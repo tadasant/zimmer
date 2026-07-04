@@ -1,0 +1,359 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@source "../../views/**/*.html.erb";
+@source "../../helpers/**/*.rb";
+@source "../../javascript/**/*.js";
+
+/* Custom theme extensions for ultrawide layouts */
+@theme {
+  --breakpoint-3xl: 1920px;
+}
+
+/* Apple-Inspired Markdown Rendering Styles */
+@layer components {
+  /* Code block styling - refined with subtle gradients and shadows */
+  .prose pre.highlight {
+    @apply text-gray-100 rounded-xl overflow-x-auto my-5 text-sm leading-relaxed;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    background: linear-gradient(180deg, #1e1e1e 0%, #262626 100%);
+    padding: 1rem 1.25rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .prose pre.highlight code {
+    @apply bg-transparent p-0 text-inherit;
+    font-size: inherit;
+    line-height: 1.6;
+  }
+
+  /* Inline code styling - refined pill-style appearance */
+  .prose .inline-code {
+    @apply px-2 py-0.5 rounded-md font-medium;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 0.85em;
+    background: linear-gradient(180deg, #f5f5f7 0%, #ebebed 100%);
+    color: #1d1d1f;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+  }
+
+  /* Dark mode inline code */
+  .dark .prose .inline-code {
+    background: linear-gradient(180deg, #3a3a3c 0%, #2c2c2e 100%);
+    color: #f5f5f7;
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  /* Blockquote styling - elegant left accent */
+  .prose .markdown-blockquote {
+    @apply pl-5 pr-4 py-4 my-5 rounded-r-lg;
+    border-left: 3px solid #0071e3;
+    background: linear-gradient(90deg, rgba(0, 113, 227, 0.04) 0%, transparent 100%);
+    font-style: normal;
+  }
+
+  .prose .markdown-blockquote p {
+    @apply m-0 text-gray-600 leading-relaxed;
+  }
+
+  .prose .markdown-blockquote p:not(:last-child) {
+    @apply mb-3;
+  }
+
+  /* Table styling - clean, minimal design */
+  .prose .table-wrapper {
+    @apply overflow-x-auto my-5 rounded-xl;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+  }
+
+  .prose .markdown-table {
+    @apply min-w-full;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .prose .markdown-table thead {
+    background: linear-gradient(180deg, #fafafa 0%, #f5f5f7 100%);
+  }
+
+  .prose .markdown-table th {
+    @apply px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  }
+
+  .prose .markdown-table td {
+    @apply px-4 py-3 text-sm text-gray-700;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  }
+
+  .prose .markdown-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  .prose .markdown-table tbody tr {
+    @apply transition-colors duration-150;
+  }
+
+  .prose .markdown-table tbody tr:hover {
+    background: rgba(0, 113, 227, 0.02);
+  }
+
+  /* Enhanced prose typography for session detail pages - Apple-inspired */
+  .prose-session {
+    @apply prose prose-sm max-w-none;
+    color: #1d1d1f;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+
+    /* Headings - clean hierarchy */
+    & h1 {
+      @apply text-xl font-semibold mt-8 mb-4 pb-3;
+      color: #1d1d1f;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+      letter-spacing: -0.01em;
+    }
+
+    & h2 {
+      @apply text-lg font-semibold mt-7 mb-3;
+      color: #1d1d1f;
+      letter-spacing: -0.01em;
+    }
+
+    & h3 {
+      @apply text-base font-semibold mt-6 mb-2;
+      color: #1d1d1f;
+      letter-spacing: -0.005em;
+    }
+
+    & h4, & h5, & h6 {
+      @apply text-sm font-semibold mt-5 mb-2;
+      color: #3a3a3c;
+    }
+
+    /* Paragraphs - optimized readability */
+    & p {
+      @apply my-4;
+      color: #424245;
+      line-height: 1.7;
+    }
+
+    /* Lists - refined spacing */
+    & ul {
+      @apply my-4 pl-6 space-y-2;
+    }
+
+    & ol {
+      @apply my-4 pl-6 space-y-2;
+    }
+
+    & li {
+      color: #424245;
+      line-height: 1.65;
+    }
+
+    & ul > li {
+      @apply list-disc;
+    }
+
+    & ul > li::marker {
+      color: #86868b;
+    }
+
+    & ol > li {
+      @apply list-decimal;
+    }
+
+    & ol > li::marker {
+      color: #86868b;
+      font-weight: 500;
+    }
+
+    /* Nested lists */
+    & ul ul, & ol ul {
+      @apply mt-2 mb-0;
+    }
+
+    & ul ol, & ol ol {
+      @apply mt-2 mb-0;
+    }
+
+    /* Links - subtle and elegant */
+    & a {
+      color: #0071e3;
+      text-decoration: none;
+      transition: color 0.15s ease;
+    }
+
+    & a:hover {
+      color: #0077ed;
+      text-decoration: underline;
+      text-decoration-color: rgba(0, 113, 227, 0.4);
+      text-underline-offset: 2px;
+    }
+
+    /* Strong and emphasis */
+    & strong {
+      @apply font-semibold;
+      color: #1d1d1f;
+    }
+
+    & em {
+      @apply italic;
+      color: #424245;
+    }
+
+    /* Strikethrough */
+    & del {
+      @apply line-through;
+      color: #86868b;
+    }
+
+    /* Horizontal rule - minimal */
+    & hr {
+      @apply my-8;
+      border: none;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.08), transparent);
+    }
+
+    /* Images - elegant presentation */
+    & img {
+      @apply rounded-xl my-5 max-w-full h-auto;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+
+    /* First paragraph after heading - tighter spacing */
+    & h1 + p, & h2 + p, & h3 + p {
+      @apply mt-3;
+    }
+  }
+}
+
+/* MCP log styling - preserves monospace font and error highlighting */
+@layer components {
+  .mcp-log {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    @apply text-xs;
+  }
+
+  .mcp-log-error {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    @apply text-xs;
+  }
+
+  .mcp-log-error .prose-session,
+  .mcp-log-error .prose-session p,
+  .mcp-log-error .prose-session li {
+    @apply text-red-700;
+  }
+}
+
+/* Language labels for code blocks - uses data-language attribute from block_code renderer */
+@layer utilities {
+  .prose pre.highlight {
+    @apply relative;
+  }
+
+  .prose pre.highlight[data-language]::before {
+    content: attr(data-language);
+    @apply absolute top-2 right-2 px-2 py-0.5 text-xs font-medium rounded-md;
+    color: rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.08);
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+  }
+}
+
+/* Pull-to-refresh component for mobile — Twitter / iOS-style feel.
+ * The indicator height tracks the finger 1:1 (no transition) during the pull,
+ * but the color/scale transitions on threshold crossing (the "ready to commit"
+ * state). Opacity has a short transition to smooth the appear/disappear. */
+@layer components {
+  .pull-to-refresh-indicator {
+    @apply overflow-hidden flex items-center justify-center bg-gray-50 transition-opacity duration-150;
+    height: 0;
+    opacity: 0;
+  }
+
+  .pull-to-refresh-indicator.pull-to-refresh-ready {
+    @apply bg-indigo-50;
+  }
+
+  /* Floating mode: indicator lives in normal document flow at the top of the
+   * page, but when the user pulls on the sticky header while scrolled into a
+   * long transcript, the in-flow position is above the fold. Lifting the
+   * indicator to fixed top-of-viewport keeps the visual feedback visible. */
+  .pull-to-refresh-indicator.pull-to-refresh-floating {
+    @apply fixed top-0 left-0 right-0 shadow-sm;
+    z-index: 20;
+  }
+
+  .pull-to-refresh-content {
+    @apply flex flex-col items-center justify-center py-2;
+  }
+
+  .pull-to-refresh-arrow {
+    @apply w-6 h-6 text-indigo-600 transition-transform duration-200;
+  }
+
+  .pull-to-refresh-spinner {
+    @apply w-6 h-6 text-indigo-600 animate-spin;
+  }
+
+  .pull-to-refresh-text {
+    @apply text-xs text-gray-500 mt-1 font-medium;
+  }
+
+  .pull-to-refresh-indicator.pull-to-refresh-ready .pull-to-refresh-text {
+    @apply text-indigo-600;
+  }
+}
+
+/* Suppress iOS / Android native overscroll bounce on the body so the custom
+ * pull-to-refresh indicator doesn't compete with the OS rubber-band effect. */
+@layer base {
+  html, body {
+    overscroll-behavior-y: contain;
+  }
+}
+
+/* Details/accordion chevron rotation */
+@layer utilities {
+  details[open] .details-chevron {
+    transform: rotate(180deg);
+  }
+}
+
+/* Error popover component for displaying full error messages */
+@layer components {
+  .error-popover-container {
+    @apply bg-white border border-red-200 rounded-lg shadow-lg overflow-hidden;
+    max-width: 500px;
+    max-height: 400px;
+  }
+
+  .error-popover-header {
+    @apply flex items-center justify-between px-3 py-2 bg-red-50 border-b border-red-200;
+  }
+
+  .error-popover-title {
+    @apply text-sm font-semibold text-red-800;
+  }
+
+  .error-popover-close {
+    @apply text-red-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 rounded p-0.5;
+  }
+
+  .error-popover-content {
+    @apply p-3 overflow-auto;
+    max-height: 340px;
+  }
+
+  .error-popover-text {
+    @apply text-sm text-gray-800 whitespace-pre-wrap break-words m-0 font-mono;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+}

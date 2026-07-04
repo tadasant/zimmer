@@ -1,0 +1,131 @@
+primary:
+  email: tadas@tadasant.com
+  status: 0
+  oauth_config:
+    claude_json:
+      oauthAccount: tadas@tadasant.com
+    credentials_json:
+      claudeAiOauth:
+        accessToken: test_access_token_1
+        refreshToken: test_refresh_token_1
+        expiresAt: 9999999999999
+  is_current: true
+  priority: 0
+  quota_hit_count: 0
+
+secondary:
+  email: sam@tadasant.com
+  status: 0
+  oauth_config:
+    claude_json:
+      oauthAccount: sam@tadasant.com
+    credentials_json:
+      claudeAiOauth:
+        accessToken: test_access_token_2
+        refreshToken: test_refresh_token_2
+        expiresAt: 9999999999999
+  is_current: false
+  priority: 1
+  quota_hit_count: 0
+
+tertiary:
+  email: peter@tadasant.com
+  status: 0
+  oauth_config:
+    claude_json:
+      oauthAccount: peter@tadasant.com
+    credentials_json:
+      claudeAiOauth:
+        accessToken: test_access_token_3
+        refreshToken: test_refresh_token_3
+        expiresAt: 9999999999999
+  is_current: false
+  priority: 2
+  quota_hit_count: 0
+
+exceeded:
+  email: exceeded@example.com
+  status: 1
+  oauth_config:
+    claude_json:
+      oauthAccount: exceeded@example.com
+    credentials_json:
+      claudeAiOauth:
+        accessToken: test_access_token_4
+        refreshToken: test_refresh_token_4
+        expiresAt: 9999999999999
+  is_current: false
+  priority: 3
+  quota_hit_count: 2
+
+unconfigured:
+  email: unconfigured@example.com
+  status: 0
+  oauth_config: {}
+  is_current: false
+  priority: 4
+  quota_hit_count: 0
+
+expired_token:
+  email: expired@example.com
+  status: 0
+  oauth_config:
+    claude_json:
+      oauthAccount: expired@example.com
+    credentials_json:
+      claudeAiOauth:
+        accessToken: expired_access_token
+        refreshToken: expired_refresh_token
+        expiresAt: 1000000000000
+  is_current: false
+  priority: 5
+  quota_hit_count: 0
+
+# --- Codex (runtime: codex) accounts ---
+# last_refresh is set to "now" so these are not "expiring soon" under the 24h
+# TTL by default — keeps the runtime-agnostic refresh job from sweeping them in
+# unrelated Claude tests. Tests that exercise refresh override last_refresh.
+
+codex_primary:
+  email: codex-primary@example.com
+  status: 0
+  runtime: codex
+  oauth_config:
+    auth_json:
+      OPENAI_API_KEY: ~
+      tokens:
+        id_token: codex_id_token_1
+        access_token: codex_access_token_1
+        refresh_token: codex_refresh_token_1
+        account_id: codex_account_1
+      last_refresh: <%= Time.current.utc.iso8601 %>
+  is_current: true
+  priority: 0
+  quota_hit_count: 0
+
+codex_secondary:
+  email: codex-secondary@example.com
+  status: 0
+  runtime: codex
+  oauth_config:
+    auth_json:
+      OPENAI_API_KEY: ~
+      tokens:
+        id_token: codex_id_token_2
+        access_token: codex_access_token_2
+        refresh_token: codex_refresh_token_2
+        account_id: codex_account_2
+      last_refresh: <%= Time.current.utc.iso8601 %>
+  is_current: false
+  priority: 1
+  quota_hit_count: 0
+
+codex_api_key:
+  email: codex-apikey@example.com
+  status: 0
+  runtime: codex
+  oauth_config:
+    api_key: sk-codex-test-key
+  is_current: false
+  priority: 2
+  quota_hit_count: 0

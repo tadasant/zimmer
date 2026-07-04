@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AgentOrchestrator</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#4f46e5">
+    <link rel="icon" href="/icons/icon-192x192.png" type="image/png">
+    <link rel="apple-touch-icon" href="/icons/icon-192x192.png">
+    <% if WebpushConfig.configured? %>
+      <meta name="vapid-public-key" content="<%= WebpushConfig.public_key %>">
+    <% end %>
+
+    <%= stylesheet_link_tag "tailwind", "data-turbo-track": "reload" %>
+    <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
+    <%= javascript_importmap_tags %>
+  </head>
+
+  <body>
+    <!-- Flash messages -->
+    <div class="fixed top-4 right-4 z-50 space-y-2">
+      <% flash.each do |type, message| %>
+        <%
+          # Parse message for action button: "message|action|id"
+          parts = message.to_s.split('|')
+          display_message = parts[0]
+          action = parts[1]
+          resource_id = parts[2]
+        %>
+        <div data-controller="flash"
+             data-flash-duration-value="<%= action == 'undo_archive' ? '5000' : '5000' %>"
+             class="bg-white shadow-lg rounded-lg px-6 py-4 max-w-md transform transition-all duration-300 ease-in-out <%= type == 'notice' ? 'border-l-4 border-green-500' : 'border-l-4 border-red-500' %>">
+          <div class="flex items-start">
+            <div class="flex-1">
+              <p class="text-sm font-medium text-gray-900">
+                <%= type.titleize %>
+              </p>
+              <p class="text-sm text-gray-600 mt-1">
+                <%= display_message %>
+              </p>
+              <% if action == 'undo_archive' && resource_id.present? %>
+                <div class="mt-3">
+                  <%= button_to "Undo", undo_archive_session_path(resource_id),
+                      method: :post,
+                      class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+                </div>
+              <% end %>
+            </div>
+            <button type="button"
+                    data-action="click->flash#dismiss"
+                    class="ml-4 text-gray-400 hover:text-gray-600 focus:outline-none">
+              <span class="sr-only">Dismiss</span>
+              <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      <% end %>
+    </div>
+
+    <%= yield %>
+
+    <%= render "shared/chat_bubble" %>
+  </body>
+</html>

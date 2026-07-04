@@ -1,0 +1,24 @@
+<%#
+  Renders a session's agent-root default artifacts as muted, dashed "inherited"
+  tags, shown in place of "None" when the session's own catalog column is blank.
+
+  A session freezes its catalog columns (mcp_servers / catalog_skills /
+  catalog_hooks / catalog_plugins) at creation. Those can land empty when the
+  catalog transiently resolved no defaults for the root, leaving the detail page
+  showing "None" forever. These tags surface what the root *currently* declares,
+  deliberately styled apart from the color-coded "captured" badges so it's clear
+  they were not part of this session's snapshot.
+
+  Locals:
+    items [Array<String>] the agent-root default artifact ids
+    label [String] short source label, e.g. "agent root default"
+%>
+<span class="inline-flex items-center gap-1 flex-wrap text-xs">
+  <% items.each do |item| %>
+    <span class="inline-flex items-center px-1.5 py-0.5 rounded font-medium bg-gray-100 text-gray-500 border border-dashed border-gray-300"
+          title="<%= item %>: <%= label %> (not captured in this session's snapshot)"
+          aria-label="<%= item %>: <%= label %> (not captured in this session's snapshot)"><%= item %></span>
+  <% end %>
+  <span class="text-gray-400 italic"
+        title="These are the agent root's current defaults, shown because this session captured none.">(<%= label %>)</span>
+</span>

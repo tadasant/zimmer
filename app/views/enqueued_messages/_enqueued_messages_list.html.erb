@@ -1,0 +1,51 @@
+<%# Enqueued messages list - shown above follow-up form %>
+<% messages = agent_session.enqueued_messages.pending.ordered %>
+<% if messages.any? %>
+  <div id="session_<%= agent_session.id %>_enqueued_messages"
+       class="bg-white border-t border-gray-200 shadow-sm"
+       data-controller="enqueued-messages-panel"
+       data-enqueued-messages-panel-session-id-value="<%= agent_session.id %>">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2">
+      <!-- Header with minimize toggle -->
+      <div class="flex items-center justify-between">
+        <button type="button"
+                class="flex items-center gap-2 text-left hover:bg-gray-50 rounded px-2 py-1 -ml-2 transition-colors"
+                data-action="click->enqueued-messages-panel#toggle"
+                data-enqueued-messages-panel-target="toggleButton"
+                aria-expanded="true"
+                aria-label="Toggle queued messages panel">
+          <svg data-enqueued-messages-panel-target="toggleIcon" class="h-4 w-4 text-gray-500 transition-transform" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+          </svg>
+          <svg class="h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z" />
+          </svg>
+          <h3 class="text-sm font-medium text-gray-900">
+            Queued Messages
+            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800">
+              <%= messages.count %>
+            </span>
+          </h3>
+        </button>
+        <p class="text-xs text-gray-500" data-enqueued-messages-panel-target="helpText">
+          Will be sent automatically when the agent requests input
+        </p>
+      </div>
+
+      <!-- Messages list with drag-and-drop support (collapsible) -->
+      <div id="session_<%= agent_session.id %>_enqueued_messages_list"
+           class="mt-2"
+           data-controller="enqueued-messages-list"
+           data-enqueued-messages-list-session-id-value="<%= agent_session.id %>"
+           data-enqueued-messages-panel-target="content">
+        <%= turbo_stream_from "session_#{agent_session.id}_enqueued_messages" %>
+        <% messages.each do |message| %>
+          <%= render "enqueued_messages/enqueued_message", message: message %>
+        <% end %>
+      </div>
+    </div>
+  </div>
+<% else %>
+  <!-- Empty state - no enqueued messages -->
+  <div id="session_<%= agent_session.id %>_enqueued_messages" class="hidden"></div>
+<% end %>

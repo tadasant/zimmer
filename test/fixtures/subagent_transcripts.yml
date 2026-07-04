@@ -1,0 +1,3 @@
+# Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
+# Note: Keep fixtures empty to avoid foreign key conflicts in tests that delete sessions
+# Subagent transcript fixtures are created dynamically in tests that need them

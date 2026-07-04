@@ -1,0 +1,54 @@
+<div class="min-h-screen bg-gray-50" data-controller="health-dashboard" data-health-dashboard-refresh-interval-value="30000">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <div class="flex justify-between items-center">
+        <div>
+          <h1 class="text-3xl font-bold text-gray-900">System Health Dashboard</h1>
+          <p class="mt-2 text-sm text-gray-600">Monitor processes, sessions, and system health</p>
+        </div>
+        <div class="flex gap-3">
+          <%= link_to root_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+            </svg>
+            Back to Sessions
+          <% end %>
+          <button type="button" data-action="click->health-dashboard#refresh" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+            </svg>
+            Refresh
+          </button>
+          <%= link_to export_diagnostics_health_path(format: :json), class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", target: "_blank" do %>
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+            </svg>
+            Export
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Overall Status Banner -->
+      <div class="mt-4 <%= status_banner_class(@health_report[:overall_status]) %> rounded-lg p-4">
+        <div class="flex items-center">
+          <%= status_icon(@health_report[:overall_status]) %>
+          <div class="ml-3">
+            <p class="text-sm font-medium <%= status_text_class(@health_report[:overall_status]) %>">
+              <%= @health_report[:overall_status].message %>
+            </p>
+            <p class="text-xs <%= status_subtext_class(@health_report[:overall_status]) %> mt-1">
+              Last updated: <span data-health-dashboard-target="lastUpdated"><%= @health_report[:generated_at].strftime("%H:%M:%S") %></span>
+              <span class="ml-2" data-health-dashboard-target="autoRefreshStatus">(Auto-refresh: 30s)</span>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Health Content (refreshable) -->
+    <div id="health-content" data-health-dashboard-target="content">
+      <%= render "health_content", health_report: @health_report %>
+    </div>
+  </div>
+</div>

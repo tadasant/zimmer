@@ -1,0 +1,63 @@
+<%# Pagination controls scoped to a single category section.
+
+    Locals:
+      collection — a Kaminari-paginated relation for one category (or Uncategorized)
+      page_key   — the namespaced page param key for this section: a category id as a
+                   string, or SessionsController::UNCATEGORIZED_PAGE_KEY.
+
+    Each section lives inside its own <turbo-frame>, so these links navigate only that
+    frame: paging one category swaps its cards in place and leaves every other section
+    untouched. Links carry page[<page_key>]=N (deep-merged onto the current query params
+    so search/filter state is preserved); the controller reads that key to window this
+    section independently. %>
+<%# A freshly-created category is rendered with a plain [] (no Kaminari window); such a
+    section can't span pages, so skip the nav unless we have a paginatable collection. %>
+<% if collection.respond_to?(:total_pages) && collection.total_pages > 1 %>
+  <%
+    current = collection.current_page
+    total = collection.total_pages
+    window = 2 # Show 2 pages on each side of the current page.
+    pages_to_show = [ 1, total, current, *(current - window..current + window) ]
+      .select { |p| p >= 1 && p <= total }.uniq.sort
+
+    page_url = ->(n) { root_path(request.query_parameters.deep_merge("page" => { page_key => n })) }
+  %>
+  <div class="mt-4 flex justify-center">
+    <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+      <% if collection.first_page? %>
+        <span class="relative inline-flex items-center rounded-l-md px-4 py-2 text-gray-300 bg-white border border-gray-300 cursor-not-allowed">
+          &lsaquo; Prev
+        </span>
+      <% else %>
+        <%= link_to page_url.call(collection.prev_page), class: "relative inline-flex items-center rounded-l-md px-4 py-2 text-gray-700 bg-white border border-gray-300 hover:bg-gray-50" do %>
+          &lsaquo; Prev
+        <% end %>
+      <% end %>
+
+      <% pages_to_show.each_with_index do |page_num, idx| %>
+        <% if idx > 0 && page_num > pages_to_show[idx - 1] + 1 %>
+          <span class="relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300">
+            &hellip;
+          </span>
+        <% end %>
+        <% if page_num == current %>
+          <span class="relative z-10 inline-flex items-center px-4 py-2 text-sm font-semibold text-white bg-indigo-600 border border-indigo-600">
+            <%= page_num %>
+          </span>
+        <% else %>
+          <%= link_to page_num, page_url.call(page_num), class: "relative inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50" %>
+        <% end %>
+      <% end %>
+
+      <% if collection.last_page? %>
+        <span class="relative inline-flex items-center rounded-r-md px-4 py-2 text-gray-300 bg-white border border-gray-300 cursor-not-allowed">
+          Next &rsaquo;
+        </span>
+      <% else %>
+        <%= link_to page_url.call(collection.next_page), class: "relative inline-flex items-center rounded-r-md px-4 py-2 text-gray-700 bg-white border border-gray-300 hover:bg-gray-50" do %>
+          Next &rsaquo;
+        <% end %>
+      <% end %>
+    </nav>
+  </div>
+<% end %>

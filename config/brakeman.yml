@@ -1,0 +1,8 @@
+---
+# Brakeman configuration file
+# See https://brakemanscanner.org/docs/options/ for all options
+
+# Skip CheckFileAccess as the app is private and file paths are validated
+:skip_checks:
+  - CheckFileAccess
+

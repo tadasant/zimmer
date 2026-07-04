@@ -1,0 +1,133 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Deterministic fake `claude` binary used by the headless-inference parity test.
+#
+# It emulates BOTH ways HeadlessInferenceService can drive Claude, deriving the
+# assistant reply from the prompt through the SAME function in each, so the two
+# backends are byte-for-byte identical for the same input:
+#
+#   * native print mode — `claude ... -p "<prompt>"`: print the reply to stdout
+#     (this is what NativeClaudePrintRunner reads).
+#
+#   * interactive TUI mode — `claude ... --settings <json>` driven inside a PTY
+#     by PtyClaudePrintRunner: emit the burst of Ink terminal-capability queries,
+#     fire the inline SessionStart hook, read the bracketed-paste prompt the
+#     runner types, write a transcript JSONL in Claude's schema, then fire the
+#     Stop hook announcing the transcript path.
+#
+# Hermetic and deterministic: no network, fixed token usage / timestamps, same
+# prompt in → same bytes out.
+
+require "json"
+
+# The single source of truth for what this fake "model" replies. Deterministic
+# and identical across both modes. The embedded newline exercises multi-line
+# transcript / stdout handling.
+def assistant_reply(prompt)
+  topic = prompt.to_s.strip
+  "FAKE-REPLY :: #{topic}\nsecond line for #{topic}"
+end
+
+def hook_command(hooks, event)
+  Array(hooks[event]).each do |group|
+    Array(group["hooks"]).each do |h|
+      return h["command"] if h["type"] == "command" && h["command"]
+    end
+  end
+  nil
+end
+
+def fire_hook(command, payload)
+  return unless command
+
+  IO.popen([ "bash", "-c", command ], "w") { |io| io.write(JSON.generate(payload)) }
+end
+
+argv = ARGV.dup
+
+# ---- Native print mode -----------------------------------------------------
+if (i = argv.index("-p"))
+  $stdout.write(assistant_reply(argv[i + 1].to_s))
+  $stdout.flush
+  exit 0
+end
+
+# ---- Interactive PTY mode --------------------------------------------------
+settings_idx = argv.index("--settings")
+abort "fake-claude: expected either -p or --settings" unless settings_idx
+
+settings = JSON.parse(argv[settings_idx + 1])
+hooks = settings["hooks"] || {}
+session_start_cmd = hook_command(hooks, "SessionStart")
+stop_cmd = hook_command(hooks, "Stop")
+
+session_id = "fake-session-0001"
+transcript_path = File.join(Dir.pwd, "fake-transcript.jsonl")
+
+# Emit the startup capability queries an Ink TUI sends (DA2, DA1, DSR, XTVERSION,
+# window-size in pixels + chars, OSC-11 background). The runner's ANSI scanner
+# answers these; we don't need the answers, but emitting them exercises that path.
+$stdout.write("\e[>c\e[c\e[6n\e[>q\e[14t\e[18t\e]11;?\a")
+$stdout.flush
+
+# SessionStart: signal the runner that it is safe to type the prompt.
+fire_hook(session_start_cmd, {
+  "session_id" => session_id,
+  "transcript_path" => transcript_path,
+  "hook_event_name" => "SessionStart",
+  "source" => "startup"
+})
+
+# Read the bracketed-paste prompt the runner types:
+#   \e[200~ <prompt> \e[201~ \r
+# The runner's capability-query answers also land on our stdin ahead of the
+# paste; they contain no \e[201~ terminator, so we keep reading until we see it,
+# then extract only the bytes between the paste markers.
+buf = +""
+begin
+  while (ch = $stdin.read(1))
+    buf << ch
+    break if buf.include?("\e[201~")
+  end
+rescue IOError, Errno::EIO
+  # Master side closed; fall through with whatever we captured.
+end
+
+prompt =
+  if (m = buf.match(/\e\[200~(.*?)\e\[201~/m))
+    m[1]
+  else
+    buf.sub(/.*\e\[200~/m, "").sub(/\e\[201~.*/m, "")
+  end
+
+reply = assistant_reply(prompt)
+
+# Write the transcript JSONL in the schema PtyClaudePrintRunner scrapes.
+File.open(transcript_path, "w") do |f|
+  f.puts JSON.generate({
+    "type" => "user",
+    "message" => { "role" => "user", "content" => prompt },
+    "timestamp" => "2026-01-01T00:00:00.000Z"
+  })
+  f.puts JSON.generate({
+    "type" => "assistant",
+    "message" => {
+      "role" => "assistant",
+      "model" => "fake-model",
+      "content" => [ { "type" => "text", "text" => reply } ],
+      "usage" => { "input_tokens" => 7, "output_tokens" => 11 }
+    },
+    "timestamp" => "2026-01-01T00:00:01.000Z"
+  })
+end
+
+# Stop: announce the transcript path so the runner can scrape the final turn.
+fire_hook(stop_cmd, {
+  "session_id" => session_id,
+  "transcript_path" => transcript_path,
+  "hook_event_name" => "Stop",
+  "stop_hook_active" => false
+})
+
+exit 0

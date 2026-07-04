@@ -1,0 +1,154 @@
+<%# Mobile-optimized MCP servers display and editor %>
+<% all_servers = agent_session.all_mcp_servers %>
+<% injected_set = agent_session.injected_mcp_servers.to_set %>
+<% plugin_derived_mcp = agent_session.plugin_derived_mcp_servers %>
+<% servers_for_select = local_assigns.fetch(:servers_for_select, defined?(@servers_for_select) ? @servers_for_select : nil) %>
+<% show_mcp_section = servers_for_select || all_servers.present? || plugin_derived_mcp.any? %>
+<div id="session_<%= agent_session.id %>_mobile_mcp_servers">
+<% if show_mcp_section %>
+  <div data-controller="editable-mcp-servers"
+       data-editable-mcp-servers-session-id-value="<%= agent_session.id %>"
+       data-editable-mcp-servers-servers-value="<%= (agent_session.mcp_servers || []).to_json %>"
+       data-editable-mcp-servers-injected-servers-value="<%= agent_session.injected_mcp_servers.to_json %>"
+       data-editable-mcp-servers-available-servers-value="<%= (servers_for_select || []).to_json %>">
+    <% if agent_session.failed? && agent_session.metadata&.dig("failure_reason") == "oauth_required" && (agent_session.metadata&.dig("oauth_required_servers") || []).any? %>
+      <div class="mb-3">
+        <%= render "sessions/mcp_oauth_required_banner", agent_session: agent_session %>
+      </div>
+    <% end %>
+
+    <!-- Display Mode -->
+    <div data-editable-mcp-servers-target="display">
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs font-medium text-gray-500">MCP Servers</label>
+        <% if servers_for_select %>
+          <button type="button"
+                  data-action="click->editable-mcp-servers#edit"
+                  class="text-indigo-600 hover:text-indigo-800 text-xs font-medium px-2 py-1.5 -mr-2 -my-1"
+                  title="<%= all_servers.present? ? 'Edit MCP servers' : 'Add MCP servers' %>"
+                  aria-label="<%= all_servers.present? ? 'Edit MCP servers' : 'Add MCP servers' %>">
+            <%= all_servers.present? ? 'Edit' : 'Add' %>
+          </button>
+        <% end %>
+      </div>
+
+      <% if all_servers.present? || plugin_derived_mcp.any? %>
+        <%
+          mcp_statuses = agent_session.custom_metadata&.dig("mcp_servers_status") || {}
+        %>
+        <div class="flex flex-wrap gap-1.5">
+          <% all_servers.each do |server_name| %>
+            <%
+              server_status = mcp_statuses[server_name] || {}
+              status = server_status["status"] || "pending"
+              error = server_status["error"]
+              is_injected = injected_set.include?(server_name)
+
+              case status
+              when "connected"
+                indicator_class = "bg-green-500"
+                bg_class = "bg-green-50 text-green-800 border-green-200"
+              when "failed"
+                indicator_class = "bg-red-500"
+                bg_class = "bg-red-50 text-red-800 border-red-200"
+              else
+                indicator_class = "bg-gray-400"
+                bg_class = "bg-gray-50 text-gray-700 border-gray-200"
+              end
+
+              if is_injected
+                bg_class = case status
+                           when "connected" then "bg-green-50 text-green-800 border-green-200 border-dashed"
+                           when "failed" then "bg-red-50 text-red-800 border-red-200 border-dashed"
+                           else "bg-gray-50 text-gray-700 border-gray-200 border-dashed"
+                           end
+              end
+            %>
+            <%
+              simple_tooltip = case status
+                               when "connected" then "#{server_name}: Connected"
+                               when "failed" then "#{server_name}: Failed (tap for details)"
+                               else "#{server_name}: Pending connection"
+                               end
+              simple_tooltip += " (auto-injected)" if is_injected
+            %>
+            <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border <%= bg_class %>"
+                  title="<%= simple_tooltip %>"
+                  <% if error.present? %>
+                    data-controller="error-popover"
+                    data-error-popover-content-value="<%= error %>"
+                    data-error-popover-title-value="MCP Error: <%= server_name %>"
+                  <% end %>>
+              <span class="w-1.5 h-1.5 rounded-full <%= indicator_class %>" aria-hidden="true"></span>
+              <span class="sr-only"><%= status.humanize %>: </span>
+              <% if error.present? %>
+                <span data-error-popover-target="trigger"
+                      data-action="click->error-popover#toggle mouseenter->error-popover#showDelayed mouseleave->error-popover#hideDelayed"
+                      class="cursor-pointer"
+                      aria-label="<%= simple_tooltip %>">
+                  <%= server_name %>
+                </span>
+                <div data-error-popover-target="popover" class="hidden"></div>
+              <% else %>
+                <%= server_name %>
+              <% end %>
+            </span>
+          <% end %>
+          <% plugin_derived_mcp.each do |server_name, plugin_id| %>
+            <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-gray-50 text-gray-500 border-purple-200 italic"
+                  title="<%= server_name %>: from plugin '<%= plugin_id %>' (read-only)"
+                  aria-label="<%= server_name %>: from plugin '<%= plugin_id %>' (read-only)">
+              <span class="w-1.5 h-1.5 rounded-full bg-gray-300" aria-hidden="true"></span>
+              <span class="sr-only">From plugin <%= plugin_id %>: </span>
+              <%= server_name %>
+            </span>
+          <% end %>
+        </div>
+      <% else %>
+        <span class="text-gray-400 italic text-xs">None</span>
+      <% end %>
+    </div>
+
+    <% if servers_for_select %>
+      <!-- Edit Mode -->
+      <div data-editable-mcp-servers-target="editor" class="hidden">
+        <label class="block text-xs font-medium text-gray-500 mb-2">MCP Servers</label>
+
+        <!-- Selected servers container -->
+        <div data-editable-mcp-servers-target="selectedContainer" class="flex flex-wrap gap-1.5 mb-2 min-h-[28px]"></div>
+
+        <!-- Search input -->
+        <div class="relative">
+          <input type="text"
+                 data-editable-mcp-servers-target="input"
+                 data-action="focus->editable-mcp-servers#showDropdown input->editable-mcp-servers#filterServers keydown->editable-mcp-servers#handleKeydown"
+                 placeholder="Search MCP servers..."
+                 aria-label="Search MCP servers"
+                 autocomplete="off"
+                 class="w-full rounded-md border-gray-300 text-sm py-2 px-3 focus:ring-indigo-500 focus:border-indigo-500">
+
+          <!-- Dropdown -->
+          <div data-editable-mcp-servers-target="dropdown"
+               class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="flex gap-2 mt-3">
+          <button type="button"
+                  data-action="click->editable-mcp-servers#save"
+                  data-editable-mcp-servers-target="saveButton"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
+            Save
+          </button>
+          <button type="button"
+                  data-action="click->editable-mcp-servers#cancel"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            Cancel
+          </button>
+        </div>
+        <div data-editable-mcp-servers-target="status" class="text-xs text-gray-500 mt-2 text-center"></div>
+      </div>
+    <% end %>
+  </div>
+<% end %>
+</div>

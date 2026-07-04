@@ -1,0 +1,31 @@
+# Fixture for MCP OAuth pending flows used in tests
+pending_notion:
+  session: pending_oauth
+  server_name: notion
+  server_url: https://mcp.notion.com/v1/mcp
+  state: "test-state-abc123"
+  code_verifier: "abcdef1234567890abcdef1234567890abcdefg"
+  authorization_endpoint: https://api.notion.com/v1/oauth/authorize
+  token_endpoint: https://api.notion.com/v1/oauth/token
+  client_id: agent-orchestrator-test
+  redirect_uri: http://localhost:3000/mcp_oauth/callback
+  resource: https://mcp.notion.com
+  mcp_server_config: '{"type":"streamable-http","url":"https://mcp.notion.com/v1/mcp","headers":{}}'
+  expires_at: <%= 23.hours.from_now.to_formatted_s(:db) %>
+  created_at: <%= Time.current.to_formatted_s(:db) %>
+  updated_at: <%= Time.current.to_formatted_s(:db) %>
+
+expired_flow:
+  session: pending_oauth
+  server_name: expired-flow-server
+  server_url: https://expired.example.com/mcp
+  state: "expired-state-xyz789"
+  code_verifier: "zyxwvu0987654321zyxwvu0987654321zyxwvut"
+  authorization_endpoint: https://expired.example.com/oauth/authorize
+  token_endpoint: https://expired.example.com/oauth/token
+  client_id: test-client
+  redirect_uri: http://localhost:3000/mcp_oauth/callback
+  mcp_server_config: '{"type":"http","url":"https://expired.example.com/mcp","headers":{}}'
+  expires_at: <%= 1.hour.ago.to_formatted_s(:db) %>
+  created_at: <%= 25.hours.ago.to_formatted_s(:db) %>
+  updated_at: <%= 25.hours.ago.to_formatted_s(:db) %>

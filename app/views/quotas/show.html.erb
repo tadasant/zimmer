@@ -1,0 +1,200 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center">
+          <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+            </svg>
+          <% end %>
+          <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Quotas</h1>
+        </div>
+        <% if current_runtime == ClaudeAuthProvider::RUNTIME %>
+          <%= button_to refresh_all_quotas_path, method: :post, class: "inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50", data: { turbo_stream: true, controller: "refresh-all", action: "click->refresh-all#start" } do %>
+            <svg class="-ml-0.5 mr-1.5 h-4 w-4" data-refresh-all-target="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+            </svg>
+            Refresh All
+          <% end %>
+        <% end %>
+      </div>
+      <p class="text-sm text-gray-600"><%= RuntimeRegistry.label_for(current_runtime) %> account usage across all accounts</p>
+    </div>
+
+    <!-- Runtime sub-tabs -->
+    <div class="mb-6 border-b border-gray-200">
+      <nav class="-mb-px flex space-x-6" aria-label="Runtimes">
+        <% ClaudeAccount::RUNTIMES.each do |rt| %>
+          <% active = rt == current_runtime %>
+          <%= link_to quotas_path(runtime: rt),
+              class: "whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium #{active ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}",
+              "aria-current": (active ? "page" : nil) do %>
+            <%= RuntimeRegistry.label_for(rt) %>
+          <% end %>
+        <% end %>
+      </nav>
+    </div>
+
+    <!-- Filesystem Sync Banner -->
+    <% if @filesystem_email.present? %>
+      <% fs_account = @accounts.find { |a| a.email == @filesystem_email } %>
+      <% fs_account_valid = fs_account&.has_valid_config? %>
+      <% fs_is_current = fs_account && @current_account&.id == fs_account.id %>
+      <% show_banner = !fs_account_valid || !fs_is_current %>
+      <% if show_banner %>
+        <div class="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start justify-between">
+          <div class="flex-1">
+            <h3 class="text-sm font-medium text-yellow-800">Filesystem identity mismatch</h3>
+            <p class="mt-1 text-sm text-yellow-700">
+              Worker filesystem holds OAuth tokens for <span class="font-medium"><%= @filesystem_email %></span>.
+              <% if fs_account.nil? %>
+                No DB account matches. Run <code class="text-xs bg-yellow-100 px-1 rounded">bin/rails 'claude_accounts:add[<%= @filesystem_email %>,0]'</code> on the worker to create it.
+              <% elsif !fs_account_valid %>
+                The DB record exists but has no captured tokens. Click "Sync from filesystem" to populate it.
+              <% elsif !fs_is_current %>
+                The DB-current account is <%= @current_account&.email || "none" %>, not <%= @filesystem_email %>. Click "Sync from filesystem" to adopt the filesystem identity.
+              <% end %>
+            </p>
+          </div>
+          <% if fs_account %>
+            <%= button_to sync_from_filesystem_quotas_path, method: :post, class: "ml-4 inline-flex items-center px-3 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-800 bg-yellow-100 hover:bg-yellow-200 whitespace-nowrap" do %>
+              Sync from filesystem
+            <% end %>
+          <% end %>
+        </div>
+      <% end %>
+    <% end %>
+
+    <!-- Aggregate Stats (Claude-only: the pool summary surfaces quota utilization,
+         which has no Codex equivalent yet). -->
+    <% if current_runtime == ClaudeAuthProvider::RUNTIME %>
+      <%= render partial: "quotas/aggregate_stats", locals: { accounts: @accounts, snapshots: @snapshots, current_account: @current_account } %>
+    <% end %>
+
+    <!-- Account Cards -->
+    <% if @accounts.any? %>
+      <div class="space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-medium text-gray-900">Accounts</h2>
+        </div>
+
+        <% @accounts.each do |account| %>
+          <div id="account_card_<%= account.id %>">
+            <%= render partial: "quotas/account_card", locals: {
+              account: account,
+              snapshot: @snapshots[account.id],
+              error: nil,
+              is_current: account == @current_account
+            } %>
+          </div>
+        <% end %>
+      </div>
+    <% else %>
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200 p-8 text-center mb-6">
+        <p class="text-gray-500">No <%= RuntimeRegistry.label_for(current_runtime) %> accounts configured.</p>
+        <p class="text-sm text-gray-400 mt-2">Use "Add account" below to create one.</p>
+      </div>
+    <% end %>
+
+    <!-- Add Account -->
+    <%= render partial: "quotas/add_account_form", locals: { runtime: current_runtime } %>
+
+    <!-- Rotation Log -->
+    <% if @rotation_events.any? %>
+      <details class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6 mt-6">
+        <summary class="px-4 py-4 sm:px-6 cursor-pointer hover:bg-gray-50 flex items-center justify-between list-none">
+          <div>
+            <h2 class="text-lg font-medium text-gray-900 inline">Rotation Log</h2>
+            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600"><%= @rotation_events.size %></span>
+          </div>
+          <svg class="h-5 w-5 text-gray-400 transition-transform details-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" />
+          </svg>
+        </summary>
+        <div class="border-t border-gray-200">
+          <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+              <thead class="bg-gray-50">
+                <tr>
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To</th>
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th>
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Triggered By</th>
+                </tr>
+              </thead>
+              <tbody class="bg-white divide-y divide-gray-200">
+                <% @rotation_events.each do |event| %>
+                  <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500" title="<%= event.created_at.iso8601 %>">
+                      <%= time_ago_in_words(event.created_at) %> ago
+                    </td>
+                    <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-900">
+                      <%= event.rotated_from&.email || "—" %>
+                    </td>
+                    <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-900">
+                      <%= event.rotated_to.email %>
+                    </td>
+                    <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500">
+                      <%= event.reason || "—" %>
+                    </td>
+                    <td class="px-4 py-2 whitespace-nowrap text-xs">
+                      <% if event.source == "automatic" %>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">automatic</span>
+                      <% else %>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">manual</span>
+                      <% end %>
+                    </td>
+                    <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500">
+                      <% if event.triggered_by.present? %>
+                        <% if event.triggered_by.start_with?("session:") %>
+                          <% session_id = event.triggered_by.delete_prefix("session:") %>
+                          <%= link_to "Session ##{session_id}", session_path(session_id), class: "text-indigo-600 hover:text-indigo-800" %>
+                        <% else %>
+                          <%= event.triggered_by %>
+                        <% end %>
+                      <% else %>
+                        —
+                      <% end %>
+                    </td>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+    <% end %>
+
+    <!-- Account Management Help -->
+    <details class="mt-6">
+      <summary class="text-sm text-gray-500 cursor-pointer hover:text-gray-700">Account management</summary>
+      <div class="mt-3 bg-white shadow-sm rounded-lg border border-gray-200 p-4 text-sm text-gray-600 space-y-4">
+        <div>
+          <h4 class="font-medium text-gray-900 mb-2">Managing accounts from this page</h4>
+          <ul class="list-disc list-inside space-y-1.5">
+            <li><span class="font-medium text-gray-900">Add</span> — use "Add <%= RuntimeRegistry.label_for(current_runtime) %> account" above to create an account in this runtime's pool.</li>
+            <li><span class="font-medium text-gray-900">Switch</span> — make any configured account the current one. Its credentials are written to the worker before the next session spawns.</li>
+            <li><span class="font-medium text-gray-900">Delete</span> — remove an account. Deleting the current account automatically activates the next available account (or leaves the runtime with none).</li>
+          </ul>
+        </div>
+
+        <div>
+          <h4 class="font-medium text-gray-900 mb-2">Authenticating accounts</h4>
+          <p>Accounts showing <span class="text-yellow-600 font-medium">No tokens</span> need authentication before they can serve sessions or be switched to. Click <span class="font-medium text-gray-900">Authenticate</span> on the account card to run the login flow right here — no worker shell access required.</p>
+          <% if current_runtime == CodexAuthProvider::RUNTIME %>
+            <ul class="list-disc list-inside space-y-1.5 mt-2">
+              <li><span class="font-medium text-gray-900">API key</span> — supply an OpenAI API key when adding the account; it is usable immediately, no OAuth required.</li>
+              <li><span class="font-medium text-gray-900">OAuth (device auth)</span> — click <span class="font-medium text-gray-900">Authenticate</span>, open the verification link, and enter the one-time code shown. Tokens are captured automatically once you approve — nothing to paste back.</li>
+            </ul>
+          <% else %>
+            <p class="mt-2">Click <span class="font-medium text-gray-900">Authenticate</span> on a Claude Code account, open the authorization link, approve it, then paste the resulting code back into the panel. Tokens are captured automatically — the account must authenticate as the same email it was added under.</p>
+          <% end %>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>

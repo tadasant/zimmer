@@ -1,0 +1,30 @@
+<%# Replace target for the login actions. Shows the in-flight attempt (with the
+    Stimulus poller) when one is active, otherwise the Authenticate button plus
+    the last failure reason if the previous attempt failed. %>
+<div id="login_panel_<%= account.id %>" class="mt-4 pt-3 border-t border-gray-100">
+  <% active = account.runtime_login_attempts.active.order(:created_at).last %>
+  <% if active %>
+    <%= render "quotas/login_attempt", account: account, attempt: active %>
+  <% else %>
+    <% last = account.runtime_login_attempts.order(:created_at).last %>
+    <% if last && last.status == "failed" && last.error_message.present? %>
+      <p class="text-xs text-red-600 mb-2">Last login failed: <%= last.error_message %></p>
+    <% elsif last && last.status == "expired" %>
+      <p class="text-xs text-amber-600 mb-2">Last login expired before completion.</p>
+    <% end %>
+    <div class="flex items-center justify-between">
+      <span class="text-xs text-gray-500">
+        <% if account.has_valid_config? %>
+          Credentials stored. Re-authenticate to replace them.
+        <% else %>
+          No credentials yet — authenticate to start serving sessions.
+        <% end %>
+      </span>
+      <%= button_to (account.has_valid_config? ? "Re-authenticate" : "Authenticate"),
+            start_login_quotas_path(account), method: :post,
+            class: "inline-flex items-center px-2.5 py-1 border border-indigo-300 text-xs font-medium rounded text-indigo-700 bg-indigo-50 hover:bg-indigo-100",
+            data: { turbo_stream: true },
+            title: "Start the #{RuntimeRegistry.label_for(account.runtime)} login flow for #{account.email}" %>
+    </div>
+  <% end %>
+</div>

@@ -1,0 +1,21 @@
+# Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
+
+info_log:
+  session: running
+  content: "Agent started successfully"
+  level: info
+
+error_log:
+  session: running
+  content: "An error occurred"
+  level: error
+
+debug_log:
+  session: waiting
+  content: "Debugging information"
+  level: debug
+
+warning_log:
+  session: needs_input
+  content: "This is a warning message"
+  level: warning

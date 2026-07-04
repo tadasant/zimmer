@@ -1,0 +1,190 @@
+{
+  "ignored_warnings": [
+    {
+      "warning_type": "Command Injection",
+      "warning_code": 14,
+      "fingerprint": "f47c2f792921701f63afa08eaeee932a3e38ae85db0c5b97e3ee498b525567ee",
+      "check_name": "Execute",
+      "message": "Possible command injection",
+      "file": "app/jobs/git_hub_pull_request_poller_job.rb",
+      "line": 60,
+      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
+      "code": "Open3.capture3(\"gh\", \"pr\", \"view\", pr_number.to_s, \"--repo\", \"#{owner}/#{repo}\", \"--json\", \"state,mergedAt\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "GitHubPullRequestPollerJob",
+        "method": "fetch_pr_status"
+      },
+      "user_input": "owner",
+      "confidence": "Medium",
+      "cwe_id": [
+        77
+      ],
+      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner, repo, and pr_number are extracted from a validated GitHub PR URL pattern via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal."
+    },
+    {
+      "warning_type": "Command Injection",
+      "warning_code": 14,
+      "fingerprint": "e3b754776e3c746cd8d948b763aad00c8acc992b5ea201d27eb3d7f4408b0668",
+      "check_name": "Execute",
+      "message": "Possible command injection",
+      "file": "app/jobs/git_hub_pull_request_poller_job.rb",
+      "line": 135,
+      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
+      "code": "Open3.capture3(\"gh\", \"pr\", \"checks\", pr_number.to_s, \"--repo\", \"#{owner}/#{repo}\", \"--json\", \"bucket,state\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "GitHubPullRequestPollerJob",
+        "method": "fetch_ci_status"
+      },
+      "user_input": "owner",
+      "confidence": "Medium",
+      "cwe_id": [
+        77
+      ],
+      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner, repo, and pr_number are extracted from a validated GitHub PR URL pattern via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal."
+    },
+    {
+      "warning_type": "Command Injection",
+      "warning_code": 14,
+      "fingerprint": "d23ba0e7bdac8ffde94b473588e5f22a5f167653aedac347809b2cf62b7f8fcd",
+      "check_name": "Execute",
+      "message": "Possible command injection",
+      "file": "app/jobs/github_comment_poller_job.rb",
+      "line": 154,
+      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
+      "code": "Open3.capture3(\"gh\", \"api\", \"#{api_path}?per_page=#{100}&page=#{1}\", \"--jq\", \".\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "GithubCommentPollerJob",
+        "method": "fetch_paginated_comments"
+      },
+      "user_input": "api_path",
+      "confidence": "Medium",
+      "cwe_id": [
+        77
+      ],
+      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The api_path is constructed from owner, repo, and pr_number values extracted from validated GitHub PR URLs via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal."
+    },
+    {
+      "warning_type": "Command Injection",
+      "warning_code": 14,
+      "fingerprint": "7145c4e0795359b952c1ba81d3f77ecc24dcf220c4e292ef1e68b745ef16e98e",
+      "check_name": "Execute",
+      "message": "Possible command injection",
+      "file": "app/jobs/github_comment_poller_job.rb",
+      "line": 233,
+      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
+      "code": "Open3.capture3(\"gh\", \"api\", \"--method\", \"POST\", (\"repos/#{comment_info[:owner]}/#{comment_info[:repo]}/pulls/comments/#{comment_info.dig(:data, \"id\")}/reactions\" or \"repos/#{comment_info[:owner]}/#{comment_info[:repo]}/issues/comments/#{comment_info.dig(:data, \"id\")}/reactions\"), \"-f\", \"content=eyes\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "GithubCommentPollerJob",
+        "method": "add_eyes_reaction"
+      },
+      "user_input": "comment_info[:owner]",
+      "confidence": "Medium",
+      "cwe_id": [
+        77
+      ],
+      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner and repo are extracted from validated GitHub PR URLs via regex match (github.com/[^/]+/[^/]+/pull/\\d+), and comment_id comes from the GitHub API response itself."
+    },
+    {
+      "warning_type": "Command Injection",
+      "warning_code": 14,
+      "fingerprint": "090f54dacbe6e0d3fc5075a648ed9a1f674868d8fa2ef043d156fd823d69b7cf",
+      "check_name": "Execute",
+      "message": "Possible command injection",
+      "file": "app/services/github_comment_prompt_builder.rb",
+      "line": 217,
+      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
+      "code": "Open3.capture3(\"gh\", \"api\", \"repos/#{comment_info[:owner]}/#{comment_info[:repo]}\", \"--jq\", \".private\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "GithubCommentPromptBuilder",
+        "method": "public_repo?"
+      },
+      "user_input": "comment_info[:owner]",
+      "confidence": "Medium",
+      "cwe_id": [
+        77
+      ],
+      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner and repo are extracted from validated GitHub PR URLs via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal."
+    },
+    {
+      "warning_type": "Redirect",
+      "warning_code": 18,
+      "fingerprint": "5a2feb4035cbb209f94eb605e37bd0de13f80d6086c8b8e3a93ff9ed3106931d",
+      "check_name": "Redirect",
+      "message": "Possible unprotected redirect",
+      "file": "app/controllers/mcp_oauth_controller.rb",
+      "line": 123,
+      "link": "https://brakemanscanner.org/docs/warning_types/redirect/",
+      "code": "redirect_to(McpOauthPendingFlow.create_for_session!(...).authorization_url, :allow_other_host => true)",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "McpOauthController",
+        "method": "initiate"
+      },
+      "user_input": "McpOauthPendingFlow.create_for_session!(...).authorization_url",
+      "confidence": "Weak",
+      "cwe_id": [
+        601
+      ],
+      "note": "Expected behavior: This is the OAuth flow initiation redirect. The authorization_url is constructed from OAuth metadata fetched from the server's well-known endpoints (RFC 9728/8414) or from pre-registered OAuth config in Rails credentials. The allow_other_host: true flag is intentionally used to redirect to the external OAuth provider's authorization endpoint."
+    },
+    {
+      "warning_type": "Command Injection",
+      "warning_code": 14,
+      "fingerprint": "ba16e19c568083217a1f537c93d70c778de713e1063840050e60107595e68dab",
+      "check_name": "Execute",
+      "message": "Possible command injection",
+      "file": "app/jobs/git_hub_merge_conflict_poller_job.rb",
+      "line": 155,
+      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
+      "code": "Open3.capture3(\"gh\", \"api\", \"repos/#{owner}/#{repo}/pulls/#{pr_number}\", \"--jq\", \".mergeable\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "GitHubMergeConflictPollerJob",
+        "method": "fetch_mergeable_field"
+      },
+      "user_input": "owner",
+      "confidence": "Medium",
+      "cwe_id": [
+        77
+      ],
+      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner, repo, and pr_number are extracted from a validated GitHub PR URL pattern via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal."
+    },
+    {
+      "warning_type": "SSL Verification Bypass",
+      "warning_code": 71,
+      "fingerprint": "ee4cb206e18e8c72c20370d6e00f4e139bd56b8cccd56d269f4ec74fb9b0af9e",
+      "check_name": "SSLVerify",
+      "message": "SSL certificate verification was bypassed",
+      "file": "app/services/cert_expiry_checker.rb",
+      "line": 71,
+      "link": "https://brakemanscanner.org/docs/warning_types/ssl_verification_bypass/",
+      "code": "OpenSSL::SSL::SSLContext.new.verify_mode = OpenSSL::SSL::VERIFY_NONE",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "CertExpiryChecker",
+        "method": "ssl_context"
+      },
+      "user_input": null,
+      "confidence": "High",
+      "cwe_id": [
+        295
+      ],
+      "note": "Intentional and required: CertExpiryChecker is the cert-expiry renewal canary (CertExpiryMonitorJob). It must read the served leaf certificate even when it is expired or otherwise untrusted, because an imminently-expiring/expired cert is exactly the condition it alerts on — chain verification would raise and defeat the purpose. The handshake is outbound-only to our own hosts to read notAfter; no data is sent over the connection."
+    }
+  ],
+  "updated": "2026-06-12 00:00:00 +0000",
+  "brakeman_version": "7.1.2"
+}

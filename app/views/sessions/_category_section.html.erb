@@ -1,0 +1,120 @@
+<%# A single category section on the dashboard. Its grid is a Sortable drop target
+    (data-category-dnd-target="list") tagged with the category id so a card dropped
+    here is persisted to this category. Renders even when empty so it remains a valid
+    drop target. The section itself is a draggable unit for reordering the whole
+    stack (grabbed by the .category-drag-handle in its header). %>
+<section class="mb-8" id="<%= dom_id(category) %>" data-category-section-id="<%= category.id %>"
+         data-controller="category-collapse"
+         data-category-collapse-key-value="<%= category.id %>">
+  <div class="flex items-center justify-between mb-3">
+    <div class="flex items-center gap-2 min-w-0">
+      <%= render "sessions/collapse_toggle" %>
+      <%# Grip handle: starts a category-reorder drag, and right-click (contextmenu)
+          opens the "move category" menu with stack-position actions. touch-none lets
+          a long-press drag instead of scrolling on mobile. %>
+      <span class="category-drag-handle shrink-0 text-gray-300 hover:text-gray-500 cursor-grab active:cursor-grabbing touch-none"
+            title="Drag to reorder — right-click to move"
+            aria-label="Drag to reorder category, or right-click to move"
+            data-action="contextmenu->category-dnd#openCategoryMenu"
+            data-category-id="<%= category.id %>">
+        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M7 5a1 1 0 110-2 1 1 0 010 2zM13 5a1 1 0 110-2 1 1 0 010 2zM7 11a1 1 0 110-2 1 1 0 010 2zM13 11a1 1 0 110-2 1 1 0 010 2zM7 17a1 1 0 110-2 1 1 0 010 2zM13 17a1 1 0 110-2 1 1 0 010 2z" />
+        </svg>
+      </span>
+      <h2 class="text-lg font-semibold text-gray-800 truncate" data-category-name-id="<%= category.id %>"><%= category.name %></h2>
+      <%# Total session count for this category (Kaminari's unpaginated total, reusing the
+          COUNT it already runs for total_pages). Lives in the header — outside the
+          collapse frame — so it stays visible and tells you how many sessions are inside
+          a collapsed section. %>
+      <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 min-w-[1.5rem]"
+            data-category-count-id="<%= category.id %>"
+            title="<%= pluralize(sessions.total_count, "session") %>"
+            aria-label="<%= pluralize(sessions.total_count, "session") %>"><%= sessions.total_count %></span>
+      <%# Frozen toggle (snowflake): a frozen category is excluded from "Refresh all"
+          and automatic recovery. Always visible — muted gray when not frozen, sky-blue
+          when frozen — and directly clickable to toggle without opening the edit modal.
+          The category-edit controller PATCHes is_frozen and restyles this button in
+          place (keeping the Edit modal's frozen param in sync). %>
+      <% frozen_title = category.is_frozen? ? "Frozen — excluded from refresh-all and automatic recovery. Click to unfreeze." : "Not frozen — included in refresh-all and automatic recovery. Click to freeze." %>
+      <button type="button"
+              data-category-frozen-id="<%= category.id %>"
+              class="shrink-0 p-0.5 rounded focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-sky-500 <%= category.is_frozen? ? "text-sky-500 hover:text-sky-600" : "text-gray-300 hover:text-gray-500" %>"
+              aria-pressed="<%= category.is_frozen? %>"
+              title="<%= frozen_title %>"
+              aria-label="<%= frozen_title %>"
+              data-action="category-edit#toggleFrozen">
+        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="12" y1="2" x2="12" y2="22" />
+          <line x1="3" y1="7" x2="21" y2="17" />
+          <line x1="21" y1="7" x2="3" y2="17" />
+          <polyline points="9 4 12 6 15 4" />
+          <polyline points="9 20 12 18 15 20" />
+          <polyline points="4.5 8.5 5 11.5 2.5 13" />
+          <polyline points="19.5 8.5 19 11.5 21.5 13" />
+          <polyline points="2.5 11 5 12.5 4.5 15.5" />
+          <polyline points="21.5 11 19 12.5 19.5 15.5" />
+        </svg>
+      </button>
+    </div>
+    <div class="flex items-center gap-1 shrink-0">
+      <%# Refresh: runs the same restart/continue/transcript-refresh as the global
+          "Refresh all", but scoped to this category's non-archived sessions. Frozen
+          categories are a parked bucket excluded from refresh, so the button is not
+          rendered for them (the snowflake already signals "parked"). %>
+      <% unless category.is_frozen? %>
+        <%= button_to refresh_category_sessions_path,
+              method: :post,
+              params: { category_id: category.id },
+              class: "text-gray-400 hover:text-indigo-600 p-1",
+              title: "Refresh sessions in this category",
+              "aria-label": "Refresh sessions in this category",
+              form: { data: { turbo: false } } do %>
+          <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+      <% end %>
+      <%# Edit: opens the modal (handled by the category-edit Stimulus controller on
+          the dashboard) prefilled with this category's current name, description and
+          frozen flag. %>
+      <button type="button"
+              class="text-gray-400 hover:text-indigo-600 p-1"
+              title="Edit category"
+              aria-label="Edit category"
+              data-action="category-edit#open"
+              data-category-edit-id-param="<%= category.id %>"
+              data-category-edit-name-param="<%= category.name %>"
+              data-category-edit-description-param="<%= category.description %>"
+              data-category-edit-frozen-param="<%= category.is_frozen? %>">
+        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+        </svg>
+      </button>
+      <%= button_to category_path(category),
+            method: :delete,
+            form: { data: { turbo_confirm: "Delete category \"#{category.name}\"? Its sessions become Uncategorized." } },
+            class: "text-gray-400 hover:text-red-600 p-1",
+            title: "Delete category" do %>
+        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+        </svg>
+      <% end %>
+    </div>
+  </div>
+  <%# Per-category turbo-frame: pagination links inside it navigate only this frame,
+      so paging this category swaps its cards in place without reloading the page or
+      disturbing other sections. The frame is the collapse body — CSS hides it (grid +
+      pagination together) when the section is collapsed. %>
+  <%= turbo_frame_tag "category_frame_#{category.id}", class: "category-collapse-body" do %>
+    <div class="category-grid grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center min-h-[5rem]"
+         data-category-dnd-target="list"
+         data-category-id="<%= category.id %>">
+      <% sessions.each do |session| %>
+        <%= turbo_frame_tag dom_id(session) do %>
+          <%= render "session_card", agent_session: session %>
+        <% end %>
+      <% end %>
+    </div>
+    <%= render "sessions/category_pagination", collection: sessions, page_key: category.id.to_s %>
+  <% end %>
+</section>

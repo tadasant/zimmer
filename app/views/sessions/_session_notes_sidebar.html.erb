@@ -1,0 +1,86 @@
+<%# Session Notes Sidebar - Desktop: sticky right sidebar, Mobile: drawer %>
+<% agent_session = local_assigns[:agent_session] %>
+
+<div data-controller="session-notes"
+     data-session-notes-session-id-value="<%= agent_session.id %>"
+     data-session-notes-debounce-ms-value="1500"
+     style="top: var(--page-header-height, 73px)"
+     class="lg:sticky lg:self-start lg:flex-shrink-0">
+
+  <%# Mobile: Floating toggle button (bottom-right, above follow-up form) %>
+  <button type="button"
+          data-session-notes-target="toggleButton"
+          data-action="click->session-notes#toggleDrawer"
+          class="lg:hidden fixed bottom-24 right-4 z-30 inline-flex items-center justify-center w-12 h-12 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+          aria-label="Toggle session notes"
+          aria-expanded="false">
+    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+    </svg>
+  </button>
+
+  <%# Mobile: Drawer overlay %>
+  <div data-session-notes-target="drawerOverlay"
+       data-action="click->session-notes#closeDrawer"
+       class="hidden lg:hidden fixed inset-0 bg-black/30 z-40"></div>
+
+  <%# Mobile: Drawer panel (slides in from right) %>
+  <div data-session-notes-target="drawerPanel"
+       class="lg:hidden fixed top-0 right-0 bottom-0 w-80 max-w-[85vw] bg-white shadow-xl z-50 transform translate-x-full transition-transform duration-300 ease-in-out flex flex-col">
+    <div class="flex items-center justify-between p-4 border-b border-gray-200">
+      <h3 class="text-sm font-semibold text-gray-900">Session Notes</h3>
+      <div class="flex items-center gap-2">
+        <span data-session-notes-target="status"></span>
+        <button type="button"
+                data-action="click->session-notes#manualSave"
+                class="p-1 text-gray-400 hover:text-indigo-600"
+                title="Save now"
+                aria-label="Save notes">
+          <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 3.75H6.912a2.25 2.25 0 00-2.15 1.588L2.35 13.177a2.25 2.25 0 00-.1.661V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 00-2.15-1.588H15M2.25 13.5h3.86a2.25 2.25 0 012.012 1.244l.256.512a2.25 2.25 0 002.013 1.244h3.218a2.25 2.25 0 002.013-1.244l.256-.512a2.25 2.25 0 012.013-1.244h3.859" />
+          </svg>
+        </button>
+        <button type="button"
+                data-action="click->session-notes#closeDrawer"
+                class="p-1 text-gray-400 hover:text-gray-600"
+                aria-label="Close notes panel">
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="flex-1 p-4">
+      <textarea data-session-notes-target="textarea"
+                data-action="input->session-notes#onInput"
+                class="w-full h-full resize-none border-0 bg-gray-50 rounded-lg p-3 text-sm text-gray-700 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                placeholder="Add notes about this session..."
+      ><%= agent_session.session_notes %></textarea>
+    </div>
+  </div>
+
+  <%# Desktop: Sidebar (lg+ to avoid overlapping content at md) %>
+  <div class="hidden lg:flex flex-col w-72 xl:w-80 flex-shrink-0 border-l border-gray-200 bg-white"
+       style="height: calc(100vh - var(--page-header-height, 73px))">
+    <div class="relative flex-1 p-4 overflow-hidden">
+      <textarea data-session-notes-target="textarea"
+                data-action="input->session-notes#onInput"
+                aria-label="Session notes"
+                class="w-full h-full resize-none border-0 bg-gray-50 rounded-lg p-3 pr-10 text-sm text-gray-700 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                placeholder="Add notes about this session..."
+      ><%= agent_session.session_notes %></textarea>
+      <div class="pointer-events-none absolute top-6 right-6 flex items-center gap-2">
+        <span data-session-notes-target="status"></span>
+        <button type="button"
+                data-action="click->session-notes#manualSave"
+                class="pointer-events-auto p-1 text-gray-400 hover:text-indigo-600 rounded hover:bg-white"
+                title="Save now"
+                aria-label="Save notes">
+          <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 3.75H6.912a2.25 2.25 0 00-2.15 1.588L2.35 13.177a2.25 2.25 0 00-.1.661V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 00-2.15-1.588H15M2.25 13.5h3.86a2.25 2.25 0 012.012 1.244l.256.512a2.25 2.25 0 002.013 1.244h3.218a2.25 2.25 0 002.013-1.244l.256-.512a2.25 2.25 0 012.013-1.244h3.859" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,86 @@
+<div id="aggregate_stats">
+  <% if accounts.any? %>
+    <%
+      all_utilizations_5h = []
+      all_utilizations_7d = []
+      active_count = accounts.active.count
+      exceeded_count = accounts.quota_exceeded.count
+      reauth_count = accounts.needs_reauth.count
+
+      accounts.each do |account|
+        if (snap = snapshots[account.id])
+          eff_5h = effective_utilization(snap.utilization_5h, snap.reset_5h)
+          eff_7d = effective_utilization(snap.utilization_7d, snap.reset_7d)
+          all_utilizations_5h << eff_5h if eff_5h
+          all_utilizations_7d << eff_7d if eff_7d
+        end
+      end
+
+      avg_5h = all_utilizations_5h.any? ? all_utilizations_5h.sum / all_utilizations_5h.size : nil
+      avg_7d = all_utilizations_7d.any? ? all_utilizations_7d.sum / all_utilizations_7d.size : nil
+      max_5h = all_utilizations_5h.any? ? all_utilizations_5h.max : nil
+      max_7d = all_utilizations_7d.any? ? all_utilizations_7d.max : nil
+    %>
+
+    <div class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6">
+      <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+        <h2 class="text-lg font-medium text-gray-900">Account Pool</h2>
+        <p class="mt-1 text-sm text-gray-500">Aggregate usage across all accounts</p>
+      </div>
+      <div class="px-4 py-5 sm:px-6">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+          <div class="text-center">
+            <div class="text-2xl font-bold text-gray-900"><%= accounts.count %></div>
+            <div class="text-xs text-gray-500">Total</div>
+          </div>
+          <div class="text-center">
+            <div class="text-2xl font-bold text-green-600"><%= active_count %></div>
+            <div class="text-xs text-gray-500">Active</div>
+          </div>
+          <div class="text-center">
+            <div class="text-2xl font-bold text-red-600"><%= exceeded_count %></div>
+            <div class="text-xs text-gray-500">Quota Exceeded</div>
+          </div>
+          <div class="text-center">
+            <div class="text-2xl font-bold text-yellow-600"><%= reauth_count %></div>
+            <div class="text-xs text-gray-500">Needs Reauth</div>
+          </div>
+        </div>
+
+        <% if avg_5h || avg_7d %>
+          <div class="space-y-4">
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-medium text-gray-700">Avg 5-Hour Utilization</span>
+                <span class="text-sm font-semibold text-gray-900"><%= avg_5h ? utilization_percentage_text(avg_5h) : "N/A" %></span>
+              </div>
+              <div class="w-full bg-gray-200 rounded-full h-2.5">
+                <div class="<%= utilization_bar_color(avg_5h) %> h-2.5 rounded-full transition-all duration-300"
+                     style="width: <%= avg_5h ? [(avg_5h * 100).round(1), 100].min : 0 %>%"></div>
+              </div>
+              <% if max_5h %>
+                <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_5h) %></p>
+              <% end %>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-medium text-gray-700">Avg 7-Day Utilization</span>
+                <span class="text-sm font-semibold text-gray-900"><%= avg_7d ? utilization_percentage_text(avg_7d) : "N/A" %></span>
+              </div>
+              <div class="w-full bg-gray-200 rounded-full h-2.5">
+                <div class="<%= utilization_bar_color(avg_7d) %> h-2.5 rounded-full transition-all duration-300"
+                     style="width: <%= avg_7d ? [(avg_7d * 100).round(1), 100].min : 0 %>%"></div>
+              </div>
+              <% if max_7d %>
+                <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_7d) %></p>
+              <% end %>
+            </div>
+          </div>
+        <% else %>
+          <p class="text-sm text-gray-400">No usage data available yet. Click Refresh All to fetch live quotas.</p>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+</div>

@@ -1,0 +1,15 @@
+<%# Chevron button that collapses/expands a category section. Lives in the section
+    header (outside the section's turbo-frame) so it survives per-category pagination
+    frame swaps. The category-collapse Stimulus controller (on the <section>) toggles a
+    `category-collapsed` class and persists the state to localStorage; CSS hides the
+    grid + pagination and rotates the chevron based on that class. %>
+<button type="button"
+        data-action="click->category-collapse#toggle"
+        data-category-collapse-toggle
+        class="category-collapse-toggle shrink-0 text-gray-400 hover:text-gray-600 p-0.5"
+        aria-expanded="true"
+        aria-label="Collapse or expand this category">
+  <svg class="category-collapse-chevron h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+    <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+  </svg>
+</button>
