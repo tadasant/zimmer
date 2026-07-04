@@ -1,0 +1,204 @@
+<div class="border border-gray-200 rounded-lg p-4 bg-gray-50" data-trigger-form-target="conditionCard">
+  <%= cf.hidden_field :id if condition.persisted? %>
+
+  <div class="flex justify-between items-start mb-3">
+    <h4 class="text-sm font-medium text-gray-900">Condition #<span data-trigger-form-target="conditionNumber"><%= index + 1 %></span></h4>
+    <div class="flex items-center">
+      <%= cf.hidden_field :_destroy, value: "0", data: { trigger_form_target: "destroyField" } %>
+      <button type="button"
+              data-action="click->trigger-form#removeCondition"
+              class="text-gray-400 hover:text-red-500 text-sm"
+              title="Remove condition">
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Condition Type Selection -->
+  <div class="mb-3">
+    <label class="block text-sm font-medium text-gray-700 mb-2">Type <span class="text-red-500">*</span></label>
+    <%= cf.select :condition_type,
+        [
+          ["Slack - Channel messages or @mentions", "slack"],
+          ["Schedule - Time-based (recurring or one-time)", "schedule"],
+          ["AO Event - Internal system event", "ao_event"]
+        ],
+        { prompt: "Select condition type..." },
+        class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8",
+        data: { action: "change->trigger-form#handleConditionTypeChange", trigger_form_target: "conditionTypeSelect" } %>
+  </div>
+
+  <!-- Slack Configuration -->
+  <div data-trigger-form-target="slackConfig" class="<%= 'hidden' unless condition.condition_type == 'slack' %> space-y-3">
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Slack Channel <span class="text-red-500">*</span></label>
+      <div class="flex gap-2">
+        <input type="text"
+               name="<%= cf.object_name %>[configuration][channel_name]"
+               value="<%= condition.channel_name %>"
+               placeholder="Channel name (e.g., eng-ci)"
+               class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+        <input type="text"
+               name="<%= cf.object_name %>[configuration][channel_id]"
+               value="<%= condition.channel_id %>"
+               placeholder="Channel ID (e.g., C0A6BF8T45R)"
+               class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+      </div>
+      <p class="mt-1 text-xs text-gray-500">Enter the channel name and ID. Use the Slack API or channel settings to find the ID. For bot_mention, leave blank to monitor all channels the bot is in (plus DMs).</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Event Type</label>
+      <select name="<%= cf.object_name %>[configuration][event_type]"
+              class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+        <option value="new_message" <%= "selected" if condition.event_type == "new_message" %>>New message - All messages in channel</option>
+        <option value="bot_mention" <%= "selected" if condition.event_type == "bot_mention" %>>Bot mention - @mentions and DMs from allowed users</option>
+      </select>
+      <p class="mt-1 text-xs text-gray-500">Choose how this Slack condition fires. "Bot mention" only processes messages from authorized users.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Thread timestamp <span class="text-gray-400 font-normal">(optional)</span></label>
+      <input type="text"
+             name="<%= cf.object_name %>[configuration][thread_ts]"
+             value="<%= condition.thread_ts %>"
+             placeholder="e.g., 1767504875.131659"
+             class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+      <p class="mt-1 text-xs text-gray-500">For "New message" only. Set this to a thread's parent timestamp to monitor new <em>replies</em> in that specific thread instead of top-level channel messages — required for feeds that post as thread replies (e.g. a daily digest thread). Leave blank to monitor top-level messages. Not supported for "Bot mention".</p>
+    </div>
+  </div>
+
+  <!-- Schedule Configuration -->
+  <div data-trigger-form-target="scheduleConfig" class="<%= 'hidden' unless condition.condition_type == 'schedule' %> space-y-3">
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Schedule Mode <span class="text-red-500">*</span></label>
+      <div class="flex gap-4">
+        <label class="inline-flex items-center">
+          <input type="radio" name="<%= cf.object_name %>[_schedule_mode]" value="recurring"
+                 <%= "checked" unless condition.one_time_schedule? %>
+                 data-trigger-form-target="scheduleModeRadio"
+                 data-action="change->trigger-form#handleScheduleModeChange"
+                 class="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300">
+          <span class="ml-2 text-sm text-gray-700">Recurring</span>
+        </label>
+        <label class="inline-flex items-center">
+          <input type="radio" name="<%= cf.object_name %>[_schedule_mode]" value="one_time"
+                 <%= "checked" if condition.one_time_schedule? %>
+                 data-trigger-form-target="scheduleModeRadio"
+                 data-action="change->trigger-form#handleScheduleModeChange"
+                 class="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300">
+          <span class="ml-2 text-sm text-gray-700">One-time</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Recurring schedule fields -->
+    <div data-trigger-form-target="recurringFields" class="<%= 'hidden' if condition.one_time_schedule? %> space-y-3">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Frequency <span class="text-red-500">*</span></label>
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-gray-700 font-medium">Every</span>
+          <input type="number"
+                 name="<%= cf.object_name %>[configuration][interval]"
+                 value="<%= condition.schedule_interval %>"
+                 min="1"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 w-20 sm:text-sm border-gray-300 rounded-md px-3 py-2">
+          <select name="<%= cf.object_name %>[configuration][unit]"
+                  data-trigger-form-target="unitSelect"
+                  data-action="change->trigger-form#handleUnitChange"
+                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+            <option value="">select...</option>
+            <% %w[minutes hours days weeks].each do |unit| %>
+              <option value="<%= unit %>" <%= "selected" if condition.schedule_unit == unit %>><%= unit %></option>
+            <% end %>
+          </select>
+        </div>
+      </div>
+
+      <div data-trigger-form-target="dayOfWeekContainer" class="<%= 'hidden' unless condition.schedule_unit == 'weeks' %>">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Day of Week <span class="text-red-500">*</span></label>
+        <select name="<%= cf.object_name %>[configuration][day_of_week]"
+                class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+          <option value="">Select day...</option>
+          <% %w[monday tuesday wednesday thursday friday saturday sunday].each do |day| %>
+            <option value="<%= day %>" <%= "selected" if condition.schedule_day_of_week == day %>><%= day.capitalize %></option>
+          <% end %>
+        </select>
+      </div>
+
+      <div data-trigger-form-target="timeContainer" class="<%= 'hidden' unless %w[days weeks].include?(condition.schedule_unit) %>">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Time <span class="text-red-500">*</span></label>
+        <input type="time"
+               name="<%= cf.object_name %>[configuration][time]"
+               value="<%= condition.schedule_time %>"
+               class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+      </div>
+
+      <div data-trigger-form-target="timezoneContainer" class="<%= 'hidden' unless %w[days weeks].include?(condition.schedule_unit) %>">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Timezone</label>
+        <select name="<%= cf.object_name %>[configuration][timezone]"
+                class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+          <% ActiveSupport::TimeZone.us_zones.each do |tz| %>
+            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone == tz.name %>><%= tz.to_s %></option>
+          <% end %>
+          <option disabled>──────────</option>
+          <% (ActiveSupport::TimeZone.all - ActiveSupport::TimeZone.us_zones).each do |tz| %>
+            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone == tz.name %>><%= tz.to_s %></option>
+          <% end %>
+        </select>
+      </div>
+    </div>
+
+    <!-- One-time schedule fields -->
+    <div data-trigger-form-target="oneTimeFields" class="<%= 'hidden' unless condition.one_time_schedule? %> space-y-3">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Scheduled Date & Time <span class="text-red-500">*</span></label>
+        <input type="datetime-local"
+               name="<%= cf.object_name %>[configuration][scheduled_at]"
+               value="<%= condition.scheduled_at %>"
+               data-trigger-form-target="scheduledAtInput"
+               class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+        <p class="mt-1 text-xs text-gray-500">The trigger fires once at this time, then auto-disables.</p>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Timezone</label>
+        <select name="<%= cf.object_name %>[configuration][timezone]"
+                class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+          <% ActiveSupport::TimeZone.us_zones.each do |tz| %>
+            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone == tz.name %>><%= tz.to_s %></option>
+          <% end %>
+          <option disabled>──────────</option>
+          <% (ActiveSupport::TimeZone.all - ActiveSupport::TimeZone.us_zones).each do |tz| %>
+            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone == tz.name %>><%= tz.to_s %></option>
+          <% end %>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- AO Event Configuration -->
+  <div data-trigger-form-target="aoEventConfig" class="<%= 'hidden' unless condition.condition_type == 'ao_event' %> space-y-3">
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Event <span class="text-red-500">*</span></label>
+      <select name="<%= cf.object_name %>[configuration][event_name]"
+              class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+        <option value="">Select event...</option>
+        <option value="session_needs_input" <%= "selected" if condition.ao_event_name == "session_needs_input" %>>Session transitions to needs_input</option>
+        <option value="session_failed" <%= "selected" if condition.ao_event_name == "session_failed" %>>Session transitions to failed</option>
+        <option value="session_archived" <%= "selected" if condition.ao_event_name == "session_archived" %>>Session archived</option>
+      </select>
+      <p class="mt-1 text-xs text-gray-500">Fires when an autonomous session transitions to the selected state. Sessions created by this trigger are excluded to prevent loops.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Watched Session ID</label>
+      <input type="number"
+             name="<%= cf.object_name %>[configuration][watched_session_id]"
+             value="<%= condition.watched_session_id %>"
+             min="1"
+             placeholder="(optional) e.g., 1234"
+             class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+      <p class="mt-1 text-xs text-gray-500">Optional. When set, the condition only fires when THIS specific session transitions to the selected state. Leave blank to fire for any session.</p>
+    </div>
+  </div>
+</div>

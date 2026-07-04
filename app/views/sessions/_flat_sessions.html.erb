@@ -1,0 +1,31 @@
+<%# Flat, single-list session view used by the "Sort By Last Touched" and
+    "Sort By Created Time (Desc)" dashboard view modes. Renders one ordered grid
+    of session cards with simple scalar (?page=) pagination — no category
+    grouping, no per-category/custom ordering, no pinned favorites float.
+
+    Locals:
+      sessions - a Kaminari-paginated relation, already ordered by the controller
+      title    - section heading describing the active sort %>
+<section class="mb-8" id="flat_sessions">
+  <div class="flex items-center gap-2 min-w-0 mb-3">
+    <h2 class="text-lg font-semibold text-gray-800 truncate"><%= title %></h2>
+    <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 min-w-[1.5rem]"
+          title="<%= pluralize(sessions.total_count, "session") %>"><%= sessions.total_count %></span>
+  </div>
+  <%# Grid keeps id="sessions_grid" so real-time broadcasts that prepend new
+      cards still land here (the category grid that normally owns this id is not
+      rendered in the flat views). %>
+  <div id="sessions_grid"
+       class="grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center">
+    <% sessions.each do |session| %>
+      <%= turbo_frame_tag dom_id(session) do %>
+        <%= render "session_card", agent_session: session %>
+      <% end %>
+    <% end %>
+  </div>
+  <% if sessions.total_pages > 1 %>
+    <div class="mt-6 flex justify-center">
+      <%= paginate sessions %>
+    </div>
+  <% end %>
+</section>

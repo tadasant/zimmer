@@ -1,0 +1,83 @@
+<%# Mobile-optimized goal display and editor %>
+<% show_goal_section = defined?(@goals_for_select) || agent_session.goal.present? %>
+<% if show_goal_section %>
+  <% goal_display = goal_display_name(agent_session.goal, defined?(@goals_for_select) ? @goals_for_select : []) %>
+  <div data-controller="editable-goal"
+       data-editable-goal-session-id-value="<%= agent_session.id %>"
+       data-editable-goal-goal-value="<%= agent_session.goal %>"
+       data-editable-goal-goals-value="<%= (defined?(@goals_for_select) ? @goals_for_select : []).to_json %>">
+
+    <!-- Display Mode -->
+    <div data-editable-goal-target="display">
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs font-medium text-gray-500">Goal</label>
+        <% if defined?(@goals_for_select) %>
+          <button type="button"
+                  data-action="click->editable-goal#edit"
+                  class="text-amber-600 hover:text-amber-800 text-xs font-medium px-2 py-1.5 -mr-2 -my-1"
+                  title="<%= agent_session.goal.present? ? 'Edit goal' : 'Add goal' %>"
+                  aria-label="<%= agent_session.goal.present? ? 'Edit goal' : 'Add goal' %>">
+            <%= agent_session.goal.present? ? 'Edit' : 'Add' %>
+          </button>
+        <% end %>
+      </div>
+
+      <% if agent_session.goal.present? %>
+        <span data-editable-goal-target="displayText"
+              class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-amber-50 text-amber-800 border-amber-200"
+              title="<%= agent_session.goal %>">
+          <%= goal_display %>
+        </span>
+      <% else %>
+        <span data-editable-goal-target="displayText" class="text-gray-400 italic text-xs">None</span>
+      <% end %>
+    </div>
+
+    <% if defined?(@goals_for_select) %>
+      <!-- Edit Mode -->
+      <div data-editable-goal-target="editor" class="hidden">
+        <label class="block text-xs font-medium text-gray-500 mb-2">Goal</label>
+
+        <!-- Input with clear button -->
+        <div class="relative">
+          <input type="text"
+                 data-editable-goal-target="input"
+                 data-action="focus->editable-goal#handleFocus input->editable-goal#handleInput keydown->editable-goal#handleKeydown"
+                 placeholder="Select or type a goal..."
+                 aria-label="Goal"
+                 autocomplete="off"
+                 class="w-full rounded-md border-gray-300 text-sm py-2 px-3 pr-8 focus:ring-amber-500 focus:border-amber-500">
+          <button type="button"
+                  data-editable-goal-target="clearButton"
+                  data-action="click->editable-goal#clear"
+                  class="hidden absolute inset-y-0 right-0 flex items-center pr-2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                  aria-label="Clear goal">
+            <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+            </svg>
+          </button>
+
+          <!-- Dropdown -->
+          <div data-editable-goal-target="dropdown"
+               class="hidden fixed bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="flex gap-2 mt-3">
+          <button type="button"
+                  data-action="click->editable-goal#save"
+                  data-editable-goal-target="saveButton"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-amber-600 text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed">
+            Save
+          </button>
+          <button type="button"
+                  data-action="click->editable-goal#cancel"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500">
+            Cancel
+          </button>
+        </div>
+        <div data-editable-goal-target="status" class="text-xs text-gray-500 mt-2 text-center"></div>
+      </div>
+    <% end %>
+  </div>
+<% end %>

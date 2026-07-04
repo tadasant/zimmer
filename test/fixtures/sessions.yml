@@ -1,0 +1,215 @@
+# Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
+
+active_session:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Write a hello world program"
+  mcp_servers: ["playwright-custom", "appsignal-pulsemcp-prod"]
+  config: {}
+  git_root: "https://github.com/anthropics/anthropic-cookbook.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+
+running:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Write a hello world program"
+  mcp_servers: ["playwright-custom", "appsignal-pulsemcp-prod"]
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+
+waiting:
+  agent_runtime: claude_code
+  status: 1
+  prompt: "Analyze this codebase"
+  mcp_servers: ["appsignal-pulsemcp-prod"]
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "develop"
+  execution_provider: "local_filesystem"
+
+needs_input:
+  agent_runtime: claude_code
+  status: 2
+  prompt: "Create a new feature"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "feature-branch"
+  execution_provider: "local_filesystem"
+
+archived:
+  agent_runtime: claude_code
+  status: 3
+  prompt: "Completed task"
+  mcp_servers: ["playwright-custom"]
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  session_id: "d3b07384-d9a0-4c8e-8f1a-0e5f34c2e7b1"
+  transcript: |
+    {"type": "user", "message": {"role": "user", "content": "Complete this task"}, "timestamp": "2025-11-12T12:00:00Z"}
+    {"type": "assistant", "message": {"role": "assistant", "content": "I've completed the task for you."}, "timestamp": "2025-11-12T12:00:05Z"}
+  metadata:
+    clone_path: "/tmp/test-clone-archived"
+    working_directory: "/tmp/test-clone-archived"
+
+failed:
+  agent_runtime: claude_code
+  status: 4
+  prompt: "Failed task"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+
+remote_sandbox_session:
+  agent_runtime: claude_code
+  status: 1
+  prompt: "Test remote sandbox"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "remote_sandbox"
+
+with_transcript:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Test session with conversation transcript"
+  mcp_servers: ["playwright-custom"]
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  transcript: [{"type": "user", "message": {"role": "user", "content": "Hello, can you help me?"}, "timestamp": "2025-11-12T12:00:00Z"}, {"type": "assistant", "message": {"role": "assistant", "content": "Of course! I'd be happy to help. What do you need?"}, "timestamp": "2025-11-12T12:00:05Z"}, {"type": "user", "message": {"role": "user", "content": "I need to create a new feature"}, "timestamp": "2025-11-12T12:00:10Z"}]
+
+with_code_blocks:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Test session with code blocks"
+  mcp_servers: ["playwright-custom"]
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  transcript: |
+    {"type": "user", "message": {"role": "user", "content": "Show me a hello world example"}, "timestamp": "2025-11-12T12:00:00Z"}
+    {"type": "assistant", "message": {"role": "assistant", "content": "Here's a hello world example in Ruby:\n\n```ruby\nputs \"Hello, World!\"\n```\n\nAnd here's one in JavaScript:\n\n```javascript\nconsole.log(\"Hello, World!\");\n```"}, "timestamp": "2025-11-12T12:00:05Z"}
+
+with_pr_url:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Test session with GitHub PR URL"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/owner/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  custom_metadata:
+    github_pull_request_urls:
+      - "https://github.com/owner/repo/pull/123"
+
+with_pr_url_and_status:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Test session with GitHub PR URL and status"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/owner/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  custom_metadata:
+    github_pull_request_urls:
+      - "https://github.com/owner/repo/pull/456"
+    github_pull_request_statuses:
+      "https://github.com/owner/repo/pull/456": "open"
+
+with_multiple_pr_urls:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Test session with multiple GitHub PR URLs"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/owner/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  custom_metadata:
+    github_pull_request_urls:
+      - "https://github.com/owner/repo/pull/100"
+      - "https://github.com/owner/repo/pull/101"
+      - "https://github.com/owner/repo/pull/102"
+    github_pull_request_statuses:
+      "https://github.com/owner/repo/pull/100": "merged"
+      "https://github.com/owner/repo/pull/101": "closed"
+      "https://github.com/owner/repo/pull/102": "open"
+
+router_parent:
+  agent_runtime: claude_code
+  status: 3
+  prompt: "Route: Deploy staging"
+  title: "Deploy staging infrastructure"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  custom_metadata:
+    spawned_by: null
+
+router_child_running:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Configure Hatchbox deployment"
+  title: "Configure Hatchbox deployment"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  parent_session: router_parent
+  custom_metadata:
+    spawned_by: "ao-router"
+
+router_child_archived:
+  agent_runtime: claude_code
+  status: 3
+  prompt: "Research deployment options"
+  title: "Research deployment options"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  parent_session: router_parent
+  custom_metadata:
+    spawned_by: "ao-router"
+
+elicitation_session:
+  agent_runtime: claude_code
+  status: 0
+  prompt: "Test session for elicitation tests"
+  mcp_servers: []
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+
+pending_oauth:
+  agent_runtime: claude_code
+  status: 4
+  prompt: "Test session pending OAuth authorization"
+  mcp_servers: ["linear"]
+  config: {}
+  git_root: "https://github.com/test/repo.git"
+  branch: "main"
+  execution_provider: "local_filesystem"
+  metadata:
+    failure_reason: "oauth_required"
+    oauth_required_servers:
+      - server_name: "linear"
+        server_url: "https://mcp.linear.app/mcp"

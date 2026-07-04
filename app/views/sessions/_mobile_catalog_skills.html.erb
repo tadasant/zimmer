@@ -1,0 +1,88 @@
+<%# Mobile-optimized catalog skills display and editor %>
+<% plugin_derived_skills = agent_session.plugin_derived_skills %>
+<% show_skills_section = defined?(@catalog_skills_for_select) || agent_session.catalog_skills.present? || plugin_derived_skills.any? %>
+<% if show_skills_section %>
+  <div data-controller="editable-catalog-skills"
+       data-editable-catalog-skills-session-id-value="<%= agent_session.id %>"
+       data-editable-catalog-skills-skills-value="<%= (agent_session.catalog_skills || []).to_json %>"
+       data-editable-catalog-skills-available-skills-value="<%= (defined?(@catalog_skills_for_select) ? @catalog_skills_for_select : []).to_json %>">
+
+    <!-- Display Mode -->
+    <div data-editable-catalog-skills-target="display">
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs font-medium text-gray-500">Skills</label>
+        <% if defined?(@catalog_skills_for_select) %>
+          <button type="button"
+                  data-action="click->editable-catalog-skills#edit"
+                  class="text-green-600 hover:text-green-800 text-xs font-medium px-2 py-1.5 -mr-2 -my-1"
+                  title="<%= agent_session.catalog_skills.present? ? 'Edit skills' : 'Add skills' %>"
+                  aria-label="<%= agent_session.catalog_skills.present? ? 'Edit skills' : 'Add skills' %>">
+            <%= agent_session.catalog_skills.present? ? 'Edit' : 'Add' %>
+          </button>
+        <% end %>
+      </div>
+
+      <% if agent_session.catalog_skills.present? || plugin_derived_skills.any? %>
+        <div class="flex flex-wrap gap-1.5" data-role="skill-tags">
+          <% agent_session.catalog_skills.each do |skill_name| %>
+            <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-green-50 text-green-800 border-green-200">
+              <%= skill_name %>
+            </span>
+          <% end %>
+          <% plugin_derived_skills.each do |skill_name, plugin_id| %>
+            <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-gray-50 text-gray-500 border-purple-200 italic"
+                  title="<%= skill_name %>: from plugin '<%= plugin_id %>' (read-only)"
+                  aria-label="<%= skill_name %>: from plugin '<%= plugin_id %>' (read-only)">
+              <%= skill_name %>
+            </span>
+          <% end %>
+        </div>
+        <span data-role="skill-empty" class="hidden text-gray-400 italic text-xs">None</span>
+      <% else %>
+        <div class="hidden flex-wrap gap-1.5" data-role="skill-tags"></div>
+        <span data-role="skill-empty" class="text-gray-400 italic text-xs">None</span>
+      <% end %>
+    </div>
+
+    <% if defined?(@catalog_skills_for_select) %>
+      <!-- Edit Mode -->
+      <div data-editable-catalog-skills-target="editor" class="hidden">
+        <label class="block text-xs font-medium text-gray-500 mb-2">Skills</label>
+
+        <!-- Selected skills container -->
+        <div data-editable-catalog-skills-target="selectedContainer" class="flex flex-wrap gap-1.5 mb-2 min-h-[28px]"></div>
+
+        <!-- Search input -->
+        <div class="relative">
+          <input type="text"
+                 data-editable-catalog-skills-target="input"
+                 data-action="focus->editable-catalog-skills#showDropdown input->editable-catalog-skills#filterSkills keydown->editable-catalog-skills#handleKeydown"
+                 placeholder="Search skills..."
+                 aria-label="Search skills"
+                 autocomplete="off"
+                 class="w-full rounded-md border-gray-300 text-sm py-2 px-3 focus:ring-green-500 focus:border-green-500">
+
+          <!-- Dropdown -->
+          <div data-editable-catalog-skills-target="dropdown"
+               class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="flex gap-2 mt-3">
+          <button type="button"
+                  data-action="click->editable-catalog-skills#save"
+                  data-editable-catalog-skills-target="saveButton"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-green-600 text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed">
+            Save
+          </button>
+          <button type="button"
+                  data-action="click->editable-catalog-skills#cancel"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+            Cancel
+          </button>
+        </div>
+        <div data-editable-catalog-skills-target="status" class="text-xs text-gray-500 mt-2 text-center"></div>
+      </div>
+    <% end %>
+  </div>
+<% end %>

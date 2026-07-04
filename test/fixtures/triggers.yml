@@ -1,0 +1,127 @@
+# Test fixtures for Trigger model
+# Note: trigger_type and configuration are now on TriggerCondition
+# See trigger_conditions.yml for condition fixtures
+
+enabled_slack_trigger:
+  name: CI Failure Handler
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers:
+    - slack-workspace
+  goal: PR is merged
+  prompt_template: |
+    There is a new message in Slack, channel #{{channel}}.
+
+    Link: {{link}}
+
+    Please review it and surrounding context.
+  sessions_created_count: 5
+  reuse_session: false
+
+disabled_slack_trigger:
+  name: Disabled Trigger
+  status: disabled
+  agent_root_name: pulsemcp
+  mcp_servers: []
+  prompt_template: "New message in {{channel}}: {{link}}"
+  sessions_created_count: 0
+  reuse_session: false
+
+new_slack_trigger:
+  name: New Trigger
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers: []
+  prompt_template: "Check deployment status: {{link}}"
+  sessions_created_count: 0
+  reuse_session: false
+
+bot_mention_slack_trigger:
+  name: Bot Mention Handler
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers:
+    - slack-workspace
+  goal: PR is merged
+  prompt_template: |
+    Someone mentioned the bot in #{{channel}}.
+
+    Message: {{text}}
+    Author: {{author}}
+    Link: {{link}}
+
+    Please review and respond.
+  sessions_created_count: 2
+  reuse_session: false
+
+bot_mention_all_channels_trigger:
+  name: Bot Mention All Channels
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers:
+    - slack-workspace
+  goal: PR is merged
+  prompt_template: |
+    Someone mentioned the bot in #{{channel}}.
+
+    Message: {{text}}
+    Author: {{author}}
+    Link: {{link}}
+
+    Please review and respond.
+  sessions_created_count: 0
+  reuse_session: false
+
+enabled_schedule_trigger:
+  name: Daily Status Check
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers: []
+  prompt_template: "Run the daily status check. Current date: {{date}}, time: {{time}}"
+  sessions_created_count: 3
+  reuse_session: false
+
+weekly_schedule_trigger:
+  name: Weekly Report
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers: []
+  prompt_template: "Generate the weekly report for {{date}}"
+  sessions_created_count: 1
+  reuse_session: true
+
+disabled_schedule_trigger:
+  name: Disabled Schedule
+  status: disabled
+  agent_root_name: pulsemcp
+  mcp_servers: []
+  prompt_template: "Hourly check at {{time}}"
+  sessions_created_count: 0
+  reuse_session: false
+
+one_time_schedule_trigger:
+  name: One-Time Deployment
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers: []
+  prompt_template: "Run the one-time deployment task at {{date}} {{time}}"
+  sessions_created_count: 0
+  reuse_session: false
+
+ao_event_trigger:
+  name: Needs Input Handler
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers: []
+  prompt_template: "An AO session needs input: {{event}}. Please investigate."
+  sessions_created_count: 0
+  reuse_session: false
+
+multi_condition_trigger:
+  name: Multi Condition Flow
+  status: enabled
+  agent_root_name: pulsemcp
+  mcp_servers: []
+  prompt_template: "Triggered by one of multiple conditions. {{event}} {{link}}"
+  sessions_created_count: 0
+  reuse_session: false

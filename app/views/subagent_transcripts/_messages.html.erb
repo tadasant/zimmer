@@ -1,0 +1,34 @@
+<%# Subagent transcript messages container %>
+<%# Renders a subagent's transcript through the unified OpenTranscripts renderer %>
+<%# (timeline_items/_item), the same path the parent timeline uses. %>
+<%#
+  Local variables:
+    subagent: SubagentTranscript - the subagent record
+    session: Session - parent session (optional, defaults to subagent.session)
+%>
+<% session ||= subagent.session %>
+
+<%= turbo_frame_tag "subagent_#{subagent.agent_id}_messages" do %>
+  <div class="max-h-96 overflow-y-auto"
+       data-subagent-accordion-target="messageContainer"
+       id="subagent_<%= subagent.agent_id %>_timeline">
+    <% events = subagent.open_transcript_events %>
+    <% if events.any? %>
+      <%# Rendered without a session so subagent rows get no fork button and no %>
+      <%# further-nested accordion lookups. %>
+      <% events.each do |event| %>
+        <%= render "timeline_items/item", item: event, nested: true %>
+      <% end %>
+      <%# Sentinel the accordion observes to decide whether to auto-scroll. %>
+      <div data-subagent-accordion-target="lastMessage" aria-hidden="true"></div>
+    <% else %>
+      <div class="px-4 py-8 text-center text-gray-500 text-sm">
+        <% if subagent.running? %>
+          <p>Waiting for subagent output...</p>
+        <% else %>
+          <p>No messages in transcript</p>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+<% end %>

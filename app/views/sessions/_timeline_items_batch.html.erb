@@ -1,0 +1,17 @@
+<%# Renders a batch of timeline items for infinite scroll %>
+<%# This partial is used by the timeline_items action to return older items %>
+<%# Expected locals: items, session, has_more, next_before_index, next_before_timestamp %>
+
+<% items.each do |item| %>
+  <%= render "timeline_items/item", item: item, session: session %>
+<% end %>
+
+<%# Hidden element to communicate pagination state to Stimulus controller %>
+<div id="timeline-pagination-state"
+     data-has-more="<%= has_more %>"
+     data-next-before-index="<%= next_before_index %>"
+     <% if next_before_timestamp.present? %>
+       data-next-before-timestamp="<%= next_before_timestamp %>"
+     <% end %>
+     style="display: none;">
+</div>

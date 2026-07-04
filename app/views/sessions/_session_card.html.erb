@@ -1,0 +1,160 @@
+<div class="flex flex-col h-full bg-white shadow rounded-lg relative max-w-[400px]" data-block-picker-card-id="<%= agent_session.id %>">
+  <%# Drag handle: only this grab bar starts a category drag, so taps on the card's
+      own controls (favorite star, title, block-picker) never trigger an accidental
+      move. Top-center keeps it clear of the status badge (left) and star (right).
+      touch-none lets a long-press here drag instead of scrolling on mobile.
+      Right-click (contextmenu) opens the "move to category" menu as a no-drag
+      alternative to dragging.
+
+      Hidden for favorited sessions: a favorited card renders in the pinned "Starred"
+      group above all categories (outside the category-dnd controller), where its
+      category placement is invisible until it is unstarred. Showing a drag/right-click
+      "move to category" affordance there would be a misleading no-op, so it is omitted
+      — unstar the session to manage its category. Deriving this from favorited? (rather
+      than a passed-in local) keeps it correct across every render path, including the
+      single-card turbo-frame replace used by real-time status broadcasts. %>
+  <% unless agent_session.favorited? %>
+    <div class="session-drag-handle absolute top-1 left-1/2 -translate-x-1/2 z-10 px-3 py-0.5 text-gray-300 hover:text-gray-500 cursor-grab active:cursor-grabbing touch-none"
+         title="Drag to move between categories — right-click to pick one"
+         aria-label="Drag to move between categories, or right-click to pick one"
+         data-action="contextmenu->category-dnd#openCardMenu"
+         data-session-id="<%= agent_session.id %>">
+      <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M5 7a1 1 0 110-2 1 1 0 010 2zM10 7a1 1 0 110-2 1 1 0 010 2zM15 7a1 1 0 110-2 1 1 0 010 2zM5 11a1 1 0 110-2 1 1 0 010 2zM10 11a1 1 0 110-2 1 1 0 010 2zM15 11a1 1 0 110-2 1 1 0 010 2z" />
+      </svg>
+    </div>
+  <% end %>
+  <!-- Top-right controls: Favorite Star -->
+  <div class="absolute top-2 right-2 z-10 flex items-center gap-1">
+    <%= button_to toggle_favorite_session_path(agent_session), method: :patch, class: "p-1.5 rounded-full hover:bg-gray-100 transition-colors #{agent_session.favorited? ? 'text-yellow-500' : 'text-gray-300 hover:text-yellow-500'}", title: agent_session.favorited? ? "Remove from favorites" : "Add to favorites", "aria-label" => agent_session.favorited? ? "Remove from favorites" : "Add to favorites", "aria-pressed" => agent_session.favorited?.to_s, data: { turbo_frame: "_top" } do %>
+      <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+      </svg>
+    <% end %>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6 flex flex-col flex-grow">
+    <!-- Status Badge and ID -->
+    <div class="flex items-center justify-between mb-3">
+      <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium <%= status_badge_classes(agent_session) %>"
+            <%= 'data-running-badge' if agent_session.status == 'running' %>>
+        <% if agent_session.status == 'running' %>
+          <div class="relative inline-flex items-center">
+            <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <% if agent_session.last_timeline_entry_at.present? %>
+              <span class="absolute inset-0 flex items-center justify-center text-[8px] font-bold"
+                    data-controller="time-since"
+                    data-time-since-update-badge-color-value="true"
+                    data-timestamp="<%= agent_session.last_timeline_entry_at.iso8601 %>">
+              </span>
+            <% end %>
+          </div>
+        <% end %>
+        <%= agent_session.archived? ? "Trashed" : agent_session.status.titleize %>
+      </span>
+      <div class="flex items-center gap-2 mr-14">
+        <span class="text-xs text-gray-400 font-mono">#<%= agent_session.id %></span>
+        <span class="text-xs text-gray-500" data-timestamp="<%= agent_session.created_at.iso8601 %>" data-controller="timestamp-updater">
+          <%= time_ago_in_words(agent_session.created_at) %> ago
+        </span>
+      </div>
+    </div>
+
+    <!-- Title and Agent Root -->
+    <div class="mb-3">
+      <% if agent_session.title.present? %>
+        <div class="flex items-center gap-2 mb-1" data-controller="editable-title" data-editable-title-session-id-value="<%= agent_session.id %>" data-editable-title-title-value="<%= agent_session.title %>">
+          <h3 class="text-lg font-semibold text-gray-900 flex-grow" data-editable-title-target="display"<%= " title=\"#{h(agent_session.prompt)}\"".html_safe if agent_session.prompt.present? %>>
+            <%= agent_session.title %>
+          </h3>
+          <button type="button" class="text-gray-400 hover:text-gray-600" data-action="click->editable-title#edit">
+            <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+            </svg>
+          </button>
+          <input type="text" class="hidden text-lg font-semibold text-gray-900 border-b-2 border-indigo-500 focus:outline-none flex-grow" data-editable-title-target="input" data-action="keydown->editable-title#handleKeydown blur->editable-title#save" />
+        </div>
+      <% elsif agent_session.prompt.present? %>
+        <h3 class="text-sm font-medium text-gray-600 line-clamp-2" title="<%= agent_session.prompt %>">
+          <%= agent_session.prompt.truncate(80) %>
+        </h3>
+      <% end %>
+      <% if agent_session.agent_root_key.present? %>
+        <div class="text-xs text-gray-500 mb-2 font-mono">
+          <%= agent_session.agent_root_key %>
+        </div>
+      <% end %>
+    </div>
+
+    <!-- Footer Actions -->
+    <% pr_urls = agent_session.custom_metadata&.dig("github_pull_request_urls") || [] %>
+    <div class="mt-auto pt-4 border-t border-gray-200">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
+          <% if pr_urls.present? %>
+            <%= render "sessions/github_pr_link", agent_session: agent_session %>
+          <% end %>
+        </div>
+        <div class="flex items-center gap-2">
+          <%# Mark as blocked by / Unblock %>
+          <% if agent_session.blocked_by_session_id.present? %>
+            <%= button_to unmark_blocked_session_path(agent_session), method: :patch, class: "inline-flex items-center px-2.5 py-1.5 border border-amber-300 text-xs font-medium rounded-md text-amber-700 bg-amber-50 hover:bg-amber-100", title: "Blocked by ##{agent_session.blocked_by_session_id} — click to unblock", data: { turbo_frame: "_top" } do %>
+              <svg class="-ml-0.5 mr-1.5 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
+              </svg>
+              Unblock #<%= agent_session.blocked_by_session_id %>
+            <% end %>
+          <% elsif !agent_session.archived? %>
+            <button type="button" class="p-1.5 rounded text-gray-300 hover:text-amber-500" data-action="click->block-picker#start" data-block-picker-id-param="<%= agent_session.id %>" title="Mark as blocked by another session — then click the blocking session" aria-label="Mark this session as blocked by another session">
+              <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          <% end %>
+          <% if agent_session.failed? && !agent_session.archived? %>
+            <%= button_to restart_session_path(agent_session), method: :post, class: "inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500", title: "Restart failed session", data: { turbo_submits_with: "Restarting..." } do %>
+              <svg class="-ml-0.5 mr-1.5 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+              </svg>
+              Restart
+            <% end %>
+          <% end %>
+          <% if agent_session.archived? %>
+            <%= link_to unarchive_session_path(agent_session), data: { turbo_method: :post, turbo_frame: "_top" }, class: "inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500" do %>
+              <svg class="-ml-0.5 mr-1.5 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+              </svg>
+              Restore
+            <% end %>
+          <% else %>
+            <%= link_to archive_session_path(agent_session), data: { turbo_method: :post }, class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+              <svg class="-ml-0.5 mr-1.5 h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+              </svg>
+              Trash
+            <% end %>
+          <% end %>
+          <%# A real <a href> so middle/modifier clicks open a new tab natively;
+              session-drawer#open intercepts only plain left-clicks to open the
+              detail view in the right-side drawer. turbo_frame: "_top" keeps the
+              no-JS fallback a normal full-page navigation.
+
+              turbo_prefetch: false is REQUIRED: a plain left-click never does a
+              Turbo Drive visit (it's intercepted into a frame load), so Turbo 8's
+              hover-prefetch would only fetch the *full-page* (frameless) variant
+              of this URL and seed the browser cache with it. The drawer's frame
+              request for the same URL is then served that cached frameless
+              response, which has no <turbo-frame id="session_detail"> — rendering
+              "Content missing". Disabling prefetch here also avoids fetching a
+              ~900 KB full page on every hover that would never be used. %>
+          <%= link_to session_path(agent_session), class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", title: "View session details", "aria-label" => "View session #{agent_session.id}", data: { turbo_frame: "_top", turbo_prefetch: false, action: "click->session-drawer#open" } do %>
+            View
+          <% end %>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

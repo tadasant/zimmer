@@ -1,0 +1,56 @@
+# Database Configuration
+#
+# This application uses PostgreSQL exclusively.
+#
+# PostgreSQL Configuration:
+#   - Default port is 5432 (standard PostgreSQL port)
+#   - macOS Postgres.app users: set DATABASE_PORT=5450 in your .env file
+#   - Requires pg gem: gem "pg"
+#
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 25 } %>
+  host: <%= ENV.fetch("DATABASE_HOST", "localhost") %>
+  port: <%= ENV.fetch("DATABASE_PORT", "5432") %>
+  username: <%= ENV.fetch("DATABASE_USERNAME", ENV['USER']) %>
+  password: <%= ENV["DATABASE_PASSWORD"] %>
+
+development:
+  primary:
+    <<: *default
+    database: agent_orchestrator_development
+  cable:
+    <<: *default
+    database: agent_orchestrator_development_cable
+    migrations_paths: db/cable_migrate
+
+# Warning: The database defined as "test" will be erased and
+# re-generated from your development database when you run "rake".
+# Do not set this db to the same as development or production.
+test:
+  primary:
+    <<: *default
+    database: agent_orchestrator_test
+  cable:
+    <<: *default
+    database: agent_orchestrator_test_cable
+    migrations_paths: db/cable_migrate
+
+staging:
+  primary:
+    <<: *default
+    database: agent_orchestrator_staging
+  cable:
+    <<: *default
+    database: agent_orchestrator_staging_cable
+    migrations_paths: db/cable_migrate
+
+production:
+  primary:
+    <<: *default
+    database: agent_orchestrator_production
+  cable:
+    <<: *default
+    database: agent_orchestrator_production_cable
+    migrations_paths: db/cable_migrate

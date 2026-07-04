@@ -1,0 +1,14 @@
+<%# Session detail page. The body lives in the shared _detail partial so it can
+    also be lazy-loaded into the dashboard's right-side drawer. When the request
+    arrives via the drawer's Turbo Frame (@in_drawer set by the controller), the
+    content is wrapped in a matching <turbo-frame id="session_detail"> and
+    rendered chrome-light so it swaps cleanly into the drawer panel. On a normal
+    full-page load it renders without the frame so internal Turbo navigations
+    (follow-up form, infinite scroll, log-level filter) still target _top. %>
+<% if @in_drawer %>
+  <%= turbo_frame_tag "session_detail" do %>
+    <%= render "sessions/detail", in_drawer: true %>
+  <% end %>
+<% else %>
+  <%= render "sessions/detail", in_drawer: false %>
+<% end %>

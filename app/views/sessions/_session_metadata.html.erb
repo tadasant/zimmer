@@ -1,0 +1,699 @@
+<!-- Meta information in a compact layout -->
+<div id="session_<%= agent_session.id %>_metadata" class="flex flex-wrap items-center gap-4 text-sm text-gray-600">
+  <div class="flex items-center gap-1">
+    <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd" />
+    </svg>
+    <span data-timestamp="<%= agent_session.created_at.iso8601 %>" data-controller="timestamp-updater">Created <%= time_ago_in_words(agent_session.created_at) %> ago</span>
+  </div>
+  <% agent_root_key = agent_session.agent_root_key %>
+  <% if agent_root_key.present? %>
+    <% clone_copy_path = agent_session.metadata&.dig("full_clone_path").presence || agent_session.metadata&.dig("clone_path") %>
+    <div class="flex items-center gap-1" data-controller="clipboard">
+      <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+      </svg>
+      <span><strong>Root:</strong> <%= agent_root_key %></span>
+      <% if clone_copy_path.present? %>
+        <button type="button"
+                data-action="click->clipboard#copy"
+                data-clipboard-value="<%= clone_copy_path %>"
+                class="text-gray-400 hover:text-gray-600 focus:outline-none"
+                title="Copy full path">
+          <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+            <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+          </svg>
+        </button>
+        <span data-clipboard-target="feedback" class="hidden text-xs text-green-600 ml-1">Copied!</span>
+      <% end %>
+    </div>
+  <% end %>
+  <% scratch_path = SessionScratchDirectory.path_for(agent_session.id) %>
+  <div class="flex items-center gap-1" data-controller="clipboard"
+       title="Durable per-session scratch directory (also exported as $AO_SESSION_SCRATCH_DIR). Survives restarts/deploys — unlike /tmp.">
+    <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+      <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+    </svg>
+    <span><strong>Scratch:</strong> <span class="text-gray-500 font-mono text-xs"><%= scratch_path %></span></span>
+    <button type="button"
+            data-action="click->clipboard#copy"
+            data-clipboard-value="<%= scratch_path %>"
+            class="text-gray-400 hover:text-gray-600 focus:outline-none"
+            title="Copy scratch path">
+      <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+        <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+      </svg>
+    </button>
+    <span data-clipboard-target="feedback" class="hidden text-xs text-green-600 ml-1">Copied!</span>
+  </div>
+  <% # Resolve select data from locals (broadcast context) or instance variables (controller context) %>
+  <% servers_for_select = local_assigns.fetch(:servers_for_select, defined?(@servers_for_select) ? @servers_for_select : nil) %>
+  <% catalog_skills_for_select = local_assigns.fetch(:catalog_skills_for_select, defined?(@catalog_skills_for_select) ? @catalog_skills_for_select : nil) %>
+  <% catalog_hooks_for_select = local_assigns.fetch(:catalog_hooks_for_select, defined?(@catalog_hooks_for_select) ? @catalog_hooks_for_select : nil) %>
+  <% plugins_for_select = local_assigns.fetch(:plugins_for_select, defined?(@plugins_for_select) ? @plugins_for_select : nil) %>
+  <% available_models = local_assigns.fetch(:available_models, defined?(@available_models) ? @available_models : nil) %>
+  <% goals_for_select = local_assigns.fetch(:goals_for_select, defined?(@goals_for_select) ? @goals_for_select : nil) %>
+  <% # Show MCP section: always on detail page (where servers_for_select is available), or on other pages only if servers exist %>
+  <% all_servers = agent_session.all_mcp_servers %>
+  <% injected_set = agent_session.injected_mcp_servers.to_set %>
+  <% plugin_derived_mcp = agent_session.plugin_derived_mcp_servers %>
+  <% plugin_derived_skills = agent_session.plugin_derived_skills %>
+  <% plugin_derived_hooks = agent_session.plugin_derived_hooks %>
+  <% show_mcp_section = servers_for_select || all_servers.present? || plugin_derived_mcp.any? %>
+  <% if show_mcp_section %>
+    <div class="flex items-center gap-1"
+         data-controller="editable-mcp-servers"
+         data-editable-mcp-servers-session-id-value="<%= agent_session.id %>"
+         data-editable-mcp-servers-servers-value="<%= (agent_session.mcp_servers || []).to_json %>"
+         data-editable-mcp-servers-injected-servers-value="<%= agent_session.injected_mcp_servers.to_json %>"
+         data-editable-mcp-servers-available-servers-value="<%= (servers_for_select || []).to_json %>">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" />
+      </svg>
+
+      <!-- Display Mode -->
+      <div data-editable-mcp-servers-target="display" class="flex items-center gap-1">
+        <strong class="text-gray-700">MCP:</strong>
+        <% if all_servers.present? || plugin_derived_mcp.any? %>
+          <%
+            # Get MCP server statuses from custom_metadata (updated by McpLogPollerService)
+            mcp_statuses = agent_session.custom_metadata&.dig("mcp_servers_status") || {}
+          %>
+          <span class="text-gray-600 flex items-center gap-1 flex-wrap">
+            <% all_servers.each_with_index do |server_name, idx| %>
+              <%
+                server_status = mcp_statuses[server_name] || {}
+                status = server_status["status"] || "pending"
+                error = server_status["error"]
+                is_injected = injected_set.include?(server_name)
+
+                # Determine indicator color and tooltip
+                case status
+                when "connected"
+                  indicator_class = "bg-green-500"
+                  simple_tooltip = "#{server_name}: Connected"
+                when "failed"
+                  indicator_class = "bg-red-500"
+                  simple_tooltip = "#{server_name}: Failed (click for details)"
+                else # pending
+                  indicator_class = "bg-gray-400"
+                  simple_tooltip = "#{server_name}: Pending connection"
+                end
+                simple_tooltip += " (auto-injected)" if is_injected
+              %>
+              <% if status == "failed" && error.present? %>
+                <span class="inline-flex items-center gap-0.5"
+                      data-controller="error-popover"
+                      data-error-popover-content-value="<%= error %>"
+                      data-error-popover-title-value="MCP Error: <%= server_name %>">
+                  <span data-error-popover-target="trigger"
+                        data-action="click->error-popover#toggle mouseenter->error-popover#showDelayed mouseleave->error-popover#hideDelayed"
+                        class="inline-flex items-center gap-0.5 cursor-pointer hover:underline"
+                        title="<%= simple_tooltip %>"
+                        aria-label="<%= simple_tooltip %>">
+                    <span class="w-2 h-2 rounded-full <%= indicator_class %>" aria-hidden="true"></span>
+                    <span class="sr-only"><%= status.humanize %>: </span>
+                    <span class="text-red-600 <%= 'italic' if is_injected %>"><%= server_name %></span><%= (idx < all_servers.length - 1 || plugin_derived_mcp.any?) ? ',' : '' %>
+                  </span>
+                  <div data-error-popover-target="popover" class="hidden"></div>
+                </span>
+              <% else %>
+                <span class="inline-flex items-center gap-0.5" title="<%= simple_tooltip %>" aria-label="<%= simple_tooltip %>">
+                  <span class="w-2 h-2 rounded-full <%= indicator_class %>" aria-hidden="true"></span>
+                  <span class="sr-only"><%= status.humanize %>: </span>
+                  <% if is_injected %>
+                    <span class="italic text-gray-500"><%= server_name %></span><%= (idx < all_servers.length - 1 || plugin_derived_mcp.any?) ? ',' : '' %>
+                  <% else %>
+                    <%= server_name %><%= (idx < all_servers.length - 1 || plugin_derived_mcp.any?) ? ',' : '' %>
+                  <% end %>
+                </span>
+              <% end %>
+            <% end %>
+            <% plugin_derived_mcp.each_with_index do |(server_name, plugin_id), p_idx| %>
+              <span class="inline-flex items-center gap-0.5"
+                    title="<%= server_name %>: from plugin '<%= plugin_id %>' (read-only)"
+                    aria-label="<%= server_name %>: from plugin '<%= plugin_id %>' (read-only)">
+                <span class="w-2 h-2 rounded-full bg-gray-300" aria-hidden="true"></span>
+                <span class="sr-only">From plugin <%= plugin_id %>: </span>
+                <span class="italic text-gray-400"><%= server_name %></span><%= p_idx < plugin_derived_mcp.size - 1 ? ',' : '' %>
+              </span>
+            <% end %>
+          </span>
+        <% elsif agent_session.agent_root_default_mcp_servers.any? %>
+          <%= render "sessions/inherited_defaults", items: agent_session.agent_root_default_mcp_servers, label: "agent root default" %>
+        <% else %>
+          <span class="text-gray-400 italic text-xs">None</span>
+        <% end %>
+        <% if servers_for_select %>
+          <button type="button"
+                  data-action="click->editable-mcp-servers#edit"
+                  class="text-gray-400 hover:text-gray-600 focus:outline-none ml-1"
+                  title="<%= all_servers.present? ? 'Edit MCP servers' : 'Add MCP servers' %>">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+            </svg>
+          </button>
+        <% end %>
+      </div>
+
+      <% if servers_for_select %>
+        <!-- Edit Mode - only render if we have access to the server list -->
+        <div data-editable-mcp-servers-target="editor" class="hidden flex-1">
+          <!-- Selected servers container -->
+          <div class="flex flex-wrap items-center gap-1 mb-1">
+            <strong class="text-gray-700 mr-1">MCP:</strong>
+            <div data-editable-mcp-servers-target="selectedContainer" class="flex flex-wrap gap-1"></div>
+          </div>
+
+          <!-- Search input and dropdown container -->
+          <div class="relative mt-1">
+            <input type="text"
+                   data-editable-mcp-servers-target="input"
+                   data-action="focus->editable-mcp-servers#showDropdown input->editable-mcp-servers#filterServers keydown->editable-mcp-servers#handleKeydown"
+                   placeholder="Search to add MCP servers..."
+                   autocomplete="off"
+                   class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md py-1 px-2">
+
+            <!-- Dropdown for server selection -->
+            <div data-editable-mcp-servers-target="dropdown"
+                 class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex gap-2 mt-2">
+            <button type="button"
+                    data-action="click->editable-mcp-servers#save"
+                    data-editable-mcp-servers-target="saveButton"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              Save
+            </button>
+            <button type="button"
+                    data-action="click->editable-mcp-servers#cancel"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
+              Cancel
+            </button>
+            <span data-editable-mcp-servers-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+  <% # Show Skills section: always on detail page (where catalog_skills_for_select is available), or on other pages only if skills exist %>
+  <% show_skills_section = catalog_skills_for_select || agent_session.catalog_skills.present? || plugin_derived_skills.any? %>
+  <% if show_skills_section %>
+    <div class="flex items-center gap-1"
+         data-controller="editable-catalog-skills"
+         data-editable-catalog-skills-session-id-value="<%= agent_session.id %>"
+         data-editable-catalog-skills-skills-value="<%= (agent_session.catalog_skills || []).to_json %>"
+         data-editable-catalog-skills-available-skills-value="<%= (catalog_skills_for_select || []).to_json %>">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
+      </svg>
+
+      <!-- Display Mode -->
+      <div data-editable-catalog-skills-target="display" class="flex items-center gap-1">
+        <strong class="text-gray-700">Skills:</strong>
+        <% if agent_session.catalog_skills.present? || plugin_derived_skills.any? %>
+          <span data-role="skill-tags" class="text-gray-600 flex items-center gap-1 flex-wrap">
+            <% agent_session.catalog_skills.each do |skill_name| %>
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800"><%= skill_name %></span>
+            <% end %>
+            <% plugin_derived_skills.each do |skill_name, plugin_id| %>
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 italic border border-purple-200"
+                    title="<%= skill_name %>: from plugin '<%= plugin_id %>' (read-only)"
+                    aria-label="<%= skill_name %>: from plugin '<%= plugin_id %>' (read-only)"><%= skill_name %></span>
+            <% end %>
+          </span>
+          <span data-role="skill-empty" class="hidden text-gray-400 italic text-xs">None</span>
+        <% elsif agent_session.agent_root_default_skills.any? %>
+          <span data-role="skill-tags" class="hidden text-gray-600 flex items-center gap-1 flex-wrap"></span>
+          <span data-role="skill-empty" class="text-xs">
+            <%= render "sessions/inherited_defaults", items: agent_session.agent_root_default_skills, label: "agent root default" %>
+          </span>
+        <% else %>
+          <span data-role="skill-tags" class="hidden text-gray-600 flex items-center gap-1 flex-wrap"></span>
+          <span data-role="skill-empty" class="text-gray-400 italic text-xs">None</span>
+        <% end %>
+        <% if catalog_skills_for_select %>
+          <button type="button"
+                  data-action="click->editable-catalog-skills#edit"
+                  class="text-gray-400 hover:text-gray-600 focus:outline-none ml-1"
+                  title="<%= agent_session.catalog_skills.present? ? 'Edit skills' : 'Add skills' %>"
+                  aria-label="<%= agent_session.catalog_skills.present? ? 'Edit skills' : 'Add skills' %>">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+            </svg>
+          </button>
+        <% end %>
+      </div>
+
+      <% if catalog_skills_for_select %>
+        <!-- Edit Mode - only render if we have access to the skills list -->
+        <div data-editable-catalog-skills-target="editor" class="hidden flex-1">
+          <!-- Selected skills container -->
+          <div class="flex flex-wrap items-center gap-1 mb-1">
+            <strong class="text-gray-700 mr-1">Skills:</strong>
+            <div data-editable-catalog-skills-target="selectedContainer" class="flex flex-wrap gap-1"></div>
+          </div>
+
+          <!-- Search input and dropdown container -->
+          <div class="relative mt-1">
+            <input type="text"
+                   data-editable-catalog-skills-target="input"
+                   data-action="focus->editable-catalog-skills#showDropdown input->editable-catalog-skills#filterSkills keydown->editable-catalog-skills#handleKeydown"
+                   placeholder="Search to add skills..."
+                   aria-label="Search skills"
+                   autocomplete="off"
+                   class="shadow-sm focus:ring-green-500 focus:border-green-500 block w-full sm:text-sm border-gray-300 rounded-md py-1 px-2">
+
+            <!-- Dropdown for skill selection -->
+            <div data-editable-catalog-skills-target="dropdown"
+                 class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex gap-2 mt-2">
+            <button type="button"
+                    data-action="click->editable-catalog-skills#save"
+                    data-editable-catalog-skills-target="saveButton"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-green-600 text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              Save
+            </button>
+            <button type="button"
+                    data-action="click->editable-catalog-skills#cancel"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-green-500">
+              Cancel
+            </button>
+            <span data-editable-catalog-skills-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+  <% # Show Hooks section: always on detail page (where catalog_hooks_for_select is available), or on other pages only if hooks exist %>
+  <% show_hooks_section = catalog_hooks_for_select || agent_session.catalog_hooks.present? || plugin_derived_hooks.any? %>
+  <% if show_hooks_section %>
+    <div class="flex items-center gap-1"
+         data-controller="editable-catalog-hooks"
+         data-editable-catalog-hooks-session-id-value="<%= agent_session.id %>"
+         data-editable-catalog-hooks-hooks-value="<%= (agent_session.catalog_hooks || []).to_json %>"
+         data-editable-catalog-hooks-available-hooks-value="<%= (catalog_hooks_for_select || []).to_json %>">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" clip-rule="evenodd" />
+      </svg>
+
+      <!-- Display Mode -->
+      <div data-editable-catalog-hooks-target="display" class="flex items-center gap-1">
+        <strong class="text-gray-700">Hooks:</strong>
+        <% if agent_session.catalog_hooks.present? || plugin_derived_hooks.any? %>
+          <span data-role="hook-tags" class="text-gray-600 flex items-center gap-1 flex-wrap">
+            <% agent_session.catalog_hooks.each do |hook_name| %>
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800"><%= hook_name %></span>
+            <% end %>
+            <% plugin_derived_hooks.each do |hook_name, plugin_id| %>
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 italic border border-purple-200"
+                    title="<%= hook_name %>: from plugin '<%= plugin_id %>' (read-only)"
+                    aria-label="<%= hook_name %>: from plugin '<%= plugin_id %>' (read-only)"><%= hook_name %></span>
+            <% end %>
+          </span>
+          <span data-role="hook-empty" class="hidden text-gray-400 italic text-xs">None</span>
+        <% elsif agent_session.agent_root_default_hooks.any? %>
+          <span data-role="hook-tags" class="hidden text-gray-600 flex items-center gap-1 flex-wrap"></span>
+          <span data-role="hook-empty" class="text-xs">
+            <%= render "sessions/inherited_defaults", items: agent_session.agent_root_default_hooks, label: "agent root default" %>
+          </span>
+        <% else %>
+          <span data-role="hook-tags" class="hidden text-gray-600 flex items-center gap-1 flex-wrap"></span>
+          <span data-role="hook-empty" class="text-gray-400 italic text-xs">None</span>
+        <% end %>
+        <% if catalog_hooks_for_select %>
+          <button type="button"
+                  data-action="click->editable-catalog-hooks#edit"
+                  class="text-gray-400 hover:text-gray-600 focus:outline-none ml-1"
+                  title="<%= agent_session.catalog_hooks.present? ? 'Edit hooks' : 'Add hooks' %>"
+                  aria-label="<%= agent_session.catalog_hooks.present? ? 'Edit hooks' : 'Add hooks' %>">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+            </svg>
+          </button>
+        <% end %>
+      </div>
+
+      <% if catalog_hooks_for_select %>
+        <!-- Edit Mode - only render if we have access to the hooks list -->
+        <div data-editable-catalog-hooks-target="editor" class="hidden flex-1">
+          <!-- Selected hooks container -->
+          <div class="flex flex-wrap items-center gap-1 mb-1">
+            <strong class="text-gray-700 mr-1">Hooks:</strong>
+            <div data-editable-catalog-hooks-target="selectedContainer" class="flex flex-wrap gap-1"></div>
+          </div>
+
+          <!-- Search input and dropdown container -->
+          <div class="relative mt-1">
+            <input type="text"
+                   data-editable-catalog-hooks-target="input"
+                   data-action="focus->editable-catalog-hooks#showDropdown input->editable-catalog-hooks#filterHooks keydown->editable-catalog-hooks#handleKeydown"
+                   placeholder="Search to add hooks..."
+                   aria-label="Search hooks"
+                   autocomplete="off"
+                   class="shadow-sm focus:ring-amber-500 focus:border-amber-500 block w-full sm:text-sm border-gray-300 rounded-md py-1 px-2">
+
+            <!-- Dropdown for hook selection -->
+            <div data-editable-catalog-hooks-target="dropdown"
+                 class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex gap-2 mt-2">
+            <button type="button"
+                    data-action="click->editable-catalog-hooks#save"
+                    data-editable-catalog-hooks-target="saveButton"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-amber-600 text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              Save
+            </button>
+            <button type="button"
+                    data-action="click->editable-catalog-hooks#cancel"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-amber-500">
+              Cancel
+            </button>
+            <span data-editable-catalog-hooks-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+  <% # Show Plugins section: always on detail page (where plugins_for_select is available), or on other pages only if plugins exist %>
+  <% show_plugins_section = plugins_for_select || agent_session.catalog_plugins.present? %>
+  <% if show_plugins_section %>
+    <div class="flex items-center gap-1"
+         data-controller="editable-catalog-plugins"
+         data-editable-catalog-plugins-session-id-value="<%= agent_session.id %>"
+         data-editable-catalog-plugins-plugins-value="<%= (agent_session.catalog_plugins || []).to_json %>"
+         data-editable-catalog-plugins-available-plugins-value="<%= (plugins_for_select || []).to_json %>">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd" />
+      </svg>
+
+      <!-- Display Mode -->
+      <div data-editable-catalog-plugins-target="display" class="flex items-center gap-1">
+        <strong class="text-gray-700">Plugins:</strong>
+        <% if agent_session.catalog_plugins.present? %>
+          <span data-role="plugin-tags" class="text-gray-600 flex items-center gap-1 flex-wrap">
+            <% agent_session.catalog_plugins.each do |plugin_id| %>
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800"><%= plugin_id %></span>
+            <% end %>
+          </span>
+          <span data-role="plugin-empty" class="hidden text-gray-400 italic text-xs">None</span>
+        <% elsif agent_session.agent_root_default_plugins.any? %>
+          <span data-role="plugin-tags" class="hidden text-gray-600 flex items-center gap-1 flex-wrap"></span>
+          <span data-role="plugin-empty" class="text-xs">
+            <%= render "sessions/inherited_defaults", items: agent_session.agent_root_default_plugins, label: "agent root default" %>
+          </span>
+        <% else %>
+          <span data-role="plugin-tags" class="hidden text-gray-600 flex items-center gap-1 flex-wrap"></span>
+          <span data-role="plugin-empty" class="text-gray-400 italic text-xs">None</span>
+        <% end %>
+        <% if plugins_for_select %>
+          <button type="button"
+                  data-action="click->editable-catalog-plugins#edit"
+                  class="text-gray-400 hover:text-gray-600 focus:outline-none ml-1"
+                  title="<%= agent_session.catalog_plugins.present? ? 'Edit plugins' : 'Add plugins' %>"
+                  aria-label="<%= agent_session.catalog_plugins.present? ? 'Edit plugins' : 'Add plugins' %>">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+            </svg>
+          </button>
+        <% end %>
+      </div>
+
+      <% if plugins_for_select %>
+        <!-- Edit Mode - only render if we have access to the plugins list -->
+        <div data-editable-catalog-plugins-target="editor" class="hidden flex-1">
+          <!-- Selected plugins container -->
+          <div class="flex flex-wrap items-center gap-1 mb-1">
+            <strong class="text-gray-700 mr-1">Plugins:</strong>
+            <div data-editable-catalog-plugins-target="selectedContainer" class="flex flex-wrap gap-1"></div>
+          </div>
+
+          <!-- Search input and dropdown container -->
+          <div class="relative mt-1">
+            <input type="text"
+                   data-editable-catalog-plugins-target="input"
+                   data-action="focus->editable-catalog-plugins#showDropdown input->editable-catalog-plugins#filterPlugins keydown->editable-catalog-plugins#handleKeydown"
+                   placeholder="Search to add plugins..."
+                   aria-label="Search plugins"
+                   autocomplete="off"
+                   class="shadow-sm focus:ring-purple-500 focus:border-purple-500 block w-full sm:text-sm border-gray-300 rounded-md py-1 px-2">
+
+            <!-- Dropdown for plugin selection -->
+            <div data-editable-catalog-plugins-target="dropdown"
+                 class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex gap-2 mt-2">
+            <button type="button"
+                    data-action="click->editable-catalog-plugins#save"
+                    data-editable-catalog-plugins-target="saveButton"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-purple-600 text-white hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              Save
+            </button>
+            <button type="button"
+                    data-action="click->editable-catalog-plugins#cancel"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-purple-500">
+              Cancel
+            </button>
+            <span data-editable-catalog-plugins-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+  <%# Runtime badge: shown wherever the model section is, so the model is read in context of its runtime %>
+  <% if agent_session.agent_runtime.present? %>
+    <div class="flex items-center gap-1">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" clip-rule="evenodd" />
+      </svg>
+      <span><strong class="text-gray-700">Runtime:</strong> <span class="text-gray-600"><%= RuntimeRegistry.label_for(agent_session.agent_runtime) %></span></span>
+    </div>
+  <% end %>
+  <%
+    # Model display: show on detail page (where available_models is provided) or when model is set in config
+    current_model = agent_session.config&.dig("model")
+    show_model_section = available_models || current_model.present?
+  %>
+  <% if show_model_section %>
+    <div class="flex items-center gap-1"
+         data-controller="editable-model"
+         data-editable-model-session-id-value="<%= agent_session.id %>"
+         data-editable-model-model-value="<%= current_model || '' %>"
+         data-editable-model-available-models-value="<%= (available_models || []).to_json %>">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M13 7H7v6h6V7z" />
+        <path fill-rule="evenodd" d="M7 2a1 1 0 012 0v1h2V2a1 1 0 112 0v1h2a2 2 0 012 2v2h1a1 1 0 110 2h-1v2h1a1 1 0 110 2h-1v2a2 2 0 01-2 2h-2v1a1 1 0 11-2 0v-1H9v1a1 1 0 11-2 0v-1H5a2 2 0 01-2-2v-2H2a1 1 0 110-2h1V9H2a1 1 0 010-2h1V5a2 2 0 012-2h2V2zM5 5h10v10H5V5z" clip-rule="evenodd" />
+      </svg>
+
+      <!-- Display Mode -->
+      <div data-editable-model-target="display" class="flex items-center gap-1">
+        <strong class="text-gray-700">Model:</strong>
+        <span data-role="model-value" class="text-gray-600"><%= current_model || "opus" %></span>
+        <% if available_models %>
+          <button type="button"
+                  data-action="click->editable-model#edit"
+                  class="text-gray-400 hover:text-gray-600 focus:outline-none ml-1"
+                  title="Change model">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+            </svg>
+          </button>
+        <% end %>
+      </div>
+
+      <% if available_models %>
+        <!-- Edit Mode -->
+        <div data-editable-model-target="editor" class="hidden flex items-center gap-2">
+          <strong class="text-gray-700">Model:</strong>
+          <select data-editable-model-target="select"
+                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md py-1 px-2 pr-7">
+            <% available_models.each do |model_name| %>
+              <option value="<%= model_name %>" <%= 'selected' if model_name == current_model %>><%= model_name %></option>
+            <% end %>
+          </select>
+          <button type="button"
+                  data-action="click->editable-model#save"
+                  class="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
+            Save
+          </button>
+          <button type="button"
+                  data-action="click->editable-model#cancel"
+                  class="inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
+            Cancel
+          </button>
+          <span data-editable-model-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+  <%
+    # Context window (auto_compact_window): only Claude Code honors
+    # CLAUDE_CODE_AUTO_COMPACT_WINDOW, and editing is only meaningful on the
+    # detail page (where available_models is provided, the same signal the model
+    # section uses). The value is consumed at process spawn time, so changes
+    # take effect on the next turn / restart, not on the live process.
+    show_context_window_section = available_models && agent_session.agent_runtime == "claude_code"
+    current_context_window = agent_session.auto_compact_window
+  %>
+  <% if show_context_window_section %>
+    <div class="flex items-center gap-1"
+         data-controller="editable-auto-compact-window"
+         data-editable-auto-compact-window-session-id-value="<%= agent_session.id %>"
+         data-editable-auto-compact-window-window-value="<%= current_context_window %>"
+         data-editable-auto-compact-window-max-value="<%= Session::MAX_AUTO_COMPACT_WINDOW %>">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M3 5a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2h-2.22l.123.489.804.804A1 1 0 0113 18H7a1 1 0 01-.707-1.707l.804-.804L7.22 15H5a2 2 0 01-2-2V5zm5.771 7H5V5h10v7H8.771z" clip-rule="evenodd" />
+      </svg>
+
+      <!-- Display Mode -->
+      <div data-editable-auto-compact-window-target="display" class="flex items-center gap-1">
+        <strong class="text-gray-700">Context window:</strong>
+        <span data-editable-auto-compact-window-target="value" class="text-gray-600"><%= number_with_delimiter(current_context_window) %></span>
+        <span class="text-gray-400">tokens</span>
+        <button type="button"
+                data-action="click->editable-auto-compact-window#edit"
+                class="text-gray-400 hover:text-gray-600 focus:outline-none ml-1"
+                title="Change context window">
+          <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Edit Mode -->
+      <div data-editable-auto-compact-window-target="editor" class="hidden flex flex-wrap items-center gap-2">
+        <strong class="text-gray-700">Context window:</strong>
+        <input type="number"
+               data-editable-auto-compact-window-target="input"
+               min="1"
+               max="<%= Session::MAX_AUTO_COMPACT_WINDOW %>"
+               step="1000"
+               class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md py-1 px-2 w-32" />
+        <button type="button"
+                data-action="click->editable-auto-compact-window#save"
+                class="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
+          Save
+        </button>
+        <button type="button"
+                data-action="click->editable-auto-compact-window#cancel"
+                class="inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
+          Cancel
+        </button>
+        <span data-editable-auto-compact-window-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+        <span class="basis-full text-xs text-gray-400 italic">Applies on the next turn or restart — the running process keeps its current window.</span>
+      </div>
+    </div>
+  <% end %>
+  <%# Goal: always show on detail page (where goals_for_select is available), or on other pages only if set %>
+  <% show_goal_section = goals_for_select || agent_session.goal.present? %>
+  <% if show_goal_section %>
+    <% goal_display = goal_display_name(agent_session.goal, goals_for_select || []) %>
+    <div class="flex items-center gap-1"
+         data-controller="editable-goal"
+         data-editable-goal-session-id-value="<%= agent_session.id %>"
+         data-editable-goal-goal-value="<%= agent_session.goal %>"
+         data-editable-goal-goals-value="<%= (goals_for_select || []).to_json %>">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586L7.707 9.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 10.586V7z" clip-rule="evenodd" />
+      </svg>
+
+      <!-- Display Mode -->
+      <div data-editable-goal-target="display" class="flex items-center gap-1">
+        <strong class="text-gray-700">Goal:</strong>
+        <% if agent_session.goal.present? %>
+          <span data-editable-goal-target="displayText" class="text-gray-600 truncate max-w-xs" title="<%= agent_session.goal %>"><%= goal_display %></span>
+        <% else %>
+          <span data-editable-goal-target="displayText" class="text-gray-400 italic text-xs">None</span>
+        <% end %>
+        <% if goals_for_select %>
+          <button type="button"
+                  data-action="click->editable-goal#edit"
+                  class="text-gray-400 hover:text-gray-600 focus:outline-none ml-1"
+                  title="<%= agent_session.goal.present? ? 'Edit goal' : 'Add goal' %>">
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+            </svg>
+          </button>
+        <% end %>
+      </div>
+
+      <% if goals_for_select %>
+        <!-- Edit Mode -->
+        <div data-editable-goal-target="editor" class="hidden flex-1">
+          <div class="flex flex-wrap items-center gap-1 mb-1">
+            <strong class="text-gray-700 mr-1">Goal:</strong>
+          </div>
+
+          <div class="relative mt-1">
+            <input type="text"
+                   data-editable-goal-target="input"
+                   data-action="focus->editable-goal#handleFocus input->editable-goal#handleInput keydown->editable-goal#handleKeydown"
+                   placeholder="Select a predefined goal or type your own..."
+                   autocomplete="off"
+                   aria-label="Goal"
+                   class="shadow-sm focus:ring-amber-500 focus:border-amber-500 block w-full sm:text-sm border-gray-300 rounded-md py-1 px-2 pr-8">
+            <button type="button"
+                    data-editable-goal-target="clearButton"
+                    data-action="click->editable-goal#clear"
+                    class="hidden absolute inset-y-0 right-0 flex items-center pr-2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                    aria-label="Clear goal">
+              <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+              </svg>
+            </button>
+
+            <!-- Dropdown for suggestions -->
+            <div data-editable-goal-target="dropdown"
+                 class="hidden fixed bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex gap-2 mt-2">
+            <button type="button"
+                    data-action="click->editable-goal#save"
+                    data-editable-goal-target="saveButton"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-amber-600 text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              Save
+            </button>
+            <button type="button"
+                    data-action="click->editable-goal#cancel"
+                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-amber-500">
+              Cancel
+            </button>
+            <span data-editable-goal-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+  <% if agent_session.needs_input? && agent_session.metadata&.dig("last_quota_limit_at").present? %>
+    <div class="flex items-center gap-1.5 mt-1">
+      <svg class="h-4 w-4 text-amber-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+      </svg>
+      <span class="text-amber-700 text-sm">
+        <strong>Paused:</strong> Account quota limit reached — retry skipped (resets at time shown in error)
+      </span>
+    </div>
+  <% end %>
+  <% if agent_session.failed? && agent_session.metadata&.dig("failure_reason") == "oauth_required" %>
+    <div class="mt-2">
+      <%= render "sessions/mcp_oauth_required_banner", agent_session: agent_session %>
+    </div>
+  <% end %>
+  <%# Full, untruncated failure/exception detail (scrollable). Shared with the
+      mobile session header so failures are readable on phones too. %>
+  <%= render "sessions/failure_details", agent_session: agent_session %>
+  <span class="text-gray-400 text-xs font-mono">#<%= agent_session.id %></span>
+</div>

@@ -1,0 +1,292 @@
+<%# Session detail view body. Rendered full-page by show.html.erb and also
+    lazy-loaded into the dashboard's right-side drawer (see
+    session_drawer_controller.js). The `in_drawer` local strips the full-page
+    chrome (min-h-screen background, "Back to Sessions" navigation) so the
+    content sits cleanly inside the drawer panel without doubled page chrome —
+    in the drawer the back affordance becomes a "Close" button marked with
+    data-session-drawer-close. The session-drawer controller (an ancestor of the
+    loaded frame) catches that click via an eagerly-bound delegated listener, so
+    the button closes the drawer the instant it renders — no waiting for Stimulus
+    to wire a per-button action onto the freshly-swapped frame content. All Turbo
+    Stream subscriptions and Stimulus controllers below initialize identically in
+    both contexts. %>
+<% in_drawer = local_assigns.fetch(:in_drawer, false) %>
+<%# In the drawer, pull-to-refresh and stream-visibility-recovery are already
+    declared on the dashboard root (an ancestor), so omit them here to avoid two
+    instances double-binding document/window listeners and double-refreshing. %>
+<% detail_controllers = "session-scroll auto-scroll log-level-filter page-header-offset" %>
+<% detail_controllers += " pull-to-refresh stream-visibility-recovery" unless in_drawer %>
+<div class="<%= in_drawer ? "min-h-full pb-32" : "min-h-screen" %> bg-gray-50" data-controller="<%= detail_controllers %>"
+     data-log-level-filter-server-filter-value="<%= @filter_level %>"
+     data-current-session-id="<%= @session.id %>">
+  <%= turbo_stream_from "session_#{@session.id}_timeline" %>
+  <%= turbo_stream_from "session_#{@session.id}_status" %>
+  <%= turbo_stream_from "session_#{@session.id}_elicitations" %>
+
+  <% if @session.recently_recovered? %>
+    <%# A meta-refresh navigates the TOP-LEVEL document, so inside the drawer it
+        would reload the whole dashboard and dismiss the drawer — losing the
+        user's place, the very thing the drawer exists to preserve. Only emit it
+        full-page. In the drawer the detail's Turbo Stream subscriptions already
+        reconnect on frame load, so no page refresh is needed to restore live
+        updates. %>
+    <% unless in_drawer %>
+      <meta http-equiv="refresh" content="3">
+    <% end %>
+    <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+      <div class="flex">
+        <div class="flex-shrink-0">
+          <svg class="h-5 w-5 text-yellow-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+          </svg>
+        </div>
+        <div class="ml-3">
+          <p class="text-sm text-yellow-700">
+            <% if in_drawer %>
+              Session connection recovered. Live updates have been restored.
+            <% else %>
+              Session connection recovered. Page will refresh in 3 seconds to restore live updates...
+            <% end %>
+          </p>
+        </div>
+      </div>
+    </div>
+  <% end %>
+
+  <!-- Sticky Header -->
+  <!-- data-pull-to-refresh-target="trigger" lets the page-level pull-to-refresh
+       controller fire from a header pull at any scroll position (the body-level
+       gesture still requires scrollY === 0). -->
+  <div class="sticky top-0 z-10 bg-white shadow-sm border-b border-gray-200" data-page-header-offset-target="header" data-pull-to-refresh-target="trigger">
+    <div class="max-w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4">
+      <!-- Mobile: Compact header — back button, title, status. All actions
+           live in the joystick bubble rendered below (see _mobile_joystick). -->
+      <div class="flex items-center justify-between gap-2 md:hidden">
+        <% if in_drawer %>
+          <div class="flex items-center gap-1">
+            <button type="button" data-session-drawer-close class="inline-flex items-center justify-center w-10 h-10 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md" title="Close" aria-label="Close session details">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <%# Top-level navigation to the full-page session view. A plain anchor
+                (not a session-drawer Stimulus action), but the detail is loaded
+                inside a <turbo-frame id="session_detail"> in the drawer, so
+                data-turbo-frame="_top" is required to navigate the whole document
+                rather than reloading the detail back into the frame — exactly the
+                intent of "expand to full page". %>
+            <%= link_to session_path(@session), class: "inline-flex items-center justify-center w-10 h-10 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md", title: "Open full page", "aria-label": "Expand to full page", data: { turbo_frame: "_top" } do %>
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15m11.25 5.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
+              </svg>
+            <% end %>
+          </div>
+        <% else %>
+          <%= link_to root_path, class: "inline-flex items-center justify-center w-10 h-10 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md", title: "Back to Sessions" do %>
+            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+            </svg>
+          <% end %>
+        <% end %>
+
+        <div class="flex-1 min-w-0 mx-2">
+          <% if @session.title.present? %>
+            <h1 class="text-base font-bold text-gray-900 truncate"><%= @session.title %></h1>
+          <% end %>
+          <div class="flex items-center gap-2">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium <%= status_badge_classes(@session) %>">
+              <%= @session.status.titleize %>
+            </span>
+            <span class="text-xs text-gray-400 font-mono">#<%= @session.id %></span>
+          </div>
+        </div>
+
+        <%# Placeholder spacer to keep title centered after removing hamburger %>
+        <div class="w-10 h-10" aria-hidden="true"></div>
+
+      </div>
+
+      <% if @session.failed? && @session.metadata&.dig("failure_reason") == "oauth_required" && (@session.metadata&.dig("oauth_required_servers") || []).any? %>
+        <%# Keep OAuth prompts discoverable above the mobile joystick-only actions. %>
+        <div class="md:hidden mt-3">
+          <%= render "sessions/mcp_oauth_required_banner", agent_session: @session %>
+        </div>
+      <% end %>
+
+      <%# The full session metadata (incl. failure details) lives in the desktop-only
+          header below. Surface the failure/exception detail on mobile too, so phone
+          users can read the actual error instead of a hidden, desktop-only block. %>
+      <div class="md:hidden">
+        <%= render "sessions/failure_details", agent_session: @session %>
+      </div>
+
+      <!-- Desktop: Full header -->
+      <div class="hidden md:block">
+        <% if in_drawer %>
+          <div class="flex items-center gap-1 mb-3">
+            <button type="button" data-session-drawer-close title="Close" aria-label="Close session details" class="inline-flex items-center justify-center w-10 h-10 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <%# Top-level navigation to the full-page session view. A plain anchor
+                (not a session-drawer Stimulus action), but the detail is loaded
+                inside a <turbo-frame id="session_detail"> in the drawer, so
+                data-turbo-frame="_top" is required to navigate the whole document
+                rather than reloading the detail back into the frame — exactly the
+                intent of "expand to full page". %>
+            <%= link_to session_path(@session), title: "Open full page", "aria-label": "Expand to full page", class: "inline-flex items-center justify-center w-10 h-10 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md", data: { turbo_frame: "_top" } do %>
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15m11.25 5.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
+              </svg>
+            <% end %>
+          </div>
+        <% else %>
+          <%= link_to root_path, class: "inline-flex items-center text-sm font-medium text-gray-500 hover:text-gray-700 mb-3" do %>
+            <svg class="mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+            </svg>
+            Back to Sessions
+          <% end %>
+        <% end %>
+
+        <div class="flex items-start justify-between gap-6">
+          <!-- Title and Meta Info -->
+          <div class="flex-1">
+            <% if @session.title.present? %>
+              <div class="mb-2" data-controller="editable-title" data-editable-title-session-id-value="<%= @session.id %>" data-editable-title-title-value="<%= @session.title %>">
+                <div class="flex items-center gap-2">
+                  <h1 class="text-2xl font-bold text-gray-900 flex-grow" data-editable-title-target="display">
+                    <%= @session.title %>
+                  </h1>
+                  <button type="button" class="text-gray-400 hover:text-gray-600" data-action="click->editable-title#edit">
+                    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                    </svg>
+                  </button>
+                  <input type="text" class="hidden text-2xl font-bold text-gray-900 border-b-2 border-indigo-500 focus:outline-none flex-grow" data-editable-title-target="input" data-action="keydown->editable-title#handleKeydown blur->editable-title#save" />
+                </div>
+              </div>
+            <% end %>
+            <div class="flex items-center gap-4 mb-3">
+              <%= render "sessions/status_badge", agent_session: @session %>
+              <!-- Log Level Filter and Item Count (lifted to sticky header) -->
+              <div class="flex items-center gap-4 ml-4 border-l border-gray-300 pl-4">
+                <label class="flex items-center text-sm text-gray-600">
+                  <span class="mr-2">Log Level:</span>
+                  <select id="log-level-filter" data-log-level-filter-target="select" data-action="change->log-level-filter#change" class="rounded border-gray-300 text-gray-700 text-sm focus:ring-indigo-500 focus:border-indigo-500 px-2 py-1 pr-7">
+                    <option value="minimal" <%= 'selected' if @filter_level == 'minimal' %>>Minimal</option>
+                    <option value="condensed" <%= 'selected' if @filter_level == 'condensed' %>>Condensed</option>
+                    <option value="show-logs" <%= 'selected' if @filter_level == 'show-logs' %>>Show Logs</option>
+                    <option value="verbose" <%= 'selected' if @filter_level == 'verbose' %>>Verbose</option>
+                  </select>
+                </label>
+                <span class="text-sm text-gray-500" data-infinite-scroll-target="itemsCount">
+                  <% if @has_more_items %>
+                    Showing <%= @timeline_items.count %> of <%= @total_timeline_items_count %> items
+                  <% else %>
+                    <%= @total_timeline_items_count %> <%= @total_timeline_items_count == 1 ? 'item' : 'items' %>
+                  <% end %>
+                </span>
+              </div>
+            </div>
+
+            <%= render "sessions/session_metadata", agent_session: @session %>
+          </div>
+
+          <!-- Action Buttons - broadcast target for real-time updates -->
+          <%= render "sessions/session_header_actions", agent_session: @session %>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content with Notes Sidebar -->
+  <div class="flex flex-1 min-h-0">
+    <!-- Timeline Content -->
+    <div class="flex-1 min-w-0 max-w-full mx-auto px-2 sm:px-6 lg:px-8 py-4 sm:py-8">
+    <div class="bg-white shadow rounded-lg" id="timeline-container" data-session-scroll-target="timeline"
+         data-controller="infinite-scroll"
+         data-infinite-scroll-url-value="<%= timeline_items_session_path(@session) %>"
+         data-infinite-scroll-before-index-value="<%= @oldest_displayed_index %>"
+         data-infinite-scroll-before-timestamp-value="<%= @oldest_displayed_timestamp %>"
+         data-infinite-scroll-has-more-value="<%= @has_more_items %>"
+         data-infinite-scroll-total-count-value="<%= @total_timeline_items_count %>"
+         data-infinite-scroll-displayed-count-value="<%= @timeline_items.count %>"
+         data-infinite-scroll-filter-level-value="<%= @filter_level %>">
+      <div class="divide-y divide-gray-200" data-auto-scroll-target="timelineContainer" data-log-level-filter-target="timeline">
+        <!-- Always render the timeline target div for Turbo Streams -->
+        <div id="session_<%= @session.id %>_timeline" data-controller="timeline" data-infinite-scroll-target="timelineContent">
+          <%# Load more indicator at the top - shown when there are more items to load %>
+          <% if @has_more_items %>
+            <div data-infinite-scroll-target="loadMoreTrigger" class="px-6 py-3 text-center border-b border-gray-100">
+              <button type="button"
+                      data-action="click->infinite-scroll#loadMoreClicked"
+                      data-infinite-scroll-target="loadMoreButton"
+                      class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                <svg class="mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd" />
+                </svg>
+                Load earlier messages (<%= @oldest_displayed_index %> more)
+              </button>
+            </div>
+            <div data-infinite-scroll-target="loadingIndicator"
+                 class="hidden px-6 py-3 text-center border-b border-gray-100"
+                 role="status"
+                 aria-live="polite">
+              <svg class="animate-spin inline-block h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span class="ml-2 text-sm text-gray-600">Loading earlier messages...</span>
+            </div>
+          <% end %>
+
+          <% if @timeline_items.empty? %>
+            <!-- Empty state message inside timeline div so Turbo Streams can replace it -->
+            <div id="empty-timeline-message" class="px-6 py-12 text-center">
+              <% if @session.running? %>
+                <svg class="animate-spin mx-auto h-12 w-12 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <h3 class="mt-4 text-sm font-medium text-gray-900">Agent is running...</h3>
+                <p class="mt-1 text-sm text-gray-500">The conversation and activity will appear here as the agent progresses.</p>
+              <% else %>
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                <h3 class="mt-2 text-sm font-medium text-gray-900">No activity yet</h3>
+                <p class="mt-1 text-sm text-gray-500">The conversation and activity logs will appear here as the agent session progresses.</p>
+              <% end %>
+            </div>
+          <% end %>
+
+          <% @timeline_items.each do |item| %>
+            <%= render "timeline_items/item", item: item, session: @session %>
+          <% end %>
+        </div>
+      </div>
+    </div>
+
+      <%# Elicitation banners - shown above the follow-up form when MCP servers need user approval %>
+      <div id="session_<%= @session.id %>_elicitations" class="px-2 sm:px-6 lg:px-8 space-y-2">
+        <% @session.elicitations.active.each do |elicitation| %>
+          <%= render "elicitations/elicitation_banner", elicitation: elicitation, session: @session %>
+        <% end %>
+      </div>
+
+      <!-- Follow-up Prompt Input (Sticky at bottom) -->
+      <%= render "sessions/follow_up_form", agent_session: @session, session_skills: @session_skills %>
+
+      <!-- Running Loader (Sticky at bottom) - Shown independently when session is running -->
+      <%= render "sessions/running_loader", agent_session: @session %>
+    </div>
+
+    <!-- Session Notes Sidebar -->
+    <%= render "sessions/session_notes_sidebar", agent_session: @session %>
+  </div>
+
+  <%# Mobile joystick bubble (single FAB for all mobile actions; hidden on md+) %>
+  <%= render "sessions/mobile_joystick" %>
+</div>

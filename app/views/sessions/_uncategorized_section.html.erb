@@ -1,0 +1,71 @@
+<%# The "Uncategorized" section: holds every unassigned session (category_id = nil)
+    and is where new sessions appear. It has no Category row, so it carries the
+    "uncategorized" sentinel as its data-category-section-id; the reorder endpoint
+    maps that to AppSetting#uncategorized_position. Like a category section it is a
+    draggable unit (grabbed by its .category-drag-handle), is collapsible (the
+    category-collapse controller keyed by the "uncategorized" sentinel), paginates
+    independently inside its own turbo-frame, and its grid is a Sortable drop target
+    (data-category-dnd-target="list", empty data-category-id = nil). Its grid keeps
+    id="sessions_grid" so real-time broadcasts that prepend new cards, and the destroy
+    action's re-homing of orphaned cards, still land here. %>
+<section class="mb-8" id="uncategorized_section" data-category-section-id="uncategorized"
+         data-controller="category-collapse"
+         data-category-collapse-key-value="<%= SessionsController::UNCATEGORIZED_PAGE_KEY %>">
+  <div class="flex items-center justify-between mb-3">
+    <div class="flex items-center gap-2 min-w-0">
+      <%= render "sessions/collapse_toggle" %>
+      <%# Grip handle: starts a section-reorder drag, and right-click (contextmenu)
+          opens the "move section" menu with stack-position actions. touch-none lets a
+          long-press drag instead of scrolling on mobile. %>
+      <span class="category-drag-handle shrink-0 text-gray-300 hover:text-gray-500 cursor-grab active:cursor-grabbing touch-none"
+            title="Drag to reorder — right-click to move"
+            aria-label="Drag to reorder the Uncategorized section, or right-click to move"
+            data-action="contextmenu->category-dnd#openCategoryMenu"
+            data-category-id="uncategorized">
+        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M7 5a1 1 0 110-2 1 1 0 010 2zM13 5a1 1 0 110-2 1 1 0 010 2zM7 11a1 1 0 110-2 1 1 0 010 2zM13 11a1 1 0 110-2 1 1 0 010 2zM7 17a1 1 0 110-2 1 1 0 010 2zM13 17a1 1 0 110-2 1 1 0 010 2z" />
+        </svg>
+      </span>
+      <h2 class="text-lg font-semibold text-gray-800 truncate">Uncategorized</h2>
+      <%# Total count of unassigned sessions (Kaminari's unpaginated total). In the header,
+          outside the collapse frame, so it stays visible when the bucket is collapsed. %>
+      <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 min-w-[1.5rem]"
+            data-category-count-id="<%= SessionsController::UNCATEGORIZED_PAGE_KEY %>"
+            title="<%= pluralize(sessions.total_count, "session") %>"
+            aria-label="<%= pluralize(sessions.total_count, "session") %>"><%= sessions.total_count %></span>
+    </div>
+    <div class="flex items-center gap-1 shrink-0">
+      <%# Refresh: runs the same restart/continue/transcript-refresh as the global
+          "Refresh all", scoped to non-archived sessions with no category. The
+          "uncategorized" sentinel maps to the category_id = nil bucket server-side. %>
+      <%= button_to refresh_category_sessions_path,
+            method: :post,
+            params: { category_id: "uncategorized" },
+            class: "text-gray-400 hover:text-indigo-600 p-1",
+            title: "Refresh sessions in this category",
+            "aria-label": "Refresh sessions in this category",
+            form: { data: { turbo: false } } do %>
+        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+        </svg>
+      <% end %>
+    </div>
+  </div>
+  <%# Per-section turbo-frame: pagination links inside it navigate only this frame, so
+      Uncategorized pages on its own without reloading the rest of the dashboard. The
+      frame is the collapse body — CSS hides it (grid + pagination together) when the
+      section is collapsed. %>
+  <%= turbo_frame_tag "category_frame_#{SessionsController::UNCATEGORIZED_PAGE_KEY}", class: "category-collapse-body" do %>
+    <div id="sessions_grid"
+         class="category-grid grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center min-h-[5rem]"
+         data-category-dnd-target="list"
+         data-category-id="">
+      <% sessions.each do |session| %>
+        <%= turbo_frame_tag dom_id(session) do %>
+          <%= render "session_card", agent_session: session %>
+        <% end %>
+      <% end %>
+    </div>
+    <%= render "sessions/category_pagination", collection: sessions, page_key: SessionsController::UNCATEGORIZED_PAGE_KEY %>
+  <% end %>
+</section>

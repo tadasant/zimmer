@@ -1,0 +1,56 @@
+#!/bin/bash -e
+
+# Enable jemalloc for reduced memory usage and latency.
+if [ -z "${LD_PRELOAD+x}" ]; then
+    LD_PRELOAD=$(find /usr/lib -name libjemalloc.so.2 -print -quit)
+    export LD_PRELOAD
+fi
+
+# Configure git to use the gh CLI for GitHub authentication.
+# The gh OAuth token from `gh auth login` is mounted as a volume at ~/.config/gh.
+# Dockerfile.base bakes in `credential.https://github.com.helper = !gh auth git-credential`,
+# so this step is currently belt-and-suspenders — `gh auth setup-git` reaffirms the
+# helper config in case it was mutated by a downstream layer or runtime config.
+if gh auth status &>/dev/null; then
+    gh auth setup-git 2>/dev/null || true
+fi
+
+# Ensure image storage directory exists with correct permissions.
+# Docker volumes are created with root ownership by default, but this script
+# runs as user 1000:1000 (rails). The volume mount should be owned by the
+# container user, so mkdir -p will work if permissions are correct.
+# If the directory can't be created, log a warning but continue (the app
+# will fail gracefully when trying to upload images).
+IMAGE_STORAGE_DIR="/tmp/agent-orchestrator-images"
+if [ ! -d "$IMAGE_STORAGE_DIR" ]; then
+    mkdir -p "$IMAGE_STORAGE_DIR" 2>/dev/null || echo "Warning: Could not create $IMAGE_STORAGE_DIR - image uploads may fail"
+fi
+
+# Update Claude Code CLI and Playwright browsers in the background.
+# These are network-dependent operations that can take 30s+ (npm downloads,
+# Chromium installs), which blocks Rails from booting and causes the Kamal
+# health check to time out. Running them in the background lets Rails start
+# immediately while updates complete asynchronously.
+#
+# Claude CLI: ~/.local is a Docker named volume that persists across deploys,
+# so the binary baked into the image gets shadowed by the volume's stale copy.
+# Playwright: MCP servers use playwright-stealth-mcp-server@latest which may
+# need a newer Chromium than what was installed at Docker build time.
+# Sessions that start before the updates finish use the prior version, which
+# is acceptable — it's the same version that was running on the previous deploy.
+{
+  if command -v claude &>/dev/null; then
+    claude update 2>&1 || echo "Warning: Claude CLI update failed, continuing with existing version"
+  fi
+
+  if [ -x "./bin/ensure-playwright-browsers" ]; then
+    ./bin/ensure-playwright-browsers || true
+  fi
+} &
+
+# If running the rails server then create or migrate existing database
+if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
+  ./bin/rails db:prepare
+fi
+
+exec "${@}"

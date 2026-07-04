@@ -1,0 +1,76 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <div class="flex justify-between items-center">
+        <div>
+          <h1 class="text-3xl font-bold text-gray-900">CLI Tools</h1>
+          <p class="mt-2 text-sm text-gray-600">Installation and authentication status for command-line tools</p>
+        </div>
+        <div class="flex gap-3">
+          <%= link_to root_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+            </svg>
+            Back to Sessions
+          <% end %>
+          <%= button_to clear_cache_clis_path, method: :post, class: "inline-flex items-center px-4 py-2 border border-orange-300 text-sm font-medium rounded-md shadow-sm text-orange-700 bg-orange-50 hover:bg-orange-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500" do %>
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+            </svg>
+            Clear Cache
+          <% end %>
+          <%= link_to refresh_clis_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+            </svg>
+            Refresh
+          <% end %>
+        </div>
+      </div>
+    </div>
+
+    <!-- SSH Instructions -->
+    <div class="mb-6 bg-white rounded-lg shadow p-6">
+      <h2 class="text-lg font-medium text-gray-900 mb-4">Connect to Server</h2>
+      <p class="text-sm text-gray-600 mb-3">First, SSH into the server:</p>
+      <% ssh_command = "ssh root@#{@server_ip}" %>
+      <div class="relative" data-controller="clipboard">
+        <div class="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-100 overflow-x-auto">
+          <code><%= ssh_command %></code>
+        </div>
+        <button type="button" data-action="click->clipboard#copy" data-clipboard-value="<%= ssh_command %>" class="absolute top-2 right-2 p-1.5 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Copy to clipboard">
+          <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        </button>
+        <span data-clipboard-target="feedback" class="hidden absolute top-2 right-10 text-xs text-green-400">Copied!</span>
+      </div>
+      <p class="text-xs text-gray-500 mt-2">All commands below should be run on the server after connecting.</p>
+    </div>
+
+    <!-- CLI Status Content - loaded async via Turbo Frame -->
+    <%= turbo_frame_tag "cli_status", src: clis_status_path, loading: :lazy do %>
+      <!-- Loading state -->
+      <div class="space-y-6">
+        <% 3.times do %>
+          <div class="bg-white rounded-lg shadow overflow-hidden animate-pulse">
+            <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <div class="h-6 w-32 bg-gray-200 rounded"></div>
+                <div class="h-4 w-12 bg-gray-100 rounded"></div>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="h-6 w-20 bg-gray-200 rounded-full"></div>
+                <div class="h-6 w-28 bg-gray-200 rounded-full"></div>
+              </div>
+            </div>
+            <div class="px-6 py-4">
+              <div class="h-4 w-48 bg-gray-100 rounded"></div>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+</div>

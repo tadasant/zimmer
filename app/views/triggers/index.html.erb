@@ -1,0 +1,76 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <%= link_to root_path, class: "inline-flex items-center text-sm font-medium text-gray-500 hover:text-gray-700 mb-4" do %>
+        <svg class="mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+        </svg>
+        Back to Sessions
+      <% end %>
+      <div class="flex justify-between items-center">
+        <div>
+          <h1 class="text-3xl font-bold text-gray-900">Triggers</h1>
+          <p class="mt-2 text-sm text-gray-600">Automated session creation based on external events</p>
+        </div>
+        <%= link_to new_trigger_path, class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+          </svg>
+          New Trigger
+        <% end %>
+      </div>
+    </div>
+
+    <% if @triggers.empty? %>
+      <!-- Empty State -->
+      <div class="text-center py-12 bg-white rounded-lg shadow">
+        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+        <h3 class="mt-2 text-sm font-medium text-gray-900">No triggers</h3>
+        <p class="mt-1 text-sm text-gray-500">Get started by creating a new trigger to automate session creation.</p>
+        <div class="mt-6">
+          <%= link_to new_trigger_path, class: "inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700" do %>
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+            </svg>
+            New Trigger
+          <% end %>
+        </div>
+      </div>
+    <% else %>
+      <!-- Triggers List -->
+      <div class="bg-white shadow rounded-lg overflow-hidden">
+        <ul class="divide-y divide-gray-200">
+          <% @triggers.each do |trigger| %>
+            <%= render partial: "trigger", locals: { trigger: trigger } %>
+          <% end %>
+        </ul>
+      </div>
+    <% end %>
+
+    <!-- Info Box -->
+    <div class="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+      <div class="flex">
+        <div class="flex-shrink-0">
+          <svg class="h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+          </svg>
+        </div>
+        <div class="ml-3">
+          <h3 class="text-sm font-medium text-blue-800">How Triggers Work</h3>
+          <div class="mt-2 text-sm text-blue-700">
+            <p>Triggers automatically create agent sessions when events occur. Each trigger can have multiple conditions (OR logic) &mdash; if any condition fires, the session is created. Supported condition types:</p>
+            <ul class="mt-2 list-disc list-inside">
+              <li><strong>Slack:</strong> Monitor a channel for new messages</li>
+              <li><strong>Schedule:</strong> Fire on a recurring time-based schedule (every N min, hourly, daily, weekly)</li>
+              <li><strong>AO Event:</strong> Fire on internal events like a session transitioning to needs_input</li>
+            </ul>
+            <p class="mt-2">The system checks for Slack and schedule events every minute. AO events fire immediately when they occur. You can also enable <strong>session re-use</strong> to send follow-up prompts to existing sessions instead of creating new ones.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
