@@ -1,0 +1,11 @@
+# Copy to staging.tfvars and fill in. SECRETS are NOT set here — pass them as
+# TF_VAR_do_token / TF_VAR_tailscale_auth_key / TF_VAR_ghcr_token /
+# TF_VAR_secret_key_base via env (CI: GitHub Actions secrets). This file holds
+# only non-secret configuration and may be committed as an example.
+environment          = "staging"
+region               = "nyc3"
+droplet_size         = "s-2vcpu-4gb"
+image_ref            = "ghcr.io/tadasant/zimmer:latest"
+domain               = "staging.zimmer.tadasant.com"
+ghcr_username        = "tadasant"
+ssh_key_fingerprints = [] # e.g. ["aa:bb:cc:..."] — DO-registered SSH key fingerprints

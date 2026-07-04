@@ -1,0 +1,83 @@
+name: Deploy staging
+
+# Manually-invoked ONLY. Stands up / updates the staging instance at
+# staging.zimmer.tadasant.com from the chosen ref. Never auto-deploys.
+#
+# Staging lives on a Tailscale tailnet; this job joins the tailnet (ephemeral
+# key) so it can reach the droplet, applies the Terraform, and redeploys the
+# app image. All secrets come from GitHub Actions secrets — none are in git.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/tag/SHA to deploy (defaults to the selected ref)"
+        required: false
+        default: ""
+      image_tag:
+        description: "GHCR image tag to run (default: latest)"
+        required: false
+        default: "latest"
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # Join the tailnet so we can reach the (VPN-only) staging droplet.
+      - name: Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform apply (staging)
+        working-directory: infra/terraform
+        env:
+          TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          TF_VAR_ghcr_token: ${{ secrets.GHCR_PULL_TOKEN }}
+          TF_VAR_secret_key_base: ${{ secrets.STAGING_SECRET_KEY_BASE }}
+          TF_VAR_image_ref: ghcr.io/tadasant/zimmer:${{ inputs.image_tag }}
+        run: |
+          terraform init -input=false
+          cp staging.tfvars.example staging.tfvars
+          terraform apply -input=false -auto-approve \
+            -var-file=staging.tfvars \
+            -var="image_ref=ghcr.io/tadasant/zimmer:${{ inputs.image_tag }}"
+          terraform output -raw droplet_ipv4 > /tmp/droplet_ip
+
+      # Redeploy the running app to the requested image over Tailscale SSH.
+      - name: Redeploy app image
+        run: |
+          HOST="zimmer-staging"   # tailnet hostname
+          tailscale ssh root@"$HOST" '
+            cd /opt/zimmer &&
+            docker compose pull &&
+            docker compose up -d
+          ' || echo "If the droplet was just created, cloud-init handles first boot."
+
+      - name: Health check (over tailnet)
+        run: |
+          for i in $(seq 1 30); do
+            if tailscale ssh root@zimmer-staging 'curl -fsS http://127.0.0.1:80/up' >/dev/null 2>&1; then
+              echo "Staging healthy."; exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check did not pass in time"; exit 1
