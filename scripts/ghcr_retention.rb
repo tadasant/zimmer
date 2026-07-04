@@ -33,8 +33,8 @@ module GhcrRetention
   CADENCE = 10
 
   Version = Struct.new(:raw, :major, :minor, :patch, :id) do
-    def line = [major, minor]
-    def <=>(other) = [major, minor, patch] <=> [other.major, other.minor, other.patch]
+    def line = [ major, minor ]
+    def <=>(other) = [ major, minor, patch ] <=> [ other.major, other.minor, other.patch ]
     include Comparable
   end
 
@@ -57,7 +57,7 @@ module GhcrRetention
     return [] if parsed.empty?
 
     # Newest first, de-duplicated by (major,minor,patch).
-    sorted = parsed.sort.reverse.uniq { |v| [v.major, v.minor, v.patch] }
+    sorted = parsed.sort.reverse.uniq { |v| [ v.major, v.minor, v.patch ] }
 
     keep = []
     add = ->(v) { keep << v unless keep.any? { |k| k.line == v.line && k.patch == v.patch } }
@@ -83,10 +83,10 @@ module GhcrRetention
   # Non-semver tags are never returned (never pruned by this tool).
   def select_to_prune(versions, limit: DEFAULT_LIMIT)
     parsed = versions.map { |v| v.is_a?(Version) ? v : parse(v) }.compact
-                     .uniq { |v| [v.major, v.minor, v.patch] }
+                     .uniq { |v| [ v.major, v.minor, v.patch ] }
     keep = select_to_keep(parsed, limit: limit)
-    kept = keep.map { |v| [v.major, v.minor, v.patch] }.to_set
-    parsed.reject { |v| kept.include?([v.major, v.minor, v.patch]) }
+    kept = keep.map { |v| [ v.major, v.minor, v.patch ] }.to_set
+    parsed.reject { |v| kept.include?([ v.major, v.minor, v.patch ]) }
   end
 end
 
@@ -138,7 +138,7 @@ if __FILE__ == $PROGRAM_NAME
   prune = GhcrRetention.select_to_prune(raw_versions, limit: limit)
   keep = GhcrRetention.select_to_keep(raw_versions, limit: limit)
 
-  puts "Parsed semver versions: #{raw_versions.uniq { |v| [v.major, v.minor, v.patch] }.size}"
+  puts "Parsed semver versions: #{raw_versions.uniq { |v| [ v.major, v.minor, v.patch ] }.size}"
   puts "Keeping #{keep.size}: #{keep.map(&:raw).join(', ')}"
   puts "Pruning #{prune.size}: #{prune.map(&:raw).join(', ')}"
 
@@ -149,7 +149,7 @@ if __FILE__ == $PROGRAM_NAME
       next if v.id.nil?
 
       res = gh(URI("#{base}/#{v.id}"), token, method: :delete)
-      ok = [204, 200].include?(res.code.to_i)
+      ok = [ 204, 200 ].include?(res.code.to_i)
       puts "  delete #{v.raw} (id=#{v.id}): #{ok ? 'ok' : "FAILED #{res.code}"}"
     end
   end
