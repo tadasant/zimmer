@@ -100,9 +100,10 @@ jobs:
       - name: Tailscale
         uses: tailscale/github-action@v3
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          # Use a pre-minted, tag:ci-tagged auth key (the OAuth client is not
+          # permitted to mint tag:ci keys — "requested tags [tag:ci] are invalid
+          # or not permitted"). The key is already tagged, so no `tags:` input.
+          authkey: ${{ secrets.TS_CI_AUTHKEY }}
 
       - name: Health check (over tailnet)
         run: |
