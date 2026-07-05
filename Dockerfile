@@ -51,7 +51,7 @@ COPY --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 COPY --from=build /rails /rails
 
 # Fix ownership of runtime directories for the rails user (user already exists in base)
-RUN chown -R rails:rails db log storage tmp
+RUN mkdir -p db log storage tmp && chown -R rails:rails db log storage tmp
 
 # Create shared storage directories with correct ownership before volume mount.
 # When Docker mounts an empty named volume over these directories, it copies the
