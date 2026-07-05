@@ -167,7 +167,11 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
       scheduled_at: 2.minutes.from_now
     )
 
-    assert_no_enqueued_jobs do
+    # Scope to AgentSessionJob (the resume job) rather than a global assertion:
+    # under the full parallel suite CleanupOrphanedSessionsJob may enqueue work for
+    # other orphaned sessions in the worker's DB, which a bare assert_no_enqueued_jobs
+    # would count. The intent here is only that THIS parked session is not re-queued.
+    assert_no_enqueued_jobs only: AgentSessionJob do
       CleanupOrphanedSessionsJob.perform_now
     end
 
