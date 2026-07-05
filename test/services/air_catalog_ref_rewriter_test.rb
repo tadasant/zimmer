@@ -189,6 +189,15 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     air_production_path = Rails.root.join("air.production.json")
     skip "air.production.json not present" unless File.exist?(air_production_path)
 
+    # Zimmer's default air.production.json points at a self-contained local ./catalog
+    # (no `catalogs` aggregation of github:// URIs), so there is nothing for the
+    # ref-rewriter to pin. The rewriter is exercised on synthetic fixtures above;
+    # skip here unless a deployment actually uses github:// catalogs.
+    src = JSON.parse(File.read(air_production_path))
+    unless src["catalogs"].is_a?(Array) && src["catalogs"].any? { |c| c.to_s.start_with?("github://") }
+      skip "air.production.json uses a self-contained local catalog (no github:// catalogs to pin)"
+    end
+
     rewritten = AirCatalogRefRewriter.rewrite(File.read(air_production_path), pins: { ZIMMER_CATALOG => "test-ref" })
     parsed = JSON.parse(rewritten)
 
