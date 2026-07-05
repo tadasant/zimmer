@@ -12,7 +12,7 @@ and the secret values.
 - `cloud-init.yaml.tftpl` — droplet bootstrap: Docker, Tailscale join, GHCR login,
   `docker compose up`.
 - `staging.tfvars.example` — non-secret staging config to copy to `staging.tfvars`.
-  (Production values live in the private `zimmer-internal` repo.)
+  (Production values live in the private `tadasant-internal` repo.)
 
 ## Secrets — never commit these
 
