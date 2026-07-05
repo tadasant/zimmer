@@ -44,7 +44,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "New Test Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "New message: {{link}}",
           mcp_servers: [],
           trigger_conditions_attributes: [
@@ -72,7 +72,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "Bot Mention Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Bot was mentioned: {{text}}",
           mcp_servers: [],
           trigger_conditions_attributes: [
@@ -104,7 +104,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "Hash Indexed Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Test prompt: {{link}}",
           mcp_servers: [],
           trigger_conditions_attributes: {
@@ -135,7 +135,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "New Schedule Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Run daily check at {{time}}",
           mcp_servers: [],
           trigger_conditions_attributes: [
@@ -168,7 +168,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "AO Event Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Session needs input: {{event}}",
           mcp_servers: [],
           trigger_conditions_attributes: [
@@ -196,7 +196,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "Multi Condition Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Triggered: {{event}} {{link}}",
           mcp_servers: [],
           trigger_conditions_attributes: [
@@ -230,7 +230,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "Reuse Session Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Check at {{time}}",
           reuse_session: "1",
           mcp_servers: [],
@@ -255,7 +255,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
       post triggers_path, params: {
         trigger: {
           name: "",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Test",
           trigger_conditions_attributes: [
             {
@@ -503,7 +503,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "Trigger With Skills",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Do the thing: {{link}}",
           mcp_servers: [],
           catalog_skills: [ "commit", "review-pr" ],
@@ -532,7 +532,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "Trigger Without Skills",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Do the thing: {{link}}",
           mcp_servers: [],
           catalog_skills: [],
@@ -571,7 +571,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "Full Reuse Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Check at {{time}}",
           reuse_session: "1",
           enqueue_messages: "1",
@@ -602,7 +602,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
         trigger: {
           name: "No Reuse Trigger",
           status: "enabled",
-          agent_root_name: "pulsemcp",
+          agent_root_name: "zimmer",
           prompt_template: "Check at {{time}}",
           reuse_session: "0",
           enqueue_messages: "1",

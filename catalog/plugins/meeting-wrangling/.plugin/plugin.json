@@ -1,0 +1,10 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/plugin-manifest.schema.json",
+  "name": "meeting-wrangling",
+  "title": "Meeting Wrangling",
+  "version": "0.0.0",
+  "skills": [],
+  "mcp_servers": [],
+  "hooks": [],
+  "keywords": []
+}

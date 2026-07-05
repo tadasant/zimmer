@@ -1,0 +1,140 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/mcp.schema.json",
+  "playwright-custom": {
+    "title": "Playwright Custom",
+    "description": "Playwright MCP server for browser automation and screenshots.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "playwright-stealth-mcp-server@latest"
+    ],
+    "env": {
+      "STEALTH_MODE": "false",
+      "HEADLESS": "true"
+    },
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "context7": {
+    "title": "Context7",
+    "description": "Up-to-date library documentation lookup.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@upstash/context7-mcp@latest"
+    ]
+  },
+  "linear": {
+    "title": "Linear",
+    "description": "Linear issue tracking MCP server.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@tacticlaunch/mcp-linear@latest"
+    ]
+  },
+  "remote-fs-screenshots": {
+    "title": "Remote FS Screenshots",
+    "description": "Remote filesystem MCP server for persisting and sharing screenshots.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "remote-fs-mcp@latest"
+    ]
+  },
+  "twist-wolfbot": {
+    "title": "Twist",
+    "description": "Twist messaging MCP server.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "twist-mcp@latest"
+    ]
+  },
+  "agent-orchestrator-staging-self-session": {
+    "title": "AO Self-Session (staging)",
+    "description": "Self-session MCP server letting a session call back into its own orchestrator instance.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "agent-orchestrator-mcp-server@latest"
+    ],
+    "env": {
+      "TOOL_GROUPS": "self_session",
+      "AGENT_ORCHESTRATOR_BASE_URL": "https://staging.zimmer.example.com",
+      "AGENT_ORCHESTRATOR_API_KEY": "${AGENT_ORCHESTRATOR_STAGING_API_KEY}"
+    }
+  },
+  "agent-orchestrator-prod-self-session": {
+    "title": "AO Self-Session (prod)",
+    "description": "Self-session MCP server letting a session call back into its own orchestrator instance.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "agent-orchestrator-mcp-server@latest"
+    ],
+    "env": {
+      "TOOL_GROUPS": "self_session",
+      "AGENT_ORCHESTRATOR_BASE_URL": "https://zimmer.example.com",
+      "AGENT_ORCHESTRATOR_API_KEY": "${AGENT_ORCHESTRATOR_PROD_API_KEY}"
+    }
+  },
+  "figma": {
+    "title": "Figma",
+    "description": "Figma design MCP server.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "figma-mcp@latest"
+    ]
+  },
+  "image-diff": {
+    "title": "Image Diff",
+    "description": "Pixel image-diff MCP server.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "image-diff-mcp@latest"
+    ]
+  },
+  "svg-tracer": {
+    "title": "Svg Tracer",
+    "description": "Bitmap-to-SVG tracer MCP server.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "svg-tracer-mcp@latest"
+    ]
+  },
+  "slack-workspace": {
+    "title": "Slack Workspace",
+    "description": "Slack workspace MCP server.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "slack-workspace-mcp@latest"
+    ]
+  },
+  "agent-orchestrator-prod-sessions": {
+    "title": "Agent Orchestrator Prod Sessions",
+    "description": "AO sessions MCP server (spawn/list downstream sessions).",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "agent-orchestrator-prod-sessions-mcp@latest"
+    ]
+  }
+}

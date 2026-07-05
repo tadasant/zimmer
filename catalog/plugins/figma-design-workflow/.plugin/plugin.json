@@ -1,0 +1,15 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/plugin-manifest.schema.json",
+  "name": "figma-design-workflow",
+  "title": "Figma Design Workflow",
+  "version": "0.0.0",
+  "skills": [],
+  "mcp_servers": [
+    "figma",
+    "image-diff",
+    "svg-tracer",
+    "playwright-custom"
+  ],
+  "hooks": [],
+  "keywords": []
+}

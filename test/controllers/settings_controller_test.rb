@@ -46,18 +46,12 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
 
   # Experimental Section — data-driven from the extension registry, so each
   # registered experimental extension renders a checkbox keyed on its id.
-  test "should have experimental section with the PTY transport toggle" do
-    get settings_url
-    assert_select "h2", "Experimental"
-    assert_select "form[action=?]", app_settings_path
-    assert_select "input[type=checkbox][name='app_setting[extensions][pty_transport]']"
-    assert_select "input[type=submit][value=?]", "Save experimental settings"
-  end
-
   test "should have experimental section with the tool-search toggle" do
     get settings_url
     assert_select "h2", "Experimental"
+    assert_select "form[action=?]", app_settings_path
     assert_select "input[type=checkbox][name='app_setting[extensions][mcp_tool_search]']"
+    assert_select "input[type=submit][value=?]", "Save experimental settings"
   end
 
   # Catalog Pins Section

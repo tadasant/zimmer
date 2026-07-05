@@ -107,7 +107,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {
         name: "New Slack Trigger",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Check this: {{link}}",
         trigger_conditions_attributes: [
           {
@@ -129,7 +129,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {
         name: "Hourly Check",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Run hourly check at {{time}}",
         trigger_conditions_attributes: [
           {
@@ -149,7 +149,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {
         name: "AO Event Trigger",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Session needs input: {{event}}",
         trigger_conditions_attributes: [
           {
@@ -169,7 +169,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {
         name: "Session Failed Handler",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Session failed: {{event}}",
         trigger_conditions_attributes: [
           {
@@ -193,7 +193,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {
         name: "Wake on watched session",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Watched reached state: {{event}}",
         reuse_session: true,
         last_session_id: target.id,
@@ -221,7 +221,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_no_difference("Trigger.count") do
       post api_v1_triggers_path, params: {
         name: "Invalid watched id",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Bad: {{event}}",
         reuse_session: true,
         last_session_id: target.id,
@@ -246,7 +246,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
   test "should reject trigger without name" do
     assert_no_difference("Trigger.count") do
       post api_v1_triggers_path, params: {
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "test",
         trigger_conditions_attributes: [
           { condition_type: "slack", configuration: { channel_id: "C123" } }
@@ -260,7 +260,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
   test "should create trigger with mcp_servers" do
     post api_v1_triggers_path, params: {
       name: "With Servers",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "test: {{link}}",
       mcp_servers: [ "slack-workspace" ],
       trigger_conditions_attributes: [
@@ -345,7 +345,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
 
     post api_v1_triggers_path, params: {
       name: "Wake me later",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Resume work",
       reuse_session: true,
       last_session_id: target.id,
@@ -371,7 +371,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
 
     post api_v1_triggers_path, params: {
       name: "Wake me later via alias",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Resume work",
       reuse_session: true,
       session_id: target.id,
@@ -394,7 +394,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_no_difference("Trigger.count") do
       post api_v1_triggers_path, params: {
         name: "Invalid per-session trigger",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Resume",
         last_session_id: target.id,
         trigger_conditions_attributes: [

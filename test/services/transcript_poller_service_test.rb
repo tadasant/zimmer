@@ -778,7 +778,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
   test "poll_and_broadcast polls MCP logs when session has mcp_servers configured" do
     # Configure session with MCP servers and working directory
     @session.update!(
-      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      mcp_servers: [ "context7" ],
       metadata: { "working_directory" => "/tmp/test-clone" }
     )
 
@@ -792,7 +792,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
     # Setup MCP log directory (uses .jsonl extension and JSONL format)
     cache_dir = File.join(PathSanitizer.cache_base, "-tmp-test-clone")
-    mcp_log_dir = File.join(cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    mcp_log_dir = File.join(cache_dir, "mcp-logs-context7")
     mcp_log_file = File.join(mcp_log_dir, "2025-01-15T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_log_dir)
@@ -806,7 +806,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     # Capture calls to timeline_message
     mcp_log_received = false
     mock_broadcast_service.stubs(:timeline_message).with do |session, message|
-      if message["type"] == "mcp_log" && message["server_name"] == "appsignal-pulsemcp-prod"
+      if message["type"] == "mcp_log" && message["server_name"] == "context7"
         mcp_log_received = true
       end
       true
@@ -820,7 +820,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
     # Verify session metadata was updated with MCP status
     @session.reload
-    mcp_status = @session.custom_metadata&.dig("mcp_servers_status", "appsignal-pulsemcp-prod")
+    mcp_status = @session.custom_metadata&.dig("mcp_servers_status", "context7")
     assert_not_nil mcp_status
     assert_equal "connected", mcp_status["status"]
   end
@@ -828,7 +828,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
   test "poll_and_broadcast marks session for failure when MCP server fails to connect" do
     # Configure session with MCP servers and working directory
     @session.update!(
-      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      mcp_servers: [ "context7" ],
       metadata: { "working_directory" => "/tmp/test-clone" }
     )
 
@@ -842,7 +842,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
     # Setup MCP log directory with a failure message (uses .jsonl extension and JSONL format)
     cache_dir = File.join(PathSanitizer.cache_base, "-tmp-test-clone")
-    mcp_log_dir = File.join(cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    mcp_log_dir = File.join(cache_dir, "mcp-logs-context7")
     mcp_log_file = File.join(mcp_log_dir, "2025-01-15T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_log_dir)
@@ -861,7 +861,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     @session.reload
     assert_equal true, @session.custom_metadata["should_fail_session"]
     assert_equal true, @session.custom_metadata["mcp_connection_checked"]
-    assert_includes @session.custom_metadata["mcp_failure_reason"], "appsignal-pulsemcp-prod"
+    assert_includes @session.custom_metadata["mcp_failure_reason"], "context7"
   end
 
   test "poll_and_broadcast polls MCP logs when only injected mcp_servers present (no configured)" do
@@ -872,7 +872,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     @session.update!(
       mcp_servers: [],
       metadata: { "working_directory" => "/tmp/test-clone" },
-      custom_metadata: { "injected_mcp_servers" => [ "appsignal-pulsemcp-prod" ] }
+      custom_metadata: { "injected_mcp_servers" => [ "context7" ] }
     )
 
     home_dir = File.expand_path("~")
@@ -882,7 +882,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     @mock_file_system.write(transcript_file, '{"type":"user","message":{"role":"user","content":"Hello"}}')
 
     cache_dir = File.join(PathSanitizer.cache_base, "-tmp-test-clone")
-    mcp_log_dir = File.join(cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    mcp_log_dir = File.join(cache_dir, "mcp-logs-context7")
     mcp_log_file = File.join(mcp_log_dir, "2025-01-15T10-00-00.jsonl")
     @mock_file_system.mkdir_p(mcp_log_dir)
     @mock_file_system.write(mcp_log_file, '{"timestamp":"2025-01-15T10:00:00Z","debug":"Successfully connected to MCP server"}')
@@ -896,7 +896,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     service.poll_and_broadcast
 
     @session.reload
-    mcp_status = @session.custom_metadata&.dig("mcp_servers_status", "appsignal-pulsemcp-prod")
+    mcp_status = @session.custom_metadata&.dig("mcp_servers_status", "context7")
     assert_not_nil mcp_status, "Auto-injected server status must be tracked even when no servers are explicitly configured"
     assert_equal "connected", mcp_status["status"]
     # Injected-only failures should never auto-fail the session, but here we're connected anyway

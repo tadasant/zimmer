@@ -15,10 +15,10 @@ class PluginsConfigTest < ActiveSupport::TestCase
   end
 
   test "find returns plugin by id" do
-    plugin = PluginsConfig.find("pulsemcp-ci-workflow")
+    plugin = PluginsConfig.find("ci-workflow")
 
     assert_not_nil plugin
-    assert_equal "pulsemcp-ci-workflow", plugin.id
+    assert_equal "ci-workflow", plugin.id
     assert_equal "PulseMCP CI Workflow", plugin.title
   end
 
@@ -33,7 +33,7 @@ class PluginsConfigTest < ActiveSupport::TestCase
   end
 
   test "exists? returns true for known plugin" do
-    assert PluginsConfig.exists?("pulsemcp-ci-workflow")
+    assert PluginsConfig.exists?("ci-workflow")
   end
 
   test "exists? returns false for unknown plugin" do
@@ -44,13 +44,13 @@ class PluginsConfigTest < ActiveSupport::TestCase
     ids = PluginsConfig.ids
 
     assert ids.is_a?(Array)
-    assert_includes ids, "pulsemcp-ci-workflow"
+    assert_includes ids, "ci-workflow"
   end
 
   test "plugin has correct attributes" do
-    plugin = PluginsConfig.find("pulsemcp-ci-workflow")
+    plugin = PluginsConfig.find("ci-workflow")
 
-    assert_equal "pulsemcp-ci-workflow", plugin.id
+    assert_equal "ci-workflow", plugin.id
     assert_equal "PulseMCP CI Workflow", plugin.title
     assert_equal "1.0.1", plugin.version
     assert_includes plugin.skills, "wait-for-ci"
@@ -59,10 +59,10 @@ class PluginsConfigTest < ActiveSupport::TestCase
   end
 
   test "plugin to_h includes all fields" do
-    plugin = PluginsConfig.find("pulsemcp-ci-workflow")
+    plugin = PluginsConfig.find("ci-workflow")
     hash = plugin.to_h
 
-    assert_equal "pulsemcp-ci-workflow", hash[:id]
+    assert_equal "ci-workflow", hash[:id]
     assert_equal "PulseMCP CI Workflow", hash[:title]
     assert_includes hash.keys, :description
     assert_includes hash.keys, :version
@@ -81,7 +81,7 @@ class PluginsConfigTest < ActiveSupport::TestCase
   end
 
   test "plugin mcp_servers defaults to empty array when not declared" do
-    plugin = PluginsConfig.find("pulsemcp-ci-workflow")
+    plugin = PluginsConfig.find("ci-workflow")
 
     assert_equal [], plugin.mcp_servers
   end

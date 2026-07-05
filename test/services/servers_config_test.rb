@@ -14,7 +14,7 @@ class ServersConfigTest < ActiveSupport::TestCase
     # Spot-check some key server names from mcp-servers/mcp.json in the catalog
     # We don't assert on total count as it changes frequently when adding servers
     assert_includes server_names, "playwright-custom"
-    assert_includes server_names, "appsignal-pulsemcp-prod"
+    assert_includes server_names, "context7"
     assert_includes server_names, "grafana-pulsemcp-prod"
     assert_includes server_names, "grafana-pulsemcp-staging"
     assert_includes server_names, "glitchtip-pulsemcp-prod"
@@ -53,7 +53,7 @@ class ServersConfigTest < ActiveSupport::TestCase
   # Test server existence
   test "should return true for existing server" do
     assert ServersConfig.exists?("playwright-custom")
-    assert ServersConfig.exists?("appsignal-pulsemcp-prod")
+    assert ServersConfig.exists?("context7")
     assert ServersConfig.exists?("grafana-pulsemcp-prod")
     assert ServersConfig.exists?("glitchtip-pulsemcp-prod")
     assert ServersConfig.exists?("twist-wolfbot")
@@ -135,7 +135,7 @@ class ServersConfigTest < ActiveSupport::TestCase
 
   # Test environment variable detection
   test "should identify required environment variables" do
-    server = ServersConfig.find("appsignal-pulsemcp-prod")
+    server = ServersConfig.find("context7")
     required_vars = server.required_env_vars
 
     assert required_vars.is_a?(Array)
@@ -143,7 +143,7 @@ class ServersConfigTest < ActiveSupport::TestCase
   end
 
   test "should identify optional environment variables" do
-    server = ServersConfig.find("appsignal-pulsemcp-prod")
+    server = ServersConfig.find("context7")
     optional_vars = server.optional_env_vars
 
     # APPSIGNAL_APP_ID is now hardcoded, so no optional vars with interpolation
@@ -152,7 +152,7 @@ class ServersConfigTest < ActiveSupport::TestCase
   end
 
   test "should get all env vars" do
-    server = ServersConfig.find("appsignal-pulsemcp-prod")
+    server = ServersConfig.find("context7")
     all_vars = server.all_env_vars
 
     # Only APPSIGNAL_API_KEY uses interpolation now
@@ -163,7 +163,7 @@ class ServersConfigTest < ActiveSupport::TestCase
     server = ServersConfig.find("grafana-pulsemcp-prod")
     required_vars = server.required_env_vars
 
-    # GRAFANA_URL is hardcoded to obs.example.com; only the service account token is interpolated.
+    # GRAFANA_URL is hardcoded to obs.tadasant.com; only the service account token is interpolated.
     assert_includes required_vars, "GRAFANA_PROD_SERVICE_ACCOUNT_TOKEN"
   end
 
@@ -210,7 +210,7 @@ class ServersConfigTest < ActiveSupport::TestCase
     config = ServersConfig.config
     assert config.is_a?(Hash)
     assert config.key?("playwright-custom")
-    assert config.key?("appsignal-pulsemcp-prod")
+    assert config.key?("context7")
     assert config.key?("grafana-pulsemcp-prod")
     assert config.key?("glitchtip-pulsemcp-prod")
   end
@@ -261,7 +261,7 @@ class ServersConfigTest < ActiveSupport::TestCase
 
   # Test interpolation pattern detection
   test "should detect required var without default" do
-    server = ServersConfig.find("appsignal-pulsemcp-prod")
+    server = ServersConfig.find("context7")
     required_vars = server.required_env_vars
 
     # The config uses ${APPSIGNAL_API_KEY} interpolation
@@ -269,7 +269,7 @@ class ServersConfigTest < ActiveSupport::TestCase
   end
 
   test "should return empty optional vars when all are hardcoded" do
-    server = ServersConfig.find("appsignal-pulsemcp-prod")
+    server = ServersConfig.find("context7")
     optional_vars = server.optional_env_vars
 
     # APPSIGNAL_APP_ID is now hardcoded, so no optional vars with interpolation

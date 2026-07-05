@@ -1,0 +1,52 @@
+{
+  "ao-start-dev-server": {
+    "id": "ao-start-dev-server",
+    "title": "Start Dev Server",
+    "description": "Start the local dev server to verify changes before committing.",
+    "path": "zimmer/ao-start-dev-server",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "ao-deploy-staging": {
+    "id": "ao-deploy-staging",
+    "title": "Deploy Staging",
+    "description": "Deploy the current branch to the staging environment for testing.",
+    "path": "zimmer/ao-deploy-staging",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "wait-for-ci": {
+    "id": "wait-for-ci",
+    "title": "Wait For CI",
+    "description": "Block until CI passes or fails on the current PR.",
+    "path": "zimmer/wait-for-ci",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "pr": {
+    "id": "pr",
+    "title": "PR",
+    "description": "Open a pull request for the current branch.",
+    "path": "zimmer/pr",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "analyze-agent-transcript": {
+    "id": "analyze-agent-transcript",
+    "title": "Analyze Agent Transcript",
+    "description": "Analyze an agent session transcript.",
+    "path": "zimmer/analyze-agent-transcript",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  }
+}

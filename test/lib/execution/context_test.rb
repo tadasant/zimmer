@@ -178,13 +178,13 @@ module Execution
     end
 
     test "handles complex mcp_servers configuration" do
-      @session.mcp_servers = [ "playwright-custom", "twist-wolfbot", "appsignal-pulsemcp-prod" ]
+      @session.mcp_servers = [ "playwright-custom", "twist-wolfbot", "context7" ]
       context = Context.new(session: @session)
 
       assert_equal 3, context.mcp_servers.length
       assert_includes context.mcp_servers, "playwright-custom"
       assert_includes context.mcp_servers, "twist-wolfbot"
-      assert_includes context.mcp_servers, "appsignal-pulsemcp-prod"
+      assert_includes context.mcp_servers, "context7"
     end
 
     test "validates session is not nil" do

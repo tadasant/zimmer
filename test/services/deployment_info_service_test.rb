@@ -148,9 +148,9 @@ class DeploymentInfoServiceTest < ActiveSupport::TestCase
   test "mcp_config redacts env values containing environment variables" do
     mcp_config = DeploymentInfoService.mcp_config_with_redacted_secrets
 
-    # Find a server with env vars (appsignal-pulsemcp-prod has APPSIGNAL_API_KEY)
-    appsignal_server = mcp_config["appsignal-pulsemcp-prod"]
-    assert_not_nil appsignal_server, "appsignal-pulsemcp-prod server should exist"
+    # Find a server with env vars (context7 has APPSIGNAL_API_KEY)
+    appsignal_server = mcp_config["context7"]
+    assert_not_nil appsignal_server, "context7 server should exist"
 
     # Check that env values with ${VAR} pattern are redacted
     api_key_value = appsignal_server.dig("env", "APPSIGNAL_API_KEY")

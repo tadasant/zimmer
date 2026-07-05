@@ -38,7 +38,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       mcp_servers: [ "playwright-custom" ],
       catalog_skills: [ "ao-start-dev-server" ],
       catalog_hooks: [ "git-push-ci-reminder" ],
-      catalog_plugins: [ "pulsemcp-ci-workflow" ],
+      catalog_plugins: [ "ci-workflow" ],
       goal: "Complete the task",
       is_autonomous: false,
       session_notes: "Do not touch the payments module",
@@ -395,7 +395,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
   end
 
   test "carries over catalog_plugins to forked session" do
-    assert_equal [ "pulsemcp-ci-workflow" ], @source_session.catalog_plugins
+    assert_equal [ "ci-workflow" ], @source_session.catalog_plugins
 
     result = ForkSessionService.call(
       source_session: @source_session,
@@ -404,7 +404,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     )
 
     assert result.success?
-    assert_equal [ "pulsemcp-ci-workflow" ], result.forked_session.catalog_plugins,
+    assert_equal [ "ci-workflow" ], result.forked_session.catalog_plugins,
       "Forked session must inherit catalog_plugins from source session"
   end
 

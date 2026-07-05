@@ -15,7 +15,7 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
     @session.update!(
       agent_runtime: "codex",
       metadata: { "working_directory" => @working_dir },
-      mcp_servers: [ "appsignal-pulsemcp-prod", "playwright-custom" ]
+      mcp_servers: [ "context7", "playwright-custom" ]
     )
   end
 
@@ -73,26 +73,26 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
 
   test "poll marks a server connected when its mcp__ tool is called in the rollout" do
     content = rollout(
-      function_call(name: "mcp__appsignal-pulsemcp-prod__search_logs", timestamp: "2026-05-29T21:39:13.000Z")
+      function_call(name: "mcp__context7__search_logs", timestamp: "2026-05-29T21:39:13.000Z")
     )
 
     statuses = detector.poll(transcript_content: content)[:server_statuses]
 
-    assert_equal "connected", statuses["appsignal-pulsemcp-prod"][:status]
-    assert_equal "2026-05-29T21:39:13.000Z", statuses["appsignal-pulsemcp-prod"][:connected_at]
+    assert_equal "connected", statuses["context7"][:status]
+    assert_equal "2026-05-29T21:39:13.000Z", statuses["context7"][:connected_at]
     # A server with no tool call stays absent (rendered as pending by the view).
     assert_nil statuses["playwright-custom"]
   end
 
   test "poll marks multiple servers connected independently" do
     content = rollout(
-      function_call(name: "mcp__appsignal-pulsemcp-prod__search_logs", timestamp: "2026-05-29T21:39:13.000Z", call_id: "c1"),
+      function_call(name: "mcp__context7__search_logs", timestamp: "2026-05-29T21:39:13.000Z", call_id: "c1"),
       function_call(name: "mcp__playwright-custom__browser_execute", timestamp: "2026-05-29T21:39:20.000Z", call_id: "c2")
     )
 
     statuses = detector.poll(transcript_content: content)[:server_statuses]
 
-    assert_equal "connected", statuses["appsignal-pulsemcp-prod"][:status]
+    assert_equal "connected", statuses["context7"][:status]
     assert_equal "connected", statuses["playwright-custom"][:status]
   end
 
@@ -136,13 +136,13 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
 
   test "poll marks a server connected from an mcp_tool_call_end event" do
     content = rollout(
-      mcp_tool_call_end(server: "appsignal-pulsemcp-prod", tool: "search_logs", timestamp: "2026-05-29T21:39:13.000Z")
+      mcp_tool_call_end(server: "context7", tool: "search_logs", timestamp: "2026-05-29T21:39:13.000Z")
     )
 
     statuses = detector.poll(transcript_content: content)[:server_statuses]
 
-    assert_equal "connected", statuses["appsignal-pulsemcp-prod"][:status]
-    assert_equal "2026-05-29T21:39:13.000Z", statuses["appsignal-pulsemcp-prod"][:connected_at]
+    assert_equal "connected", statuses["context7"][:status]
+    assert_equal "2026-05-29T21:39:13.000Z", statuses["context7"][:connected_at]
   end
 
   test "poll marks a server connected from mcp_tool_call_end even when the tool errored" do
@@ -247,12 +247,12 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
 
   test "poll marks a server failed when stderr reports a startup failure" do
     stderr_path = File.join(@working_dir, "codex_stderr.log")
-    @mock_file_system.write(stderr_path, "ERROR: MCP client for `appsignal-pulsemcp-prod` failed to start: spawn error\n")
+    @mock_file_system.write(stderr_path, "ERROR: MCP client for `context7` failed to start: spawn error\n")
 
     statuses = detector.poll(transcript_content: "")[:server_statuses]
 
-    assert_equal "failed", statuses["appsignal-pulsemcp-prod"][:status]
-    assert_includes statuses["appsignal-pulsemcp-prod"][:error], "failed to start"
+    assert_equal "failed", statuses["context7"][:status]
+    assert_includes statuses["context7"][:error], "failed to start"
   end
 
   test "a successful tool call takes precedence over a stderr failure for the same server" do
@@ -281,7 +281,7 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
     stderr_path = File.join(@working_dir, "codex_stderr.log")
     benign = <<~STDERR
       INFO: starting MCP server `playwright-custom`
-      DEBUG: appsignal-pulsemcp-prod connected, 12 tools available
+      DEBUG: context7 connected, 12 tools available
       WARN: tool call failed: navigation timed out for playwright-custom
       ERROR: request to https://example.com failed with status 500
       INFO: playwright-custom: screenshot captured
@@ -327,11 +327,11 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
 
     statuses = detector.poll(transcript_content: nil)[:server_statuses]
 
-    assert_equal "connected", statuses["appsignal-pulsemcp-prod"][:status]
+    assert_equal "connected", statuses["context7"][:status]
     assert_equal "connected", statuses["playwright-custom"][:status]
     # connected_at is approximated with the latest init line — every expected
     # server has finished its handshake by then.
-    assert_equal "2026-05-29T21:39:12.000Z", statuses["appsignal-pulsemcp-prod"][:connected_at]
+    assert_equal "2026-05-29T21:39:12.000Z", statuses["context7"][:connected_at]
     assert_equal "2026-05-29T21:39:12.000Z", statuses["playwright-custom"][:connected_at]
   end
 
@@ -352,13 +352,13 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
       rmcp_init_line(timestamp: "2026-05-29T21:39:12.000Z")
     ].join("\n") + "\n")
     content = rollout(
-      function_call(name: "mcp__appsignal-pulsemcp-prod__search_logs", timestamp: "2026-05-29T21:39:11.000Z")
+      function_call(name: "mcp__context7__search_logs", timestamp: "2026-05-29T21:39:11.000Z")
     )
 
     statuses = detector.poll(transcript_content: content)[:server_statuses]
 
     # The called server keeps its precise tool-call timestamp...
-    assert_equal "2026-05-29T21:39:11.000Z", statuses["appsignal-pulsemcp-prod"][:connected_at]
+    assert_equal "2026-05-29T21:39:11.000Z", statuses["context7"][:connected_at]
     # ...while the never-called server is greened from the count.
     assert_equal "connected", statuses["playwright-custom"][:status]
     assert_equal "2026-05-29T21:39:12.000Z", statuses["playwright-custom"][:connected_at]
@@ -369,14 +369,14 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
     # startup-failure line keeps that server red (failure wins over the fallback).
     stderr_path = File.join(@working_dir, "codex_stderr.log")
     @mock_file_system.write(stderr_path, [
-      "ERROR: MCP client for `appsignal-pulsemcp-prod` failed to start",
+      "ERROR: MCP client for `context7` failed to start",
       rmcp_init_line(timestamp: "2026-05-29T21:39:10.000Z"),
       rmcp_init_line(timestamp: "2026-05-29T21:39:12.000Z")
     ].join("\n") + "\n")
 
     statuses = detector.poll(transcript_content: nil)[:server_statuses]
 
-    assert_equal "failed", statuses["appsignal-pulsemcp-prod"][:status]
+    assert_equal "failed", statuses["context7"][:status]
     assert_equal "connected", statuses["playwright-custom"][:status]
   end
 
@@ -409,7 +409,7 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
 
   test "poll + update_session_mcp_status writes connected status into custom_metadata" do
     content = rollout(
-      function_call(name: "mcp__appsignal-pulsemcp-prod__search_logs", timestamp: "2026-05-29T21:39:13.000Z")
+      function_call(name: "mcp__context7__search_logs", timestamp: "2026-05-29T21:39:13.000Z")
     )
 
     d = detector
@@ -417,14 +417,14 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
     d.update_session_mcp_status(result[:server_statuses])
 
     @session.reload
-    status = @session.custom_metadata.dig("mcp_servers_status", "appsignal-pulsemcp-prod")
+    status = @session.custom_metadata.dig("mcp_servers_status", "context7")
     assert_equal "connected", status["status"]
     assert_equal "2026-05-29T21:39:13.000Z", status["connected_at"]
   end
 
   test "update_session_mcp_status escalates a configured server failure to the session" do
     stderr_path = File.join(@working_dir, "codex_stderr.log")
-    @mock_file_system.write(stderr_path, "ERROR: MCP client for `appsignal-pulsemcp-prod` failed to start\n")
+    @mock_file_system.write(stderr_path, "ERROR: MCP client for `context7` failed to start\n")
 
     d = detector
     result = d.poll(transcript_content: "")

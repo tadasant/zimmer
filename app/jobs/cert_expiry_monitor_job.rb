@@ -45,8 +45,8 @@ class CertExpiryMonitorJob < ApplicationJob
   DEFAULT_HOSTS = %w[
     zimmer.example.com
     staging.zimmer.example.com
-    obs.example.com
-    glitchtip.obs.example.com
+    obs.tadasant.com
+    glitchtip.obs.tadasant.com
   ].freeze
 
   # @param hosts [Array<String>, nil] hosts to check; defaults to monitored_hosts

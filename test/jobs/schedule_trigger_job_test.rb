@@ -225,7 +225,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     sibling_needs_input = Trigger.create!(
       name: "Sibling needs_input wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -237,7 +237,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     sibling_deadline = Trigger.create!(
       name: "Sibling deadline backstop",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -280,7 +280,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     sibling_wake = Trigger.create!(
       name: "Sibling wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -323,7 +323,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     sibling_wake = Trigger.create!(
       name: "Sibling wake on watched",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -391,7 +391,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     sibling_wake = Trigger.create!(
       name: "Sibling wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: requester.id,

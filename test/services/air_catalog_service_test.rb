@@ -364,7 +364,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
 
   test "resolved_sha_for reads the commit SHA from the cache clone" do
     cache_dir = File.join(@tmpdir, "cache")
-    clone = File.join(cache_dir, "pulsemcp", "ai-artifacts", "HEAD")
+    clone = File.join(cache_dir, "zimmer", "ai-artifacts", "HEAD")
     FileUtils.mkdir_p(clone)
     system("git", "-C", clone, "init", "-q", exception: true)
     File.write(File.join(clone, "f.txt"), "x")

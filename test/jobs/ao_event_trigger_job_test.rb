@@ -165,7 +165,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     failed_trigger = Trigger.create!(
       name: "Session Failed Handler",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Session failed: {{event}}",
       trigger_conditions_attributes: [
         { condition_type: "ao_event", configuration: { "event_name" => "session_failed" } }
@@ -216,7 +216,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     archived_trigger = Trigger.create!(
       name: "Session Archived Handler",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Session archived: {{event}}",
       trigger_conditions_attributes: [
         { condition_type: "ao_event", configuration: { "event_name" => "session_archived" } }
@@ -244,7 +244,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     archived_trigger = Trigger.create!(
       name: "Session Archived Handler",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Session archived: {{event}}",
       trigger_conditions_attributes: [
         { condition_type: "ao_event", configuration: { "event_name" => "session_archived" } }
@@ -273,7 +273,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     Trigger.create!(
       name: "Session Archived Handler",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Session archived: {{event}}",
       trigger_conditions_attributes: [
         { condition_type: "ao_event", configuration: { "event_name" => "session_archived" } }
@@ -330,7 +330,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     one_time_trigger = Trigger.create!(
       name: "Wake target on watched archive",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Watched session reached state: {{event}}",
       reuse_session: true,
       last_session_id: target_session.id,
@@ -505,7 +505,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     one_time_trigger = Trigger.create!(
       name: "Wake target on watched needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Watched session reached state: {{event}}",
       reuse_session: true,
       last_session_id: target_session.id,
@@ -557,7 +557,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     needs_input_wake = Trigger.create!(
       name: "Wake on watched needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target_session.id,
@@ -569,7 +569,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     failed_wake = Trigger.create!(
       name: "Wake on watched failed",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target_session.id,
@@ -581,7 +581,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     archived_wake = Trigger.create!(
       name: "Wake on watched archived",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target_session.id,
@@ -593,7 +593,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     deadline_backstop = Trigger.create!(
       name: "Deadline backstop wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: target_session.id,
@@ -628,7 +628,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     wake_for_a = Trigger.create!(
       name: "Wake A on watched",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target_a.id,
@@ -640,7 +640,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     unrelated_wake_for_b = Trigger.create!(
       name: "Wake B on watched",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target_b.id,
@@ -673,7 +673,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     multi_trigger = Trigger.create!(
       name: "Wake on watched OR slack message",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Triggered: {{event}} {{link}}",
       trigger_conditions_attributes: [
         {
@@ -733,7 +733,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     firing_wake = Trigger.create!(
       name: "Wake on watched needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up: {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -745,7 +745,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     sibling_failed = Trigger.create!(
       name: "Sibling wake on watched failed",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up: {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -757,7 +757,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     sibling_deadline = Trigger.create!(
       name: "Sibling deadline backstop",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: requester.id,
@@ -813,7 +813,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     firing_wake = Trigger.create!(
       name: "Wake on watched needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up: {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -825,7 +825,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     sibling_failed = Trigger.create!(
       name: "Sibling wake on watched failed",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up: {{event}}",
       reuse_session: true,
       last_session_id: requester.id,

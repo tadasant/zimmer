@@ -152,7 +152,7 @@ class SessionTest < ActiveSupport::TestCase
   end
 
   test "should persist mcp_servers as JSON array" do
-    servers = [ "playwright-custom", "twist-wolfbot", "appsignal-pulsemcp-prod" ]
+    servers = [ "playwright-custom", "twist-wolfbot", "context7" ]
     # Using create_session helper from FixtureHelpers
     session = create_session(
       prompt: "Test",
@@ -713,7 +713,7 @@ class SessionTest < ActiveSupport::TestCase
     session = sessions(:running)
     original_servers = session.mcp_servers.dup
     # Change to different servers
-    session.mcp_servers = [ "playwright-custom", "appsignal-pulsemcp-prod", "twist-wolfbot" ]
+    session.mcp_servers = [ "playwright-custom", "context7", "twist-wolfbot" ]
     session.save!
 
     # Verify mcp_servers changed
@@ -3117,7 +3117,7 @@ class SessionTest < ActiveSupport::TestCase
     session = Session.new(
       git_root: "https://github.com/test/repo.git",
       prompt: "Test",
-      catalog_plugins: [ "pulsemcp-ci-workflow" ]
+      catalog_plugins: [ "ci-workflow" ]
     )
     session.valid?
     assert_empty session.errors[:catalog_plugins]
@@ -3272,28 +3272,28 @@ class SessionTest < ActiveSupport::TestCase
 
   test "plugin_derived_skills maps skills to their contributing plugin" do
     session = sessions(:active_session)
-    session.update!(catalog_plugins: [ "pulsemcp-ci-workflow" ], catalog_skills: [])
+    session.update!(catalog_plugins: [ "ci-workflow" ], catalog_skills: [])
 
-    assert_equal({ "wait-for-ci" => "pulsemcp-ci-workflow" }, session.plugin_derived_skills)
+    assert_equal({ "wait-for-ci" => "ci-workflow" }, session.plugin_derived_skills)
   end
 
   test "plugin_derived_skills excludes skills already directly selected" do
     session = sessions(:active_session)
-    session.update!(catalog_plugins: [ "pulsemcp-ci-workflow" ], catalog_skills: [ "wait-for-ci" ])
+    session.update!(catalog_plugins: [ "ci-workflow" ], catalog_skills: [ "wait-for-ci" ])
 
     assert_equal({}, session.plugin_derived_skills)
   end
 
   test "plugin_derived_hooks maps hooks to their contributing plugin" do
     session = sessions(:active_session)
-    session.update!(catalog_plugins: [ "pulsemcp-ci-workflow" ], catalog_hooks: [])
+    session.update!(catalog_plugins: [ "ci-workflow" ], catalog_hooks: [])
 
-    assert_equal({ "git-push-ci-reminder" => "pulsemcp-ci-workflow" }, session.plugin_derived_hooks)
+    assert_equal({ "git-push-ci-reminder" => "ci-workflow" }, session.plugin_derived_hooks)
   end
 
   test "plugin_derived_hooks excludes hooks already directly selected" do
     session = sessions(:active_session)
-    session.update!(catalog_plugins: [ "pulsemcp-ci-workflow" ], catalog_hooks: [ "git-push-ci-reminder" ])
+    session.update!(catalog_plugins: [ "ci-workflow" ], catalog_hooks: [ "git-push-ci-reminder" ])
 
     assert_equal({}, session.plugin_derived_hooks)
   end

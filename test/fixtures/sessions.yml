@@ -4,7 +4,7 @@ active_session:
   agent_runtime: claude_code
   status: 0
   prompt: "Write a hello world program"
-  mcp_servers: ["playwright-custom", "appsignal-pulsemcp-prod"]
+  mcp_servers: ["playwright-custom", "context7"]
   config: {}
   git_root: "https://github.com/anthropics/anthropic-cookbook.git"
   branch: "main"
@@ -14,7 +14,7 @@ running:
   agent_runtime: claude_code
   status: 0
   prompt: "Write a hello world program"
-  mcp_servers: ["playwright-custom", "appsignal-pulsemcp-prod"]
+  mcp_servers: ["playwright-custom", "context7"]
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
@@ -24,7 +24,7 @@ waiting:
   agent_runtime: claude_code
   status: 1
   prompt: "Analyze this codebase"
-  mcp_servers: ["appsignal-pulsemcp-prod"]
+  mcp_servers: ["context7"]
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "develop"
