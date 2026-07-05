@@ -110,28 +110,23 @@ class SessionsTest < ApplicationSystemTestCase
     find("[data-mcp-server-select-target='input']").click
 
     # Dropdown caps the unfiltered view at 10 results (see mcp_server_select_controller.js).
-    # Spot-check that the legacy AppSignal MCP and a new self-hosted observability MCP
-    # (Grafana prod) both render in that initial slice — see issue #2868 Phase 1h.
-    # Staging variants are exercised by typing into the input to filter (next test).
+    # Spot-check that a couple of catalog servers render in that initial slice.
+    # Other servers are exercised by typing into the input to filter (next test).
     assert_selector ".server-item[data-name='context7']"
-    assert_selector ".server-item[data-name='grafana-pulsemcp-prod']"
-    assert_selector ".server-item[data-name='glitchtip-pulsemcp-prod']"
     assert_selector ".server-item[data-name='playwright-custom']"
   end
 
-  test "MCP server dropdown filtering surfaces staging observability MCPs" do
+  test "MCP server dropdown filtering surfaces servers by exact-name query" do
     visit new_session_url
 
     # The dropdown caps rendered results at 10 even when filtered (see
-    # mcp_server_select_controller.js). The catalog has many "*-pulsemcp-staging"
-    # entries, so a broad "staging" query can push specific targets out of the
-    # visible slice. Search for each entry by its full name to keep this robust
-    # as the catalog grows. See issue #3369.
+    # mcp_server_select_controller.js). Search for each entry by its full name to
+    # keep this robust as the catalog grows.
     input = find("[data-mcp-server-select-target='input']")
     [
-      "grafana-pulsemcp-staging",
-      "glitchtip-pulsemcp-staging",
-      "appsignal-pulsemcp-staging"
+      "linear",
+      "notion",
+      "tally"
     ].each do |name|
       input.click
       input.fill_in with: name
@@ -207,16 +202,16 @@ class SessionsTest < ApplicationSystemTestCase
     assert_text "playwright-custom"
   end
 
-  test "creating session with new self-hosted observability MCPs (Grafana + GlitchTip)" do
+  test "creating session with multiple selected MCP servers" do
     visit new_session_url
 
-    fill_in "session[prompt]", with: "Triage a Grafana alert and a GlitchTip error"
+    fill_in "session[prompt]", with: "Look up docs and file an issue"
 
-    # Select the new self-hosted observability MCPs added in #2868 Phase 1h
+    # Select two catalog MCP servers by name.
     find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='grafana-pulsemcp-prod']").click
+    find(".server-item[data-name='linear']").click
     find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='glitchtip-pulsemcp-prod']").click
+    find(".server-item[data-name='notion']").click
 
     # Click elsewhere to close the dropdown
     find("label", text: "Initial Prompt").click
@@ -225,8 +220,8 @@ class SessionsTest < ApplicationSystemTestCase
 
     assert_text "Session created successfully"
     assert_text "MCP:"
-    assert_text "grafana-pulsemcp-prod"
-    assert_text "glitchtip-pulsemcp-prod"
+    assert_text "linear"
+    assert_text "notion"
   end
 
   test "creating session with cmd+enter keyboard shortcut" do

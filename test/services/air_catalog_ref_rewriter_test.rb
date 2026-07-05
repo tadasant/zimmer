@@ -3,8 +3,8 @@
 require "test_helper"
 
 class AirCatalogRefRewriterTest < ActiveSupport::TestCase
-  PULSEMCP = "github://tadasant/zimmer-catalog"
-  REFRAME = "github://tadasant/zimmer-artifacts"
+  ZIMMER_CATALOG = "github://tadasant/zimmer-catalog"
+  ZIMMER_ARTIFACTS = "github://tadasant/zimmer-artifacts"
   AI_ARTIFACTS = "github://tadasant/ai-artifacts"
 
   PRODUCTION_AIR_JSON = <<~JSON
@@ -34,14 +34,14 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
   JSON
 
   test "rewrites tadasant/zimmer-catalog URIs to pin to a simple ref" do
-    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { PULSEMCP => "feat-branch" })
+    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { ZIMMER_CATALOG => "feat-branch" })
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog@feat-branch/agents", parsed["catalogs"][0]
   end
 
   test "leaves unpinned catalog URIs untouched" do
-    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { PULSEMCP => "feat-branch" })
+    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { ZIMMER_CATALOG => "feat-branch" })
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-artifacts/artifacts", parsed["catalogs"][1]
@@ -50,8 +50,8 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
 
   test "pins multiple catalogs independently in a single pass" do
     rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: {
-      PULSEMCP => "aaa1111",
-      REFRAME => "bbb2222",
+      ZIMMER_CATALOG => "aaa1111",
+      ZIMMER_ARTIFACTS => "bbb2222",
       AI_ARTIFACTS => "ccc3333"
     })
     parsed = JSON.parse(rewritten)
@@ -74,7 +74,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     # be rewritten.
     json = JSON.dump("catalogs" => [ "github://tadasant/zimmer-catalog-foo/agents" ])
 
-    rewritten = AirCatalogRefRewriter.rewrite(json, pins: { PULSEMCP => "feat-branch" })
+    rewritten = AirCatalogRefRewriter.rewrite(json, pins: { ZIMMER_CATALOG => "feat-branch" })
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog-foo/agents", parsed["catalogs"][0]
@@ -87,7 +87,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     ])
 
     rewritten = AirCatalogRefRewriter.rewrite(json, pins: {
-      PULSEMCP => "shortref",
+      ZIMMER_CATALOG => "shortref",
       "github://tadasant/zimmer-catalog-foo" => "longref"
     })
     parsed = JSON.parse(rewritten)
@@ -97,7 +97,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
   end
 
   test "leaves shortname-style references in exclude untouched" do
-    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { REFRAME => "feat-branch" })
+    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { ZIMMER_ARTIFACTS => "feat-branch" })
     parsed = JSON.parse(rewritten)
 
     assert_equal "@tadasant/zimmer-catalog/github", parsed["exclude"]["mcp"][0]
@@ -105,7 +105,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
   end
 
   test "uses legacy path-suffix syntax for refs containing a slash" do
-    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { PULSEMCP => "user/feature-branch" })
+    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { ZIMMER_CATALOG => "user/feature-branch" })
     parsed = JSON.parse(rewritten)
 
     # The provider docs require the legacy `path@ref` syntax for refs with slashes
@@ -123,7 +123,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
 
   test "supports SHA refs" do
     sha = "abc1234567890def1234567890fedcba12345678"
-    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { PULSEMCP => sha })
+    rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { ZIMMER_CATALOG => sha })
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog@#{sha}/agents", parsed["catalogs"][0]
@@ -132,7 +132,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
   test "drops an existing repo-level ref and applies the new one" do
     json = JSON.dump("catalogs" => [ "github://tadasant/zimmer-catalog@v1.0.0/agents" ])
 
-    rewritten = AirCatalogRefRewriter.rewrite(json, pins: { PULSEMCP => "feat-branch" })
+    rewritten = AirCatalogRefRewriter.rewrite(json, pins: { ZIMMER_CATALOG => "feat-branch" })
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog@feat-branch/agents", parsed["catalogs"][0]
@@ -141,7 +141,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
   test "drops an existing path-suffix ref and applies the new one" do
     json = JSON.dump("catalogs" => [ "github://tadasant/zimmer-catalog/agents@some/old-ref" ])
 
-    rewritten = AirCatalogRefRewriter.rewrite(json, pins: { PULSEMCP => "feat-branch" })
+    rewritten = AirCatalogRefRewriter.rewrite(json, pins: { ZIMMER_CATALOG => "feat-branch" })
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog@feat-branch/agents", parsed["catalogs"][0]
@@ -157,8 +157,8 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
 
   test "drops blank refs and leaves those catalogs untouched" do
     rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: {
-      PULSEMCP => "  ",
-      REFRAME => nil,
+      ZIMMER_CATALOG => "  ",
+      ZIMMER_ARTIFACTS => nil,
       AI_ARTIFACTS => ""
     })
     parsed = JSON.parse(rewritten)
@@ -178,7 +178,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
       }
     )
 
-    rewritten = AirCatalogRefRewriter.rewrite(json, pins: { PULSEMCP => "feat-branch" })
+    rewritten = AirCatalogRefRewriter.rewrite(json, pins: { ZIMMER_CATALOG => "feat-branch" })
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog@feat-branch/agents/skills/skills.json", parsed["skills"][0]
@@ -189,7 +189,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     air_production_path = Rails.root.join("air.production.json")
     skip "air.production.json not present" unless File.exist?(air_production_path)
 
-    rewritten = AirCatalogRefRewriter.rewrite(File.read(air_production_path), pins: { PULSEMCP => "test-ref" })
+    rewritten = AirCatalogRefRewriter.rewrite(File.read(air_production_path), pins: { ZIMMER_CATALOG => "test-ref" })
     parsed = JSON.parse(rewritten)
 
     catalogs = parsed["catalogs"]

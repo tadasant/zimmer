@@ -410,7 +410,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     @mock_fs.mkdir_p(@clone_path)
 
     # Resolved root defaults differ; they must NOT overwrite the explicit list.
-    @session.stubs(:agent_root_default_mcp_servers).returns([ "grafana-pulsemcp-prod" ])
+    @session.stubs(:agent_root_default_mcp_servers).returns([ "linear" ])
     AirPrepareService.any_instance.stubs(:injected_mcp_servers).returns([])
 
     result = UnarchiveSessionService.call(
