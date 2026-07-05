@@ -248,7 +248,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
   end
 
   test "poll combines multiple error messages to show root cause" do
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-1password-ro")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-13T00-07-09-351Z.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -263,15 +263,15 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     @mock_file_system.write(log_file, error_content)
 
     # Need to configure session to use this server
-    @session.update!(mcp_servers: [ "1password-ro" ])
+    @session.update!(mcp_servers: [ "context7" ])
 
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
     result = service.poll
 
     assert_equal 3, result[:logs].length
-    assert_equal "failed", result[:server_statuses]["1password-ro"][:status]
+    assert_equal "failed", result[:server_statuses]["context7"][:status]
     # Should include both the root cause and the connection failed message
-    error_message = result[:server_statuses]["1password-ro"][:error]
+    error_message = result[:server_statuses]["context7"][:error]
     assert_includes error_message, "API key not found",
       "Error should include root cause message"
     assert_includes error_message, "Connection failed",
@@ -575,10 +575,10 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     # Simulate a real scenario: first connection fails due to npm cache issue,
     # then retry succeeds
     logs = [
-      { server_name: "pulse-redirects-rw", timestamp: "2025-12-09T10:00:00Z", level: "error", message: "npm error code ENOTEMPTY" },
-      { server_name: "pulse-redirects-rw", timestamp: "2025-12-09T10:00:01Z", message: "Connection failed after 796ms: MCP error -32000: Connection closed" },
-      { server_name: "pulse-redirects-rw", timestamp: "2025-12-09T10:00:02Z", message: "Starting connection with timeout of 180000ms" },
-      { server_name: "pulse-redirects-rw", timestamp: "2025-12-09T10:00:03Z", message: "Successfully connected to undefined server in 545ms" }
+      { server_name: "example-redirects-rw", timestamp: "2025-12-09T10:00:00Z", level: "error", message: "npm error code ENOTEMPTY" },
+      { server_name: "example-redirects-rw", timestamp: "2025-12-09T10:00:01Z", message: "Connection failed after 796ms: MCP error -32000: Connection closed" },
+      { server_name: "example-redirects-rw", timestamp: "2025-12-09T10:00:02Z", message: "Starting connection with timeout of 180000ms" },
+      { server_name: "example-redirects-rw", timestamp: "2025-12-09T10:00:03Z", message: "Successfully connected to undefined server in 545ms" }
     ]
 
     result = service.send(:determine_server_status, logs)
@@ -593,10 +593,10 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
 
     logs = [
-      { server_name: "pulse-redirects-rw", timestamp: "2025-12-09T10:00:00Z", level: "error", message: "npm error code ENOTEMPTY" },
-      { server_name: "pulse-redirects-rw", timestamp: "2025-12-09T10:00:01Z", message: "Connection failed after 796ms: MCP error -32000: Connection closed" },
-      { server_name: "pulse-redirects-rw", timestamp: "2025-12-09T10:00:02Z", message: "Starting connection with timeout of 180000ms" },
-      { server_name: "pulse-redirects-rw", timestamp: "2025-12-09T10:00:03Z", message: "Connection failed after 500ms: timeout" }
+      { server_name: "example-redirects-rw", timestamp: "2025-12-09T10:00:00Z", level: "error", message: "npm error code ENOTEMPTY" },
+      { server_name: "example-redirects-rw", timestamp: "2025-12-09T10:00:01Z", message: "Connection failed after 796ms: MCP error -32000: Connection closed" },
+      { server_name: "example-redirects-rw", timestamp: "2025-12-09T10:00:02Z", message: "Starting connection with timeout of 180000ms" },
+      { server_name: "example-redirects-rw", timestamp: "2025-12-09T10:00:03Z", message: "Connection failed after 500ms: timeout" }
     ]
 
     result = service.send(:determine_server_status, logs)

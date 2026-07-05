@@ -4,13 +4,13 @@ require "test_helper"
 
 class AirCatalogRefRewriterTest < ActiveSupport::TestCase
   PULSEMCP = "github://tadasant/zimmer-catalog"
-  REFRAME = "github://tadasant/zimmer-catalog"
-  AI_ARTIFACTS = "github://pulsemcp/ai-artifacts"
+  REFRAME = "github://tadasant/zimmer-artifacts"
+  AI_ARTIFACTS = "github://tadasant/ai-artifacts"
 
   PRODUCTION_AIR_JSON = <<~JSON
     {
       "$schema": "https://pulsemcp.github.io/air/schemas/air.schema.json",
-      "name": "pulsemcp-agents",
+      "name": "zimmer-agents",
       "gitProtocol": "https",
       "extensions": [
         "@pulsemcp/air-adapter-claude",
@@ -19,8 +19,8 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
       ],
       "catalogs": [
         "github://tadasant/zimmer-catalog/agents",
-        "github://tadasant/zimmer-catalog/artifacts",
-        "github://pulsemcp/ai-artifacts"
+        "github://tadasant/zimmer-artifacts/artifacts",
+        "github://tadasant/ai-artifacts"
       ],
       "exclude": {
         "mcp": [
@@ -44,8 +44,8 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { PULSEMCP => "feat-branch" })
     parsed = JSON.parse(rewritten)
 
-    assert_equal "github://tadasant/zimmer-catalog/artifacts", parsed["catalogs"][1]
-    assert_equal "github://pulsemcp/ai-artifacts", parsed["catalogs"][2]
+    assert_equal "github://tadasant/zimmer-artifacts/artifacts", parsed["catalogs"][1]
+    assert_equal "github://tadasant/ai-artifacts", parsed["catalogs"][2]
   end
 
   test "pins multiple catalogs independently in a single pass" do
@@ -57,15 +57,15 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog@aaa1111/agents", parsed["catalogs"][0]
-    assert_equal "github://tadasant/zimmer-catalog@bbb2222/artifacts", parsed["catalogs"][1]
-    assert_equal "github://pulsemcp/ai-artifacts@ccc3333", parsed["catalogs"][2]
+    assert_equal "github://tadasant/zimmer-artifacts@bbb2222/artifacts", parsed["catalogs"][1]
+    assert_equal "github://tadasant/ai-artifacts@ccc3333", parsed["catalogs"][2]
   end
 
   test "pins a catalog URI that has no path component" do
     rewritten = AirCatalogRefRewriter.rewrite(PRODUCTION_AIR_JSON, pins: { AI_ARTIFACTS => "deadbeef" })
     parsed = JSON.parse(rewritten)
 
-    assert_equal "github://pulsemcp/ai-artifacts@deadbeef", parsed["catalogs"][2]
+    assert_equal "github://tadasant/ai-artifacts@deadbeef", parsed["catalogs"][2]
   end
 
   test "leaves sibling-repo URIs that share a prefix untouched" do
@@ -114,7 +114,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
   end
 
   test "raises for a slash ref on a catalog URI with no path component" do
-    json = JSON.dump("catalogs" => [ "github://pulsemcp/ai-artifacts" ])
+    json = JSON.dump("catalogs" => [ "github://tadasant/ai-artifacts" ])
 
     assert_raises(ArgumentError) do
       AirCatalogRefRewriter.rewrite(json, pins: { AI_ARTIFACTS => "user/branch" })
@@ -152,7 +152,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog/agents", parsed["catalogs"][0]
-    assert_equal "github://tadasant/zimmer-catalog/artifacts", parsed["catalogs"][1]
+    assert_equal "github://tadasant/zimmer-artifacts/artifacts", parsed["catalogs"][1]
   end
 
   test "drops blank refs and leaves those catalogs untouched" do
@@ -164,8 +164,8 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     parsed = JSON.parse(rewritten)
 
     assert_equal "github://tadasant/zimmer-catalog/agents", parsed["catalogs"][0]
-    assert_equal "github://tadasant/zimmer-catalog/artifacts", parsed["catalogs"][1]
-    assert_equal "github://pulsemcp/ai-artifacts", parsed["catalogs"][2]
+    assert_equal "github://tadasant/zimmer-artifacts/artifacts", parsed["catalogs"][1]
+    assert_equal "github://tadasant/ai-artifacts", parsed["catalogs"][2]
   end
 
   test "rewrites URIs nested deeper than top-level keys" do

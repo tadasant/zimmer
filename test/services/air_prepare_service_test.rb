@@ -693,7 +693,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   test "prepare! repeats flags per value to support multiple IDs" do
     @session.update!(
       catalog_skills: [ "wait-for-ci", "ao-deploy-staging" ],
-      mcp_servers: [ "playwright-custom", "playwright-custom-stealth" ]
+      mcp_servers: [ "playwright-custom", "context7" ]
     )
     captured_cmd = nil
 
@@ -715,7 +715,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes cmd_args, "ao-deploy-staging"
     assert_equal 2, cmd_args.count("--mcp-server"), "--mcp-server should repeat once per server ID"
     assert_includes cmd_args, "playwright-custom"
-    assert_includes cmd_args, "playwright-custom-stealth"
+    assert_includes cmd_args, "context7"
   end
 
   test "prepare! passes --no-subagent-merge to AIR CLI" do

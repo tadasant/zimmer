@@ -351,29 +351,6 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     end
   end
 
-  test "public_repo? returns false for pulsemcp-owned repos without API call" do
-    comment_info = build_comment_info_with_owner(
-      type: "pr",
-      body: "Test",
-      author: "tadasant",
-      owner: "zimmer",
-      repo: "agents"
-    )
-
-    builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
-
-    call_count = 0
-    mock_capture3 = ->(*) {
-      call_count += 1
-      [ "false\n", "", mock_success_status ]  # Would return public
-    }
-
-    Open3.stub(:capture3, mock_capture3) do
-      refute builder.send(:public_repo?), "pulsemcp repos should be treated as trusted (no warning)"
-      assert_equal 0, call_count, "API should not be called for trusted owners"
-    end
-  end
-
   test "public_repo? returns false for tadasant-owned repos without API call" do
     comment_info = build_comment_info_with_owner(
       type: "pr",
@@ -402,7 +379,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       type: "pr",
       body: "Test",
       author: "someone",
-      owner: "PULSEMCP",  # uppercase
+      owner: "TADASANT",  # uppercase
       repo: "some-repo"
     )
 
@@ -425,7 +402,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       type: "pr",
       body: "Test",
       author: "someone",
-      owner: "PulseMCP",  # mixed case
+      owner: "Tadasant",  # mixed case
       repo: "some-repo"
     )
 
@@ -464,21 +441,6 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       assert builder.send(:public_repo?), "Non-trusted public repos should show warning"
       assert_equal 1, call_count, "API should be called for non-trusted owners"
     end
-  end
-
-  test "does not append public repo warning for pulsemcp-owned repos" do
-    comment_info = build_comment_info_with_owner(
-      type: "pr",
-      body: "Please fix this bug",
-      author: "tadasant",
-      owner: "zimmer",
-      repo: "agents"
-    )
-
-    builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
-    prompt = builder.build
-
-    refute_includes prompt, "PUBLIC REPOSITORY NOTICE", "pulsemcp repos should not show warning"
   end
 
   test "does not append public repo warning for tadasant-owned repos" do
