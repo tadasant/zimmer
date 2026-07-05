@@ -1,0 +1,115 @@
+name: Deploy staging
+
+# Manually-invoked ONLY. Stands up / updates the staging instance at
+# staging.zimmer.tadasant.com from the chosen ref. Never auto-deploys.
+#
+# Self-contained: builds the base + app image from the checked-out ref and pushes
+# them to GHCR, then Terraform-applies the DigitalOcean droplet (Tailscale-only)
+# and health-checks the app over the tailnet. All secrets come from GitHub Actions
+# secrets — none are in git.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/tag/SHA to build & deploy"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Resolve image tag
+        id: img
+        run: echo "tag=staging-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push base image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.base
+          push: true
+          tags: ghcr.io/tadasant/zimmer-base:staging
+          cache-from: type=gha,scope=base
+          cache-to: type=gha,mode=max,scope=base
+
+      - name: Build & push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: |
+            BASE_IMAGE=ghcr.io/tadasant/zimmer-base:staging
+          push: true
+          tags: |
+            ghcr.io/tadasant/zimmer:${{ steps.img.outputs.tag }}
+            ghcr.io/tadasant/zimmer:staging-latest
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+
+      # Join the tailnet so we can reach the (VPN-only) staging droplet.
+      - name: Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform apply (staging)
+        working-directory: infra/terraform
+        env:
+          TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          TF_VAR_ghcr_username: ${{ github.actor }}
+          TF_VAR_ghcr_token: ${{ secrets.GHCR_PULL_TOKEN }}
+          TF_VAR_secret_key_base: ${{ secrets.STAGING_SECRET_BASE }}
+        run: |
+          set -euo pipefail
+          IMG="ghcr.io/tadasant/zimmer:${{ steps.img.outputs.tag }}"
+          terraform init -input=false
+          cp staging.tfvars.example staging.tfvars
+          terraform apply -input=false -auto-approve \
+            -var-file=staging.tfvars \
+            -var="image_ref=${IMG}"
+          terraform output -raw droplet_ipv4 > /tmp/droplet_ip
+          echo "Droplet IP: $(cat /tmp/droplet_ip)"
+
+      - name: Health check (over tailnet)
+        run: |
+          # Cloud-init installs Docker + Tailscale + runs the compose stack on
+          # first boot; give it time, then curl /up over the tailnet SSH.
+          for i in $(seq 1 40); do
+            if tailscale ssh root@zimmer-staging 'curl -fsS http://127.0.0.1:80/up' 2>/dev/null; then
+              echo "✅ Staging healthy at http://zimmer-staging/up"; exit 0
+            fi
+            echo "waiting for app to come up ($i/40)…"; sleep 15
+          done
+          echo "::error::Health check did not pass in time"
+          tailscale ssh root@zimmer-staging 'docker ps -a; docker compose -f /opt/zimmer/docker-compose.yml logs --tail=50 2>/dev/null' || true
+          exit 1
