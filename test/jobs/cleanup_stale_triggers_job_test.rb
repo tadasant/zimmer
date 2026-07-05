@@ -20,7 +20,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     orphan = Trigger.create!(
       name: "Orphan wake (target archived)",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target.id,
@@ -41,7 +41,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     active = Trigger.create!(
       name: "Active wake (target alive)",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target.id,
@@ -62,7 +62,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     resuscitator = Trigger.create!(
       name: "Resuscitator wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       resuscitate_archived: true,
@@ -83,7 +83,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     recurring = Trigger.create!(
       name: "Recurring broadcast referencing archived session",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target.id,
@@ -103,7 +103,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     lapsed = Trigger.create!(
       name: "Lapsed one-time schedule",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -123,7 +123,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     future = Trigger.create!(
       name: "Future one-time schedule",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -143,7 +143,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     recently_lapsed = Trigger.create!(
       name: "Recently lapsed one-time schedule",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -166,7 +166,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     mixed = Trigger.create!(
       name: "Mixed conditions",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -196,7 +196,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     weird_tz_lapsed = Trigger.create!(
       name: "Lapsed schedule with +12:00 offset",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -218,7 +218,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     Trigger.create!(
       name: "Orphan wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go {{event}}",
       reuse_session: true,
       last_session_id: target.id,

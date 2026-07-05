@@ -5,7 +5,7 @@
 enabled_slack_trigger:
   name: CI Failure Handler
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers:
     - slack-workspace
   goal: PR is merged
@@ -21,7 +21,7 @@ enabled_slack_trigger:
 disabled_slack_trigger:
   name: Disabled Trigger
   status: disabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers: []
   prompt_template: "New message in {{channel}}: {{link}}"
   sessions_created_count: 0
@@ -30,7 +30,7 @@ disabled_slack_trigger:
 new_slack_trigger:
   name: New Trigger
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers: []
   prompt_template: "Check deployment status: {{link}}"
   sessions_created_count: 0
@@ -39,7 +39,7 @@ new_slack_trigger:
 bot_mention_slack_trigger:
   name: Bot Mention Handler
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers:
     - slack-workspace
   goal: PR is merged
@@ -57,7 +57,7 @@ bot_mention_slack_trigger:
 bot_mention_all_channels_trigger:
   name: Bot Mention All Channels
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers:
     - slack-workspace
   goal: PR is merged
@@ -75,7 +75,7 @@ bot_mention_all_channels_trigger:
 enabled_schedule_trigger:
   name: Daily Status Check
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers: []
   prompt_template: "Run the daily status check. Current date: {{date}}, time: {{time}}"
   sessions_created_count: 3
@@ -84,7 +84,7 @@ enabled_schedule_trigger:
 weekly_schedule_trigger:
   name: Weekly Report
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers: []
   prompt_template: "Generate the weekly report for {{date}}"
   sessions_created_count: 1
@@ -93,7 +93,7 @@ weekly_schedule_trigger:
 disabled_schedule_trigger:
   name: Disabled Schedule
   status: disabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers: []
   prompt_template: "Hourly check at {{time}}"
   sessions_created_count: 0
@@ -102,7 +102,7 @@ disabled_schedule_trigger:
 one_time_schedule_trigger:
   name: One-Time Deployment
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers: []
   prompt_template: "Run the one-time deployment task at {{date}} {{time}}"
   sessions_created_count: 0
@@ -111,7 +111,7 @@ one_time_schedule_trigger:
 ao_event_trigger:
   name: Needs Input Handler
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers: []
   prompt_template: "An AO session needs input: {{event}}. Please investigate."
   sessions_created_count: 0
@@ -120,7 +120,7 @@ ao_event_trigger:
 multi_condition_trigger:
   name: Multi Condition Flow
   status: enabled
-  agent_root_name: pulsemcp
+  agent_root_name: zimmer
   mcp_servers: []
   prompt_template: "Triggered by one of multiple conditions. {{event}} {{link}}"
   sessions_created_count: 0

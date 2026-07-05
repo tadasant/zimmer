@@ -1,0 +1,8 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/hooks.schema.json",
+  "git-push-ci-reminder": {
+    "title": "Git Push CI Reminder",
+    "description": "Reminder to monitor CI status after git push.",
+    "path": "git-push-ci-reminder"
+  }
+}

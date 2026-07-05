@@ -939,7 +939,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Per-session wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake",
       reuse_session: true,
       last_session_id: session.id,
@@ -964,7 +964,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Recurring",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Recurring",
       reuse_session: true,
       last_session_id: session.id,
@@ -989,7 +989,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Disabled wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake",
       reuse_session: true,
       last_session_id: session.id,
@@ -1016,7 +1016,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Per-other-session wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake",
       reuse_session: true,
       last_session_id: other_session.id,
@@ -1040,7 +1040,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Per-session wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake",
       reuse_session: true,
       last_session_id: session.id,
@@ -1140,7 +1140,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Wake on watched needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Watched session reached state",
       trigger_conditions_attributes: [
         {
@@ -1164,7 +1164,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Broadcast needs_input handler",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Some session needs input",
       trigger_conditions_attributes: [
         { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input" } }
@@ -1184,7 +1184,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Wake on other session",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Other session reached state",
       trigger_conditions_attributes: [
         {
@@ -1212,7 +1212,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Wake on watched archive",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Watched session was archived: {{event}}",
       trigger_conditions_attributes: [
         {
@@ -1241,7 +1241,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     needs_input_trigger = Trigger.create!(
       name: "Wake on needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "needs_input: {{event}}",
       trigger_conditions_attributes: [
         {
@@ -1253,7 +1253,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     archived_trigger = Trigger.create!(
       name: "Wake on archive",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "archived: {{event}}",
       trigger_conditions_attributes: [
         {
@@ -1283,7 +1283,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Multi-condition trigger",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Triggered: {{event}} {{link}}",
       trigger_conditions_attributes: [
         {
@@ -1327,7 +1327,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Wake target on watched needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Watched reached: {{event}}",
       reuse_session: true,
       last_session_id: target_session.id,
@@ -1356,7 +1356,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Broadcast handler with target",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Some session needs input: {{event}}",
       reuse_session: true,
       last_session_id: target_session.id,

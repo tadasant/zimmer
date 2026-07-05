@@ -48,21 +48,21 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
 
   setup do
     @session = sessions(:running)
-    @session.update!(mcp_servers: [ "appsignal-pulsemcp-prod" ])
+    @session.update!(mcp_servers: [ "context7" ])
     @logger = RecordingLogger.new
     @host = Host.new(@session, @logger)
   end
 
   test "a configured server failure is detected, escalated, but logged at .info (not .error)" do
     any_failed = @host.update_session_mcp_status(
-      "appsignal-pulsemcp-prod" => { status: "failed", error: "Connection closed" }
+      "context7" => { status: "failed", error: "Connection closed" }
     )
 
     assert any_failed, "configured server failure should escalate (any_failed)"
 
     @session.reload
     assert @session.custom_metadata["should_fail_session"], "should flag session for retry/failure handling"
-    assert_equal "failed", @session.custom_metadata.dig("mcp_servers_status", "appsignal-pulsemcp-prod", "status")
+    assert_equal "failed", @session.custom_metadata.dig("mcp_servers_status", "context7", "status")
 
     # The intermediate detection is logged at .info — NOT .error — so transient,
     # self-healing flaps don't trip the global prod-ERROR alert.

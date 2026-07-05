@@ -1,5 +1,5 @@
 # Sentry SDK pointed at the self-hosted GlitchTip instance
-# (https://glitchtip.obs.example.com). GlitchTip is Sentry-API compatible,
+# (https://glitchtip.obs.tadasant.com). GlitchTip is Sentry-API compatible,
 # so the official sentry-ruby/sentry-rails SDKs work as-is.
 #
 # This initializer is a hard no-op when SENTRY_DSN_BACKEND is unset, which keeps

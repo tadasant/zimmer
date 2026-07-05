@@ -180,7 +180,7 @@ module Execution
 
       # Test with complex session
       complex_session = sessions(:active_session)
-      complex_session.mcp_servers = [ "playwright-custom", "twist-wolfbot", "appsignal-pulsemcp-prod" ]
+      complex_session.mcp_servers = [ "playwright-custom", "twist-wolfbot", "context7" ]
       complex_session.config = { custom: "config", nested: { value: 42 } }
       complex_context = Context.new(session: complex_session)
 

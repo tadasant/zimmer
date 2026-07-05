@@ -11,7 +11,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     # Use actual server names from mcp.json config to pass validation
     @session.update!(
       metadata: { "working_directory" => "/Users/admin/test-project" },
-      mcp_servers: [ "appsignal-pulsemcp-prod", "playwright-custom" ]
+      mcp_servers: [ "context7", "playwright-custom" ]
     )
   end
 
@@ -44,14 +44,14 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     result = service.poll
 
     assert_equal 2, result[:logs].length
-    assert_equal "appsignal-pulsemcp-prod", result[:logs][0][:server_name]
+    assert_equal "context7", result[:logs][0][:server_name]
     assert_equal "Starting connection with timeout of 30000ms", result[:logs][0][:message]
   end
 
   test "poll finds .jsonl files (Claude CLI actual format)" do
     # This test validates we're looking for the correct file extension
     # that Claude CLI actually creates
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-13T00-07-09-351Z.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -68,7 +68,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
   end
 
   test "poll determines server status as connected when connection success message found" do
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-09T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -81,12 +81,12 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
     result = service.poll
 
-    assert_equal "connected", result[:server_statuses]["appsignal-pulsemcp-prod"][:status]
-    assert_equal "2025-12-09T10:00:01Z", result[:server_statuses]["appsignal-pulsemcp-prod"][:connected_at]
+    assert_equal "connected", result[:server_statuses]["context7"][:status]
+    assert_equal "2025-12-09T10:00:01Z", result[:server_statuses]["context7"][:connected_at]
   end
 
   test "poll determines server status as failed when connection failed message found" do
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-09T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -99,12 +99,12 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
     result = service.poll
 
-    assert_equal "failed", result[:server_statuses]["appsignal-pulsemcp-prod"][:status]
-    assert_includes result[:server_statuses]["appsignal-pulsemcp-prod"][:error], "Connection failed"
+    assert_equal "failed", result[:server_statuses]["context7"][:status]
+    assert_includes result[:server_statuses]["context7"][:error], "Connection failed"
   end
 
   test "poll determines server status as pending when no connection status found" do
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-09T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -116,11 +116,11 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
     result = service.poll
 
-    assert_equal "pending", result[:server_statuses]["appsignal-pulsemcp-prod"][:status]
+    assert_equal "pending", result[:server_statuses]["context7"][:status]
   end
 
   test "poll handles invalid JSON in log files gracefully" do
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-09T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -135,7 +135,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
   end
 
   test "poll handles partially invalid JSONL (valid lines still parsed)" do
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-09T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -158,7 +158,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
   end
 
   test "poll sorts logs by timestamp across multiple servers" do
-    server1_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server1_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     server2_dir = File.join(mcp_cache_dir, "mcp-logs-playwright-custom")
     log1_file = File.join(server1_dir, "2025-12-09T10-00-00.jsonl")
     log2_file = File.join(server2_dir, "2025-12-09T10-00-00.jsonl")
@@ -178,7 +178,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
 
     # playwright-custom message should come first (earlier timestamp)
     assert_equal "playwright-custom", result[:logs][0][:server_name]
-    assert_equal "appsignal-pulsemcp-prod", result[:logs][1][:server_name]
+    assert_equal "context7", result[:logs][1][:server_name]
   end
 
   # === Real Claude CLI Format Tests ===
@@ -205,7 +205,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
 
   test "poll correctly parses real Claude CLI log files with .jsonl extension" do
     # Test with the exact filename format Claude CLI uses: ISO timestamp with Z.jsonl
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-13T00-07-09-351Z.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -222,11 +222,11 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     result = service.poll
 
     assert_equal 2, result[:logs].length
-    assert_equal "connected", result[:server_statuses]["appsignal-pulsemcp-prod"][:status]
+    assert_equal "connected", result[:server_statuses]["context7"][:status]
   end
 
   test "poll detects connection failure from real Claude CLI error format" do
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-13T00-07-09-351Z.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -243,8 +243,8 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     result = service.poll
 
     assert_equal 2, result[:logs].length
-    assert_equal "failed", result[:server_statuses]["appsignal-pulsemcp-prod"][:status]
-    assert_includes result[:server_statuses]["appsignal-pulsemcp-prod"][:error], "Connection failed"
+    assert_equal "failed", result[:server_statuses]["context7"][:status]
+    assert_includes result[:server_statuses]["context7"][:error], "Connection failed"
   end
 
   test "poll combines multiple error messages to show root cause" do
@@ -279,7 +279,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
   end
 
   test "poll clears error messages after successful connection" do
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-13T00-07-09-351Z.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -296,9 +296,9 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     result = service.poll
 
     # Should be connected (not failed) since the connection succeeded after the error
-    assert_equal "connected", result[:server_statuses]["appsignal-pulsemcp-prod"][:status],
+    assert_equal "connected", result[:server_statuses]["context7"][:status],
       "Should detect as connected when connection eventually succeeds"
-    assert_nil result[:server_statuses]["appsignal-pulsemcp-prod"][:error],
+    assert_nil result[:server_statuses]["context7"][:error],
       "Should not include earlier errors when connection eventually succeeds"
   end
 
@@ -308,20 +308,20 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
 
     server_statuses = {
-      "appsignal-pulsemcp-prod" => { status: "connected", connected_at: "2025-12-09T10:00:00Z" }
+      "context7" => { status: "connected", connected_at: "2025-12-09T10:00:00Z" }
     }
 
     service.update_session_mcp_status(server_statuses)
 
     @session.reload
-    assert_equal "connected", @session.custom_metadata.dig("mcp_servers_status", "appsignal-pulsemcp-prod", "status")
+    assert_equal "connected", @session.custom_metadata.dig("mcp_servers_status", "context7", "status")
   end
 
   test "update_session_mcp_status sets should_fail_session when configured server fails" do
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
 
     server_statuses = {
-      "appsignal-pulsemcp-prod" => { status: "failed", error: "Connection failed", failed_at: "2025-12-09T10:00:00Z" }
+      "context7" => { status: "failed", error: "Connection failed", failed_at: "2025-12-09T10:00:00Z" }
     }
 
     result = service.update_session_mcp_status(server_statuses)
@@ -329,8 +329,8 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     @session.reload
     assert result, "Should return true when a server fails"
     assert @session.custom_metadata["should_fail_session"]
-    assert_equal "MCP server(s) failed to connect: appsignal-pulsemcp-prod", @session.custom_metadata["mcp_failure_reason"]
-    assert_equal [ { "name" => "appsignal-pulsemcp-prod", "status" => "failed", "error" => "Connection failed" } ], @session.custom_metadata["mcp_failed_servers"]
+    assert_equal "MCP server(s) failed to connect: context7", @session.custom_metadata["mcp_failure_reason"]
+    assert_equal [ { "name" => "context7", "status" => "failed", "error" => "Connection failed" } ], @session.custom_metadata["mcp_failed_servers"]
   end
 
   test "update_session_mcp_status does not set should_fail_session for unconfigured servers" do
@@ -338,9 +338,9 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     @session.update!(mcp_servers: [ "playwright-custom" ])
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
 
-    # appsignal-pulsemcp-prod fails but is not configured
+    # context7 fails but is not configured
     server_statuses = {
-      "appsignal-pulsemcp-prod" => { status: "failed", error: "Connection failed", failed_at: "2025-12-09T10:00:00Z" }
+      "context7" => { status: "failed", error: "Connection failed", failed_at: "2025-12-09T10:00:00Z" }
     }
 
     result = service.update_session_mcp_status(server_statuses)
@@ -355,7 +355,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
 
     # First call - should set should_fail_session
     server_statuses = {
-      "appsignal-pulsemcp-prod" => { status: "failed", error: "Connection failed", failed_at: "2025-12-09T10:00:00Z" }
+      "context7" => { status: "failed", error: "Connection failed", failed_at: "2025-12-09T10:00:00Z" }
     }
     service.update_session_mcp_status(server_statuses)
 
@@ -376,7 +376,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     @session.update!(mcp_servers: nil)
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
 
-    result = service.update_session_mcp_status({ "appsignal-pulsemcp-prod" => { status: "connected" } })
+    result = service.update_session_mcp_status({ "context7" => { status: "connected" } })
 
     assert_not result
   end
@@ -409,7 +409,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
 
     server_statuses = {
-      "appsignal-pulsemcp-prod" => { status: "connected", connected_at: "2026-04-27T20:53:00Z" },
+      "context7" => { status: "connected", connected_at: "2026-04-27T20:53:00Z" },
       "agent-orchestrator" => { status: "connected", connected_at: "2026-04-27T20:53:11Z" }
     }
 
@@ -417,7 +417,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
 
     @session.reload
     statuses = @session.custom_metadata["mcp_servers_status"]
-    assert_equal "connected", statuses.dig("appsignal-pulsemcp-prod", "status")
+    assert_equal "connected", statuses.dig("context7", "status")
     assert_equal "connected", statuses.dig("agent-orchestrator", "status")
   end
 
@@ -465,13 +465,13 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     # is configured-by-the-user and a failure should still escalate to should_fail_session.
     # The .uniq deduplication must not strip the configured semantics.
     @session.update!(
-      mcp_servers: [ "appsignal-pulsemcp-prod" ],
-      custom_metadata: { "injected_mcp_servers" => [ "appsignal-pulsemcp-prod" ] }
+      mcp_servers: [ "context7" ],
+      custom_metadata: { "injected_mcp_servers" => [ "context7" ] }
     )
     service = McpLogPollerService.new(@session, file_system: @mock_file_system)
 
     server_statuses = {
-      "appsignal-pulsemcp-prod" => { status: "failed", error: "boom", failed_at: "2026-04-27T20:53:11Z" }
+      "context7" => { status: "failed", error: "boom", failed_at: "2026-04-27T20:53:11Z" }
     }
 
     result = service.update_session_mcp_status(server_statuses)
@@ -493,8 +493,8 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     # Logs contain a failure from BEFORE min_timestamp (should be filtered)
     # and a success AFTER min_timestamp (should be included)
     logs = [
-      { server_name: "appsignal-pulsemcp-prod", timestamp: "2025-12-09T10:00:00Z", message: "Connection failed: timeout" },
-      { server_name: "appsignal-pulsemcp-prod", timestamp: "2025-12-09T10:00:03Z", message: "Successfully connected to server" }
+      { server_name: "context7", timestamp: "2025-12-09T10:00:00Z", message: "Connection failed: timeout" },
+      { server_name: "context7", timestamp: "2025-12-09T10:00:03Z", message: "Successfully connected to server" }
     ]
 
     result = service.send(:determine_server_status, logs)
@@ -510,7 +510,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     service = McpLogPollerService.new(@session, file_system: @mock_file_system, min_timestamp: min_timestamp)
 
     logs = [
-      { server_name: "appsignal-pulsemcp-prod", timestamp: "2025-12-09T10:00:00Z", message: "Connection failed: timeout" }
+      { server_name: "context7", timestamp: "2025-12-09T10:00:00Z", message: "Connection failed: timeout" }
     ]
 
     result = service.send(:determine_server_status, logs)
@@ -526,7 +526,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
 
     # Logs contain a failure followed by success
     logs = [
-      { server_name: "appsignal-pulsemcp-prod", timestamp: "2025-12-09T10:00:00Z", message: "Connection failed: timeout" }
+      { server_name: "context7", timestamp: "2025-12-09T10:00:00Z", message: "Connection failed: timeout" }
     ]
 
     result = service.send(:determine_server_status, logs)
@@ -541,8 +541,8 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
 
     # Mix of entries with and without timestamps
     logs = [
-      { server_name: "appsignal-pulsemcp-prod", timestamp: nil, message: "Connection failed: timeout" },
-      { server_name: "appsignal-pulsemcp-prod", timestamp: "2025-12-09T10:00:03Z", message: "Successfully connected to server" }
+      { server_name: "context7", timestamp: nil, message: "Connection failed: timeout" },
+      { server_name: "context7", timestamp: "2025-12-09T10:00:03Z", message: "Successfully connected to server" }
     ]
 
     result = service.send(:determine_server_status, logs)
@@ -557,7 +557,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     service = McpLogPollerService.new(@session, file_system: @mock_file_system, min_timestamp: min_timestamp)
 
     logs = [
-      { server_name: "appsignal-pulsemcp-prod", timestamp: "not-a-valid-timestamp", message: "Connection failed: timeout" }
+      { server_name: "context7", timestamp: "not-a-valid-timestamp", message: "Connection failed: timeout" }
     ]
 
     result = service.send(:determine_server_status, logs)
@@ -612,7 +612,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     # - User restarts on 12/28
     # - Old 12/24 logs should NOT cause immediate failure
 
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-24T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)
@@ -633,7 +633,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
 
     # All logs are from 12/24 which is before min_timestamp
     # So server status should be pending (no new connection info yet)
-    assert_equal "pending", result[:server_statuses]["appsignal-pulsemcp-prod"][:status]
+    assert_equal "pending", result[:server_statuses]["context7"][:status]
   end
 
   private
@@ -649,7 +649,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
   end
 
   def setup_mcp_log_directory_with_logs
-    server_dir = File.join(mcp_cache_dir, "mcp-logs-appsignal-pulsemcp-prod")
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
     log_file = File.join(server_dir, "2025-12-09T10-00-00.jsonl")
 
     @mock_file_system.mkdir_p(mcp_cache_dir)

@@ -31,7 +31,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       transcript: @transcript_content,
-      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      mcp_servers: [ "context7" ],
       goal: "Complete the task",
       title: "Test Session",
       metadata: {
@@ -356,7 +356,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     @mock_fs.mkdir_p(@clone_path)
 
     # Root currently resolves these defaults (default_in_roots folded in).
-    @session.stubs(:agent_root_default_mcp_servers).returns([ "appsignal-pulsemcp-prod" ])
+    @session.stubs(:agent_root_default_mcp_servers).returns([ "context7" ])
 
     # Backfilling flips the gate to the prepare! branch (which passes the servers
     # to AIR as --mcp-server flags), instead of the empty-column baseline branch.
@@ -373,7 +373,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert result.success?
 
     @session.reload
-    assert_equal [ "appsignal-pulsemcp-prod" ], @session.mcp_servers,
+    assert_equal [ "context7" ], @session.mcp_servers,
       "unarchive must backfill an empty mcp_servers column from the root's resolved defaults " \
       "so the regenerated .mcp.json restores the default_in_roots servers"
   end
@@ -406,7 +406,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
   test "does not clobber a non-empty mcp_servers column with agent root defaults" do
     # When the session already has explicit MCP servers, unarchive must leave
     # them untouched — backfill only targets the empty-column defect.
-    @session.update!(mcp_servers: [ "appsignal-pulsemcp-prod" ])
+    @session.update!(mcp_servers: [ "context7" ])
     @mock_fs.mkdir_p(@clone_path)
 
     # Resolved root defaults differ; they must NOT overwrite the explicit list.
@@ -421,7 +421,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert result.success?
 
     @session.reload
-    assert_equal [ "appsignal-pulsemcp-prod" ], @session.mcp_servers,
+    assert_equal [ "context7" ], @session.mcp_servers,
       "unarchive must preserve an explicitly-configured mcp_servers list, not overwrite it with root defaults"
   end
 
@@ -436,7 +436,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     @mock_fs.mkdir_p(@clone_path)
 
     @session.stubs(:agent_root_default_mcp_servers)
-      .returns([ "appsignal-pulsemcp-prod", "this-server-does-not-exist-xyz" ])
+      .returns([ "context7", "this-server-does-not-exist-xyz" ])
 
     AirPrepareService.any_instance.expects(:prepare!).once
     AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
@@ -450,7 +450,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert result.success?
 
     @session.reload
-    assert_equal [ "appsignal-pulsemcp-prod" ], @session.mcp_servers,
+    assert_equal [ "context7" ], @session.mcp_servers,
       "backfill must keep only catalog-valid servers so an incomplete catalog can't make update! raise and abort the heal"
   end
 

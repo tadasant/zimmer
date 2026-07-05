@@ -72,7 +72,7 @@ class CertExpiryMonitorJobTest < ActiveSupport::TestCase
       CertExpiryMonitorJob.perform_now(hosts: [ "zimmer.example.com" ], checker: checker)
       assert_equal 1, alerts.size, "expected exactly one GlitchTip alert"
       assert_equal 10, alerts.first[:context][:days_remaining]
-      assert_match(/ao\.pulsemcp\.com/, alerts.first[:context][:host].to_s)
+      assert_match(/zimmer\.example\.com/, alerts.first[:context][:host].to_s)
     end
 
     assert_match(/ERROR/, @log_io.string)
@@ -189,7 +189,7 @@ class CertExpiryMonitorJobTest < ActiveSupport::TestCase
       "the worker cannot reach its own host's tailscale origin, so it must skip it"
     # The peer AO host and the public obs hosts are still watched.
     assert_includes checker.checked_hosts, "zimmer.example.com"
-    assert_includes checker.checked_hosts, "obs.example.com"
+    assert_includes checker.checked_hosts, "obs.tadasant.com"
   end
 
   test "matches APP_HOST against the host list ignoring port and case" do
@@ -197,7 +197,7 @@ class CertExpiryMonitorJobTest < ActiveSupport::TestCase
 
     # APP_HOST carrying a port and mixed case must still drop the bare lowercase
     # host from the default set — otherwise the environment self-monitors.
-    with_env("CERT_EXPIRY_MONITOR_HOSTS" => nil, "APP_HOST" => "zimmer.example.com:443") do
+    with_env("CERT_EXPIRY_MONITOR_HOSTS" => nil, "APP_HOST" => "Staging.Zimmer.Example.com:443") do
       capture_alerts do |_alerts|
         CertExpiryMonitorJob.perform_now(checker: checker)
       end

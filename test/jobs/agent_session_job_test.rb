@@ -1033,10 +1033,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
     )
 
     # Root currently resolves this default (folded in from default_in_roots).
-    # appsignal-pulsemcp-prod is a stdio server (no OAuth), so it passes the
+    # context7 is a stdio server (no OAuth), so it passes the
     # OAuth gate cleanly. Stub on any_instance because the job reloads the
     # session by id into a fresh Session instance.
-    Session.any_instance.stubs(:agent_root_default_mcp_servers).returns([ "appsignal-pulsemcp-prod" ])
+    Session.any_instance.stubs(:agent_root_default_mcp_servers).returns([ "context7" ])
 
     # Backfilling flips the gate to the prepare! branch (servers passed to AIR),
     # instead of the empty-column ensure_baseline_mcp_config! branch that would
@@ -1044,7 +1044,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     AirPrepareService.any_instance.expects(:prepare!).once
     AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
     AirPrepareService.any_instance.stubs(:injected_mcp_servers)
-      .returns([ "appsignal-pulsemcp-prod", "agent-orchestrator-prod-self-session" ])
+      .returns([ "context7", "agent-orchestrator-prod-self-session" ])
 
     job = AgentSessionJob.new
 
@@ -1087,7 +1087,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.reload
     assert_equal true, @session.metadata["clone_recreated"],
       "Clone should have been recreated for this regression scenario"
-    assert_equal [ "appsignal-pulsemcp-prod" ], @session.mcp_servers,
+    assert_equal [ "context7" ], @session.mcp_servers,
       "recreating a clone must backfill an empty mcp_servers column from the root's " \
       "resolved defaults so the regenerated .mcp.json keeps the configured servers " \
       "instead of collapsing to the self-session baseline"
@@ -5855,9 +5855,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
       custom_metadata: {
         "should_fail_session" => true,
         "mcp_failed_servers" => [
-          { "name" => "appsignal-pulsemcp-prod", "status" => "error" }
+          { "name" => "context7", "status" => "error" }
         ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: appsignal-pulsemcp-prod"
+        "mcp_failure_reason" => "MCP server(s) failed to connect: context7"
       }
     )
 
@@ -5877,13 +5877,13 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "needs_input", @session.status
     assert_equal "mcp_retry", @session.metadata["paused_by"]
     assert_equal 1, @session.metadata["mcp_retry_count"]
-    assert_equal [ { "name" => "appsignal-pulsemcp-prod", "status" => "error" } ], @session.metadata["mcp_failed_servers"]
+    assert_equal [ { "name" => "context7", "status" => "error" } ], @session.metadata["mcp_failed_servers"]
 
     # Verify error logs were created
     log_buffer.flush
     error_logs = @session.logs.where(level: "error")
     assert error_logs.any? { |log| log.content.include?("MCP connection failure detected") }
-    assert error_logs.any? { |log| log.content.include?("appsignal-pulsemcp-prod") && log.content.include?("error") }
+    assert error_logs.any? { |log| log.content.include?("context7") && log.content.include?("error") }
   end
 
   test "check_and_handle_mcp_failure heals a partial _npx cache before retrying" do
@@ -5968,10 +5968,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
       custom_metadata: {
         "should_fail_session" => true,
         "mcp_failed_servers" => [
-          { "name" => "appsignal-pulsemcp-prod", "status" => "error" },
+          { "name" => "context7", "status" => "error" },
           { "name" => "playwright-custom", "status" => "offline" }
         ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: appsignal-pulsemcp-prod, playwright-custom"
+        "mcp_failure_reason" => "MCP server(s) failed to connect: context7, playwright-custom"
       }
     )
 
@@ -5994,7 +5994,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Verify both server errors were logged
     log_buffer.flush
     error_logs = @session.logs.where(level: "error").pluck(:content).join(" ")
-    assert_includes error_logs, "appsignal-pulsemcp-prod"
+    assert_includes error_logs, "context7"
     assert_includes error_logs, "playwright-custom"
   end
 

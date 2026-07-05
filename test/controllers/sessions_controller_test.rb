@@ -370,7 +370,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should accept multiple mcp_servers" do
-    servers = [ "playwright-custom", "twist-wolfbot", "appsignal-pulsemcp-prod" ]
+    servers = [ "playwright-custom", "twist-wolfbot", "context7" ]
 
     post sessions_url, params: {
       session: {
@@ -3523,13 +3523,13 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [ "playwright-custom", "twist-wolfbot" ])
 
     patch update_mcp_servers_session_url(session),
-          params: { mcp_servers: [ "appsignal-pulsemcp-prod" ] },
+          params: { mcp_servers: [ "context7" ] },
           as: :json
 
     assert_response :success
     session.reload
     log = session.logs.last
-    assert_includes log.content, "added: appsignal-pulsemcp-prod"
+    assert_includes log.content, "added: context7"
     assert_includes log.content, "removed: playwright-custom, twist-wolfbot"
   end
 
@@ -3771,12 +3771,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # Should not raise an error, just skip regeneration (no file to write)
     patch update_mcp_servers_session_url(session),
-          params: { mcp_servers: [ "appsignal-pulsemcp-prod" ] },
+          params: { mcp_servers: [ "context7" ] },
           as: :json
 
     assert_response :success
     session.reload
-    assert_equal [ "appsignal-pulsemcp-prod" ], session.mcp_servers
+    assert_equal [ "context7" ], session.mcp_servers
   end
 
   test "should handle mcp_servers update when no working directory in metadata" do
@@ -3789,12 +3789,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # Should not raise an error, just skip regeneration (no working dir)
     patch update_mcp_servers_session_url(session),
-          params: { mcp_servers: [ "appsignal-pulsemcp-prod" ] },
+          params: { mcp_servers: [ "context7" ] },
           as: :json
 
     assert_response :success
     session.reload
-    assert_equal [ "appsignal-pulsemcp-prod" ], session.mcp_servers
+    assert_equal [ "context7" ], session.mcp_servers
   end
 
   test "should handle mcp_servers update when metadata is nil" do
@@ -3808,12 +3808,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # Should not raise an error, just skip regeneration (no metadata)
     patch update_mcp_servers_session_url(session),
-          params: { mcp_servers: [ "appsignal-pulsemcp-prod" ] },
+          params: { mcp_servers: [ "context7" ] },
           as: :json
 
     assert_response :success
     session.reload
-    assert_equal [ "appsignal-pulsemcp-prod" ], session.mcp_servers
+    assert_equal [ "context7" ], session.mcp_servers
   end
 
   test "should regenerate mcp.json when catalog plugin bundles MCP servers" do

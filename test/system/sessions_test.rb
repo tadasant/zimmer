@@ -113,7 +113,7 @@ class SessionsTest < ApplicationSystemTestCase
     # Spot-check that the legacy AppSignal MCP and a new self-hosted observability MCP
     # (Grafana prod) both render in that initial slice — see issue #2868 Phase 1h.
     # Staging variants are exercised by typing into the input to filter (next test).
-    assert_selector ".server-item[data-name='appsignal-pulsemcp-prod']"
+    assert_selector ".server-item[data-name='context7']"
     assert_selector ".server-item[data-name='grafana-pulsemcp-prod']"
     assert_selector ".server-item[data-name='glitchtip-pulsemcp-prod']"
     assert_selector ".server-item[data-name='playwright-custom']"
@@ -153,7 +153,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Select MCP servers using the multi-select dropdown
     find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='appsignal-pulsemcp-prod']").click
+    find(".server-item[data-name='context7']").click
     find("[data-mcp-server-select-target='input']").click
     find(".server-item[data-name='playwright-custom']").click
 
@@ -189,7 +189,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Select all available servers using multi-select dropdown
     find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='appsignal-pulsemcp-prod']").click
+    find(".server-item[data-name='context7']").click
     find("[data-mcp-server-select-target='input']").click
     find(".server-item[data-name='playwright-custom']").click
 
@@ -203,7 +203,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Should see all selected servers in the header (MCP info is inline)
     assert_text "MCP:"
-    assert_text "appsignal-pulsemcp-prod"
+    assert_text "context7"
     assert_text "playwright-custom"
   end
 
@@ -291,7 +291,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Select server using multi-select dropdown
     find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='appsignal-pulsemcp-prod']").click
+    find(".server-item[data-name='context7']").click
     find("label", text: "Initial Prompt").click
 
     click_button "Create Session"
@@ -406,7 +406,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Select servers using multi-select dropdown
     find("[data-mcp-server-select-target='input']").click
-    find(".server-item[data-name='appsignal-pulsemcp-prod']").click
+    find(".server-item[data-name='context7']").click
     find("[data-mcp-server-select-target='input']").click
     find(".server-item[data-name='playwright-custom']").click
     find("label", text: "Initial Prompt").click
@@ -423,7 +423,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Should see selected MCP servers inline in header
     assert_text "MCP:"
-    assert_text "appsignal-pulsemcp-prod"
+    assert_text "context7"
     assert_text "playwright-custom"
   end
 

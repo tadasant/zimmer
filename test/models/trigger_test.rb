@@ -55,7 +55,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.new(
       name: "Test",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Test"
     )
     assert_not trigger.valid?
@@ -81,7 +81,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.new(
       name: "Nested Test",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Test",
       trigger_conditions_attributes: [
         { condition_type: "slack", configuration: { "channel_id" => "C123", "channel_name" => "test" } }
@@ -631,7 +631,7 @@ class TriggerTest < ActiveSupport::TestCase
   test "catalog_skills defaults to empty array" do
     trigger = Trigger.new(
       name: "Test",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Test"
     )
     assert_equal [], trigger.catalog_skills
@@ -736,7 +736,7 @@ class TriggerTest < ActiveSupport::TestCase
   test "catalog_hooks defaults to empty array" do
     trigger = Trigger.new(
       name: "Test",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Test"
     )
     assert_equal [], trigger.catalog_hooks
@@ -820,7 +820,7 @@ class TriggerTest < ActiveSupport::TestCase
   test "catalog_plugins defaults to empty array" do
     trigger = Trigger.new(
       name: "Test",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Test"
     )
     assert_equal [], trigger.catalog_plugins
@@ -863,16 +863,16 @@ class TriggerTest < ActiveSupport::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
     PluginsConfig.stubs(:exists?).returns(true)
 
-    @trigger.update!(catalog_plugins: [ "pulsemcp-ci-workflow" ])
+    @trigger.update!(catalog_plugins: [ "ci-workflow" ])
     session = @trigger.create_session!(prompt: "Test with plugins")
-    assert_equal [ "pulsemcp-ci-workflow" ], session.catalog_plugins
+    assert_equal [ "ci-workflow" ], session.catalog_plugins
   end
 
   # Enqueue messages validation tests
   test "enqueue_messages defaults to false" do
     trigger = Trigger.new(
       name: "Test",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Test"
     )
     assert_equal false, trigger.enqueue_messages
@@ -929,7 +929,7 @@ class TriggerTest < ActiveSupport::TestCase
   test "resuscitate_archived defaults to false" do
     trigger = Trigger.new(
       name: "Test",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Test"
     )
     assert_equal false, trigger.resuscitate_archived
@@ -1580,7 +1580,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.new(
       name: "Per-session wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: false,
       last_session_id: target.id,
@@ -1599,7 +1599,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Per-session wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: target.id,
@@ -1619,7 +1619,7 @@ class TriggerTest < ActiveSupport::TestCase
     Trigger.create!(
       name: "Per-session wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: target.id,
@@ -1639,7 +1639,7 @@ class TriggerTest < ActiveSupport::TestCase
     Trigger.create!(
       name: "Recurring",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Recurring",
       reuse_session: false,
       trigger_conditions_attributes: [
@@ -1657,7 +1657,7 @@ class TriggerTest < ActiveSupport::TestCase
     Trigger.create!(
       name: "Hourly",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Hourly",
       reuse_session: true,
       last_session_id: target.id,
@@ -1676,7 +1676,7 @@ class TriggerTest < ActiveSupport::TestCase
     Trigger.create!(
       name: "Disabled wake",
       status: "disabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: target.id,
@@ -1696,7 +1696,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Wake on watched session",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: target.id,
@@ -1719,7 +1719,7 @@ class TriggerTest < ActiveSupport::TestCase
     Trigger.create!(
       name: "Broadcast ao_event",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Broadcast",
       reuse_session: true,
       last_session_id: target.id,
@@ -1739,7 +1739,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "Per-session ao_event wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: target.id,
@@ -1761,7 +1761,7 @@ class TriggerTest < ActiveSupport::TestCase
       Trigger.create!(
         name: "Per-session wake",
         status: "enabled",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Wake up",
         reuse_session: true,
         last_session_id: target.id,
@@ -1784,7 +1784,7 @@ class TriggerTest < ActiveSupport::TestCase
     needs_input_wake = Trigger.create!(
       name: "Wake on needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -1796,7 +1796,7 @@ class TriggerTest < ActiveSupport::TestCase
     failed_wake = Trigger.create!(
       name: "Wake on failed",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -1808,7 +1808,7 @@ class TriggerTest < ActiveSupport::TestCase
     deadline = Trigger.create!(
       name: "Deadline backstop",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -1833,7 +1833,7 @@ class TriggerTest < ActiveSupport::TestCase
     wake_a = Trigger.create!(
       name: "Wake A",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester_a.id,
@@ -1845,7 +1845,7 @@ class TriggerTest < ActiveSupport::TestCase
     wake_b = Trigger.create!(
       name: "Wake B",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester_b.id,
@@ -1867,7 +1867,7 @@ class TriggerTest < ActiveSupport::TestCase
     one_time_wake = Trigger.create!(
       name: "One-time wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -1879,7 +1879,7 @@ class TriggerTest < ActiveSupport::TestCase
     recurring_trigger = Trigger.create!(
       name: "Recurring (broadcast ao_event) referencing same requester",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -1900,7 +1900,7 @@ class TriggerTest < ActiveSupport::TestCase
     sibling = Trigger.create!(
       name: "Sibling wake",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: requester.id,
@@ -1961,7 +1961,7 @@ class TriggerTest < ActiveSupport::TestCase
       Trigger.create!(
         name: "Wake on already-needs_input",
         status: "enabled",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Wake up",
         reuse_session: true,
         last_session_id: requester.id,
@@ -1983,7 +1983,7 @@ class TriggerTest < ActiveSupport::TestCase
       Trigger.create!(
         name: "Wake on already-failed",
         status: "enabled",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Wake up",
         reuse_session: true,
         last_session_id: requester.id,
@@ -2005,7 +2005,7 @@ class TriggerTest < ActiveSupport::TestCase
       Trigger.create!(
         name: "Wake on already-archived",
         status: "enabled",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Wake up",
         reuse_session: true,
         last_session_id: requester.id,
@@ -2027,7 +2027,7 @@ class TriggerTest < ActiveSupport::TestCase
       Trigger.create!(
         name: "Wake on mismatched state",
         status: "enabled",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Wake up",
         reuse_session: true,
         last_session_id: requester.id,
@@ -2048,7 +2048,7 @@ class TriggerTest < ActiveSupport::TestCase
       Trigger.create!(
         name: "Broadcast wake",
         status: "enabled",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Wake up",
         reuse_session: true,
         last_session_id: requester.id,
@@ -2067,7 +2067,7 @@ class TriggerTest < ActiveSupport::TestCase
       Trigger.create!(
         name: "Disabled wake",
         status: "disabled",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Wake up",
         reuse_session: true,
         last_session_id: requester.id,
@@ -2101,7 +2101,7 @@ class TriggerTest < ActiveSupport::TestCase
       Trigger.create!(
         name: "Lock test wake",
         status: "enabled",
-        agent_root_name: "pulsemcp",
+        agent_root_name: "zimmer",
         prompt_template: "Wake up",
         reuse_session: true,
         last_session_id: requester.id,
@@ -2141,7 +2141,7 @@ class TriggerTest < ActiveSupport::TestCase
           trigger = Trigger.create!(
             name: "Wake on missing-watched",
             status: "enabled",
-            agent_root_name: "pulsemcp",
+            agent_root_name: "zimmer",
             prompt_template: "Wake up",
             reuse_session: true,
             last_session_id: requester.id,
@@ -2170,7 +2170,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.new(
       name: "Self-watch (invalid)",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: requester.id,
@@ -2193,7 +2193,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.new(
       name: "Self-watch failed (invalid)",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: requester.id,
@@ -2215,7 +2215,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.new(
       name: "Self-watch archived (invalid)",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Wake up",
       reuse_session: true,
       last_session_id: requester.id,
@@ -2340,7 +2340,7 @@ class TriggerTest < ActiveSupport::TestCase
     wake_trigger = Trigger.create!(
       name: "Wake on watched needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Watched session reached {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -2396,7 +2396,7 @@ class TriggerTest < ActiveSupport::TestCase
     wake_trigger = Trigger.create!(
       name: "Wake on watched needs_input",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Watched session reached {{event}}",
       reuse_session: true,
       last_session_id: requester.id,
@@ -2438,7 +2438,7 @@ class TriggerTest < ActiveSupport::TestCase
     sched_trigger = Trigger.create!(
       name: "One-time schedule new-session",
       status: "enabled",
-      agent_root_name: "pulsemcp",
+      agent_root_name: "zimmer",
       prompt_template: "Scheduled run",
       reuse_session: false,
       trigger_conditions_attributes: [

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/air.schema.json",
+  "name": "zimmer-placeholder-catalog",
+  "description": "Self-contained placeholder AIR catalog for Zimmer. Defines a minimal set of agent roots, skills, MCP servers, references, hooks, and plugins so the app's config services resolve non-empty data fully offline (no private GitHub catalogs, no network). Replace or extend `catalog/` with your own AIR catalog for real deployments.",
+  "gitProtocol": "https",
+  "extensions": [
+    "@pulsemcp/air-adapter-claude",
+    "@pulsemcp/air-secrets-env"
+  ],
+  "skills": ["./catalog/skills/skills.json"],
+  "mcp": ["./catalog/mcp.json"],
+  "roots": ["./catalog/roots.json"],
+  "references": ["./catalog/references/references.json"],
+  "hooks": ["./catalog/hooks/hooks.json"],
+  "plugins": ["./catalog/plugins/plugins.json"]
+}

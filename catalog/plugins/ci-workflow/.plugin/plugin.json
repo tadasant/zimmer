@@ -1,0 +1,14 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/plugin-manifest.schema.json",
+  "name": "ci-workflow",
+  "title": "Ci Workflow",
+  "version": "0.0.0",
+  "skills": [
+    "wait-for-ci"
+  ],
+  "mcp_servers": [],
+  "hooks": [
+    "git-push-ci-reminder"
+  ],
+  "keywords": []
+}

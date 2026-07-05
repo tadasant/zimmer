@@ -27,7 +27,7 @@
 #
 # Configuration (env vars; absence of either is a hard no-op, so dev/test/CI
 # never attempt network I/O):
-#   OTEL_LOGS_EXPORTER_ENDPOINT      e.g. https://obs.example.com/otel/v1/logs
+#   OTEL_LOGS_EXPORTER_ENDPOINT      e.g. https://obs.tadasant.com/otel/v1/logs
 #   OTEL_LOGS_EXPORTER_BEARER_TOKEN  shared secret matching Caddy's bearer gate
 #                                    (the obs droplet's OTEL_INGEST_TOKEN)
 #   OTEL_SERVICE_NAME                optional; defaults to "agent-orchestrator"

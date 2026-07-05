@@ -1,0 +1,29 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/roots.schema.json",
+  "zimmer": {
+    "name": "zimmer",
+    "display_name": "Zimmer",
+    "description": "The Zimmer orchestrator itself — self-hostable AI coding agent orchestration.",
+    "url": "https://github.com/tadasant/zimmer.git",
+    "default_branch": "main",
+    "user_invocable": true,
+    "default_goal": "open-reviewed-green-pr"
+  },
+  "agent-orchestrator": {
+    "name": "agent-orchestrator",
+    "display_name": "Agent Orchestrator",
+    "description": "The Zimmer orchestrator Rails app itself — models, controllers, jobs, services, views, migrations, tests.",
+    "url": "https://github.com/tadasant/zimmer.git",
+    "default_branch": "main",
+    "user_invocable": true,
+    "default_goal": "open-reviewed-green-pr"
+  },
+  "agents": {
+    "name": "agents",
+    "display_name": "Agents",
+    "description": "Harness artifacts that wire agent sessions: skills, agent-root definitions, MCP server registry, hooks, plugins, and references.",
+    "url": "https://github.com/tadasant/zimmer.git",
+    "default_branch": "main",
+    "user_invocable": true
+  }
+}

@@ -43,14 +43,14 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
         git_root: "https://github.com/tadasant/zimmer-catalog.git",
         mcp_servers: []
       },
-      agent_root_name: "pulsemcp"
+      agent_root_name: "zimmer"
     }
 
     session = Session.last
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", session.git_root
     assert_nil session.subdirectory
     assert_equal "main", session.branch
-    assert_equal "pulsemcp", session.agent_root_path
+    assert_equal "zimmer", session.agent_root_path
   end
 
   test "should fallback to URL-based lookup when agent_root_name not provided" do
@@ -158,7 +158,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
 
     # Verify the fix: agents root gets "agents" subdirectory (monorepo subdir), not agent-orchestrator
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", session.git_root
-    assert_equal "pulsemcp", session.agent_root_name
+    assert_equal "zimmer", session.agent_root_name
     assert_equal "agents", session.subdirectory, "Subdirectory should be 'agents' for the agents agent root"
     assert_equal "pulsemcp/agents", session.agent_root_path
 

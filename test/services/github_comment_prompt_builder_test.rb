@@ -356,7 +356,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       type: "pr",
       body: "Test",
       author: "tadasant",
-      owner: "pulsemcp",
+      owner: "zimmer",
       repo: "agents"
     )
 
@@ -471,7 +471,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       type: "pr",
       body: "Please fix this bug",
       author: "tadasant",
-      owner: "pulsemcp",
+      owner: "zimmer",
       repo: "agents"
     )
 

@@ -563,7 +563,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   end
 
   test "prepare! passes --plugin when session has catalog_plugins" do
-    @session.update!(catalog_plugins: [ "pulsemcp-ci-workflow" ])
+    @session.update!(catalog_plugins: [ "ci-workflow" ])
     captured_cmd = nil
 
     stub_air_subprocess(proc { |*args, **opts|
@@ -580,7 +580,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
     cmd_args = captured_cmd[1..]
     assert_includes cmd_args, "--plugin"
-    assert_includes cmd_args, "pulsemcp-ci-workflow"
+    assert_includes cmd_args, "ci-workflow"
   end
 
   test "prepare! expands selected plugin bundled MCP servers into runtime MCP selections" do
