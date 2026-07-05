@@ -41,7 +41,7 @@ RUN bundle install && \
     bundle exec bootsnap precompile --gemfile
 
 # Copy MCP config and pre-install script for package caching
-COPY config/mcp.json ./config/
+COPY catalog/mcp.json ./catalog/
 COPY bin/preinstall-mcp-packages ./bin/
 
 # Install CLI tools for agent execution
@@ -93,7 +93,7 @@ RUN apt-get update -qq && \
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright npx playwright@^1 install --with-deps chromium && \
     chmod -R 755 /opt/playwright && \
     # Pre-install npm MCP server packages to avoid cold-start delays
-    # This reads from config/mcp.json and installs all packages with pinned versions
+    # This reads from catalog/mcp.json and installs all packages with pinned versions
     ./bin/preinstall-mcp-packages --npm-only && \
     # Clean up
     rm -rf /var/lib/apt/lists /var/cache/apt/archives

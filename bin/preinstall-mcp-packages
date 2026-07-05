@@ -1,7 +1,7 @@
 #!/bin/bash
 # Pre-install MCP server packages to avoid cold-start delays
 #
-# This script reads config/mcp.json and pre-installs all npm and Python packages
+# This script reads catalog/mcp.json and pre-installs all npm and Python packages
 # that are used by MCP servers. It's run during Docker image build to ensure
 # packages are cached and ready to use at runtime.
 #
@@ -10,7 +10,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MCP_CONFIG="${SCRIPT_DIR}/../config/mcp.json"
+MCP_CONFIG="${SCRIPT_DIR}/../catalog/mcp.json"
 
 # Check if jq is available
 if ! command -v jq &> /dev/null; then
