@@ -103,13 +103,18 @@ jobs:
       - name: Health check (over tailnet)
         run: |
           # Cloud-init installs Docker + Tailscale + runs the compose stack on
-          # first boot; give it time, then curl /up over the tailnet SSH.
+          # first boot; give it time, then curl /up directly over the tailnet.
+          # The app publishes port 80 (tailnet-only; the DO firewall drops public
+          # :80), so we hit it over MagicDNS without needing Tailscale SSH.
+          host=zimmer-staging
           for i in $(seq 1 40); do
-            if tailscale ssh root@zimmer-staging 'curl -fsS http://127.0.0.1:80/up' 2>/dev/null; then
-              echo "✅ Staging healthy at http://zimmer-staging/up"; exit 0
+            if curl -fsS --max-time 5 "http://$host/up" >/dev/null 2>&1; then
+              echo "✅ Staging healthy at http://$host/up"; exit 0
             fi
             echo "waiting for app to come up ($i/40)…"; sleep 15
           done
           echo "::error::Health check did not pass in time"
-          tailscale ssh root@zimmer-staging 'docker ps -a; docker compose -f /opt/zimmer/docker-compose.yml logs --tail=50 2>/dev/null' || true
+          echo "--- tailscale status ---"; tailscale status 2>&1 || true
+          echo "--- tailscale ping $host ---"; tailscale ping -c 3 "$host" 2>&1 || true
+          echo "--- direct curl (verbose) ---"; curl -v --max-time 5 "http://$host/up" 2>&1 || true
           exit 1

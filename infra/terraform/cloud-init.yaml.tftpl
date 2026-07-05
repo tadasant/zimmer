@@ -27,10 +27,15 @@ write_files:
           restart: always
         app:
           image: ${image_ref}
-          # Bind to localhost only. External reach is via Tailscale, not the
-          # public interface. Do NOT publish on 0.0.0.0.
+          # Publish on all interfaces so the app is reachable over the Tailscale
+          # tunnel (the CI health check curls http://zimmer-staging/up directly,
+          # without needing Tailscale SSH — SSH ACLs are brittle). This is NOT a
+          # public exposure: the DigitalOcean cloud firewall (see main.tf) allows
+          # only inbound 22/tcp + 41641/udp, so port 80 is dropped at the network
+          # edge for everyone except tailnet peers, whose traffic arrives via the
+          # WireGuard tunnel on the allowed UDP port.
           ports:
-            - "127.0.0.1:80:80"
+            - "80:80"
           environment:
             RAILS_ENV: production
             SECRET_KEY_BASE: ${secret_key_base}
