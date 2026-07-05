@@ -7,8 +7,8 @@ around the DO console by hand.
 
 The staging environment (`staging.zimmer.tadasant.com`) is defined in this repo.
 A production environment is a *sync* of the same Terraform with production
-variables, kept in the private `zimmer-internal` repo — see
-[Production](#production-zimmer-internal).
+variables, kept in the private `tadasant-internal` repo — see
+[Production](#production-tadasant-internal).
 
 ## Prerequisites (one-time manual setup)
 
@@ -60,11 +60,11 @@ You can hand this whole guide to a coding agent (e.g. an Zimmer session itself):
 The agent's job is deterministic: it runs the workflow and verifies `/up`; it does
 not improvise infrastructure, because the infra is fully in Terraform.
 
-## Production (`zimmer-internal`)
+## Production (`tadasant-internal`)
 
 Production is the same Terraform with production `.tfvars`, kept private in
-`zimmer-internal`, plus a workflow that **auto-upgrades prod to the newest
+`tadasant-internal`, plus a workflow that **auto-upgrades prod to the newest
 `ghcr.io/tadasant/zimmer` image** whenever a commit lands on this repo's `main`.
-The flow is: change → tested in this repo's staging → synced to `zimmer-internal`
-→ prod tracks the latest image automatically. See the `zimmer-internal` repo's
+The flow is: change → tested in this repo's staging → synced to `tadasant-internal`
+→ prod tracks the latest image automatically. See the `tadasant-internal` repo's
 README and its deploy PR for the concrete instantiation of this guide.

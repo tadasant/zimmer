@@ -33,6 +33,6 @@ Copies the extension into a checkout so your next image build includes it.
 ## Why extensions are not in the core image
 
 Keeping optional behavior out of core keeps the published image minimal and lets
-internally-developed extensions live in a private overlay (e.g. `zimmer-internal`)
+internally-developed extensions live in a private overlay (e.g. `tadasant-internal`)
 without being part of the public release. Removability is a hard invariant:
 deleting an extension directory must always leave a working app.
