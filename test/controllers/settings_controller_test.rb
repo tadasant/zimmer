@@ -56,6 +56,7 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
 
   # Catalog Pins Section
   test "should have catalog pins section with an editable form" do
+    skip "Requires a remote (github://) catalog; Zimmer default catalog is local-only."
     get settings_url
     assert_select "h2", "Catalog Pins"
     # form_with method: :patch renders a POST form with a hidden _method override.

@@ -48,53 +48,61 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "enables an extension via the extensions param" do
-    patch app_settings_path, params: { app_setting: { extensions: { "pty_transport" => "1" } } }
+    patch app_settings_path, params: { app_setting: { extensions: { "mcp_tool_search" => "1" } } }
 
     assert_redirected_to settings_path
-    assert AppSetting.current.extension_enabled?("pty_transport")
+    assert AppSetting.current.extension_enabled?("mcp_tool_search")
   end
 
   test "disables an extension via the hidden-field fallback" do
-    AppSetting.create!.tap { |s| s.set_extension_enabled("pty_transport", true); s.save! }
+    AppSetting.create!.tap { |s| s.set_extension_enabled("mcp_tool_search", true); s.save! }
 
-    patch app_settings_path, params: { app_setting: { extensions: { "pty_transport" => "0" } } }
+    patch app_settings_path, params: { app_setting: { extensions: { "mcp_tool_search" => "0" } } }
 
     assert_redirected_to settings_path
-    refute AppSetting.current.extension_enabled?("pty_transport")
+    refute AppSetting.current.extension_enabled?("mcp_tool_search")
   end
 
   test "toggling an extension does not clobber existing runtime + model defaults" do
     AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
 
-    patch app_settings_path, params: { app_setting: { extensions: { "pty_transport" => "1" } } }
+    patch app_settings_path, params: { app_setting: { extensions: { "mcp_tool_search" => "1" } } }
 
     assert_redirected_to settings_path
     setting = AppSetting.current
-    assert setting.extension_enabled?("pty_transport")
+    assert setting.extension_enabled?("mcp_tool_search")
     assert_equal "codex", setting.default_runtime
     assert_equal "gpt-5.5", setting.default_model
   end
 
   test "saving runtime + model leaves extension enablement untouched" do
-    AppSetting.create!.tap { |s| s.set_extension_enabled("pty_transport", true); s.save! }
+    AppSetting.create!.tap { |s| s.set_extension_enabled("mcp_tool_search", true); s.save! }
 
     patch app_settings_path, params: { app_setting: { default_runtime: "claude_code", default_model: "opus" } }
 
     assert_redirected_to settings_path
     setting = AppSetting.current
-    assert setting.extension_enabled?("pty_transport")
+    assert setting.extension_enabled?("mcp_tool_search")
     assert_equal "claude_code", setting.default_runtime
   end
 
-  test "a single submit can toggle multiple extensions independently" do
+  test "a submit applies each registered extension's checkbox value independently" do
+    # Zimmer ships a single built-in extension (mcp_tool_search); the per-id
+    # toggle path is exercised by enabling it in one submit and disabling it in
+    # the next. An unregistered id co-submitted alongside is ignored, proving the
+    # handler keys strictly on the registered set rather than blindly persisting.
     patch app_settings_path, params: {
-      app_setting: { extensions: { "pty_transport" => "1", "mcp_tool_search" => "0" } }
+      app_setting: { extensions: { "mcp_tool_search" => "1", "not_a_real_extension" => "1" } }
     }
-
     assert_redirected_to settings_path
     setting = AppSetting.current
-    assert setting.extension_enabled?("pty_transport")
-    refute setting.extension_enabled?("mcp_tool_search")
+    assert setting.extension_enabled?("mcp_tool_search")
+    refute setting.extension_enabled?("not_a_real_extension")
+
+    patch app_settings_path, params: {
+      app_setting: { extensions: { "mcp_tool_search" => "0" } }
+    }
+    refute AppSetting.current.extension_enabled?("mcp_tool_search")
   end
 
   test "a scalar extensions param is ignored rather than raising" do

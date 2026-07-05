@@ -68,8 +68,8 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "post_process! injects AO MCP server when root has default_subagent_roots" do
-    # Use pulse-catalog-management which has default_subagent_roots
-    @session.update!(metadata: { "agent_root_key" => "pulse-catalog-management" })
+    # Use catalog-management which has default_subagent_roots
+    @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
     write_config(
       "agent-orchestrator-ai-artifact-engineering" => {
@@ -90,10 +90,10 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     allowed = ao_server.dig("env", "ALLOWED_AGENT_ROOTS")
     assert_not_nil allowed
-    assert_includes allowed, "pulse-catalog-mgmt-research"
-    assert_includes allowed, "pulse-catalog-mgmt-configs"
-    assert_includes allowed, "pulse-catalog-mgmt-proctor"
-    assert_includes allowed, "pulse-catalog-mgmt-save"
+    assert_includes allowed, "catalog-mgmt-research"
+    assert_includes allowed, "catalog-mgmt-configs"
+    assert_includes allowed, "catalog-mgmt-proctor"
+    assert_includes allowed, "catalog-mgmt-save"
 
     assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
   end
@@ -169,7 +169,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "post_process! does NOT inject self-session alongside auto-injected subagent AO server (ALLOWED_AGENT_ROOTS set, TOOL_GROUPS blank)" do
-    @session.update!(metadata: { "agent_root_key" => "pulse-catalog-management" })
+    @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
     write_config(
       "playwright-custom" => {
@@ -495,14 +495,14 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     # auto-injected agent-orchestrator MCP server must point at the LOCAL AO
     # instance in dev, not production.
     ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
-    @session.update!(metadata: { "agent_root_key" => "pulse-catalog-management" })
+    @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
     write_config("noop" => { "command" => "true", "args" => [], "env" => {} })
 
     build_processor.post_process!
 
     injected = read_config.dig("mcpServers", "agent-orchestrator")
-    assert_not_nil injected, "Subagent AO server should be injected for pulse-catalog-management"
+    assert_not_nil injected, "Subagent AO server should be injected for catalog-management"
     assert_equal "http://localhost:3000", injected.dig("env", "AGENT_ORCHESTRATOR_BASE_URL"),
       "Auto-injected subagent AO server BASE_URL must be the local instance, not prod"
     assert_equal "local-test-key", injected.dig("env", "AGENT_ORCHESTRATOR_API_KEY"),
@@ -515,7 +515,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
   test "inject_subagent_ao_server! uses prod target in production env" do
     ENV["AGENT_ORCHESTRATOR_PROD_API_KEY"] = "real-prod-key"
-    @session.update!(metadata: { "agent_root_key" => "pulse-catalog-management" })
+    @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
     Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
       write_config("noop" => { "command" => "true", "args" => [], "env" => {} })

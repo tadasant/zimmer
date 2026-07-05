@@ -89,13 +89,9 @@
   },
   "figma": {
     "title": "Figma",
-    "description": "Figma design MCP server.",
-    "type": "stdio",
-    "command": "npx",
-    "args": [
-      "-y",
-      "figma-mcp@latest"
-    ]
+    "description": "Figma design MCP server (hosted, streamable-http). OAuth via browser flow.",
+    "type": "streamable-http",
+    "url": "https://mcp.figma.com/mcp"
   },
   "image-diff": {
     "title": "Image Diff",
@@ -136,5 +132,21 @@
       "-y",
       "agent-orchestrator-prod-sessions-mcp@latest"
     ]
+  },
+  "tally": {
+    "title": "Tally",
+    "description": "Tally forms MCP server.",
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "tally-mcp@latest"
+    ]
+  },
+  "notion": {
+    "title": "Notion",
+    "description": "Notion MCP server (hosted, streamable-http). OAuth via browser flow.",
+    "type": "streamable-http",
+    "url": "https://mcp.notion.com/mcp"
   }
 }
