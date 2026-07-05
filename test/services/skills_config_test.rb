@@ -105,9 +105,9 @@ class SkillsConfigTest < ActiveSupport::TestCase
   end
 
   test "skill should have references attribute" do
-    skill = SkillsConfig.find("create-skill")
+    skill = SkillsConfig.find("analyze-agent-transcript")
     assert skill.references.is_a?(Array)
-    assert_includes skill.references, "skill-design"
+    assert_includes skill.references, "engineering-practices"
   end
 
   test "skill without references should have empty array" do
@@ -118,9 +118,6 @@ class SkillsConfigTest < ActiveSupport::TestCase
   test "skill should have category derived from path" do
     skill = SkillsConfig.find("ao-start-dev-server")
     assert_equal "agent-orchestrator", skill.category
-
-    groceries_skill = SkillsConfig.find("groceries-recommend-recipes")
-    assert_equal "groceries", groceries_skill.category
   end
 
   # Test user_invocable
@@ -185,8 +182,6 @@ class SkillsConfigTest < ActiveSupport::TestCase
     categories = SkillsConfig.categories
     assert categories.is_a?(Array)
     assert_includes categories, "agent-orchestrator"
-    assert_includes categories, "groceries"
-    assert_includes categories, "travel"
     assert_equal categories, categories.sort
     assert_equal categories, categories.uniq
   end

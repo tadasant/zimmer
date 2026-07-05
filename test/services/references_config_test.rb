@@ -13,18 +13,15 @@ class ReferencesConfigTest < ActiveSupport::TestCase
   test "should have expected references from config" do
     ids = ReferencesConfig.ids
 
-    assert_includes ids, "skill-design"
-    assert_includes ids, "booking-flights"
-    assert_includes ids, "points-balances"
-    assert_includes ids, "agent-design"
+    assert_includes ids, "engineering-practices"
   end
 
   # Test finding references
   test "should find reference by id" do
-    ref = ReferencesConfig.find("skill-design")
+    ref = ReferencesConfig.find("engineering-practices")
     assert_not_nil ref
-    assert_equal "skill-design", ref.id
-    assert_equal "SKILL_DESIGN.md", ref.file
+    assert_equal "engineering-practices", ref.id
+    assert_equal "ENGINEERING_PRACTICES.md", ref.file
   end
 
   test "should return nil for non-existent reference" do
@@ -40,8 +37,7 @@ class ReferencesConfigTest < ActiveSupport::TestCase
 
   # Test reference existence
   test "should return true for existing reference" do
-    assert ReferencesConfig.exists?("skill-design")
-    assert ReferencesConfig.exists?("booking-flights")
+    assert ReferencesConfig.exists?("engineering-practices")
   end
 
   test "should return false for non-existent reference" do
@@ -50,19 +46,19 @@ class ReferencesConfigTest < ActiveSupport::TestCase
 
   # Test Reference object attributes
   test "reference should have id title description and file" do
-    ref = ReferencesConfig.find("skill-design")
-    assert_equal "skill-design", ref.id
+    ref = ReferencesConfig.find("engineering-practices")
+    assert_equal "engineering-practices", ref.id
     assert ref.title.is_a?(String)
     assert ref.description.is_a?(String)
-    assert_equal "SKILL_DESIGN.md", ref.file
+    assert_equal "ENGINEERING_PRACTICES.md", ref.file
   end
 
   test "reference to_h should include all attributes" do
-    ref = ReferencesConfig.find("skill-design")
+    ref = ReferencesConfig.find("engineering-practices")
     hash = ref.to_h
 
-    assert_equal "skill-design", hash[:id]
-    assert_equal "SKILL_DESIGN.md", hash[:file]
+    assert_equal "engineering-practices", hash[:id]
+    assert_equal "ENGINEERING_PRACTICES.md", hash[:file]
     assert hash.key?(:title)
     assert hash.key?(:description)
   end
