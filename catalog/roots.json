@@ -47,7 +47,8 @@
     "user_invocable": false,
     "default_in_roots": [
       "catalog-management"
-    ]
+    ],
+    "default_model": "sonnet"
   },
   "catalog-mgmt-configs": {
     "name": "catalog-mgmt-configs",
@@ -59,7 +60,8 @@
     "user_invocable": false,
     "default_in_roots": [
       "catalog-management"
-    ]
+    ],
+    "default_model": "sonnet"
   },
   "catalog-mgmt-proctor": {
     "name": "catalog-mgmt-proctor",
@@ -71,7 +73,8 @@
     "user_invocable": false,
     "default_in_roots": [
       "catalog-management"
-    ]
+    ],
+    "default_model": "sonnet"
   },
   "catalog-mgmt-save": {
     "name": "catalog-mgmt-save",
@@ -83,6 +86,15 @@
     "user_invocable": false,
     "default_in_roots": [
       "catalog-management"
-    ]
+    ],
+    "default_model": "sonnet"
+  },
+  "general-agent": {
+    "name": "general-agent",
+    "display_name": "General Agent",
+    "description": "Generic catch-all root for ad-hoc coding tasks with no dedicated root.",
+    "url": "https://github.com/tadasant/zimmer.git",
+    "default_branch": "main",
+    "user_invocable": true
   }
 }

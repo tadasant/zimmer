@@ -19,7 +19,7 @@ class PluginsConfigTest < ActiveSupport::TestCase
 
     assert_not_nil plugin
     assert_equal "ci-workflow", plugin.id
-    assert_equal "PulseMCP CI Workflow", plugin.title
+    assert_equal "CI Workflow", plugin.title
   end
 
   test "find returns nil for unknown plugin" do
@@ -51,8 +51,8 @@ class PluginsConfigTest < ActiveSupport::TestCase
     plugin = PluginsConfig.find("ci-workflow")
 
     assert_equal "ci-workflow", plugin.id
-    assert_equal "PulseMCP CI Workflow", plugin.title
-    assert_equal "1.0.1", plugin.version
+    assert_equal "CI Workflow", plugin.title
+    assert_equal "1.0.0", plugin.version
     assert_includes plugin.skills, "wait-for-ci"
     assert_includes plugin.hooks, "git-push-ci-reminder"
     assert_includes plugin.keywords, "ci"
@@ -63,7 +63,7 @@ class PluginsConfigTest < ActiveSupport::TestCase
     hash = plugin.to_h
 
     assert_equal "ci-workflow", hash[:id]
-    assert_equal "PulseMCP CI Workflow", hash[:title]
+    assert_equal "CI Workflow", hash[:title]
     assert_includes hash.keys, :description
     assert_includes hash.keys, :version
     assert_includes hash.keys, :skills

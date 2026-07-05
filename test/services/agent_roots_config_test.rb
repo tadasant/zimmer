@@ -131,7 +131,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
 
     assert user_invocable_roots.size < all_roots.size, "user_invocable should return fewer roots than all"
     assert user_invocable_roots.all?(&:user_invocable?), "all returned roots should be user_invocable"
-    refute user_invocable_roots.any? { |r| r.name == "pulse-catalog-mgmt-proctor" }, "subagent should not be included"
+    refute user_invocable_roots.any? { |r| r.name == "catalog-mgmt-proctor" }, "subagent should not be included"
   end
 
   test "user_invocable defaults to true" do
@@ -141,7 +141,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "user_invocable is false for subagent roots" do
-    agent_root = AgentRootsConfig.find("pulse-catalog-mgmt-proctor")
+    agent_root = AgentRootsConfig.find("catalog-mgmt-proctor")
 
     assert_not_nil agent_root
     refute agent_root.user_invocable?
@@ -156,23 +156,23 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "subagent roots have correct default_mcp_servers" do
-    agent_root = AgentRootsConfig.find("pulse-catalog-mgmt-proctor")
+    agent_root = AgentRootsConfig.find("catalog-mgmt-proctor")
 
-    # default_mcp_servers is composed from roots.json + plugin manifests (owned by
-    # the agents root, outside this app). Assert the proctor-specific servers are
-    # wired through rather than exact-matching the full set, which drifts whenever
-    # a bundled plugin adds a server (e.g. secrets/1Password) — mirrors the robust
-    # assert_includes style of the default_skills test below.
-    assert_includes agent_root.default_mcp_servers, "proctor-rw"
-    assert_includes agent_root.default_mcp_servers, "pulse-proctor-rw"
+    # The minimal Zimmer catalog wires no plugin/server membership onto the demo
+    # subagent roots, so default_mcp_servers resolves to an empty array. Assert the
+    # shape and the empty default rather than specific servers.
+    assert_not_nil agent_root
+    assert agent_root.default_mcp_servers.is_a?(Array)
+    assert_empty agent_root.default_mcp_servers
   end
 
   test "subagent roots have correct default_skills" do
-    agent_root = AgentRootsConfig.find("pulse-catalog-mgmt-configs")
+    agent_root = AgentRootsConfig.find("catalog-mgmt-configs")
 
-    assert_includes agent_root.default_skills, "onboarding-validate-server-json"
-    assert_includes agent_root.default_skills, "onboarding-validate-mcp-json"
-    assert_includes agent_root.default_skills, "onboarding-create-dewey-icon"
+    # No skills are wired onto the demo subagent roots in the minimal catalog.
+    assert_not_nil agent_root
+    assert agent_root.default_skills.is_a?(Array)
+    assert_empty agent_root.default_skills
   end
 
   test "default_model defaults to opus when not specified" do
@@ -181,20 +181,20 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     assert_equal "opus", agent_root.default_model
   end
 
-  test "pulse-catalog-management parent root uses opus model" do
-    agent_root = AgentRootsConfig.find("pulse-catalog-management")
+  test "catalog-management parent root uses opus model" do
+    agent_root = AgentRootsConfig.find("catalog-management")
     assert_equal "opus", agent_root.default_model
   end
 
-  test "pulse-catalog-mgmt subagent roots use sonnet model" do
-    %w[pulse-catalog-mgmt-configs pulse-catalog-mgmt-research pulse-catalog-mgmt-save pulse-catalog-mgmt-proctor].each do |root_name|
+  test "catalog-mgmt subagent roots use sonnet model" do
+    %w[catalog-mgmt-configs catalog-mgmt-research catalog-mgmt-save catalog-mgmt-proctor].each do |root_name|
       agent_root = AgentRootsConfig.find(root_name)
       assert_equal "sonnet", agent_root.default_model, "Expected #{root_name} to use sonnet"
     end
   end
 
   test "default_model is included in to_h" do
-    agent_root = AgentRootsConfig.find("pulse-catalog-management")
+    agent_root = AgentRootsConfig.find("catalog-management")
     hash = agent_root.to_h
 
     assert_includes hash.keys, :default_model
@@ -374,14 +374,14 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "default_subagent_roots is parsed for parent roots" do
-    agent_root = AgentRootsConfig.find("pulse-catalog-management")
+    agent_root = AgentRootsConfig.find("catalog-management")
 
     assert_not_nil agent_root.default_subagent_roots
     assert agent_root.default_subagent_roots.is_a?(Array)
-    assert_includes agent_root.default_subagent_roots, "pulse-catalog-mgmt-research"
-    assert_includes agent_root.default_subagent_roots, "pulse-catalog-mgmt-configs"
-    assert_includes agent_root.default_subagent_roots, "pulse-catalog-mgmt-proctor"
-    assert_includes agent_root.default_subagent_roots, "pulse-catalog-mgmt-save"
+    assert_includes agent_root.default_subagent_roots, "catalog-mgmt-research"
+    assert_includes agent_root.default_subagent_roots, "catalog-mgmt-configs"
+    assert_includes agent_root.default_subagent_roots, "catalog-mgmt-proctor"
+    assert_includes agent_root.default_subagent_roots, "catalog-mgmt-save"
   end
 
   test "default_subagent_roots is empty for roots without subagents" do
@@ -391,7 +391,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "default_plugins defaults to empty array when not specified" do
-    agent_root = AgentRootsConfig.find("ao-heartbeat")
+    agent_root = AgentRootsConfig.find("agents")
 
     assert_equal [], agent_root.default_plugins
   end
@@ -402,7 +402,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     # Resolved membership is an unordered set — AgentRootsConfig loads it straight
     # into an attribute with no order logic, and `air resolve` derives ordering from
     # artifact-file order (plugins.json), not the root entry. Compare sorted.
-    assert_equal [ "html-walkthrough", "screenshots-videos" ], agent_root.default_plugins.sort
+    assert_equal [ "ci-workflow", "screenshots-videos" ], agent_root.default_plugins.sort
   end
 
   test "default_plugins is included in to_h" do
@@ -410,11 +410,11 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     hash = agent_root.to_h
 
     assert_includes hash.keys, :default_plugins
-    assert_equal [ "html-walkthrough", "screenshots-videos" ], hash[:default_plugins].sort
+    assert_equal [ "ci-workflow", "screenshots-videos" ], hash[:default_plugins].sort
   end
 
-  test "pulse-catalog-management no longer has locked-down AO MCP server in default_mcp_servers" do
-    agent_root = AgentRootsConfig.find("pulse-catalog-management")
+  test "catalog-management no longer has locked-down AO MCP server in default_mcp_servers" do
+    agent_root = AgentRootsConfig.find("catalog-management")
 
     refute_includes agent_root.default_mcp_servers, "agent-orchestrator-server-onboarding",
       "Locked-down AO MCP server should be removed — AO auto-injects from default_subagent_roots"

@@ -2,7 +2,10 @@
   "$schema": "https://pulsemcp.github.io/air/schemas/plugins.schema.json",
   "ci-workflow": {
     "description": "ci-workflow plugin.",
-    "path": "./ci-workflow"
+    "path": "./ci-workflow",
+    "default_in_roots": [
+      "agent-orchestrator"
+    ]
   },
   "figma-design-workflow": {
     "description": "figma-design-workflow plugin.",
@@ -10,7 +13,10 @@
   },
   "screenshots-videos": {
     "description": "screenshots-videos plugin.",
-    "path": "./screenshots-videos"
+    "path": "./screenshots-videos",
+    "default_in_roots": [
+      "agent-orchestrator"
+    ]
   },
   "meeting-wrangling": {
     "description": "meeting-wrangling plugin.",
