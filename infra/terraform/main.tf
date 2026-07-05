@@ -67,6 +67,18 @@ variable "domain" {
   description = "Optional FQDN to create an A record for (e.g. staging.zimmer.tadasant.com). Empty = no DNS."
 }
 
+variable "manage_project" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Whether to create a dedicated DigitalOcean Project for this environment.
+    Off by default: a DO Project name is account-unique, so under the CI deploy's
+    ephemeral tfstate a re-run collides with the prior run's project (409 "name is
+    already in use"). The droplet works fine in the account's default project.
+    Enable only with a persistent tfstate backend that can reconcile the project.
+  EOT
+}
+
 variable "ssh_key_fingerprints" {
   type        = list(string)
   default     = []
@@ -99,6 +111,7 @@ variable "secret_key_base" {
 # ---- Resources --------------------------------------------------------------
 
 resource "digitalocean_project" "zimmer" {
+  count       = var.manage_project ? 1 : 0
   name        = "zimmer-${var.environment}"
   description = "Zimmer ${var.environment} environment."
   purpose     = "Web Application"
