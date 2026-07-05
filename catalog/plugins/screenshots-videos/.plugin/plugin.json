@@ -2,7 +2,7 @@
   "$schema": "https://pulsemcp.github.io/air/schemas/plugin-manifest.schema.json",
   "name": "screenshots-videos",
   "title": "Screenshots Videos",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "skills": [],
   "mcp_servers": [
     "playwright-custom",
