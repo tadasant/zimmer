@@ -201,16 +201,16 @@ class GithubCommentPromptBuilder
     comment_info[:data]["id"]
   end
 
-  # Trusted owners whose public repositories don't require human approval
-  # These are organizations/users that we control, so we trust agent actions on them
-  TRUSTED_OWNERS = %w[pulsemcp tadasant].freeze
+  # Trusted owners whose public repositories don't require human approval.
+  # These are organizations/users that we control, so we trust agent actions on them.
+  TRUSTED_OWNERS = %w[tadasant].freeze
 
   # Check if the repository requires the public repo warning
   # Uses the GitHub API to fetch repository visibility
   #
   # Returns false (no warning needed) if:
   # - The repository is private
-  # - The repository is owned by a trusted owner (pulsemcp, tadasant)
+  # - The repository is owned by a trusted owner (tadasant)
   # - Owner or repo is missing/blank
   #
   # Returns true (warning needed) if:

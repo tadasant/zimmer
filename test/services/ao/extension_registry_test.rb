@@ -70,11 +70,11 @@ class Ao::ExtensionRegistryTest < ActiveSupport::TestCase
     # Simulate a deleted extension directory: a built-in name that no longer
     # resolves must be silently skipped, not raise. This IS the removability
     # mechanism the OSS build depends on.
-    with_builtin_classes(%w[PtyTransportExtension DefinitelyNotARealExtensionConstant]) do
+    with_builtin_classes(%w[McpToolSearchExtension DefinitelyNotARealExtensionConstant]) do
       assert_nothing_raised { Ao::ExtensionRegistry.register_builtins! }
     end
     ids = Ao::ExtensionRegistry.all.map(&:id)
-    assert_includes ids, "pty_transport"
+    assert_includes ids, "mcp_tool_search"
     refute_includes ids, "definitely_not_a_real_extension_constant"
   end
 

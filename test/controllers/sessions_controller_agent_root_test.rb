@@ -16,7 +16,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", session.git_root
     assert_equal "agents/agent-orchestrator", session.subdirectory
     assert_equal "main", session.branch
-    assert_equal "pulsemcp/agents/agent-orchestrator", session.agent_root_path
+    assert_equal "zimmer-catalog/agents/agent-orchestrator", session.agent_root_path
   end
 
   test "should set subdirectory when selecting agents agent root" do
@@ -33,10 +33,10 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", session.git_root
     assert_equal "agents", session.subdirectory
     assert_equal "main", session.branch
-    assert_equal "pulsemcp/agents", session.agent_root_path
+    assert_equal "zimmer-catalog/agents", session.agent_root_path
   end
 
-  test "should set subdirectory for pulsemcp agent root (no subdirectory)" do
+  test "should set subdirectory for zimmer agent root (no subdirectory)" do
     post sessions_url, params: {
       session: {
         prompt: "Test prompt",
@@ -50,7 +50,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", session.git_root
     assert_nil session.subdirectory
     assert_equal "main", session.branch
-    assert_equal "zimmer", session.agent_root_path
+    assert_equal "zimmer-catalog", session.agent_root_path
   end
 
   test "should fallback to URL-based lookup when agent_root_name not provided" do
@@ -66,10 +66,10 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
 
     session = Session.last
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", session.git_root
-    # This will get the first matching agent root's subdirectory from the config
-    # Currently pulsemcp-agentic-engineering is first among pulsemcp.git roots
-    # (its subdirectory is "agentic-engineering-infra")
-    assert_equal "agentic-engineering-infra", session.subdirectory
+    # This will get the first matching agent root's subdirectory from the config.
+    # agent-orchestrator is the first zimmer-catalog.git root (subdirectory
+    # "agents/agent-orchestrator").
+    assert_equal "agents/agent-orchestrator", session.subdirectory
   end
 
   test "should handle custom URL without agent_root_name" do
@@ -104,7 +104,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     session = Session.last
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", session.git_root
     assert_equal "custom-dir", session.subdirectory  # User's explicit choice preserved
-    assert_equal "pulsemcp/custom-dir", session.agent_root_path
+    assert_equal "zimmer-catalog/custom-dir", session.agent_root_path
   end
 
   test "should preserve explicitly set branch even with agent_root_name" do
@@ -158,9 +158,9 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
 
     # Verify the fix: agents root gets "agents" subdirectory (monorepo subdir), not agent-orchestrator
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", session.git_root
-    assert_equal "zimmer", session.agent_root_name
+    assert_equal "zimmer-catalog", session.agent_root_name
     assert_equal "agents", session.subdirectory, "Subdirectory should be 'agents' for the agents agent root"
-    assert_equal "pulsemcp/agents", session.agent_root_path
+    assert_equal "zimmer-catalog/agents", session.agent_root_path
 
     # This is the key assertion - ensuring we don't incorrectly set agent-orchestrator subdirectory
     refute_equal "agents/agent-orchestrator", session.subdirectory, "Should NOT have agents/agent-orchestrator subdirectory"
