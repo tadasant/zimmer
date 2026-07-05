@@ -1,7 +1,7 @@
 #cloud-config
 # Bootstraps a Zimmer droplet: Docker, Tailscale (VPN-only access), and the
 # Zimmer stack via docker compose. Rendered by Terraform (main.tf). No secret is
-# stored in the repo — values are interpolated from Terraform variables at apply.
+# stored in the repo -- values are interpolated from Terraform variables at apply.
 package_update: true
 packages:
   - ca-certificates
@@ -29,7 +29,7 @@ write_files:
           image: ${image_ref}
           # Publish on all interfaces so the app is reachable over the Tailscale
           # tunnel (the CI health check curls http://zimmer-staging/up directly,
-          # without needing Tailscale SSH — SSH ACLs are brittle). This is NOT a
+          # without needing Tailscale SSH -- SSH ACLs are brittle). This is NOT a
           # public exposure: the DigitalOcean cloud firewall (see main.tf) allows
           # only inbound 22/tcp + 41641/udp, so port 80 is dropped at the network
           # edge for everyone except tailnet peers, whose traffic arrives via the
@@ -54,7 +54,7 @@ runcmd:
   - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
   - apt-get update -y
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  # Tailscale — join tailnet as zimmer-${environment}. ACLs (managed in the
+  # Tailscale -- join tailnet as zimmer-${environment}. ACLs (managed in the
   # Tailscale admin, NOT here) restrict who can reach this node.
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey='${tailscale_auth_key}' --hostname='zimmer-${environment}' --ssh
