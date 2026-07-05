@@ -102,19 +102,28 @@ jobs:
 
       - name: Health check (over tailnet)
         run: |
-          # Cloud-init installs Docker + Tailscale + runs the compose stack on
-          # first boot; give it time, then curl /up directly over the tailnet.
           # The app publishes port 80 (tailnet-only; the DO firewall drops public
-          # :80), so we hit it over MagicDNS without needing Tailscale SSH.
-          host=zimmer-staging
+          # :80), so we reach it over the tailnet. GitHub runners do NOT get
+          # MagicDNS in /etc/resolv.conf, so `curl http://zimmer-staging` can't
+          # resolve the name — resolve the droplet's tailnet IP from
+          # `tailscale status --json` and curl that instead.
+          if ! tailscale status >/dev/null 2>&1; then
+            echo "::error::Tailscale is not up on the runner (\`tailscale status\` reports logged out)."
+            echo "This is a runner/tailnet-auth issue, not the app. Check the TS_OAUTH_CLIENT_ID/SECRET"
+            echo "GitHub secrets and that the OAuth client has the auth_keys scope + tag:ci in the ACL"
+            echo "tagOwners, and that the minted ephemeral key TTL exceeds the deploy duration."
+            tailscale status 2>&1 || true
+            exit 1
+          fi
           for i in $(seq 1 40); do
-            if curl -fsS --max-time 5 "http://$host/up" >/dev/null 2>&1; then
-              echo "✅ Staging healthy at http://$host/up"; exit 0
+            ip=$(tailscale status --json 2>/dev/null \
+              | jq -r '.Peer[]? | select(.HostName=="zimmer-staging") | .TailscaleIPs[0]' | head -1)
+            if [ -n "$ip" ] && curl -fsS --max-time 5 "http://$ip/up" >/dev/null 2>&1; then
+              echo "✅ Staging healthy at http://$ip/up (zimmer-staging)"; exit 0
             fi
-            echo "waiting for app to come up ($i/40)…"; sleep 15
+            echo "waiting for app to come up ($i/40, droplet tailnet ip='${ip:-not-yet-visible}')…"
+            sleep 15
           done
           echo "::error::Health check did not pass in time"
           echo "--- tailscale status ---"; tailscale status 2>&1 || true
-          echo "--- tailscale ping $host ---"; tailscale ping -c 3 "$host" 2>&1 || true
-          echo "--- direct curl (verbose) ---"; curl -v --max-time 5 "http://$host/up" 2>&1 || true
           exit 1
