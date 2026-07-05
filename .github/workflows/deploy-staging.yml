@@ -69,14 +69,6 @@ jobs:
           cache-from: type=gha,scope=app
           cache-to: type=gha,mode=max,scope=app
 
-      # Join the tailnet so we can reach the (VPN-only) staging droplet.
-      - name: Tailscale
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
@@ -99,6 +91,18 @@ jobs:
             -var="image_ref=${IMG}"
           terraform output -raw droplet_ipv4 > /tmp/droplet_ip
           echo "Droplet IP: $(cat /tmp/droplet_ip)"
+
+      # Join the tailnet LAST — right before the health check — so the runner's
+      # ephemeral tailnet session is alive only for the (short) health check and
+      # can't log out during the image build + terraform apply (which is what
+      # broke earlier runs: `tailscale status` reported "Logged out" by the time
+      # the health check ran).
+      - name: Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
 
       - name: Health check (over tailnet)
         run: |
