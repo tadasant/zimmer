@@ -658,7 +658,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   test "reusing an existing clone writes freshly-authorized OAuth credentials to the on-disk store before spawning" do
     # Real catalog server (the exact server from the incident) — no stubbing of
     # the catalog lookup; the injector reads the live ServersConfig entry.
-    server_name = "notion-t3s-marketing"
+    server_name = "notion"
     server_url = "https://mcp.notion.com/mcp"
     credential_key = McpOauthCredential.compute_credential_key(
       server_name, { type: "streamable-http", url: server_url }
@@ -6021,13 +6021,13 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Simulate an MCP failure with "Unauthorized" in the error message
     @session.update!(
       status: :running,
-      mcp_servers: [ "notion-t3s-marketing" ],
+      mcp_servers: [ "notion" ],
       custom_metadata: {
         "should_fail_session" => true,
         "mcp_failed_servers" => [
-          { "name" => "notion-t3s-marketing", "status" => "failed", "error" => "HTTP Connection failed after 7094ms: Unauthorized (code: none, errno: none)" }
+          { "name" => "notion", "status" => "failed", "error" => "HTTP Connection failed after 7094ms: Unauthorized (code: none, errno: none)" }
         ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: notion-t3s-marketing"
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion"
       }
     )
 
@@ -6048,7 +6048,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     oauth_servers = @session.metadata["oauth_required_servers"]
     assert_not_nil oauth_servers
     assert_equal 1, oauth_servers.length
-    assert_equal "notion-t3s-marketing", oauth_servers.first["server_name"]
+    assert_equal "notion", oauth_servers.first["server_name"]
   end
 
   test "check_and_handle_mcp_failure detects 401 as oauth_required" do
@@ -6262,9 +6262,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
       custom_metadata: {
         "should_fail_session" => true,
         "mcp_failed_servers" => [
-          { "name" => "notion-t3s-marketing", "status" => "failed", "error" => "Unauthorized" }
+          { "name" => "notion", "status" => "failed", "error" => "Unauthorized" }
         ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: notion-t3s-marketing"
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion"
       }
     )
 
@@ -6285,14 +6285,14 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # the auth failures should be treated as oauth_required
     @session.update!(
       status: :running,
-      mcp_servers: [ "notion-t3s-marketing", "playwright-custom" ],
+      mcp_servers: [ "notion", "playwright-custom" ],
       custom_metadata: {
         "should_fail_session" => true,
         "mcp_failed_servers" => [
-          { "name" => "notion-t3s-marketing", "status" => "failed", "error" => "Unauthorized" },
+          { "name" => "notion", "status" => "failed", "error" => "Unauthorized" },
           { "name" => "playwright-custom", "status" => "failed", "error" => "Connection refused" }
         ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: notion-t3s-marketing, playwright-custom"
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion, playwright-custom"
       }
     )
 
@@ -6309,7 +6309,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "oauth_required", @session.metadata["failure_reason"]
     oauth_servers = @session.metadata["oauth_required_servers"]
     assert_equal 1, oauth_servers.length
-    assert_equal "notion-t3s-marketing", oauth_servers.first["server_name"]
+    assert_equal "notion", oauth_servers.first["server_name"]
   end
 
   # Tests for OAuth credential injection on follow-up prompts
@@ -6323,7 +6323,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.update!(
       session_id: session_id_uuid,
       status: :running,
-      mcp_servers: [ "notion-t3s-marketing" ],
+      mcp_servers: [ "notion" ],
       metadata: {
         "clone_path" => clone_path,
         "working_directory" => clone_path,
@@ -6434,7 +6434,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.update!(
       session_id: session_id_uuid,
       status: :running,
-      mcp_servers: [ "notion-t3s-marketing" ],
+      mcp_servers: [ "notion" ],
       metadata: {
         "clone_path" => clone_path,
         "working_directory" => clone_path,
@@ -6466,7 +6466,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       .with(@session, clone_path, instance_of(LogBuffer))
       .returns({
         blocked: true,
-        missing_servers: [ { "server_name" => "notion-t3s-marketing", "server_url" => "https://mcp.notion.com/mcp" } ]
+        missing_servers: [ { "server_name" => "notion", "server_url" => "https://mcp.notion.com/mcp" } ]
       })
 
     job.perform(@session.id, "Follow-up prompt requiring OAuth")
@@ -6478,7 +6478,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "oauth_required", @session.metadata["failure_reason"]
     assert_not_nil @session.metadata["oauth_required_servers"]
     assert_equal 1, @session.metadata["oauth_required_servers"].length
-    assert_equal "notion-t3s-marketing", @session.metadata["oauth_required_servers"].first["server_name"]
+    assert_equal "notion", @session.metadata["oauth_required_servers"].first["server_name"]
 
     # Claude CLI should NOT have been called
     assert_empty mock_cli_adapter.resumed_sessions
@@ -6489,11 +6489,11 @@ class AgentSessionJobTest < ActiveJob::TestCase
     clone_path = "/tmp/test-followup-mcp-config"
 
     # Setup session as running with MCP servers configured
-    # Using notion-t3s-marketing (remote server) to avoid env var interpolation issues
+    # Using notion (remote server) to avoid env var interpolation issues
     @session.update!(
       session_id: session_id_uuid,
       status: :running,
-      mcp_servers: [ "notion-t3s-marketing" ],
+      mcp_servers: [ "notion" ],
       metadata: {
         "clone_path" => clone_path,
         "working_directory" => clone_path,

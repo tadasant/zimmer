@@ -4199,16 +4199,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
         metadata: { "working_directory" => temp_dir }
       )
 
-      # Add an OAuth-protected server (notion-t3s-marketing uses streamable-http which triggers OAuth check)
+      # Add an OAuth-protected server (notion uses streamable-http which triggers OAuth check)
       # Note: In production this would probe the server, but the response indicates OAuth detection works
       patch update_mcp_servers_session_url(session),
-            params: { mcp_servers: [ "notion-t3s-marketing" ] },
+            params: { mcp_servers: [ "notion" ] },
             as: :json
 
       assert_response :success
       json_response = JSON.parse(response.body)
       assert_equal true, json_response["success"]
-      assert_equal [ "notion-t3s-marketing" ], json_response["mcp_servers"]
+      assert_equal [ "notion" ], json_response["mcp_servers"]
       # The response should include oauth_required fields (may be true or false depending on probe)
       assert json_response.key?("oauth_required"), "Response should include oauth_required field"
       assert json_response.key?("oauth_required_servers"), "Response should include oauth_required_servers field"
@@ -4246,7 +4246,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     )
 
     patch update_mcp_servers_session_url(session),
-          params: { mcp_servers: [ "notion-t3s-marketing" ] },
+          params: { mcp_servers: [ "notion" ] },
           as: :json
 
     assert_response :success
