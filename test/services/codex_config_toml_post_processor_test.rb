@@ -44,7 +44,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
         "command" => "npx",
         "args" => [ "-y", "@acme/mcp" ],
         "env" => {},
-        # ACME_API_KEY is an Zimmer secret → inline it; ACME_HOST_REGION is a genuine
+        # ACME_API_KEY is a Zimmer secret → inline it; ACME_HOST_REGION is a genuine
         # host-env var Codex should forward at launch → leave it in env_vars.
         "env_vars" => [ "ACME_API_KEY", "ACME_HOST_REGION" ]
       }
@@ -59,7 +59,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "Non-secret host-env var must remain in env_vars for Codex to forward at launch"
   end
 
-  test "post_process! drops env_vars entirely when every forwarded var is an Zimmer secret" do
+  test "post_process! drops env_vars entirely when every forwarded var is a Zimmer secret" do
     stub_secrets("ACME_API_KEY" => "sk-acme-123", "ACME_DB_URL" => "postgres://x")
 
     write_config(
@@ -203,7 +203,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   # ---------------------------------------------------------------------------
   # Locks in the exact serialized TOML for a representative config so any future
   # change to the post-processor or the TOML serializer cannot silently alter
-  # the bytes Zimmer writes. The input includes an Zimmer server with TOOL_GROUPS blank
+  # the bytes Zimmer writes. The input includes a Zimmer server with TOOL_GROUPS blank
   # so self-session injection is deduped away — this keeps the output
   # independent of the runtime catalog and fully deterministic. It exercises all
   # three Codex-specific paths: env retargeting, env_vars secret inlining (with

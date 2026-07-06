@@ -1,4 +1,4 @@
-# Authoring an Zimmer Extension
+# Authoring a Zimmer Extension
 
 A practical guide to adding a new **Zimmer Extension**. For the design rationale and
 invariants, read [AO_EXTENSIONS.md](AO_EXTENSIONS.md) first.
