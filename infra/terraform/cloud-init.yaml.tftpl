@@ -39,7 +39,12 @@ write_files:
           environment:
             RAILS_ENV: production
             SECRET_KEY_BASE: ${secret_key_base}
-            DATABASE_URL: postgres://zimmer:${secret_key_base}@db:5432/zimmer_${environment}
+            # The app's config/database.yml reads DATABASE_HOST/PORT/USERNAME/PASSWORD
+            # (NOT DATABASE_URL); point them at the compose `db` service.
+            DATABASE_HOST: db
+            DATABASE_PORT: "5432"
+            DATABASE_USERNAME: zimmer
+            DATABASE_PASSWORD: ${secret_key_base}
             REDIS_URL: redis://redis:6379/0
           depends_on: [db, redis]
           restart: always
