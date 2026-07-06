@@ -140,12 +140,18 @@ jobs:
             exit 1
           fi
           for i in $(seq 1 40); do
-            ip=$(tailscale status --json 2>/dev/null \
-              | jq -r '.Peer[]? | select(.HostName=="zimmer-staging") | .TailscaleIPs[0]' | head -1)
-            if [ -n "$ip" ] && curl -fsS --max-time 5 "http://$ip/up" >/dev/null 2>&1; then
-              echo "✅ Staging healthy at http://$ip/up (zimmer-staging)"; exit 0
-            fi
-            echo "waiting for app to come up ($i/40, droplet tailnet ip='${ip:-not-yet-visible}')…"
+            # There can be more than one online peer named "zimmer-staging" —
+            # ephemeral tailnet nodes from prior deploys linger briefly after their
+            # droplet is destroyed. Try EVERY online candidate and succeed if any
+            # serves /up, so a stale IP can't mask the live droplet.
+            ips=$(tailscale status --json 2>/dev/null \
+              | jq -r '.Peer[]? | select(.HostName=="zimmer-staging" and .Online==true) | .TailscaleIPs[0]')
+            for ip in $ips; do
+              if curl -fsS --max-time 5 "http://$ip/up" >/dev/null 2>&1; then
+                echo "✅ Staging healthy at http://$ip/up (zimmer-staging)"; exit 0
+              fi
+            done
+            echo "waiting for app to come up ($i/40, candidates='$(echo $ips | tr '\n' ' ')')…"
             sleep 15
           done
           echo "::error::Health check did not pass in time"
