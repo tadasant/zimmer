@@ -185,7 +185,7 @@ class OrchestratorSystemPromptBuilder
 
       ### 8. Always Link PRs and Zimmer Sessions
 
-      When you reference a GitHub PR in user-facing text, include the full URL (e.g., `https://github.com/tadasant/zimmer-catalog/pull/3287`). When you reference an Zimmer session, include its full URL (e.g., `https://zimmer.example.com/sessions/5050`). Do this **every time** you mention them, not just on first mention.
+      When you reference a GitHub PR in user-facing text, include the full URL (e.g., `https://github.com/tadasant/zimmer-catalog/pull/3287`). When you reference a Zimmer session, include its full URL (e.g., `https://zimmer.example.com/sessions/5050`). Do this **every time** you mention them, not just on first mention.
 
       Users often read on mobile, where scrolling back to find an earlier link is painful. A bare "PR #3287" or "session 5050" is harder to act on than the full URL. The cost of repeating the URL is trivial; the cost of the user hunting for it is not.
     SECTION
