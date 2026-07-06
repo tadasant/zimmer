@@ -1,0 +1,21 @@
+<%#
+  Enhanced Markdown Rendering Partial
+
+  Wraps markdown content with interactive features like code block copy buttons.
+  Uses Rouge for syntax highlighting and Tailwind Typography for polished prose.
+
+  This partial is designed to be extensible for future enhancements such as:
+  - Table of contents generation
+  - Image lightboxes
+  - Collapsible sections
+  - Syntax highlighting controls
+
+  Local variables:
+    content: String - The raw markdown content to render
+    variant: String (optional) - Styling variant: "default" or "session" (default: "session")
+%>
+<% variant ||= "session" %>
+
+<div data-controller="code-block" class="<%= variant == 'session' ? 'prose-session' : 'prose prose-sm max-w-none text-gray-700' %>">
+  <%= markdown(content) %>
+</div>

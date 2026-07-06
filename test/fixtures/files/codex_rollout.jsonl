@@ -1,0 +1,12 @@
+{"timestamp":"2026-05-29T21:39:10.000Z","type":"session_meta","payload":{"id":"0199b3d2-codex-4d2e-8f1a-rollout000001","timestamp":"2026-05-29T21:39:10.000Z","cwd":"/home/rails/project","originator":"codex_cli_rs","cli_version":"0.45.0","instructions":null}}
+{"timestamp":"2026-05-29T21:39:10.100Z","type":"turn_context","payload":{"cwd":"/home/rails/project","approval_policy":"on-request","sandbox_policy":{"mode":"workspace-write"},"model":"gpt-5-codex","effort":"medium","summary":"auto"}}
+{"timestamp":"2026-05-29T21:39:11.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"List the files in the current directory."}]}}
+{"timestamp":"2026-05-29T21:39:12.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"The user wants a directory listing. I'll run ls."}]}}
+{"timestamp":"2026-05-29T21:39:13.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\",\"-la\"]}","call_id":"call_abc123"}}
+{"timestamp":"2026-05-29T21:39:13.500Z","type":"event_msg","payload":{"type":"exec_command_begin","call_id":"call_abc123","command":["ls","-la"]}}
+{"timestamp":"2026-05-29T21:39:14.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_abc123","output":"total 8\ndrwxr-xr-x  2 rails rails 4096 May 29 21:39 .\n-rw-r--r--  1 rails rails    0 May 29 21:39 README.md"}}
+{"timestamp":"2026-05-29T21:39:15.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The directory contains a single file: `README.md`."}]}}
+{"timestamp":"2026-05-29T21:39:15.100Z","type":"event_msg","payload":{"type":"agent_message","message":"The directory contains a single file: `README.md`."}}
+{"timestamp":"2026-05-29T21:39:16.000Z","type":"response_item","payload":{"type":"local_shell_call","call_id":"call_shell9","status":"completed","action":{"type":"exec","command":["cat","README.md"]}}}
+{"timestamp":"2026-05-29T21:39:18.000Z","type":"event_msg","payload":{"type":"token_count","input_tokens":1200,"output_tokens":340}}
+{"timestamp":"2026-05-29T21:39:20.000Z","type":"compacted","payload":{"message":"Summary: user asked for a directory listing; assistant ran ls and reported README.md."}}

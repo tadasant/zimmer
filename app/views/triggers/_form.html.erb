@@ -1,0 +1,327 @@
+<%= form_with model: trigger, class: "space-y-6 p-6", data: {
+  controller: "trigger-form mcp-server-select goal skills-select hooks-select plugins-select",
+  trigger_form_slack_configured_value: @slack_configured,
+  trigger_form_conditions_value: trigger.trigger_conditions.map { |c| { id: c.id, condition_type: c.condition_type, configuration: c.configuration } }.to_json,
+  mcp_server_select_servers_value: @servers_for_select.to_json,
+  mcp_server_select_agent_root_defaults_value: @agent_root_mcp_servers.to_json,
+  mcp_server_select_default_servers_value: (trigger.mcp_servers || []).to_json,
+  mcp_server_select_input_name_value: "trigger[mcp_servers][]",
+  goal_goals_value: @goals.to_json,
+  goal_agent_root_defaults_value: @agent_root_goals.to_json,
+  skills_select_skills_value: @catalog_skills_for_select.to_json,
+  skills_select_agent_root_defaults_value: @agent_root_catalog_skills.to_json,
+  skills_select_default_skills_value: (trigger.catalog_skills || []).to_json,
+  skills_select_input_name_value: "trigger[catalog_skills][]",
+  hooks_select_hooks_value: @catalog_hooks_for_select.to_json,
+  hooks_select_agent_root_defaults_value: @agent_root_catalog_hooks.to_json,
+  hooks_select_default_hooks_value: (trigger.catalog_hooks || []).to_json,
+  hooks_select_input_name_value: "trigger[catalog_hooks][]",
+  plugins_select_plugins_value: @plugins_for_select.to_json,
+  plugins_select_agent_root_defaults_value: @agent_root_catalog_plugins.to_json,
+  plugins_select_default_plugins_value: (trigger.catalog_plugins || []).to_json,
+  plugins_select_input_name_value: "trigger[catalog_plugins][]",
+  turbo_frame: "_top"
+} do |f| %>
+  <% if trigger.errors.any? %>
+    <div class="rounded-md bg-red-50 p-4">
+      <div class="flex">
+        <div class="flex-shrink-0">
+          <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+          </svg>
+        </div>
+        <div class="ml-3">
+          <h3 class="text-sm font-medium text-red-800"><%= pluralize(trigger.errors.count, "error") %> prohibited this trigger from being saved:</h3>
+          <div class="mt-2 text-sm text-red-700">
+            <ul class="list-disc list-inside">
+              <% trigger.errors.full_messages.each do |message| %>
+                <li><%= message %></li>
+              <% end %>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  <% end %>
+
+  <!-- Trigger Name -->
+  <div>
+    <%= f.label :name, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+      Trigger Name
+      <span class="text-red-500">*</span>
+    <% end %>
+    <%= f.text_field :name,
+        placeholder: "e.g., CI Failure Handler",
+        class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2" %>
+    <p class="mt-2 text-sm text-gray-500">A descriptive name for this trigger</p>
+  </div>
+
+  <!-- Trigger Conditions Section -->
+  <div>
+    <div class="flex justify-between items-center mb-3">
+      <label class="block text-sm font-medium text-gray-700">Trigger Conditions <span class="text-red-500">*</span></label>
+      <button type="button"
+              data-action="click->trigger-form#addCondition"
+              class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+        <svg class="-ml-0.5 mr-1.5 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+        </svg>
+        Add Condition
+      </button>
+    </div>
+    <p class="text-sm text-gray-500 mb-4">The trigger fires when <strong>any</strong> condition matches (OR logic). Add multiple conditions to respond to different events.</p>
+
+    <div data-trigger-form-target="conditionsContainer" class="space-y-4">
+      <% trigger.trigger_conditions.each_with_index do |condition, index| %>
+        <%= f.fields_for :trigger_conditions, condition, child_index: index do |cf| %>
+          <%= render partial: "triggers/condition_fields", locals: { cf: cf, condition: condition, index: index } %>
+        <% end %>
+      <% end %>
+    </div>
+  </div>
+
+  <!-- Session Template Section -->
+  <div class="border-t border-gray-200 pt-6">
+    <h3 class="text-lg font-medium text-gray-900 mb-4">Session Template</h3>
+    <p class="text-sm text-gray-500 mb-4">Configure how sessions will be created when this trigger fires</p>
+
+    <!-- Agent Root Selection -->
+    <div class="mb-4">
+      <%= f.label :agent_root_name, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+        Agent Root
+        <span class="text-red-500">*</span>
+      <% end %>
+      <%= f.select :agent_root_name,
+          @agent_roots.map { |ar| [ar.display_name, ar.name] },
+          { prompt: "Select an agent root..." },
+          class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8",
+          data: { action: "change->mcp-server-select#handleAgentRootChange change->skills-select#handleAgentRootChange change->hooks-select#handleAgentRootChange change->plugins-select#handleAgentRootChange change->goal#handleAgentRootChange" } %>
+      <p class="mt-2 text-sm text-gray-500">The codebase the agent will work with</p>
+    </div>
+
+    <!-- MCP Servers Multi-Select (using mcp-server-select controller from sessions) -->
+    <div class="mb-4">
+      <%= f.label :mcp_servers, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+        MCP Servers
+      <% end %>
+
+      <!-- Selected servers display -->
+      <div data-mcp-server-select-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+      <!-- Hidden inputs container -->
+      <div data-mcp-server-select-target="hiddenInputs"></div>
+
+      <!-- Search input -->
+      <input type="text"
+             data-mcp-server-select-target="input"
+             data-action="focus->mcp-server-select#handleFocus input->mcp-server-select#handleInput keydown->mcp-server-select#handleKeydown"
+             placeholder="Search and select MCP servers..."
+             autocomplete="off"
+             class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+
+      <!-- Dropdown for server selection -->
+      <div data-mcp-server-select-target="dropdown"
+           class="hidden absolute bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+
+      <p class="mt-2 text-sm text-gray-500">Select MCP servers that will be available to the agent</p>
+    </div>
+
+    <!-- Catalog Skills Multi-Select (using skills-select controller from sessions) -->
+    <div class="mb-4">
+      <%= f.label :catalog_skills, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+        Skills
+      <% end %>
+
+      <!-- Selected skills display -->
+      <div data-skills-select-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+      <!-- Hidden inputs container -->
+      <div data-skills-select-target="hiddenInputs"></div>
+
+      <!-- Search input -->
+      <input type="text"
+             data-skills-select-target="input"
+             data-action="focus->skills-select#handleFocus input->skills-select#handleInput keydown->skills-select#handleKeydown"
+             placeholder="Search and select skills..."
+             autocomplete="off"
+             class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+
+      <!-- Dropdown for skill selection -->
+      <div data-skills-select-target="dropdown"
+           class="hidden absolute bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+
+      <p class="mt-2 text-sm text-gray-500">Select skills from the catalog to inject into the agent's working directory. Local skills with the same name take priority.</p>
+    </div>
+
+    <!-- Catalog Hooks Multi-Select (using hooks-select controller from sessions) -->
+    <div class="mb-4">
+      <%= f.label :catalog_hooks, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+        Hooks
+      <% end %>
+
+      <!-- Selected hooks display -->
+      <div data-hooks-select-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+      <!-- Hidden inputs container -->
+      <div data-hooks-select-target="hiddenInputs"></div>
+
+      <!-- Search input -->
+      <input type="text"
+             data-hooks-select-target="input"
+             data-action="focus->hooks-select#handleFocus input->hooks-select#handleInput keydown->hooks-select#handleKeydown"
+             placeholder="Search and select hooks..."
+             autocomplete="off"
+             class="shadow-sm focus:ring-amber-500 focus:border-amber-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+
+      <!-- Dropdown for hook selection -->
+      <div data-hooks-select-target="dropdown"
+           class="hidden absolute bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+
+      <p class="mt-2 text-sm text-gray-500">Select hooks from the catalog to configure Claude Code lifecycle hooks for this session.</p>
+    </div>
+
+    <!-- Catalog Plugins Multi-Select (using plugins-select controller from sessions) -->
+    <div class="mb-4">
+      <%= f.label :catalog_plugins, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+        Plugins
+      <% end %>
+
+      <!-- Selected plugins display -->
+      <div data-plugins-select-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+      <!-- Hidden inputs container -->
+      <div data-plugins-select-target="hiddenInputs"></div>
+
+      <!-- Search input -->
+      <input type="text"
+             data-plugins-select-target="input"
+             data-action="focus->plugins-select#handleFocus input->plugins-select#handleInput keydown->plugins-select#handleKeydown"
+             placeholder="Search and select plugins..."
+             autocomplete="off"
+             class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+
+      <!-- Dropdown for plugin selection -->
+      <div data-plugins-select-target="dropdown"
+           class="hidden absolute bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+
+      <p class="mt-2 text-sm text-gray-500">Select plugins to bundle skills, hooks, and MCP servers together.</p>
+    </div>
+
+    <!-- Goal (using goal controller from sessions) -->
+    <div class="mb-4">
+      <div class="flex justify-between items-center mb-2">
+        <%= f.label :goal, class: "block text-sm font-medium text-gray-700" do %>
+          Goal
+          <span data-goal-target="displayName" class="ml-2 text-xs font-normal text-indigo-600"></span>
+        <% end %>
+      </div>
+
+      <div class="relative">
+        <input type="text"
+               data-goal-target="input"
+               data-action="focus->goal#handleFocus input->goal#handleInput keydown->goal#handleKeydown"
+               value="<%= trigger.goal %>"
+               placeholder="Select a predefined goal or type your own..."
+               autocomplete="off"
+               class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md pr-10 px-3 py-2">
+        <button type="button"
+                data-goal-target="clearButton"
+                data-action="click->goal#clear"
+                class="hidden absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 focus:outline-none focus:text-gray-600 rounded-r-md"
+                aria-label="Clear goal">
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Hidden field that actually submits the value -->
+      <%= f.hidden_field :goal, data: { goal_target: "hiddenField" } %>
+
+      <!-- Dropdown for suggestions -->
+      <div data-goal-target="dropdown"
+           class="hidden fixed bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+    </div>
+
+    <!-- Re-use Existing Session -->
+    <div class="mb-4">
+      <div class="flex items-start">
+        <div class="flex items-center h-5">
+          <%= f.check_box :reuse_session,
+              class: "focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300 rounded",
+              data: { action: "change->trigger-form#toggleReuseSubOptions" } %>
+        </div>
+        <div class="ml-3">
+          <%= f.label :reuse_session, class: "text-sm font-medium text-gray-700" do %>
+            Re-use existing session
+          <% end %>
+          <p class="text-sm text-gray-500">When enabled, subsequent trigger invocations will send a follow-up prompt to the previously created session instead of spawning a new one. If the previous session is no longer active, a new session will be created.</p>
+
+          <!-- Sub-options (only relevant when reuse_session is enabled) -->
+          <div class="mt-3 ml-1 space-y-3 <%= 'hidden' unless trigger.reuse_session %>" data-trigger-form-target="reuseSubOptions">
+            <div class="flex items-start">
+              <div class="flex items-center h-5">
+                <%= f.check_box :enqueue_messages,
+                    class: "focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300 rounded" %>
+              </div>
+              <div class="ml-3">
+                <%= f.label :enqueue_messages, class: "text-sm font-medium text-gray-700" do %>
+                  Enqueue messages
+                <% end %>
+                <p class="text-xs text-gray-500">When the session is still running, queue the new prompt as an enqueued message instead of skipping it.</p>
+              </div>
+            </div>
+
+            <div class="flex items-start">
+              <div class="flex items-center h-5">
+                <%= f.check_box :resuscitate_archived,
+                    class: "focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300 rounded" %>
+              </div>
+              <div class="ml-3">
+                <%= f.label :resuscitate_archived, class: "text-sm font-medium text-gray-700" do %>
+                  Resuscitate archived sessions
+                <% end %>
+                <p class="text-xs text-gray-500">When the previous session has been archived, automatically unarchive it and send the follow-up prompt instead of creating a new session.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Prompt Template -->
+    <div>
+      <%= f.label :prompt_template, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+        Prompt Template
+        <span class="text-red-500">*</span>
+      <% end %>
+      <%= f.text_area :prompt_template,
+          rows: 10,
+          placeholder: "Enter the prompt template for triggered sessions.\n\nAvailable variables:\n{{link}} - Link to the Slack message\n{{text}} - Content of the message\n{{author}} - Name of the message author\n{{channel}} - Channel name\n{{time}} - Current time (HH:MM)\n{{date}} - Current date (YYYY-MM-DD)\n{{event}} - Event name (for AO events)",
+          class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md font-mono" %>
+      <div class="mt-2 text-sm text-gray-500" data-trigger-form-target="promptHelp">
+        <p>The prompt sent to the agent when the trigger fires. Available variables:</p>
+        <ul class="mt-1 list-disc list-inside text-xs">
+          <li><code class="bg-gray-100 px-1 rounded">{{link}}</code> - Link to the Slack message (Slack conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{text}}</code> - Content of the message (Slack conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{author}}</code> - Name of the message author (Slack conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{channel}}</code> - Channel name (Slack conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{time}}</code> - Current time (HH:MM)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{date}}</code> - Current date (YYYY-MM-DD)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{event}}</code> - Event description (AO Event conditions)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Submit Buttons -->
+  <div class="flex items-center justify-between pt-6 border-t border-gray-200">
+    <% if trigger.persisted? %>
+      <%= link_to "Cancel", trigger_path(trigger), class: "inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+    <% else %>
+      <%= link_to "Cancel", triggers_path, class: "inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+    <% end %>
+    <%= f.submit trigger.persisted? ? "Update Trigger" : "Create Trigger",
+        class: "inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer" %>
+  </div>
+<% end %>

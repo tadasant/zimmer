@@ -1,0 +1,860 @@
+<style>
+  .sortable-ghost {
+    opacity: 0.4;
+    border: 2px dashed #818cf8;
+    border-radius: 0.5rem;
+    background: #eef2ff;
+    box-shadow: none;
+  }
+  .sortable-ghost > * { opacity: 0; }
+  .sortable-chosen {
+    box-shadow: 0 0 0 2px #818cf8;
+    border-radius: 0.5rem;
+    transform: scale(1.02);
+    z-index: 30;
+  }
+  .sortable-drag {
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+    transform: rotate(1.5deg) scale(1.03);
+    border-radius: 0.5rem;
+    opacity: 0.95;
+  }
+  /* An empty category grid still needs to read as a drop target. Show a dashed
+     "Drop sessions here" hint only while it has no cards. */
+  .category-grid:not(:has(*))::after {
+    content: "Drop sessions here";
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 5rem;
+    color: #9ca3af;
+    font-size: 0.875rem;
+    border: 2px dashed #e5e7eb;
+    border-radius: 0.5rem;
+  }
+  /* Collapsible category sections. The category-collapse controller toggles
+     `category-collapsed` on the <section> and persists it to localStorage; the chevron
+     (in the header) lives outside the section's turbo-frame so it survives pagination
+     swaps. Hiding the frame collapses the grid and its pagination together. */
+  .category-collapse-chevron {
+    transition: transform 0.2s ease;
+  }
+  .category-collapsed .category-collapse-chevron {
+    transform: rotate(-90deg);
+  }
+  .category-collapsed .category-collapse-body {
+    display: none;
+  }
+  /* "Click to pick a blocker" mode: every session card becomes a click target. */
+  .block-picking [data-block-picker-card-id] {
+    cursor: pointer;
+  }
+  .block-picking [data-block-picker-card-id]:hover {
+    outline: 2px solid #f59e0b;
+    outline-offset: 2px;
+    border-radius: 0.5rem;
+  }
+</style>
+<div class="min-h-screen bg-gray-50"
+     data-controller="pull-to-refresh dashboard-notes stream-visibility-recovery block-picker session-drawer"
+     data-block-picker-mark-url-template-value="<%= mark_blocked_session_path("__ID__") %>">
+  <%# Blocker-selection banner: shown while picking a session to block by. %>
+  <div data-block-picker-target="banner" class="hidden sticky top-0 z-[70] bg-amber-500 text-white px-4 py-2 shadow-md">
+    <div class="flex items-center justify-between gap-3">
+      <div class="flex items-center gap-2 text-sm font-medium">
+        <svg class="h-4 w-4 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
+        </svg>
+        <span data-block-picker-target="label">Select the session that is blocking this one — click any session card.</span>
+      </div>
+      <button type="button" data-action="click->block-picker#cancel" class="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-md bg-white/20 hover:bg-white/30 flex-shrink-0">
+        Cancel (Esc)
+      </button>
+    </div>
+  </div>
+  <%= turbo_stream_from "sessions_index_individual" %>
+  <%= turbo_stream_from "notification_badge" %>
+  <!-- Ultrawide: sidebar + content layout. Below 2xl: stacked layout -->
+  <div class="2xl:flex 2xl:gap-8 px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Sidebar (ultrawide) / Header (smaller screens) -->
+    <div class="2xl:w-80 2xl:flex-shrink-0 2xl:sticky 2xl:top-8 2xl:self-start mb-8 2xl:mb-0">
+      <!-- Title & Description with Mobile Menu -->
+      <div class="mb-6">
+        <div class="flex justify-between items-center relative" data-controller="mobile-menu">
+          <div>
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Agent Sessions</h1>
+            <p class="mt-1 sm:mt-2 text-xs sm:text-sm text-gray-600 hidden sm:block">Manage and monitor your agent orchestration sessions</p>
+          </div>
+
+          <!-- Mobile: Hamburger menu button + New Session -->
+          <div class="flex items-center gap-2 md:hidden">
+            <%= link_to new_session_path, class: "inline-flex items-center justify-center w-10 h-10 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", title: "New Session", "aria-label" => "New Session" do %>
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+              </svg>
+            <% end %>
+            <button type="button"
+                    data-action="click->mobile-menu#toggle"
+                    data-mobile-menu-target="button"
+                    class="inline-flex items-center justify-center w-10 h-10 border border-gray-300 rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                    aria-label="Toggle menu"
+                    aria-expanded="false"
+                    aria-controls="index-mobile-menu-dropdown">
+              <!-- Hamburger icon -->
+              <svg data-mobile-menu-target="openIcon" class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+              <!-- Close icon -->
+              <svg data-mobile-menu-target="closeIcon" class="hidden h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Mobile: Dropdown menu -->
+          <div id="index-mobile-menu-dropdown" data-mobile-menu-target="menu" class="hidden absolute top-16 right-4 left-4 bg-white border border-gray-200 rounded-lg shadow-lg z-50 md:hidden">
+            <div class="p-2 space-y-1">
+              <%= link_to supervisor_root_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+                  <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
+                </svg>
+                Supervisor
+              <% end %>
+              <%= link_to good_job_path, target: "_blank", rel: "noopener noreferrer", class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" />
+                </svg>
+                Jobs
+              <% end %>
+              <%= link_to health_dashboard_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clip-rule="evenodd" />
+                </svg>
+                Health
+              <% end %>
+              <%= link_to clis_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" />
+                </svg>
+                CLIs
+              <% end %>
+              <%= link_to notifications_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z" />
+                </svg>
+                Notifications
+              <% end %>
+              <%= link_to triggers_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd" />
+                </svg>
+                Triggers
+              <% end %>
+              <%= link_to oauth_status_index_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 2 2 0 012 2 1 1 0 102 0 4 4 0 00-4-4z" clip-rule="evenodd" />
+                </svg>
+                OAuth Status
+              <% end %>
+              <%= link_to quotas_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                </svg>
+                Quotas
+              <% end %>
+              <%= link_to settings_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+                </svg>
+                Settings
+              <% end %>
+              <%= link_to api_docs_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd" />
+                </svg>
+                API Docs
+              <% end %>
+              <div class="border-t border-gray-100 my-1"></div>
+              <%= button_to refresh_all_sessions_path, method: :post, class: "flex items-center w-full px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md text-left", title: "Refresh transcripts and restart failed sessions", form: { data: { turbo: false } } do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+                </svg>
+                Refresh All
+              <% end %>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Navigation Links - hidden on mobile (in hamburger), horizontal on md-2xl, vertical on 2xl+ -->
+      <div class="hidden md:flex flex-wrap gap-2 2xl:flex-col 2xl:gap-3 mb-6">
+        <%= link_to new_session_path, class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full 2xl:justify-center" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+          </svg>
+          New Session
+        <% end %>
+        <%= link_to supervisor_root_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+            <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
+          </svg>
+          Supervisor
+        <% end %>
+        <%= link_to good_job_path, target: "_blank", rel: "noopener noreferrer", class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" />
+          </svg>
+          Jobs
+        <% end %>
+        <%= link_to health_dashboard_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clip-rule="evenodd" />
+          </svg>
+          Health
+        <% end %>
+        <!-- CLI Badge - loaded async to avoid blocking page render -->
+        <%= turbo_frame_tag "cli_badge", src: clis_badge_path, loading: :lazy do %>
+          <%= link_to clis_path, data: { turbo_frame: "_top" }, class: "relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" />
+            </svg>
+            CLIs
+          <% end %>
+        <% end %>
+        <!-- Notification Badge - loaded async to avoid blocking page render -->
+        <%= turbo_frame_tag "notification_badge", src: badge_notifications_path, loading: :lazy do %>
+          <%= link_to notifications_path, data: { turbo_frame: "_top" }, class: "relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+            <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z" />
+            </svg>
+            Notifications
+          <% end %>
+        <% end %>
+        <%= link_to triggers_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd" />
+          </svg>
+          Triggers
+        <% end %>
+        <%= link_to oauth_status_index_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 2 2 0 012 2 1 1 0 102 0 4 4 0 00-4-4z" clip-rule="evenodd" />
+          </svg>
+          OAuth Status
+        <% end %>
+        <%= link_to quotas_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+          </svg>
+          Quotas
+        <% end %>
+        <%= link_to settings_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+          </svg>
+          Settings
+        <% end %>
+        <%= link_to api_docs_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd" />
+          </svg>
+          API Docs
+        <% end %>
+        <%= button_to refresh_all_sessions_path, method: :post, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full 2xl:justify-center", title: "Refresh transcripts and restart failed sessions", "aria-label" => "Refresh all sessions", form: { data: { turbo: false } } do %>
+          <svg class="h-5 w-5 2xl:mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+          </svg>
+          <span class="sr-only 2xl:not-sr-only">Refresh All</span>
+        <% end %>
+      </div>
+
+      <!-- Search Bar -->
+      <div class="bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200 mb-4">
+        <%= form_with url: root_path, method: :get, local: true, class: "space-y-3" do %>
+          <%# Only carry an explicit trash choice forward. When unset, the controller
+              defaults trash ON for any active search, so omitting the field here lets a
+              fresh search include trashed sessions without the user toggling anything. %>
+          <%= hidden_field_tag :show_archived, (@show_archived ? "true" : "false") if @show_archived_explicit %>
+          <%= hidden_field_tag :show_blocked, "true" if @show_blocked %>
+          <div class="flex flex-col gap-3">
+            <!-- Search Input -->
+            <div class="flex-1">
+              <div class="relative">
+                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <svg class="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
+                  </svg>
+                </div>
+                <%= text_field_tag :q, @search_query, placeholder: "Search sessions...", class: "block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" %>
+              </div>
+            </div>
+
+            <!-- Search Button -->
+            <div class="flex items-center gap-2">
+              <%= submit_tag "Search", class: "flex-1 inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer" %>
+              <% if @search_active %>
+                <%# Clear drops both the text query and the agent-root filter, returning to
+                    the category grid. The user's explicit trash/blocked choice is preserved. %>
+                <%= link_to "Clear", root_path(show_archived: @show_archived_explicit ? (@show_archived ? "true" : "false") : nil, show_blocked: @show_blocked ? "true" : nil), class: "inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+              <% end %>
+            </div>
+          </div>
+
+          <!-- Advanced Search Accordion -->
+          <% advanced_active = @search_contents || @agent_root_filter.present? %>
+          <details class="text-sm"<%= " open" if advanced_active %>>
+            <summary class="cursor-pointer text-gray-600 hover:text-gray-900 select-none">
+              Advanced Search<%= " (active)" if advanced_active %>
+            </summary>
+            <div class="mt-2 pl-1 space-y-3">
+              <%# Agent-root filter: type to autocomplete from the catalog (native
+                  datalist), then Search to see that root's recent sessions. The submitted
+                  value is the root's catalog name. %>
+              <div>
+                <label for="agent_root" class="block text-gray-600 mb-1">Agent root</label>
+                <div class="flex items-center gap-2">
+                  <%= text_field_tag :agent_root, @agent_root_filter, list: "agent_root_filter_options", placeholder: "Filter by agent root…", autocomplete: "off", class: "block w-full max-w-sm px-3 py-2 border border-gray-300 rounded-md leading-5 bg-white text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" %>
+                  <datalist id="agent_root_filter_options">
+                    <% @agent_roots_for_filter.each do |ar| %>
+                      <option value="<%= ar.name %>"><%= "#{ar.display_name.presence || ar.name} (#{ar.name})" %></option>
+                    <% end %>
+                  </datalist>
+                </div>
+              </div>
+              <label class="inline-flex items-center cursor-pointer">
+                <%= check_box_tag :search_contents, "1", @search_contents, class: "h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded" %>
+                <span class="ml-2 text-gray-600">Search transcript contents</span>
+              </label>
+            </div>
+          </details>
+        <% end %>
+      </div>
+
+      <!-- Trash Filter -->
+      <div class="flex items-center justify-between bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200">
+        <div class="flex items-center text-sm text-gray-600">
+          <% if @show_archived %>
+            <svg class="h-4 w-4 mr-1.5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+            </svg>
+            <span>Including trashed</span>
+          <% else %>
+            <span>Trashed hidden</span>
+          <% end %>
+        </div>
+        <div>
+          <% if @show_archived %>
+            <%# Pass show_archived=false explicitly so it survives an active search, where
+                an omitted param would otherwise re-default trash back on. %>
+            <%= link_to "Hide Trash", root_path(show_archived: "false", show_blocked: @show_blocked ? "true" : nil, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+          <% else %>
+            <%= link_to "Show Trash", root_path(show_archived: "true", show_blocked: @show_blocked ? "true" : nil, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Blocked Filter -->
+      <div class="flex items-center justify-between bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200 mt-3">
+        <div class="flex items-center text-sm text-gray-600">
+          <% if @show_blocked %>
+            <svg class="h-4 w-4 mr-1.5 text-amber-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
+            </svg>
+            <span>Including blocked</span>
+          <% else %>
+            <span>Blocked hidden</span>
+          <% end %>
+        </div>
+        <div>
+          <%# Preserve the current trash state explicitly so toggling Blocked never
+              re-defaults trash on during an active search. %>
+          <% archived_param = @show_archived ? "true" : "false" %>
+          <% if @show_blocked %>
+            <%= link_to "Hide Blocked", root_path(show_archived: archived_param, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+          <% else %>
+            <%= link_to "Show Blocked", root_path(show_blocked: true, show_archived: archived_param, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+          <% end %>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="2xl:flex-1 2xl:min-w-0">
+      <!-- Quick Prompt -->
+      <div class="mb-6"
+           data-controller="quick-prompt"
+           data-quick-prompt-max-image-size-value="<%= ImageStorageService::MAX_IMAGE_SIZE %>"
+           data-quick-prompt-max-images-value="<%= SessionsController::MAX_IMAGES_PER_REQUEST %>"
+           data-quick-prompt-max-file-size-value="<%= FileStorageService::MAX_FILE_SIZE %>"
+           data-quick-prompt-max-files-value="<%= SessionsController::MAX_FILES_PER_REQUEST %>">
+        <%# Mobile: tappable pill that opens the full-screen editor %>
+        <button type="button"
+                data-action="quick-prompt#openMobile"
+                class="md:hidden flex w-full items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm text-gray-400 shadow-sm">
+          <svg class="h-4 w-4 flex-shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+          </svg>
+          What do you want to do?
+        </button>
+
+        <%# Mobile: full-screen overlay editor %>
+        <div data-quick-prompt-target="mobileOverlay"
+             data-action="keydown->quick-prompt#closeMobileOnEscape"
+             role="dialog" aria-modal="true" aria-label="New prompt"
+             class="hidden fixed inset-0 z-50 bg-white flex flex-col md:hidden">
+          <div class="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+            <h2 class="text-base font-semibold text-gray-900">New prompt</h2>
+            <button type="button" data-action="quick-prompt#closeMobile"
+                    aria-label="Close"
+                    class="rounded-md p-1 text-gray-400 hover:text-gray-600">
+              <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+          <%= form_with url: quick_prompt_sessions_path, method: :post, local: true, multipart: true,
+                data: { turbo: false, quick_prompt_target: "mobileForm",
+                        action: "submit->quick-prompt#submitMobile" },
+                class: "flex flex-col flex-1 min-h-0" do %>
+            <%= text_area_tag :prompt, nil,
+                  placeholder: "What do you want to do?",
+                  data: { quick_prompt_target: "mobileTextarea" },
+                  class: "flex-1 w-full resize-none border-0 px-4 py-3 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-0" %>
+
+            <%# Hidden inputs receive the actual files; visible buttons forward
+                clicks to them so the user gets familiar attach/camera affordances. %>
+            <input type="file" name="images[]" multiple class="hidden"
+                   accept="image/jpeg,image/png,image/gif,image/webp"
+                   data-quick-prompt-target="mobileImageInput"
+                   data-action="change->quick-prompt#updateMobileBadge">
+            <input type="file" name="images[]" class="hidden"
+                   accept="image/*" capture="environment"
+                   data-quick-prompt-target="mobileCameraInput"
+                   data-action="change->quick-prompt#updateMobileBadge">
+            <input type="file" name="files[]" multiple class="hidden"
+                   data-quick-prompt-target="mobileFileInput"
+                   data-action="change->quick-prompt#updateMobileBadge">
+
+            <div class="border-t border-gray-200 px-4 py-3">
+              <div class="flex items-center gap-2 mb-3">
+                <button type="button"
+                        data-action="quick-prompt#openMobileImage"
+                        class="inline-flex items-center p-2 border border-gray-300 rounded-md text-gray-500 bg-white hover:bg-gray-50"
+                        title="Attach images">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                  </svg>
+                </button>
+                <button type="button"
+                        data-action="quick-prompt#openMobileCamera"
+                        class="inline-flex items-center p-2 border border-gray-300 rounded-md text-gray-500 bg-white hover:bg-gray-50"
+                        title="Take photo">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/>
+                  </svg>
+                </button>
+                <button type="button"
+                        data-action="quick-prompt#openMobileFile"
+                        class="inline-flex items-center p-2 border border-gray-300 rounded-md text-gray-500 bg-white hover:bg-gray-50"
+                        title="Attach files">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+                  </svg>
+                </button>
+                <span data-quick-prompt-target="mobileBadge" class="ml-auto text-xs text-gray-500"></span>
+              </div>
+              <button type="submit" data-quick-prompt-target="mobileSubmit"
+                      class="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                Submit
+              </button>
+            </div>
+          <% end %>
+        </div>
+
+        <%# Desktop: inline textarea with resize handle %>
+        <%= form_with url: quick_prompt_sessions_path, method: :post, local: true, multipart: true,
+              data: { turbo: false, quick_prompt_target: "desktopForm" },
+              class: "relative hidden md:block" do %>
+          <%= text_area_tag :prompt, nil,
+                placeholder: "What do you want to do? (Cmd/Ctrl+Enter to submit)",
+                rows: 2,
+                data: {
+                  quick_prompt_target: "textarea",
+                  action: "keydown->quick-prompt#submitOnCmdEnter"
+                },
+                class: "block w-full rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 placeholder-gray-400 shadow-sm resize-y focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" %>
+
+          <%# Hidden file inputs and visible attach buttons. Camera input has
+              capture="environment" so mobile browsers open the rear camera. %>
+          <input type="file" name="images[]" multiple class="hidden"
+                 accept="image/jpeg,image/png,image/gif,image/webp"
+                 data-quick-prompt-target="desktopImageInput"
+                 data-action="change->quick-prompt#updateDesktopBadge">
+          <input type="file" name="images[]" class="hidden"
+                 accept="image/*" capture="environment"
+                 data-quick-prompt-target="desktopCameraInput"
+                 data-action="change->quick-prompt#updateDesktopBadge">
+          <input type="file" name="files[]" multiple class="hidden"
+                 data-quick-prompt-target="desktopFileInput"
+                 data-action="change->quick-prompt#updateDesktopBadge">
+
+          <div class="mt-2 flex items-center gap-2">
+            <button type="button"
+                    data-action="quick-prompt#openDesktopImage"
+                    class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-500 bg-white hover:bg-gray-50"
+                    title="Attach images">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+              </svg>
+            </button>
+            <button type="button"
+                    data-action="quick-prompt#openDesktopCamera"
+                    class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-500 bg-white hover:bg-gray-50"
+                    title="Take photo (mobile camera) or choose image">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+            </button>
+            <button type="button"
+                    data-action="quick-prompt#openDesktopFile"
+                    class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-500 bg-white hover:bg-gray-50"
+                    title="Attach files">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+              </svg>
+            </button>
+            <span data-quick-prompt-target="desktopBadge" class="text-xs text-gray-500"></span>
+          </div>
+        <% end %>
+      </div>
+
+      <%# View Mode Switcher — top-right toolbar above the session list. Flattens the
+          dashboard from the category-grouped grid into a single list sorted solely by
+          last-touched or created time. The chosen mode rides in ?view= (persisted via
+          cookie server-side); each link preserves the current search/filter params and
+          drops pagination since the flat and per-category paginators use different
+          schemes. Sits in the main content column so it lands at the top-right of the
+          dashboard on every screen size. %>
+      <div class="mb-6 flex items-center gap-3">
+        <%# Collapse all / Expand all: a single toggle that drives every section's
+            category-collapse controller via the Stimulus outlets API. The button element is
+            the collapse-all controller; its outlet selector matches every <section> that
+            mounts category-collapse, so persistence stays owned by that controller (the
+            single source of truth) and never drifts. The label/aria flip between "Collapse
+            all" and "Expand all" based on whether every section is already collapsed.
+            Only meaningful in the categories view (the only view with category sections),
+            so it is rendered as a peer of the view-mode tabs there and omitted in the flat
+            sort views and while a search is active. %>
+        <% if @view_mode == SessionsController::VIEW_MODE_CATEGORIES && !@search_active %>
+          <button type="button"
+                  data-controller="collapse-all"
+                  data-collapse-all-category-collapse-outlet="[data-controller~='category-collapse']"
+                  data-action="click->collapse-all#toggle category-collapse:changed@window->collapse-all#syncLabel"
+                  class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  aria-controls="category_sections"
+                  aria-expanded="true"
+                  aria-label="Collapse all categories">
+            <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd" />
+            </svg>
+            <span data-collapse-all-target="label">Collapse all</span>
+          </button>
+        <% end %>
+        <div class="inline-flex items-center gap-1 rounded-lg bg-gray-100 p-1 shadow-inner max-w-full overflow-x-auto ml-auto"
+             role="group" aria-label="Dashboard view mode">
+          <%
+            view_modes = [
+              [ SessionsController::VIEW_MODE_CATEGORIES, "Categories" ],
+              [ SessionsController::VIEW_MODE_LAST_TOUCHED, "Last Touched" ],
+              [ SessionsController::VIEW_MODE_CREATED_DESC, "Created" ]
+            ]
+            view_link_params = ->(mode) { request.query_parameters.except("page").merge("view" => mode) }
+          %>
+          <% view_modes.each do |(mode, label)| %>
+            <% active = @view_mode == mode %>
+            <%= link_to label, root_path(view_link_params.call(mode)),
+                  "aria-pressed": active.to_s,
+                  class: [
+                    "px-3 py-1.5 text-sm font-medium rounded-md whitespace-nowrap transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500",
+                    (active ? "bg-white text-indigo-700 shadow-sm" : "text-gray-600 hover:text-gray-900 hover:bg-white/60")
+                  ].join(" ") %>
+          <% end %>
+        </div>
+      </div>
+
+      <% if @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED || @view_mode == SessionsController::VIEW_MODE_CREATED_DESC %>
+        <%# Flat sort views: a single list sorted solely by the chosen factor
+            (last touched, or created desc). No category grouping, no custom/
+            per-category ordering, and no pinned favorites float. Honors the same
+            filters/search as every other view. %>
+        <% if @any_sessions %>
+          <%= render "sessions/flat_sessions", sessions: @flat_sessions, title: @flat_view_title %>
+        <% end %>
+      <% elsif @search_active %>
+        <%# Flat search results: a single ordered list (favorites first, then newest) of
+            every session matching the active search. The category grid and its
+            drag-and-drop are intentionally hidden while searching. %>
+        <% if @any_sessions %>
+          <section class="mb-8" id="search_results">
+            <div class="flex items-center gap-2 min-w-0 mb-3">
+              <h2 class="text-lg font-semibold text-gray-800 truncate">Search results</h2>
+              <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 min-w-[1.5rem]"
+                    title="<%= pluralize(@search_results.total_count, "session") %>"><%= @search_results.total_count %></span>
+            </div>
+            <%# Grid keeps id="sessions_grid" so real-time broadcasts that prepend new
+                cards still land here while a search is active (the category grid that
+                normally owns this id is not rendered during search). %>
+            <div id="sessions_grid"
+                 class="grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center">
+              <% @search_results.each do |session| %>
+                <%= turbo_frame_tag dom_id(session) do %>
+                  <%= render "session_card", agent_session: session %>
+                <% end %>
+              <% end %>
+            </div>
+            <% if @search_results.total_pages > 1 %>
+              <div class="mt-6 flex justify-center">
+                <%= paginate @search_results %>
+              </div>
+            <% end %>
+          </section>
+        <% end %>
+      <% else %>
+      <%# Starred (favorited) sessions pinned above every category section. Rendered
+          outside the category-dnd controller so it is neither draggable nor a drop
+          target — it is derived purely from favorite state. Omitted when nothing is
+          starred. %>
+      <% if @pinned_sessions.any? %>
+        <%= render "sessions/pinned_section", sessions: @pinned_sessions %>
+      <% end %>
+
+      <!-- Sessions List: drag-and-drop category sections -->
+      <%# The whole grid is one drag-and-drop controller. Every section (Uncategorized
+          plus each category) is a Sortable list sharing a group, so a card can be
+          dragged from any section into any other; the drop persists the session's
+          category assignment so it survives reload. %>
+      <div data-controller="category-dnd category-edit"
+           data-category-dnd-set-category-url-template-value="<%= set_category_session_path("__SESSION_ID__") %>"
+           data-category-dnd-create-url-value="<%= categories_path %>"
+           data-category-dnd-reorder-url-value="<%= reorder_categories_path %>"
+           data-category-edit-update-url-template-value="<%= category_path("__ID__") %>">
+        <%# The Sortable "sections" target: each child <section> is a draggable unit
+            grabbed by its .category-drag-handle, and a reorder POSTs the new
+            top-to-bottom id order so the stacking survives reload. Uncategorized and
+            the custom categories are interleaved here by @ordered_sections, so the
+            Uncategorized bucket can be dragged anywhere in the stack — not pinned to
+            the top. New category sections are appended here by the "+" button. Each
+            section paginates independently and is collapsible (see its partial). %>
+        <div id="category_sections" data-category-dnd-target="sections">
+          <% @ordered_sections.each do |section| %>
+            <% if section == :uncategorized %>
+              <%= render "sessions/uncategorized_section", sessions: @uncategorized_sessions %>
+            <% else %>
+              <%= render "sessions/category_section", category: section, sessions: @sessions_by_category[section.id] %>
+            <% end %>
+          <% end %>
+        </div>
+
+        <%# Divider with a "+" button at the top-right that creates a new category. %>
+        <div class="relative my-8">
+          <div class="absolute inset-0 flex items-center" aria-hidden="true">
+            <div class="w-full border-t border-gray-300"></div>
+          </div>
+          <div class="relative flex justify-end">
+            <button type="button"
+                    data-action="category-dnd#addCategory"
+                    class="inline-flex items-center gap-1 rounded-full border border-gray-300 bg-white px-3 py-1 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 hover:text-indigo-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                    title="Add category">
+              <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+              </svg>
+              New category
+            </button>
+          </div>
+        </div>
+
+        <%# Shared right-click "move" menu. Hidden until openCardMenu/openCategoryMenu
+            populate and position it at the cursor; dismissed on outside-click or Escape.
+            One element is reused for every handle so there's no per-card menu markup. %>
+        <div data-category-dnd-target="menu"
+             class="hidden fixed z-50 min-w-[12rem] max-h-[20rem] overflow-auto rounded-md border border-gray-200 bg-white py-1 shadow-lg text-sm"
+             role="menu"></div>
+        <%# Edit-category modal. Hidden until the category-edit controller opens it,
+            at which point its fields are prefilled from the clicked Edit button's
+            data params. Submitting PATCHes /categories/:id and patches the section
+            header name in place on success. %>
+        <div data-category-edit-target="modal"
+             class="hidden fixed inset-0 z-[80] flex items-center justify-center p-4"
+             data-action="keydown->category-edit#closeOnEscape">
+          <div class="absolute inset-0 bg-black/40" data-action="click->category-edit#close"></div>
+          <div class="relative bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-lg font-semibold text-gray-900">Edit category</h3>
+              <button type="button" class="text-gray-400 hover:text-gray-600" data-action="category-edit#close" aria-label="Close">
+                <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <form data-action="submit->category-edit#submit">
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1" for="category-edit-name">Name</label>
+                <input type="text" id="category-edit-name"
+                       data-category-edit-target="nameInput"
+                       class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                       maxlength="100" required />
+              </div>
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1" for="category-edit-description">
+                  Description <span class="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <textarea id="category-edit-description"
+                          data-category-edit-target="descriptionInput"
+                          rows="3" maxlength="1000"
+                          placeholder="What belongs in this category? Used to auto-sort new sessions."
+                          class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 resize-y focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+              </div>
+              <div class="mb-4">
+                <label class="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" id="category-edit-frozen"
+                         data-category-edit-target="frozenInput"
+                         class="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" />
+                  <span class="text-sm">
+                    <span class="font-medium text-gray-700">Freeze this category</span>
+                    <span class="block text-gray-400 font-normal">Its sessions are skipped by "Refresh all" and automatic recovery. Useful for a parked backlog.</span>
+                  </span>
+                </label>
+              </div>
+              <p data-category-edit-target="error" class="hidden mb-3 text-sm text-red-600"></p>
+              <div class="flex justify-end gap-2">
+                <button type="button" data-action="category-edit#close"
+                        class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                  Cancel
+                </button>
+                <button type="submit" data-category-edit-target="submit"
+                        class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                  Save
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+      <% end %>
+
+      <%# Pagination is now per-category — each section renders its own controls inside
+          its turbo-frame (see _category_pagination). Only the empty state remains here. %>
+      <% unless @any_sessions %>
+        <!-- Empty State -->
+        <div class="text-center py-12">
+          <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          <h3 class="mt-2 text-sm font-medium text-gray-900">No sessions<% if @search_active %> found<% end %></h3>
+          <p class="mt-1 text-sm text-gray-500">
+            <% if @search_active %>
+              No sessions match your search. Try adjusting your search terms.
+            <% else %>
+              Get started by creating a new agent session.
+            <% end %>
+          </p>
+          <div class="mt-6">
+            <% if @search_active %>
+              <%= link_to root_path(show_archived: @show_archived_explicit ? (@show_archived ? "true" : "false") : nil, show_blocked: @show_blocked ? "true" : nil), class: "inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+                Clear Search
+              <% end %>
+            <% else %>
+              <%= link_to new_session_path, class: "inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+                <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+                </svg>
+                New Session
+              <% end %>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  </div>
+
+  <%# Dashboard Notes Sidebar - slides in from right when notes icon is clicked %>
+  <div data-dashboard-notes-target="overlay"
+       data-action="click->dashboard-notes#close"
+       class="hidden fixed inset-0 bg-black/30 z-40"></div>
+
+  <div data-dashboard-notes-target="sidebar"
+       class="fixed top-0 right-0 bottom-0 w-80 max-w-[85vw] bg-white shadow-xl z-50 transform translate-x-full transition-transform duration-300 ease-in-out flex flex-col">
+    <div class="flex items-center justify-between p-4 border-b border-gray-200">
+      <div class="min-w-0 flex-1">
+        <h3 class="text-sm font-semibold text-gray-900 truncate" data-dashboard-notes-target="sessionTitle">Session Notes</h3>
+      </div>
+      <div class="flex items-center gap-2 ml-2 flex-shrink-0">
+        <span data-dashboard-notes-target="status"></span>
+        <button type="button"
+                data-action="click->dashboard-notes#manualSave"
+                class="p-1 text-gray-400 hover:text-indigo-600"
+                title="Save now">
+          <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 3.75H6.912a2.25 2.25 0 00-2.15 1.588L2.35 13.177a2.25 2.25 0 00-.1.661V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 00-2.15-1.588H15M2.25 13.5h3.86a2.25 2.25 0 012.012 1.244l.256.512a2.25 2.25 0 002.013 1.244h3.218a2.25 2.25 0 002.013-1.244l.256-.512a2.25 2.25 0 012.013-1.244h3.859" />
+          </svg>
+        </button>
+        <button type="button"
+                data-action="click->dashboard-notes#close"
+                class="p-1 text-gray-400 hover:text-gray-600">
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="flex-1 p-4 overflow-hidden">
+      <textarea data-dashboard-notes-target="textarea"
+                data-action="input->dashboard-notes#onInput"
+                class="w-full h-full resize-none border-0 bg-gray-50 rounded-lg p-3 text-sm text-gray-700 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                placeholder="Add notes about this session..."></textarea>
+    </div>
+  </div>
+
+  <%# Session detail drawer — slides in from the right when a card's "View" is
+      left-clicked (see session_drawer_controller.js). The detail view is
+      lazy-loaded into the Turbo Frame so its Turbo Stream subscriptions and
+      Stimulus controllers connect and stream live; the dashboard stays in place
+      behind the overlay so the user keeps their scroll position. When open the
+      controller gives the panel an explicit `translate-x-0`, so its non-none
+      `translate` makes it the containing block for the detail view's `fixed`
+      follow-up form — the form spans the drawer width and sticks to the drawer's
+      bottom rather than escaping to the full viewport. %>
+  <div data-session-drawer-target="overlay"
+       data-action="click->session-drawer#close"
+       class="hidden fixed inset-0 bg-black/40 z-[60]"></div>
+
+  <div data-session-drawer-target="panel"
+       tabindex="-1"
+       role="dialog" aria-modal="true" aria-label="Session details"
+       aria-hidden="true"
+       class="fixed top-0 right-0 bottom-0 w-full max-w-5xl bg-gray-50 shadow-2xl z-[65] transform translate-x-full transition-transform duration-300 ease-in-out flex flex-col focus:outline-none">
+    <%# Drag handle on the panel's left edge to widen/narrow the drawer. Hidden on
+        small screens, where the drawer is full-width and resizing is moot. The
+        wider transparent hit area sits over a thin always-visible grip. %>
+    <div data-session-drawer-target="resizeHandle"
+         data-action="pointerdown->session-drawer#startResize keydown->session-drawer#resizeKeydown"
+         role="separator" aria-orientation="vertical" aria-label="Resize session details panel" aria-controls="session_detail"
+         tabindex="0"
+         class="hidden sm:block absolute top-0 left-0 bottom-0 w-2 -translate-x-1/2 cursor-col-resize z-10 bg-gray-300 hover:bg-indigo-400 transition-colors focus:outline-none focus-visible:bg-indigo-400 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-1"></div>
+    <%# data-scroll-container marks this panel as the drawer's scroll element so the
+        detail's scroll controllers (session-scroll, auto-scroll) can find it by DOM
+        ancestry rather than by probing computed overflow — the latter races against
+        layout and silently fails when the container isn't overflowing yet. %>
+    <div data-scroll-container class="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+      <%= turbo_frame_tag "session_detail", class: "block", data: { "session-drawer-target": "frame" } do %>
+        <%# Lazy-loaded on open via session-drawer#open %>
+      <% end %>
+    </div>
+  </div>
+</div>

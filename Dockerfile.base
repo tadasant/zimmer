@@ -1,0 +1,214 @@
+# syntax=docker/dockerfile:1
+# check=error=true
+
+# Base image for Agent Orchestrator with pre-installed heavy dependencies AND gems.
+# This image is built separately and cached to speed up production deployments.
+#
+# Rebuild this image when:
+# - Node.js, Playwright, Puppeteer/Chrome, Claude Code, or CLI tools change
+# - Gemfile/Gemfile.lock changes (gem updates)
+# - Ruby version changes
+
+ARG RUBY_VERSION=3.4.6
+FROM docker.io/library/ruby:$RUBY_VERSION-slim AS base
+
+# Rails app lives here
+WORKDIR /rails
+
+# Install base packages (includes PostgreSQL client library, git for runtime repo cloning)
+# Also install build dependencies for native gem compilation
+# jq is needed for Claude Code hooks that parse JSON (e.g., stop hooks)
+# procps provides pgrep and ps, used by HealthMonitorService / ProcessDiagnostics to
+# detect orphaned and active `claude` processes. --no-install-recommends does not pull
+# it in transitively, so it must be listed explicitly (see issue #4347 — without it,
+# `Open3.capture2("pgrep", ...)` raises Errno::ENOENT every health-check cycle).
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y \
+    curl libjemalloc2 libvips libpq5 git jq ripgrep procps \
+    build-essential libyaml-dev pkg-config libpq-dev && \
+    rm -rf /var/lib/apt/lists /var/cache/apt/archives
+
+# Set production environment
+ENV RAILS_ENV="production" \
+    BUNDLE_DEPLOYMENT="1" \
+    BUNDLE_PATH="/usr/local/bundle" \
+    BUNDLE_WITHOUT="development"
+
+# Pre-install application gems (copied from the repo at build time)
+COPY Gemfile Gemfile.lock ./
+RUN bundle install && \
+    rm -rf ~/.bundle/ "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git && \
+    bundle exec bootsnap precompile --gemfile
+
+# Copy MCP config and pre-install script for package caching
+COPY catalog/mcp.json ./catalog/
+COPY bin/preinstall-mcp-packages ./bin/
+
+# Install CLI tools for agent execution
+# - Node.js 22 LTS (from NodeSource) and npm for Playwright and MCP server packages
+# - GitHub CLI (gh) for GitHub operations
+# - Docker CLI for container operations (uses host's Docker via socket mount)
+# - gnupg for verifying GPG signatures
+# - openssh-client for SSH operations (git+ssh, scp, remote server access)
+# - Playwright with Chromium browser and system dependencies for MCP server
+# - uv/uvx for Python-based MCP servers (postgres-mcp, redis-mcp-server, etc.)
+# - 1Password CLI (op) for secret injection in proctor exams
+#
+# Node 22 (not Debian's stock nodejs, which is Node 20) is required because puppeteer
+# and other current npm packages require node >=22.12.0. NodeSource's nodejs package
+# bundles a matching npm — installing Debian's npm separately would downgrade it.
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y gnupg ca-certificates openssh-client && \
+    # Install Node.js 22 LTS from NodeSource
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install --no-install-recommends -y nodejs && \
+    # Install Docker CLI (not the daemon - we use host's Docker via socket mount)
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
+    chmod a+r /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list && \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends -y docker-ce-cli docker-compose-plugin && \
+    # Install GitHub CLI
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends -y gh && \
+    # Install 1Password CLI (op) for secret injection
+    # Used by agent sessions to read secrets from 1Password vaults
+    curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" > /etc/apt/sources.list.d/1password.list && \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends -y 1password-cli && \
+    # Install uv (Python package manager) which includes uvx
+    # This is needed for Python-based MCP servers like postgres-mcp and redis-mcp-server
+    # Install to /usr/local/bin for system-wide access (by all users including rails)
+    (set -o pipefail; for i in 1 2 3; do curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh && s=0 && break || s=$?; echo "uv install attempt $i failed (exit $s), retrying in 5s..."; sleep 5; done; exit $s) && \
+    # Install Playwright with Chromium browser and system dependencies
+    # Install to /opt/playwright as a shared location accessible by all users
+    # Pin to playwright@^1: unpinned `npx playwright` resolves @latest at build time,
+    # which is how puppeteer@25.0.0 silently broke this image (see #3651). Playwright
+    # has been on 1.x for years; bump intentionally when moving to a new major.
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright npx playwright@^1 install --with-deps chromium && \
+    chmod -R 755 /opt/playwright && \
+    # Pre-install npm MCP server packages to avoid cold-start delays
+    # This reads from catalog/mcp.json and installs all packages with pinned versions
+    ./bin/preinstall-mcp-packages --npm-only && \
+    # Clean up
+    rm -rf /var/lib/apt/lists /var/cache/apt/archives
+
+# Set Playwright browsers path for runtime
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+
+# Pre-install Python MCP server packages to avoid cold-start delays
+# This must be done after uv is installed and before switching to rails user
+RUN ./bin/preinstall-mcp-packages --python-only
+
+# Pre-install AIR CLI packages for agent session preparation.
+# Version must match AirPrepareService::AIR_CLI_VERSION.
+RUN npm install --prefix /opt/air-cli \
+    @pulsemcp/air-cli@0.13.0 \
+    @pulsemcp/air-adapter-claude@0.13.0 \
+    @pulsemcp/air-adapter-codex@0.13.0 \
+    @pulsemcp/air-secrets-env@0.13.0 \
+    @pulsemcp/air-provider-github@0.13.0 && \
+    touch /opt/air-cli/.air-version-0.13.0
+
+# Install the OpenAI Codex CLI for the `codex` agent runtime.
+# Installed globally so the `codex` binary lands on PATH at /usr/local/bin/codex,
+# alongside the `claude` CLI used by the claude_code runtime.
+# The version is pinned for reproducible image builds; bump it via the
+# ao-upgrade-codex skill (mirrors the ao-upgrade-air pattern).
+# `codex --version` runs in the build so a broken install fails fast.
+RUN set -eo pipefail; \
+    for i in 1 2 3; do npm install -g @openai/codex@0.135.0 && break || { echo "codex install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
+    codex --version
+
+# Create rails user for security (non-root runtime)
+# Use --force for groupadd to handle pre-existing GID 1000 in base images
+# Use --non-unique for useradd to allow UID 1000 if already taken
+RUN groupadd --system --gid 1000 --force rails && \
+    useradd rails --uid 1000 --gid 1000 --non-unique --create-home --shell /bin/bash
+
+# Make Playwright browsers directory writable by rails user for runtime updates.
+# The entrypoint runs `bin/ensure-playwright-browsers` which updates Chromium to
+# match the latest playwright version, handling version drift when MCP servers
+# use playwright-stealth-mcp-server@latest.
+RUN chown -R rails:rails /opt/playwright
+RUN chown -R rails:rails /opt/air-cli
+
+# Create image storage directory with correct ownership before volume mount.
+# When Docker mounts an empty named volume over this directory, it copies the
+# ownership from the container's directory to the volume.
+RUN mkdir -p /tmp/agent-orchestrator-images && \
+    chown rails:rails /tmp/agent-orchestrator-images && \
+    chmod 755 /tmp/agent-orchestrator-images
+
+# Pre-create ~/.config with rails ownership so bind mounts for subdirectories
+# (e.g., .config/gh) don't cause Docker to create the parent as root.
+# Without this, tools like 1Password CLI fail when creating .config/op/.
+RUN mkdir -p /home/rails/.config && \
+    chown rails:rails /home/rails/.config
+
+# Pre-create ~/.codex (CODEX_HOME) with rails ownership so the Codex CLI can
+# write its auth.json/config at runtime. Owned by uid 1000 to match the
+# container's rails user, mirroring how ~/.claude is handled. The Codex OAuth
+# login flow that populates this directory is wired up separately.
+RUN mkdir -p /home/rails/.codex && \
+    chown rails:rails /home/rails/.codex
+
+# Install Fly.io CLI for the rails user (installs to ~/.fly)
+USER 1000:1000
+RUN set -o pipefail; for i in 1 2 3; do curl -L https://fly.io/install.sh | sh && s=0 && break || s=$?; echo "Attempt $i failed (exit $s), retrying in 5s..."; sleep 5; done; exit $s
+
+# Install Claude Code CLI via native installer (replaces deprecated npm install)
+# Installs to ~/.local/bin/claude (symlink) and ~/.local/share/claude/versions/ (binary)
+# ~/.local is volume-mounted in production; bin/docker-entrypoint runs `claude update`
+# at startup to keep the CLI current since the volume shadows the image-baked binary
+RUN set -o pipefail; for i in 1 2 3; do curl -fsSL https://claude.ai/install.sh | bash && s=0 && break || s=$?; echo "Attempt $i failed (exit $s), retrying in 5s..."; sleep 5; done; exit $s
+
+# Install Playwright browsers to rails user's default cache directory
+# Some MCP servers have their own playwright dependency that looks in the default location
+# (~/.cache/ms-playwright) rather than PLAYWRIGHT_BROWSERS_PATH, so we install to both locations
+# Unset PLAYWRIGHT_BROWSERS_PATH to use the default ~/.cache/ms-playwright location
+# Pin to playwright@^1 for the same reason as the earlier install step — avoid silent
+# breakage from a future major release (see #3651 for the puppeteer precedent).
+RUN PLAYWRIGHT_BROWSERS_PATH= npx playwright@^1 install chromium
+
+# Pre-install Puppeteer's Chrome for Testing to ~/.cache/puppeteer/
+# This is needed by chrome-devtools-mcp which uses Puppeteer (not Playwright) to launch Chrome.
+# Without this, Puppeteer downloads Chrome on first use, causing cold-start delays.
+# The ~/.cache/puppeteer/ directory is NOT volume-mounted, so it must be baked into the image.
+# Note: System dependencies (libnss3, libatk, etc.) are provided by Playwright's
+# --with-deps install above. If that step is removed, add system deps here.
+#
+# Pin to puppeteer ^24: puppeteer 25.0.0 went ESM-only as a breaking change and the
+# `npx puppeteer browsers install chrome` CLI silently exits 1 during chrome-headless-shell
+# setup even on Node 22. Track upstream for a 25.x release that restores a working install
+# CLI before unpinning. chrome-devtools-mcp@0.26.0 bundles puppeteer@24.43.0 internally,
+# so this pin only affects the chrome-browser install step in this image.
+RUN npx puppeteer@^24 browsers install chrome
+
+# Configure git to use the gh CLI's credential helper for GitHub authentication.
+# The OAuth token comes from `gh auth login` and is mounted as a volume at
+# ~/.config/gh — the helper invokes gh to fetch it on demand.
+#
+# CI mirrors this pattern in `.github/workflows/agent-orchestrator-ci.yml`
+# (validate_air_config job, "Configure git auth for private catalog clones"
+# step) so AIR's catalog clones in CI use the same auth path as production
+# runtime. If you change the credential helper here, update the CI step too
+# — otherwise CI and prod will drift on auth behavior.
+RUN git config --global credential.https://github.com.helper '' \
+    && git config --global credential.https://github.com.helper '!/usr/bin/gh auth git-credential'
+
+ENV FLYCTL_INSTALL="/home/rails/.fly"
+ENV PATH="/home/rails/.local/bin:${FLYCTL_INSTALL}/bin:${PATH}"
+
+# Codex CLI home — stores auth.json and config.toml. Set explicitly to the
+# rails user's home (the CLI default is ~/.codex) so the location is
+# unambiguous for runtime auth and any volume mounting.
+ENV CODEX_HOME="/home/rails/.codex"
+
+# Switch back to root for the app build stage (Dockerfile will switch to rails user at the end)
+USER root

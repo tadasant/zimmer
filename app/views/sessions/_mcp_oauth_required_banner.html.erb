@@ -1,0 +1,28 @@
+<% oauth_required_servers = agent_session.metadata&.dig("oauth_required_servers") || [] %>
+<% if agent_session.failed? && agent_session.metadata&.dig("failure_reason") == "oauth_required" && oauth_required_servers.any? %>
+  <div class="flex flex-col gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+    <div class="flex items-center gap-2">
+      <svg class="h-5 w-5 text-amber-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
+      </svg>
+      <span class="font-medium text-amber-800">OAuth Authorization Required</span>
+    </div>
+    <p class="text-sm text-amber-700">
+      The following MCP servers require OAuth authorization before the session can start.
+      Click "Authorize" for each server to grant access.
+    </p>
+    <div class="flex flex-col sm:flex-row sm:flex-wrap gap-2 mt-1">
+      <% oauth_required_servers.each do |server_info| %>
+        <% server_name = server_info["server_name"] || server_info[:server_name] %>
+        <% server_url = server_info["server_url"] || server_info[:server_url] %>
+        <%= form_with url: mcp_oauth_initiate_path, method: :post, local: true, data: { turbo: false }, class: "w-full sm:w-auto" do |f| %>
+          <%= f.hidden_field :session_id, value: agent_session.id %>
+          <%= f.hidden_field :server_name, value: server_name %>
+          <%= f.hidden_field :server_url, value: server_url %>
+          <%= f.submit "Authorize #{server_name}",
+              class: "w-full sm:w-auto inline-flex items-center justify-center px-3 py-2 border border-amber-600 text-sm font-medium rounded-md text-amber-700 bg-white hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 cursor-pointer" %>
+        <% end %>
+      <% end %>
+    </div>
+  </div>
+<% end %>

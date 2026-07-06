@@ -1,0 +1,59 @@
+<%# One in-flight login attempt. Carries the Stimulus poller (only while
+    non-terminal — the active scope guarantees that here) which polls
+    login_status and streams progress back in. %>
+<div id="login_attempt_<%= attempt.id %>"
+     class="rounded-md bg-indigo-50 border border-indigo-100 p-3"
+     data-controller="quotas-login-poller"
+     data-quotas-login-poller-url-value="<%= login_status_quotas_path(attempt.id) %>"
+     data-quotas-login-poller-interval-value="2000"
+     data-login-status="<%= attempt.status %>">
+  <div class="flex items-center justify-between mb-2">
+    <span class="text-xs font-semibold text-indigo-800">
+      Authenticating <%= account.email %>
+    </span>
+    <%= button_to "Cancel", cancel_login_quotas_path(attempt.id), method: :post,
+          class: "text-xs text-gray-500 hover:text-gray-700 underline",
+          data: { turbo_stream: true } %>
+  </div>
+
+  <% case attempt.status %>
+  <% when "starting" %>
+    <p class="text-xs text-indigo-700">Starting the login CLI and waiting for a verification link…</p>
+
+  <% when "awaiting_user" %>
+    <ol class="text-xs text-indigo-900 space-y-2 list-decimal list-inside">
+      <%= render "quotas/verification_link", attempt: attempt %>
+      <% if attempt.verification_code.present? %>
+        <li>
+          Enter this one-time code:
+          <span class="ml-1 inline-block px-2 py-0.5 rounded bg-white border border-indigo-200 font-mono text-sm tracking-widest text-indigo-900"><%= attempt.verification_code %></span>
+        </li>
+      <% else %>
+        <li>After authorizing, return here — we'll capture the credentials automatically once you paste the code below (if prompted).</li>
+      <% end %>
+    </ol>
+
+  <% when "awaiting_code" %>
+    <%# Keep the authorization URL visible: the user needs it open to obtain the
+        code this state is requesting, and the brief awaiting_user state that
+        first surfaced it is often skipped between polls. %>
+    <ol class="text-xs text-indigo-900 space-y-2 list-decimal list-inside mb-2">
+      <%= render "quotas/verification_link", attempt: attempt %>
+      <li>Paste the authorization code the page shows below.</li>
+    </ol>
+    <%= form_with url: submit_login_code_quotas_path(attempt.id), method: :post,
+          data: { turbo_stream: true }, class: "flex items-center gap-2" do |f| %>
+      <%= f.text_field :code, autocomplete: "off",
+            class: "flex-1 text-xs font-mono border border-indigo-200 rounded px-2 py-1",
+            placeholder: "Paste code here" %>
+      <%= f.submit "Submit",
+            class: "inline-flex items-center px-2.5 py-1 border border-indigo-300 text-xs font-medium rounded text-indigo-700 bg-white hover:bg-indigo-100" %>
+    <% end %>
+
+  <% when "completing" %>
+    <p class="text-xs text-indigo-700">Finishing sign-in and capturing credentials…</p>
+
+  <% else %>
+    <p class="text-xs text-indigo-700"><%= attempt.status.humanize %>…</p>
+  <% end %>
+</div>

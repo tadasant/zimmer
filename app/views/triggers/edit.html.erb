@@ -1,0 +1,20 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <%= link_to trigger_path(@trigger), class: "inline-flex items-center text-sm font-medium text-gray-500 hover:text-gray-700 mb-4" do %>
+        <svg class="mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+        </svg>
+        Back to Trigger
+      <% end %>
+      <h1 class="text-3xl font-bold text-gray-900">Edit Trigger</h1>
+      <p class="mt-2 text-sm text-gray-600">Update the trigger configuration</p>
+    </div>
+
+    <!-- Form -->
+    <div class="bg-white shadow rounded-lg">
+      <%= render "form", trigger: @trigger %>
+    </div>
+  </div>
+</div>

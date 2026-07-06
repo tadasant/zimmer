@@ -1,0 +1,990 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <div class="flex items-center mb-4">
+        <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">API Documentation</h1>
+      </div>
+      <p class="text-sm text-gray-600">REST API reference for programmatically controlling agent sessions</p>
+    </div>
+
+    <div class="space-y-6">
+      <!-- Overview Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Overview</h2>
+        </div>
+        <div class="px-4 py-5 sm:px-6 space-y-4">
+          <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-2">Base URL</h3>
+            <p class="text-sm text-gray-600 mb-2">All API endpoints are prefixed with <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">/api/v1</code></p>
+          </div>
+          <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-2">Authentication</h3>
+            <p class="text-sm text-gray-600 mb-2">All requests require an API key via the <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">X-API-Key</code> header. API keys are configured via the <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">API_KEYS</code> environment variable (comma-separated list).</p>
+            <div class="bg-gray-900 rounded-md p-4 overflow-x-auto">
+              <pre class="text-xs text-gray-100 font-mono">curl -H "X-API-Key: your_api_key" <%= request.base_url %>/api/v1/sessions</pre>
+            </div>
+          </div>
+          <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-2">Pagination</h3>
+            <p class="text-sm text-gray-600">List endpoints support <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">page</code> and <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">per_page</code> (max 100) query parameters. Responses include a <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">pagination</code> object with <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">page</code>, <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">per_page</code>, <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">total_count</code>, and <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">total_pages</code>.</p>
+          </div>
+          <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-2">Error Responses</h3>
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead>
+                  <tr class="border-b border-gray-200">
+                    <th class="text-left py-2 pr-4 font-medium text-gray-900">Status</th>
+                    <th class="text-left py-2 font-medium text-gray-900">Description</th>
+                  </tr>
+                </thead>
+                <tbody class="text-gray-600">
+                  <tr class="border-b border-gray-100">
+                    <td class="py-2 pr-4 font-mono">400</td>
+                    <td class="py-2">Bad request (missing or invalid parameters)</td>
+                  </tr>
+                  <tr class="border-b border-gray-100">
+                    <td class="py-2 pr-4 font-mono">401</td>
+                    <td class="py-2">Invalid or missing API key</td>
+                  </tr>
+                  <tr class="border-b border-gray-100">
+                    <td class="py-2 pr-4 font-mono">404</td>
+                    <td class="py-2">Resource not found</td>
+                  </tr>
+                  <tr class="border-b border-gray-100">
+                    <td class="py-2 pr-4 font-mono">422</td>
+                    <td class="py-2">Validation failed</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Terminology Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Terminology</h2>
+          <p class="mt-1 text-sm text-gray-500">Naming conventions used throughout this API</p>
+        </div>
+        <div class="px-4 py-5 sm:px-6 space-y-4 text-sm text-gray-600">
+          <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-1">Archived vs. Trash</h3>
+            <p>Archived sessions are surfaced as <strong>"trash"</strong> in the UI and in some response messages, but the underlying status enum value is <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">archived</code> and the timestamp column is <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">archived_at</code>. When you archive a session, the response message will say <em>"Session moved to trash"</em> and a <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">trash_after</code> timestamp is returned indicating when the session's clone will be automatically cleaned up. Filter parameters and status values are always <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">archived</code>, never <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">trash</code>.</p>
+          </div>
+          <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-1">git_root vs. agent_root</h3>
+            <p><code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">git_root</code> is a repository URL or local path on a session — a free-form string. <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_root</code> is the name of a preconfigured catalog entry (e.g., <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent-orchestrator</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">ao-router</code>) that resolves to a <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">git_root</code> plus defaults for <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">branch</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">subdirectory</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">mcp_servers</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_skills</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_hooks</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_plugins</code>, and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">model</code>. You can pass either when creating a session — passing <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_root</code> is the recommended way to spawn sessions on configured roots.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sessions Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Sessions</h2>
+          <p class="mt-1 text-sm text-gray-500">Manage agent execution sessions</p>
+        </div>
+
+        <!-- Session Object Fields -->
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-100">
+          <h3 class="text-sm font-medium text-gray-900 mb-2">Session Object</h3>
+          <details class="text-sm">
+            <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Show fields</summary>
+            <div class="mt-2 overflow-x-auto">
+              <table class="min-w-full text-xs">
+                <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Field</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                <tbody class="text-gray-600">
+                  <tr><td class="py-1 pr-3 font-mono">id</td><td class="py-1 pr-3">integer</td><td class="py-1">Unique session ID</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">slug</td><td class="py-1 pr-3">string</td><td class="py-1">URL-friendly identifier (optional)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">title</td><td class="py-1 pr-3">string</td><td class="py-1">Session display title</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">status</td><td class="py-1 pr-3">string</td><td class="py-1"><code>waiting</code>, <code>running</code>, <code>needs_input</code>, <code>failed</code>, <code>archived</code></td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">agent_runtime</td><td class="py-1 pr-3">string</td><td class="py-1">Agent runtime (currently only <code>claude_code</code>)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">prompt</td><td class="py-1 pr-3">string</td><td class="py-1">Initial prompt or latest follow-up</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">git_root</td><td class="py-1 pr-3">string</td><td class="py-1">Repository URL or local path</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">branch</td><td class="py-1 pr-3">string</td><td class="py-1">Git branch name</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">subdirectory</td><td class="py-1 pr-3">string</td><td class="py-1">Subdirectory within the repository</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">execution_provider</td><td class="py-1 pr-3">string</td><td class="py-1"><code>local_filesystem</code> or <code>remote_sandbox</code></td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">goal</td><td class="py-1 pr-3">string</td><td class="py-1">Goal for the session</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">List of MCP server names</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">catalog_skills</td><td class="py-1 pr-3">array</td><td class="py-1">Skill names selected from the catalog</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">catalog_hooks</td><td class="py-1 pr-3">array</td><td class="py-1">Hook names selected from the catalog</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">catalog_plugins</td><td class="py-1 pr-3">array</td><td class="py-1">Plugin IDs selected from the catalog</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">config</td><td class="py-1 pr-3">object</td><td class="py-1">Additional configuration (e.g., <code>model</code>)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">metadata</td><td class="py-1 pr-3">object</td><td class="py-1">System metadata (<code>clone_path</code>, <code>exit_status</code>, <code>agent_root_key</code>, etc.)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">custom_metadata</td><td class="py-1 pr-3">object</td><td class="py-1">User-defined metadata</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">is_autonomous</td><td class="py-1 pr-3">boolean</td><td class="py-1">Whether the heartbeat agent manages this session</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">auto_compact_window</td><td class="py-1 pr-3">integer</td><td class="py-1">Token threshold for auto-compaction</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">category_id</td><td class="py-1 pr-3">integer</td><td class="py-1">ID of the category this session belongs to (null when Uncategorized)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">category</td><td class="py-1 pr-3">object</td><td class="py-1">Compact category summary (<code>id</code>, <code>name</code>, <code>position</code>, <code>is_frozen</code>), or null when Uncategorized</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">session_id</td><td class="py-1 pr-3">string</td><td class="py-1">Claude Code session ID</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">job_id</td><td class="py-1 pr-3">string</td><td class="py-1">Background job ID for initial run</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">running_job_id</td><td class="py-1 pr-3">string</td><td class="py-1">Background job ID for follow-up runs</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">archived_at</td><td class="py-1 pr-3">string</td><td class="py-1">ISO 8601 timestamp when archived (null otherwise)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">trash_after</td><td class="py-1 pr-3">string</td><td class="py-1">ISO 8601 timestamp when clone will be auto-cleaned</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">session_notes</td><td class="py-1 pr-3">string</td><td class="py-1">Free-form notes attached to the session</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">session_notes_updated_at</td><td class="py-1 pr-3">string</td><td class="py-1">When the notes were last updated</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">favorited</td><td class="py-1 pr-3">boolean</td><td class="py-1">Whether the session is marked as favorite</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">created_at</td><td class="py-1 pr-3">string</td><td class="py-1">ISO 8601 creation timestamp</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">updated_at</td><td class="py-1 pr-3">string</td><td class="py-1">ISO 8601 last update timestamp</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+
+        <div class="divide-y divide-gray-100">
+          <!-- List Sessions -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">List all sessions with optional filtering.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Parameters &amp; Example</summary>
+              <div class="mt-2 space-y-2">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-xs">
+                    <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Parameter</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                    <tbody class="text-gray-600">
+                      <tr><td class="py-1 pr-3 font-mono">status</td><td class="py-1 pr-3">string</td><td class="py-1">Filter by status</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">agent_runtime</td><td class="py-1 pr-3">string</td><td class="py-1">Filter by agent runtime</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">show_archived</td><td class="py-1 pr-3">boolean</td><td class="py-1">Include archived (trashed) sessions (default: false)</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -H "X-API-Key: $API_KEY" \
+  "<%= request.base_url %>/api/v1/sessions?status=running"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Search Sessions -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/search</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Search sessions by query string across title, metadata, and optionally transcript contents.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Parameters &amp; Example</summary>
+              <div class="mt-2 space-y-2">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-xs">
+                    <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Parameter</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                    <tbody class="text-gray-600">
+                      <tr><td class="py-1 pr-3 font-mono">q</td><td class="py-1 pr-3">string</td><td class="py-1"><strong>Required.</strong> Search query (max 1000 chars)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">search_contents</td><td class="py-1 pr-3">boolean</td><td class="py-1">Also search transcript contents (default: false)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">status</td><td class="py-1 pr-3">string</td><td class="py-1">Filter by status</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">agent_runtime</td><td class="py-1 pr-3">string</td><td class="py-1">Filter by agent runtime</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">show_archived</td><td class="py-1 pr-3">boolean</td><td class="py-1">Include archived sessions (default: false)</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -H "X-API-Key: $API_KEY" \
+  "<%= request.base_url %>/api/v1/sessions/search?q=authentication"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Dependency Graph -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/dependency_graph</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Returns a structured graph (<code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">nodes</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">edges</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">roots</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">summary</code>) capturing parent-child invocation chains and blocking relationships across non-archived sessions. Pass <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">include_archived=true</code> to include archived sessions.</p>
+          </div>
+
+          <!-- Get Session -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Get a single session by ID or slug. Pass <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">include_transcript=true</code> to include the full transcript.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Example</summary>
+              <div class="mt-2">
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -H "X-API-Key: $API_KEY" \
+  "<%= request.base_url %>/api/v1/sessions/1?include_transcript=true"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Create Session -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Create a new session. If a prompt is provided, the agent job is automatically queued. Pass an <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_root</code> to resolve <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">git_root</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">branch</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">subdirectory</code>, and catalog defaults from a configured root.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Body Parameters &amp; Example</summary>
+              <div class="mt-2 space-y-2">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-xs">
+                    <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Field</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Required</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                    <tbody class="text-gray-600">
+                      <tr><td class="py-1 pr-3 font-mono">agent_root</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Catalog name; resolves git_root, branch, subdirectory, mcp_servers, catalog_skills, catalog_hooks, catalog_plugins, model</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">agent_runtime</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Per-spawn runtime override. When omitted, resolution falls through the <code>agent_root</code>'s <code>default_runtime</code>, then the global session default (configured on the Settings page), then <code>claude_code</code>. Must be a registered runtime; an unregistered value returns 422.</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">prompt</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Initial prompt (omit for clone-only)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">git_root</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Repository URL or path (overrides agent_root's URL)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">branch</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Git branch (default: <code>main</code> or root's default)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">subdirectory</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Subdirectory within repo</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">title</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Session title</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">slug</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">URL-friendly identifier</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">goal</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Goal for the session</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">execution_provider</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1"><code>local_filesystem</code> or <code>remote_sandbox</code></td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">No</td><td class="py-1">List of MCP server names (overrides agent root defaults)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">catalog_skills</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">No</td><td class="py-1">List of skill names (overrides agent root defaults)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">catalog_hooks</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">No</td><td class="py-1">List of hook names (overrides agent root defaults)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">catalog_plugins</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">No</td><td class="py-1">List of plugin IDs (overrides agent root defaults)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">config</td><td class="py-1 pr-3">object</td><td class="py-1 pr-3">No</td><td class="py-1">Additional configuration (e.g., <code>{"model":"sonnet"}</code>). When <code>model</code> is omitted, it resolves to the agent root's default, then the global session default (Settings page), then the runtime's catalog default; a model incompatible with the resolved runtime is replaced by that fallback.</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">custom_metadata</td><td class="py-1 pr-3">object</td><td class="py-1 pr-3">No</td><td class="py-1">User-defined metadata</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">is_autonomous</td><td class="py-1 pr-3">boolean</td><td class="py-1 pr-3">No</td><td class="py-1">Heartbeat-managed flag</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">parent_session_id</td><td class="py-1 pr-3">integer</td><td class="py-1 pr-3">No</td><td class="py-1">ID of the session that spawned this one</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">auto_compact_window</td><td class="py-1 pr-3">integer</td><td class="py-1 pr-3">No</td><td class="py-1">Custom auto-compact threshold</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="text-xs text-gray-700 font-medium mt-2">Example (with agent_root):</p>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -X POST -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_root": "agent-orchestrator", "prompt": "Add unit tests for the Session model"}' \
+  "<%= request.base_url %>/api/v1/sessions"</pre>
+                </div>
+                <p class="text-xs text-gray-700 font-medium mt-2">Example (with explicit git_root):</p>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -X POST -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Fix the auth bug", "git_root": "https://github.com/example/repo.git"}' \
+  "<%= request.base_url %>/api/v1/sessions"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Update Session -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Update session attributes. Updatable fields: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">title</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">slug</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">goal</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">is_autonomous</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">custom_metadata</code>. Other fields use dedicated endpoints below.</p>
+          </div>
+
+          <!-- Delete Session -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">DELETE</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Permanently delete a session and all associated logs and transcripts. Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">204 No Content</code>.</p>
+          </div>
+
+          <!-- Archive (Trash) -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/archive</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Archive a session (moves it to trash). Works on sessions in <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">waiting</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">running</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">needs_input</code>, or <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">failed</code> status. Response sets <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">status</code> to <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">archived</code>, populates <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">archived_at</code>, and returns a <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">trash_after</code> timestamp indicating when the clone will be auto-cleaned.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Example response</summary>
+              <div class="mt-2 bg-gray-900 rounded-md p-3 overflow-x-auto">
+                <pre class="text-xs text-gray-100 font-mono">{
+  "session": { "id": 1, "status": "archived", "archived_at": "2025-01-15T15:00:00Z", "trash_after": "2025-01-29T15:00:00Z" },
+  "message": "Session moved to trash",
+  "trash_after": "2025-01-29T15:00:00Z"
+}</pre>
+              </div>
+            </details>
+          </div>
+
+          <!-- Unarchive -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/unarchive</code>
+            </div>
+            <p class="text-sm text-gray-600">Restore an archived session from trash. Recreates the clone directory if needed and restores the transcript so Claude Code can resume where it left off.</p>
+          </div>
+
+          <!-- Bulk Archive -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/bulk_archive</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Archive multiple sessions at once. Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">session_ids</code> (array, required). Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">archived_count</code> and any <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">errors</code>.</p>
+          </div>
+
+          <!-- Follow-up -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/follow_up</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Send a follow-up prompt. Sent immediately if the session is <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">needs_input</code> or <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">waiting</code>; queued as an enqueued message if <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">running</code> (HTTP 202). Pass <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">force_immediate: true</code> to interrupt a running session and deliver the prompt now — this routes through the same race-free interrupt backend as the web "Send Now" button (the running turn is terminated so the prompt is picked up immediately; exactly-once, FIFO-ordered). On success returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">"Follow-up prompt sent immediately"</code>; if the interrupt cannot be dispatched the staged message is discarded and the call returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">404</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">409</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">422</code>, or <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">500</code>.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Body &amp; Example</summary>
+              <div class="mt-2 space-y-2">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-xs">
+                    <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Field</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Required</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                    <tbody class="text-gray-600">
+                      <tr><td class="py-1 pr-3 font-mono">prompt</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">Yes</td><td class="py-1">Follow-up prompt (max 500,000 chars)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">goal</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Override the session's goal for this turn. Omitting or sending an empty string preserves the session's existing goal — use <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">PATCH /api/v1/sessions/:id</code> to explicitly change or clear it.</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">force_immediate</td><td class="py-1 pr-3">boolean</td><td class="py-1 pr-3">No</td><td class="py-1">Interrupt a running session to send now</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -X POST -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Now add integration tests"}' \
+  "<%= request.base_url %>/api/v1/sessions/1/follow_up"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Pause -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/pause</code>
+            </div>
+            <p class="text-sm text-gray-600">Pause a running session, transitioning it to <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">needs_input</code> status.</p>
+          </div>
+
+          <!-- Sleep -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/sleep</code>
+            </div>
+            <p class="text-sm text-gray-600">Put a session to sleep (transitions to <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">waiting</code>). Used by the "wake me up later" workflow — a one-time schedule trigger will resume it at the specified time. Accepts both <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">needs_input</code> (immediate sleep) and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">running</code> (deferred — takes effect when the current turn ends).</p>
+          </div>
+
+          <!-- Restart -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/restart</code>
+            </div>
+            <p class="text-sm text-gray-600">Restart a paused or failed session. Clears stale retry metadata and re-queues the agent job. If setup never completed (e.g., git clone failed), the full setup pipeline is re-run from scratch.</p>
+          </div>
+
+          <!-- Fork -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/fork</code>
+            </div>
+            <p class="text-sm text-gray-600">Create a new session branching from a specific message in the source session's transcript. Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">message_index</code> (integer, required). Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">201 Created</code>.</p>
+          </div>
+
+          <!-- Refresh -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/refresh</code>
+            </div>
+            <p class="text-sm text-gray-600">Re-read the session's transcript from the filesystem and update the database. Useful when the DB transcript may be stale. Never replaces the stored transcript with a shorter filesystem one (which happens when the clone was recreated at a new path) — the longer stored transcript is preserved to avoid losing history.</p>
+          </div>
+
+          <!-- Refresh All -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/refresh_all</code>
+            </div>
+            <p class="text-sm text-gray-600">Bulk: restart failed sessions, continue auto-continuable paused sessions, and refresh running sessions. Limited to 50 sessions per call. Sessions in a frozen category are a parked bucket and are excluded. Returns counts: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">refreshed</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">restarted</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">continued</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">errors</code>.</p>
+          </div>
+
+          <!-- Update MCP Servers -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/mcp_servers</code>
+            </div>
+            <p class="text-sm text-gray-600">Replace the list of MCP servers (max 50, each must exist in the catalog). Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">mcp_servers</code> (array, required).</p>
+          </div>
+
+          <!-- Update Catalog Skills -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/catalog_skills</code>
+            </div>
+            <p class="text-sm text-gray-600">Replace the list of catalog skills. Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_skills</code> (array, required).</p>
+          </div>
+
+          <!-- Update Catalog Hooks -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/catalog_hooks</code>
+            </div>
+            <p class="text-sm text-gray-600">Replace the list of catalog hooks. Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_hooks</code> (array, required).</p>
+          </div>
+
+          <!-- Update Catalog Plugins -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/catalog_plugins</code>
+            </div>
+            <p class="text-sm text-gray-600">Replace the list of catalog plugins. Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_plugins</code> (array, required).</p>
+          </div>
+
+          <!-- Update Model -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/model</code>
+            </div>
+            <p class="text-sm text-gray-600">Change the model used by the session. Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">model</code> (string, required — e.g., <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">opus</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">sonnet</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">haiku</code>). The model must be valid for the session's <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_runtime</code>; an invalid model returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">422</code> with <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">error: "Invalid model"</code> and a message listing the valid models.</p>
+            <p class="text-sm text-gray-600 mt-2">Valid models are scoped to the runtime: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">claude_code</code> → <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">opus</code> (default), <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">sonnet</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">haiku</code>; <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">codex</code> → <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">gpt-5.5</code> (default, requires ChatGPT login), <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">gpt-5.4</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">gpt-5.4-mini</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">gpt-5.3-codex</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">gpt-5.2-codex</code> (deprecated). Codex models are selectable only once the Codex runtime is available on a session.</p>
+          </div>
+
+          <!-- Update Notes -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/notes</code>
+            </div>
+            <p class="text-sm text-gray-600">Update free-form notes attached to the session (max 50,000 chars; pass empty string to clear). Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">session_notes</code> (string, required).</p>
+          </div>
+
+          <!-- Toggle Favorite -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/toggle_favorite</code>
+            </div>
+            <p class="text-sm text-gray-600">Toggle the <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">favorited</code> flag. Favorited sessions sort to the top of the dashboard.</p>
+          </div>
+
+          <!-- Set Category -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/set_category</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Assign the session to a category, or move it back to "Uncategorized". Pass <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">category_id</code>; a blank or omitted value clears the category. Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">404</code> if the supplied <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">category_id</code> does not match any category.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Body Parameters &amp; Example</summary>
+              <div class="mt-2 space-y-2">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-xs">
+                    <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Field</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Required</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                    <tbody class="text-gray-600">
+                      <tr><td class="py-1 pr-3 font-mono">category_id</td><td class="py-1 pr-3">integer</td><td class="py-1 pr-3">No</td><td class="py-1">Target category ID. Blank or omitted moves the session to Uncategorized.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -X PATCH -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"category_id": 3}' \
+  "<%= request.base_url %>/api/v1/sessions/1/set_category"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Plain-text Transcript -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/transcript</code>
+            </div>
+            <p class="text-sm text-gray-600">Returns a human-readable plain-text rendering of the transcript. Pass <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">format=text</code> to return <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">text/plain</code> instead of JSON-wrapped.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Categories Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Categories</h2>
+          <p class="mt-1 text-sm text-gray-500">Organizational buckets for grouping session cards on the dashboard</p>
+        </div>
+
+        <!-- Category Object Fields -->
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-100">
+          <h3 class="text-sm font-medium text-gray-900 mb-2">Category Object</h3>
+          <p class="text-sm text-gray-600 mb-2">A <strong>frozen</strong> category (<code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">is_frozen: true</code>) is a parked bucket excluded from refresh-all and recovery. Sessions belonging to no category are "Uncategorized". Deleting a category nullifies its sessions' <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">category_id</code> (the sessions are not deleted).</p>
+          <details class="text-sm">
+            <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Show fields</summary>
+            <div class="mt-2 overflow-x-auto">
+              <table class="min-w-full text-xs">
+                <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Field</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                <tbody class="text-gray-600">
+                  <tr><td class="py-1 pr-3 font-mono">id</td><td class="py-1 pr-3">integer</td><td class="py-1">Unique category ID</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">name</td><td class="py-1 pr-3">string</td><td class="py-1">Category name (unique, case-insensitive, max 100 chars)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">description</td><td class="py-1 pr-3">string</td><td class="py-1">Optional description (max 1000 chars), used to guide auto-categorization</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">position</td><td class="py-1 pr-3">integer</td><td class="py-1">Sort order (ascending) in the dashboard</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">is_frozen</td><td class="py-1 pr-3">boolean</td><td class="py-1">Whether the category is parked (excluded from refresh-all and recovery)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">session_count</td><td class="py-1 pr-3">integer</td><td class="py-1">Number of sessions currently assigned to this category</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">created_at</td><td class="py-1 pr-3">string</td><td class="py-1">ISO 8601 creation timestamp</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">updated_at</td><td class="py-1 pr-3">string</td><td class="py-1">ISO 8601 last update timestamp</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+
+        <div class="divide-y divide-gray-100">
+          <!-- List Categories -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/categories</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">List all categories ordered by <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">position</code> (ascending), each with its current <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">session_count</code>.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Example</summary>
+              <div class="mt-2">
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -H "X-API-Key: $API_KEY" \
+  "<%= request.base_url %>/api/v1/categories"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Create Category -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/categories</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Create a new category. New categories are appended to the end of the stack (highest <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">position</code>). Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">201</code> on success, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">422</code> on validation failure.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Body Parameters &amp; Example</summary>
+              <div class="mt-2 space-y-2">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-xs">
+                    <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Field</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Required</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                    <tbody class="text-gray-600">
+                      <tr><td class="py-1 pr-3 font-mono">name</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">Yes</td><td class="py-1">Category name (unique, case-insensitive, max 100 chars). Surrounding whitespace is stripped.</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">description</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Description (max 1000 chars). Blank is stored as null.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -X POST -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Auth work", "description": "Sessions touching authentication"}' \
+  "<%= request.base_url %>/api/v1/categories"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Update Category -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/categories/:id</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Update any subset of a category's name, description, and frozen state. Only the fields you send change — sending just <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">is_frozen</code> leaves name and description untouched. Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">404</code> for an unknown ID, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">422</code> on validation failure.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Body Parameters &amp; Example</summary>
+              <div class="mt-2 space-y-2">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-xs">
+                    <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Field</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Required</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                    <tbody class="text-gray-600">
+                      <tr><td class="py-1 pr-3 font-mono">name</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">New name (unique, case-insensitive, max 100 chars)</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">description</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">New description (max 1000 chars). Blank clears it (stored as null).</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">is_frozen</td><td class="py-1 pr-3">boolean</td><td class="py-1 pr-3">No</td><td class="py-1">Freeze (<code>true</code>) or unfreeze (<code>false</code>) the category</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -X PATCH -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"is_frozen": true}' \
+  "<%= request.base_url %>/api/v1/categories/3"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Delete Category -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">DELETE</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/categories/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Delete a category. Its sessions fall back to Uncategorized (their <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">category_id</code> is nullified). Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">204 No Content</code> on success, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">404</code> for an unknown ID.</p>
+          </div>
+
+          <!-- Reorder Categories -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/categories/reorder</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Persist a new top-to-bottom ordering. Each listed category's <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">position</code> is set to its index in the array; categories omitted from the list keep their existing position. Include the string sentinel <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">"uncategorized"</code> to position the Uncategorized section (stored separately, so it is not in the returned list). Returns the full category list in its new order.</p>
+            <details class="text-sm">
+              <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Body Parameters &amp; Example</summary>
+              <div class="mt-2 space-y-2">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-xs">
+                    <thead><tr class="border-b border-gray-200"><th class="text-left py-1 pr-3 font-medium text-gray-700">Field</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Type</th><th class="text-left py-1 pr-3 font-medium text-gray-700">Required</th><th class="text-left py-1 font-medium text-gray-700">Description</th></tr></thead>
+                    <tbody class="text-gray-600">
+                      <tr><td class="py-1 pr-3 font-mono">ids</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">Yes</td><td class="py-1">Ordered array of category IDs (top to bottom). May include the string <code>"uncategorized"</code> to position the Uncategorized section.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+                  <pre class="text-xs text-gray-100 font-mono">curl -X POST -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ids": [5, "uncategorized", 3, 8]}' \
+  "<%= request.base_url %>/api/v1/categories/reorder"</pre>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+
+      <!-- Logs Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Logs</h2>
+          <p class="mt-1 text-sm text-gray-500">Session execution logs (scoped to a session)</p>
+        </div>
+        <div class="divide-y divide-gray-100">
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/logs</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">List logs for a session. Filter with <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">level</code> (info, error, debug, warning, verbose).</p>
+          </div>
+
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/logs/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Get a single log entry.</p>
+          </div>
+
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/logs</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Create a log entry. Required: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">content</code> (string), <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">level</code> (string — one of <code>info</code>, <code>error</code>, <code>debug</code>, <code>warning</code>, <code>verbose</code>).</p>
+          </div>
+
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/logs/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Update a log entry. Updatable fields: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">content</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">level</code>.</p>
+          </div>
+
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">DELETE</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/logs/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Delete a log entry. Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">204 No Content</code>.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Enqueued Messages Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Enqueued Messages</h2>
+          <p class="mt-1 text-sm text-gray-500">Follow-up prompts queued for delivery to a running session</p>
+        </div>
+        <div class="divide-y divide-gray-100">
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/enqueued_messages</code>
+            </div>
+            <p class="text-sm text-gray-600">List enqueued messages. Filter with <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">status</code> (<code>pending</code>, <code>processing</code>, <code>sent</code>).</p>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/enqueued_messages/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Get a single enqueued message.</p>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/enqueued_messages</code>
+            </div>
+            <p class="text-sm text-gray-600">Create an enqueued message. Required: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">content</code> (string, max 500,000 chars). Optional: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">goal</code>. Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">201 Created</code>.</p>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/enqueued_messages/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Update an enqueued message. Updatable fields: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">content</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">goal</code>.</p>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">DELETE</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/enqueued_messages/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Delete an enqueued message and re-number remaining positions. Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">204 No Content</code>.</p>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/enqueued_messages/:id/reorder</code>
+            </div>
+            <p class="text-sm text-gray-600">Reorder a message. Body: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">position</code> (integer, >= 1, required).</p>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/enqueued_messages/:id/interrupt</code>
+            </div>
+            <p class="text-sm text-gray-600">Send this enqueued message immediately, interrupting the current session (pauses first if running).</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subagent Transcripts Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Subagent Transcripts</h2>
+          <p class="mt-1 text-sm text-gray-500">Conversation history of nested agents spawned during session execution</p>
+        </div>
+        <div class="divide-y divide-gray-100">
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/subagent_transcripts</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">List subagent transcripts. Filter with <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">status</code> or <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">subagent_type</code>.</p>
+          </div>
+
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/subagent_transcripts/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Get a single subagent transcript. Pass <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">include_transcript=true</code> for full JSONL content.</p>
+          </div>
+
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">POST</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/subagent_transcripts</code>
+            </div>
+            <p class="text-sm text-gray-600">Create a subagent transcript. Required: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_id</code>.</p>
+          </div>
+
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/subagent_transcripts/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Update a subagent transcript. All fields except <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">session_id</code> and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">id</code> can be updated.</p>
+          </div>
+
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">DELETE</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:session_id/subagent_transcripts/:id</code>
+            </div>
+            <p class="text-sm text-gray-600">Delete a subagent transcript. Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">204 No Content</code>.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Elicitations Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Elicitations</h2>
+          <p class="mt-1 text-sm text-gray-500">Approve or decline pending MCP elicitation (action-approval) requests. <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">:id</code> is the elicitation's <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">request_id</code> (the MCP-facing identifier), not the database primary key.</p>
+        </div>
+        <div class="divide-y divide-gray-100">
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/elicitations/:id/respond</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Programmatically resolve a pending elicitation. This is the authenticated counterpart to the human web UI — it lets a script, agent, or tool accept or decline an approval request. Resolving the elicitation unblocks the owning session (flips it from <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">needs_input</code> back to <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">running</code>).</p>
+            <p class="text-sm text-gray-600 mb-2"><strong>Body parameters:</strong></p>
+            <div class="overflow-x-auto">
+              <table class="text-sm text-gray-600 mb-2">
+                <thead><tr class="text-left border-b border-gray-200"><th class="py-1 pr-3">Field</th><th class="py-1 pr-3">Type</th><th class="py-1 pr-3">Required</th><th class="py-1">Description</th></tr></thead>
+                <tbody>
+                  <tr><td class="py-1 pr-3 font-mono">action_type</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">Yes</td><td class="py-1">One of <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">accept</code> or <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">decline</code>.</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">content</td><td class="py-1 pr-3">object</td><td class="py-1 pr-3">No</td><td class="py-1">Optional JSON object with the form response to persist (typically supplied when accepting).</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">200 OK</code> with the poll response: <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">action</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">content</code>, and a <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">_meta</code> object carrying <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">com.pulsemcp/request-id</code> and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">com.pulsemcp/responded-at</code>. Returns <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">404</code> if no elicitation matches the <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">request_id</code>, and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">422</code> if it has already been resolved or <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">action_type</code> is invalid.</p>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <p class="text-sm text-gray-500"><strong>Note:</strong> <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">POST /api/v1/elicitations</code> and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">GET /api/v1/elicitations/:id</code> also exist but are part of the internal MCP fallback protocol (called by MCP servers, unauthenticated) and are not intended for general API consumers.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Configuration Endpoints Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Configuration</h2>
+          <p class="mt-1 text-sm text-gray-500">Read-only catalog endpoints</p>
+        </div>
+        <div class="divide-y divide-gray-100">
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/configs</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Returns all static configuration data. Response includes three keys:</p>
+            <ul class="text-sm text-gray-600 list-disc list-inside space-y-1">
+              <li><code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">mcp_servers</code> - Available MCP servers (name, title, description)</li>
+              <li><code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_roots</code> - Preconfigured catalog entries (name, url, default_branch, subdirectory, default_mcp_servers, default_skills, default_hooks, default_plugins, default_model)</li>
+              <li><code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">goals</code> - Available session goals</li>
+            </ul>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/mcp_servers</code>
+            </div>
+            <p class="text-sm text-gray-600">List available MCP servers. Returns an array of objects with <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">name</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">title</code>, and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">description</code> fields.</p>
+          </div>
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/skills</code>
+            </div>
+            <p class="text-sm text-gray-600">List available catalog skills.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- SDK Examples Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">SDK Examples</h2>
+          <p class="mt-1 text-sm text-gray-500">Quick-start code snippets</p>
+        </div>
+        <div class="px-4 py-5 sm:px-6 space-y-4">
+          <!-- cURL -->
+          <details class="text-sm">
+            <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">cURL</summary>
+            <div class="mt-2 bg-gray-900 rounded-md p-4 overflow-x-auto">
+              <pre class="text-xs text-gray-100 font-mono">API_KEY="your_api_key"
+BASE_URL="<%= request.base_url %>/api/v1"
+
+# Create a session using an agent_root
+curl -X POST "$BASE_URL/sessions" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_root": "agent-orchestrator", "prompt": "Fix the bug"}'
+
+# List running sessions
+curl "$BASE_URL/sessions?status=running" -H "X-API-Key: $API_KEY"
+
+# Send follow-up prompt
+curl -X POST "$BASE_URL/sessions/1/follow_up" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Now add tests"}'
+
+# Archive a session (moves to trash)
+curl -X POST "$BASE_URL/sessions/1/archive" -H "X-API-Key: $API_KEY"</pre>
+            </div>
+          </details>
+
+          <!-- Python -->
+          <details class="text-sm">
+            <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">Python</summary>
+            <div class="mt-2 bg-gray-900 rounded-md p-4 overflow-x-auto">
+              <pre class="text-xs text-gray-100 font-mono">import requests, time
+
+API_KEY = "your_api_key"
+BASE_URL = "<%= request.base_url %>/api/v1"
+headers = {"X-API-Key": API_KEY}
+
+# Create a session using an agent_root
+resp = requests.post(f"{BASE_URL}/sessions", headers=headers, json={
+    "agent_root": "agent-orchestrator",
+    "prompt": "Fix the auth bug"
+})
+session = resp.json()["session"]
+
+# Poll for completion
+while True:
+    resp = requests.get(f"{BASE_URL}/sessions/{session['id']}", headers=headers)
+    status = resp.json()["session"]["status"]
+    if status in ("needs_input", "failed", "archived"):
+        break
+    time.sleep(5)</pre>
+            </div>
+          </details>
+
+          <!-- JavaScript -->
+          <details class="text-sm">
+            <summary class="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">JavaScript</summary>
+            <div class="mt-2 bg-gray-900 rounded-md p-4 overflow-x-auto">
+              <pre class="text-xs text-gray-100 font-mono">const API_KEY = "your_api_key";
+const BASE_URL = "<%= request.base_url %>/api/v1";
+const headers = { "X-API-Key": API_KEY, "Content-Type": "application/json" };
+
+// Create a session using an agent_root
+const resp = await fetch(`${BASE_URL}/sessions`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({
+    agent_root: "agent-orchestrator",
+    prompt: "Fix the auth bug"
+  })
+});
+const { session } = await resp.json();
+
+// Send follow-up
+await fetch(`${BASE_URL}/sessions/${session.id}/follow_up`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({ prompt: "Now add tests" })
+});</pre>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

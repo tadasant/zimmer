@@ -1,0 +1,4 @@
+web: bin/rails server
+css: while true; do bin/rails tailwindcss:watch || sleep 5; done
+# GoodJob runs in :async mode within the Rails process in development
+# For production, use: worker: bundle exec good_job start

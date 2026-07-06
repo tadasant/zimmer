@@ -1,0 +1,17 @@
+<%# The OAuth authorization link the user must open. Shared by the awaiting_user
+    and awaiting_code states so the URL stays visible the whole time the panel is
+    asking the user to authorize and paste back a code — the Claude --claudeai
+    flow prints the URL and blocks on its paste prompt almost simultaneously, so
+    awaiting_user is often skipped between polls and the URL must remain in
+    awaiting_code too. Emits an <li>, so render it inside an <ol>/<ul>. %>
+<li>
+  Open this link and authorize:
+  <% if attempt.verification_url.present? %>
+    <a href="<%= attempt.verification_url %>" target="_blank" rel="noopener"
+       class="block mt-1 break-all font-mono text-indigo-700 underline hover:text-indigo-900">
+      <%= attempt.verification_url %>
+    </a>
+  <% else %>
+    <span class="text-indigo-500">(waiting for link…)</span>
+  <% end %>
+</li>

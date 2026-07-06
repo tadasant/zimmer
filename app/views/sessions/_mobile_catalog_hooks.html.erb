@@ -1,0 +1,88 @@
+<%# Mobile-optimized catalog hooks display and editor %>
+<% plugin_derived_hooks = agent_session.plugin_derived_hooks %>
+<% show_hooks_section = defined?(@catalog_hooks_for_select) || agent_session.catalog_hooks.present? || plugin_derived_hooks.any? %>
+<% if show_hooks_section %>
+  <div data-controller="editable-catalog-hooks"
+       data-editable-catalog-hooks-session-id-value="<%= agent_session.id %>"
+       data-editable-catalog-hooks-hooks-value="<%= (agent_session.catalog_hooks || []).to_json %>"
+       data-editable-catalog-hooks-available-hooks-value="<%= (defined?(@catalog_hooks_for_select) ? @catalog_hooks_for_select : []).to_json %>">
+
+    <!-- Display Mode -->
+    <div data-editable-catalog-hooks-target="display">
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs font-medium text-gray-500">Hooks</label>
+        <% if defined?(@catalog_hooks_for_select) %>
+          <button type="button"
+                  data-action="click->editable-catalog-hooks#edit"
+                  class="text-amber-600 hover:text-amber-800 text-xs font-medium px-2 py-1.5 -mr-2 -my-1"
+                  title="<%= agent_session.catalog_hooks.present? ? 'Edit hooks' : 'Add hooks' %>"
+                  aria-label="<%= agent_session.catalog_hooks.present? ? 'Edit hooks' : 'Add hooks' %>">
+            <%= agent_session.catalog_hooks.present? ? 'Edit' : 'Add' %>
+          </button>
+        <% end %>
+      </div>
+
+      <% if agent_session.catalog_hooks.present? || plugin_derived_hooks.any? %>
+        <div class="flex flex-wrap gap-1.5" data-role="hook-tags">
+          <% agent_session.catalog_hooks.each do |hook_name| %>
+            <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-amber-50 text-amber-800 border-amber-200">
+              <%= hook_name %>
+            </span>
+          <% end %>
+          <% plugin_derived_hooks.each do |hook_name, plugin_id| %>
+            <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-gray-50 text-gray-500 border-purple-200 italic"
+                  title="<%= hook_name %>: from plugin '<%= plugin_id %>' (read-only)"
+                  aria-label="<%= hook_name %>: from plugin '<%= plugin_id %>' (read-only)">
+              <%= hook_name %>
+            </span>
+          <% end %>
+        </div>
+        <span data-role="hook-empty" class="hidden text-gray-400 italic text-xs">None</span>
+      <% else %>
+        <div class="hidden flex-wrap gap-1.5" data-role="hook-tags"></div>
+        <span data-role="hook-empty" class="text-gray-400 italic text-xs">None</span>
+      <% end %>
+    </div>
+
+    <% if defined?(@catalog_hooks_for_select) %>
+      <!-- Edit Mode -->
+      <div data-editable-catalog-hooks-target="editor" class="hidden">
+        <label class="block text-xs font-medium text-gray-500 mb-2">Hooks</label>
+
+        <!-- Selected hooks container -->
+        <div data-editable-catalog-hooks-target="selectedContainer" class="flex flex-wrap gap-1.5 mb-2 min-h-[28px]"></div>
+
+        <!-- Search input -->
+        <div class="relative">
+          <input type="text"
+                 data-editable-catalog-hooks-target="input"
+                 data-action="focus->editable-catalog-hooks#showDropdown input->editable-catalog-hooks#filterHooks keydown->editable-catalog-hooks#handleKeydown"
+                 placeholder="Search hooks..."
+                 aria-label="Search hooks"
+                 autocomplete="off"
+                 class="w-full rounded-md border-gray-300 text-sm py-2 px-3 focus:ring-amber-500 focus:border-amber-500">
+
+          <!-- Dropdown -->
+          <div data-editable-catalog-hooks-target="dropdown"
+               class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="flex gap-2 mt-3">
+          <button type="button"
+                  data-action="click->editable-catalog-hooks#save"
+                  data-editable-catalog-hooks-target="saveButton"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-amber-600 text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed">
+            Save
+          </button>
+          <button type="button"
+                  data-action="click->editable-catalog-hooks#cancel"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500">
+            Cancel
+          </button>
+        </div>
+        <div data-editable-catalog-hooks-target="status" class="text-xs text-gray-500 mt-2 text-center"></div>
+      </div>
+    <% end %>
+  </div>
+<% end %>

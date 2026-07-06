@@ -1,0 +1,50 @@
+<div class="min-h-screen bg-gray-50 overflow-x-hidden">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+      <div class="min-w-0">
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 truncate">Notifications</h1>
+        <p class="mt-1 text-sm text-gray-600">Recent notifications from your agent sessions</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 sm:gap-4 flex-shrink-0">
+        <% if @notifications.any? { |n| !n.read? } %>
+          <%= button_to mark_all_read_notifications_path, method: :patch, class: "inline-flex items-center px-3 sm:px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 whitespace-nowrap" do %>
+            Mark all read
+          <% end %>
+        <% end %>
+        <% if @notifications.any?(&:read?) %>
+          <%= button_to dismiss_all_read_notifications_path, method: :delete, data: { turbo_confirm: "Dismiss all read notifications? This cannot be undone." }, class: "inline-flex items-center px-3 sm:px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 whitespace-nowrap" do %>
+            Dismiss all read
+          <% end %>
+        <% end %>
+        <%= link_to root_path, class: "inline-flex items-center px-3 sm:px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 whitespace-nowrap" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+          Back
+        <% end %>
+      </div>
+    </div>
+
+    <!-- Notifications List -->
+    <div class="bg-white shadow-sm rounded-lg divide-y divide-gray-200 overflow-hidden">
+      <% if @notifications.any? %>
+        <% @notifications.each do |notification| %>
+          <div id="notification_<%= notification.id %>">
+            <%= render "notification_row", notification: notification %>
+          </div>
+        <% end %>
+      <% else %>
+        <div class="px-6 py-12 text-center">
+          <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+          </svg>
+          <h3 class="mt-2 text-sm font-medium text-gray-900">No notifications</h3>
+          <p class="mt-1 text-sm text-gray-500">
+            You're all caught up! Notifications will appear here when sessions need your attention.
+          </p>
+        </div>
+      <% end %>
+    </div>
+  </div>
+</div>

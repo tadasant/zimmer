@@ -69,17 +69,28 @@ jobs:
           cache-from: type=gha,scope=app
           cache-to: type=gha,mode=max,scope=app
 
-      # Join the tailnet so we can reach the (VPN-only) staging droplet.
-      - name: Tailscale
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
+
+      # The deploy runs with ephemeral tfstate (no remote backend configured), so a
+      # re-run can't reconcile the previous run's resources. DO firewall names are
+      # account-unique, so a leftover `zimmer-staging` firewall makes the next
+      # `terraform apply` fail with 409 duplicate name. Delete any prior
+      # zimmer-staging droplet + firewall first so each run starts clean. Idempotent.
+      - name: Reap prior staging resources (ephemeral tfstate)
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          api() { curl -fsS -H "Authorization: Bearer $DO_TOKEN" "$@"; }
+          for d in $(api "https://api.digitalocean.com/v2/droplets?tag_name=zimmer-staging" | jq -r '.droplets[].id'); do
+            echo "reaping droplet $d"; api -X DELETE "https://api.digitalocean.com/v2/droplets/$d" || true
+          done
+          for fw in $(api "https://api.digitalocean.com/v2/firewalls" | jq -r '.firewalls[] | select(.name=="zimmer-staging") | .id'); do
+            echo "reaping firewall $fw"; api -X DELETE "https://api.digitalocean.com/v2/firewalls/$fw" || true
+          done
+          sleep 5
 
       - name: Terraform apply (staging)
         working-directory: infra/terraform
@@ -100,16 +111,49 @@ jobs:
           terraform output -raw droplet_ipv4 > /tmp/droplet_ip
           echo "Droplet IP: $(cat /tmp/droplet_ip)"
 
+      # Join the tailnet LAST — right before the health check — so the runner's
+      # ephemeral tailnet session is alive only for the (short) health check and
+      # can't log out during the image build + terraform apply (which is what
+      # broke earlier runs: `tailscale status` reported "Logged out" by the time
+      # the health check ran).
+      - name: Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          # Use a pre-minted, tag:ci-tagged auth key (the OAuth client is not
+          # permitted to mint tag:ci keys — "requested tags [tag:ci] are invalid
+          # or not permitted"). The key is already tagged, so no `tags:` input.
+          authkey: ${{ secrets.TS_CI_AUTHKEY }}
+
       - name: Health check (over tailnet)
         run: |
-          # Cloud-init installs Docker + Tailscale + runs the compose stack on
-          # first boot; give it time, then curl /up over the tailnet SSH.
+          # The app publishes port 80 (tailnet-only; the DO firewall drops public
+          # :80), so we reach it over the tailnet. GitHub runners do NOT get
+          # MagicDNS in /etc/resolv.conf, so `curl http://zimmer-staging` can't
+          # resolve the name — resolve the droplet's tailnet IP from
+          # `tailscale status --json` and curl that instead.
+          if ! tailscale status >/dev/null 2>&1; then
+            echo "::error::Tailscale is not up on the runner (\`tailscale status\` reports logged out)."
+            echo "This is a runner/tailnet-auth issue, not the app. Check the TS_OAUTH_CLIENT_ID/SECRET"
+            echo "GitHub secrets and that the OAuth client has the auth_keys scope + tag:ci in the ACL"
+            echo "tagOwners, and that the minted ephemeral key TTL exceeds the deploy duration."
+            tailscale status 2>&1 || true
+            exit 1
+          fi
           for i in $(seq 1 40); do
-            if tailscale ssh root@zimmer-staging 'curl -fsS http://127.0.0.1:80/up' 2>/dev/null; then
-              echo "✅ Staging healthy at http://zimmer-staging/up"; exit 0
-            fi
-            echo "waiting for app to come up ($i/40)…"; sleep 15
+            # There can be more than one online peer named "zimmer-staging" —
+            # ephemeral tailnet nodes from prior deploys linger briefly after their
+            # droplet is destroyed. Try EVERY online candidate and succeed if any
+            # serves /up, so a stale IP can't mask the live droplet.
+            ips=$(tailscale status --json 2>/dev/null \
+              | jq -r '.Peer[]? | select(.HostName=="zimmer-staging" and .Online==true) | .TailscaleIPs[0]')
+            for ip in $ips; do
+              if curl -fsS --max-time 5 "http://$ip/up" >/dev/null 2>&1; then
+                echo "✅ Staging healthy at http://$ip/up (zimmer-staging)"; exit 0
+              fi
+            done
+            echo "waiting for app to come up ($i/40, candidates='$(echo $ips | tr '\n' ' ')')…"
+            sleep 15
           done
           echo "::error::Health check did not pass in time"
-          tailscale ssh root@zimmer-staging 'docker ps -a; docker compose -f /opt/zimmer/docker-compose.yml logs --tail=50 2>/dev/null' || true
+          echo "--- tailscale status ---"; tailscale status 2>&1 || true
           exit 1

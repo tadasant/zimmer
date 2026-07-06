@@ -1,0 +1,565 @@
+<%# Mobile session-detail joystick menu (md:hidden).
+    One floating bubble. Tap-and-hold => radial petals; quick tap => bottom sheet.
+    Replaces the legacy hamburger + chat-bubble + notes drawer toggle on mobile. %>
+<%
+  pr_urls = @session.custom_metadata&.dig("github_pull_request_urls") || []
+  pr_statuses = @session.custom_metadata&.dig("github_pull_request_statuses") || {}
+  ci_statuses = @session.custom_metadata&.dig("github_pull_request_ci_statuses") || {}
+
+  has_pr = pr_urls.present?
+  multi_pr = pr_urls.size > 1
+
+  # Tailwind doesn't see interpolated class names — list each color's literal
+  # classes here so the JIT picks them up.
+  petal_color_classes = {
+    "indigo" => "border-indigo-200 text-indigo-700 data-[active=true]:ring-indigo-300 data-[active=true]:bg-indigo-50",
+    "purple" => "border-purple-200 text-purple-700 data-[active=true]:ring-purple-300 data-[active=true]:bg-purple-50",
+    "blue"   => "border-blue-200 text-blue-700 data-[active=true]:ring-blue-300 data-[active=true]:bg-blue-50",
+    "green"  => "border-green-200 text-green-700 data-[active=true]:ring-green-300 data-[active=true]:bg-green-50",
+    "red"    => "border-red-200 text-red-700 data-[active=true]:ring-red-300 data-[active=true]:bg-red-50",
+  }
+
+  # Build first-arc petals. We aim for ~5-6 in the primary arc to keep it
+  # readable on small screens. Add View PR only if there's at least one PR.
+  has_artifacts = defined?(@servers_for_select) ||
+                  defined?(@catalog_skills_for_select) ||
+                  defined?(@catalog_hooks_for_select) ||
+                  defined?(@plugins_for_select) ||
+                  defined?(@goals_for_select)
+
+  primary_petals = []
+  primary_petals << { key: "quick-router", label: "Quick Router", color: "indigo", icon: "chat" }
+  primary_petals << { key: "edit-notes", label: "Edit Notes", color: "indigo", icon: "notes" }
+  primary_petals << { key: "view-artifacts", label: "Artifacts", color: "purple", icon: "artifacts" } if has_artifacts
+  if has_pr
+    primary_petals << { key: "view-pr", label: multi_pr ? "View PR (#{pr_urls.size})" : "View PR", color: "blue", icon: "pr" }
+  end
+  if @session.archived?
+    primary_petals << { key: "restore", label: "Restore", color: "green", icon: "restore" }
+  else
+    primary_petals << { key: "trash", label: "Trash", color: "red", icon: "trash" }
+  end
+
+  # Geometry: petals fan out from bottom-right bubble center, sweeping from
+  # ~180° (left) up through ~90° (top). The bubble sits at right-4 / bottom-4.
+  petal_count = primary_petals.size
+  radius_px = 130
+  start_angle_deg = 180
+  end_angle_deg = 90
+  # Spread petals evenly across the arc; if only one petal, point it ~135°.
+  step = petal_count > 1 ? (end_angle_deg - start_angle_deg).to_f / (petal_count - 1) : 0
+
+  primary_with_geom = primary_petals.each_with_index.map do |p, i|
+    angle_deg = petal_count > 1 ? start_angle_deg + (step * i) : 135
+    rad = angle_deg * Math::PI / 180.0
+    # Petals fan out from bubble: positive y is "down" in CSS so flip.
+    dx = (Math.cos(rad) * radius_px).round
+    dy = (-Math.sin(rad) * radius_px).round
+    p.merge(dx: dx, dy: dy)
+  end
+
+  # Sub-arc geometry for multi-PR: another arc, larger radius (220px), tighter
+  # spread around the View-PR petal angle.
+  sub_radius_px = 220
+  view_pr_index = primary_with_geom.index { |p| p[:key] == "view-pr" }
+  view_pr_angle = view_pr_index ? (start_angle_deg + step * view_pr_index) : 135
+  sub_spread = 50.0
+  pr_count = pr_urls.size
+  sub_start = view_pr_angle - sub_spread / 2.0
+  sub_end = view_pr_angle + sub_spread / 2.0
+  sub_step = pr_count > 1 ? (sub_end - sub_start) / (pr_count - 1) : 0
+%>
+
+<div class="md:hidden"
+     data-controller="joystick-menu"
+     data-joystick-menu-pr-urls-value="<%= pr_urls.to_json %>"
+     data-archive-url="<%= archive_session_path(@session) %>"
+     data-unarchive-url="<%= unarchive_session_path(@session) %>"
+     data-refresh-url="<%= refresh_session_path(@session) %>"
+     data-pause-url="<%= pause_session_path(@session) %>"
+     data-restart-url="<%= restart_session_path(@session) %>"
+     data-favorite-url="<%= toggle_favorite_session_path(@session) %>"
+     data-touch-url="<%= touch_activity_session_path(@session) %>">
+
+  <%# Suppress the page-global chat-bubble FAB and notes-drawer toggle on mobile
+      (< md) wherever this joystick is rendered. The joystick consolidates both
+      into its own radial menu, so on mobile they would be redundant — and the
+      chat-bubble FAB shares the bottom-right corner with the radial trigger, so
+      if it stays visible it stacks on top and swallows the taps meant for the
+      radial.
+
+      This is server-rendered CSS rather than a JS hook on purpose. The
+      #chat-bubble element is `data-turbo-permanent`, so on a Turbo navigation it
+      is transplanted into the new page out-of-band; a controller `connect()`
+      that reaches for it can run before the transplant lands and silently no-op,
+      leaving the FAB visible (the bug this fixes). CSS has no such race: whenever
+      this partial is in the document, the rule applies; when you navigate away
+      from a session page the partial — and this rule — disappear with it. %>
+  <style>
+    @media (max-width: 767px) {
+      #chat-bubble > button,
+      [data-session-notes-target="toggleButton"] { display: none !important; }
+    }
+
+    <%# Harden the radial trigger and petals against iOS standalone (PWA) WebKit
+        hijacking a tap-and-hold for text selection / the system callout menu,
+        so the long-press fans out the petals instead. %>
+    [data-controller="joystick-menu"] [data-joystick-menu-target="trigger"],
+    [data-controller="joystick-menu"] .joystick-petal,
+    [data-controller="joystick-menu"] .joystick-subpetal {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+  </style>
+
+  <%# Dim overlay shown while radial is expanded %>
+  <div data-joystick-menu-target="overlay"
+       class="fixed inset-0 z-30 bg-black/30 opacity-0 pointer-events-none transition-opacity duration-150"></div>
+
+  <%# Radial petal container — anchored to the bubble's center.
+      Each petal is absolutely positioned starting at the same point as the
+      bubble; transform-translate moves it to its arc target on expand. %>
+  <div data-joystick-menu-target="petals" class="fixed bottom-6 right-6 z-40 pointer-events-none">
+    <% primary_with_geom.each do |p| %>
+      <button type="button"
+              data-joystick-menu-target="petal"
+              data-petal-key="<%= p[:key] %>"
+              data-target-x="<%= p[:dx] %>"
+              data-target-y="<%= p[:dy] %>"
+              aria-label="<%= p[:label] %>"
+              class="joystick-petal absolute bottom-0 right-0 inline-flex flex-col items-center justify-center w-16 h-16 rounded-full bg-white shadow-lg border-2 opacity-0 scale-50 pointer-events-none transition-all duration-200 ease-out data-[active=true]:scale-110 data-[active=true]:ring-4 <%= petal_color_classes[p[:color]] %>">
+        <%= render "sessions/joystick_petal_icon", icon: p[:icon] %>
+        <span class="mt-0.5 text-[9px] font-semibold leading-tight text-center px-1 max-w-[60px] truncate"><%= p[:label] %></span>
+      </button>
+    <% end %>
+  </div>
+
+  <%# Sub-arc for PRs (only rendered when 2+ PRs) %>
+  <% if multi_pr %>
+    <div data-joystick-menu-target="subArc" class="hidden fixed bottom-6 right-6 z-40 pointer-events-none">
+      <% pr_urls.each_with_index do |url, i|
+           angle_deg = pr_count > 1 ? sub_start + (sub_step * i) : view_pr_angle
+           rad = angle_deg * Math::PI / 180.0
+           dx = (Math.cos(rad) * sub_radius_px).round
+           dy = (-Math.sin(rad) * sub_radius_px).round
+           pr_number = extract_pr_number(url)
+           status = pr_statuses[url]
+           ci_status = ci_statuses[url]
+           icon_color = pr_icon_color_class(status)
+      %>
+        <button type="button"
+                data-joystick-menu-target="subPetals"
+                data-petal-pr-url="<%= url %>"
+                data-target-x="<%= dx %>"
+                data-target-y="<%= dy %>"
+                aria-label="PR <%= pr_number %> (<%= status&.titleize || 'Unknown' %>)"
+                class="joystick-subpetal absolute bottom-0 right-0 inline-flex flex-col items-center justify-center w-14 h-14 rounded-full bg-white shadow-lg border-2 border-blue-200 text-blue-700 opacity-0 scale-50 transition-all duration-200 ease-out pointer-events-auto data-[active=true]:scale-110 data-[active=true]:ring-4 data-[active=true]:ring-blue-300 data-[active=true]:bg-blue-50">
+          <span class="text-[10px] font-bold"><%= pr_number %></span>
+          <% if status == "open" && ci_status.present? %>
+            <span class="mt-0.5 h-2 w-2 rounded-full <%= ci_status_bg_class(ci_status) %>"></span>
+          <% else %>
+            <span class="mt-0.5 h-2 w-2 rounded-full <%= icon_color.sub('text-', 'bg-') %>"></span>
+          <% end %>
+        </button>
+      <% end %>
+    </div>
+  <% end %>
+
+  <%# The bubble itself. Pointer events on the trigger; touch-action: none so
+      browsers don't try to scroll or fire panning gestures. %>
+  <button type="button"
+          data-joystick-menu-target="trigger"
+          data-action="pointerdown->joystick-menu#start"
+          aria-label="Open session actions menu"
+          aria-haspopup="true"
+          aria-expanded="false"
+          style="touch-action: none;"
+          class="fixed bottom-4 right-4 z-50 inline-flex items-center justify-center w-14 h-14 rounded-full bg-indigo-600 text-white shadow-xl ring-4 ring-white hover:bg-indigo-700 focus:outline-none focus:ring-indigo-300 active:scale-95 transition-transform">
+    <svg class="h-7 w-7" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <circle cx="12" cy="4" r="1.5" fill="currentColor"/>
+      <circle cx="12" cy="20" r="1.5" fill="currentColor"/>
+      <circle cx="4" cy="12" r="1.5" fill="currentColor"/>
+      <circle cx="20" cy="12" r="1.5" fill="currentColor"/>
+    </svg>
+  </button>
+
+  <%# Bottom-sheet fallback list (opens on quick tap; tap-friendly large rows) %>
+  <div data-joystick-menu-target="sheetOverlay"
+       data-action="click->joystick-menu#closeSheet"
+       class="hidden fixed inset-0 z-40 bg-black/40"></div>
+
+  <div data-joystick-menu-target="sheet"
+       class="fixed left-0 right-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-2xl translate-y-full opacity-0 transition-all duration-200 ease-out max-h-[80vh] overflow-y-auto pb-safe">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100 sticky top-0 bg-white">
+      <h3 class="text-base font-semibold text-gray-900">Session actions</h3>
+      <button type="button" data-action="click->joystick-menu#closeSheet" class="p-2 -mr-2 text-gray-400 hover:text-gray-600" aria-label="Close menu">
+        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="py-2 divide-y divide-gray-100">
+      <%# Top-priority actions (always shown) %>
+      <button type="button" data-action="click->joystick-menu#fire" data-petal-key="quick-router" class="flex items-center w-full px-4 py-3 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100">
+        <span class="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "chat" %></span>
+        <span class="flex-1 font-medium">Quick Router</span>
+      </button>
+      <button type="button" data-action="click->joystick-menu#fire" data-petal-key="edit-notes" class="flex items-center w-full px-4 py-3 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100">
+        <span class="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "notes" %></span>
+        <span class="flex-1 font-medium">Edit Notes</span>
+      </button>
+
+      <% if has_artifacts %>
+        <button type="button" data-action="click->joystick-menu#fire" data-petal-key="view-artifacts" class="flex items-center w-full px-4 py-3 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100">
+          <span class="w-9 h-9 rounded-full bg-purple-50 text-purple-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "artifacts" %></span>
+          <span class="flex-1 font-medium">View Artifacts</span>
+          <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+        </button>
+      <% end %>
+
+      <% if has_pr %>
+        <% if multi_pr %>
+          <div class="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide bg-gray-50">Pull Requests</div>
+          <% pr_urls.each do |url|
+               pr_number = extract_pr_number(url)
+               status = pr_statuses[url]
+               ci_status = ci_statuses[url]
+          %>
+            <%= link_to url, target: "_blank", rel: "noopener noreferrer", class: "flex items-center w-full px-4 py-3 text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100",
+                data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(@session) } do %>
+              <span class="w-9 h-9 rounded-full bg-blue-50 text-blue-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "pr" %></span>
+              <span class="flex-1 font-medium">PR <%= pr_number %></span>
+              <span class="text-xs text-gray-500 mr-2"><%= status&.titleize || "Unknown" %></span>
+              <% if status == "open" && ci_status.present? %>
+                <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(ci_status) %>"></span>
+              <% end %>
+            <% end %>
+          <% end %>
+        <% else %>
+          <%= link_to pr_urls.first, target: "_blank", rel: "noopener noreferrer", class: "flex items-center w-full px-4 py-3 text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100",
+              data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(@session) } do %>
+            <span class="w-9 h-9 rounded-full bg-blue-50 text-blue-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "pr" %></span>
+            <span class="flex-1 font-medium">View PR</span>
+            <% st = pr_statuses[pr_urls.first] %>
+            <span class="text-xs text-gray-500"><%= st&.titleize || "Unknown" %></span>
+          <% end %>
+        <% end %>
+      <% end %>
+
+      <%# Session-state actions %>
+      <% if @session.archived? %>
+        <button type="button" data-action="click->joystick-menu#fire" data-petal-key="restore" class="flex items-center w-full px-4 py-3 text-left text-sm text-green-700 hover:bg-green-50 active:bg-green-100">
+          <span class="w-9 h-9 rounded-full bg-green-50 text-green-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "restore" %></span>
+          <span class="flex-1 font-medium">Restore from Trash</span>
+        </button>
+      <% else %>
+        <button type="button" data-action="click->joystick-menu#fire" data-petal-key="trash" class="flex items-center w-full px-4 py-3 text-left text-sm text-red-700 hover:bg-red-50 active:bg-red-100">
+          <span class="w-9 h-9 rounded-full bg-red-50 text-red-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "trash" %></span>
+          <span class="flex-1 font-medium">Trash</span>
+        </button>
+      <% end %>
+
+      <button type="button" data-action="click->joystick-menu#fire" data-petal-key="refresh" class="flex items-center w-full px-4 py-3 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100">
+        <span class="w-9 h-9 rounded-full bg-gray-100 text-gray-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "refresh" %></span>
+        <span class="flex-1 font-medium">Refresh Transcript</span>
+      </button>
+
+      <% if @session.running? %>
+        <button type="button" data-action="click->joystick-menu#fire" data-petal-key="pause" class="flex items-center w-full px-4 py-3 text-left text-sm text-yellow-700 hover:bg-yellow-50 active:bg-yellow-100">
+          <span class="w-9 h-9 rounded-full bg-yellow-50 text-yellow-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "pause" %></span>
+          <span class="flex-1 font-medium">Pause Session</span>
+        </button>
+      <% end %>
+      <% if @session.failed? %>
+        <button type="button" data-action="click->joystick-menu#fire" data-petal-key="restart" class="flex items-center w-full px-4 py-3 text-left text-sm text-green-700 hover:bg-green-50 active:bg-green-100">
+          <span class="w-9 h-9 rounded-full bg-green-50 text-green-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "restart" %></span>
+          <span class="flex-1 font-medium">Restart Session</span>
+        </button>
+      <% end %>
+
+      <button type="button" data-action="click->joystick-menu#fire" data-petal-key="favorite" class="flex items-center w-full px-4 py-3 text-left text-sm <%= @session.favorited? ? 'text-yellow-700' : 'text-gray-800' %> hover:bg-gray-50 active:bg-gray-100">
+        <span class="w-9 h-9 rounded-full bg-yellow-50 text-yellow-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "star" %></span>
+        <span class="flex-1 font-medium"><%= @session.favorited? ? "Remove from Favorites" : "Add to Favorites" %></span>
+      </button>
+
+      <%# Log Level select (kept here for completeness; read-only metadata fits better than radial) %>
+      <div class="px-4 py-3">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Log Level</label>
+        <select id="log-level-filter-mobile" data-log-level-filter-target="select" data-action="change->log-level-filter#change" class="w-full rounded border-gray-300 text-gray-700 text-sm focus:ring-indigo-500 focus:border-indigo-500 px-3 py-2 pr-8">
+          <option value="minimal" <%= 'selected' if @filter_level == 'minimal' %>>Minimal</option>
+          <option value="condensed" <%= 'selected' if @filter_level == 'condensed' %>>Condensed</option>
+          <option value="show-logs" <%= 'selected' if @filter_level == 'show-logs' %>>Show Logs</option>
+          <option value="verbose" <%= 'selected' if @filter_level == 'verbose' %>>Verbose</option>
+        </select>
+        <p class="mt-2 text-xs text-gray-500">
+          <% if @has_more_items %>
+            Showing <%= @timeline_items.count %> of <%= @total_timeline_items_count %> items
+          <% else %>
+            <%= @total_timeline_items_count %> <%= @total_timeline_items_count == 1 ? 'item' : 'items' %>
+          <% end %>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <%# Full-screen mobile modals for write-heavy editor flows %>
+  <div data-joystick-menu-target="modalRoot">
+    <% if has_artifacts %>
+      <%
+        mcp_statuses = @session.custom_metadata&.dig("mcp_servers_status") || {}
+        all_mcp = @session.all_mcp_servers
+        injected_mcp = @session.injected_mcp_servers.to_set
+        plugin_mcp = @session.plugin_derived_mcp_servers
+        plugin_skills = @session.plugin_derived_skills
+        plugin_hooks = @session.plugin_derived_hooks
+        goal_text = @session.goal.present? ? goal_display_name(@session.goal, (defined?(@goals_for_select) ? @goals_for_select : [])) : nil
+      %>
+      <div data-modal-kind="artifacts" class="hidden fixed inset-0 z-[60] bg-black/40 flex items-end">
+        <div class="bg-white w-full rounded-t-2xl shadow-2xl max-h-[90vh] flex flex-col">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100 sticky top-0 bg-white z-10">
+            <h3 class="text-base font-semibold text-gray-900">Artifacts</h3>
+            <button type="button" data-action="click->joystick-menu#closeModal" class="p-2 -mr-2 text-gray-400 hover:text-gray-600" aria-label="Close">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto divide-y divide-gray-100">
+
+            <% if defined?(@servers_for_select) %>
+              <div class="px-4 py-4">
+                <div class="flex items-center justify-between mb-2">
+                  <label class="text-xs font-semibold text-gray-700 uppercase tracking-wide">MCP Servers</label>
+                  <button type="button"
+                          data-action="click->joystick-menu#modifyArtifact"
+                          data-artifact-kind="mcp-servers"
+                          class="text-xs font-medium text-indigo-600 hover:text-indigo-800 px-3 py-1.5 rounded-md border border-indigo-200 bg-indigo-50">
+                    Modify
+                  </button>
+                </div>
+                <% if all_mcp.present? || plugin_mcp.any? %>
+                  <div class="flex flex-wrap gap-1.5">
+                    <% all_mcp.each do |server_name|
+                         server_status = mcp_statuses[server_name] || {}
+                         status = server_status["status"] || "pending"
+                         is_injected = injected_mcp.include?(server_name)
+                         indicator_class = case status
+                                           when "connected" then "bg-green-500"
+                                           when "failed" then "bg-red-500"
+                                           else "bg-gray-400"
+                                           end
+                         bg_class = case status
+                                    when "connected" then "bg-green-50 text-green-800 border-green-200"
+                                    when "failed" then "bg-red-50 text-red-800 border-red-200"
+                                    else "bg-gray-50 text-gray-700 border-gray-200"
+                                    end
+                         bg_class += " border-dashed" if is_injected
+                    %>
+                      <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border <%= bg_class %>">
+                        <span class="w-1.5 h-1.5 rounded-full <%= indicator_class %>" aria-hidden="true"></span>
+                        <%= server_name %>
+                      </span>
+                    <% end %>
+                    <% plugin_mcp.each do |server_name, plugin_id| %>
+                      <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-gray-50 text-gray-500 border-purple-200 italic"
+                            title="from plugin '<%= plugin_id %>'">
+                        <span class="w-1.5 h-1.5 rounded-full bg-gray-300" aria-hidden="true"></span>
+                        <%= server_name %>
+                      </span>
+                    <% end %>
+                  </div>
+                <% else %>
+                  <span class="text-gray-400 italic text-xs">None</span>
+                <% end %>
+              </div>
+            <% end %>
+
+            <% if defined?(@catalog_skills_for_select) %>
+              <div class="px-4 py-4">
+                <div class="flex items-center justify-between mb-2">
+                  <label class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Skills</label>
+                  <button type="button"
+                          data-action="click->joystick-menu#modifyArtifact"
+                          data-artifact-kind="skills"
+                          class="text-xs font-medium text-green-600 hover:text-green-800 px-3 py-1.5 rounded-md border border-green-200 bg-green-50">
+                    Modify
+                  </button>
+                </div>
+                <% if @session.catalog_skills.present? || plugin_skills.any? %>
+                  <div class="flex flex-wrap gap-1.5">
+                    <% @session.catalog_skills.each do |skill_name| %>
+                      <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-green-50 text-green-800 border-green-200">
+                        <%= skill_name %>
+                      </span>
+                    <% end %>
+                    <% plugin_skills.each do |skill_name, plugin_id| %>
+                      <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-gray-50 text-gray-500 border-purple-200 italic"
+                            title="from plugin '<%= plugin_id %>'">
+                        <%= skill_name %>
+                      </span>
+                    <% end %>
+                  </div>
+                <% else %>
+                  <span class="text-gray-400 italic text-xs">None</span>
+                <% end %>
+              </div>
+            <% end %>
+
+            <% if defined?(@catalog_hooks_for_select) %>
+              <div class="px-4 py-4">
+                <div class="flex items-center justify-between mb-2">
+                  <label class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Hooks</label>
+                  <button type="button"
+                          data-action="click->joystick-menu#modifyArtifact"
+                          data-artifact-kind="hooks"
+                          class="text-xs font-medium text-amber-600 hover:text-amber-800 px-3 py-1.5 rounded-md border border-amber-200 bg-amber-50">
+                    Modify
+                  </button>
+                </div>
+                <% if @session.catalog_hooks.present? || plugin_hooks.any? %>
+                  <div class="flex flex-wrap gap-1.5">
+                    <% @session.catalog_hooks.each do |hook_name| %>
+                      <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-amber-50 text-amber-800 border-amber-200">
+                        <%= hook_name %>
+                      </span>
+                    <% end %>
+                    <% plugin_hooks.each do |hook_name, plugin_id| %>
+                      <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-gray-50 text-gray-500 border-purple-200 italic"
+                            title="from plugin '<%= plugin_id %>'">
+                        <%= hook_name %>
+                      </span>
+                    <% end %>
+                  </div>
+                <% else %>
+                  <span class="text-gray-400 italic text-xs">None</span>
+                <% end %>
+              </div>
+            <% end %>
+
+            <% if defined?(@plugins_for_select) %>
+              <div class="px-4 py-4">
+                <div class="flex items-center justify-between mb-2">
+                  <label class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Plugins</label>
+                  <button type="button"
+                          data-action="click->joystick-menu#modifyArtifact"
+                          data-artifact-kind="plugins"
+                          class="text-xs font-medium text-purple-600 hover:text-purple-800 px-3 py-1.5 rounded-md border border-purple-200 bg-purple-50">
+                    Modify
+                  </button>
+                </div>
+                <% if @session.catalog_plugins.present? %>
+                  <div class="flex flex-wrap gap-1.5">
+                    <% @session.catalog_plugins.each do |plugin_id| %>
+                      <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-purple-50 text-purple-800 border-purple-200">
+                        <%= plugin_id %>
+                      </span>
+                    <% end %>
+                  </div>
+                <% else %>
+                  <span class="text-gray-400 italic text-xs">None</span>
+                <% end %>
+              </div>
+            <% end %>
+
+            <% if defined?(@goals_for_select) %>
+              <div class="px-4 py-4">
+                <div class="flex items-center justify-between mb-2">
+                  <label class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Goal</label>
+                  <button type="button"
+                          data-action="click->joystick-menu#modifyArtifact"
+                          data-artifact-kind="goal"
+                          class="text-xs font-medium text-amber-600 hover:text-amber-800 px-3 py-1.5 rounded-md border border-amber-200 bg-amber-50">
+                    Modify
+                  </button>
+                </div>
+                <% if goal_text %>
+                  <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-amber-50 text-amber-800 border-amber-200">
+                    <%= goal_text %>
+                  </span>
+                <% else %>
+                  <span class="text-gray-400 italic text-xs">None</span>
+                <% end %>
+              </div>
+            <% end %>
+
+          </div>
+        </div>
+      </div>
+    <% end %>
+
+    <% if defined?(@servers_for_select) %>
+      <div data-modal-kind="mcp-servers" class="hidden fixed inset-0 z-[60] bg-black/40 flex items-end">
+        <div class="bg-white w-full rounded-t-2xl shadow-2xl max-h-[90vh] flex flex-col">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+            <h3 class="text-base font-semibold text-gray-900">Modify MCP Servers</h3>
+            <button type="button" data-action="click->joystick-menu#closeModal" class="p-2 -mr-2 text-gray-400 hover:text-gray-600" aria-label="Close">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-4">
+            <%= render "sessions/mobile_mcp_servers", agent_session: @session, servers_for_select: @servers_for_select %>
+          </div>
+        </div>
+      </div>
+    <% end %>
+    <% if defined?(@catalog_skills_for_select) %>
+      <div data-modal-kind="skills" class="hidden fixed inset-0 z-[60] bg-black/40 flex items-end">
+        <div class="bg-white w-full rounded-t-2xl shadow-2xl max-h-[90vh] flex flex-col">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+            <h3 class="text-base font-semibold text-gray-900">Modify Skills</h3>
+            <button type="button" data-action="click->joystick-menu#closeModal" class="p-2 -mr-2 text-gray-400 hover:text-gray-600" aria-label="Close">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-4">
+            <%= render "sessions/mobile_catalog_skills", agent_session: @session %>
+          </div>
+        </div>
+      </div>
+    <% end %>
+    <% if defined?(@catalog_hooks_for_select) %>
+      <div data-modal-kind="hooks" class="hidden fixed inset-0 z-[60] bg-black/40 flex items-end">
+        <div class="bg-white w-full rounded-t-2xl shadow-2xl max-h-[90vh] flex flex-col">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+            <h3 class="text-base font-semibold text-gray-900">Modify Hooks</h3>
+            <button type="button" data-action="click->joystick-menu#closeModal" class="p-2 -mr-2 text-gray-400 hover:text-gray-600" aria-label="Close">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-4">
+            <%= render "sessions/mobile_catalog_hooks", agent_session: @session %>
+          </div>
+        </div>
+      </div>
+    <% end %>
+    <% if defined?(@plugins_for_select) %>
+      <div data-modal-kind="plugins" class="hidden fixed inset-0 z-[60] bg-black/40 flex items-end">
+        <div class="bg-white w-full rounded-t-2xl shadow-2xl max-h-[90vh] flex flex-col">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+            <h3 class="text-base font-semibold text-gray-900">Modify Plugins</h3>
+            <button type="button" data-action="click->joystick-menu#closeModal" class="p-2 -mr-2 text-gray-400 hover:text-gray-600" aria-label="Close">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-4">
+            <%= render "sessions/mobile_catalog_plugins", agent_session: @session %>
+          </div>
+        </div>
+      </div>
+    <% end %>
+    <% if defined?(@goals_for_select) %>
+      <div data-modal-kind="goal" class="hidden fixed inset-0 z-[60] bg-black/40 flex items-end">
+        <div class="bg-white w-full rounded-t-2xl shadow-2xl max-h-[90vh] flex flex-col">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+            <h3 class="text-base font-semibold text-gray-900">Modify Goal</h3>
+            <button type="button" data-action="click->joystick-menu#closeModal" class="p-2 -mr-2 text-gray-400 hover:text-gray-600" aria-label="Close">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-4">
+            <%= render "sessions/mobile_goal", agent_session: @session %>
+          </div>
+        </div>
+      </div>
+    <% end %>
+  </div>
+</div>

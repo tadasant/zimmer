@@ -1,0 +1,55 @@
+<%# Renders the full failure/exception details for a failed session.
+    Used in both the desktop session metadata header and the mobile session
+    header so the failure is visible regardless of viewport.
+
+    The detail bodies (MCP connection failure detail, exception message) are
+    rendered inline and untruncated in a scrollable monospace block, so the real
+    error — frequently buried at the tail after leading warnings/stack-trace
+    noise — is always reachable. This deliberately avoids a hover/click popover,
+    which is unreliable on mobile.
+
+    OAuth-required failures are surfaced by a dedicated banner elsewhere, so this
+    partial renders nothing for them. %>
+<% if agent_session.failed? && agent_session.metadata&.dig("failure_reason").present? %>
+  <% failure_reason = agent_session.metadata["failure_reason"] %>
+  <% unless failure_reason == "oauth_required" %>
+    <%
+      if failure_reason == "mcp_connection_failed"
+        failure_display = agent_session.failure_summary || "MCP connection failed"
+        failure_details = agent_session.failure_detail
+      else
+        failure_display = agent_session.failure_summary || failure_reason.humanize
+        failure_details = nil
+      end
+      exception_msg = agent_session.metadata&.dig("exception_message")
+      exit_status = agent_session.metadata&.dig("exit_status")
+      exception_class = agent_session.metadata&.dig("exception_class")
+    %>
+    <div class="mt-1">
+      <div class="flex items-center gap-1 flex-wrap">
+        <svg class="h-4 w-4 text-red-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+        </svg>
+        <span class="text-red-600"><strong>Failure:</strong> <%= failure_display %></span>
+        <% if exit_status.present? %>
+          <span class="text-red-500 text-xs">(<%= exit_status %>)</span>
+        <% end %>
+        <% if exception_msg.blank? && exception_class.present? %>
+          <span class="text-red-500 text-xs">(<%= exception_class %>)</span>
+        <% end %>
+      </div>
+      <% if failure_details.present? %>
+        <div class="mt-1">
+          <div class="text-red-400 text-[10px] font-semibold uppercase tracking-wide">MCP Connection Failure Details</div>
+          <pre class="mt-0.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded border border-red-200 bg-red-50 p-2 text-xs font-mono text-red-800"><%= failure_details %></pre>
+        </div>
+      <% end %>
+      <% if exception_msg.present? %>
+        <div class="mt-1">
+          <div class="text-red-400 text-[10px] font-semibold uppercase tracking-wide">Exception Details<%= " (#{exception_class})" if exception_class.present? %></div>
+          <pre class="mt-0.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded border border-red-200 bg-red-50 p-2 text-xs font-mono text-red-800"><%= exception_msg %></pre>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+<% end %>
