@@ -11,7 +11,7 @@
 # calls into this after deserializing its native config format.
 #
 # AIR's own @pulsemcp/air-secrets-env transform already resolves ${VAR} from
-# process.env during `air prepare`. AO post-processes a second time because its
+# process.env during `air prepare`. Zimmer post-processes a second time because its
 # secrets live in Rails encrypted credentials (SecretsLoader), which are NOT in
 # process.env.
 class SecretsInterpolator

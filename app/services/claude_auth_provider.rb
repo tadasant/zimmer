@@ -27,11 +27,11 @@ class ClaudeAuthProvider < RuntimeAuthProvider
   CLAUDE_JSON_PATH = File.join(Dir.home, ".claude.json")
   CREDENTIALS_JSON_PATH = File.join(Dir.home, ".claude", ".credentials.json")
 
-  # Claude's CLI rotates refresh tokens on its own during sessions, so AO sweeps
+  # Claude's CLI rotates refresh tokens on its own during sessions, so Zimmer sweeps
   # the pool every 5 minutes to refresh anything expiring soon.
   ROTATION_INTERVAL = 5.minutes
 
-  # Sidecar marker recording which account AO last wrote into the SHARED
+  # Sidecar marker recording which account Zimmer last wrote into the SHARED
   # ~/.claude/.credentials.json. It is co-located with the credentials file (same
   # directory, which in production is a bind mount shared by the web and worker
   # containers) so every reader agrees on "whose tokens are on disk" — unlike

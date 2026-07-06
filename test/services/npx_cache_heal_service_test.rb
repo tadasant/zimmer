@@ -43,8 +43,8 @@ class NpxCacheHealServiceTest < ActiveSupport::TestCase
     dir
   end
 
-  # The real ERR_UNSUPPORTED_DIR_IMPORT crash signature persisted by AO for the
-  # agent-orchestrator-mcp-server `zod/v4` failure (see AO session 8162). Node's
+  # The real ERR_UNSUPPORTED_DIR_IMPORT crash signature persisted by Zimmer for the
+  # agent-orchestrator-mcp-server `zod/v4` failure (see Zimmer session 8162). Node's
   # ESM loader aborts when an import resolves to a bare directory.
   def dir_import_error(hash)
     cache = File.join(@npx_dir, hash, "node_modules")

@@ -3,7 +3,7 @@
 # AuthWarmupService — write each runtime's DB-current login identity to disk at
 # worker boot, before GoodJob starts consuming jobs.
 #
-# AO maintains a pool of login accounts per runtime (Claude, Codex) and writes
+# Zimmer maintains a pool of login accounts per runtime (Claude, Codex) and writes
 # the active account's credentials to the runtime's canonical filesystem location
 # (~/.claude.json + ~/.claude/.credentials.json for Claude, ~/.codex/auth.json for
 # Codex) LAZILY — on the first session that runs on a worker container. On a

@@ -24,30 +24,30 @@ class ClaudeCliAdapter
 
   class ClaudeCliError < StandardError; end
 
-  # Tools that AO-spawned Claude Code sessions must never invoke.
-  # AO sessions run with --dangerously-skip-permissions, which bypasses
+  # Tools that Zimmer-spawned Claude Code sessions must never invoke.
+  # Zimmer sessions run with --dangerously-skip-permissions, which bypasses
   # settings.json permission checks and makes PreToolUse hooks unreliable
   # (see anthropics/claude-code#20946). The --disallowedTools CLI flag is
   # the one enforcement mechanism that still applies in bypass mode.
   #
   # Monitor / ScheduleWakeup / Bash(sleep *) are Claude Code's in-process
-  # async-wait primitives. They don't fit the AO execution model — AO
-  # sessions should use the AO-native wake_me_up_later /
+  # async-wait primitives. They don't fit the Zimmer execution model — Zimmer
+  # sessions should use the Zimmer-native wake_me_up_later /
   # wake_me_up_when_session_changes_state MCP tools for scheduled
   # resumption instead.
   #
   # Skill(schedule) blocks the `/schedule` skill that ships with the Claude
   # Code CLI. That skill creates scheduled remote agents and is geared
   # toward terminal-attached users who walk away from their machine — it
-  # is non-functional inside an AO session and was previously a frequent
-  # mistake target despite the system-prompt directive against it. AO has
+  # is non-functional inside an Zimmer session and was previously a frequent
+  # mistake target despite the system-prompt directive against it. Zimmer has
   # its own trigger system + wake-me-up tools that serve the same intent.
   #
   # AskUserQuestion surfaces an interactive multiple-choice prompt to the
-  # user. AO sessions are autonomous — when an agent invokes this tool, it
+  # user. Zimmer sessions are autonomous — when an agent invokes this tool, it
   # stalls the session waiting on interactive input that doesn't fit the
-  # AO execution model (the same reason EnterPlanMode/ExitPlanMode are
-  # forbidden via the system prompt). AO's own guidance tells agents to
+  # Zimmer execution model (the same reason EnterPlanMode/ExitPlanMode are
+  # forbidden via the system prompt). Zimmer's own guidance tells agents to
   # avoid clarifying questions and prioritize autonomy; blocking the tool
   # makes that enforceable instead of advisory.
   #
@@ -198,7 +198,7 @@ class ClaudeCliAdapter
     parts.join(" ")
   end
 
-  # Tools AO-spawned Claude Code sessions must never invoke. Part of the
+  # Tools Zimmer-spawned Claude Code sessions must never invoke. Part of the
   # RuntimeCliAdapter contract; see DISALLOWED_TOOLS for rationale.
   def disallowed_tools
     DISALLOWED_TOOLS

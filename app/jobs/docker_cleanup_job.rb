@@ -12,7 +12,7 @@ require "open3"
 #      containers become permanent orphans. This job discovers them by naming convention and
 #      stops any stack running longer than MAX_DEV_SERVER_AGE.
 #
-#   2. **Docker image pruning** — Each AO deploy pulls an ~8.8 GB image. Without pruning,
+#   2. **Docker image pruning** — Each Zimmer deploy pulls an ~8.8 GB image. Without pruning,
 #      old images accumulate after every deploy. Prunes images unused for 24+ hours.
 #
 #   3. **Emergency disk handling** — When disk usage exceeds EMERGENCY_THRESHOLD, aggressively

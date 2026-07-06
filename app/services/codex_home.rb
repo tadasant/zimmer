@@ -10,13 +10,13 @@
 #   - state_*.sqlite        — the thread store
 #
 # `codex exec resume <thread-id>` resolves a thread by its ROLLOUT FILE, so the
-# directory the spawned `codex` WRITES rollouts to must be the same directory AO
+# directory the spawned `codex` WRITES rollouts to must be the same directory Zimmer
 # READS transcripts from on a later turn. If those diverge — or if CODEX_HOME
 # lives on an ephemeral filesystem that is wiped between turns — resume fails
 # with "no rollout found for thread id".
 #
 # CODEX_HOME overrides the default ~/.codex, mirroring the Codex CLI itself.
-# Every AO component that touches Codex state (the auth provider, the transcript
+# Every Zimmer component that touches Codex state (the auth provider, the transcript
 # source, the MCP credential writer, and the spawn environment) MUST resolve the
 # path through this module so they never disagree about where Codex state lives.
 #

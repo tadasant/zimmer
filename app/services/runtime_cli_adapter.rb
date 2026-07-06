@@ -2,7 +2,7 @@
 
 # RuntimeCliAdapter — the contract every agent-runtime CLI adapter implements.
 #
-# An adapter is the single seam through which AO spawns a coding-agent CLI
+# An adapter is the single seam through which Zimmer spawns a coding-agent CLI
 # process (today: `claude`; forthcoming: `codex`, see #3777). It builds the
 # command, injects the environment, spawns the process, and reports back the
 # pid plus the stderr log path the monitoring loop should tail.
@@ -53,7 +53,7 @@
 #
 #   process_manager=, file_system=, ao_session_id=
 #   ProcessLifecycleManager sets these so the adapter shares its process manager
-#   and file system (important for test doubles) and knows the AO session id for
+#   and file system (important for test doubles) and knows the Zimmer session id for
 #   MCP elicitation callbacks.
 #
 # == Optional hooks (sensible defaults provided here) ==

@@ -17,7 +17,7 @@ class BundleInstallJob < ApplicationJob
   discard_on StandardError
 
   # GoodJob::InterruptError < StandardError, so the broad discard_on above would otherwise
-  # catch deploy interrupts and log them at ERROR (tripping the "any AO ERROR → critical"
+  # catch deploy interrupts and log them at ERROR (tripping the "any Zimmer ERROR → critical"
   # Grafana alert). Re-register the quiet INFO handler AFTER discard_on so last-registered-wins
   # routes interrupts there instead. See ApplicationJob.discard_interrupt_quietly.
   discard_interrupt_quietly

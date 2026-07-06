@@ -10,7 +10,7 @@
 # container's ephemeral overlay layer and is wiped on every container
 # recreation — including a routine Kamal deploy. A session that is mid-run when
 # a deploy lands loses all of its `/tmp` artifacts and has to reconstruct them
-# from scratch (see the AO-side fix for the Discovery pipeline scratch wipe).
+# from scratch (see the Zimmer-side fix for the Discovery pipeline scratch wipe).
 #
 # This module hands each session a directory that lives INSIDE the durable
 # `agent-orchestrator_agent-clones` named volume (mounted at
@@ -58,7 +58,7 @@ module SessionScratchDirectory
 
   # Absolute path to a specific session's scratch directory (does not create it).
   #
-  # @param session_id [Integer, String] the AO session id
+  # @param session_id [Integer, String] the Zimmer session id
   # @return [String] absolute path to the session's scratch directory
   # @raise [ArgumentError] if session_id is blank
   def path_for(session_id)
@@ -70,7 +70,7 @@ module SessionScratchDirectory
   # Ensure a session's scratch directory exists, creating it (and the base) if
   # needed, and return its absolute path.
   #
-  # @param session_id [Integer, String] the AO session id
+  # @param session_id [Integer, String] the Zimmer session id
   # @return [String] absolute path to the session's scratch directory
   def ensure_for(session_id)
     path = path_for(session_id)
@@ -86,7 +86,7 @@ module SessionScratchDirectory
   # cleanup, so errors are swallowed (best-effort, logged by the caller's job
   # context if a logger is available).
   #
-  # @param session_id [Integer, String] the AO session id
+  # @param session_id [Integer, String] the Zimmer session id
   # @return [void]
   def cleanup_for(session_id)
     return if session_id.blank?

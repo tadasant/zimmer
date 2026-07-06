@@ -27,7 +27,7 @@ module RuntimeRegistry
   #
   # `air_adapter_name` is the AIR CLI adapter id this runtime is prepared with
   # (`air prepare <adapter>`): claude → "claude", codex → "codex".
-  # `config_post_processor_class` applies AO-specific tweaks to the MCP config
+  # `config_post_processor_class` applies Zimmer-specific tweaks to the MCP config
   # AIR writes (server injection, env retargeting, secret/npx rewrites) in the
   # runtime's native format (`.mcp.json` for Claude, `.codex/config.toml` for
   # Codex).
@@ -130,7 +130,7 @@ module RuntimeRegistry
     end
   end
 
-  # Resolve the CLI adapter CLASS for a session's runtime, letting an enabled AO
+  # Resolve the CLI adapter CLASS for a session's runtime, letting an enabled Zimmer
   # Extension override the runtime bundle's default adapter.
   #
   # This is the single seam that governs which adapter drives a session. The core

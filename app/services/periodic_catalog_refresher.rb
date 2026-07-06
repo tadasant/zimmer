@@ -9,7 +9,7 @@
 # fresh. The web container's cache is otherwise refreshed just once, at boot, by
 # config/initializers/air_catalog.rb. Between web deploys nothing re-fetches the web
 # cache, so everything the web serves from the catalog — AirCatalogService.entries_for
-# (get_configs, the AO UI's view of available MCP servers / agent roots / skills) and
+# (get_configs, the Zimmer UI's view of available MCP servers / agent roots / skills) and
 # start_session MCP-name validation — drifts stale for up to a full deploy cycle after
 # a harness change merges to tadasant/zimmer-catalog main.
 #

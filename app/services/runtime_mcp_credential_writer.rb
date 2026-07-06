@@ -3,7 +3,7 @@
 # RuntimeMcpCredentialWriter — the contract every agent-runtime MCP credential
 # writer implements.
 #
-# AO resolves a session's active MCP OAuth tokens in a runtime-agnostic way: the
+# Zimmer resolves a session's active MCP OAuth tokens in a runtime-agnostic way: the
 # OAuth discovery / DCR / refresh machinery and McpOauthCredentialInjector
 # produce ResolvedMcpCredential value objects. The *sink* — where those tokens
 # are written so the spawned CLI can read them — is the one runtime-specific

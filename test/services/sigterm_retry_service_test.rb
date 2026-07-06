@@ -667,7 +667,7 @@ class SigtermRetryServiceTest < ActiveSupport::TestCase
     service.attempt_retry("/tmp/test-clone")
 
     assert_not_nil captured_system_prompt, "System prompt should be passed to resume"
-    assert_includes captured_system_prompt, "Agent Orchestrator"
+    assert_includes captured_system_prompt, "Zimmer"
     assert_includes captured_system_prompt, "Session ID: #{@session.id}"
   end
 
@@ -686,7 +686,7 @@ class SigtermRetryServiceTest < ActiveSupport::TestCase
     service.attempt_retry("/tmp/test-clone")
 
     assert_not_nil captured_system_prompt, "System prompt should be passed to execute"
-    assert_includes captured_system_prompt, "Agent Orchestrator"
+    assert_includes captured_system_prompt, "Zimmer"
     assert_includes captured_system_prompt, "Session ID: #{@session.id}"
   end
 end

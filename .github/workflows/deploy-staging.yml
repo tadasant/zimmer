@@ -100,6 +100,10 @@ jobs:
           TF_VAR_ghcr_username: ${{ github.actor }}
           TF_VAR_ghcr_token: ${{ secrets.GHCR_PULL_TOKEN }}
           TF_VAR_secret_key_base: ${{ secrets.STAGING_SECRET_BASE }}
+          # Optional observability — leave the secrets unset to keep obs off.
+          TF_VAR_otel_logs_endpoint: ${{ secrets.OTEL_LOGS_EXPORTER_ENDPOINT }}
+          TF_VAR_otel_logs_token: ${{ secrets.OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
+          TF_VAR_sentry_dsn: ${{ secrets.SENTRY_DSN_BACKEND }}
         run: |
           set -euo pipefail
           IMG="ghcr.io/tadasant/zimmer:${{ steps.img.outputs.tag }}"

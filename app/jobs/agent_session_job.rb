@@ -789,7 +789,7 @@ class AgentSessionJob < ApplicationJob
           # Use AIR CLI to generate MCP configuration and inject catalog skills.
           # AIR resolves air.json, writes .mcp.json, and copies skills + references
           # into .claude/skills/. Post-processing resolves ${VAR} interpolations
-          # and applies AO-specific tweaks (npx --prefix, filesystem dirs).
+          # and applies Zimmer-specific tweaks (npx --prefix, filesystem dirs).
           # Heal a mcp_servers column that landed empty at create time before deciding
           # between prepare! and the baseline fallback, so a root whose servers come
           # from default_in_roots doesn't regenerate .mcp.json with only the

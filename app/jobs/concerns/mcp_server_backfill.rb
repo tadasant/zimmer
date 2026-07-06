@@ -1,11 +1,11 @@
 # Heals sessions whose mcp_servers column landed empty at creation time by
-# restoring the servers the agent root currently resolves, before AO re-runs AIR
+# restoring the servers the agent root currently resolves, before Zimmer re-runs AIR
 # to regenerate .mcp.json.
 #
 # The "landed empty at create" defect: a root whose MCP servers come from
 # `default_in_roots` (e.g. pulsemcp-inbox-manager → gmail-pulsemcp-readwrite-external,
 # 1password-provisioning, pulse-tenants-rw) resolves those into its
-# default_mcp_servers via `air resolve`, which AO freezes into the session at
+# default_mcp_servers via `air resolve`, which Zimmer freezes into the session at
 # create time. When the catalog resolve was structurally incomplete in that
 # moment, AIR drops the unresolvable references and the column lands empty (see
 # AirCatalogService for that failure mode).

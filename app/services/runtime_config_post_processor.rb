@@ -4,14 +4,14 @@
 # CLI writes during `air prepare`.
 #
 # AIR produces a runtime-native config file (`.mcp.json` for Claude,
-# `.codex/config.toml` for Codex). AO then applies a fixed set of conceptually
+# `.codex/config.toml` for Codex). Zimmer then applies a fixed set of conceptually
 # runtime-agnostic tweaks to it:
 #
 #   1. Inject an agent-orchestrator MCP server when the root declares
 #      default_subagent_roots (so parent roots can spawn subagent sessions).
-#   2. Inject a self-session AO MCP server unless an existing AO server already
+#   2. Inject a self-session Zimmer MCP server unless an existing Zimmer server already
 #      covers the self_session tool group.
-#   3. Retarget agent-orchestrator-* server entries at the current AO instance
+#   3. Retarget agent-orchestrator-* server entries at the current Zimmer instance
 #      so a local-dev or staging session orchestrates itself, not production.
 #   4. Resolve ${VAR} interpolations from SecretsLoader and rewrite npx commands.
 #
@@ -57,7 +57,7 @@ class RuntimeConfigPostProcessor
   end
 
   # Ensure a baseline MCP config exists for sessions without explicit MCP
-  # servers: create the config file if needed and inject the self-session AO
+  # servers: create the config file if needed and inject the self-session Zimmer
   # server so every session has basic self-management tools.
   def ensure_baseline!
     config = file_system.exists?(config_path) ? parse_config(file_system.read(config_path)) : empty_config
@@ -130,7 +130,7 @@ class RuntimeConfigPostProcessor
 
   # When the root declares default_subagent_roots, inject an agent-orchestrator MCP server
   # with ALLOWED_AGENT_ROOTS set to the declared subagent roots. This lets parent roots
-  # spawn subagent sessions without explicitly listing an AO MCP server in default_mcp_servers.
+  # spawn subagent sessions without explicitly listing an Zimmer MCP server in default_mcp_servers.
   def inject_subagent_ao_server!(servers)
     root = find_root
     return unless root&.default_subagent_roots&.any?
@@ -164,14 +164,14 @@ class RuntimeConfigPostProcessor
     injected_mcp_servers << injected_key if injected_key
   end
 
-  # Retarget every agent-orchestrator-* MCP server entry at the current AO
+  # Retarget every agent-orchestrator-* MCP server entry at the current Zimmer
   # instance's BASE_URL and API_KEY.
   #
   # Why: roots.json default_mcp_servers references the prod-suffixed catalog
   # entries (e.g. `agent-orchestrator-prod`), and the catalog entries default
   # to https://zimmer.example.com. A local-dev or staging session inheriting that
-  # default would orchestrate production AO instead of its own instance. We
-  # rewrite at config-write time so the same root works against any AO
+  # default would orchestrate production Zimmer instead of its own instance. We
+  # rewrite at config-write time so the same root works against any Zimmer
   # environment without per-env duplication in the catalog.
   #
   # The TOOL_GROUPS / API_KEY env keys live in the literal `env` table in both

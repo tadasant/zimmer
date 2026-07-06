@@ -21,7 +21,7 @@
 # tool_result blocks becomes one ToolResult per block.
 #
 # This port mirrors the reference `open_transcripts.py` / `cc_jsonl.py`
-# converters with two documented AO differences: no secret redaction, and
+# converters with two documented Zimmer differences: no secret redaction, and
 # per-line normalization (timestamps fall back to the session's created_at
 # rather than carrying forward across lines). See docs/OPEN_TRANSCRIPTS.md.
 class ClaudeTranscriptNormalizer < TranscriptNormalizer
@@ -63,7 +63,7 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
 
   # @see TranscriptNormalizer#mints_own_session_id?
   #
-  # Claude Code honors the AO-supplied `--session-id` / `--resume <id>`, so the
+  # Claude Code honors the Zimmer-supplied `--session-id` / `--resume <id>`, so the
   # stored session id is already authoritative — the poller must not re-learn it
   # from transcript content. This matters most for forked sessions: the fork's
   # transcript is copied verbatim from the source, so its early lines carry the
