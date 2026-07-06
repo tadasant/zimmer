@@ -73,6 +73,25 @@ jobs:
         with:
           terraform_version: "1.9.8"
 
+      # The deploy runs with ephemeral tfstate (no remote backend configured), so a
+      # re-run can't reconcile the previous run's resources. DO firewall names are
+      # account-unique, so a leftover `zimmer-staging` firewall makes the next
+      # `terraform apply` fail with 409 duplicate name. Delete any prior
+      # zimmer-staging droplet + firewall first so each run starts clean. Idempotent.
+      - name: Reap prior staging resources (ephemeral tfstate)
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          api() { curl -fsS -H "Authorization: Bearer $DO_TOKEN" "$@"; }
+          for d in $(api "https://api.digitalocean.com/v2/droplets?tag_name=zimmer-staging" | jq -r '.droplets[].id'); do
+            echo "reaping droplet $d"; api -X DELETE "https://api.digitalocean.com/v2/droplets/$d" || true
+          done
+          for fw in $(api "https://api.digitalocean.com/v2/firewalls" | jq -r '.firewalls[] | select(.name=="zimmer-staging") | .id'); do
+            echo "reaping firewall $fw"; api -X DELETE "https://api.digitalocean.com/v2/firewalls/$fw" || true
+          done
+          sleep 5
+
       - name: Terraform apply (staging)
         working-directory: infra/terraform
         env:
