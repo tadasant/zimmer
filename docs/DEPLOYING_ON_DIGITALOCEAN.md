@@ -49,7 +49,7 @@ Staging never auto-deploys — it only runs when you trigger it.
 
 ## Deploying with a coding agent
 
-You can hand this whole guide to a coding agent (e.g. an Zimmer session itself):
+You can hand this whole guide to a coding agent (e.g. a Zimmer session itself):
 
 1. Point the agent at this file and `infra/terraform`.
 2. Ensure the secrets above exist as GitHub Actions secrets (the agent cannot mint

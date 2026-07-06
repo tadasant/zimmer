@@ -278,7 +278,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     # An Zimmer server with TOOL_GROUPS blank already registers the full self_session tool
     # group, so the self-session server is redundant.
     assert_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
-      "Self-session server should NOT be injected when an Zimmer server with TOOL_GROUPS blank is already present"
+      "Self-session server should NOT be injected when a Zimmer server with TOOL_GROUPS blank is already present"
     assert_empty processor.injected_mcp_servers
   end
 
@@ -300,7 +300,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     processor.ensure_baseline!
 
     assert_nil read_config.dig("mcpServers", "agent-orchestrator-staging-self-session"),
-      "Self-session server should NOT be injected when an Zimmer server with TOOL_GROUPS blank is present"
+      "Self-session server should NOT be injected when a Zimmer server with TOOL_GROUPS blank is present"
     assert_empty processor.injected_mcp_servers
   end
 
@@ -641,7 +641,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   # ---------------------------------------------------------------------------
   # Locks in the exact serialized output for a representative config so the
   # Phase-1 extraction (and any future change to the post-processor) cannot
-  # silently alter the bytes Zimmer writes. The input deliberately includes an Zimmer
+  # silently alter the bytes Zimmer writes. The input deliberately includes a Zimmer
   # server with TOOL_GROUPS blank so self-session injection is deduped away —
   # this keeps the output independent of the runtime catalog and fully
   # deterministic.
