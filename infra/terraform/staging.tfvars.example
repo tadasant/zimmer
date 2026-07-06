@@ -13,4 +13,4 @@ image_ref            = "ghcr.io/tadasant/zimmer:latest"
 # otherwise `terraform apply` fails with "domain not found" (404).
 domain               = ""
 ghcr_username        = "tadasant"
-ssh_key_fingerprints = ["45:97:18:1d:53:c7:cf:40:90:15:28:01:64:68:28:5d"] # TEMP debug key — remove before finalizing
+ssh_key_fingerprints = [] # e.g. ["aa:bb:cc:..."] — DO-registered SSH key fingerprints
