@@ -1,0 +1,112 @@
+<div class="space-y-6">
+  <% cli_report[:tools].each do |tool_key, tool| %>
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+      <!-- Tool Header -->
+      <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+        <div class="flex items-center">
+          <h3 class="text-lg font-medium text-gray-900"><%= tool[:name] %></h3>
+          <span class="ml-2 text-sm text-gray-500">(<code class="text-xs"><%= tool_key %></code>)</span>
+          <% if tool[:version].present? %>
+            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">v<%= tool[:version] %></span>
+          <% end %>
+        </div>
+        <div class="flex items-center gap-2">
+          <% if tool[:installed] %>
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+              Installed
+            </span>
+          <% else %>
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+              Not Installed
+            </span>
+          <% end %>
+          <% if tool[:authenticated] %>
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+              Authenticated
+            </span>
+          <% else %>
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+              Not Authenticated
+            </span>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Tool Content -->
+      <div class="px-6 py-4 space-y-4">
+        <% unless tool[:installed] %>
+          <!-- Installation Instructions -->
+          <div>
+            <h4 class="text-sm font-medium text-gray-700 mb-2 flex items-center">
+              <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-200 text-gray-700 text-xs font-bold mr-2">1</span>
+              Installation
+            </h4>
+            <div class="relative" data-controller="clipboard">
+              <div class="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-100 overflow-x-auto whitespace-pre-wrap"><%= tool[:install_instructions].strip %></div>
+              <button type="button" data-action="click->clipboard#copy" data-clipboard-value="<%= tool[:install_instructions].strip %>" class="absolute top-2 right-2 p-1.5 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Copy to clipboard">
+                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              </button>
+              <span data-clipboard-target="feedback" class="hidden absolute top-2 right-10 text-xs text-green-400">Copied!</span>
+            </div>
+          </div>
+        <% end %>
+
+        <% if tool[:installed] && !tool[:authenticated] %>
+          <!-- Authentication Instructions -->
+          <div>
+            <h4 class="text-sm font-medium text-gray-700 mb-2 flex items-center">
+              <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-200 text-yellow-800 text-xs font-bold mr-2">!</span>
+              Authentication Required
+            </h4>
+            <% if tool[:auth_method] == :env_var %>
+              <!-- Environment variable authentication -->
+              <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <p class="text-sm text-yellow-800">
+                  <strong><%= tool[:env_var_name] %></strong> environment variable is not set.
+                </p>
+                <p class="text-sm text-yellow-700 mt-2">
+                  Set <strong><%= tool[:env_var_name] %></strong> as a GitHub Actions secret and redeploy (or set it in your shell for manual <code class="bg-yellow-100 px-1 rounded">bin/kamal deploy</code>):
+                </p>
+                <div class="relative mt-2" data-controller="clipboard">
+                  <div class="bg-gray-900 rounded-lg p-3 font-mono text-sm text-gray-100"><%= tool[:env_var_name] %>=your_token_here</div>
+                  <button type="button" data-action="click->clipboard#copy" data-clipboard-value="<%= tool[:env_var_name] %>=your_token_here" class="absolute top-2 right-2 p-1.5 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Copy to clipboard">
+                    <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                  <span data-clipboard-target="feedback" class="hidden absolute top-2 right-10 text-xs text-green-400">Copied!</span>
+                </div>
+              </div>
+            <% elsif tool[:auth_instructions].present? %>
+              <!-- OAuth or manual authentication -->
+              <div class="relative" data-controller="clipboard">
+                <div class="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-100 overflow-x-auto whitespace-pre-wrap"><%= tool[:auth_instructions].strip %></div>
+                <button type="button" data-action="click->clipboard#copy" data-clipboard-value="<%= tool[:auth_instructions].strip %>" class="absolute top-2 right-2 p-1.5 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Copy to clipboard">
+                  <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                </button>
+                <span data-clipboard-target="feedback" class="hidden absolute top-2 right-10 text-xs text-green-400">Copied!</span>
+              </div>
+            <% end %>
+          </div>
+        <% end %>
+
+        <% if tool[:installed] && tool[:authenticated] %>
+          <!-- All good message -->
+          <div class="flex items-center text-green-600">
+            <svg class="h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+            </svg>
+            <span class="text-sm font-medium">Ready to use</span>
+            <% if tool[:auth_method] == :env_var && tool[:env_var_name] %>
+              <span class="ml-2 text-sm text-gray-500">(via <%= tool[:env_var_name] %>)</span>
+            <% end %>
+          </div>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+</div>

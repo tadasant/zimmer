@@ -1,0 +1,47 @@
+#!/bin/bash
+# Ensure Chromium browser matches the latest Playwright version.
+#
+# When playwright-stealth-mcp-server@latest resolves to a version with a newer
+# playwright-core dependency, it requires a matching Chromium revision. This script
+# installs the correct Chromium at container startup, preventing the browser version
+# mismatch that occurs when the Docker base image was built with an older revision.
+#
+# Browsers are installed to both locations used in the Docker image:
+# - /opt/playwright (via PLAYWRIGHT_BROWSERS_PATH env var) — primary location
+# - ~/.cache/ms-playwright (Playwright default) — some MCP servers with their own
+#   playwright dependency look here instead of PLAYWRIGHT_BROWSERS_PATH
+#
+# Idempotent: Playwright skips the download if the correct revision already exists.
+# Disk space: containers are ephemeral, so old revisions from previous builds are
+# cleaned up on each deployment. At most 2 revisions coexist (build-time + updated).
+#
+# Skip with SKIP_PLAYWRIGHT_UPDATE=true (useful for debugging startup issues).
+
+if [ "${SKIP_PLAYWRIGHT_UPDATE:-false}" = "true" ]; then
+  echo "[ensure-playwright-browsers] Skipped (SKIP_PLAYWRIGHT_UPDATE=true)"
+  exit 0
+fi
+
+echo "[ensure-playwright-browsers] Checking Playwright browser compatibility..."
+
+# Use npx to run the latest playwright CLI, which knows which Chromium revision
+# it needs. --prefix /tmp avoids npm workspace resolution issues in the Rails
+# app directory. This is the same pattern used by AirPrepareService at session
+# runtime, ensuring version consistency.
+#
+# Install to both browser locations:
+# 1. /opt/playwright (PLAYWRIGHT_BROWSERS_PATH, used by most MCP servers)
+# 2. ~/.cache/ms-playwright (default path, used by MCP servers with bundled playwright)
+if npx -y --prefix /tmp playwright@latest install chromium 2>&1; then
+  echo "[ensure-playwright-browsers] Chromium updated in /opt/playwright."
+else
+  echo "[ensure-playwright-browsers] WARNING: Failed to update Chromium in /opt/playwright."
+fi
+
+if PLAYWRIGHT_BROWSERS_PATH= npx -y --prefix /tmp playwright@latest install chromium 2>&1; then
+  echo "[ensure-playwright-browsers] Chromium updated in ~/.cache/ms-playwright."
+else
+  echo "[ensure-playwright-browsers] WARNING: Failed to update Chromium in ~/.cache/ms-playwright."
+fi
+
+echo "[ensure-playwright-browsers] Browser check complete."

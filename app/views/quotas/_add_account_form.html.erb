@@ -1,0 +1,48 @@
+<%# Add an account to the current runtime's pool. OAuth accounts are created as
+    empty rows that still need authentication; Codex additionally supports an
+    API-key account that is usable immediately. %>
+<% is_codex = runtime == CodexAuthProvider::RUNTIME %>
+<details class="mt-6 bg-white shadow-sm rounded-lg border border-gray-200">
+  <summary class="px-4 py-4 sm:px-6 cursor-pointer hover:bg-gray-50 flex items-center justify-between list-none">
+    <div class="flex items-center">
+      <svg class="h-5 w-5 text-gray-400 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
+      </svg>
+      <h2 class="text-sm font-medium text-gray-900">Add <%= RuntimeRegistry.label_for(runtime) %> account</h2>
+    </div>
+  </summary>
+  <div class="border-t border-gray-200 px-4 py-4 sm:px-6">
+    <%= form_with url: add_account_quotas_path, method: :post, data: { turbo: false }, class: "space-y-4" do |f| %>
+      <%= f.hidden_field :runtime, value: runtime %>
+      <div>
+        <label for="email" class="block text-sm font-medium text-gray-700">Email</label>
+        <%= f.email_field :email, required: true, placeholder: "account@example.com",
+            class: "mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm px-3 py-2 border" %>
+      </div>
+      <div>
+        <label for="priority" class="block text-sm font-medium text-gray-700">Priority</label>
+        <%= f.number_field :priority, value: 0,
+            class: "mt-1 block w-32 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm px-3 py-2 border" %>
+        <p class="mt-1 text-xs text-gray-400">Lower numbers are preferred when rotating.</p>
+      </div>
+      <% if is_codex %>
+        <div>
+          <label for="api_key" class="block text-sm font-medium text-gray-700">API key <span class="text-gray-400 font-normal">(optional)</span></label>
+          <%= f.password_field :api_key, autocomplete: "off", placeholder: "sk-... (leave blank to authenticate via OAuth)",
+              class: "mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm px-3 py-2 border font-mono" %>
+          <p class="mt-1 text-xs text-gray-400">
+            Provide an OpenAI API key to create a ready-to-use account. Leave blank to add an OAuth account that you authenticate afterward.
+          </p>
+        </div>
+      <% else %>
+        <p class="text-xs text-gray-500">
+          The account is created without credentials. After adding it, authenticate it to capture OAuth tokens.
+        </p>
+      <% end %>
+      <div>
+        <%= f.submit "Add account",
+            class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer" %>
+      </div>
+    <% end %>
+  </div>
+</details>

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/air.schema.json",
+  "name": "zimmer-catalog",
+  "description": "In-image AIR catalog used in production/staging. Points at the local ./catalog shipped in the image (resolved offline via the bundled @pulsemcp/air-cli). Replace catalog/ with your own for real deployments.",
+  "gitProtocol": "https",
+  "extensions": [
+    "@pulsemcp/air-adapter-claude",
+    "@pulsemcp/air-secrets-env"
+  ],
+  "skills": [
+    "./catalog/skills/skills.json"
+  ],
+  "mcp": [
+    "./catalog/mcp.json"
+  ],
+  "roots": [
+    "./catalog/roots.json"
+  ],
+  "references": [
+    "./catalog/references/references.json"
+  ],
+  "hooks": [
+    "./catalog/hooks/hooks.json"
+  ],
+  "plugins": [
+    "./catalog/plugins/plugins.json"
+  ]
+}

@@ -1,0 +1,273 @@
+<% unless agent_session.archived? %>
+  <%# Check if there's a pending sent_message that should be preloaded into the textarea.
+      This happens when a follow-up was sent but the session transitioned to paused/failed
+      before the message appeared in the transcript. We preload it so the user doesn't lose their message. %>
+  <% pending_sent_message = (!agent_session.running? && agent_session.metadata&.dig("sent_message").present?) ? agent_session.metadata["sent_message"] : nil %>
+  <%# session_skills is passed in from the controller via locals, or we fetch it here for backwards compatibility %>
+  <% session_skills ||= ClaudeSkillsCacheService.get_for_session(agent_session) %>
+  <div id="session_<%= agent_session.id %>_follow_up_form"
+       class="fixed bottom-0 left-0 right-0 z-20 bg-white border-t border-gray-200 shadow-lg"
+       data-controller="follow-up-prompt character-counter bottom-panel-padding bottom-drawer image-attachment file-attachment slash-command"
+       data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>"
+       data-follow-up-prompt-prompt-max-length-value="<%= Session::PROMPT_MAX_LENGTH %>"
+       data-follow-up-prompt-session-running-value="<%= agent_session.running? %>"
+       data-follow-up-prompt-session-id-value="<%= agent_session.id %>"
+       data-follow-up-prompt-pending-sent-message-value="<%= pending_sent_message %>"
+       data-image-attachment-session-id-value="<%= agent_session.id %>"
+       data-image-attachment-upload-url-value="<%= upload_images_session_path(agent_session) %>"
+       data-file-attachment-session-id-value="<%= agent_session.id %>"
+       data-file-attachment-upload-url-value="<%= upload_files_session_path(agent_session) %>"
+       data-slash-command-skills-value="<%= session_skills.to_json %>"
+       data-bottom-panel-padding-target="panel"
+       data-bottom-drawer-target="drawer">
+    <%# Enqueued messages list - shown above the form %>
+    <%= render "enqueued_messages/enqueued_messages_list", agent_session: agent_session %>
+
+    <%# Running indicator - shown above the form when session is running %>
+    <% if agent_session.running? %>
+      <div id="session_<%= agent_session.id %>_running_indicator" class="bg-green-50 border-b border-green-200 px-4 py-2">
+        <div class="max-w-7xl mx-auto flex items-center justify-center gap-2">
+          <div class="relative inline-flex items-center" data-running-badge>
+            <svg class="animate-spin h-5 w-5 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <% if agent_session.last_timeline_entry_at.present? %>
+              <span class="absolute inset-0 flex items-center justify-center text-[8px] font-bold text-green-700"
+                    data-controller="time-since"
+                    data-time-since-update-badge-color-value="true"
+                    data-timestamp="<%= agent_session.last_timeline_entry_at.iso8601 %>">
+              </span>
+            <% end %>
+          </div>
+          <span class="text-sm font-medium text-green-700">Agent is running</span>
+          <span class="text-xs text-green-600 hidden sm:inline">(messages will be queued)</span>
+        </div>
+      </div>
+    <% end %>
+
+    <!-- Mobile: Collapsed trigger bar (shown when drawer is collapsed) -->
+    <div data-bottom-drawer-target="trigger" class="sm:hidden">
+      <button type="button"
+              data-action="click->bottom-drawer#open"
+              class="w-full px-4 py-3 flex items-center justify-between text-left bg-gray-50 hover:bg-gray-100 transition-colors">
+        <div class="flex items-center gap-2">
+          <svg class="h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z" />
+            <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z" />
+          </svg>
+          <span class="text-sm font-medium text-gray-700">
+            <% if agent_session.running? %>
+              Queue a message...
+            <% else %>
+              Send a follow-up...
+            <% end %>
+          </span>
+        </div>
+        <svg class="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- Mobile: Full form content (hidden when collapsed) -->
+    <div data-bottom-drawer-target="content" class="hidden sm:block">
+      <!-- Mobile close button -->
+      <div class="sm:hidden flex items-center justify-between px-4 py-2 border-b border-gray-100">
+        <span class="text-sm font-medium text-gray-700">
+          <% if agent_session.running? %>
+            Queue Message
+          <% else %>
+            Follow-up Prompt
+          <% end %>
+        </span>
+        <button type="button"
+                data-action="click->bottom-drawer#close"
+                class="p-2 text-gray-400 hover:text-gray-600 rounded-md hover:bg-gray-100">
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
+        <%# Container for form errors - updated via Turbo Stream when validation fails %>
+        <div id="enqueued_messages_form_errors"></div>
+
+        <%# Form action is set server-side based on session status to prevent race conditions.
+            When running, messages are queued; when needs_input/waiting, messages are sent directly.
+            JavaScript also updates the form action dynamically, but server-side default ensures
+            correct behavior even before JS initializes or if JS fails. %>
+        <%= form_with url: agent_session.running? ? session_enqueued_messages_path(agent_session) : follow_up_session_path(agent_session), method: :post, data: { follow_up_prompt_target: "form", enqueue_mode: agent_session.running? } do |form| %>
+          <div class="space-y-3">
+            <!-- Main prompt area -->
+            <!-- Desktop: horizontal layout -->
+            <div class="hidden sm:flex items-end space-x-4">
+              <div class="flex-1">
+                <div class="flex justify-between items-center mb-2">
+                  <label for="follow_up_prompt" class="block text-sm font-medium text-gray-700">
+                    Follow-up Prompt
+                    <span class="text-xs text-gray-500">(Cmd+Enter to submit, Ctrl+V to paste images)</span>
+                    <% if agent_session.running? %>
+                      <span class="text-xs text-indigo-600 font-medium ml-2">(will be queued)</span>
+                    <% end %>
+                  </label>
+                  <span data-character-counter-target="counter" class="text-xs text-gray-500"></span>
+                </div>
+                <%# Note: We intentionally don't use the 'required' HTML5 attribute here because
+                    it conflicts with Turbo Stream replacements - when the form is replaced via
+                    Turbo Stream, the browser's native validation state can become inconsistent.
+                    Validation is handled by JavaScript in follow_up_prompt_controller.js instead.
+
+                    The data-turbo-permanent attribute tells Turbo to preserve this textarea when
+                    the parent form is replaced via Turbo Stream. This prevents losing user input
+                    when status changes or transcript updates trigger form replacement. The element
+                    must have a unique ID for this to work. %>
+                <div data-image-attachment-target="dropZone" data-file-attachment-target="dropZone" class="relative border-2 border-transparent rounded-md transition-colors">
+                  <%= text_area_tag :follow_up_prompt, nil,
+                    id: "session_#{agent_session.id}_follow_up_textarea",
+                    class: "block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm px-3 py-2",
+                    rows: 3,
+                    placeholder: "Enter your follow-up prompt here... Type / for slash commands (supports markdown, paste/drag-drop images, files, and folders)",
+                    data: {
+                      turbo_permanent: true,
+                      follow_up_prompt_target: "textarea",
+                      character_counter_target: "input",
+                      slash_command_target: "textarea",
+                      action: "keydown->follow-up-prompt#handleKeydown keydown->slash-command#handleKeydown input->character-counter#update input->slash-command#handleInput"
+                    } %>
+                  <%# Slash command typeahead dropdown %>
+                  <div data-slash-command-target="dropdown"
+                       class="hidden bg-white border border-gray-300 rounded-md shadow-lg overflow-y-auto"></div>
+                </div>
+                <%# Image preview area - shows attached images %>
+                <div data-image-attachment-target="preview" class="hidden mt-2"></div>
+                <%# File preview area - shows attached general-purpose files %>
+                <div data-file-attachment-target="preview" class="hidden mt-2"></div>
+                <%# File upload progress banner - visible while uploads are in flight %>
+                <div data-file-attachment-target="progress" class="hidden mt-2"></div>
+              </div>
+              <%# Hidden field for image data %>
+              <%= hidden_field_tag :images, nil, data: { image_attachment_target: "imagesField" } %>
+              <%# Hidden field for file data %>
+              <%= hidden_field_tag :files_payload, nil, data: { file_attachment_target: "filesField" } %>
+              <%# Hidden file input for image selection %>
+              <input type="file"
+                     accept="image/jpeg,image/png,image/gif,image/webp"
+                     multiple
+                     class="hidden"
+                     data-image-attachment-target="input"
+                     data-action="change->image-attachment#handleFileSelect">
+              <%# Hidden file input for camera capture (uses rear camera on mobile) %>
+              <input type="file"
+                     accept="image/*"
+                     capture="environment"
+                     class="hidden"
+                     data-image-attachment-target="cameraInput"
+                     data-action="change->image-attachment#handleFileSelect">
+              <%# Hidden file input for general file selection %>
+              <input type="file"
+                     multiple
+                     class="hidden"
+                     data-file-attachment-target="input"
+                     data-action="change->file-attachment#handleFileSelect">
+              <%# Hidden file input for folder selection (webkitdirectory recursively expands) %>
+              <input type="file"
+                     webkitdirectory
+                     multiple
+                     class="hidden"
+                     data-file-attachment-target="folderInput"
+                     data-action="change->file-attachment#handleFileSelect">
+              <div class="flex items-center space-x-2">
+                <%# Image attachment button %>
+                <button type="button"
+                  class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  data-image-attachment-target="attachButton"
+                  data-action="click->image-attachment#openFileDialog"
+                  title="Attach images (or paste/drag-drop)">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                  </svg>
+                </button>
+                <%# Camera button (uses rear camera on mobile via capture="environment") %>
+                <button type="button"
+                  class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  data-image-attachment-target="cameraButton"
+                  data-action="click->image-attachment#openCameraDialog"
+                  title="Take photo (mobile camera) or choose image">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/>
+                  </svg>
+                </button>
+                <%# File attachment button %>
+                <button type="button"
+                  class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  data-file-attachment-target="attachButton"
+                  data-action="click->file-attachment#openFileDialog"
+                  title="Attach files (or drag-drop)">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+                  </svg>
+                </button>
+                <%# Folder attachment button %>
+                <button type="button"
+                  class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  data-file-attachment-target="attachFolderButton"
+                  data-action="click->file-attachment#openFolderDialog"
+                  title="Attach folder (recursively)">
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+                  </svg>
+                </button>
+                <button type="button"
+                  class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  data-follow-up-prompt-target="submitButton"
+                  data-action="click->follow-up-prompt#submitForm">
+                  Submit
+                </button>
+              </div>
+            </div>
+
+            <!-- Mobile: vertical stacked layout -->
+            <div class="sm:hidden space-y-3">
+              <div class="relative">
+                <div class="flex justify-end mb-2">
+                  <span data-character-counter-target="counter" class="text-xs text-gray-500"></span>
+                </div>
+                <%= text_area_tag :follow_up_prompt_mobile, nil,
+                  id: "session_#{agent_session.id}_follow_up_textarea_mobile",
+                  class: "block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-base px-3 py-2",
+                  rows: 4,
+                  placeholder: "Enter your message... (type / for commands)",
+                  data: {
+                    turbo_permanent: true,
+                    follow_up_prompt_target: "textareaMobile",
+                    slash_command_target: "textarea",
+                    action: "keydown->follow-up-prompt#handleKeydown keydown->slash-command#handleKeydown input->character-counter#update input->slash-command#handleInput"
+                  } %>
+                <%# Slash command typeahead dropdown for mobile %>
+                <div data-slash-command-target="dropdown"
+                     class="hidden bg-white border border-gray-300 rounded-md shadow-lg overflow-y-auto"></div>
+              </div>
+              <button type="button"
+                class="w-full inline-flex items-center justify-center px-4 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                data-follow-up-prompt-target="submitButtonMobile"
+                data-action="click->follow-up-prompt#submitForm">
+                <% if agent_session.running? %>
+                  Queue Message
+                <% else %>
+                  Send Message
+                <% end %>
+              </button>
+            </div>
+
+          </div>
+        <% end %>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dynamic padding spacer - height is adjusted by bottom-panel-padding controller -->
+  <div data-bottom-panel-padding-target="spacer" class="h-48 sm:h-64"></div>
+<% end %>

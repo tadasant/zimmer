@@ -1,0 +1,114 @@
+# Test fixtures for TriggerCondition model
+# Each condition belongs to a trigger and fires with OR semantics
+
+# Conditions for enabled_slack_trigger
+enabled_slack_condition:
+  trigger: enabled_slack_trigger
+  condition_type: slack
+  configuration:
+    channel_id: C0A6BF8T45R
+    channel_name: eng-ci
+    event_type: new_message
+  last_message_ts: "1704067200.000000"
+
+# Conditions for disabled_slack_trigger
+disabled_slack_condition:
+  trigger: disabled_slack_trigger
+  condition_type: slack
+  configuration:
+    channel_id: C0A6BF8T45R
+    channel_name: eng-ci
+    event_type: new_message
+
+# Conditions for new_slack_trigger
+new_slack_condition:
+  trigger: new_slack_trigger
+  condition_type: slack
+  configuration:
+    channel_id: C0B7CF9T56S
+    channel_name: deploys
+    event_type: new_message
+
+# Conditions for bot_mention_slack_trigger
+bot_mention_slack_condition:
+  trigger: bot_mention_slack_trigger
+  condition_type: slack
+  configuration:
+    channel_id: C0A6BF8T45R
+    channel_name: eng-support
+    event_type: bot_mention
+  last_message_ts: "1704067200.000000"
+
+# Conditions for bot_mention_all_channels_trigger (no specific channel — monitors all)
+bot_mention_all_channels_condition:
+  trigger: bot_mention_all_channels_trigger
+  condition_type: slack
+  configuration:
+    event_type: bot_mention
+  last_message_ts:
+
+# Conditions for enabled_schedule_trigger
+enabled_schedule_condition:
+  trigger: enabled_schedule_trigger
+  condition_type: schedule
+  configuration:
+    interval: 1
+    unit: days
+    time: "09:00"
+    timezone: Eastern Time (US & Canada)
+
+# Conditions for weekly_schedule_trigger
+weekly_schedule_condition:
+  trigger: weekly_schedule_trigger
+  condition_type: schedule
+  configuration:
+    interval: 1
+    unit: weeks
+    time: "10:00"
+    day_of_week: monday
+    timezone: Pacific Time (US & Canada)
+
+# Conditions for disabled_schedule_trigger
+disabled_schedule_condition:
+  trigger: disabled_schedule_trigger
+  condition_type: schedule
+  configuration:
+    interval: 1
+    unit: hours
+
+# Conditions for one_time_schedule_trigger
+one_time_schedule_condition:
+  trigger: one_time_schedule_trigger
+  condition_type: schedule
+  configuration:
+    scheduled_at: "2026-04-15T14:30:00"
+    timezone: America/New_York
+
+# Conditions for ao_event_trigger
+ao_event_condition:
+  trigger: ao_event_trigger
+  condition_type: ao_event
+  configuration:
+    event_name: session_needs_input
+
+# Conditions for multi_condition_trigger (multiple conditions with OR semantics)
+multi_slack_condition:
+  trigger: multi_condition_trigger
+  condition_type: slack
+  configuration:
+    channel_id: C0A6BF8T45R
+    channel_name: eng-ci
+    event_type: new_message
+
+multi_schedule_condition:
+  trigger: multi_condition_trigger
+  condition_type: schedule
+  configuration:
+    interval: 30
+    unit: minutes
+
+multi_ao_event_condition:
+  trigger: multi_condition_trigger
+  condition_type: ao_event
+  configuration:
+    event_name: session_needs_input

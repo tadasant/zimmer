@@ -1,0 +1,141 @@
+<div class="bg-white shadow-sm rounded-lg border <%= is_current ? 'border-indigo-300 ring-1 ring-indigo-200' : 'border-gray-200' %>">
+  <div class="px-4 py-4 sm:px-6">
+    <!-- Account header -->
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center space-x-3">
+        <h3 class="text-sm font-semibold text-gray-900"><%= account.email %></h3>
+        <% if is_current %>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">Current</span>
+        <% end %>
+        <%= account_status_badge(account.status) %>
+      </div>
+      <div class="flex items-center space-x-2 text-xs text-gray-400">
+        <% if error.present? %>
+          <span class="text-red-500" title="<%= error %>">Probe failed</span>
+        <% end %>
+        <% if account.quota_hit_count > 0 %>
+          <span title="Times quota was hit"><%= account.quota_hit_count %> hits</span>
+        <% end %>
+        <% if snapshot %>
+          <span><%= time_ago_in_words(snapshot.created_at) %> ago</span>
+        <% end %>
+        <% if account.codex? && account.codex_api_key_account? %>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600" title="Authenticates with a stored OpenAI API key.">API key</span>
+        <% elsif !account.has_valid_config? %>
+          <span class="text-yellow-600" title="No tokens stored. Authenticate the account before it can serve sessions.">No tokens</span>
+        <% end %>
+        <% unless account.codex? %>
+          <%= button_to refresh_account_quotas_path(account), method: :post,
+              class: "inline-flex items-center px-2 py-1 border border-gray-300 text-xs font-medium rounded text-gray-600 bg-white hover:bg-gray-50",
+              data: { turbo_stream: true },
+              title: "Refresh quota for #{account.email}" do %>
+            <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+            </svg>
+          <% end %>
+        <% end %>
+        <% unless is_current %>
+          <%= button_to "Switch", switch_account_path(account), method: :post,
+              class: "inline-flex items-center px-2 py-1 border border-indigo-300 text-xs font-medium rounded text-indigo-700 bg-indigo-50 hover:bg-indigo-100 #{account.has_valid_config? ? '' : 'opacity-50'}",
+              disabled: !account.has_valid_config?,
+              data: account.has_valid_config? ? { turbo_confirm: "Switch to #{account.email}?" } : {},
+              title: account.has_valid_config? ? "Switch to #{account.email}" : "No tokens — authenticate the account first" %>
+        <% end %>
+        <%= button_to "Delete", destroy_account_quotas_path(account), method: :delete,
+            class: "inline-flex items-center px-2 py-1 border border-red-200 text-xs font-medium rounded text-red-700 bg-red-50 hover:bg-red-100",
+            data: { turbo_confirm: is_current ? "#{account.email} is the current account. Deleting it will activate the next available account (or leave this runtime with none). Continue?" : "Delete #{account.email}?" },
+            title: "Delete #{account.email}" %>
+      </div>
+    </div>
+
+    <% if account.codex? %>
+      <!-- Codex authenticates statically (API key) or via OAuth; there is no
+           usage-quota probe, so no utilization bars or refresh affordance. -->
+      <div class="py-2">
+        <p class="text-sm text-gray-400">
+          <% if account.codex_api_key_account? %>
+            Authenticates with a stored OpenAI API key — no usage quota tracked.
+          <% else %>
+            Authenticated via OpenAI OAuth — no usage quota tracked.
+          <% end %>
+        </p>
+      </div>
+    <% elsif snapshot %>
+      <!-- Utilization bars -->
+      <div class="space-y-3">
+        <!-- 5h window -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <div class="flex items-center space-x-2">
+              <span class="text-xs font-medium text-gray-600">5h</span>
+              <%= quota_status_badge(snapshot.status_5h) %>
+            </div>
+            <span class="text-xs font-semibold text-gray-900">
+              <% u5h = effective_utilization(snapshot.utilization_5h, snapshot.reset_5h) %>
+              <%= utilization_percentage_text(u5h) %>
+            </span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-2">
+            <div class="<%= utilization_bar_color(u5h) %> h-2 rounded-full transition-all duration-300"
+                 style="width: <%= u5h ? [(u5h * 100).round(1), 100].min : 0 %>%"></div>
+          </div>
+          <% if snapshot.reset_5h %>
+            <% if snapshot.reset_5h <= Time.current %>
+              <p class="mt-0.5 text-xs text-green-500">Window reset</p>
+            <% else %>
+              <p class="mt-0.5 text-xs text-gray-400">Resets in <%= time_until_reset(snapshot.reset_5h) %></p>
+            <% end %>
+          <% end %>
+        </div>
+
+        <!-- 7d window -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <div class="flex items-center space-x-2">
+              <span class="text-xs font-medium text-gray-600">7d</span>
+              <%= quota_status_badge(snapshot.status_7d) %>
+            </div>
+            <span class="text-xs font-semibold text-gray-900">
+              <% u7d = effective_utilization(snapshot.utilization_7d, snapshot.reset_7d) %>
+              <%= utilization_percentage_text(u7d) %>
+            </span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-2">
+            <div class="<%= utilization_bar_color(u7d) %> h-2 rounded-full transition-all duration-300"
+                 style="width: <%= u7d ? [(u7d * 100).round(1), 100].min : 0 %>%"></div>
+          </div>
+          <% if snapshot.reset_7d %>
+            <% if snapshot.reset_7d <= Time.current %>
+              <p class="mt-0.5 text-xs text-green-500">Window reset</p>
+            <% else %>
+              <p class="mt-0.5 text-xs text-gray-400">Resets in <%= time_until_reset(snapshot.reset_7d) %></p>
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Plan info row -->
+      <div class="mt-3 flex items-center space-x-4 text-xs text-gray-500">
+        <% if snapshot.subscription_type %>
+          <span>Plan: <%= snapshot.subscription_type %></span>
+        <% end %>
+        <% if snapshot.rate_limit_tier %>
+          <span>Tier: <%= snapshot.rate_limit_tier %></span>
+        <% end %>
+      </div>
+    <% else %>
+      <!-- No data -->
+      <div class="py-2">
+        <p class="text-sm text-gray-400">
+          No quota data available. Click the refresh button to fetch live data.
+        </p>
+      </div>
+    <% end %>
+
+    <!-- UI-driven login flow ("Authenticate"). Skipped for Codex API-key
+         accounts, which carry their credential statically. -->
+    <% unless account.codex? && account.codex_api_key_account? %>
+      <%= render "quotas/login_panel", account: account %>
+    <% end %>
+  </div>
+</div>

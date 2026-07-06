@@ -1,0 +1,44 @@
+#!/usr/bin/env sh
+
+if ! gem list foreman -i --silent; then
+  echo "Installing foreman..."
+  gem install foreman
+fi
+
+# Default to port 3000 if not specified
+export PORT="${PORT:-3000}"
+
+# Check if Redis is running
+echo "Checking Redis connection..."
+if ! redis-cli ping > /dev/null 2>&1; then
+  echo ""
+  echo "WARNING: Redis is not running. Please start Redis first:"
+  echo "  macOS (Homebrew): brew services start redis"
+  echo "  Linux: sudo systemctl start redis"
+  echo "  Docker: docker run -d -p 6379:6379 redis:alpine"
+  echo ""
+  echo "Continuing without Redis (caching will be disabled)..."
+  echo ""
+fi
+
+# Kill any existing foreman processes
+echo "Ensuring clean process state..."
+pkill -f "foreman.*Procfile.dev" > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+  echo "Killed existing foreman processes"
+  sleep 2
+fi
+
+# Kill any existing process on the target port
+if lsof -ti:$PORT > /dev/null 2>&1; then
+  echo "Killing existing process on port $PORT..."
+  lsof -ti:$PORT | xargs kill -9
+  sleep 1
+fi
+
+# Let the debug gem allow remote connections,
+# but avoid loading until `debugger` is called
+export RUBY_DEBUG_OPEN="true"
+export RUBY_DEBUG_LAZY="true"
+
+exec foreman start -f Procfile.dev "$@"

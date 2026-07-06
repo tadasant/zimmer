@@ -1,0 +1,129 @@
+#!/bin/bash
+# Pre-install MCP server packages to avoid cold-start delays
+#
+# This script reads catalog/mcp.json and pre-installs all npm and Python packages
+# that are used by MCP servers. It's run during Docker image build to ensure
+# packages are cached and ready to use at runtime.
+#
+# Usage: bin/preinstall-mcp-packages [--npm-only] [--python-only]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MCP_CONFIG="${SCRIPT_DIR}/../catalog/mcp.json"
+
+# Check if jq is available
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is required but not installed"
+    exit 1
+fi
+
+# Check if config file exists
+if [ ! -f "$MCP_CONFIG" ]; then
+    echo "Error: MCP config not found at $MCP_CONFIG"
+    exit 1
+fi
+
+install_npm_packages() {
+    echo "=== Installing npm MCP packages ==="
+
+    # Extract all unique npm packages with versions from npx commands
+    # Format: package@version (e.g., "@playwright/mcp@0.0.54")
+    local packages=$(jq -r '
+        to_entries[] |
+        select(.value.command? == "npx") |
+        .value.args |
+        map(select(startswith("-") | not)) |
+        .[0]
+    ' "$MCP_CONFIG" | sort -u | grep -v '^$' || true)
+
+    if [ -z "$packages" ]; then
+        echo "No npm packages found in config"
+        return
+    fi
+
+    echo "Found packages:"
+    echo "$packages"
+    echo ""
+
+    # Install each package globally to cache it
+    for pkg in $packages; do
+        echo "Installing: $pkg"
+        npm install -g "$pkg" || echo "Warning: Failed to install $pkg (may be private or unavailable)"
+    done
+
+    echo ""
+    echo "=== npm package installation complete ==="
+}
+
+install_python_packages() {
+    echo "=== Installing Python MCP packages ==="
+
+    # Check if uv is available
+    if ! command -v uv &> /dev/null; then
+        echo "Warning: uv not installed, skipping Python packages"
+        return
+    fi
+
+    # Extract all unique Python packages with versions from uvx commands
+    # Format: package==version (e.g., "postgres-mcp==0.3.0")
+    local packages=$(jq -r '
+        to_entries[] |
+        select(.value.command? == "uvx") |
+        .value.args |
+        if .[0] == "--from" then .[1] else empty end
+    ' "$MCP_CONFIG" | sort -u | grep -v '^$' || true)
+
+    if [ -z "$packages" ]; then
+        echo "No Python packages found in config"
+        return
+    fi
+
+    echo "Found packages:"
+    echo "$packages"
+    echo ""
+
+    # Pre-cache each package using uvx
+    for pkg in $packages; do
+        echo "Pre-caching: $pkg"
+        # Run with --help to trigger download without needing env vars
+        uvx --from "$pkg" --help 2>/dev/null || uvx --from "$pkg" python --version 2>/dev/null || echo "Warning: Failed to pre-cache $pkg"
+    done
+
+    echo ""
+    echo "=== Python package installation complete ==="
+}
+
+# Parse arguments
+NPM_ONLY=false
+PYTHON_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --npm-only)
+            NPM_ONLY=true
+            shift
+            ;;
+        --python-only)
+            PYTHON_ONLY=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Run installations based on arguments
+if [ "$NPM_ONLY" = true ]; then
+    install_npm_packages
+elif [ "$PYTHON_ONLY" = true ]; then
+    install_python_packages
+else
+    install_npm_packages
+    install_python_packages
+fi
+
+echo ""
+echo "MCP package pre-installation complete!"

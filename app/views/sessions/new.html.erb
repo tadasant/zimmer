@@ -1,0 +1,419 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <%= link_to root_path, class: "inline-flex items-center text-sm font-medium text-gray-500 hover:text-gray-700 mb-4" do %>
+        <svg class="mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+        </svg>
+        Back to Sessions
+      <% end %>
+      <div class="flex items-center justify-between">
+        <h1 class="text-3xl font-bold text-gray-900">Create New Session</h1>
+        <div class="flex items-center gap-2">
+          <% if (last_refreshed = AirCatalogService.last_refreshed_at) %>
+            <span class="text-xs text-gray-400" title="<%= last_refreshed.strftime('%b %d, %Y %H:%M:%S %Z') %>">
+              Updated <%= time_ago_in_words(last_refreshed) %> ago
+            </span>
+          <% end %>
+          <%= button_to refresh_catalogs_path, method: :post,
+              class: "inline-flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600",
+              data: { turbo_frame: "_top", turbo_submits_with: "Refreshing..." } do %>
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+            </svg>
+            Refresh catalogs
+          <% end %>
+        </div>
+      </div>
+    </div>
+
+    <!-- Form -->
+    <% temp_session_id = "temp_#{SecureRandom.uuid}" %>
+    <div class="bg-white shadow rounded-lg">
+      <%= form_with model: @session, class: "space-y-6 p-6", data: { controller: "session-form goal mcp-server-select skills-select hooks-select plugins-select image-attachment file-attachment slash-command", session_form_target: "form", session_form_prompt_max_length_value: Session::PROMPT_MAX_LENGTH, session_form_goal_max_length_value: Session::GOAL_MAX_LENGTH, goal_goals_value: @goals.to_json, goal_default_goal_value: @default_goal, goal_agent_root_defaults_value: @agent_root_goals.to_json, mcp_server_select_servers_value: @servers_for_select.to_json, mcp_server_select_agent_root_defaults_value: @agent_root_mcp_servers.to_json, mcp_server_select_default_servers_value: @default_mcp_servers.to_json, skills_select_skills_value: @catalog_skills_for_select.to_json, skills_select_agent_root_defaults_value: @agent_root_catalog_skills.to_json, skills_select_default_skills_value: @default_catalog_skills.to_json, hooks_select_hooks_value: @catalog_hooks_for_select.to_json, hooks_select_agent_root_defaults_value: @agent_root_catalog_hooks.to_json, hooks_select_default_hooks_value: @default_catalog_hooks.to_json, plugins_select_plugins_value: @plugins_for_select.to_json, plugins_select_agent_root_defaults_value: @agent_root_catalog_plugins.to_json, plugins_select_default_plugins_value: @default_catalog_plugins.to_json, image_attachment_temp_session_id_value: temp_session_id, image_attachment_upload_url_value: upload_images_new_session_sessions_path, file_attachment_temp_session_id_value: temp_session_id, file_attachment_upload_url_value: upload_files_new_session_sessions_path, slash_command_catalog_skills_value: @catalog_skills_for_select.to_json, action: "skills-select:skillsChanged->slash-command#handleSelectedSkillsChanged" } do |f| %>
+        <%# Hidden field to pass temp_session_id to the controller for image copying %>
+        <%= hidden_field_tag :temp_session_id, temp_session_id %>
+
+        <!-- Agent Runtime Selection -->
+        <%# Lists every registered runtime (Claude Code, Codex, …). The choice is
+            a per-session override stored on sessions.agent_runtime, so it is
+            decoupled from any root's default_runtime: it only swaps the model
+            catalog (via model-select), never the selectable agent roots. Adding a
+            runtime is pure data via RuntimeRegistry + ModelCatalog. %>
+        <div data-controller="runtime-select">
+          <label for="agent_runtime" class="block text-sm font-medium text-gray-700 mb-2">
+            Agent Runtime
+            <span class="text-red-500">*</span>
+          </label>
+          <select name="agent_runtime"
+                  id="agent_runtime"
+                  data-runtime-select-target="select"
+                  data-action="change->runtime-select#change"
+                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+            <% @runtimes_for_select.each do |runtime| %>
+              <option value="<%= runtime[:id] %>" <%= 'selected' if runtime[:id] == @default_runtime %>><%= runtime[:label] %></option>
+            <% end %>
+          </select>
+        </div>
+
+        <!-- Agent Root Selection -->
+        <%
+          default_agent_root = AgentRootsConfig.default
+          agent_roots_for_select = @agent_roots.map do |agent_root|
+            path = agent_root.url.sub(%r{^https?://[^/]+/}, "").sub(/\.git$/, "")
+            path = "#{path}/#{agent_root.subdirectory}" if agent_root.subdirectory.present?
+            {
+              name: agent_root.name,
+              displayName: agent_root.display_name,
+              url: agent_root.url,
+              path: path
+            }
+          end
+        %>
+        <div data-controller="agent-root-select agent-root-selector"
+             data-agent-root-select-roots-value="<%= agent_roots_for_select.to_json %>">
+          <%= f.label :git_root, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+            Agent Root
+            <span class="text-red-500">*</span>
+          <% end %>
+
+          <!-- Hidden field to store agent root name -->
+          <%= hidden_field_tag "agent_root_name", default_agent_root&.name, data: { agent_root_select_target: "nameField", agent_root_selector_target: "nameField" } %>
+
+          <%# Hidden radio buttons preserve compatibility with existing change-event listeners on other controllers. %>
+          <div class="hidden">
+            <% @agent_roots.each do |agent_root| %>
+              <%= f.radio_button :git_root,
+                  agent_root.url,
+                  id: "agent_root_#{agent_root.name}",
+                  checked: agent_root.name == default_agent_root&.name,
+                  data: { agent_root_select_target: "radio", action: "change->goal#handleAgentRootChange change->agent-root-selector#updateName change->mcp-server-select#handleAgentRootChange change->skills-select#handleAgentRootChange change->hooks-select#handleAgentRootChange change->plugins-select#handleAgentRootChange", agent_root_name: agent_root.name } %>
+            <% end %>
+          </div>
+
+          <%# Selected display - shows currently chosen root with a "change" button %>
+          <div data-agent-root-select-target="selectedDisplay" class="mb-2"></div>
+
+          <%# Search input %>
+          <div class="relative">
+            <input type="text"
+                   data-agent-root-select-target="input"
+                   data-action="focus->agent-root-select#handleFocus input->agent-root-select#handleInput keydown->agent-root-select#handleKeydown"
+                   placeholder="Search agent roots..."
+                   class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+          </div>
+
+          <%# Dropdown for results %>
+          <div data-agent-root-select-target="dropdown"
+               class="hidden fixed bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Model Selection -->
+        <%# Options are scoped to the selected runtime (ModelCatalog) and reset when
+            the runtime changes; the selected value follows the agent root's default
+            when it belongs to the runtime, else the runtime default. %>
+        <div data-controller="model-select"
+             data-model-select-agent-root-defaults-value="<%= @agent_root_models.to_json %>"
+             data-model-select-runtime-models-value="<%= @runtime_models.to_json %>"
+             data-model-select-runtime-defaults-value="<%= @runtime_default_models.to_json %>"
+             data-model-select-runtime-value="<%= @default_runtime %>">
+          <label for="session_model" class="block text-sm font-medium text-gray-700 mb-2">
+            Model
+          </label>
+          <input type="hidden" name="model" value="<%= @default_model %>" data-model-select-target="hiddenField">
+          <select id="session_model"
+                  data-model-select-target="select"
+                  data-action="change->model-select#updateHiddenField"
+                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+            <% @available_models.each do |model_name| %>
+              <option value="<%= model_name %>" <%= 'selected' if model_name == @default_model %>><%= model_name %></option>
+            <% end %>
+          </select>
+        </div>
+
+        <!-- Auto-Compact Window (Claude Code only) -->
+        <%# CLAUDE_CODE_AUTO_COMPACT_WINDOW: the token budget at which Claude Code
+            auto-compacts the conversation. A per-session override of the column
+            default (200k). Only Claude Code honors it — Codex and other runtimes
+            have no analog — so the field is hidden and disabled for non-Claude
+            runtimes via the auto-compact-window controller, which reacts to the
+            ao:runtime-changed event the runtime selector broadcasts. A disabled
+            input is omitted from the submit, leaving the column default. The
+            initial-visibility gate keys on the claude_code runtime literal —
+            the same predicate auto_compact_window_controller.js uses — so the
+            server's first paint and the client stay in lockstep regardless of
+            which runtime happens to be the global default. %>
+        <% auto_compact_runtime = RuntimeRegistry::CLAUDE_CODE_BUNDLE.runtime %>
+        <div data-controller="auto-compact-window"
+             data-auto-compact-window-runtime-value="<%= @default_runtime %>"
+             class="<%= "hidden" unless @default_runtime == auto_compact_runtime %>">
+          <%= f.label :auto_compact_window, "Auto-compact window (tokens)", class: "block text-sm font-medium text-gray-700 mb-2" %>
+          <%= f.number_field :auto_compact_window,
+              value: @session.auto_compact_window,
+              min: 1,
+              max: 1_000_000,
+              step: 1,
+              data: { auto_compact_window_target: "input" },
+              class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2" %>
+          <p class="mt-1 text-xs text-gray-500">
+            Claude Code context-compaction threshold (<code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>). Defaults to 200,000 tokens; max 1,000,000. Only applies to Claude Code sessions.
+          </p>
+        </div>
+
+        <!-- Prompt Field -->
+        <div data-controller="character-counter" data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>">
+          <%= f.label :prompt, "Initial Prompt", class: "block text-sm font-medium text-gray-700 mb-2" %>
+          <div data-image-attachment-target="dropZone" data-file-attachment-target="dropZone" class="relative border-2 border-transparent rounded-md transition-colors">
+            <%= f.text_area :prompt,
+                rows: 6,
+                placeholder: "Enter your prompt for the agent. For example: 'Build a user authentication system with email verification'. Type / for slash commands. Leave blank to only set up the clone. You can paste or drag-drop images, files, and folders.",
+                autofocus: true,
+                data: { session_form_target: "promptTextarea", character_counter_target: "input", slash_command_target: "textarea", action: "keydown->session-form#handleKeydown keydown->slash-command#handleKeydown input->character-counter#update input->slash-command#handleInput" },
+                class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2" %>
+            <%# Slash command typeahead dropdown %>
+            <div data-slash-command-target="dropdown"
+                 class="hidden bg-white border border-gray-300 rounded-md shadow-lg overflow-y-auto"></div>
+          </div>
+          <%# Image preview area - shows attached images %>
+          <div data-image-attachment-target="preview" class="hidden mt-2"></div>
+          <%# File preview area - shows attached general-purpose files %>
+          <div data-file-attachment-target="preview" class="hidden mt-2"></div>
+          <%# File upload progress banner - visible while uploads are in flight %>
+          <div data-file-attachment-target="progress" class="hidden mt-2"></div>
+          <div class="mt-1 flex justify-between items-center">
+            <div class="flex items-center space-x-2">
+              <%# Image attachment button %>
+              <button type="button"
+                class="inline-flex items-center p-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-500 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                data-image-attachment-target="attachButton"
+                data-action="click->image-attachment#openFileDialog"
+                title="Attach images (or paste/drag-drop)">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                </svg>
+              </button>
+              <%# Camera button (uses rear camera on mobile via capture="environment") %>
+              <button type="button"
+                class="inline-flex items-center p-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-500 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                data-image-attachment-target="cameraButton"
+                data-action="click->image-attachment#openCameraDialog"
+                title="Take photo (mobile camera) or choose image">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/>
+                </svg>
+              </button>
+              <%# File attachment button %>
+              <button type="button"
+                class="inline-flex items-center p-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-500 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                data-file-attachment-target="attachButton"
+                data-action="click->file-attachment#openFileDialog"
+                title="Attach files (or drag-drop)">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+                </svg>
+              </button>
+              <%# Folder attachment button %>
+              <button type="button"
+                class="inline-flex items-center p-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-500 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                data-file-attachment-target="attachFolderButton"
+                data-action="click->file-attachment#openFolderDialog"
+                title="Attach folder (recursively)">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+                </svg>
+              </button>
+            </div>
+            <span data-character-counter-target="counter" class="text-xs text-gray-500 ml-4 whitespace-nowrap"></span>
+          </div>
+          <%# Hidden file input for image selection %>
+          <input type="file"
+                 accept="image/jpeg,image/png,image/gif,image/webp"
+                 multiple
+                 class="hidden"
+                 data-image-attachment-target="input"
+                 data-action="change->image-attachment#handleFileSelect">
+          <%# Hidden file input for camera capture (uses rear camera on mobile) %>
+          <input type="file"
+                 accept="image/*"
+                 capture="environment"
+                 class="hidden"
+                 data-image-attachment-target="cameraInput"
+                 data-action="change->image-attachment#handleFileSelect">
+          <%# Hidden file input for general file selection %>
+          <input type="file"
+                 multiple
+                 class="hidden"
+                 data-file-attachment-target="input"
+                 data-action="change->file-attachment#handleFileSelect">
+          <%# Hidden file input for folder selection (webkitdirectory recursively expands) %>
+          <input type="file"
+                 webkitdirectory
+                 multiple
+                 class="hidden"
+                 data-file-attachment-target="folderInput"
+                 data-action="change->file-attachment#handleFileSelect">
+          <%# Hidden field carrying the JSON list of attached files (parsed server-side) %>
+          <%= hidden_field_tag :files_payload, nil, data: { file_attachment_target: "filesField" } %>
+        </div>
+
+        <!-- Goal Field -->
+        <div data-controller="character-counter" data-character-counter-max-value="<%= Session::GOAL_MAX_LENGTH %>">
+          <div class="flex justify-between items-center mb-2">
+            <%= f.label :goal, class: "block text-sm font-medium text-gray-700" do %>
+              Goal
+              <span data-goal-target="displayName" class="ml-2 text-xs font-normal text-indigo-600"></span>
+            <% end %>
+            <span data-character-counter-target="counter" class="text-xs text-gray-500"></span>
+          </div>
+
+          <!-- Visible input field for display and typing with clear button -->
+          <div class="relative">
+            <input type="text"
+                   data-goal-target="input"
+                   data-character-counter-target="input"
+                   data-action="focus->goal#handleFocus input->goal#handleInput input->character-counter#update keydown->goal#handleKeydown"
+                   placeholder="Select a predefined goal or type your own..."
+                   class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md pr-10 px-3 py-2">
+            <button type="button"
+                    data-goal-target="clearButton"
+                    data-action="click->goal#clear"
+                    class="hidden absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 focus:outline-none focus:text-gray-600 rounded-r-md"
+                    aria-label="Clear goal">
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Hidden field that actually submits the value -->
+          <%= f.hidden_field :goal, data: { goal_target: "hiddenField" } %>
+
+          <!-- Dropdown for suggestions -->
+          <div data-goal-target="dropdown"
+               class="hidden fixed bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- MCP Servers Multi-Select -->
+        <div>
+          <%= f.label :mcp_servers, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+            MCP Servers
+          <% end %>
+
+          <!-- Selected servers display -->
+          <div data-mcp-server-select-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+          <!-- Hidden inputs container -->
+          <div data-mcp-server-select-target="hiddenInputs"></div>
+
+          <!-- Search input -->
+          <input type="text"
+                 data-mcp-server-select-target="input"
+                 data-action="focus->mcp-server-select#handleFocus input->mcp-server-select#handleInput keydown->mcp-server-select#handleKeydown"
+                 placeholder="Search and select MCP servers..."
+                 autocomplete="off"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+
+          <!-- Dropdown for server selection -->
+          <div data-mcp-server-select-target="dropdown"
+               class="hidden absolute bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Catalog Skills Multi-Select -->
+        <div>
+          <%= f.label :catalog_skills, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+            Skills
+          <% end %>
+
+          <!-- Selected skills display -->
+          <div data-skills-select-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+          <!-- Hidden inputs container -->
+          <div data-skills-select-target="hiddenInputs"></div>
+
+          <!-- Search input -->
+          <input type="text"
+                 data-skills-select-target="input"
+                 data-action="focus->skills-select#handleFocus input->skills-select#handleInput keydown->skills-select#handleKeydown"
+                 placeholder="Search and select skills..."
+                 autocomplete="off"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+
+          <!-- Dropdown for skill selection -->
+          <div data-skills-select-target="dropdown"
+               class="hidden absolute bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Catalog Hooks Multi-Select -->
+        <div>
+          <%= f.label :catalog_hooks, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+            Hooks
+          <% end %>
+
+          <!-- Selected hooks display -->
+          <div data-hooks-select-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+          <!-- Hidden inputs container -->
+          <div data-hooks-select-target="hiddenInputs"></div>
+
+          <!-- Search input -->
+          <input type="text"
+                 data-hooks-select-target="input"
+                 data-action="focus->hooks-select#handleFocus input->hooks-select#handleInput keydown->hooks-select#handleKeydown"
+                 placeholder="Search and select hooks..."
+                 autocomplete="off"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+
+          <!-- Dropdown for hook selection -->
+          <div data-hooks-select-target="dropdown"
+               class="hidden absolute bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Catalog Plugins Multi-Select -->
+        <div>
+          <%= f.label :catalog_plugins, class: "block text-sm font-medium text-gray-700 mb-2" do %>
+            Plugins
+          <% end %>
+
+          <!-- Selected plugins display -->
+          <div data-plugins-select-target="selectedContainer" class="flex flex-wrap mb-2"></div>
+
+          <!-- Hidden inputs container -->
+          <div data-plugins-select-target="hiddenInputs"></div>
+
+          <!-- Search input -->
+          <input type="text"
+                 data-plugins-select-target="input"
+                 data-action="focus->plugins-select#handleFocus input->plugins-select#handleInput keydown->plugins-select#handleKeydown"
+                 placeholder="Search and select plugins..."
+                 autocomplete="off"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+
+          <!-- Dropdown for plugin selection -->
+          <div data-plugins-select-target="dropdown"
+               class="hidden absolute bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Submit Buttons -->
+        <div class="flex items-center justify-between pt-4 border-t border-gray-200">
+          <div>
+            <%= link_to "Cancel", root_path, class: "inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+          </div>
+          <div class="flex items-center space-x-3">
+            <button type="button"
+                data-session-form-target="cloneOnlyButton"
+                data-action="click->session-form#handleCloneOnly"
+                class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer">
+              Clone Only
+            </button>
+            <%= f.submit "Create Session",
+                data: { session_form_target: "submitButton" },
+                class: "inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer" %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+
+  </div>
+</div>

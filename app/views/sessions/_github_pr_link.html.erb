@@ -1,0 +1,114 @@
+<%# Display GitHub PR link button(s) if the session has PR URLs %>
+<%# Status colors: gray (unknown/pending), green (open), purple (merged), red (closed) %>
+<%# CI status indicator: Shows colored circle for open PRs (green=pass, yellow=pending, red=fail) %>
+<%# For multiple PRs, shows the most recent as primary with a dropdown for all PRs %>
+<%# size: :small (default) matches dashboard card / row buttons; :large matches session header buttons %>
+<% pr_urls = agent_session.custom_metadata&.dig("github_pull_request_urls") || [] %>
+<% pr_statuses = agent_session.custom_metadata&.dig("github_pull_request_statuses") || {} %>
+<% ci_statuses = agent_session.custom_metadata&.dig("github_pull_request_ci_statuses") || {} %>
+<% size = local_assigns[:size] || :small %>
+<% if pr_urls.present? %>
+  <%
+    # Most recent PR is the last one in the array (primary)
+    primary_url = pr_urls.last
+    primary_status = pr_statuses[primary_url]
+    primary_ci_status = ci_statuses[primary_url]
+    primary_icon_color = pr_icon_color_class(primary_status)
+    primary_status_text = primary_status.present? ? primary_status.titleize : "Unknown"
+
+    if size == :large
+      button_size_classes = "px-4 py-2 text-sm shadow-sm"
+      toggle_size_classes = "px-2 py-2 text-sm shadow-sm"
+      icon_classes = "mr-1.5"
+    else
+      button_size_classes = "px-3 py-1.5 text-xs"
+      toggle_size_classes = "px-2 py-1.5 text-xs"
+      icon_classes = "-ml-0.5 mr-1.5"
+    end
+  %>
+
+  <% if pr_urls.size == 1 %>
+    <%# Single PR - simple button with CI status indicator for open PRs %>
+    <%= link_to primary_url, target: "_blank", rel: "noopener noreferrer",
+        class: "inline-flex items-center #{button_size_classes} border border-gray-300 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500",
+        title: "View PR on GitHub",
+        data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(agent_session) } do %>
+      <svg class="<%= icon_classes %> h-4 w-4 <%= primary_icon_color %>" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
+      </svg>
+      PR (<%= primary_status_text %>)
+      <% if primary_status == "open" && primary_ci_status.present? %>
+        <span class="ml-1.5 inline-flex items-center" title="CI: <%= primary_ci_status.titleize %>">
+          <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(primary_ci_status) %>"></span>
+        </span>
+      <% end %>
+    <% end %>
+  <% else %>
+    <%# Multiple PRs - button group with dropdown %>
+    <div class="relative inline-flex" data-controller="dropdown">
+      <%# Primary button - most recent PR with CI status indicator %>
+      <%= link_to primary_url, target: "_blank", rel: "noopener noreferrer",
+          class: "inline-flex items-center #{button_size_classes} border border-gray-300 font-medium rounded-l-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500",
+          title: "View most recent PR on GitHub",
+          data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(agent_session) } do %>
+        <svg class="<%= icon_classes %> h-4 w-4 <%= primary_icon_color %>" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
+        </svg>
+        <%= extract_pr_number(primary_url) %> (<%= primary_status_text %>)
+        <% if primary_status == "open" && primary_ci_status.present? %>
+          <span class="ml-1.5 inline-flex items-center" title="CI: <%= primary_ci_status.titleize %>">
+            <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(primary_ci_status) %>"></span>
+          </span>
+        <% end %>
+      <% end %>
+
+      <%# Dropdown toggle button %>
+      <button type="button"
+              class="inline-flex items-center <%= toggle_size_classes %> border border-l-0 border-gray-300 font-medium rounded-r-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              data-action="click->dropdown#toggle"
+              title="View all PRs (<%= pr_urls.size %>)">
+        <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+        </svg>
+      </button>
+
+      <%# Dropdown menu - opens downward (top-full) since button is in sticky header near top of screen %>
+      <div class="hidden absolute left-0 top-full mt-1 w-64 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50"
+           data-dropdown-target="menu">
+        <div class="py-1" role="menu">
+          <div class="px-3 py-1.5 text-xs font-medium text-gray-500 border-b border-gray-100">
+            All PRs (<%= pr_urls.size %>)
+          </div>
+          <% pr_urls.reverse.each_with_index do |url, index| %>
+            <%
+              status = pr_statuses[url]
+              ci_status = ci_statuses[url]
+              icon_color = pr_icon_color_class(status)
+              status_text = status.present? ? status.titleize : "Unknown"
+              pr_number = extract_pr_number(url)
+              is_primary = index == 0
+            %>
+            <%= link_to url, target: "_blank", rel: "noopener noreferrer",
+                class: "flex items-center px-3 py-2 text-xs text-gray-700 hover:bg-gray-100",
+                role: "menuitem",
+                data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(agent_session) } do %>
+              <svg class="mr-2 h-4 w-4 <%= icon_color %>" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
+              </svg>
+              <span class="flex-1"><%= pr_number %></span>
+              <span class="text-gray-500"><%= status_text %></span>
+              <% if status == "open" && ci_status.present? %>
+                <span class="ml-1.5 inline-flex items-center" title="CI: <%= ci_status.titleize %>">
+                  <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(ci_status) %>"></span>
+                </span>
+              <% end %>
+              <% if is_primary %>
+                <span class="ml-2 text-xs text-indigo-600">(latest)</span>
+              <% end %>
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+    </div>
+  <% end %>
+<% end %>

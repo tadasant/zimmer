@@ -1,0 +1,9 @@
+# Test fixtures for notifications
+# Note: Most tests create their own notifications to test specific scenarios
+
+# Example notification for basic tests
+default_notification:
+  session: active_session
+  notification_type: needs_input
+  read: false
+  stale: false

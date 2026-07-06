@@ -1,0 +1,41 @@
+primary_recent:
+  claude_account: primary
+  subscription_type: claude_max
+  rate_limit_tier: tier_4
+  utilization_5h: 0.45
+  utilization_7d: 0.30
+  status_5h: allowed
+  status_7d: allowed
+  reset_5h: <%= 3.hours.from_now.iso8601 %>
+  reset_7d: <%= 5.days.from_now.iso8601 %>
+  trigger: page_view
+  created_at: <%= 10.minutes.ago.iso8601 %>
+  updated_at: <%= 10.minutes.ago.iso8601 %>
+
+secondary_recent:
+  claude_account: secondary
+  subscription_type: claude_max
+  rate_limit_tier: tier_4
+  utilization_5h: 0.70
+  utilization_7d: 0.55
+  status_5h: allowed
+  status_7d: allowed
+  reset_5h: <%= 2.hours.from_now.iso8601 %>
+  reset_7d: <%= 4.days.from_now.iso8601 %>
+  trigger: rotation
+  created_at: <%= 1.hour.ago.iso8601 %>
+  updated_at: <%= 1.hour.ago.iso8601 %>
+
+exceeded_snapshot:
+  claude_account: exceeded
+  subscription_type: claude_max
+  rate_limit_tier: tier_4
+  utilization_5h: 1.0
+  utilization_7d: 0.95
+  status_5h: exceeded
+  status_7d: allowed
+  reset_5h: <%= 1.hour.ago.iso8601 %>
+  reset_7d: <%= 1.day.ago.iso8601 %>
+  trigger: rotation
+  created_at: <%= 2.hours.ago.iso8601 %>
+  updated_at: <%= 2.hours.ago.iso8601 %>

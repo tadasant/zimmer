@@ -1,0 +1,44 @@
+name: GHCR retention
+
+# Prunes old ghcr.io/tadasant/zimmer image versions to at most 50, using the
+# tiered keep-priority implemented and unit-tested in scripts/ghcr_retention.rb.
+# Runs weekly and on demand. Dry-run by default on manual runs so you can see
+# what it would delete before letting it prune.
+on:
+  schedule:
+    - cron: "0 5 * * 0" # 05:00 UTC every Sunday
+  workflow_dispatch:
+    inputs:
+      prune:
+        description: "Actually delete (otherwise dry-run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  retention:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.6"
+      - name: Prune old image versions
+        env:
+          # Default GITHUB_TOKEN can delete versions of packages owned by the
+          # same account/repo. If retention ever needs to span repos, replace
+          # with a PAT that has delete:packages and store it as a secret.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_OWNER: tadasant
+          GHCR_PACKAGE: zimmer
+          GHCR_OWNER_TYPE: users
+          RETENTION_LIMIT: "50"
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.prune }}" = "true" ]; then
+            ruby scripts/ghcr_retention.rb --prune
+          else
+            ruby scripts/ghcr_retention.rb --dry-run
+          fi

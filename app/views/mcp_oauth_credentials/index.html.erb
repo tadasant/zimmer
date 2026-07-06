@@ -1,0 +1,220 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <div class="flex items-center mb-4">
+        <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">OAuth Status</h1>
+      </div>
+      <p class="text-sm text-gray-600">View and manage OAuth credentials for MCP servers</p>
+    </div>
+
+    <% if @credentials.any? %>
+      <!-- Credentials Table -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Active OAuth Credentials</h2>
+          <p class="mt-1 text-sm text-gray-500"><%= @credentials.count %> credential<%= @credentials.count == 1 ? "" : "s" %> stored</p>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+              <tr>
+                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Server</th>
+                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expires</th>
+                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Refresh Token</th>
+                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                <th scope="col" class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+              <% @credentials.each do |credential| %>
+                <%= turbo_frame_tag credential do %>
+                  <tr id="<%= dom_id(credential) %>">
+                    <td class="px-4 py-4 whitespace-nowrap">
+                      <div class="flex flex-col">
+                        <span class="text-sm font-medium text-gray-900"><%= credential.server_name %></span>
+                        <span class="text-xs text-gray-500 truncate max-w-[200px]" title="<%= credential.server_url %>"><%= credential.server_url %></span>
+                      </div>
+                    </td>
+                    <td class="px-4 py-4 whitespace-nowrap">
+                      <% if credential.active? %>
+                        <% if credential.expiring_soon? %>
+                          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                            Expiring Soon
+                          </span>
+                        <% else %>
+                          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            Active
+                          </span>
+                        <% end %>
+                      <% else %>
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                          Expired
+                        </span>
+                      <% end %>
+                    </td>
+                    <td class="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <% if credential.expires_at %>
+                        <span title="<%= credential.expires_at.strftime("%Y-%m-%d %H:%M:%S %Z") %>">
+                          <%= time_ago_in_words(credential.expires_at) %> <%= credential.expires_at > Time.current ? "from now" : "ago" %>
+                        </span>
+                      <% else %>
+                        <span class="text-gray-400">Never</span>
+                      <% end %>
+                    </td>
+                    <td class="px-4 py-4 whitespace-nowrap text-sm">
+                      <% if credential.refresh_token.present? %>
+                        <span class="inline-flex items-center text-green-600">
+                          <svg class="h-4 w-4 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                          </svg>
+                          Yes
+                        </span>
+                      <% else %>
+                        <span class="inline-flex items-center text-gray-400">
+                          <svg class="h-4 w-4 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                          </svg>
+                          No
+                        </span>
+                      <% end %>
+                    </td>
+                    <td class="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <span title="<%= credential.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") %>">
+                        <%= time_ago_in_words(credential.created_at) %> ago
+                      </span>
+                    </td>
+                    <td class="px-4 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      <%= button_to oauth_status_path(credential),
+                            method: :delete,
+                            class: "inline-flex items-center px-3 py-1.5 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500",
+                            form: { data: { turbo_confirm: "Delete OAuth credential for #{credential.server_name}? This will require re-authentication." } } do %>
+                        <svg class="h-4 w-4 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+                        </svg>
+                        Delete
+                      <% end %>
+                    </td>
+                  </tr>
+                <% end %>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Additional Details Section -->
+      <div class="mt-6 bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Credential Details</h2>
+          <p class="mt-1 text-sm text-gray-500">Detailed information for debugging</p>
+        </div>
+        <div class="divide-y divide-gray-200">
+          <% @credentials.each do |credential| %>
+            <details class="group">
+              <summary class="px-4 py-4 cursor-pointer hover:bg-gray-50 flex items-center justify-between">
+                <span class="text-sm font-medium text-gray-900"><%= credential.server_name %></span>
+                <svg class="h-5 w-5 text-gray-400 transform transition-transform group-open:rotate-180" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+              </summary>
+              <div class="px-4 pb-4">
+                <dl class="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
+                  <div>
+                    <dt class="text-xs font-medium text-gray-500">Credential Key</dt>
+                    <dd class="mt-1 text-sm text-gray-900 font-mono break-all"><%= credential.credential_key %></dd>
+                  </div>
+                  <div>
+                    <dt class="text-xs font-medium text-gray-500">Client ID</dt>
+                    <dd class="mt-1 text-sm text-gray-900 font-mono break-all"><%= credential.client_id %></dd>
+                  </div>
+                  <div class="sm:col-span-2">
+                    <dt class="text-xs font-medium text-gray-500">Server URL</dt>
+                    <dd class="mt-1 text-sm text-gray-900 font-mono break-all"><%= credential.server_url %></dd>
+                  </div>
+                  <% if credential.token_endpoint.present? %>
+                    <div class="sm:col-span-2">
+                      <dt class="text-xs font-medium text-gray-500">Token Endpoint</dt>
+                      <dd class="mt-1 text-sm text-gray-900 font-mono break-all"><%= credential.token_endpoint %></dd>
+                    </div>
+                  <% end %>
+                  <div>
+                    <dt class="text-xs font-medium text-gray-500">Access Token</dt>
+                    <dd class="mt-1 text-sm text-gray-500 font-mono"><%= credential.access_token.truncate(20) %>...</dd>
+                  </div>
+                  <% if credential.refresh_token.present? %>
+                    <div>
+                      <dt class="text-xs font-medium text-gray-500">Refresh Token</dt>
+                      <dd class="mt-1 text-sm text-gray-500 font-mono"><%= credential.refresh_token.truncate(20) %>...</dd>
+                    </div>
+                  <% end %>
+                  <div>
+                    <dt class="text-xs font-medium text-gray-500">Created At</dt>
+                    <dd class="mt-1 text-sm text-gray-900"><%= credential.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") %></dd>
+                  </div>
+                  <div>
+                    <dt class="text-xs font-medium text-gray-500">Updated At</dt>
+                    <dd class="mt-1 text-sm text-gray-900"><%= credential.updated_at.strftime("%Y-%m-%d %H:%M:%S %Z") %></dd>
+                  </div>
+                  <% if credential.expires_at %>
+                    <div>
+                      <dt class="text-xs font-medium text-gray-500">Expires At</dt>
+                      <dd class="mt-1 text-sm text-gray-900"><%= credential.expires_at.strftime("%Y-%m-%d %H:%M:%S %Z") %></dd>
+                    </div>
+                  <% end %>
+                  <div>
+                    <dt class="text-xs font-medium text-gray-500">Can Refresh?</dt>
+                    <dd class="mt-1 text-sm text-gray-900"><%= credential.can_refresh? ? "Yes" : "No" %></dd>
+                  </div>
+                </dl>
+              </div>
+            </details>
+          <% end %>
+        </div>
+      </div>
+    <% else %>
+      <!-- Empty State -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200 px-4 py-12 text-center">
+        <svg class="mx-auto h-12 w-12 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+        </svg>
+        <h3 class="mt-2 text-sm font-medium text-gray-900">No OAuth Credentials</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          OAuth credentials will appear here when you authorize MCP servers that require OAuth authentication.
+        </p>
+        <p class="mt-4 text-sm text-gray-500">
+          Create a session with an OAuth-enabled MCP server (like Linear or Notion) to get started.
+        </p>
+      </div>
+    <% end %>
+
+    <!-- Info Section -->
+    <div class="mt-6 bg-blue-50 border border-blue-200 rounded-lg px-4 py-4">
+      <div class="flex">
+        <div class="flex-shrink-0">
+          <svg class="h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+          </svg>
+        </div>
+        <div class="ml-3">
+          <h3 class="text-sm font-medium text-blue-800">About OAuth Credentials</h3>
+          <div class="mt-2 text-sm text-blue-700">
+            <ul class="list-disc list-inside space-y-1">
+              <li>OAuth credentials are stored in the database and injected into Claude Code sessions</li>
+              <li>Credentials with refresh tokens will be automatically refreshed when they expire</li>
+              <li>Deleting a credential will require re-authorization on the next session using that server</li>
+              <li>Static OAuth client IDs and secrets are stored in encrypted Rails credentials, not here</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

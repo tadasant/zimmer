@@ -1,0 +1,80 @@
+<%# Mobile-optimized catalog plugins display and editor %>
+<% show_plugins_section = defined?(@plugins_for_select) || agent_session.catalog_plugins.present? %>
+<% if show_plugins_section %>
+  <div data-controller="editable-catalog-plugins"
+       data-editable-catalog-plugins-session-id-value="<%= agent_session.id %>"
+       data-editable-catalog-plugins-plugins-value="<%= (agent_session.catalog_plugins || []).to_json %>"
+       data-editable-catalog-plugins-available-plugins-value="<%= (defined?(@plugins_for_select) ? @plugins_for_select : []).to_json %>">
+
+    <!-- Display Mode -->
+    <div data-editable-catalog-plugins-target="display">
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs font-medium text-gray-500">Plugins</label>
+        <% if defined?(@plugins_for_select) %>
+          <button type="button"
+                  data-action="click->editable-catalog-plugins#edit"
+                  class="text-purple-600 hover:text-purple-800 text-xs font-medium px-2 py-1.5 -mr-2 -my-1"
+                  title="<%= agent_session.catalog_plugins.present? ? 'Edit plugins' : 'Add plugins' %>"
+                  aria-label="<%= agent_session.catalog_plugins.present? ? 'Edit plugins' : 'Add plugins' %>">
+            <%= agent_session.catalog_plugins.present? ? 'Edit' : 'Add' %>
+          </button>
+        <% end %>
+      </div>
+
+      <% if agent_session.catalog_plugins.present? %>
+        <div class="flex flex-wrap gap-1.5" data-role="plugin-tags">
+          <% agent_session.catalog_plugins.each do |plugin_id| %>
+            <span class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border bg-purple-50 text-purple-800 border-purple-200">
+              <%= plugin_id %>
+            </span>
+          <% end %>
+        </div>
+        <span data-role="plugin-empty" class="hidden text-gray-400 italic text-xs">None</span>
+      <% else %>
+        <div class="hidden flex-wrap gap-1.5" data-role="plugin-tags"></div>
+        <span data-role="plugin-empty" class="text-gray-400 italic text-xs">None</span>
+      <% end %>
+    </div>
+
+    <% if defined?(@plugins_for_select) %>
+      <!-- Edit Mode -->
+      <div data-editable-catalog-plugins-target="editor" class="hidden">
+        <label class="block text-xs font-medium text-gray-500 mb-2">Plugins</label>
+
+        <!-- Selected plugins container -->
+        <div data-editable-catalog-plugins-target="selectedContainer" class="flex flex-wrap gap-1.5 mb-2 min-h-[28px]"></div>
+
+        <!-- Search input -->
+        <div class="relative">
+          <input type="text"
+                 data-editable-catalog-plugins-target="input"
+                 data-action="focus->editable-catalog-plugins#showDropdown input->editable-catalog-plugins#filterPlugins keydown->editable-catalog-plugins#handleKeydown"
+                 placeholder="Search plugins..."
+                 aria-label="Search plugins"
+                 autocomplete="off"
+                 class="w-full rounded-md border-gray-300 text-sm py-2 px-3 focus:ring-purple-500 focus:border-purple-500">
+
+          <!-- Dropdown -->
+          <div data-editable-catalog-plugins-target="dropdown"
+               class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="flex gap-2 mt-3">
+          <button type="button"
+                  data-action="click->editable-catalog-plugins#save"
+                  data-editable-catalog-plugins-target="saveButton"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-purple-600 text-white hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed">
+            Save
+          </button>
+          <button type="button"
+                  data-action="click->editable-catalog-plugins#cancel"
+                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
+            Cancel
+          </button>
+        </div>
+        <div data-editable-catalog-plugins-target="status" class="text-xs text-gray-500 mt-2 text-center"></div>
+      </div>
+    <% end %>
+  </div>
+<% end %>

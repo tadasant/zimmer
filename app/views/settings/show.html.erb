@@ -1,0 +1,376 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <div class="flex items-center mb-4">
+        <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Settings</h1>
+      </div>
+      <p class="text-sm text-gray-600">Manage your application preferences</p>
+    </div>
+
+    <!-- Settings Sections -->
+    <div class="space-y-6">
+      <!-- Session Defaults Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Session Defaults</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            The base agent runtime and model used when nothing more specific is set — i.e. when neither the
+            new-session form nor an agent root's <code class="bg-gray-100 px-1 rounded">roots.json</code> entry
+            pins its own runtime/model. Roots and per-session choices always override this.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <% global_active = @app_setting.default_runtime.present? || @app_setting.default_model.present? %>
+          <div class="mb-4 rounded-md px-3 py-2 text-sm <%= global_active ? "bg-indigo-50 text-indigo-800" : "bg-gray-50 text-gray-600" %>">
+            <% if global_active %>
+              Active global default:
+              <span class="font-medium"><%= RuntimeRegistry.label_for(@selected_runtime) %></span>
+              / <span class="font-mono"><%= @selected_model %></span>
+            <% else %>
+              No global override set — using the built-in default
+              (<span class="font-medium"><%= RuntimeRegistry.label_for(RuntimeRegistry::DEFAULT_RUNTIME) %></span>
+              / <span class="font-mono"><%= ModelCatalog.default_for(RuntimeRegistry::DEFAULT_RUNTIME) %></span>).
+            <% end %>
+          </div>
+
+          <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
+            <div class="space-y-4">
+              <!-- Runtime -->
+              <div data-controller="runtime-select">
+                <label for="app_setting_default_runtime" class="block text-sm font-medium text-gray-700 mb-1">Runtime</label>
+                <select name="app_setting[default_runtime]"
+                        id="app_setting_default_runtime"
+                        data-runtime-select-target="select"
+                        data-action="change->runtime-select#change"
+                        class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+                  <% @runtimes_for_select.each do |runtime| %>
+                    <option value="<%= runtime[:id] %>" <%= "selected" if runtime[:id] == @selected_runtime %>><%= runtime[:label] %></option>
+                  <% end %>
+                </select>
+              </div>
+
+              <!-- Model -->
+              <%# Options are scoped to the selected runtime (ModelCatalog) and reset when
+                  the runtime changes, so an incompatible pairing (e.g. Claude Code + a GPT
+                  model) can't be selected. The model validation on AppSetting is the backstop. %>
+              <div data-controller="model-select"
+                   data-model-select-agent-root-defaults-value="{}"
+                   data-model-select-runtime-models-value="<%= @runtime_models.to_json %>"
+                   data-model-select-runtime-defaults-value="<%= @runtime_default_models.to_json %>"
+                   data-model-select-runtime-value="<%= @selected_runtime %>">
+                <label for="app_setting_default_model" class="block text-sm font-medium text-gray-700 mb-1">Model</label>
+                <input type="hidden" name="app_setting[default_model]" value="<%= @selected_model %>" data-model-select-target="hiddenField">
+                <select id="app_setting_default_model"
+                        data-model-select-target="select"
+                        data-action="change->model-select#updateHiddenField"
+                        class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+                  <% @runtime_models[@selected_runtime].each do |model_name| %>
+                    <option value="<%= model_name %>" <%= "selected" if model_name == @selected_model %>><%= model_name %></option>
+                  <% end %>
+                </select>
+              </div>
+            </div>
+
+            <div class="mt-5">
+              <%= submit_tag "Save session defaults",
+                    class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 cursor-pointer" %>
+              <p class="mt-2 text-xs text-gray-500">
+                To return to the built-in default, pick <span class="font-medium">Claude Code</span> /
+                <span class="font-mono">opus</span> and save.
+              </p>
+            </div>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Experimental Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Experimental</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            Opt-in features that are not yet considered stable. Leave these off unless you know you need them.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <% if @extensions.blank? %>
+            <p class="text-sm text-gray-500">No experimental features are available in this build.</p>
+          <% else %>
+            <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
+              <% @extensions.each_with_index do |extension, index| %>
+                <% on = extension.enabled? %>
+                <div class="<%= "mt-6" unless index.zero? %> mb-4 rounded-md px-3 py-2 text-sm <%= on ? "bg-amber-50 text-amber-800" : "bg-gray-50 text-gray-600" %>">
+                  <%= extension.title %> is
+                  <span class="font-medium"><%= on ? "ON" : "OFF" %></span><%= " (recommended default)" unless on %>.
+                </div>
+
+                <div class="flex items-start justify-between">
+                  <div class="flex-1 min-w-0 pr-4">
+                    <p class="text-sm font-medium text-gray-900"><%= extension.title %></p>
+                    <p class="text-sm text-gray-500"><%= extension.description %></p>
+                  </div>
+                  <div class="flex-shrink-0">
+                    <!-- Toggle switch (submits the form) -->
+                    <input type="hidden" name="app_setting[extensions][<%= extension.id %>]" value="0">
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <span class="sr-only">Toggle <%= extension.title %></span>
+                      <input type="checkbox"
+                             name="app_setting[extensions][<%= extension.id %>]"
+                             id="app_setting_extension_<%= extension.id %>"
+                             value="1"
+                             class="sr-only peer"
+                             role="switch"
+                             aria-label="<%= extension.title %>"
+                             <%= "checked" if on %>
+                             onchange="this.form.requestSubmit()">
+                      <div class="w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-2 peer-focus:ring-indigo-500 peer-checked:bg-indigo-600 transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:border after:border-gray-300 after:shadow after:transition-all peer-checked:after:translate-x-5"></div>
+                    </label>
+                  </div>
+                </div>
+              <% end %>
+
+              <div class="mt-4">
+                <%= submit_tag "Save experimental settings",
+                      class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 cursor-pointer" %>
+              </div>
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Notifications Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Notifications</h2>
+          <p class="mt-1 text-sm text-gray-500">Configure how you receive notifications</p>
+        </div>
+        <div class="px-4 py-5 sm:px-6" data-controller="push-subscription">
+          <div class="flex items-center justify-between">
+            <div class="flex-1 min-w-0 pr-4">
+              <p class="text-sm font-medium text-gray-900">Push Notifications</p>
+              <p class="text-sm text-gray-500">Receive notifications when agent sessions need your attention</p>
+            </div>
+            <div class="flex-shrink-0">
+              <!-- Toggle Switch -->
+              <button type="button"
+                      data-push-subscription-target="toggle"
+                      data-action="push-subscription#handleToggle"
+                      class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent bg-gray-200 transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
+                      role="switch"
+                      aria-checked="false"
+                      aria-label="Enable push notifications">
+                <span class="pointer-events-none relative inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out translate-x-0">
+                  <!-- Off icon -->
+                  <span class="absolute inset-0 flex h-full w-full items-center justify-center transition-opacity duration-200 ease-in opacity-100" data-push-subscription-target="toggleOffIcon" aria-hidden="true">
+                    <svg class="h-3 w-3 text-gray-400" fill="none" viewBox="0 0 12 12">
+                      <path d="M4 8l2-2m0 0l2-2M6 6L4 4m2 2l2 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </span>
+                  <!-- On icon -->
+                  <span class="absolute inset-0 flex h-full w-full items-center justify-center transition-opacity duration-200 ease-out opacity-0" data-push-subscription-target="toggleOnIcon" aria-hidden="true">
+                    <svg class="h-3 w-3 text-indigo-600" fill="currentColor" viewBox="0 0 12 12">
+                      <path d="M3.707 5.293a1 1 0 00-1.414 1.414l1.414-1.414zM5 8l-.707.707a1 1 0 001.414 0L5 8zm4.707-3.293a1 1 0 00-1.414-1.414l1.414 1.414zm-7.414 2l2 2 1.414-1.414-2-2-1.414 1.414zm3.414 2l4-4-1.414-1.414-4 4 1.414 1.414z" />
+                    </svg>
+                  </span>
+                </span>
+              </button>
+            </div>
+          </div>
+          <!-- Status message -->
+          <p data-push-subscription-target="status" class="mt-2 text-sm"></p>
+          <!-- Blocked state message -->
+          <p data-push-subscription-target="blockedMessage" class="hidden mt-2 text-sm text-amber-600">
+            <svg class="inline-block h-4 w-4 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+            </svg>
+            Notifications are blocked in your browser settings. To enable, update your browser's notification permissions for this site.
+          </p>
+          <!-- Not supported message -->
+          <p data-push-subscription-target="notSupportedMessage" class="hidden mt-2 text-sm text-gray-500">
+            Push notifications are not supported in this browser.
+          </p>
+        </div>
+      </div>
+      <!-- Catalog Pins Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Catalog Pins</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            Freeze an AIR catalog to a specific commit so breaking changes upstream can't disrupt your setup.
+            Leave a field blank to track the latest <code class="bg-gray-100 px-1 rounded">HEAD</code>.
+            Pins apply to catalog resolution and to every new agent session.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <%= form_with url: catalog_pins_path, method: :patch, data: { turbo: false } do |f| %>
+            <div class="space-y-5">
+              <% @deployment_info[:catalog_pins].each do |cp| %>
+                <div class="border border-gray-200 rounded-md p-4"
+                     data-controller="catalog-pin"
+                     data-catalog-pin-head-value="<%= cp[:head_sha] %>">
+                  <input type="hidden" name="pins[][catalog]" value="<%= cp[:catalog] %>">
+
+                  <div class="flex items-start justify-between gap-3 mb-2">
+                    <div class="min-w-0">
+                      <p class="text-sm font-medium text-gray-900 font-mono break-all"><%= cp[:name] %></p>
+                      <% if cp[:pinned_ref].present? %>
+                        <p class="mt-1 text-xs text-amber-700">
+                          Pinned to <span class="font-mono"><%= cp[:pinned_ref] %></span>
+                        </p>
+                      <% else %>
+                        <p class="mt-1 text-xs text-green-700">Tracking latest HEAD</p>
+                      <% end %>
+                    </div>
+                    <div class="text-right flex-shrink-0">
+                      <dt class="text-xs font-medium text-gray-500">Resolved SHA</dt>
+                      <dd class="mt-0.5 text-xs text-gray-900 font-mono">
+                        <%= cp[:resolved_sha] ? cp[:resolved_sha][0, 12] : "—" %>
+                      </dd>
+                    </div>
+                  </div>
+
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Pin to ref (commit SHA, tag, or branch)</label>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <input type="text"
+                           name="pins[][ref]"
+                           value="<%= cp[:pinned_ref] %>"
+                           placeholder="latest HEAD"
+                           autocomplete="off"
+                           spellcheck="false"
+                           data-catalog-pin-target="input"
+                           class="flex-1 min-w-0 font-mono text-sm rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    <% if cp[:head_sha].present? %>
+                      <button type="button"
+                              data-action="catalog-pin#pinToHead"
+                              class="inline-flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50">
+                        Pin to current HEAD
+                      </button>
+                    <% end %>
+                    <button type="button"
+                            data-action="catalog-pin#clear"
+                            class="inline-flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50">
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              <% end %>
+            </div>
+
+            <div class="mt-5">
+              <%= f.submit "Save catalog pins",
+                    class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 cursor-pointer" %>
+              <p class="mt-2 text-xs text-gray-500">
+                Saving re-resolves the catalogs. If a ref doesn't exist, the pins are rejected and nothing changes.
+              </p>
+            </div>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Deployment Information Section -->
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Deployment Information</h2>
+          <p class="mt-1 text-sm text-gray-500">Details about the current deployment for troubleshooting</p>
+        </div>
+        <div class="px-4 py-5 sm:px-6 space-y-6">
+          <!-- Git Information -->
+          <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-3">Git</h3>
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">
+              <div class="sm:col-span-1">
+                <dt class="text-xs font-medium text-gray-500">Commit SHA</dt>
+                <dd class="mt-1 text-sm text-gray-900 font-mono" title="<%= @deployment_info[:git][:commit_sha] %>"><%= @deployment_info[:git][:commit_short] %></dd>
+              </div>
+              <div class="sm:col-span-1">
+                <dt class="text-xs font-medium text-gray-500">Branch</dt>
+                <dd class="mt-1 text-sm text-gray-900 font-mono"><%= @deployment_info[:git][:branch] %></dd>
+              </div>
+              <% if @deployment_info[:git][:commit_date] %>
+                <div class="sm:col-span-2">
+                  <dt class="text-xs font-medium text-gray-500">Commit Date</dt>
+                  <dd class="mt-1 text-sm text-gray-900"><%= @deployment_info[:git][:commit_date] %></dd>
+                </div>
+              <% end %>
+            </dl>
+          </div>
+
+          <!-- Environment Information -->
+          <div class="border-t border-gray-200 pt-4">
+            <h3 class="text-sm font-medium text-gray-900 mb-3">Environment</h3>
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-3">
+              <div>
+                <dt class="text-xs font-medium text-gray-500">Rails Environment</dt>
+                <dd class="mt-1 text-sm text-gray-900"><%= @deployment_info[:environment][:rails_env] %></dd>
+              </div>
+              <div>
+                <dt class="text-xs font-medium text-gray-500">Ruby Version</dt>
+                <dd class="mt-1 text-sm text-gray-900"><%= @deployment_info[:environment][:ruby_version] %></dd>
+              </div>
+              <div>
+                <dt class="text-xs font-medium text-gray-500">Rails Version</dt>
+                <dd class="mt-1 text-sm text-gray-900"><%= @deployment_info[:environment][:rails_version] %></dd>
+              </div>
+            </dl>
+          </div>
+
+          <!-- MCP Configuration -->
+          <div class="border-t border-gray-200 pt-4">
+            <h3 class="text-sm font-medium text-gray-900 mb-3">MCP Servers</h3>
+            <p class="text-xs text-gray-500 mb-2">Loaded from <code class="bg-gray-100 px-1 rounded">mcp.json</code> (secrets redacted)</p>
+            <details class="group">
+              <summary class="cursor-pointer text-sm text-indigo-600 hover:text-indigo-700 font-medium flex items-center">
+                <svg class="h-4 w-4 mr-1 transform transition-transform group-open:rotate-90" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />
+                </svg>
+                View full configuration (<%= @deployment_info[:server_count] %> servers)
+              </summary>
+              <div class="mt-3 overflow-auto max-h-96 rounded-md bg-gray-900 p-4">
+                <pre class="text-xs text-gray-100 whitespace-pre-wrap break-words"><%= JSON.pretty_generate(@deployment_info[:mcp_config]) %></pre>
+              </div>
+            </details>
+          </div>
+
+          <!-- Agent Roots Configuration -->
+          <div class="border-t border-gray-200 pt-4">
+            <h3 class="text-sm font-medium text-gray-900 mb-3">Agent Roots</h3>
+            <p class="text-xs text-gray-500 mb-2">Loaded from <code class="bg-gray-100 px-1 rounded">roots.json</code></p>
+            <details class="group">
+              <summary class="cursor-pointer text-sm text-indigo-600 hover:text-indigo-700 font-medium flex items-center">
+                <svg class="h-4 w-4 mr-1 transform transition-transform group-open:rotate-90" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />
+                </svg>
+                View full configuration (<%= @deployment_info[:agent_roots_count] %> agent roots)
+              </summary>
+              <div class="mt-3 overflow-auto max-h-96 rounded-md bg-gray-900 p-4">
+                <pre class="text-xs text-gray-100 whitespace-pre-wrap break-words"><%= JSON.pretty_generate(@deployment_info[:agent_roots_config]) %></pre>
+              </div>
+            </details>
+          </div>
+
+          <!-- Skills Configuration -->
+          <div class="border-t border-gray-200 pt-4">
+            <h3 class="text-sm font-medium text-gray-900 mb-3">Skills</h3>
+            <p class="text-xs text-gray-500 mb-2">Loaded from <code class="bg-gray-100 px-1 rounded">skills.json</code></p>
+            <details class="group">
+              <summary class="cursor-pointer text-sm text-indigo-600 hover:text-indigo-700 font-medium flex items-center">
+                <svg class="h-4 w-4 mr-1 transform transition-transform group-open:rotate-90" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />
+                </svg>
+                View full configuration (<%= @deployment_info[:skills_count] %> skills)
+              </summary>
+              <div class="mt-3 overflow-auto max-h-96 rounded-md bg-gray-900 p-4">
+                <pre class="text-xs text-gray-100 whitespace-pre-wrap break-words"><%= JSON.pretty_generate(@deployment_info[:skills_config]) %></pre>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
