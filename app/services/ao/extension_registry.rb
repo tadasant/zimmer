@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Ao
-  # Registry of AO Extensions (see Ao::Extension) and the single place the core
+  # Registry of Zimmer Extensions (see Ao::Extension) and the single place the core
   # resolves extension-contributed behavior. Core seams ask the registry generic
   # questions ("does any enabled extension override the CLI adapter for this
   # runtime?") and never name a concrete extension — so an extension can be

@@ -5,7 +5,7 @@
 # error.
 #
 # Background (see GitHub issues #3924 / #4109):
-#   AO isolates the npm cache per clone via NPM_CONFIG_CACHE=<working_dir>/.npm-cache
+#   Zimmer isolates the npm cache per clone via NPM_CONFIG_CACHE=<working_dir>/.npm-cache
 #   (ClaudeCliAdapter#configure_mcp_env). When concurrent or retried `npx`
 #   invocations race into the same shared `_npx/<hash>` directory, one can read a
 #   half-written tree — a transitive dependency (e.g. `ajv`, pulled in by
@@ -30,7 +30,7 @@
 #     '.../_npx/a5c0f8a8df975b78/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js'
 #       code: 'ERR_UNSUPPORTED_DIR_IMPORT'
 #
-#   This is the same class of `_npx` corruption AO already mitigates for
+#   This is the same class of `_npx` corruption Zimmer already mitigates for
 #   ENOTEMPTY / tar-extraction errors (CacheClearService, SelfSessionInjector),
 #   but the partial-install / version-skew variants manifest as a module-resolution
 #   error rather than a tar error, so the existing guards miss them.
@@ -41,7 +41,7 @@
 #
 # Strategy (detect-and-heal): when an MCP connection failure carries a Node
 # module-resolution error originating from an `_npx` cache, this service deletes
-# the offending cache tree so AO's existing MCP-retry path (AgentSessionJob)
+# the offending cache tree so Zimmer's existing MCP-retry path (AgentSessionJob)
 # re-installs it cleanly. It is targeted by default (deletes only the specific
 # `_npx/<hash>` directories named in the error) and falls back to clearing the
 # whole per-clone `_npx` directory when the error references the cache but no
@@ -159,7 +159,7 @@ class NpxCacheHealService
       File.join(working_directory, ".npm-cache", "_npx")
     end
 
-    # Guard against deleting anything outside an AO clone's npm cache. Only paths
+    # Guard against deleting anything outside an Zimmer clone's npm cache. Only paths
     # that live under ~/.agent-orchestrator/clones AND inside a `.npm-cache/_npx`
     # segment are eligible.
     def safe_to_remove?(path)

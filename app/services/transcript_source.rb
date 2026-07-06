@@ -30,7 +30,7 @@ class TranscriptSource
     raise NotImplementedError, "#{self.class}#transcript_directory"
   end
 
-  # The on-disk path where AO should re-materialize the canonical stored
+  # The on-disk path where Zimmer should re-materialize the canonical stored
   # transcript so the runtime's `--resume` reads the complete conversation
   # history. This is the file the runtime actually reads on resume — distinct
   # from any cache/log directory.

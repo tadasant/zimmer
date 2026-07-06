@@ -1082,7 +1082,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal "value", session.metadata["other_key"]
   end
 
-  # === AO Event firing on transitions ===
+  # === Zimmer Event firing on transitions ===
   #
   # fire_ao_event_triggers uses ActiveRecord.after_all_transactions_commit,
   # which defers job enqueueing until the outermost transaction commits. In

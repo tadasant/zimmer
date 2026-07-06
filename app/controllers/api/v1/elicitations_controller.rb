@@ -159,12 +159,12 @@ class Api::V1::ElicitationsController < Api::BaseController
     params[:_meta]&.to_unsafe_h || {}
   end
 
-  # Find the AO session from the meta session-id
+  # Find the Zimmer session from the meta session-id
   def find_session_from_meta(meta)
     session_identifier = meta["com.pulsemcp/session-id"]
     return nil unless session_identifier.present?
 
-    # Try by AO ID first (only if numeric), then by slug
+    # Try by Zimmer ID first (only if numeric), then by slug
     if session_identifier.to_s.match?(/\A\d+\z/)
       Session.find_by(id: session_identifier) || Session.find_by(slug: session_identifier)
     else

@@ -2,9 +2,9 @@
 
 # RuntimeAuthProvider — the contract for a coding-agent runtime's login-credential lifecycle.
 #
-# AO drives agent CLIs (today: `claude`; forthcoming: `codex`, see #3766) that
+# Zimmer drives agent CLIs (today: `claude`; forthcoming: `codex`, see #3766) that
 # authenticate against their vendor without an API key by reading login
-# credentials from a canonical filesystem location. AO maintains a pool of
+# credentials from a canonical filesystem location. Zimmer maintains a pool of
 # accounts per runtime, rotates between them when quotas are hit, and keeps the
 # active account's credentials fresh and written to disk before each spawn.
 #
@@ -90,13 +90,13 @@ class RuntimeAuthProvider
     def ok? = ok
   end
 
-  # Runtimes AO can authenticate.
+  # Runtimes Zimmer can authenticate.
   RUNTIMES = %w[claude_code codex].freeze
 
   # Resolve the auth provider for a runtime identifier.
   #
   # @param runtime [String, Symbol, nil] runtime identifier. nil/blank defaults
-  #   to Claude Code, since that is AO's only runtime today and keeps every
+  #   to Claude Code, since that is Zimmer's only runtime today and keeps every
   #   existing call site (which pass session.agent_runtime == "claude_code") on the
   #   unchanged Claude path.
   # @return [RuntimeAuthProvider]
@@ -112,7 +112,7 @@ class RuntimeAuthProvider
   end
 
   # All registered runtime providers, one instance each. Used by the token
-  # refresh dispatcher to fan out across every runtime AO authenticates.
+  # refresh dispatcher to fan out across every runtime Zimmer authenticates.
   #
   # @return [Array<RuntimeAuthProvider>]
   def self.registered

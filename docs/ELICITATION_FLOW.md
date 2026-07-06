@@ -1,10 +1,10 @@
 # MCP Server Fallback Elicitation Flow
 
-This document describes the end-to-end flow for MCP server fallback elicitations in Agent Orchestrator. When an MCP server (e.g., Gmail) needs user approval before performing a sensitive action like sending an email, it uses this HTTP-based fallback protocol to request and receive confirmation.
+This document describes the end-to-end flow for MCP server fallback elicitations in Zimmer. When an MCP server (e.g., Gmail) needs user approval before performing a sensitive action like sending an email, it uses this HTTP-based fallback protocol to request and receive confirmation.
 
 ## Overview
 
-The MCP protocol supports native elicitation (built into the MCP client), but not all clients implement it. For clients that don't (like Claude Code at the time of writing), AO provides an HTTP fallback: the MCP server POSTs an approval request to AO, AO shows a banner to the user, and the MCP server polls until the user responds.
+The MCP protocol supports native elicitation (built into the MCP client), but not all clients implement it. For clients that don't (like Claude Code at the time of writing), Zimmer provides an HTTP fallback: the MCP server POSTs an approval request to Zimmer, Zimmer shows a banner to the user, and the MCP server polls until the user responds.
 
 ```
 ┌───────────────┐     ┌───────────────┐     ┌───────────────┐
@@ -33,7 +33,7 @@ Two sources of configuration connect the pieces:
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `ELICITATION_SESSION_ID` | `session.id` (e.g., `123`) | Per-session identifier; the `@pulsemcp/mcp-elicitation` library reads this and auto-includes it as `com.pulsemcp/session-id` in `_meta` of HTTP fallback requests, so AO can link elicitation requests back to the correct session |
+| `ELICITATION_SESSION_ID` | `session.id` (e.g., `123`) | Per-session identifier; the `@pulsemcp/mcp-elicitation` library reads this and auto-includes it as `com.pulsemcp/session-id` in `_meta` of HTTP fallback requests, so Zimmer can link elicitation requests back to the correct session |
 
 `ELICITATION_SESSION_ID` is set on the Claude CLI process environment. MCP servers, as child processes, inherit it automatically. The env var name is orchestrator-agnostic — it follows the `ELICITATION_*` naming convention used by the library.
 
@@ -76,7 +76,7 @@ end
 
 ### Step 1: Session Setup
 
-When AO starts a new agent session, it spawns a Claude CLI process:
+When Zimmer starts a new agent session, it spawns a Claude CLI process:
 
 ```
 ProcessLifecycleManager                  ClaudeCliAdapter
@@ -109,7 +109,7 @@ Claude CLI process (ELICITATION_SESSION_ID=123)
 
 ### Step 2: MCP Server Requests Approval
 
-When the Gmail MCP server's `send_email` tool is invoked, the `@pulsemcp/mcp-elicitation` library checks if elicitation is enabled. If so, it builds the `_meta` (auto-including `com.pulsemcp/session-id` from `ELICITATION_SESSION_ID` if set) and POSTs to AO:
+When the Gmail MCP server's `send_email` tool is invoked, the `@pulsemcp/mcp-elicitation` library checks if elicitation is enabled. If so, it builds the `_meta` (auto-including `com.pulsemcp/session-id` from `ELICITATION_SESSION_ID` if set) and POSTs to Zimmer:
 
 ```
 POST https://zimmer.example.com/api/v1/elicitations
@@ -149,7 +149,7 @@ Key `_meta` fields:
 | `com.pulsemcp/context` | LLM-generated explanation for the user |
 | `com.pulsemcp/expires-at` | When the request expires (optional; defaults to 10 minutes) |
 
-### Step 3: AO Creates Elicitation Record
+### Step 3: Zimmer Creates Elicitation Record
 
 `Api::V1::ElicitationsController#create` handles the POST:
 
@@ -182,7 +182,7 @@ The session detail page (`/sessions/123`) subscribes to a Turbo Stream channel:
 <%= turbo_stream_from "session_123_elicitations" %>
 ```
 
-When AO broadcasts the elicitation, a banner appears in real-time (no page reload needed):
+When Zimmer broadcasts the elicitation, a banner appears in real-time (no page reload needed):
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -264,7 +264,7 @@ content={"confirm_send":true}
 
 ### Step 7: MCP Server Gets the Answer
 
-On the next poll, AO returns the resolved response:
+On the next poll, Zimmer returns the resolved response:
 
 **If accepted:**
 
@@ -343,10 +343,10 @@ scope :active, -> { pending.where("expires_at > ?", Time.current) }
 
 ## Session Linkage
 
-The critical question: how does AO know which session an elicitation belongs to?
+The critical question: how does Zimmer know which session an elicitation belongs to?
 
 ```
-AO Session #123
+Zimmer Session #123
     │
     ├── ProcessLifecycleManager sets cli_adapter.ao_session_id = session.id
     │
@@ -358,7 +358,7 @@ AO Session #123
     ├── @pulsemcp/mcp-elicitation library reads process.env.ELICITATION_SESSION_ID
     │   └── Auto-includes in POST as _meta["com.pulsemcp/session-id"]: "123"
     │
-    ├── AO controller extracts _meta["com.pulsemcp/session-id"]
+    ├── Zimmer controller extracts _meta["com.pulsemcp/session-id"]
     │   └── Session.find_by(id: 123)
     │
     └── Elicitation created with session_id: 123

@@ -134,12 +134,12 @@ class TranscriptPollerService
 
     # Capture the runtime's own session id from the transcript and persist it
     # when it differs from what we stored at spawn. This is essential for Codex:
-    # the CLI ignores the AO-supplied session id and mints its own rollout/thread
+    # the CLI ignores the Zimmer-supplied session id and mints its own rollout/thread
     # UUID (emitted on the `session_meta` line), and that UUID is what
     # `codex exec resume <uuid>` requires. Without capturing it, resume targets
-    # the stale AO UUID and Codex aborts with "no rollout found for thread id",
+    # the stale Zimmer UUID and Codex aborts with "no rollout found for thread id",
     # failing every follow-up turn. Gated on the runtime trait so it runs only for
-    # runtimes that mint their own id (#3884). Claude honors the AO-supplied id, so
+    # runtimes that mint their own id (#3884). Claude honors the Zimmer-supplied id, so
     # capturing is both unnecessary and actively harmful there: a forked Claude
     # session's transcript is copied from its source and its early lines carry the
     # SOURCE session's id, which would overwrite the fork's id, collide with the
@@ -256,7 +256,7 @@ class TranscriptPollerService
   # Persist the runtime's own session id once it appears in the transcript.
   #
   # Some runtimes (Codex) generate their own session/thread UUID at spawn and
-  # ignore the id AO supplied; that generated UUID — emitted on the runtime's
+  # ignore the id Zimmer supplied; that generated UUID — emitted on the runtime's
   # session-metadata line — is the one resume must target. We read it from the
   # parsed events via the normalizer and store it when it changes. Gated on the
   # runtime's mints_own_session_id? trait so it is an outright no-op for runtimes
@@ -265,7 +265,7 @@ class TranscriptPollerService
   # transcript/metadata update flow.
   def capture_runtime_session_id!(raw_events)
     # Only runtimes that mint their own session id (Codex) learn it from the
-    # transcript. Claude honors the AO-supplied id, so its stored session_id is
+    # transcript. Claude honors the Zimmer-supplied id, so its stored session_id is
     # authoritative and must never be rewritten from transcript content — see the
     # call-site comment and ClaudeTranscriptNormalizer#mints_own_session_id?.
     return unless @normalizer.mints_own_session_id?
@@ -445,7 +445,7 @@ class TranscriptPollerService
   # Poll MCP server logs and update connection status in session custom_metadata
   # This detects MCP server connection failures early (before the transcript shows them).
   # `all_mcp_servers` is the union of user-configured and auto-injected servers, so
-  # sessions with only injected servers (e.g. an AO root that lists no MCP servers
+  # sessions with only injected servers (e.g. an Zimmer root that lists no MCP servers
   # of its own but has the agent-orchestrator MCP auto-injected for subagents) still
   # get their connection state tracked.
   def poll_mcp_logs(transcript_content = nil)

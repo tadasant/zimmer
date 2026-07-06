@@ -8,16 +8,16 @@
 #
 # == Codex bug workarounds (remove when fixed upstream) ==
 #
-# AO writes Codex's credential store DIRECTLY from McpOauthCredential on every
+# Zimmer writes Codex's credential store DIRECTLY from McpOauthCredential on every
 # session spawn (and refreshes tokens every 30 min via RefreshMcpOauthTokensJob),
 # rather than trusting the Codex CLI's own `codex mcp login` persistence or its
 # token auto-refresh. This works around two open Codex bugs:
 #
 #   * openai/codex#15122 — credentials written by `codex mcp login` don't reliably
-#     persist / read back across restarts. AO never relies on Codex's own login
+#     persist / read back across restarts. Zimmer never relies on Codex's own login
 #     persistence: it writes the file itself before each spawn.
 #   * openai/codex#17265 — Codex doesn't use the stored refresh_token to refresh an
-#     expired access_token, so MCP calls fail with "Authorization required". AO
+#     expired access_token, so MCP calls fail with "Authorization required". Zimmer
 #     refreshes tokens itself and writes fresh ones at every session start, so the
 #     access_token Codex reads is always current and Codex never has to refresh.
 #
@@ -69,7 +69,7 @@
 #
 # Keychain format verified against codex-rs/rmcp-client/src/oauth.rs and the
 # oauth2 5.0.0 StandardTokenResponse serialization @ rust-v0.133.0 (source-read;
-# not runtime-verified, as AO's CI/staging/production workers are all Linux where
+# not runtime-verified, as Zimmer's CI/staging/production workers are all Linux where
 # the file store is used). expires_in is intentionally omitted from token_response
 # — Codex makes refresh decisions from the top-level expires_at (millis), so the
 # original grant duration is not needed once persisted.
@@ -77,7 +77,7 @@ class CodexMcpCredentialWriter
   include RuntimeMcpCredentialWriter
 
   # Resolved through the shared CodexHome resolver so MCP credentials land in the
-  # same CODEX_HOME the rest of AO (and the Codex CLI) uses.
+  # same CODEX_HOME the rest of Zimmer (and the Codex CLI) uses.
   CODEX_CREDENTIALS_PATH = File.join(CodexHome.path, ".credentials.json").freeze
   KEYCHAIN_SERVICE_NAME = "Codex MCP Credentials".freeze
 
@@ -217,7 +217,7 @@ class CodexMcpCredentialWriter
   # one item per server — unlike Claude Code, which uses a single item keyed by
   # the OS username. Each item's value is the raw JSON of Codex's StoredOAuthTokens
   # (no hex/base64 encoding). Best-effort and rescued — the file write is the
-  # authoritative path on AO's Linux workers.
+  # authoritative path on Zimmer's Linux workers.
   def write_credentials_to_keychain(credentials)
     credentials.each do |credential|
       blob = JSON.generate(codex_keychain_blob(credential))

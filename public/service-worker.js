@@ -1,4 +1,4 @@
-// Service Worker for Agent Orchestrator push notifications
+// Service Worker for Zimmer push notifications
 //
 // This service worker handles:
 // - Push notifications from the server
@@ -22,7 +22,7 @@ self.addEventListener('push', (event) => {
     return;
   }
 
-  const title = data.title || 'Agent Orchestrator';
+  const title = data.title || 'Zimmer';
   // URL is nested inside data.data.url (server sends {data: {url: "..."}})
   const notificationUrl = data.data?.url || data.url || DEFAULT_URL;
   const options = {

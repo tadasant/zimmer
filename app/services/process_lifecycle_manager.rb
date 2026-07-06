@@ -112,7 +112,7 @@ class ProcessLifecycleManager
     @cli_adapter.process_manager = @process_manager
     @cli_adapter.file_system = @file_system
 
-    # Set the AO session ID on the CLI adapter so every process it spawns (fresh
+    # Set the Zimmer session ID on the CLI adapter so every process it spawns (fresh
     # start, resume, and all recovery/retry respawns) injects ELICITATION_SESSION_ID
     # and AO_SESSION_SCRATCH_DIR into the child env. This MUST live in the constructor,
     # not #spawn: the resume_monitoring path never calls #spawn, yet a process it

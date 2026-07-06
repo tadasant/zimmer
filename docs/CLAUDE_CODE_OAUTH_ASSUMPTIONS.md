@@ -2,7 +2,7 @@
 
 > **Scope.** This document is about the OAuth login that authenticates the
 > **Claude Code CLI itself** (the Max-subscription identity every agent session
-> runs as) and the **account-rotation pool** AO builds on top of it. It is **not**
+> runs as) and the **account-rotation pool** Zimmer builds on top of it. It is **not**
 > about MCP-server OAuth (BigQuery/Linear/Notion credentials) — that is a separate
 > system documented in [`OAUTH_ARCHITECTURE.md`](OAUTH_ARCHITECTURE.md). For the
 > Codex runtime equivalent, see [`CODEX_AUTH.md`](CODEX_AUTH.md). For the
@@ -11,7 +11,7 @@
 
 ## Why this document exists
 
-AO has built a complex OAuth-token + account-rotation automation **on top of
+Zimmer has built a complex OAuth-token + account-rotation automation **on top of
 Claude Code's OAuth implementation, which is an undocumented, moving target.**
 Anthropic can — and does — change how the CLI stores credentials, when it rotates
 tokens, and what its login command looks like, with no notice and no changelog
@@ -35,7 +35,7 @@ outage (worked example at the bottom) happened.
 
 ## 1. The two credential files (and the critical scope split)
 
-Claude Code stores its login state in **two** files. AO's entire rotation system
+Claude Code stores its login state in **two** files. Zimmer's entire rotation system
 hinges on understanding what each one is and — critically — *where it lives in
 production*.
 
@@ -49,13 +49,13 @@ production*.
 > code that reads `~/.claude.json` to decide *"whose tokens are in
 > `~/.claude/.credentials.json`?"* is comparing a container-local answer against a
 > shared file — and on the "wrong" container it gets a confidently wrong answer.
-> This is the structural root of cross-account token contamination. AO works
+> This is the structural root of cross-account token contamination. Zimmer works
 > around it with a **shared owner marker** (`~/.claude/.ao-credentials-owner.json`,
-> written by AO alongside the credentials) — see the architecture doc.
+> written by Zimmer alongside the credentials) — see the architecture doc.
 
 ### `~/.claude.json` → `oauthAccount` shape
 
-Has appeared in **two** formats across CLI versions (AO handles both — see
+Has appeared in **two** formats across CLI versions (Zimmer handles both — see
 `ClaudeAccount#extract_oauth_email`):
 
 ```jsonc
@@ -101,7 +101,7 @@ login break wholesale.
 
 ## 3. Refresh-token behavior — **the assumption that bites hardest**
 
-These are the rules AO's rotation logic is built on. They are inferred from
+These are the rules Zimmer's rotation logic is built on. They are inferred from
 observed behavior, not from a spec.
 
 1. **Refresh tokens are single-use and rotate.** A successful
@@ -118,14 +118,14 @@ observed behavior, not from a spec.
 3. **A refresh-token-less credential set is a dead end.** Because of (1), if a
    row/file ends up with an `accessToken` but **no `refreshToken`**, it is
    *unrecoverable* the moment that access token expires or is invalidated — there
-   is nothing to refresh with. This is why AO refuses to persist incomplete
+   is nothing to refresh with. This is why Zimmer refuses to persist incomplete
    credentials anywhere (`ClaudeAccount.complete_claude_oauth?`).
 
 4. **The Claude CLI refreshes tokens on its own, mid-session.** While a session
    runs, the CLI may refresh and **write a new pair into the shared
-   `~/.claude/.credentials.json`** without telling AO. AO must capture those
+   `~/.claude/.credentials.json`** without telling Zimmer. Zimmer must capture those
    CLI-rotated tokens back into the DB (`sync_tokens_from_filesystem!`) or its DB
-   copy goes stale and the next AO-driven refresh fails with `invalid_grant`.
+   copy goes stale and the next Zimmer-driven refresh fails with `invalid_grant`.
 
 ### Observed failure responses
 
@@ -138,7 +138,7 @@ observed behavior, not from a spec.
 ### Token lifetime
 
 `expires_in` observed at **~8 hours** (e.g. minted 23:13Z → `expiresAt` 07:08Z
-next day). AO refreshes anything within `REFRESH_THRESHOLD` (15 min) of expiry on
+next day). Zimmer refreshes anything within `REFRESH_THRESHOLD` (15 min) of expiry on
 a 5-minute cron (`RefreshRuntimeAuthTokensJob`).
 
 ---
@@ -146,7 +146,7 @@ a 5-minute cron (`RefreshRuntimeAuthTokensJob`).
 ## 4. Known CLI quirks we actively defend against
 
 - **The CLI sometimes rewrites `~/.claude/.credentials.json` without the
-  `claudeAiOauth` tokens** (it uses this file for MCP OAuth state too). If AO
+  `claudeAiOauth` tokens** (it uses this file for MCP OAuth state too). If Zimmer
   blindly adopted that, it would erase the refresh token from the DB and brick the
   pool. Guarded by `complete_claude_oauth?` on every read *and* write path.
 
@@ -173,7 +173,7 @@ live credentials, then captures the result into the DB.
 - **Env isolation:** `CLAUDE_CONFIG_DIR=<scratch dir>`
 - **Flow:** the CLI prints an authorize URL, then blocks on a `Paste code here`
   prompt. The user authorizes in a browser and pastes back a `<code>#<state>`
-  string, which AO writes to the held-open CLI's stdin.
+  string, which Zimmer writes to the held-open CLI's stdin.
 - **Capture guard:** `ClaudeLoginDriver#capture!` rejects the login if the
   authenticated email ≠ the target account, or if the credentials are missing
   `accessToken`/`refreshToken`.

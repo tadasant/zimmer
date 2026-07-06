@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-# Per-runtime contribution to the Agent Orchestrator system prompt.
+# Per-runtime contribution to the Zimmer system prompt.
 #
 # Most of the orchestrator system prompt is runtime-agnostic — the operating
 # principles, session URL, MCP server list, and autonomous problem-solving
-# guidance apply to every runtime AO can drive. A small slice is specific to a
+# guidance apply to every runtime Zimmer can drive. A small slice is specific to a
 # given runtime's tool surface, though: Claude Code ships an `EnterPlanMode`
-# tool, a `/schedule` skill, and an `AskUserQuestion` tool that AO needs to
+# tool, a `/schedule` skill, and an `AskUserQuestion` tool that Zimmer needs to
 # steer agents away from. Other runtimes (e.g. Codex) have no analog for those
 # tools, so repeating Claude's "never use EnterPlanMode" guidance to them would
 # be noise at best and confusing at worst.
@@ -14,13 +14,13 @@
 # This class is the seam: `OrchestratorSystemPromptBuilder` composes the shared
 # sections and asks the runtime's contribution for the runtime-specific slices.
 # The base implementation contributes nothing, so a runtime without an
-# implementation gets the shared AO principles and no runtime-specific tool
+# implementation gets the shared Zimmer principles and no runtime-specific tool
 # guidance. `ClaudeRuntimePromptContribution` overrides the slices with Claude's
 # tool opinions; `CodexRuntimePromptContribution` does the same for Codex.
 #
 # Beyond the tool-guidance slices, the contribution also owns two delivery facts
 # that differ by runtime: how the prompt reaches the agent (Claude appends it via
-# `--append-system-prompt`; Codex has no such flag, so AO writes it to the
+# `--append-system-prompt`; Codex has no such flag, so Zimmer writes it to the
 # runtime's project-instructions file at prepare time) and which file holds the
 # repo's project instructions (`CLAUDE.md` vs `AGENTS.md`). `AirPrepareService`
 # reads `delivered_via_file?`/`system_prompt_filename` to decide whether to write
@@ -31,7 +31,7 @@ class RuntimePromptContribution
   # Resolve the contribution for a runtime identifier.
   #
   # @param runtime [String, Symbol, nil] Runtime identifier (e.g. "claude").
-  #   nil/blank defaults to Claude, since that is AO's only runtime today and
+  #   nil/blank defaults to Claude, since that is Zimmer's only runtime today and
   #   keeps the prompt byte-identical when no runtime is specified.
   # @return [RuntimePromptContribution]
   def self.for(runtime)
@@ -45,7 +45,7 @@ class RuntimePromptContribution
     end
   end
 
-  # Runtime-specific bullets inserted into the "Agent Orchestrator Guidelines"
+  # Runtime-specific bullets inserted into the "Zimmer Guidelines"
   # list, after the shared intro bullets and before the remote-filesystem
   # bullet. Each array element is a complete bullet block (a leading "- ..."
   # line, optionally followed by indented sub-bullets).
@@ -76,7 +76,7 @@ class RuntimePromptContribution
   end
 
   # Optional replacement for the shared "## Dynamic Skills and MCP Servers"
-  # section, which describes where AO injects skills and MCP config. Those paths
+  # section, which describes where Zimmer injects skills and MCP config. Those paths
   # are runtime-specific (`.claude/skills/` + `.mcp.json` for Claude;
   # `.agents/skills/` + `.codex/config.toml` for Codex). Returning nil keeps the
   # builder's default (Claude-flavored) section, so the default runtime is
@@ -87,9 +87,9 @@ class RuntimePromptContribution
     nil
   end
 
-  # Whether AO delivers the orchestrator system prompt by writing it to a file in
+  # Whether Zimmer delivers the orchestrator system prompt by writing it to a file in
   # the working directory rather than passing it as a CLI flag. Claude appends it
-  # via `--append-system-prompt` (false); Codex has no such flag, so AO writes the
+  # via `--append-system-prompt` (false); Codex has no such flag, so Zimmer writes the
   # prompt to `system_prompt_filename` during prepare (true).
   #
   # @return [Boolean]

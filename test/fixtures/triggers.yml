@@ -113,7 +113,7 @@ ao_event_trigger:
   status: enabled
   agent_root_name: zimmer
   mcp_servers: []
-  prompt_template: "An AO session needs input: {{event}}. Please investigate."
+  prompt_template: "An Zimmer session needs input: {{event}}. Please investigate."
   sessions_created_count: 0
   reuse_session: false
 

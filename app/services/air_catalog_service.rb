@@ -315,7 +315,7 @@ class AirCatalogService
     # pointing at the configured air.json. Returns stdout.
     #
     # `--no-scope` (AIR 0.1.1+) emits shortname-keyed output and rewrites
-    # qualified references inside entries back to bare IDs. AO surfaces bare
+    # qualified references inside entries back to bare IDs. Zimmer surfaces bare
     # shortnames everywhere (UI, DB, Session.catalog_skills, agent root
     # defaults), so this matches our internal model directly. AIR hard-fails
     # the resolve if any cross-scope shortname collision exists; the resulting

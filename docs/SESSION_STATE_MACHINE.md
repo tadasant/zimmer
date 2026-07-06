@@ -1,6 +1,6 @@
 # Session State Machine
 
-This document describes the state machine that manages the lifecycle of agent sessions in Agent Orchestrator.
+This document describes the state machine that manages the lifecycle of agent sessions in Zimmer.
 
 ## Overview
 

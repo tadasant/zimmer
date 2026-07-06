@@ -3,14 +3,14 @@
 require "automated_prompts"
 
 # Service for recovering an in-flight session after its on-disk login identity
-# was invalidated mid-run — typically by AO rotating the active Claude account
+# was invalidated mid-run — typically by Zimmer rotating the active Claude account
 # (e.g. on quota exhaustion via AccountRotationService) while this session's CLI
 # process was still running.
 #
 # == The failure this recovers ==
 #
-# AO keeps one active account's credentials written to the runtime's canonical
-# filesystem location. When AO rotates accounts, any session whose CLI is
+# Zimmer keeps one active account's credentials written to the runtime's canonical
+# filesystem location. When Zimmer rotates accounts, any session whose CLI is
 # mid-turn makes its next API call against credentials that are no longer valid
 # for it, and Claude Code records a synthetic API error in the transcript:
 #

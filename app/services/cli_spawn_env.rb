@@ -8,7 +8,7 @@
 #   1. Load the per-clone `.env` file (KEY=VALUE) so the agent sees the
 #      session's configured environment.
 #   2. Clear inherited database/bundler variables so the child process uses its
-#      own configuration instead of AO's (issues #500 and #569).
+#      own configuration instead of Zimmer's (issues #500 and #569).
 #
 # Both ClaudeCliAdapter and CodexRuntimeAdapter include this module. Adapters
 # layer their own runtime-specific env vars (Claude's CLAUDE_CODE_* flags, MCP

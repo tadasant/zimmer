@@ -1,17 +1,17 @@
 # frozen_string_literal: true
 
 # Decides whether a session needs a dedicated self-session agent-orchestrator
-# MCP server injected, and resolves the per-environment AO instance target
-# (BASE_URL / API_KEY) that AO servers should point at.
+# MCP server injected, and resolves the per-environment Zimmer instance target
+# (BASE_URL / API_KEY) that Zimmer servers should point at.
 #
 # This is runtime-agnostic: it reasons about *which* catalog entry to inject and
 # *whether* injection is needed (the dedup rule), but it does not know how to
 # write the entry in any particular config format. The per-runtime config
-# post-processor passes in a description of the AO servers already present and a
+# post-processor passes in a description of the Zimmer servers already present and a
 # sink block that writes the chosen entry in its native format (`.mcp.json` for
 # Claude, `.codex/config.toml` for Codex).
 class SelfSessionInjector
-  # The catalog key for the self-session AO server, per environment. Dev/test
+  # The catalog key for the self-session Zimmer server, per environment. Dev/test
   # have no dedicated entry, so they fall back to the staging-flavored one and
   # rely on the post-processor's env retargeting to point it at the local
   # instance.
@@ -31,7 +31,7 @@ class SelfSessionInjector
     SELF_SESSION_CATALOG_KEYS.fetch(@env, SELF_SESSION_CATALOG_KEYS["staging"])
   end
 
-  # Inject the self-session AO server unless an existing AO server already
+  # Inject the self-session Zimmer server unless an existing Zimmer server already
   # exposes the self_session tool group.
   #
   # @param existing_ao_servers [Array<Hash>] one entry per MCP server already
@@ -56,7 +56,7 @@ class SelfSessionInjector
     key
   end
 
-  # An AO server with TOOL_GROUPS blank exposes the full tool surface — including
+  # An Zimmer server with TOOL_GROUPS blank exposes the full tool surface — including
   # the self_session group — which makes the dedicated self-session server
   # redundant.
   #
@@ -98,8 +98,8 @@ class SelfSessionInjector
     end
   end
 
-  # BASE_URL and API_KEY for the AO instance this Rails process IS. Used both to
-  # retarget catalog-resolved AO servers and to populate auto-injected AO
+  # BASE_URL and API_KEY for the Zimmer instance this Rails process IS. Used both to
+  # retarget catalog-resolved Zimmer servers and to populate auto-injected Zimmer
   # servers so a local-dev or staging session orchestrates itself, not
   # production.
   def ao_self_target

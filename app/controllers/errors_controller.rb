@@ -1,7 +1,7 @@
 # Handles unmatched routes (routing misses) so they no longer bubble up as an
 # ActionController::RoutingError. Rails' default DebugExceptions middleware logs
 # every RoutingError at ERROR level, and a single ERROR line trips the critical
-# "Agent Orchestrator ERROR logs present" Grafana alert. A routine 404 (favicon
+# "Zimmer ERROR logs present" Grafana alert. A routine 404 (favicon
 # probe, stale API path a client is hitting, etc.) is not "broken system behavior
 # requiring attention", so it is logged at INFO here instead.
 #

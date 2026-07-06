@@ -5,7 +5,7 @@ require "timeout"
 require "fileutils"
 
 # The native print-mode backend: shells out to `claude -p "<prompt>"`, waits for
-# it to finish, and returns its stdout. This is AO's default, historically
+# it to finish, and returns its stdout. This is Zimmer's default, historically
 # proven headless-inference path; it is selected unless the
 # `pty_transport` extension is enabled.
 #

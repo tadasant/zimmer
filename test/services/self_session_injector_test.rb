@@ -34,7 +34,7 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
       [ { name: "agent-orchestrator-prod-sessions", tool_groups: "sessions" } ]
     )
 
-    # Non-AO server -> ignored
+    # Non-Zimmer server -> ignored
     refute injector.self_session_capable_present?(
       [ { name: "playwright-custom", tool_groups: nil } ]
     )
@@ -45,7 +45,7 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
     )
   end
 
-  test "inject! yields catalog key and server when no capable AO server present" do
+  test "inject! yields catalog key and server when no capable Zimmer server present" do
     injector = SelfSessionInjector.new(env: "staging")
     fake_server = Object.new
     yielded = nil
@@ -60,7 +60,7 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
     assert_equal [ "agent-orchestrator-staging-self-session", fake_server ], yielded
   end
 
-  test "inject! skips and does not yield when a capable AO server is present" do
+  test "inject! skips and does not yield when a capable Zimmer server is present" do
     injector = SelfSessionInjector.new(env: "staging")
     yielded = false
 

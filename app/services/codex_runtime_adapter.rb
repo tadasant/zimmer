@@ -23,12 +23,12 @@
 #   disables Codex's own sandbox. This is the Codex analog to Claude's
 #   `--dangerously-skip-permissions`. We must NOT use `--full-auto` here:
 #   `--full-auto` selects the `workspace-write` sandbox, which Codex enforces via
-#   bubblewrap (bwrap). AO runs every session inside an already-isolated,
+#   bubblewrap (bwrap). Zimmer runs every session inside an already-isolated,
 #   externally-sandboxed container where the kernel disallows unprivileged user
 #   namespaces, so bwrap aborts ("No permissions to create a new namespace") and
 #   EVERY model-issued shell command fails before executing — the agent can do
 #   nothing. The Codex docs explicitly intend this flag for "environments that are
-#   externally sandboxed", which is exactly AO's model (#3884).
+#   externally sandboxed", which is exactly Zimmer's model (#3884).
 # - `--cd/-C <dir>` sets the working directory. NOTE: only `codex exec` accepts
 #   this; the `codex exec resume` subcommand rejects `--cd`, so resume relies on
 #   the spawned process's chdir instead (see #build_resume_command).
@@ -73,7 +73,7 @@ class CodexRuntimeAdapter
   # Execute a new Codex CLI session.
   #
   # @param prompt [String] The text prompt to send
-  # @param session_id [String] AO session UUID — accepted for contract symmetry
+  # @param session_id [String] Zimmer session UUID — accepted for contract symmetry
   #   but not passed to Codex, which generates its own session UUID (see class doc)
   # @param working_dir [String] Working directory for the process
   # @param mcp_config_path [String, nil] Accepted for contract symmetry; Codex
@@ -210,11 +210,11 @@ class CodexRuntimeAdapter
   # content is built by the Codex prompt contribution (#3783); this adapter only
   # delivers it.
   #
-  # The AO-managed prompt is written below AgentsMdWriter::AO_SECTION_MARKER, and
+  # The Zimmer-managed prompt is written below AgentsMdWriter::AO_SECTION_MARKER, and
   # any content already above that marker is preserved. This keeps the spawn-time
   # write consistent with the prepare-time AgentsMdWriter (which uses the same
   # marker): a committed AGENTS.md the repo ships flows through above the marker,
-  # while the AO section below it is refreshed on every spawn/resume. Without the
+  # while the Zimmer section below it is refreshed on every spawn/resume. Without the
   # preserve, this spawn-time write would clobber both the repo's AGENTS.md and
   # AgentsMdWriter's prepared content with orchestrator-only text.
   def write_system_prompt(working_dir, append_system_prompt)
@@ -297,7 +297,7 @@ class CodexRuntimeAdapter
   end
 
   # Explicitly export CODEX_HOME so the spawned `codex` persists its rollout
-  # JSONL transcript and state sqlite to the same directory AO reads transcripts
+  # JSONL transcript and state sqlite to the same directory Zimmer reads transcripts
   # from (CodexTranscriptSource) and the auth provider writes auth.json to. The
   # resolved path is the durable CODEX_HOME, or ~/.codex when unset. Without this
   # the child could fall back to a home dir on the ephemeral overlay filesystem,

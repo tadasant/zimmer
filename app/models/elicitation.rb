@@ -10,7 +10,7 @@
 # Lifecycle: pending -> accept | decline | cancel | expired
 #
 # Attributes:
-#   session_id        - The AO session this elicitation relates to
+#   session_id        - The Zimmer session this elicitation relates to
 #   request_id        - Unique ID from the MCP server (for polling)
 #   status            - Current state: pending, accept, decline, cancel, expired
 #   mode              - Elicitation mode (currently "form")

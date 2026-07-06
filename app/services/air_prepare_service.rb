@@ -14,7 +14,7 @@ require "tmpdir"
 # session's runtime via RuntimeRegistry, so each runtime declares its own
 # adapter id (claude → "claude", codex → "codex"). After AIR runs, this service
 # hands off to the runtime's RuntimeConfigPostProcessor, which resolves
-# remaining ${VAR} interpolations from SecretsLoader and applies AO-specific
+# remaining ${VAR} interpolations from SecretsLoader and applies Zimmer-specific
 # tweaks (server injection, env retargeting, npx --prefix) in the runtime's
 # native config format.
 class AirPrepareService
@@ -246,7 +246,7 @@ class AirPrepareService
       "--target", working_directory,
       "--no-subagent-merge",
       # AIR v0.0.30 flipped skill/mcp/hook/plugin flag semantics from "replace root
-      # defaults" to "add to root defaults". AO already stores the final resolved
+      # defaults" to "add to root defaults". Zimmer already stores the final resolved
       # session lists in session.catalog_skills / mcp_servers / catalog_hooks /
       # catalog_plugins (UI PATCH endpoints mutate these). Without this flag, if a
       # user removes a default artifact via the UI, AIR silently re-adds it from
@@ -271,7 +271,7 @@ class AirPrepareService
     Rails.logger.info "[AirPrepareService] Running: #{cmd.join(' ')}"
 
     # AIR CLI looks up its config in this order: --config flag, AIR_CONFIG env, ~/.air/air.json.
-    # We pass AIR_CONFIG so AO's Rails-level air.json setting drives the CLI.
+    # We pass AIR_CONFIG so Zimmer's Rails-level air.json setting drives the CLI.
     # effective_air_json_path applies any UI-configured catalog pins, so sessions
     # resolve the same frozen catalog refs as the rest of the app.
     env = SecretsLoader.all.merge("AIR_CONFIG" => AirCatalogService.effective_air_json_path)

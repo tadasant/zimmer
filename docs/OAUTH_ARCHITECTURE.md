@@ -1,6 +1,6 @@
-# OAuth Architecture in Agent Orchestrator
+# OAuth Architecture in Zimmer
 
-> **Scope.** This document is about **MCP-server** OAuth — the credentials AO
+> **Scope.** This document is about **MCP-server** OAuth — the credentials Zimmer
 > obtains so an MCP server (BigQuery, Linear, Notion, …) can act on the user's
 > behalf. It is a *different system* from the OAuth that authenticates the
 > **Claude Code CLI itself** (the Max-subscription login + account-rotation pool),
@@ -9,11 +9,11 @@
 > rendered walkthrough [`AUTH_ROTATION_ARCHITECTURE.html`](AUTH_ROTATION_ARCHITECTURE.html).
 > The Codex runtime equivalent is [`CODEX_AUTH.md`](CODEX_AUTH.md).
 
-This document describes how OAuth authentication works in Agent Orchestrator for MCP servers that require OAuth credentials.
+This document describes how OAuth authentication works in Zimmer for MCP servers that require OAuth credentials.
 
 ## Overview
 
-Agent Orchestrator supports OAuth authentication for MCP servers through two mechanisms:
+Zimmer supports OAuth authentication for MCP servers through two mechanisms:
 
 1. **Pre-registered OAuth** - Client credentials configured in Rails credentials for providers that don't support Dynamic Client Registration (DCR)
 2. **Dynamic OAuth Discovery** - RFC 8414/9728 metadata discovery with optional DCR for providers that support it
@@ -135,7 +135,7 @@ Without these parameters, Google only returns a short-lived access token (~1 hou
 
 ### Our Solution
 
-Agent Orchestrator automatically detects Google OAuth and adds the required parameters:
+Zimmer automatically detects Google OAuth and adds the required parameters:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -177,7 +177,7 @@ auth inside the session.
    `/.well-known/oauth-protected-resource`) is fetched and its `resource` field
    captured — this is the canonical, PRM-advertised identifier (for Notion,
    `https://mcp.notion.com`, **not** the `/mcp` path).
-2. If the PRM omits `resource`, AO falls back to the canonical MCP server URL
+2. If the PRM omits `resource`, Zimmer falls back to the canonical MCP server URL
    (scheme + host + port + path, minus query/fragment and trailing slash) via
    `McpOauthService#canonical_resource`. The indicator is therefore always sent.
 

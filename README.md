@@ -229,7 +229,7 @@ See [docs/EXTENSIONS_INSTALL.md](docs/EXTENSIONS_INSTALL.md) and, to write one,
 
 **Architecture & internals**
 - [Adding an agent harness/runtime](docs/ADDING_AN_AGENT_HARNESS.md)
-- [AO Extensions design](docs/AO_EXTENSIONS.md) ·
+- [Zimmer Extensions design](docs/AO_EXTENSIONS.md) ·
   [Authoring an extension](docs/AUTHORING_AN_AO_EXTENSION.md)
 - [MCP OAuth architecture](docs/OAUTH_ARCHITECTURE.md) ·
   [Elicitation flow](docs/ELICITATION_FLOW.md)

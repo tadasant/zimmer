@@ -46,6 +46,13 @@ write_files:
             DATABASE_USERNAME: zimmer
             DATABASE_PASSWORD: ${secret_key_base}
             REDIS_URL: redis://redis:6379/0
+            # Observability (optional): the app's initializers are hard no-ops when
+            # these are empty, so leaving them blank simply disables obs. Set the
+            # matching TF_VAR_* (from GitHub secrets) to turn shipping on.
+            OTEL_SERVICE_NAME: zimmer
+            OTEL_LOGS_EXPORTER_ENDPOINT: "${otel_logs_endpoint}"
+            OTEL_LOGS_EXPORTER_BEARER_TOKEN: "${otel_logs_token}"
+            SENTRY_DSN_BACKEND: "${sentry_dsn}"
           depends_on: [db, redis]
           restart: always
       volumes:

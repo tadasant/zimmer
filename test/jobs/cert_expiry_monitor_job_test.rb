@@ -187,7 +187,7 @@ class CertExpiryMonitorJobTest < ActiveSupport::TestCase
 
     refute_includes checker.checked_hosts, "staging.zimmer.example.com",
       "the worker cannot reach its own host's tailscale origin, so it must skip it"
-    # The peer AO host and the public obs hosts are still watched.
+    # The peer Zimmer host and the public obs hosts are still watched.
     assert_includes checker.checked_hosts, "zimmer.example.com"
     assert_includes checker.checked_hosts, "obs.tadasant.com"
   end
