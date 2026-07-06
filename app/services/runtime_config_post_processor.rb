@@ -130,7 +130,7 @@ class RuntimeConfigPostProcessor
 
   # When the root declares default_subagent_roots, inject an agent-orchestrator MCP server
   # with ALLOWED_AGENT_ROOTS set to the declared subagent roots. This lets parent roots
-  # spawn subagent sessions without explicitly listing an Zimmer MCP server in default_mcp_servers.
+  # spawn subagent sessions without explicitly listing a Zimmer MCP server in default_mcp_servers.
   def inject_subagent_ao_server!(servers)
     root = find_root
     return unless root&.default_subagent_roots&.any?

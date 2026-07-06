@@ -159,7 +159,7 @@ class NpxCacheHealService
       File.join(working_directory, ".npm-cache", "_npx")
     end
 
-    # Guard against deleting anything outside an Zimmer clone's npm cache. Only paths
+    # Guard against deleting anything outside a Zimmer clone's npm cache. Only paths
     # that live under ~/.agent-orchestrator/clones AND inside a `.npm-cache/_npx`
     # segment are eligible.
     def safe_to_remove?(path)

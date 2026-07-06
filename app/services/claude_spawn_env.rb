@@ -71,7 +71,7 @@ module ClaudeSpawnEnv
 
     # Let enabled Zimmer Extensions contribute/override env vars (e.g. mcp_tool_search
     # flipping ENABLE_TOOL_SEARCH to "true"). Merged over the baseline above so an
-    # extension can override an Zimmer default; with no extension enabled this is a
+    # extension can override a Zimmer default; with no extension enabled this is a
     # no-op and the child sees the baseline env unchanged.
     env_vars.merge!(Ao::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
 

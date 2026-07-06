@@ -39,7 +39,7 @@ class ClaudeCliAdapter
   # Skill(schedule) blocks the `/schedule` skill that ships with the Claude
   # Code CLI. That skill creates scheduled remote agents and is geared
   # toward terminal-attached users who walk away from their machine — it
-  # is non-functional inside an Zimmer session and was previously a frequent
+  # is non-functional inside a Zimmer session and was previously a frequent
   # mistake target despite the system-prompt directive against it. Zimmer has
   # its own trigger system + wake-me-up tools that serve the same intent.
   #
