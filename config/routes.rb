@@ -304,7 +304,7 @@ Rails.application.routes.draw do
   # Catch-all for unmatched paths. MUST stay last so it never shadows a real route.
   # Without it, an unmatched path raises ActionController::RoutingError, which Rails'
   # default DebugExceptions middleware logs at ERROR — and a single ERROR line trips
-  # the critical "Agent Orchestrator ERROR logs present" Grafana alert. Routing here
+  # the critical "Zimmer ERROR logs present" Grafana alert. Routing here
   # instead renders a normal 404 (JSON for /api/*, the static 404 page otherwise) and
   # logs at INFO. Real exceptions raised inside controllers are unaffected.
   #

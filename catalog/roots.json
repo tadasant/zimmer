@@ -11,7 +11,7 @@
   },
   "agent-orchestrator": {
     "name": "agent-orchestrator",
-    "display_name": "Agent Orchestrator",
+    "display_name": "Zimmer",
     "description": "The Zimmer orchestrator Rails app itself — models, controllers, jobs, services, views, migrations, tests.",
     "url": "https://github.com/tadasant/zimmer-catalog.git",
     "default_branch": "main",

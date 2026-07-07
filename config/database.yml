@@ -19,10 +19,10 @@ default: &default
 development:
   primary:
     <<: *default
-    database: agent_orchestrator_development
+    database: zimmer_development
   cable:
     <<: *default
-    database: agent_orchestrator_development_cable
+    database: zimmer_development_cable
     migrations_paths: db/cable_migrate
 
 # Warning: The database defined as "test" will be erased and
@@ -31,26 +31,26 @@ development:
 test:
   primary:
     <<: *default
-    database: agent_orchestrator_test
+    database: zimmer_test
   cable:
     <<: *default
-    database: agent_orchestrator_test_cable
+    database: zimmer_test_cable
     migrations_paths: db/cable_migrate
 
 staging:
   primary:
     <<: *default
-    database: agent_orchestrator_staging
+    database: zimmer_staging
   cable:
     <<: *default
-    database: agent_orchestrator_staging_cable
+    database: zimmer_staging_cable
     migrations_paths: db/cable_migrate
 
 production:
   primary:
     <<: *default
-    database: agent_orchestrator_production
+    database: zimmer_production
   cable:
     <<: *default
-    database: agent_orchestrator_production_cable
+    database: zimmer_production_cable
     migrations_paths: db/cable_migrate

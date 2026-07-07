@@ -16,8 +16,8 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     @ao_session = Session.create!(
       git_root: "https://github.com/tadasant/zimmer-catalog.git",
       subdirectory: "agents/agent-orchestrator",
-      prompt: "AO session",
-      title: "AO Session",
+      prompt: "Zimmer session",
+      title: "Zimmer Session",
       metadata: { "agent_root_key" => "agent-orchestrator" }
     )
 
@@ -26,8 +26,8 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     @ao_legacy_session = Session.create!(
       git_root: "https://github.com/tadasant/zimmer-catalog.git",
       subdirectory: "agents/agent-orchestrator",
-      prompt: "AO legacy session",
-      title: "AO Legacy Session"
+      prompt: "Zimmer legacy session",
+      title: "Zimmer Legacy Session"
     )
 
     # Belongs to a different root ("agents").
@@ -121,7 +121,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   end
 
   test "agent root filter and text query combine" do
-    @ao_session.update!(title: "Special AO")
+    @ao_session.update!(title: "Special Zimmer")
 
     get root_url(agent_root: "agent-orchestrator", q: "Special")
     assert_response :success

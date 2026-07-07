@@ -96,7 +96,7 @@ module SessionStateMachine
       # it made a synchronous MCP elicitation request and is blocked awaiting the
       # user's accept/decline/cancel response. We surface the session as needs_input
       # so it appears in the user's homepage action queue and gets the same Slack /
-      # AO-event visibility a normal pause gets, but we deliberately do NOT call
+      # Zimmer-event visibility a normal pause gets, but we deliberately do NOT call
       # `cleanup_running_job` — that would terminate the process and break the
       # elicitation round-trip. The push notification for this case is the immediate
       # `elicitation_pending` push enqueued at elicitation-create time, so we do not
@@ -555,7 +555,7 @@ module SessionStateMachine
     # Don't raise - cleanup failures shouldn't block archival
   end
 
-  # Fire AO event triggers when session transitions to a watchable state.
+  # Fire Zimmer event triggers when session transitions to a watchable state.
   # Defers the job until after the current transaction commits to ensure:
   # 1. The session record is persisted and visible to the job
   # 2. No synchronous cascading in system tests using perform_enqueued_jobs
@@ -572,7 +572,7 @@ module SessionStateMachine
       AoEventTriggerJob.perform_later(event_name, session_id)
     end
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to enqueue AO event trigger job (#{event_name}): #{e.message}"
+    Rails.logger.error "[SessionStateMachine] Failed to enqueue Zimmer event trigger job (#{event_name}): #{e.message}"
     # Don't raise - trigger failures shouldn't block state transitions
   end
 

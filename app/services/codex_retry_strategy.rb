@@ -26,7 +26,7 @@
 # == Not yet characterized ==
 #
 # context_length_error? and api_error_for_retry? still return false because the
-# Codex-specific signals are not yet characterized in AO: Codex's
+# Codex-specific signals are not yet characterized in Zimmer: Codex's
 # context-length stderr strings differ from Claude's, and the Codex transcript
 # error envelope shape is owned by the Codex transcript source (#3779). Unlike a
 # failed resume, those conditions surface as ordinary non-zero exits that
@@ -102,7 +102,7 @@ class CodexRetryStrategy
   end
 
   # Codex's mid-session auth-invalidation signature (the analog of Claude Code's
-  # "Not logged in / Please run /login") is not yet characterized in AO — its
+  # "Not logged in / Please run /login") is not yet characterized in Zimmer — its
   # transcript error envelope is owned by the Codex transcript source (#3779).
   # Until then there is nothing to classify, so an invalidated Codex turn falls
   # through to the generic failure path (surfaced, not hidden), exactly as

@@ -227,9 +227,9 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert account.needs_reauth?
   end
 
-  test "refresh_token! uses filesystem refresh token when CLI rotated it behind AO" do
+  test "refresh_token! uses filesystem refresh token when CLI rotated it behind Zimmer" do
     # Simulates the divergence case from issue #2964: CLI rotated the refresh token
-    # on disk (via Anthropic's OAuth rotation during a session) but AO's DB still
+    # on disk (via Anthropic's OAuth rotation during a session) but Zimmer's DB still
     # holds the original stale token. Without the sync, the OAuth call would use
     # the stale token and fail with invalid_grant.
     tmpdir = Dir.mktmpdir

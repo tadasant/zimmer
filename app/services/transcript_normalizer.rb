@@ -17,7 +17,7 @@
 # docs/OPEN_TRANSCRIPTS.md). One source line may fan out into several events
 # (e.g. an assistant line -> AssistantMessage + Thinking + ToolCall), or into
 # none (bookkeeping lines that are not rendered). Each event is a symbol-keyed
-# Hash carrying the spec fields (:id, :ts, :type, ...) plus AO render/order
+# Hash carrying the spec fields (:id, :ts, :type, ...) plus Zimmer render/order
 # adornments (:sort_time, :transcript_index, :event_order). The single UI
 # partial timeline_items/_item dispatches on each event's :type.
 #
@@ -57,12 +57,12 @@ class TranscriptNormalizer
     raise NotImplementedError, "#{self.class}#extract_session_id"
   end
 
-  # Whether this runtime mints its OWN session id that AO must learn from the
-  # transcript (rather than honoring the id AO supplied at spawn).
+  # Whether this runtime mints its OWN session id that Zimmer must learn from the
+  # transcript (rather than honoring the id Zimmer supplied at spawn).
   #
-  # Codex ignores the AO-supplied id and generates its own rollout/thread UUID,
+  # Codex ignores the Zimmer-supplied id and generates its own rollout/thread UUID,
   # so the poller must capture it from the transcript for resume to target the
-  # right rollout. Claude Code honors the AO-supplied `--session-id` / `--resume
+  # right rollout. Claude Code honors the Zimmer-supplied `--session-id` / `--resume
   # <id>`, so its stored session id is already authoritative and must NEVER be
   # overwritten from transcript content — doing so corrupts forked sessions,
   # whose copied-from-source lines carry the SOURCE session's id (see

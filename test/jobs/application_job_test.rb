@@ -124,7 +124,7 @@ class ApplicationJobTest < ActiveSupport::TestCase
   test "discards GoodJob::InterruptError and logs the discard at INFO, not ERROR" do
     # Deploy/graceful-shutdown interruptions are expected operational behavior. The original
     # `discard_on GoodJob::InterruptError` fired ActiveJob's `discard.active_job` notification,
-    # whose LogSubscriber logs at ERROR — tripping the "any AO ERROR → critical" Grafana alert
+    # whose LogSubscriber logs at ERROR — tripping the "any Zimmer ERROR → critical" Grafana alert
     # on every deploy that interrupted a job. ApplicationJob handles the error with rescue_from
     # instead, which discards the job WITHOUT firing that notification and logs at INFO.
     #

@@ -38,15 +38,15 @@ class AgentsMdWriterTest < ActiveSupport::TestCase
     assert_equal TARGET, @writer.target_path
   end
 
-  test "fresh write creates AGENTS.md with the AO marker and codex orchestrator context" do
+  test "fresh write creates AGENTS.md with the Zimmer marker and codex orchestrator context" do
     path = @writer.write!
 
     assert_equal TARGET, path
     content = @fs.read(TARGET)
 
     assert content.start_with?(AgentsMdWriter::AO_SECTION_MARKER),
-      "fresh write should lead with the AO section marker so re-runs can detect it"
-    assert_includes content, "# Agent Orchestrator Context"
+      "fresh write should lead with the Zimmer section marker so re-runs can detect it"
+    assert_includes content, "# Zimmer Context"
     assert_includes content, "## Operating Principles"
     # Codex-flavored: AGENTS.md references, not CLAUDE.md, and no Claude-only tools.
     assert_includes content, "following any AGENTS.md instructions in the repository"
@@ -63,9 +63,9 @@ class AgentsMdWriterTest < ActiveSupport::TestCase
 
     assert_includes content, "# Repo AGENTS"
     assert_includes content, "Project specific stuff."
-    assert_includes content, "# Agent Orchestrator Context"
+    assert_includes content, "# Zimmer Context"
     assert content.index("# Repo AGENTS") < content.index(AgentsMdWriter::AO_SECTION_MARKER),
-      "the repo's existing content should remain above the AO-managed section"
+      "the repo's existing content should remain above the Zimmer-managed section"
   end
 
   test "is idempotent across repeated prepares" do
@@ -77,8 +77,8 @@ class AgentsMdWriterTest < ActiveSupport::TestCase
 
     assert_equal first, second, "a second prepare must not change the file"
     assert_equal 1, second.scan(AgentsMdWriter::AO_SECTION_MARKER).length,
-      "the AO marker should appear exactly once"
-    assert_equal 1, second.scan("# Agent Orchestrator Context").length,
+      "the Zimmer marker should appear exactly once"
+    assert_equal 1, second.scan("# Zimmer Context").length,
       "the orchestrator context should be written exactly once"
   end
 end

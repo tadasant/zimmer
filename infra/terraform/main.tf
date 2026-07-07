@@ -108,6 +108,28 @@ variable "secret_key_base" {
   description = "Rails SECRET_KEY_BASE for the app."
 }
 
+# ---- Observability (all optional; empty = the app's obs initializers no-op) --
+
+variable "otel_logs_endpoint" {
+  type        = string
+  default     = ""
+  description = "OTLP/HTTP logs endpoint (e.g. https://obs.example.com/otel/v1/logs). Empty disables OTEL log shipping."
+}
+
+variable "otel_logs_token" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Bearer token for the OTLP logs endpoint. Both endpoint and token must be set to enable shipping."
+}
+
+variable "sentry_dsn" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Sentry/GlitchTip DSN for backend error tracking. Empty disables Sentry."
+}
+
 # ---- Resources --------------------------------------------------------------
 
 resource "digitalocean_project" "zimmer" {
@@ -134,6 +156,9 @@ resource "digitalocean_droplet" "zimmer" {
     ghcr_username      = var.ghcr_username
     ghcr_token         = var.ghcr_token
     secret_key_base    = var.secret_key_base
+    otel_logs_endpoint = var.otel_logs_endpoint
+    otel_logs_token    = var.otel_logs_token
+    sentry_dsn         = var.sentry_dsn
   })
 }
 

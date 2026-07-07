@@ -3,7 +3,7 @@
 # Service for making one-off, headless inference calls — a "sprinkle of
 # inference" without standing up a full interactive agent session.
 #
-# This is the runtime-neutral interface AO uses anywhere it needs a single
+# This is the runtime-neutral interface Zimmer uses anywhere it needs a single
 # short LLM completion (session titles, notification summaries, category
 # inference). Callers depend only on #generate(prompt, …); they make no
 # assumption about which coding-agent runtime backs it.

@@ -7,7 +7,7 @@ require "mocha/minitest"
 # Tests for AirPrepareService — the thin orchestrator that installs the AIR CLI,
 # picks the runtime's AIR adapter from RuntimeRegistry, shells out to
 # `air prepare`, and hands off MCP-config post-processing to the runtime's
-# RuntimeConfigPostProcessor. The AO-specific .mcp.json tweaks are tested
+# RuntimeConfigPostProcessor. The Zimmer-specific .mcp.json tweaks are tested
 # directly against ClaudeMcpConfigPostProcessor in
 # claude_mcp_config_post_processor_test.rb.
 class AirPrepareServiceTest < ActiveSupport::TestCase
@@ -736,7 +736,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes captured_cmd, "--no-subagent-merge"
   end
 
-  test "prepare! passes --without-defaults to AIR CLI so root defaults are not layered on AO's resolved session lists" do
+  test "prepare! passes --without-defaults to AIR CLI so root defaults are not layered on Zimmer's resolved session lists" do
     captured_cmd = nil
 
     stub_air_subprocess(proc { |*args, **opts|
@@ -796,7 +796,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     mcp_config_path = File.join(@working_dir, ".mcp.json")
     assert @mock_fs.exists?(mcp_config_path), ".mcp.json should be created by the post-processor"
     self_server = JSON.parse(@mock_fs.read(mcp_config_path)).dig("mcpServers", "agent-orchestrator-staging-self-session")
-    assert_not_nil self_server, "Self-session AO server should be injected via delegation"
+    assert_not_nil self_server, "Self-session Zimmer server should be injected via delegation"
     assert_equal [ "agent-orchestrator-staging-self-session" ], service.injected_mcp_servers
   end
 

@@ -17,7 +17,7 @@ class McpOauthService
   REQUEST_TIMEOUT = 30
 
   # User agent for OAuth requests
-  USER_AGENT = "AgentOrchestrator/1.0".freeze
+  USER_AGENT = "Zimmer/1.0".freeze
 
   # Result of checking a server's OAuth requirements
   OAuthRequirement = Struct.new(:required, :metadata, :error, keyword_init: true)
@@ -192,7 +192,7 @@ class McpOauthService
 
     body = {
       redirect_uris: [ redirect_uri ],
-      client_name: "Claude Code (Agent Orchestrator)",
+      client_name: "Claude Code (Zimmer)",
       grant_types: [ "authorization_code", "refresh_token" ],
       response_types: [ "code" ],
       token_endpoint_auth_method: auth_method

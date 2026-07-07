@@ -5,20 +5,20 @@
 #
 # Claude Code receives the orchestrator system prompt via `--append-system-prompt`
 # at spawn time. Codex has no equivalent flag — it reads project instructions from
-# `AGENTS.md` — so AO writes the same orchestrator context (AO operating
+# `AGENTS.md` — so Zimmer writes the same orchestrator context (Zimmer operating
 # principles + the Codex runtime contribution) into `AGENTS.md` during prepare.
 #
-# If the repo already ships an `AGENTS.md`, AO's content is appended below a
+# If the repo already ships an `AGENTS.md`, Zimmer's content is appended below a
 # clearly delimited marker rather than overwriting it, so the repo's own project
-# instructions are preserved (mirroring how Claude's `CLAUDE.md` and AO's appended
+# instructions are preserved (mirroring how Claude's `CLAUDE.md` and Zimmer's appended
 # system prompt coexist).
 #
 # Skill/hook/plugin content does NOT flow through this writer — those reach Codex
 # through their own native discovery surfaces (`.agents/skills/`, `.codex/`), wired
 # by the AIR Codex adapter. This writer only delivers the system-prompt slice.
 class AgentsMdWriter
-  # Marks the start of AO-managed content appended to a pre-existing AGENTS.md.
-  AO_SECTION_MARKER = "<!-- BEGIN Agent Orchestrator context (managed by AO) -->"
+  # Marks the start of Zimmer-managed content appended to a pre-existing AGENTS.md.
+  AO_SECTION_MARKER = "<!-- BEGIN Zimmer context (managed by Zimmer) -->"
 
   attr_reader :session, :working_directory, :file_system
 
@@ -51,7 +51,7 @@ class AgentsMdWriter
     File.join(working_directory, filename)
   end
 
-  # Write the orchestrator context to the target file. The AO content is always
+  # Write the orchestrator context to the target file. The Zimmer content is always
   # wrapped in AO_SECTION_MARKER so it can be detected on re-runs: appended below
   # a delimiter when the file already exists, written on its own otherwise. The
   # marker is the dedupe key, so it must be present even on a fresh write to keep

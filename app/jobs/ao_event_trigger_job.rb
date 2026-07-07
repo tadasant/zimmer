@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Job that fires ao_event trigger conditions when internal AO events occur.
+# Job that fires ao_event trigger conditions when internal Zimmer events occur.
 #
 # Currently supports:
 # - session_needs_input: Fired when a session transitions to needs_input

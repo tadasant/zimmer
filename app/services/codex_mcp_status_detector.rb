@@ -32,7 +32,7 @@
 # server connected is the rmcp `Service initialized as client` line Codex emits
 # on stderr, once per connected MCP server, when `RUST_LOG` enables `rmcp=info`
 # (CodexRuntimeAdapter sets this on spawn). That line reports the server's
-# self-declared name, not the AO config key, so it cannot be mapped to a specific
+# self-declared name, not the Zimmer config key, so it cannot be mapped to a specific
 # server — only counted. When the number of fresh init lines reaches the total
 # number of servers Codex is expected to connect to, every expected server
 # connected, so all trackable servers are marked connected. This never
@@ -41,7 +41,7 @@
 # the #3991 follow-up.
 #
 # Failed detection (best-effort): Codex surfaces MCP startup failures on the CLI's
-# stderr, which AO captures to `<working_directory>/codex_stderr.log`. We scan it
+# stderr, which Zimmer captures to `<working_directory>/codex_stderr.log`. We scan it
 # for lines naming a server that failed to start. This is conservative — a server
 # that produced a successful tool call is never marked failed — because a
 # configured-server failure escalates to a session-level failure.

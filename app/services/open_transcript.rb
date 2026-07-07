@@ -2,7 +2,7 @@
 
 # OpenTranscript — Ruby representation of the OpenTranscripts v0.1 event model.
 #
-# This is a vendor-neutral, event-based transcript format. Both AO runtimes
+# This is a vendor-neutral, event-based transcript format. Both Zimmer runtimes
 # (Claude Code and Codex) normalize their native transcript JSONL into a stream
 # of OpenTranscripts events, and a single UI renderer (timeline_items/_item)
 # dispatches on each event's `type`.
@@ -12,16 +12,16 @@
 # converters). See docs/OPEN_TRANSCRIPTS.md for the vendored schema doc and the
 # pointer back to the canonical definition.
 #
-# Representation choices for AO:
+# Representation choices for Zimmer:
 # - Each event is a Ruby Hash with SYMBOL keys for the event's own fields
 #   (:id, :ts, :type, ...). Nested structures that originate from parsed JSON
 #   (ContentParts, tool arguments, provider_raw payloads) keep their STRING
 #   keys, matching how they arrive from JSON.parse.
-# - Events carry a few AO-internal adornments alongside the spec fields:
+# - Events carry a few Zimmer-internal adornments alongside the spec fields:
 #   :sort_time (a Time for stable ordering), :transcript_index (the source line
 #   index, used by fork-from-here), and :event_order (intra-line fan-out order).
 #   These are ignored by the spec but used by the renderer/controller.
-# - AO does NOT apply the reference converter's secret redaction. It renders raw
+# - Zimmer does NOT apply the reference converter's secret redaction. It renders raw
 #   content exactly as it always has (documented fidelity note in the PR).
 module OpenTranscript
   SCHEMA_VERSION = "0.1"
@@ -176,7 +176,7 @@ module OpenTranscript
   end
 
   # Assemble a full OpenTranscripts Transcript envelope from a flat list of
-  # events (already AO-internal hashes). Sorts events by ts ascending with a
+  # events (already Zimmer-internal hashes). Sorts events by ts ascending with a
   # stable tiebreak on (transcript_index, event_order), backfills nothing
   # (events always have a ts), and computes final_metrics. Primarily used by
   # tests and the invariant checks; the live UI consumes events directly.

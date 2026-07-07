@@ -2,7 +2,7 @@ require "test_helper"
 
 # Routing misses (404s) must NOT be logged at ERROR. Rails' default behavior raises
 # ActionController::RoutingError for an unmatched path, which DebugExceptions logs at
-# ERROR — and a single ERROR line trips the critical "Agent Orchestrator ERROR logs
+# ERROR — and a single ERROR line trips the critical "Zimmer ERROR logs
 # present" Grafana alert. The favicon route + bottom catch-all route convert these into
 # quiet, non-ERROR responses. See GitHub issue #4307.
 class Routing404Test < ActionDispatch::IntegrationTest

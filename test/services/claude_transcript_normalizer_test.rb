@@ -294,7 +294,7 @@ class ClaudeTranscriptNormalizerTest < ActiveSupport::TestCase
 
   # === mints_own_session_id? ===
 
-  test "mints_own_session_id? is false (Claude honors the AO-supplied id)" do
+  test "mints_own_session_id? is false (Claude honors the Zimmer-supplied id)" do
     assert_equal false, @normalizer.mints_own_session_id?
   end
 

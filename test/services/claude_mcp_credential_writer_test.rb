@@ -128,7 +128,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
 
   # --- merge-guard: preserve fresher runtime-written tokens ---
 
-  test "write! preserves an existing entry that is still valid and fresher than AO's" do
+  test "write! preserves an existing entry that is still valid and fresher than Zimmer's" do
     runtime_expiry_ms = (2.hours.from_now.to_f * 1000).to_i
     File.write(@credentials_file, JSON.pretty_generate({
       "mcpOAuth" => {
@@ -140,7 +140,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       }
     }))
 
-    # AO's incoming token expires sooner than the runtime one.
+    # Zimmer's incoming token expires sooner than the runtime one.
     ao_credential = resolved_credential(
       credential_key: "notion|abc123",
       access_token: "ao-stale-token",
@@ -155,7 +155,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     assert_equal "runtime-fresh-token", entry["accessToken"], "must keep the fresher runtime token"
   end
 
-  test "write! overwrites an existing entry that AO's token is newer than" do
+  test "write! overwrites an existing entry that Zimmer's token is newer than" do
     runtime_expiry_ms = (1.hour.from_now.to_f * 1000).to_i
     File.write(@credentials_file, JSON.pretty_generate({
       "mcpOAuth" => {
@@ -178,7 +178,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
-    assert_equal "ao-newer-token", entry["accessToken"], "AO's newer token must win"
+    assert_equal "ao-newer-token", entry["accessToken"], "Zimmer's newer token must win"
   end
 
   test "write! overwrites an existing entry that has already expired" do
@@ -204,7 +204,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
-    assert_equal "ao-token", entry["accessToken"], "AO's token must replace the expired runtime token"
+    assert_equal "ao-token", entry["accessToken"], "Zimmer's token must replace the expired runtime token"
   end
 
   test "write! overwrites an existing entry that has no recorded expiry" do
@@ -228,10 +228,10 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
-    assert_equal "ao-token", entry["accessToken"], "AO's entry must win when existing has no expiry"
+    assert_equal "ao-token", entry["accessToken"], "Zimmer's entry must win when existing has no expiry"
   end
 
-  test "write! keeps a still-valid runtime entry when AO's incoming token has no expiry" do
+  test "write! keeps a still-valid runtime entry when Zimmer's incoming token has no expiry" do
     runtime_expiry_ms = (2.hours.from_now.to_f * 1000).to_i
     File.write(@credentials_file, JSON.pretty_generate({
       "mcpOAuth" => {
@@ -243,7 +243,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       }
     }))
 
-    # AO's incoming token has no recorded expiry — it is not demonstrably fresher
+    # Zimmer's incoming token has no recorded expiry — it is not demonstrably fresher
     # than the still-valid runtime entry, so the runtime entry is preserved.
     ao_credential = resolved_credential(
       credential_key: "notion|abc123",
@@ -256,7 +256,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
-    assert_equal "runtime-valid-token", entry["accessToken"], "must keep the still-valid runtime token when AO's has no expiry"
+    assert_equal "runtime-valid-token", entry["accessToken"], "must keep the still-valid runtime token when Zimmer's has no expiry"
   end
 
   private

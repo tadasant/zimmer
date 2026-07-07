@@ -21,7 +21,7 @@ class AppSettingsController < ApplicationController
       setting.default_model = app_params[:default_model].to_s.strip.presence
     end
 
-    # AO Extension enablement toggles arrive as app_setting[extensions][<id>].
+    # Zimmer Extension enablement toggles arrive as app_setting[extensions][<id>].
     # Handled generically off the extension id so adding or removing an extension
     # needs no controller change — the id is the enablement key in extension_states.
     # Guard the param shape (a scalar would raise on #each_pair) and persist only
