@@ -78,8 +78,9 @@ jobs:
         # Fire a repository_dispatch so tadasant-internal's auto-upgrade + IaC-sync
         # workflows run the instant a new image publishes, instead of waiting for
         # their polls. This NEVER fails the release: it is a no-op until the
-        # ZIMMER_INTERNAL_DISPATCH_TOKEN secret is set (a PAT with contents/dispatch
-        # write access to tadasant-internal), and a non-2xx response only warns --
+        # ZIMMER_INTERNAL_DISPATCH_TOKEN secret is set (a PAT with Contents:write on
+        # tadasant-internal -- the repository_dispatch API is gated by Contents write;
+        # there is no separate "dispatch" scope), and a non-2xx response only warns --
         # prod still catches up on its own schedule.
         env:
           DISPATCH_TOKEN: ${{ secrets.ZIMMER_INTERNAL_DISPATCH_TOKEN }}
