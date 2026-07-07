@@ -6,7 +6,7 @@ class CatalogsController < ApplicationController
   # of a few catalog repos — normally a few seconds — but the ceiling is generous
   # to absorb a cold/slow github.com fetch. Overridable via ENV for ops tuning.
   #
-  # Keep this safely UNDER the Cloudflare edge proxy timeout (~100s; AO is served
+  # Keep this safely UNDER the Cloudflare edge proxy timeout (~100s; Zimmer is served
   # Cloudflare → Hatchbox → Rails). If the wait can outlast the edge, a genuinely
   # slow refresh is cut off with a generic 524 page instead of the "still running
   # in the background" alert below — and the request also pins a Puma thread (only

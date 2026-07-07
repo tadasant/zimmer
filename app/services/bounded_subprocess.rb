@@ -5,7 +5,7 @@ require "open3"
 # Runs a subprocess under a hard wall-clock timeout, killing the entire process
 # group on deadline.
 #
-# Shared by the two places AO shells out to git over the network on the
+# Shared by the two places Zimmer shells out to git over the network on the
 # `waiting → running` launch path:
 #   - GitCloneService (clones the session's working directory)
 #   - AirPrepareService (runs `air prepare`, which itself shells out to

@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-# Builds the system prompt context for Claude Code sessions running within Agent Orchestrator.
+# Builds the system prompt context for Claude Code sessions running within Zimmer.
 #
 # This context is appended to Claude's default system prompt via --append-system-prompt,
 # providing agents with awareness of:
-# - The Agent Orchestrator environment they're operating in
+# - The Zimmer environment they're operating in
 # - The deployment environment (development/production)
 # - Session-specific context (repository, MCP servers, etc.)
 #
@@ -17,7 +17,7 @@ class OrchestratorSystemPromptBuilder
   # @param clone_path [String, nil] The path to the git clone (if available)
   # @param runtime [String, Symbol, nil] The agent runtime driving the session
   #   (e.g. "claude"). Selects the per-runtime prompt contribution. nil defaults
-  #   to Claude — AO's only runtime today — so the prompt is unchanged when no
+  #   to Claude — Zimmer's only runtime today — so the prompt is unchanged when no
   #   runtime is specified.
   # @return [String] The system prompt to append
   def self.build(session:, clone_path: nil, runtime: nil)
@@ -46,12 +46,12 @@ class OrchestratorSystemPromptBuilder
 
   def orchestrator_context_section
     <<~SECTION.strip
-      # Agent Orchestrator Context
+      # Zimmer Context
 
-      You are facilitating an agent session within Agent Orchestrator, a Rails application for orchestrating AI coding agents.
+      You are facilitating an agent session within Zimmer, a Rails application for orchestrating AI coding agents.
 
       Environment: #{Rails.env}
-      Application: Agent Orchestrator (https://github.com/tadasant/zimmer-catalog)
+      Application: Zimmer (https://github.com/tadasant/zimmer-catalog)
     SECTION
   end
 
@@ -125,7 +125,7 @@ class OrchestratorSystemPromptBuilder
     <<~SECTION.strip
       ## Operating Principles
 
-      These principles govern how every agent operates within Agent Orchestrator. They apply regardless of which agent root you are running under.
+      These principles govern how every agent operates within Zimmer. They apply regardless of which agent root you are running under.
 
       ### 1. Human-Approved Git Changes
 
@@ -143,7 +143,7 @@ class OrchestratorSystemPromptBuilder
 
       ### 3. Remote Execution Environment
 
-      Agent Orchestrator sessions run on remote servers, not on the user's local machine. The user interacts through a web UI layered on top of headless Claude Code and has no access to the agent's filesystem. They may be on their phone, a tablet, or any device — all they see is the conversation.
+      Zimmer sessions run on remote servers, not on the user's local machine. The user interacts through a web UI layered on top of headless Claude Code and has no access to the agent's filesystem. They may be on their phone, a tablet, or any device — all they see is the conversation.
 
       **Bias toward inline content.** When sharing code, logs, errors, or other artifacts with the user, show them directly in your conversation text rather than pointing to local file paths. A message like "check `/tmp/output.log`" is useless to someone who cannot open that path.
 
@@ -165,17 +165,17 @@ class OrchestratorSystemPromptBuilder
 
       ### 6. Expected Operations
 
-      These are the normal operational expectations for Agent Orchestrator. If something takes significantly longer than described here, the problem is likely with the system — report it to the user rather than endlessly retrying.
+      These are the normal operational expectations for Zimmer. If something takes significantly longer than described here, the problem is likely with the system — report it to the user rather than endlessly retrying.
 
       - **Session spawning**: A newly created session should start running within about a minute. If a spawned session is still in `waiting` after a couple of minutes, something is wrong — flag it to the user.
       - **CI**: GitHub Actions CI typically completes within around 5–10 minutes. If checks haven't started within a couple of minutes of pushing, check for merge conflicts or GitHub outages before retrying.
-      - **Transient failure recovery**: AO automatically handles transient API errors, process interruptions, and context length issues with retries and compaction. Most transient problems resolve within a few minutes without any action from you. If your session is interrupted and resumes, this is normal — continue your work.
-      - **Stuck sessions**: If a session has no activity for an extended period (~15 minutes), AO will detect and recover it automatically. You do not need to monitor for this.
-      - **Process shutdown**: When AO needs to stop a session, it sends SIGTERM and expects a prompt exit — there is no extended grace period before it escalates to SIGKILL. Keep this in mind if you start long-running subprocesses.
+      - **Transient failure recovery**: Zimmer automatically handles transient API errors, process interruptions, and context length issues with retries and compaction. Most transient problems resolve within a few minutes without any action from you. If your session is interrupted and resumes, this is normal — continue your work.
+      - **Stuck sessions**: If a session has no activity for an extended period (~15 minutes), Zimmer will detect and recover it automatically. You do not need to monitor for this.
+      - **Process shutdown**: When Zimmer needs to stop a session, it sends SIGTERM and expects a prompt exit — there is no extended grace period before it escalates to SIGKILL. Keep this in mind if you start long-running subprocesses.
 
       ### 7. Session Lifecycle Management
 
-      The AO homepage shows sessions in "needs_input" state as the user's action queue. Keep this in mind when making session lifecycle decisions:
+      The Zimmer homepage shows sessions in "needs_input" state as the user's action queue. Keep this in mind when making session lifecycle decisions:
 
       - Sessions in "needs_input" appear on the user's homepage and will be noticed. Use this visibility to ensure important outcomes are surfaced.
       - When the session's task is fully complete and there's nothing left for the user to act on (e.g., PR merged, question answered), archive the session — don't leave it on the homepage unnecessarily.
@@ -183,9 +183,9 @@ class OrchestratorSystemPromptBuilder
       - Conversely, don't leave sessions in "needs_input" if there's genuinely nothing for the user to do (read or act on). An overloaded homepage trains users to ignore it.
       - If your session has a goal or skill-level archiving instructions, follow those — this guidance covers the general case.
 
-      ### 8. Always Link PRs and AO Sessions
+      ### 8. Always Link PRs and Zimmer Sessions
 
-      When you reference a GitHub PR in user-facing text, include the full URL (e.g., `https://github.com/tadasant/zimmer-catalog/pull/3287`). When you reference an AO session, include its full URL (e.g., `https://zimmer.example.com/sessions/5050`). Do this **every time** you mention them, not just on first mention.
+      When you reference a GitHub PR in user-facing text, include the full URL (e.g., `https://github.com/tadasant/zimmer-catalog/pull/3287`). When you reference a Zimmer session, include its full URL (e.g., `https://zimmer.example.com/sessions/5050`). Do this **every time** you mention them, not just on first mention.
 
       Users often read on mobile, where scrolling back to find an earlier link is painful. A bare "PR #3287" or "session 5050" is harder to act on than the full URL. The cost of repeating the URL is trivial; the cost of the user hunting for it is not.
     SECTION
@@ -199,14 +199,14 @@ class OrchestratorSystemPromptBuilder
     ].join("\n\n")
   end
 
-  # The "Agent Orchestrator Guidelines" bullet list. The shared bullets are
+  # The "Zimmer Guidelines" bullet list. The shared bullets are
   # interleaved with the runtime-specific bullets (Claude's EnterPlanMode and
   # /schedule guidance) and the runtime-specific clarifying-questions suffix
   # (Claude's AskUserQuestion note), so a runtime without those tools omits the
   # guidance cleanly rather than receiving instructions about tools it lacks.
   def guidelines_list_section
     bullets = [
-      "- This session is managed by Agent Orchestrator, which monitors your progress and handles session lifecycle",
+      "- This session is managed by Zimmer, which monitors your progress and handles session lifecycle",
       "- The session may have a goal specified in the user's prompt - honor it when present",
       "- Your work is being tracked and can be resumed if interrupted",
       "- Focus on completing the task efficiently while following any #{project_instructions_filename} instructions in the repository",
@@ -215,7 +215,7 @@ class OrchestratorSystemPromptBuilder
       "- Unless explicitly asked to do otherwise, avoid asking the user clarifying questions — make your best assumptions and prioritize autonomy.#{@runtime_contribution.clarifying_questions_suffix}"
     ]
 
-    "## Agent Orchestrator Guidelines\n\n#{bullets.join("\n")}"
+    "## Zimmer Guidelines\n\n#{bullets.join("\n")}"
   end
 
   def autonomous_problem_solving_section
@@ -248,10 +248,10 @@ class OrchestratorSystemPromptBuilder
     <<~SECTION.strip
       ## Dynamic Skills and MCP Servers
 
-      Agent Orchestrator dynamically injects resources into your working directory at session start:
+      Zimmer dynamically injects resources into your working directory at session start:
 
-      - **`.claude/skills/`** — Skills (SKILL.md files) are copied from a centralized catalog based on the session's configured skill set. These appear as regular files but are managed by AO, not checked into the repo. The directory is `.gitignore`'d — do not commit, modify, or delete these files. If a skill already exists in the repo at the same path, the repo version takes priority.
-      - **`.mcp.json`** — MCP server configurations are generated from the session's configured MCP servers. This file is also `.gitignore`'d and managed by AO.
+      - **`.claude/skills/`** — Skills (SKILL.md files) are copied from a centralized catalog based on the session's configured skill set. These appear as regular files but are managed by Zimmer, not checked into the repo. The directory is `.gitignore`'d — do not commit, modify, or delete these files. If a skill already exists in the repo at the same path, the repo version takes priority.
+      - **`.mcp.json`** — MCP server configurations are generated from the session's configured MCP servers. This file is also `.gitignore`'d and managed by Zimmer.
 
       Treat both as read-only runtime resources. If you need to understand what skills or MCP servers are available, read the files — but do not attempt to version-control or modify them.
     SECTION

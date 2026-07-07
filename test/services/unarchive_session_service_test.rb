@@ -293,7 +293,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
   test "overwrites stale injected_mcp_servers even when AIR injects nothing" do
     # If the regenerated .mcp.json no longer needs auto-injected servers
-    # (e.g. session.mcp_servers now contains an AO server with TOOL_GROUPS
+    # (e.g. session.mcp_servers now contains a Zimmer server with TOOL_GROUPS
     # blank), the unarchive must clear the stale list rather than leave it.
     @session.update!(
       custom_metadata: { "injected_mcp_servers" => [ "stale-self-session-from-prior-run" ] }

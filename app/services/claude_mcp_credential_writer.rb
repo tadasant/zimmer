@@ -56,17 +56,17 @@ class ClaudeMcpCredentialWriter
 
   private
 
-  # Merges AO's freshly-resolved mcpOAuth entries into the on-disk/keychain map
+  # Merges Zimmer's freshly-resolved mcpOAuth entries into the on-disk/keychain map
   # without clobbering a fresher, still-valid token Claude Code wrote at runtime
   # under the same `server_name|hash` key.
   #
   # AgentSessionJob re-injects credentials on every spawn and follow-up. A plain
-  # `merge!` would overwrite whatever Claude Code refreshed in-session with AO's
+  # `merge!` would overwrite whatever Claude Code refreshed in-session with Zimmer's
   # (possibly older) copy. For each key we keep the existing entry only when it
-  # is still valid AND strictly newer than AO's; otherwise AO's entry wins.
+  # is still valid AND strictly newer than Zimmer's; otherwise Zimmer's entry wins.
   #
   # @param existing [Hash] the current mcpOAuth map (mutated in place)
-  # @param incoming [Hash] AO's resolved entries keyed by credential_key
+  # @param incoming [Hash] Zimmer's resolved entries keyed by credential_key
   def merge_preserving_fresher!(existing, incoming)
     incoming.each do |key, incoming_entry|
       existing[key] = preferred_entry(existing[key], incoming_entry)
@@ -74,22 +74,22 @@ class ClaudeMcpCredentialWriter
     existing
   end
 
-  # Chooses between an existing (runtime-written) entry and AO's incoming entry.
+  # Chooses between an existing (runtime-written) entry and Zimmer's incoming entry.
   # Returns the existing entry only when it is still valid and strictly fresher
-  # than AO's; otherwise returns AO's incoming entry.
+  # than Zimmer's; otherwise returns Zimmer's incoming entry.
   def preferred_entry(existing_entry, incoming_entry)
     return incoming_entry if existing_entry.blank?
 
     existing_expires = existing_entry["expiresAt"]
-    # No expiry recorded on the existing entry → not demonstrably fresher, AO wins.
+    # No expiry recorded on the existing entry → not demonstrably fresher, Zimmer wins.
     return incoming_entry if existing_expires.nil?
 
     now_ms = (Time.current.to_f * 1000).to_i
-    # Existing token already expired → AO's entry wins.
+    # Existing token already expired → Zimmer's entry wins.
     return incoming_entry if existing_expires <= now_ms
 
     incoming_expires = incoming_entry["expiresAt"]
-    # Existing is still valid; keep it unless AO's token is newer (or AO has no
+    # Existing is still valid; keep it unless Zimmer's token is newer (or Zimmer has no
     # expiry, in which case the known-valid existing one is preferred).
     return existing_entry if incoming_expires.nil? || incoming_expires <= existing_expires
 

@@ -1375,9 +1375,9 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
   end
 
   # === Runtime session id capture (#3884) ===
-  # Codex mints its own rollout/thread UUID and ignores the AO-supplied id; the
+  # Codex mints its own rollout/thread UUID and ignores the Zimmer-supplied id; the
   # poller must capture that UUID from the transcript so resume can target it.
-  # Claude honors the AO-supplied id, so capture is gated off for it entirely
+  # Claude honors the Zimmer-supplied id, so capture is gated off for it entirely
   # (mints_own_session_id? == false) — see the forked-session regression below.
 
   test "capture_runtime_session_id! persists a changed runtime id from the transcript (Codex)" do
@@ -1419,7 +1419,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
   # Regression for the forked-Claude-session "transcript_unavailable" failure:
   # a fork's transcript is copied from its source, so its early lines carry the
-  # SOURCE session's sessionId. Claude honors the AO-supplied id (capture is
+  # SOURCE session's sessionId. Claude honors the Zimmer-supplied id (capture is
   # gated off), so the fork's own session_id must survive untouched even though
   # a foreign id appears in the transcript. Capturing it would have tried to
   # rewrite the fork's session_id to the source's, colliding with the unique

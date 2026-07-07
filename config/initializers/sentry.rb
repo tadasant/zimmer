@@ -3,13 +3,11 @@
 # so the official sentry-ruby/sentry-rails SDKs work as-is.
 #
 # This initializer is a hard no-op when SENTRY_DSN_BACKEND is unset, which keeps
-# development and test quiet without any extra config. Production and staging
-# set the DSN via Kamal secrets (.kamal/secrets.* + the `env > secret` list in
-# config/deploy.*.yml) — AO deploys via Kamal, not Hatchbox.
-#
-# Modeled on web-app/config/initializers/sentry.rb. AO uses its own GlitchTip
-# project (separate DSN from the web-app) so AO errors are isolated and
-# independently alertable.
+# development and test quiet without any extra config. In production/staging, set
+# SENTRY_DSN_BACKEND as an environment variable (Zimmer deploys via the DigitalOcean
+# + Tailscale GitHub Actions workflow and docker compose; the deploy passes it
+# through Terraform when the secret is present). Point it at your own GlitchTip
+# project so Zimmer's errors are isolated and independently alertable.
 if ENV["SENTRY_DSN_BACKEND"].present?
   Sentry.init do |config|
     config.dsn = ENV["SENTRY_DSN_BACKEND"]
@@ -24,7 +22,7 @@ if ENV["SENTRY_DSN_BACKEND"].present?
     # explicitly opt in later.
     config.send_default_pii = false
 
-    # AO's failure surfaces are background jobs and the session-lifecycle
+    # Zimmer's failure surfaces are background jobs and the session-lifecycle
     # subsystem, not HTTP requests. The sentry-rails ActiveJob integration
     # captures terminal job failures automatically (AgentSessionJob re-raises at
     # its top-level rescue), and deliberate "log but don't fail" swallow-rescues

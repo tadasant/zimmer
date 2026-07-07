@@ -28,7 +28,7 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
 
   test "resume_transcript_path returns nil (Codex opts out of single-file restore)" do
     # Codex rollouts are date-partitioned, UUID-named, and may be Zstandard-
-    # compressed, so AO cannot restore them by writing stored bytes to one path.
+    # compressed, so Zimmer cannot restore them by writing stored bytes to one path.
     # A nil result tells AgentSessionJob to skip the restore for Codex sessions.
     @session.update!(session_id: SecureRandom.uuid)
     assert_nil @source.resume_transcript_path(session: @session, working_directory: "/tmp/clone")
@@ -112,7 +112,7 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
   # === concurrent-session isolation (regression: cross-session contamination) ===
   #
   # Before a session's own Codex UUID is captured, the stored session_id is the
-  # AO-minted placeholder that never matches a rollout filename, so selection
+  # Zimmer-minted placeholder that never matches a rollout filename, so selection
   # falls back to the shared tree. Codex writes every session's rollout into the
   # same $CODEX_HOME tree, so the fallback must NOT cross clone boundaries.
 
@@ -253,7 +253,7 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
     # The production false-positive page: a live `codex` process is mid-write on
     # a large rollout record, so the final line has no terminator yet and fails
     # JSON parsing. This is the common live-polling case and must NOT page —
-    # the AO error-logs alert fires on any single production .error line.
+    # the Zimmer error-logs alert fires on any single production .error line.
     partial = "{\"type\":\"session_meta\"}\n{\"type\":\"response_item\",\"payload\":{\"text\":\"abc"
     log = capture_log_output do
       assert_equal [ { "type" => "session_meta" } ], @source.parse_events(partial)
@@ -322,7 +322,7 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
 
   # Capture everything written to Rails.logger during the block as a String so
   # tests can assert on log level (e.g. that a benign parse failure never lands
-  # at ERROR, which would page the AO error-logs alert).
+  # at ERROR, which would page the Zimmer error-logs alert).
   def capture_log_output
     original_logger = Rails.logger
     log_output = StringIO.new

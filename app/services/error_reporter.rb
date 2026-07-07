@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-# ErrorReporter is the single seam through which AO surfaces failures to the
+# ErrorReporter is the single seam through which Zimmer surfaces failures to the
 # self-hosted GlitchTip instance (via the Sentry SDK).
 #
-# AO is not request-driven like the web-app — its failures live in GoodJob
+# Zimmer is not request-driven like the web-app — its failures live in GoodJob
 # background jobs and the session-lifecycle subsystem, much of it inside
 # deliberate "log but don't fail" swallow-rescues that would otherwise be
 # invisible (this is exactly what let the 2026-06-10 stalled-sessions incident

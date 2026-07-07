@@ -55,7 +55,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   test "build_command bypasses the Codex sandbox and never uses --full-auto" do
-    # AO runs each session in an already-isolated, externally-sandboxed container
+    # Zimmer runs each session in an already-isolated, externally-sandboxed container
     # where Codex's bwrap-backed workspace-write sandbox (selected by --full-auto)
     # cannot create a user namespace, so every shell command fails. We must use
     # the explicit bypass flag instead (the Codex analog to Claude's
@@ -175,20 +175,20 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
 
   # ===== SYSTEM PROMPT DELIVERY (AGENTS.md) =====
 
-  test "execute writes append_system_prompt below the AO marker in AGENTS.md before spawn" do
+  test "execute writes append_system_prompt below the Zimmer marker in AGENTS.md before spawn" do
     @adapter.execute(
       prompt: "go",
       session_id: "ao-session-uuid",
       working_dir: @test_dir,
-      append_system_prompt: "You are operating inside Agent Orchestrator."
+      append_system_prompt: "You are operating inside Zimmer."
     )
 
     agents_md = File.join(@test_dir, "AGENTS.md")
     assert @mock_file_system.exists?(agents_md), "expected AGENTS.md to be written"
     content = @mock_file_system.read(agents_md)
     assert content.start_with?(AgentsMdWriter::AO_SECTION_MARKER),
-      "AO content should lead with the shared marker so re-spawns can detect it"
-    assert_includes content, "You are operating inside Agent Orchestrator."
+      "Zimmer content should lead with the shared marker so re-spawns can detect it"
+    assert_includes content, "You are operating inside Zimmer."
   end
 
   test "execute does not write AGENTS.md when no system prompt is given" do
@@ -202,20 +202,20 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_not @mock_file_system.exists?(File.join(@test_dir, "AGENTS.md"))
   end
 
-  test "resume writes append_system_prompt below the AO marker in AGENTS.md before spawn" do
+  test "resume writes append_system_prompt below the Zimmer marker in AGENTS.md before spawn" do
     @adapter.resume(
       session_id: "codex-uuid",
       working_dir: @test_dir,
       prompt: "more",
-      append_system_prompt: "AO system prompt."
+      append_system_prompt: "Zimmer system prompt."
     )
 
     content = @mock_file_system.read(File.join(@test_dir, "AGENTS.md"))
     assert content.start_with?(AgentsMdWriter::AO_SECTION_MARKER)
-    assert_includes content, "AO system prompt."
+    assert_includes content, "Zimmer system prompt."
   end
 
-  test "write_system_prompt preserves a committed AGENTS.md above the AO marker" do
+  test "write_system_prompt preserves a committed AGENTS.md above the Zimmer marker" do
     agents_md = File.join(@test_dir, "AGENTS.md")
     @mock_file_system.write(agents_md, "# Repo AGENTS\n\nProject-specific Codex guidance.\n")
 
@@ -223,20 +223,20 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
       prompt: "go",
       session_id: "uuid",
       working_dir: @test_dir,
-      append_system_prompt: "AO orchestrator context."
+      append_system_prompt: "Zimmer orchestrator context."
     )
 
     content = @mock_file_system.read(agents_md)
     assert_includes content, "# Repo AGENTS"
     assert_includes content, "Project-specific Codex guidance."
-    assert_includes content, "AO orchestrator context."
+    assert_includes content, "Zimmer orchestrator context."
     assert content.index("# Repo AGENTS") < content.index(AgentsMdWriter::AO_SECTION_MARKER),
-      "the repo's committed AGENTS.md should remain above the AO-managed section"
+      "the repo's committed AGENTS.md should remain above the Zimmer-managed section"
   end
 
-  test "write_system_prompt refreshes the AO section without duplicating it across spawns" do
+  test "write_system_prompt refreshes the Zimmer section without duplicating it across spawns" do
     # Simulates prepare-time AgentsMdWriter + spawn-time adapter writing the same
-    # marker: the AO section must be replaced, not appended a second time.
+    # marker: the Zimmer section must be replaced, not appended a second time.
     @adapter.execute(
       prompt: "go",
       session_id: "uuid",
@@ -252,15 +252,15 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
 
     content = @mock_file_system.read(File.join(@test_dir, "AGENTS.md"))
     assert_equal 1, content.scan(AgentsMdWriter::AO_SECTION_MARKER).length,
-      "the AO marker must appear exactly once after repeated spawns"
+      "the Zimmer marker must appear exactly once after repeated spawns"
     assert_includes content, "Second spawn context."
     refute_includes content, "First spawn context.",
-      "the stale AO section should be replaced on the next spawn"
+      "the stale Zimmer section should be replaced on the next spawn"
   end
 
-  test "write_system_prompt preserves committed content while refreshing the AO section across spawns" do
+  test "write_system_prompt preserves committed content while refreshing the Zimmer section across spawns" do
     # The two behaviors compose: a repo's committed AGENTS.md must survive every
-    # spawn intact, while the AO-managed section below it is replaced each time.
+    # spawn intact, while the Zimmer-managed section below it is replaced each time.
     agents_md = File.join(@test_dir, "AGENTS.md")
     @mock_file_system.write(agents_md, "# Repo AGENTS\n\nProject-specific Codex guidance.\n")
 
@@ -283,21 +283,21 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
       "the repo's committed AGENTS.md must be preserved exactly once, not re-appended"
     assert_includes content, "Project-specific Codex guidance."
     assert content.index("# Repo AGENTS") < content.index(AgentsMdWriter::AO_SECTION_MARKER),
-      "committed content stays above the AO-managed section"
-    # AO section is refreshed, not duplicated.
+      "committed content stays above the Zimmer-managed section"
+    # Zimmer section is refreshed, not duplicated.
     assert_equal 1, content.scan(AgentsMdWriter::AO_SECTION_MARKER).length,
-      "the AO marker must appear exactly once after repeated spawns"
+      "the Zimmer marker must appear exactly once after repeated spawns"
     assert_includes content, "Second spawn context."
     refute_includes content, "First spawn context.",
-      "the stale AO section should be replaced on the next spawn"
+      "the stale Zimmer section should be replaced on the next spawn"
   end
 
-  test "spawn-time write_system_prompt replaces the AO section laid down by the real prepare-time AgentsMdWriter" do
+  test "spawn-time write_system_prompt replaces the Zimmer section laid down by the real prepare-time AgentsMdWriter" do
     # The prepare-time path (AgentsMdWriter#write!) and the spawn-time path
-    # (CodexRuntimeAdapter#write_system_prompt) both manage the AO section using the
+    # (CodexRuntimeAdapter#write_system_prompt) both manage the Zimmer section using the
     # same AO_SECTION_MARKER and the same "#{marker}\n\n#{content}\n" format. This
     # exercises the real handoff end to end: a committed AGENTS.md, then the real
-    # writer appends its AO block, then the adapter refreshes it on spawn. The
+    # writer appends its Zimmer block, then the adapter refreshes it on spawn. The
     # adapter must REPLACE the writer's block (marker appears once), not append a
     # second one — guarding against either side's format drifting from the other.
     agents_md = File.join(@test_dir, "AGENTS.md")
@@ -319,10 +319,10 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     ).write!
 
     prepared = @mock_file_system.read(agents_md)
-    assert_includes prepared, "# Agent Orchestrator Context",
+    assert_includes prepared, "# Zimmer Context",
       "sanity: the real writer should have laid down the orchestrator context"
 
-    # Spawn-time: the adapter refreshes the AO section with the live prompt.
+    # Spawn-time: the adapter refreshes the Zimmer section with the live prompt.
     @adapter.execute(
       prompt: "go",
       session_id: "uuid",
@@ -334,12 +334,12 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     # Committed repo content survives intact, above a single marker.
     assert_equal 1, content.scan("# Repo AGENTS").length
     assert content.index("# Repo AGENTS") < content.index(AgentsMdWriter::AO_SECTION_MARKER),
-      "committed content stays above the AO-managed section"
-    # The adapter replaced — not appended to — the writer's AO block.
+      "committed content stays above the Zimmer-managed section"
+    # The adapter replaced — not appended to — the writer's Zimmer block.
     assert_equal 1, content.scan(AgentsMdWriter::AO_SECTION_MARKER).length,
-      "the adapter must replace the writer's AO section, leaving exactly one marker"
+      "the adapter must replace the writer's Zimmer section, leaving exactly one marker"
     assert_includes content, "Spawn-time orchestrator context."
-    refute_includes content, "# Agent Orchestrator Context",
+    refute_includes content, "# Zimmer Context",
       "the writer's stale orchestrator body must be replaced by the adapter's refresh"
   end
 

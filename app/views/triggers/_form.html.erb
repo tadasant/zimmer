@@ -297,7 +297,7 @@
       <% end %>
       <%= f.text_area :prompt_template,
           rows: 10,
-          placeholder: "Enter the prompt template for triggered sessions.\n\nAvailable variables:\n{{link}} - Link to the Slack message\n{{text}} - Content of the message\n{{author}} - Name of the message author\n{{channel}} - Channel name\n{{time}} - Current time (HH:MM)\n{{date}} - Current date (YYYY-MM-DD)\n{{event}} - Event name (for AO events)",
+          placeholder: "Enter the prompt template for triggered sessions.\n\nAvailable variables:\n{{link}} - Link to the Slack message\n{{text}} - Content of the message\n{{author}} - Name of the message author\n{{channel}} - Channel name\n{{time}} - Current time (HH:MM)\n{{date}} - Current date (YYYY-MM-DD)\n{{event}} - Event name (for Zimmer events)",
           class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md font-mono" %>
       <div class="mt-2 text-sm text-gray-500" data-trigger-form-target="promptHelp">
         <p>The prompt sent to the agent when the trigger fires. Available variables:</p>
@@ -308,7 +308,7 @@
           <li><code class="bg-gray-100 px-1 rounded">{{channel}}</code> - Channel name (Slack conditions)</li>
           <li><code class="bg-gray-100 px-1 rounded">{{time}}</code> - Current time (HH:MM)</li>
           <li><code class="bg-gray-100 px-1 rounded">{{date}}</code> - Current date (YYYY-MM-DD)</li>
-          <li><code class="bg-gray-100 px-1 rounded">{{event}}</code> - Event description (AO Event conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{event}}</code> - Event description (Zimmer Event conditions)</li>
         </ul>
       </div>
     </div>

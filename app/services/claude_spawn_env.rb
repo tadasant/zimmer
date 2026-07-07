@@ -41,23 +41,23 @@ module ClaudeSpawnEnv
     # (gem path conflicts, #569). Setting them to nil unsets them in the child.
     env_vars = clear_inherited_env_vars(env_vars)
 
-    # AO's baseline is MCP tool search OFF — spawned sessions run with
+    # Zimmer's baseline is MCP tool search OFF — spawned sessions run with
     # ENABLE_TOOL_SEARCH=false to avoid unnecessary overhead during execution.
-    # An enabled AO Extension may flip this on (the mcp_tool_search extension
+    # An enabled Zimmer Extension may flip this on (the mcp_tool_search extension
     # contributes ENABLE_TOOL_SEARCH=true via #spawn_env_contribution below). With
     # that extension removed, the baseline stands and tool search stays off.
     env_vars["ENABLE_TOOL_SEARCH"] = "false"
 
     # Disable in-process cron/scheduling tools (CronCreate, ScheduleWakeup, /loop).
-    # These are session-scoped and unreliable in headless mode — AO's trigger system
+    # These are session-scoped and unreliable in headless mode — Zimmer's trigger system
     # provides durable scheduling via ScheduleTriggerJob instead.
     env_vars["CLAUDE_CODE_DISABLE_CRON"] = "1"
 
-    # Disable Claude Code's auto-memory feature. AO sessions are session-scoped —
+    # Disable Claude Code's auto-memory feature. Zimmer sessions are session-scoped —
     # nothing durable should be persisted to ~/.claude/projects/<slug>/memory/ or
     # MEMORY.md. Anything worth keeping belongs in code, CLAUDE.md, SKILL.md, a
     # reference, or a PR/issue. settings.json/PreToolUse hooks are NOT a viable
-    # alternative here because AO sessions run with --dangerously-skip-permissions,
+    # alternative here because Zimmer sessions run with --dangerously-skip-permissions,
     # which bypasses both (see the comment on ClaudeCliAdapter::DISALLOWED_TOOLS).
     env_vars["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
 
@@ -69,9 +69,9 @@ module ClaudeSpawnEnv
     inject_api_key_from_credentials(env_vars)
     configure_mcp_env(env_vars, working_dir) if has_mcp
 
-    # Let enabled AO Extensions contribute/override env vars (e.g. mcp_tool_search
+    # Let enabled Zimmer Extensions contribute/override env vars (e.g. mcp_tool_search
     # flipping ENABLE_TOOL_SEARCH to "true"). Merged over the baseline above so an
-    # extension can override an AO default; with no extension enabled this is a
+    # extension can override a Zimmer default; with no extension enabled this is a
     # no-op and the child sees the baseline env unchanged.
     env_vars.merge!(Ao::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
 
@@ -104,7 +104,7 @@ module ClaudeSpawnEnv
   # The @pulsemcp/mcp-elicitation library reads ELICITATION_SESSION_ID from
   # the environment and auto-includes it as com.pulsemcp/session-id in the
   # _meta of HTTP fallback POST requests. This lets the elicitation service
-  # (AO) associate each request with the correct session.
+  # (Zimmer) associate each request with the correct session.
   #
   # Other elicitation env vars (ELICITATION_ENABLED, ELICITATION_REQUEST_URL,
   # ELICITATION_POLL_URL) are configured per-server in config/mcp.json.

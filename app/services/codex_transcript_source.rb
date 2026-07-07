@@ -25,7 +25,7 @@ class CodexTranscriptSource < TranscriptSource
   # The base directory that holds every Codex rollout, across all dates.
   #
   # Resolved through the shared CodexHome resolver (honoring the CODEX_HOME env
-  # override) so AO reads rollouts from exactly the directory the spawned `codex`
+  # override) so Zimmer reads rollouts from exactly the directory the spawned `codex`
   # wrote them to. Codex ignores the spawn cwd when choosing where to write
   # rollouts, so `working_directory` is accepted for interface parity but unused.
   #
@@ -84,7 +84,7 @@ class CodexTranscriptSource < TranscriptSource
   #
   # Log level is deliberately NOT `.error` here: a parse failure on a rollout
   # line is an expected, self-resolving condition during live polling, not
-  # broken-system behavior, and the AO error-logs alert pages on any single
+  # broken-system behavior, and the Zimmer error-logs alert pages on any single
   # production `.error` line. We split the two cases:
   #
   #   * A line with no trailing newline is the final record still being flushed
@@ -141,8 +141,8 @@ class CodexTranscriptSource < TranscriptSource
 
   # Select a rollout before this session's own Codex UUID has been captured.
   #
-  # At spawn AO stores a randomly-minted placeholder `session_id` (Codex ignores
-  # the AO-supplied id and generates its own UUID, captured later from the
+  # At spawn Zimmer stores a randomly-minted placeholder `session_id` (Codex ignores
+  # the Zimmer-supplied id and generates its own UUID, captured later from the
   # rollout's `session_meta` line). Until that capture happens the placeholder
   # never matches a rollout filename, so we land here.
   #

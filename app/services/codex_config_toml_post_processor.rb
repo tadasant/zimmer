@@ -15,11 +15,11 @@
 # launch. AIR translates same-named whole-value refs (`env: { VAR: "${VAR}" }`)
 # into that forwarding form during `air prepare`.
 #
-# The Codex-specific concern: AO's secrets live in Rails encrypted credentials
+# The Codex-specific concern: Zimmer's secrets live in Rails encrypted credentials
 # (SecretsLoader), NOT in the host process env the Codex CLI inherits. So a
-# forwarded var that AO resolves would never reach the server. This processor
+# forwarded var that Zimmer resolves would never reach the server. This processor
 # moves every SecretsLoader-backed var OUT of the forwarding fields and INTO the
-# literal `env`/`http_headers` tables with the resolved value. Forwarded vars AO
+# literal `env`/`http_headers` tables with the resolved value. Forwarded vars Zimmer
 # can't resolve are left in place — those are genuine host-env vars Codex
 # forwards at launch.
 class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
@@ -72,7 +72,7 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
 
   # Move every SecretsLoader-resolvable var out of Codex's host-env forwarding
   # fields and into the literal tables with the resolved value, since the Codex
-  # process's host env does not carry AO's encrypted-credential secrets.
+  # process's host env does not carry Zimmer's encrypted-credential secrets.
   def inline_forwarded_secrets!(entry)
     inline_forwarded_env_vars!(entry)
     inline_forwarded_env_http_headers!(entry)

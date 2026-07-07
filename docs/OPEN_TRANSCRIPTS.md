@@ -4,11 +4,11 @@
 > schema maintained in **pulsemcp/ai-artifacts** (the `open-transcripts` spec
 > plus the reference converters `open_transcripts.py` and `cc_jsonl.py`). When
 > the upstream schema changes, update this doc **and** `app/services/open_transcript.rb`
-> to match. Do not treat this file as authoritative on its own — it exists so AO
+> to match. Do not treat this file as authoritative on its own — it exists so Zimmer
 > contributors have the field list at hand without leaving the repo.
 
 OpenTranscripts is a vendor-neutral, event-based model for agent transcripts.
-Agent Orchestrator normalizes both runtimes' native transcript JSONL
+Zimmer normalizes both runtimes' native transcript JSONL
 (Claude Code and Codex) into a single stream of these events, then renders every
 event through one UI partial keyed on the event `type`
 (`app/views/timeline_items/_item.html.erb`).
@@ -83,12 +83,12 @@ Subagent linkage uses the `tool_use_id` (`toolu_…`) to connect a parent's
 `Task`/`Agent` `tool_use` block to the spawned `agent-<agentId>.jsonl`
 transcript.
 
-## AO fidelity notes (intentional differences from the reference converter)
+## Zimmer fidelity notes (intentional differences from the reference converter)
 
 - **No secret redaction.** The Python reference applies a `redact()` pass to
-  content and `provider_raw`. AO renders raw content exactly as it always has,
+  content and `provider_raw`. Zimmer renders raw content exactly as it always has,
   so the port omits redaction.
-- **Per-line normalization, no cross-line `ts` carry-forward.** AO normalizes
+- **Per-line normalization, no cross-line `ts` carry-forward.** Zimmer normalizes
   one source line at a time (to fit its incremental broadcast pipeline). A line
   missing a parseable timestamp falls back to the session's `created_at` rather
   than carrying forward the previous line's `ts`.

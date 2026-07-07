@@ -11,11 +11,11 @@
 # are:
 #
 #   - ChatGPT OAuth (preferred) — captured via `codex login --device-auth`, stored
-#     as the full auth.json envelope under oauth_config["auth_json"]. AO refreshes
+#     as the full auth.json envelope under oauth_config["auth_json"]. Zimmer refreshes
 #     these tokens against OpenAI's token endpoint and rotates between accounts
 #     when one hits a usage quota.
 #   - OPENAI_API_KEY (fallback) — stored as oauth_config["api_key"]. Static keys
-#     never expire and have nothing to refresh; AO simply writes them to auth.json.
+#     never expire and have nothing to refresh; Zimmer simply writes them to auth.json.
 #
 # Unlike Claude, Codex has no separate AccountRotationService — the filesystem is
 # a single shared ~/.codex/auth.json (like ~/.claude.json), so this provider owns
@@ -38,7 +38,7 @@ class CodexAuthProvider < RuntimeAuthProvider
   CODEX_HOME = CodexHome.path
   AUTH_JSON_PATH = CodexHome.auth_json_path
 
-  # auth.json carries no explicit access-token expiry. AO refreshes pool accounts
+  # auth.json carries no explicit access-token expiry. Zimmer refreshes pool accounts
   # on a soft TTL measured from last_refresh — long enough that the sweep skips
   # most ticks (refreshing each account roughly once per day) while keeping
   # refresh tokens warm. The CLI handles intra-session freshness on its own.

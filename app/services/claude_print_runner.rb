@@ -12,7 +12,7 @@
 #
 # The default backend is always NativeClaudePrintRunner — it shells out to
 # `claude -p "<prompt>"` and reads stdout (the historically-proven path). An
-# enabled AO Extension may supply an alternative backend via the extension
+# enabled Zimmer Extension may supply an alternative backend via the extension
 # registry; the PTY transport extension does, substituting a PtyClaudePrintRunner
 # that drives the interactive Claude TUI inside a pseudo-terminal and scrapes the
 # transcript. Any backend satisfies the same contract —
