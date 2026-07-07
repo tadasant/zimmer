@@ -166,7 +166,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_difference("Trigger.count") do
       post triggers_path, params: {
         trigger: {
-          name: "AO Event Trigger",
+          name: "Zimmer Event Trigger",
           status: "enabled",
           agent_root_name: "zimmer",
           prompt_template: "Session needs input: {{event}}",

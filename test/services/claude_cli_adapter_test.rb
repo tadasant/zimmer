@@ -207,12 +207,12 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       prompt: "test",
       session_id: "session-1",
       mcp_config_path: nil,
-      append_system_prompt: "You are in Agent Orchestrator.",
+      append_system_prompt: "You are in Zimmer.",
       dangerously_skip_permissions: false,
       debug: false)
 
     assert_includes command, "--append-system-prompt"
-    assert_includes command, "You are in Agent Orchestrator."
+    assert_includes command, "You are in Zimmer."
   end
 
   test "build_command excludes append-system-prompt when nil" do
@@ -492,12 +492,12 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       session_id: "session-1",
       prompt: "continue",
       mcp_config_path: nil,
-      append_system_prompt: "Agent Orchestrator context",
+      append_system_prompt: "Zimmer context",
       dangerously_skip_permissions: false,
       debug: false)
 
     assert_includes command, "--append-system-prompt"
-    assert_includes command, "Agent Orchestrator context"
+    assert_includes command, "Zimmer context"
   end
 
   test "build_resume_command excludes append-system-prompt when nil" do
@@ -539,7 +539,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   end
 
   # ===== DISALLOWED TOOLS TESTS =====
-  # AO sessions must never invoke Claude Code's in-process async-wait
+  # Zimmer sessions must never invoke Claude Code's in-process async-wait
   # primitives (Monitor, ScheduleWakeup, Bash(sleep *)), the bundled
   # `/schedule` skill (Skill(schedule)), or AskUserQuestion (interactive
   # prompts stall autonomous sessions) — see DISALLOWED_TOOLS.
@@ -1567,7 +1567,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   test "clear_inherited_env_vars strips inherited BUNDLER_SETUP family from parent ENV" do
     # Regression for the spawn-failure root cause: modern Bundler exports
     # BUNDLER_SETUP (a RubyGems auto-require hook), BUNDLER_VERSION, and
-    # BUNDLER_ORIG_* preserved originals from `bundle exec`. AO's worker runs
+    # BUNDLER_ORIG_* preserved originals from `bundle exec`. Zimmer's worker runs
     # under `bundle exec good_job`, so these are present in the worker's ENV. If
     # they leak into a spawned agent, the Ruby PTY driver — which chdir's into
     # the project clone — auto-loads bundler/setup against the clone's Gemfile
@@ -1962,7 +1962,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   end
 
   # ===== ENABLE_TOOL_SEARCH / extension spawn-env seam =====
-  # AO's baseline sets ENABLE_TOOL_SEARCH=false; the mcp_tool_search extension
+  # Zimmer's baseline sets ENABLE_TOOL_SEARCH=false; the mcp_tool_search extension
   # flips it on by contributing the var through the spawn-env seam. The baseline
   # (false-by-default) is a core adapter behavior and holds even with every
   # extension deleted. The "extension flips it on" case is exercised with a FAKE
@@ -2014,8 +2014,8 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   end
 
   # ===== CLAUDE_CODE_DISABLE_AUTO_MEMORY TESTS =====
-  # Disable Claude Code's auto-memory feature for all AO-spawned sessions.
-  # AO sessions are session-scoped — durable persistence belongs in code/CLAUDE.md/PRs,
+  # Disable Claude Code's auto-memory feature for all Zimmer-spawned sessions.
+  # Zimmer sessions are session-scoped — durable persistence belongs in code/CLAUDE.md/PRs,
   # not in ~/.claude/projects/<slug>/memory/. The env var is the hard layer that
   # prevents memory writes regardless of agent intent.
 

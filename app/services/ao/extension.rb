@@ -1,20 +1,20 @@
 # frozen_string_literal: true
 
 module Ao
-  # Base class for an **AO Extension** — a self-contained, individually-deletable
-  # bundle of optional behavior that plugs into AO's core seams without the core
+  # Base class for an **Zimmer Extension** — a self-contained, individually-deletable
+  # bundle of optional behavior that plugs into Zimmer's core seams without the core
   # ever naming it.
   #
   # This is deliberately distinct from an AIR "session plugin" (PluginsConfig):
   # a session plugin injects skills / MCP servers / hooks INTO an agent session's
-  # workspace. An AO Extension, by contrast, alters how AO itself drives a
+  # workspace. An Zimmer Extension, by contrast, alters how Zimmer itself drives a
   # runtime — which CLI adapter it spawns, which print-inference backend it uses,
   # what env it hands the child process. The word "plugin" is reserved for the
   # AIR concept; this layer is "extensions".
   #
   # == Why this exists ==
   #
-  # AO is being extracted from the monorepo as standalone OSS. Some features
+  # Zimmer is being extracted from the monorepo as standalone OSS. Some features
   # (the PTY transport, in particular) depend on internal-only techniques we do
   # not want to publish. An extension is the seam that lets such a feature live
   # entirely under app/extensions/<id>/ and be removed wholesale for the OSS
@@ -116,7 +116,7 @@ module Ao
     end
 
     # Return a hash of environment variables to merge into a spawned child's env.
-    # Merged over AO's baseline env (so an extension can override a baseline
+    # Merged over Zimmer's baseline env (so an extension can override a baseline
     # default). Keys/values are stringified by the registry.
     #
     # @param context [Hash] spawn context (e.g. { runtime: "claude_code" })

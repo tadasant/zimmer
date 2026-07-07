@@ -9,7 +9,7 @@
 # - "schedule": Fires on a time-based schedule (recurring or one-time)
 #     Recurring: { "unit" => "hours", "interval" => 2, "timezone" => "UTC" }
 #     One-time:  { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "America/New_York" }
-# - "ao_event": Fires on internal AO events (e.g., session transitions to needs_input)
+# - "ao_event": Fires on internal Zimmer events (e.g., session transitions to needs_input)
 class TriggerCondition < ApplicationRecord
   CONDITION_TYPES = %w[slack schedule ao_event].freeze
   EVENT_TYPES = %w[new_message bot_mention].freeze
@@ -121,7 +121,7 @@ class TriggerCondition < ApplicationRecord
     configuration["timezone"] || "UTC"
   end
 
-  # AO event configuration accessors
+  # Zimmer event configuration accessors
   def ao_event_name
     configuration["event_name"]
   end
@@ -199,13 +199,13 @@ class TriggerCondition < ApplicationRecord
     when "ao_event"
       base = case ao_event_name
       when "session_needs_input"
-        "AO Event: Session needs input"
+        "Zimmer Event: Session needs input"
       when "session_failed"
-        "AO Event: Session failed"
+        "Zimmer Event: Session failed"
       when "session_archived"
-        "AO Event: Session archived"
+        "Zimmer Event: Session archived"
       else
-        "AO Event: #{ao_event_name}"
+        "Zimmer Event: #{ao_event_name}"
       end
       session_scoped_ao_event? ? "#{base} (session ##{watched_session_id})" : base
     else
@@ -387,7 +387,7 @@ class TriggerCondition < ApplicationRecord
   def validate_ao_event_configuration
     event_name = configuration["event_name"]
     if event_name.blank?
-      errors.add(:configuration, "must include event_name for AO Event conditions")
+      errors.add(:configuration, "must include event_name for Zimmer Event conditions")
       return
     end
 

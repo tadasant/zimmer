@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # AutomatedPrompts provides centralized constants for automated prompts sent
-# to Claude Code by the Agent Orchestrator system.
+# to Claude Code by the Zimmer system.
 #
 # These prompts are sent automatically after system events (deployment recovery,
 # session restart, health monitor retry) and are NOT user-initiated messages.
@@ -27,7 +27,7 @@ module AutomatedPrompts
   SYSTEM_RECOVERY = <<~PROMPT.strip
     [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
 
-    This session may have been interrupted by a system event (deployment restart, process termination, or transient failure). This is an automated nudge from Agent Orchestrator to check on your status.
+    This session may have been interrupted by a system event (deployment restart, process termination, or transient failure). This is an automated nudge from Zimmer to check on your status.
 
     If you were in the middle of a task, please continue where you left off.
 

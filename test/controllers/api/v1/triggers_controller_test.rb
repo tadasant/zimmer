@@ -148,7 +148,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
   test "should create ao_event trigger with conditions" do
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {
-        name: "AO Event Trigger",
+        name: "Zimmer Event Trigger",
         agent_root_name: "zimmer",
         prompt_template: "Session needs input: {{event}}",
         trigger_conditions_attributes: [

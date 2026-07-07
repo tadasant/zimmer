@@ -79,7 +79,7 @@ class AccountRotationService
     # Two gates, both required:
     #
     #   1. credentials_changed_externally? — the SHARED credentials file was
-    #      written by something other than AO since our last marker stamp. This
+    #      written by something other than Zimmer since our last marker stamp. This
     #      timestamp comparison is on the shared bind mount, so it is identical on
     #      the web and worker containers — it cannot be fooled by a stale,
     #      container-local ~/.claude.json (the divergence that previously let the
@@ -353,13 +353,13 @@ class AccountRotationService
   end
 
   # True when the shared ~/.claude/.credentials.json was modified more recently
-  # than AO last stamped the owner marker — i.e., something other than AO (the
+  # than Zimmer last stamped the owner marker — i.e., something other than Zimmer (the
   # Claude CLI rotating tokens, or an operator's manual `claude /login`) wrote the
   # credentials since our last write. Both files live in the shared bind mount, so
   # this comparison yields the same answer on the web and worker containers.
   #
   # Conservative default: with no marker yet (the post-deploy transition window)
-  # we report false, so identity adoption stays off until AO has stamped the
+  # we report false, so identity adoption stays off until Zimmer has stamped the
   # marker at least once.
   def credentials_changed_externally?
     marker = ClaudeAuthProvider.credentials_owner_path

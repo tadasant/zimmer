@@ -216,11 +216,11 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_not @schedule_condition.one_time_schedule?
   end
 
-  # AO event validation tests
+  # Zimmer event validation tests
   test "ao_event condition requires event_name" do
     @ao_event_condition.configuration = {}
     assert_not @ao_event_condition.valid?
-    assert_includes @ao_event_condition.errors[:configuration], "must include event_name for AO Event conditions"
+    assert_includes @ao_event_condition.errors[:configuration], "must include event_name for Zimmer Event conditions"
   end
 
   test "ao_event condition validates event_name" do
@@ -321,13 +321,13 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "description for session_failed event" do
     @ao_event_condition.configuration = { "event_name" => "session_failed" }
     @ao_event_condition.save!
-    assert_equal "AO Event: Session failed", @ao_event_condition.description
+    assert_equal "Zimmer Event: Session failed", @ao_event_condition.description
   end
 
   test "description for session_archived event" do
     @ao_event_condition.configuration = { "event_name" => "session_archived" }
     @ao_event_condition.save!
-    assert_equal "AO Event: Session archived", @ao_event_condition.description
+    assert_equal "Zimmer Event: Session archived", @ao_event_condition.description
   end
 
   test "description includes watched session id when scoped" do
@@ -337,7 +337,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
       "watched_session_id" => target.id
     }
     @ao_event_condition.save!
-    assert_equal "AO Event: Session needs input (session ##{target.id})", @ao_event_condition.description
+    assert_equal "Zimmer Event: Session needs input (session ##{target.id})", @ao_event_condition.description
   end
 
   # Scopes
@@ -449,7 +449,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   end
 
   test "description for ao_event condition" do
-    assert_equal "AO Event: Session needs input", @ao_event_condition.description
+    assert_equal "Zimmer Event: Session needs input", @ao_event_condition.description
   end
 
   # Schedule due?

@@ -12,7 +12,7 @@
 #
 # Transient failure handling: a refresh can raise a transient network error
 # (the token endpoint connection times out, resets, etc.). Rather than logging
-# that at .error — which trips the "any AO ERROR log → critical" alert for a
+# that at .error — which trips the "any Zimmer ERROR log → critical" alert for a
 # self-resolving condition — the job either retries (for errors where the request
 # never reached the endpoint) or defers to the next scheduled run (for errors
 # where the request may already have been processed), logging at .info during

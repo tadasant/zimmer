@@ -1,5 +1,5 @@
 # A user-created organizational category for grouping session cards on the
-# dashboard. Categories are global (Agent Orchestrator is single-operator) and
+# dashboard. Categories are global (Zimmer is single-operator) and
 # ordered by their integer +position+. Sessions reference a category via the
 # nullable +category_id+ column; a NULL value means the session is "Uncategorized".
 #

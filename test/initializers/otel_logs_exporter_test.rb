@@ -1,7 +1,7 @@
 require "test_helper"
 
 # Unit tests for the OTLP/HTTP logs exporter
-# (config/initializers/otel_logs_exporter.rb) that ships AO's ERROR signal to
+# (config/initializers/otel_logs_exporter.rb) that ships Zimmer's ERROR signal to
 # the shared obs stack. These exercise the real OtelLogsExporter without
 # starting its background thread or hitting the network: an instance built with
 # `.new` parses its endpoint and allocates the queue but does NOT spawn the
@@ -27,11 +27,11 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
 
   # ---- Resource attributes (the Grafana selector contract) ----------------
   # The paused scaffold rules-ao-errors.yaml selects on:
-  #   service.name:agent-orchestrator AND deployment.environment:<env>
+  #   service.name:zimmer AND deployment.environment:<env>
   #   AND severity_text:ERROR
   # If any of these field names/values drift, the alert goes blind. Pin them.
 
-  test "build_envelope sets service.name=agent-orchestrator and deployment.environment resource attributes" do
+  test "build_envelope sets service.name=zimmer and deployment.environment resource attributes" do
     exporter = build_exporter
     envelope = JSON.parse(exporter.send(:build_envelope, [ { severity: "ERROR", body: "x", attributes: {} } ]))
 
@@ -39,7 +39,7 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
     service_name = attrs.find { |a| a["key"] == "service.name" }
     deployment_env = attrs.find { |a| a["key"] == "deployment.environment" }
 
-    assert_equal "agent-orchestrator", service_name["value"]["stringValue"]
+    assert_equal "zimmer", service_name["value"]["stringValue"]
     # In the test environment Rails.env is "test"; the attribute is always
     # present and is "production"/"staging" in deployed environments.
     assert_equal Rails.env.to_s, deployment_env["value"]["stringValue"]

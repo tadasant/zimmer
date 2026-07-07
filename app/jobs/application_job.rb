@@ -26,7 +26,7 @@ class ApplicationJob < ActiveJob::Base
   # On Rails 8.1, discard_on ALWAYS fires the `discard.active_job` notification — even when
   # given a block — and ActiveJob::LogSubscriber#discard logs that event at ERROR
   # (`subscribe_log_level :discard, :error`). That single ERROR line ("Discarded <Job>
-  # (Job ID: …) due to a GoodJob::InterruptError (…).") trips the "any AO ERROR → critical"
+  # (Job ID: …) due to a GoodJob::InterruptError (…).") trips the "any Zimmer ERROR → critical"
   # Grafana rule on every deploy that interrupts a running job — a false alert with no user
   # impact. A discard_on block does NOT replace that LogSubscriber on Rails 8.1; it runs in
   # addition to it. rescue_from swallows the error (so the job is discarded and NOT retried,

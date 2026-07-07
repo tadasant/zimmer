@@ -2,7 +2,7 @@
 
 # Controller for managing Triggers - automated session creation based on external events
 #
-# Triggers monitor external sources (like Slack channels, time schedules, or AO events)
+# Triggers monitor external sources (like Slack channels, time schedules, or Zimmer events)
 # and automatically create agent sessions when configured events occur.
 # A trigger can have multiple conditions (OR semantics) — if any condition fires,
 # the trigger's session template executes.

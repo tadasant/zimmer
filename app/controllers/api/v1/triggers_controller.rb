@@ -1,7 +1,7 @@
 # API controller for managing triggers.
 #
 # Triggers automate session creation based on external events (Slack messages, schedules,
-# AO events). Each trigger can have multiple conditions with OR semantics.
+# Zimmer events). Each trigger can have multiple conditions with OR semantics.
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::TriggersController < Api::BaseController

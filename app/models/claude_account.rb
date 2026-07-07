@@ -2,7 +2,7 @@
 
 # Represents an agent-runtime account in the rotation pool.
 #
-# Despite the class name, this is the shared pool for every runtime AO
+# Despite the class name, this is the shared pool for every runtime Zimmer
 # authenticates (Claude Code and Codex today) — the `runtime` column
 # discriminates rows. Each account has its own credentials (stored in
 # oauth_config) and can be rotated in/out when usage quotas are hit. Only one
@@ -189,7 +189,7 @@ class ClaudeAccount < ApplicationRecord
     oauth.is_a?(Hash) && oauth["accessToken"].present? && oauth["refreshToken"].present?
   end
 
-  # The email AO recorded as the owner of the SHARED ~/.claude/.credentials.json,
+  # The email Zimmer recorded as the owner of the SHARED ~/.claude/.credentials.json,
   # read from the sidecar owner marker, or nil if the marker is missing or
   # unparseable.
   #
@@ -292,7 +292,7 @@ class ClaudeAccount < ApplicationRecord
 
     # The Claude CLI refreshes tokens independently during sessions, and Anthropic's
     # OAuth endpoint rotates refresh_token for security. When that happens, the CLI
-    # writes the new pair to ~/.claude/.credentials.json but AO's DB copy stays
+    # writes the new pair to ~/.claude/.credentials.json but Zimmer's DB copy stays
     # stale — using it would fail with invalid_grant. Sync from filesystem first.
     # sync_tokens_from_filesystem! is a no-op when ~/.claude.json's identity does
     # not match this account or when ~/.claude.json is missing entirely.
@@ -376,7 +376,7 @@ class ClaudeAccount < ApplicationRecord
   # ~/.claude.json, whose cross-container divergence previously let one account's
   # tokens be grafted onto another account's row.
   #
-  # When no marker exists yet (the brief window after a deploy, before AO has
+  # When no marker exists yet (the brief window after a deploy, before Zimmer has
   # written credentials once) we fall back to the legacy ~/.claude.json identity
   # check so token capture keeps working during the transition. The completeness
   # guard below runs in BOTH cases, so a refresh-token-less set can never be
@@ -475,7 +475,7 @@ class ClaudeAccount < ApplicationRecord
 
   # Writes this Codex account's credentials to ~/.codex/auth.json so the next
   # CLI spawn authenticates as it. OAuth accounts write their stored auth.json
-  # verbatim (preserving fields AO doesn't model); API-key accounts write a
+  # verbatim (preserving fields Zimmer doesn't model); API-key accounts write a
   # minimal { "OPENAI_API_KEY" => key } envelope.
   def write_codex_auth_to_filesystem!
     auth_json = codex_auth_json.presence || ({ "OPENAI_API_KEY" => codex_api_key } if codex_api_key.present?)
@@ -501,8 +501,8 @@ class ClaudeAccount < ApplicationRecord
   # the per-container ~/.claude.json, because that file is the exact source of the
   # cross-container ambiguity this system exists to avoid: on the wrong container
   # it would confidently claim a different account owns the shared credentials.
-  # When no marker exists yet (the brief post-deploy window before AO's first
-  # credential write) we refuse to sync — the safe default — and AO converges the
+  # When no marker exists yet (the brief post-deploy window before Zimmer's first
+  # credential write) we refuse to sync — the safe default — and Zimmer converges the
   # marker into existence via ensure_active_account! and every write_config!.
   def filesystem_credentials_owned_by_self?
     owner = self.class.credentials_owner_email
@@ -586,7 +586,7 @@ class ClaudeAccount < ApplicationRecord
   end
 
   # Codex auth.json carries no explicit access-token expiry, and the CLI
-  # refreshes the active account's tokens in place at runtime. AO refreshes pool
+  # refreshes the active account's tokens in place at runtime. Zimmer refreshes pool
   # accounts on a soft TTL (CodexAuthProvider::TOKEN_TTL) measured from
   # last_refresh, which keeps refresh tokens warm and fires roughly once per day.
   # API-key accounts never expire.
@@ -628,7 +628,7 @@ class ClaudeAccount < ApplicationRecord
 
     # The Codex CLI refreshes the active account's tokens in place during
     # sessions and OpenAI rotates the refresh_token on each use. When that
-    # happens the CLI writes the new pair to ~/.codex/auth.json while AO's DB
+    # happens the CLI writes the new pair to ~/.codex/auth.json while Zimmer's DB
     # copy goes stale — replaying it yields refresh_token_reused. Sync the
     # filesystem tokens (identity-gated, no-op when they aren't ours) first.
     sync_codex_tokens_from_filesystem!

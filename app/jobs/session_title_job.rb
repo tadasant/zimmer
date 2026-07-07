@@ -217,7 +217,7 @@ class SessionTitleJob < ApplicationJob
         description ? "- #{category.name}: #{description}" : "- #{category.name}"
       end.join("\n")
       tasks << <<~CATEGORY.strip
-        - CATEGORY: the single best-fitting category from this list, or NONE. Do your best to place the session in a category — match on the meaning conveyed by each name AND its description (a name may be a short abbreviation, e.g. "AO"), not just literal keyword overlap. But only commit to a category when you are reasonably confident it fits. If no category clearly fits, or your confidence is low, answer NONE so the session is left Uncategorized rather than mis-sorted. When in doubt, prefer NONE.
+        - CATEGORY: the single best-fitting category from this list, or NONE. Do your best to place the session in a category — match on the meaning conveyed by each name AND its description (a name may be a short abbreviation, e.g. "Zimmer"), not just literal keyword overlap. But only commit to a category when you are reasonably confident it fits. If no category clearly fits, or your confidence is low, answer NONE so the session is left Uncategorized rather than mis-sorted. When in doubt, prefer NONE.
 
         Available categories (formatted "name: description"):
         #{category_lines}
@@ -365,7 +365,7 @@ class SessionTitleJob < ApplicationJob
   # ever coercing a malformed answer into the WRONG category:
   # 1. Exact (case-insensitive, punctuation-trimmed) match against a name.
   # 2. Failing that, if the answer wraps exactly one category name as a whole
-  #    token (e.g. "The category is AO." or "**Bugs**"), match it. When the
+  #    token (e.g. "The category is Zimmer." or "**Bugs**"), match it. When the
   #    answer mentions several candidate names it's ambiguous, so we decline.
   # Anything else (including "NONE") leaves the session Uncategorized.
   def match_category(choice, candidates)

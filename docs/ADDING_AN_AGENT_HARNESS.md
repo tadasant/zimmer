@@ -4,7 +4,7 @@ This is the **exhaustive checklist** for adding a new coding-agent runtime to Ag
 Orchestrator — a "harness" like Claude Code or Codex, and next perhaps Pi, OpenCode,
 Gemini CLI, Aider, etc.
 
-AO already supports two runtimes (`claude_code` and `codex`). Codex was added
+Zimmer already supports two runtimes (`claude_code` and `codex`). Codex was added
 incrementally, and almost every integration point below was discovered the hard way —
 a feature would look done, ship, and then break in production on some seam nobody
 remembered existed. This document exists so the **next** runtime can be added with
@@ -53,7 +53,7 @@ implemented or the runtime will fail at that seam.
 > that some shared code branched on `claude` directly or hardcoded a Claude string.
 
 > **Runtime vs extension — don't confuse the two.** A *runtime* is a vendor harness
-> (Claude Code, Codex). An **AO Extension** (`app/extensions/<id>/`, see
+> (Claude Code, Codex). An **Zimmer Extension** (`app/extensions/<id>/`, see
 > [AO_EXTENSIONS.md](AO_EXTENSIONS.md)) is an orthogonal, *removable* layer that
 > substitutes a role class (e.g. the `pty_transport` extension swaps
 > `PtyClaudeCliAdapter` in for the claude_code default) or contributes spawn env,
@@ -169,7 +169,7 @@ it** — do not drop it from the signature.
 
 **Ways Codex bit us (this is the biggest pit):**
 - **Sandbox incompatibility (#3884):** Codex's `--full-auto` selects a `workspace-write`
-  sandbox enforced via **bubblewrap (bwrap)**. AO runs every session inside an
+  sandbox enforced via **bubblewrap (bwrap)**. Zimmer runs every session inside an
   already-isolated container where unprivileged user namespaces are disallowed, so
   bwrap aborts ("No permissions to create a new namespace") and **every** model-issued
   shell command fails before executing. We must use
@@ -183,7 +183,7 @@ it** — do not drop it from the signature.
 - **No `--session-id`:** Codex generates its **own** session UUID (the rollout filename
   UUID). There is no flag to set it. The UUID is captured *downstream* from the
   transcript and fed back into `resume`. If your runtime owns its session id, build the
-  same capture path; don't assume you can pass AO's session id.
+  same capture path; don't assume you can pass Zimmer's session id.
 - **Resume backend can change underneath you (LIVE bug, session 7278):** Codex moved
   from rollout JSONL files to a **SQLite thread store** (`state_*.sqlite`); `codex exec
   resume <uuid>` started failing with "no rollout found." Resume that depends on a
@@ -217,7 +217,7 @@ The retry strategy classifies a finished process into: **succeeded**, **transien
 
 **Ways Codex bit us (LIVE bug, session 7278 — read carefully):**
 Codex can finish with **exit code 0** while having actually **errored** — it writes an
-error to stderr (e.g. `Error: ... code -32600`) but exits 0. AO classified that as
+error to stderr (e.g. `Error: ... code -32600`) but exits 0. Zimmer classified that as
 "completed turn successfully," so the session silently landed in `needs_input` with an
 **empty transcript** and no indication anything went wrong. **Exit code is not a
 reliable success signal.** Your classifier must also inspect stderr and/or the
@@ -243,9 +243,9 @@ errored-but-exit-0 case explicitly.
 - [ ] **Implement `mints_own_session_id?` on the normalizer** (abstract on
   `TranscriptNormalizer`; forgetting it raises `NotImplementedError` on the first
   poll). Return `true` **only** if the runtime generates its own session/thread id
-  that AO must learn from the transcript (Codex). Return `false` if the runtime
-  honors the AO-supplied id (Claude). This trait gates `capture_runtime_session_id!`:
-  returning `true` for a runtime that actually honors AO's id will **corrupt forked
+  that Zimmer must learn from the transcript (Codex). Return `false` if the runtime
+  honors the Zimmer-supplied id (Claude). This trait gates `capture_runtime_session_id!`:
+  returning `true` for a runtime that actually honors Zimmer's id will **corrupt forked
   sessions** — a fork's transcript is copied from its source, so its early lines
   carry the source's id, which capture would write over the fork's own id, colliding
   with the unique `session_id` index (`RecordNotUnique`) and failing every poll until
@@ -278,7 +278,7 @@ The orchestrator system prompt is mostly runtime-agnostic, but a few slices diff
 Override on your contribution:
 
 - [ ] `delivered_via_file?` — `false` if the CLI takes a prompt flag (Claude:
-  `--append-system-prompt`); `true` if AO must write it to a file (Codex: `AGENTS.md`).
+  `--append-system-prompt`); `true` if Zimmer must write it to a file (Codex: `AGENTS.md`).
 - [ ] `system_prompt_filename` — the file written when `delivered_via_file?` is true.
 - [ ] `project_instructions_filename` — `CLAUDE.md` vs `AGENTS.md`; interpolated into
   shared prompt sections that reference "follow any CLAUDE.md instructions."
@@ -305,7 +305,7 @@ Override on your contribution:
 `app/services/<runtime>_*_post_processor.rb`. Reference:
 `claude_mcp_config_post_processor.rb`, `codex_config_toml_post_processor.rb`.
 
-AIR (§13) writes a base MCP config; AO post-processes it (server injection, env
+AIR (§13) writes a base MCP config; Zimmer post-processes it (server injection, env
 retargeting, secret/npx rewrites) in the runtime's **native format**.
 
 - [ ] Implement the post-processor for the runtime's config format:
@@ -459,14 +459,14 @@ status), not a no-op dependency bump.
 **Files:** `app/services/air_prepare_service.rb`, `Dockerfile.base` (AIR adapter
 package install). Reference: `docs` and the `ao-upgrade-air` skill.
 
-AO prepares each clone with `air prepare <adapter>`. The adapter id comes from the
+Zimmer prepares each clone with `air prepare <adapter>`. The adapter id comes from the
 Bundle's `air_adapter_name`.
 
 - [ ] Set `air_adapter_name` on the Bundle (Claude → `"claude"`, Codex → `"codex"`).
 - [ ] Ensure the matching `@pulsemcp/air-adapter-<runtime>@<AIR_CLI_VERSION>` package is
   installed in `Dockerfile.base` and pinned to `AirPrepareService::AIR_CLI_VERSION`.
 - [ ] If AIR has no adapter for your runtime yet, that adapter must be built upstream
-  first — AO can't prepare a clone for a runtime AIR doesn't understand.
+  first — Zimmer can't prepare a clone for a runtime AIR doesn't understand.
 
 **Ways Codex bit us:** AIR adapter version must match `AIR_CLI_VERSION`; a broken npm
 publish of the pinned version fails prepare for the whole session. Bump the adapter and
@@ -534,7 +534,7 @@ doc surfaces `docs/REST_API.md` and `app/views/api_docs/show.html.erb`.
 - [ ] The configs/runtimes/models surfaced via REST include the new runtime.
 - [ ] **Update both REST API doc surfaces in the same PR** (see the agent-orchestrator
   `CLAUDE.md` rule — there is no automated check enforcing parity).
-- [ ] If AO MCP tools expose runtime/model choices, confirm the new runtime is
+- [ ] If Zimmer MCP tools expose runtime/model choices, confirm the new runtime is
   selectable there too.
 
 ---

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# ClaudeAccount is the shared pool for every runtime AO authenticates (claude_code
+# ClaudeAccount is the shared pool for every runtime Zimmer authenticates (claude_code
 # and codex today), with the `runtime` column discriminating rows. Email
 # uniqueness must therefore be per-runtime, not global, so one person can hold a
 # separate account on each runtime (e.g. a codex AND a claude_code account for the

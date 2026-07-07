@@ -1,14 +1,14 @@
-# AO Extensions
+# Zimmer Extensions
 
-An **AO Extension** is a self-contained, individually-deletable bundle of optional
-behavior that plugs into AO's core seams without the core ever naming it. This
+An **Zimmer Extension** is a self-contained, individually-deletable bundle of optional
+behavior that plugs into Zimmer's core seams without the core ever naming it. This
 document explains why the seam exists, how it works, and the invariants that keep
 it removable. For a step-by-step guide to writing one, see
 [AUTHORING_AN_AO_EXTENSION.md](AUTHORING_AN_AO_EXTENSION.md).
 
 ## Why this exists
 
-AO is being extracted from the monorepo as standalone OSS. A few features depend
+Zimmer is being extracted from the monorepo as standalone OSS. A few features depend
 on internal-only techniques we do not want to publish — most notably the
 **PTY transport**, which drives the interactive Claude Code TUI inside a
 pseudo-terminal instead of calling `claude -p`. That technique leans on Claude
@@ -26,8 +26,8 @@ simply do not contribute.
 
 This layer is intentionally **not** called a "plugin". In this codebase, "plugin"
 already means an **AIR session plugin** (`PluginsConfig`) — a bundle of skills /
-MCP servers / hooks injected INTO an agent session's workspace. An AO Extension is
-a different thing entirely: it alters how **AO itself** drives a runtime — which
+MCP servers / hooks injected INTO an agent session's workspace. An Zimmer Extension is
+a different thing entirely: it alters how **Zimmer itself** drives a runtime — which
 CLI adapter it spawns, which print-inference backend it uses, what env it hands
 the child process. The word "plugin" is reserved for the AIR concept; this layer
 is "extensions". Keep the vocabulary distinct in code, docs, and UI.
@@ -100,7 +100,7 @@ seams it uses. The core consults the **registry**, never a concrete extension.
 |------|----------------------------|----------------------------------------|
 | `cli_adapter_override(runtime)` | `RuntimeRegistry.cli_adapter_class_for` | the runtime bundle's default adapter |
 | `provides_print_runner?` / `print_runner_backend(...)` | `ClaudePrintRunner.build` | `NativeClaudePrintRunner` (`claude -p`) |
-| `spawn_env_contribution(context)` | `ClaudeSpawnEnv#build_claude_spawn_env` | AO's baseline env (unchanged) |
+| `spawn_env_contribution(context)` | `ClaudeSpawnEnv#build_claude_spawn_env` | Zimmer's baseline env (unchanged) |
 
 Resolution for first-wins hooks (`cli_adapter_override`, print backend) follows
 registration order in `BUILTIN_EXTENSION_CLASSES`. `spawn_env_contribution` merges
@@ -112,7 +112,7 @@ all enabled extensions' contributions (later wins on key collision).
   seam was built to isolate. Bundles `PtyClaudeCliAdapter` (interactive agent
   sessions), `PtyClaudePrintRunner` (one-off inference), and
   `PtyClaudeRetryStrategy`. When enabled, replaces **every** `claude -p` call in
-  AO. This is the directory intended to be deleted for the OSS build.
+  Zimmer. This is the directory intended to be deleted for the OSS build.
 - **`mcp_tool_search`** (`McpToolSearchExtension`) — flips `ENABLE_TOOL_SEARCH`
   to `true` for newly spawned Claude Code sessions via `spawn_env_contribution`.
   A small, self-contained example of the env-contribution seam.
@@ -125,7 +125,7 @@ Both are experimental and off by default, and both are surfaced in the settings
 1. **The core never names a concrete extension.** Only `Ao::ExtensionRegistry`
    and `BUILTIN_EXTENSION_CLASSES` mention extension class names. Any `if
    SomeExtension` branch in core code defeats removability.
-2. **Deleting `app/extensions/<id>/` must leave a working AO.** Every seam falls
+2. **Deleting `app/extensions/<id>/` must leave a working Zimmer.** Every seam falls
    back to native. If a deletion would break the build, the feature wasn't fully
    self-contained — pull the stragglers into the extension directory.
 3. **Enablement is schema-less.** New extensions add a key to `extension_states`,
