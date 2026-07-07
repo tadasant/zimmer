@@ -58,7 +58,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
 
   # Simulate a manual `claude /login` on the worker: the CLI writes ~/.claude.json
   # (the new identity) and ~/.claude/.credentials.json (the new tokens) but does
-  # NOT touch AO's shared owner marker, which still names the previous owner with
+  # NOT touch Zimmer's shared owner marker, which still names the previous owner with
   # an older mtime. This is the only legitimate way to drive reconcile adoption.
   def simulate_manual_cli_login(new_account, previous_owner:)
     ClaudeAccount.write_credentials_owner_marker!(previous_owner.email)
@@ -651,7 +651,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
 
   test "activate! captures outgoing's CLI-rotated filesystem tokens before overwriting" do
     # The bricked-rotation scenario: while account A is current, the Claude CLI
-    # refreshes its tokens, rotating refresh_token. AO's DB copy stays stale.
+    # refreshes its tokens, rotating refresh_token. Zimmer's DB copy stays stale.
     # User then switches to account B via the web UI. Without this hardening,
     # write_config!(B) overwrites the credentials file with B's tokens — A's
     # CLI-rotated refresh_token is lost forever, and the next attempt to
@@ -670,7 +670,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
     File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(cli_rotated))
     File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({ "oauthAccount" => primary.email }))
-    # The shared owner marker names primary as the on-disk owner (AO wrote primary's
+    # The shared owner marker names primary as the on-disk owner (Zimmer wrote primary's
     # config last; the CLI then rotated the tokens in place without changing identity).
     ClaudeAccount.write_credentials_owner_marker!(primary.email)
 

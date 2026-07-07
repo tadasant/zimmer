@@ -6,19 +6,19 @@
  *
  * 1. Quotas page shows 5 accounts with correct data
  * 2. Starting a session hits a quota limit (mock returns 429 quickly)
- * 3. AO detects the quota limit and rotates to the next account
+ * 3. Zimmer detects the quota limit and rotates to the next account
  * 4. After rotation, the mock API unblocks the new account
- * 5. AO auto-sends a "continue" message after rotation
+ * 5. Zimmer auto-sends a "continue" message after rotation
  * 6. A second quota limit triggers rotation to a third account
  * 7. The quotas page reflects the updated state without manual refresh
  *
  * Prerequisites:
- *   - AO Rails app running with ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set
+ *   - Zimmer Rails app running with ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set
  *   - Database seeded with 5 accounts (via seed_accounts.rb)
  *   - Playwright installed
  *
  * Usage:
- *   # Start mock API, seed accounts, start AO, then:
+ *   # Start mock API, seed accounts, start Zimmer, then:
  *   BASE_URL=http://localhost:3000 node test/e2e/account_rotation_test.js
  */
 
@@ -188,7 +188,7 @@ const ACCOUNT_TOKENS = {
     console.log('\nTest 3: Waiting for first quota limit and account rotation...');
 
     // The session will run the real Claude binary, which talks to our mock API.
-    // After 2 API calls, account1 gets a quota limit error. AO detects it in
+    // After 2 API calls, account1 gets a quota limit error. Zimmer detects it in
     // the transcript, rotates to account2, and sends a "continue" message.
     //
     // We watch for rotation events in the session logs and page content.

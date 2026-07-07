@@ -16,7 +16,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
 
     assert_not_nil agent_root
     assert_equal "agent-orchestrator", agent_root.name
-    assert_equal "Agent Orchestrator", agent_root.display_name
+    assert_equal "Zimmer", agent_root.display_name
   end
 
   test "returns nil for non-existent agent root" do
@@ -56,7 +56,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     agent_root = AgentRootsConfig.find("agent-orchestrator")
 
     assert_equal "agent-orchestrator", agent_root.name
-    assert_equal "Agent Orchestrator", agent_root.display_name
+    assert_equal "Zimmer", agent_root.display_name
     assert agent_root.description.present?
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", agent_root.url
     assert_equal "main", agent_root.default_branch
@@ -68,7 +68,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     hash = agent_root.to_h
 
     assert_equal "agent-orchestrator", hash[:name]
-    assert_equal "Agent Orchestrator", hash[:display_name]
+    assert_equal "Zimmer", hash[:display_name]
     assert hash[:description].present?
     assert_equal "https://github.com/tadasant/zimmer-catalog.git", hash[:url]
     assert_equal "main", hash[:default_branch]
@@ -82,7 +82,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     json = JSON.parse(agent_root.to_json)
 
     assert_equal "agent-orchestrator", json["name"]
-    assert_equal "Agent Orchestrator", json["display_name"]
+    assert_equal "Zimmer", json["display_name"]
   end
 
   test "reloads configuration" do
@@ -413,12 +413,12 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     assert_equal [ "ci-workflow", "screenshots-videos" ], hash[:default_plugins].sort
   end
 
-  test "catalog-management no longer has locked-down AO MCP server in default_mcp_servers" do
+  test "catalog-management no longer has locked-down Zimmer MCP server in default_mcp_servers" do
     agent_root = AgentRootsConfig.find("catalog-management")
 
     refute_includes agent_root.default_mcp_servers, "agent-orchestrator-server-onboarding",
-      "Locked-down AO MCP server should be removed — AO auto-injects from default_subagent_roots"
+      "Locked-down Zimmer MCP server should be removed — Zimmer auto-injects from default_subagent_roots"
     refute_includes agent_root.default_mcp_servers, "agent-orchestrator-ai-artifact-engineering",
-      "Locked-down AI Artifact Engineering AO MCP server should be removed — AO auto-injects from default_subagent_roots"
+      "Locked-down AI Artifact Engineering Zimmer MCP server should be removed — Zimmer auto-injects from default_subagent_roots"
   end
 end

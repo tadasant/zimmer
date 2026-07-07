@@ -1,6 +1,6 @@
-# Agent Orchestrator REST API
+# Zimmer REST API
 
-This document describes the REST API for programmatically controlling agent sessions in the Agent Orchestrator.
+This document describes the REST API for programmatically controlling agent sessions in the Zimmer.
 
 ## Base URL
 

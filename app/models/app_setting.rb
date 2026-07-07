@@ -35,7 +35,7 @@ class AppSetting < ApplicationRecord
       DEFAULT_UNCATEGORIZED_POSITION
     end
 
-    # No persisted enablement exists, so every AO Extension resolves to its own
+    # No persisted enablement exists, so every Zimmer Extension resolves to its own
     # default (off, unless the extension opts in). Keeps ExtensionRegistry safe
     # in a DB-less boot path.
     def extension_states
@@ -70,7 +70,7 @@ class AppSetting < ApplicationRecord
       order(:id).first || new
     end
 
-    # Whether the AO Extension with the given id is enabled, per the persisted
+    # Whether the Zimmer Extension with the given id is enabled, per the persisted
     # settings row. Falls back to `default` whenever the row or column can't be
     # read, so Ao::ExtensionRegistry stays safe in the hot path and DB-less boots.
     # This is the single global enablement lookup for every extension — adding an

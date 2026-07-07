@@ -8,7 +8,7 @@ require "good_job/engine"
 # you've limited to :test, :development, or :production.
 Bundler.require(*Rails.groups)
 
-module AgentOrchestrator
+module Zimmer
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
     config.load_defaults 8.0
@@ -18,7 +18,7 @@ module AgentOrchestrator
     # Common ones are `templates`, `generators`, or `middleware`, for example.
     config.autoload_lib(ignore: %w[assets tasks])
 
-    # AO Extensions (see app/services/ao/extension.rb) live one directory each
+    # Zimmer Extensions (see app/services/ao/extension.rb) live one directory each
     # under app/extensions/<id>/ so an extension is a single self-contained,
     # deletable unit. Collapse those per-extension directories so Zeitwerk does
     # NOT turn the directory name into a namespace: app/extensions/pty_transport/

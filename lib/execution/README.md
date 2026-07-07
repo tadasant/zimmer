@@ -383,4 +383,4 @@ bin/rails test test/lib/execution/
 
 ## License
 
-Part of the Agent Orchestrator application.
+Part of the Zimmer application.

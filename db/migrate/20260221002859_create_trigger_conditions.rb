@@ -4,7 +4,7 @@
 # This migration extracts trigger conditions into a separate table so a single Trigger
 # (now acting as a "trigger flow") can have multiple conditions with OR semantics.
 #
-# Also adds a new "ao_event" condition type for internal AO events like session needs_input.
+# Also adds a new "ao_event" condition type for internal Zimmer events like session needs_input.
 class CreateTriggerConditions < ActiveRecord::Migration[8.0]
   def up
     create_table :trigger_conditions do |t|

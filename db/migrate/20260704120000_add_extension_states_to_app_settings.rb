@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Replace the per-feature boolean flags (pty_headless_inference,
-# enable_tool_search) with a single generic JSONB enablement map keyed by AO
+# enable_tool_search) with a single generic JSONB enablement map keyed by Zimmer
 # Extension id. A schema-less store means a new extension needs no migration —
 # the load-bearing property for a drop-in OSS extension — and the two retired
 # experiments simply become the "pty_transport" and "mcp_tool_search" keys.

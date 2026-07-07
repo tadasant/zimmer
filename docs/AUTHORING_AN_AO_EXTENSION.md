@@ -1,10 +1,10 @@
-# Authoring an AO Extension
+# Authoring a Zimmer Extension
 
-A practical guide to adding a new **AO Extension**. For the design rationale and
+A practical guide to adding a new **Zimmer Extension**. For the design rationale and
 invariants, read [AO_EXTENSIONS.md](AO_EXTENSIONS.md) first.
 
 An extension is worth reaching for when you have optional behavior that (a) alters
-how AO drives a runtime, and (b) you want to be able to enable/disable globally
+how Zimmer drives a runtime, and (b) you want to be able to enable/disable globally
 and — critically — **delete wholesale** without touching core code. If neither of
 those is true, you probably want a plain service, a config value, or a runtime
 bundle role instead.
@@ -25,7 +25,7 @@ app/extensions/my_thing/
 
 Keep **everything** the feature needs in this directory (or in clearly-owned
 siblings like a `lib/` driver script). The deletion test is: `rm -rf
-app/extensions/my_thing/` and AO still boots and works. If a collaborator has to
+app/extensions/my_thing/` and Zimmer still boots and works. If a collaborator has to
 live elsewhere, make sure the core references it only through the extension.
 
 ## Step 2 — Subclass `Ao::Extension`
@@ -117,5 +117,5 @@ behavior (registration, enabled filtering, hook resolution order, the
 - [ ] All collaborators live under `app/extensions/<id>/` (or a clearly-owned sibling).
 - [ ] Class name added to `BUILTIN_EXTENSION_CLASSES`.
 - [ ] No core file names the extension class (only the registry does).
-- [ ] `rm -rf app/extensions/<id>/` leaves AO booting and working (native fallback).
+- [ ] `rm -rf app/extensions/<id>/` leaves Zimmer booting and working (native fallback).
 - [ ] Tests under `test/extensions/<id>/`.

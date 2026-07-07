@@ -60,7 +60,7 @@ class CodexTranscriptNormalizer < TranscriptNormalizer
 
   # @see TranscriptNormalizer#mints_own_session_id?
   #
-  # Codex ignores the AO-supplied session id and generates its own rollout/thread
+  # Codex ignores the Zimmer-supplied session id and generates its own rollout/thread
   # UUID, emitted on the `session_meta` line. The poller must capture that UUID
   # so `codex exec resume <uuid>` targets the right rollout.
   def mints_own_session_id?

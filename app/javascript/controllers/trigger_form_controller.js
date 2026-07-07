@@ -2,7 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 
 // Handles trigger form interactivity including:
 // - Adding/removing trigger conditions
-// - Condition type switching (Slack, Schedule, AO Event) per condition card
+// - Condition type switching (Slack, Schedule, Zimmer Event) per condition card
 // - Schedule mode switching (Recurring/One-time) per condition card
 // - Schedule unit-dependent field visibility (day of week, time, timezone)
 export default class extends Controller {
@@ -189,7 +189,7 @@ export default class extends Controller {
             <option value="">Select condition type...</option>
             <option value="slack">Slack - Channel messages or @mentions</option>
             <option value="schedule">Schedule - Time-based (recurring or one-time)</option>
-            <option value="ao_event">AO Event - Internal system event</option>
+            <option value="ao_event">Zimmer Event - Internal system event</option>
           </select>
         </div>
 

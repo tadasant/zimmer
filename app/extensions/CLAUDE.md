@@ -1,6 +1,6 @@
 # CLAUDE.md — `app/extensions/`
 
-Everything here is an **AO Extension**: a self-contained, individually-deletable
+Everything here is an **Zimmer Extension**: a self-contained, individually-deletable
 bundle of optional behavior resolved through `Ao::ExtensionRegistry`. Read
 **[docs/AO_EXTENSIONS.md](../../docs/AO_EXTENSIONS.md)** (design + invariants) and
 **[docs/AUTHORING_AN_AO_EXTENSION.md](../../docs/AUTHORING_AN_AO_EXTENSION.md)**
@@ -12,7 +12,7 @@ bundle of optional behavior resolved through `Ao::ExtensionRegistry`. Read
    `app/services/ao/extension_registry.rb` (via `BUILTIN_EXTENSION_CLASSES`)
    mentions extension class names. If you find yourself writing `if
    SomeExtension` in core code, stop — that defeats removability.
-2. **Deleting `app/extensions/<id>/` must leave a working AO.** Keep every
+2. **Deleting `app/extensions/<id>/` must leave a working Zimmer.** Keep every
    collaborator a feature needs inside its own `<id>/` directory (or a clearly
    owned sibling like a `lib/` driver script), so `rm -rf app/extensions/<id>/`
    drops the whole feature and the core falls back to native.

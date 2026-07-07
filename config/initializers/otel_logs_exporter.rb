@@ -1,9 +1,9 @@
-# OTLP/HTTP logs exporter — ships AO's ERROR signal to the shared obs stack.
+# OTLP/HTTP logs exporter — ships Zimmer's ERROR signal to your obs stack.
 # =========================================================================
-# Agent Orchestrator's failures live in GoodJob background jobs and the
+# Zimmer's failures live in GoodJob background jobs and the
 # session-lifecycle subsystem, not HTTP requests (the same rationale that
 # shapes config/initializers/sentry.rb). This exporter ships those failures
-# to the obs droplet's OTel Collector via OTLP/HTTP so Grafana can alert on
+# to an OTel Collector via OTLP/HTTP so Grafana can alert on
 # them out of VictoriaLogs — the signal GlitchTip alone cannot provide
 # (Grafana cannot query GlitchTip).
 #
@@ -14,23 +14,22 @@
 #     (the broad catch-all: StructuredLogger#error, Rails.logger.error from
 #     services/jobs, and Rails' own unhandled-exception logs).
 #
-# Resource attributes on every batch match the Grafana scaffold's LogsQL
-# selector exactly (infrastructure/obs-droplet/.../rules-ao-errors.yaml):
-#   service.name = agent-orchestrator
+# Resource attributes on every batch (the fields a Grafana LogsQL alert
+# selector matches on):
+#   service.name = zimmer
 #   deployment.environment = <Rails.env>   (production / staging)
 #   severity_text ∈ {INFO, WARN, ERROR, FATAL}   (OTLP severityText)
 #
 # Wire format: minimal hand-rolled OTLP/HTTP JSON. We avoid the alpha-quality
 # `opentelemetry-logs-sdk` gem and hit the documented OTLP/HTTP logs endpoint
-# directly — no new gem dependencies (net/http + json are stdlib). This
-# mirrors web-app/config/initializers/otel_logs_exporter.rb.
+# directly — no new gem dependencies (net/http + json are stdlib).
 #
 # Configuration (env vars; absence of either is a hard no-op, so dev/test/CI
 # never attempt network I/O):
 #   OTEL_LOGS_EXPORTER_ENDPOINT      e.g. https://obs.tadasant.com/otel/v1/logs
 #   OTEL_LOGS_EXPORTER_BEARER_TOKEN  shared secret matching Caddy's bearer gate
-#                                    (the obs droplet's OTEL_INGEST_TOKEN)
-#   OTEL_SERVICE_NAME                optional; defaults to "agent-orchestrator"
+#                                    (matches your obs ingest gateway's token)
+#   OTEL_SERVICE_NAME                optional; defaults to "zimmer"
 #
 # Failure mode: if the exporter is wedged or the obs droplet is down, the
 # background thread logs once and drops the batch. Job/log handling is never
@@ -106,7 +105,7 @@ class OtelLogsExporter
     @token = token
     @queue = SizedQueue.new(MAX_QUEUE_SIZE)
     @stopped = false
-    @service_name = ENV["OTEL_SERVICE_NAME"] || "agent-orchestrator"
+    @service_name = ENV["OTEL_SERVICE_NAME"] || "zimmer"
     @env_name = ENV["RAILS_ENV"] || (defined?(Rails) ? Rails.env.to_s : "unknown")
   end
 
@@ -245,7 +244,7 @@ end
 # A secondary Rails.logger sink that ships WARN/ERROR/FATAL records to the
 # OTLP exporter, so generic `Rails.logger.warn`/`.error` calls from app, job,
 # and service code reach VictoriaLogs. This is the broad catch-all: it carries
-# StructuredLogger#error output (AO's primary deliberate error surface), any
+# StructuredLogger#error output (Zimmer's primary deliberate error surface), any
 # `Rails.logger.error` from the session-lifecycle subsystem, and Rails' own
 # unhandled-exception logs.
 #

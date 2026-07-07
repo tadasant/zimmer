@@ -46,10 +46,10 @@ class RuntimePromptContributionTest < ActiveSupport::TestCase
     assert_equal 2, bullets.size
     assert_includes bullets[0], "NEVER use the `EnterPlanMode` or `ExitPlanMode` tools"
     assert_includes bullets[1], "Don't offer `/schedule` follow-ups"
-    # The /schedule bullet carries its AO-native wake-tool sub-bullets.
+    # The /schedule bullet carries its Zimmer-native wake-tool sub-bullets.
     assert_includes bullets[1], "wake_me_up_when_session_changes_state"
     assert_includes bullets[1], "wake_me_up_later"
-    assert_includes bullets[1], "Spawn a fresh AO session"
+    assert_includes bullets[1], "Spawn a fresh Zimmer session"
   end
 
   test "Claude contribution's /schedule sub-bullets keep their 4-space indentation" do
@@ -78,7 +78,7 @@ class RuntimePromptContributionTest < ActiveSupport::TestCase
     assert_nil contribution.system_prompt_filename
   end
 
-  test "Codex contribution supplies sandbox + AO-native wait guidance" do
+  test "Codex contribution supplies sandbox + Zimmer-native wait guidance" do
     bullets = CodexRuntimePromptContribution.new.guidelines_bullets
 
     assert_equal 3, bullets.size
@@ -93,7 +93,7 @@ class RuntimePromptContributionTest < ActiveSupport::TestCase
     assert_includes bullets[2], "spawn_agent",
       "Codex should be told to use its native in-process subagent for in-session work"
     assert_includes bullets[2], "Do NOT call `start_session`",
-      "Codex must be barred from spinning up a review-only AO session"
+      "Codex must be barred from spinning up a review-only Zimmer session"
     # The wait bullet's fresh-session sub-bullet stays scoped to refreshed external state.
     assert_includes bullets[1], "not as a way to delegate review of your own work"
   end

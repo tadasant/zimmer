@@ -3,7 +3,7 @@
 # McpToolSearchExtension — run newly spawned Claude Code sessions with MCP tool
 # search enabled (ENABLE_TOOL_SEARCH=true).
 #
-# AO's baseline (in ClaudeSpawnEnv#build_claude_spawn_env) sets
+# Zimmer's baseline (in ClaudeSpawnEnv#build_claude_spawn_env) sets
 # ENABLE_TOOL_SEARCH=false; this extension flips it on for enabled sessions by
 # contributing the env var, which the spawn-env seam merges over the baseline.
 # Removing this extension leaves the baseline standing — tool search stays off —

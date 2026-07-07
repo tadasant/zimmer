@@ -4,14 +4,14 @@ require "test_helper"
 require "mocha/minitest"
 
 # Tests for CodexConfigTomlPostProcessor — the runtime post-processor that
-# applies AO-specific tweaks to the `.codex/config.toml` AIR writes for OpenAI
+# applies Zimmer-specific tweaks to the `.codex/config.toml` AIR writes for OpenAI
 # Codex sessions. Like the Claude processor, these exercise the processor
 # directly (no AIR CLI / Open3): it only reads, mutates, and writes the TOML
 # config via the injected file system.
 #
 # The Codex-specific behavior under test is the host-env-forwarding rewrite:
 # Codex servers forward host process env via `env_vars`/`env_http_headers`, but
-# AO's secrets live in Rails encrypted credentials (SecretsLoader), not the
+# Zimmer's secrets live in Rails encrypted credentials (SecretsLoader), not the
 # Codex process's host env. The processor must move every SecretsLoader-backed
 # var OUT of those forwarding fields and INTO the literal `env`/`http_headers`
 # tables with the resolved value, while leaving genuine host-env vars in place.
@@ -44,7 +44,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
         "command" => "npx",
         "args" => [ "-y", "@acme/mcp" ],
         "env" => {},
-        # ACME_API_KEY is an AO secret → inline it; ACME_HOST_REGION is a genuine
+        # ACME_API_KEY is a Zimmer secret → inline it; ACME_HOST_REGION is a genuine
         # host-env var Codex should forward at launch → leave it in env_vars.
         "env_vars" => [ "ACME_API_KEY", "ACME_HOST_REGION" ]
       }
@@ -59,7 +59,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "Non-secret host-env var must remain in env_vars for Codex to forward at launch"
   end
 
-  test "post_process! drops env_vars entirely when every forwarded var is an AO secret" do
+  test "post_process! drops env_vars entirely when every forwarded var is a Zimmer secret" do
     stub_secrets("ACME_API_KEY" => "sk-acme-123", "ACME_DB_URL" => "postgres://x")
 
     write_config(
@@ -141,7 +141,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     ENV.delete("CODEX_TEST_SECRET")
   end
 
-  test "post_process! injects the self-session AO server for a codex session" do
+  test "post_process! injects the self-session Zimmer server for a codex session" do
     ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
     @session.update!(mcp_servers: [ "playwright-custom" ])
 
@@ -157,7 +157,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     processor.post_process!
 
     self_server = read_config.dig("mcp_servers", "agent-orchestrator-staging-self-session")
-    assert_not_nil self_server, "self-session AO server should be injected for codex sessions"
+    assert_not_nil self_server, "self-session Zimmer server should be injected for codex sessions"
     assert_equal "npx", self_server["command"]
     assert_includes self_server["args"], "agent-orchestrator-mcp-server@latest"
     assert_includes self_server["args"], "--prefix"
@@ -203,7 +203,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   # ---------------------------------------------------------------------------
   # Locks in the exact serialized TOML for a representative config so any future
   # change to the post-processor or the TOML serializer cannot silently alter
-  # the bytes AO writes. The input includes an AO server with TOOL_GROUPS blank
+  # the bytes Zimmer writes. The input includes a Zimmer server with TOOL_GROUPS blank
   # so self-session injection is deduped away — this keeps the output
   # independent of the runtime catalog and fully deterministic. It exercises all
   # three Codex-specific paths: env retargeting, env_vars secret inlining (with
@@ -287,7 +287,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   end
 
   # Stub SecretsLoader so the host-env-forwarding inline logic is deterministic:
-  # only the named vars are AO secrets; everything else is a genuine host-env var.
+  # only the named vars are Zimmer secrets; everything else is a genuine host-env var.
   def stub_secrets(values)
     SecretsLoader.stubs(:exists?).returns(false)
     SecretsLoader.stubs(:get).returns(nil)

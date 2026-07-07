@@ -53,7 +53,7 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
 
   # A realistic Codex stderr line emitted by the rmcp client once per connected
   # MCP server (only when RUST_LOG enables rmcp=info). The server's self-declared
-  # name is intentionally NOT the AO config key — only the COUNT of these lines is
+  # name is intentionally NOT the Zimmer config key — only the COUNT of these lines is
   # usable, which is why detection is count-based and all-or-nothing.
   def rmcp_init_line(timestamp:, name: "some-mcp-server")
     %(#{timestamp}  INFO serve_inner: rmcp::service: Service initialized as client peer_info=Some(InitializeResult { server_info: Implementation { name: "#{name}", version: "1.0.0" } }))

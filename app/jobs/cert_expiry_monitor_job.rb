@@ -28,7 +28,7 @@ class CertExpiryMonitorJob < ApplicationJob
   WARN_THRESHOLD_DAYS = 21
 
   # Public hosts whose certs live on an origin we manage with Caddy.
-  # zimmer.example.com and staging.zimmer.example.com are the AO UIs (origin Caddy,
+  # zimmer.example.com and staging.zimmer.example.com are the Zimmer UIs (origin Caddy,
   # Cloudflare DNS-01). The obs hosts are the observability droplet that also backs
   # our alerting (GlitchTip) — if its cert lapses we lose the very channel this job
   # alerts through, so it is worth watching too. Override with
@@ -36,12 +36,12 @@ class CertExpiryMonitorJob < ApplicationJob
   # this environment's own APP_HOST even from an explicit override list, since the
   # hairpin constraint holds however the list was built.
   #
-  # Cross-environment monitoring (see #monitored_hosts): the AO origins are
+  # Cross-environment monitoring (see #monitored_hosts): the Zimmer origins are
   # Tailscale-only, and a worker container cannot reach its OWN host's tailscale0
-  # address (no NAT hairpin) — but it CAN reach the *other* environment's AO host
+  # address (no NAT hairpin) — but it CAN reach the *other* environment's Zimmer host
   # over the tailnet and the public obs hosts. So each environment drops its own
   # APP_HOST and watches the peer's: staging watches zimmer.example.com, prod watches
-  # staging.zimmer.example.com. Both AO certs end up covered, neither self-monitored.
+  # staging.zimmer.example.com. Both Zimmer certs end up covered, neither self-monitored.
   DEFAULT_HOSTS = %w[
     zimmer.example.com
     staging.zimmer.example.com
@@ -91,7 +91,7 @@ class CertExpiryMonitorJob < ApplicationJob
     reject_own_host(hosts)
   end
 
-  # Drop this environment's own AO host: its cert is served by the local Caddy on a
+  # Drop this environment's own Zimmer host: its cert is served by the local Caddy on a
   # Tailscale-only origin, and the worker container cannot reach its own host's
   # tailscale0 address (no NAT hairpin), so a self-check would only ever produce a
   # daily, never-self-resolving "Could not inspect" warn. The peer environment

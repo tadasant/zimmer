@@ -1,7 +1,7 @@
 # Codex Authentication & Account Pooling
 
-How Agent Orchestrator authenticates the **OpenAI Codex CLI** and pools Codex
-accounts for rotation. This mirrors the Claude Code login-credential system: AO
+How Zimmer authenticates the **OpenAI Codex CLI** and pools Codex
+accounts for rotation. This mirrors the Claude Code login-credential system: Zimmer
 keeps a pool of accounts, keeps the active account's credentials fresh, and
 writes them to the CLI's canonical filesystem location before each spawn.
 
@@ -44,12 +44,12 @@ runtime-isolated).
 Codex authenticates one of two ways, both pooled identically:
 
 1. **ChatGPT OAuth (preferred)** — captured via `codex login --device-auth`.
-   The full `auth.json` envelope is stored under `oauth_config["auth_json"]`. AO
+   The full `auth.json` envelope is stored under `oauth_config["auth_json"]`. Zimmer
    refreshes these tokens against OpenAI's token endpoint and rotates between
    accounts when one hits a usage quota.
 2. **`OPENAI_API_KEY` (fallback)** — a static key stored under
    `oauth_config["api_key"]`. API keys never expire and have nothing to refresh;
-   AO simply writes them to `auth.json`.
+   Zimmer simply writes them to `auth.json`.
 
 `ClaudeAccount#codex_api_key_account?` returns `true` for the second kind (an
 API key present and no refresh token). Such accounts are no-ops for refresh and
@@ -57,8 +57,8 @@ never expire.
 
 ## auth.json schema
 
-The Codex CLI reads and writes `~/.codex/auth.json`. AO writes OAuth accounts'
-stored envelope verbatim (preserving fields AO doesn't model) and writes API-key
+The Codex CLI reads and writes `~/.codex/auth.json`. Zimmer writes OAuth accounts'
+stored envelope verbatim (preserving fields Zimmer doesn't model) and writes API-key
 accounts as a minimal `{ "OPENAI_API_KEY": "sk-..." }`.
 
 ```jsonc
@@ -70,7 +70,7 @@ accounts as a minimal `{ "OPENAI_API_KEY": "sk-..." }`.
     "refresh_token": "<string>",
     "account_id": "<ChatGPT account id | null>"
   },
-  "last_refresh": "2026-05-29T12:00:00Z"  // ISO8601; drives AO's soft TTL
+  "last_refresh": "2026-05-29T12:00:00Z"  // ISO8601; drives Zimmer's soft TTL
 }
 ```
 
@@ -78,13 +78,13 @@ accounts as a minimal `{ "OPENAI_API_KEY": "sk-..." }`.
 
 ## Token lifecycle
 
-- **Before a spawn** (`inject_for_session!`): AO reconciles the filesystem with
+- **Before a spawn** (`inject_for_session!`): Zimmer reconciles the filesystem with
   the DB and writes the active account's credentials to `~/.codex/auth.json`. If
-  the active account's tokens are expired or expiring, AO refreshes them first.
+  the active account's tokens are expired or expiring, Zimmer refreshes them first.
   This is the real freshness guarantee at spawn time.
 - **At runtime**: the Codex CLI refreshes the active account's tokens in place
   and **rotates the refresh token** on each use, writing the new pair back to
-  `auth.json`. AO syncs those filesystem tokens back into the DB (identity-gated
+  `auth.json`. Zimmer syncs those filesystem tokens back into the DB (identity-gated
   on `account_id`) before refreshing, so it never replays a spent refresh token
   (which OpenAI rejects with `refresh_token_reused`).
 - **Background sweep** (`RefreshRuntimeAuthTokensJob`): runs at the minimum
@@ -105,7 +105,7 @@ application/json` and body:
 }
 ```
 
-On a 2xx, AO updates `tokens.id_token`/`access_token`/`refresh_token` **only for
+On a 2xx, Zimmer updates `tokens.id_token`/`access_token`/`refresh_token` **only for
 fields the response includes** (matching the CLI's `persist_tokens`) and sets
 `last_refresh` to now. A refresh is treated as **permanently failed** (account
 marked `needs_reauth`) on HTTP 401 or when the error code is one of
@@ -146,7 +146,7 @@ bin/rails codex_accounts:clear_all   # removes only Codex accounts + their rotat
 ```
 
 `capture_tokens` reads the current `~/.codex/auth.json` and stores it on the
-named account. Because `auth.json` carries no email, AO trusts that the file's
+named account. Because `auth.json` carries no email, Zimmer trusts that the file's
 identity belongs to the email you pass — run `codex login` as the intended
 account immediately before capturing.
 

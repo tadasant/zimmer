@@ -28,8 +28,8 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "builds prompt with orchestrator context section" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "# Agent Orchestrator Context"
-    assert_includes prompt, "You are facilitating an agent session within Agent Orchestrator"
+    assert_includes prompt, "# Zimmer Context"
+    assert_includes prompt, "You are facilitating an agent session within Zimmer"
     assert_includes prompt, "Environment: test"
     assert_includes prompt, "https://github.com/tadasant/zimmer-catalog"
   end
@@ -179,7 +179,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     assert_includes prompt, "### 7. Session Lifecycle Management"
-    assert_includes prompt, "AO homepage shows sessions in \"needs_input\" state as the user's action queue"
+    assert_includes prompt, "Zimmer homepage shows sessions in \"needs_input\" state as the user's action queue"
     assert_includes prompt, "Do NOT archive a session if it contains an important message"
     assert_includes prompt, "don't leave sessions in \"needs_input\" if there's genuinely nothing for the user to do"
     assert_includes prompt, "goal or skill-level archiving instructions, follow those"
@@ -188,11 +188,11 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "includes always-link-PRs-and-sessions principle" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "### 8. Always Link PRs and AO Sessions"
+    assert_includes prompt, "### 8. Always Link PRs and Zimmer Sessions"
     assert_includes prompt, "https://github.com/tadasant/zimmer-catalog/pull/",
       "expected the principle to show an example GitHub PR URL"
     assert_includes prompt, "https://zimmer.example.com/sessions/",
-      "expected the principle to show an example AO session URL"
+      "expected the principle to show an example Zimmer session URL"
     assert_includes prompt, "every time",
       "expected the principle to emphasize linking on every mention, not just first"
     assert_includes prompt, "mobile",
@@ -203,16 +203,16 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     principles_index = prompt.index("## Operating Principles")
-    guidelines_index = prompt.index("## Agent Orchestrator Guidelines")
+    guidelines_index = prompt.index("## Zimmer Guidelines")
 
     assert principles_index < guidelines_index,
-      "Operating Principles should appear before Agent Orchestrator Guidelines"
+      "Operating Principles should appear before Zimmer Guidelines"
   end
 
   test "includes guidelines section" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "## Agent Orchestrator Guidelines"
+    assert_includes prompt, "## Zimmer Guidelines"
     assert_includes prompt, "session may have a goal"
     assert_includes prompt, "Your work is being tracked"
     assert_includes prompt, "CLAUDE.md instructions"
@@ -235,15 +235,15 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
       "agent should know this overrides the base prompt's instruction"
   end
 
-  test "/schedule guideline points at the AO-native wake tools as alternatives" do
+  test "/schedule guideline points at the Zimmer-native wake tools as alternatives" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     assert_includes prompt, "wake_me_up_when_session_changes_state",
       "expected wake_me_up_when_session_changes_state to be surfaced as an alternative to /schedule"
     assert_includes prompt, "wake_me_up_later",
       "expected wake_me_up_later to be surfaced as an alternative to /schedule"
-    assert_includes prompt, "Spawn a fresh AO session",
-      "expected spawning a fresh AO session to be surfaced as an alternative to /schedule"
+    assert_includes prompt, "Spawn a fresh Zimmer session",
+      "expected spawning a fresh Zimmer session to be surfaced as an alternative to /schedule"
     assert_includes prompt, "@latest",
       "expected the @latest MCP refresh insight to be surfaced so agents understand why a fresh session works"
   end
@@ -294,7 +294,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     # Should not raise
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "# Agent Orchestrator Context"
+    assert_includes prompt, "# Zimmer Context"
     # Session ID and URL are always present (using database ID)
     assert_includes prompt, "Session ID: #{@session.id}"
     assert_includes prompt, "Session URL:"
@@ -388,7 +388,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
       "AskUserQuestion guidance is Claude-specific and should not leak to other runtimes"
   end
 
-  test "codex runtime still includes the shared AO principles" do
+  test "codex runtime still includes the shared Zimmer principles" do
     prompt = OrchestratorSystemPromptBuilder.build(
       session: deterministic_session,
       clone_path: "/home/rails/clone/path",
@@ -398,7 +398,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     # Runtime-agnostic content must remain for every runtime.
     assert_includes prompt, "## Operating Principles"
     assert_includes prompt, "### 1. Human-Approved Git Changes"
-    assert_includes prompt, "## Agent Orchestrator Guidelines"
+    assert_includes prompt, "## Zimmer Guidelines"
     assert_includes prompt, "avoid asking the user clarifying questions — make your best assumptions and prioritize autonomy."
     assert_includes prompt, "## Autonomous Problem-Solving"
     assert_includes prompt, "## Dynamic Skills and MCP Servers"
