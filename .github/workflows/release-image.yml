@@ -59,13 +59,41 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
+      # The app image builds FROM ghcr.io/tadasant/zimmer-base:latest. Bootstrap it
+      # if it does not exist yet, so the first release (and any release before the
+      # "Build base image" workflow has ever run) does not fail with
+      # "zimmer-base:latest: not found". Once present it is reused; rebuild it via
+      # the monthly/manual "Build base image" workflow when Dockerfile.base changes.
+      - name: Check for base image
+        id: base
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect ghcr.io/tadasant/zimmer-base:latest >/dev/null 2>&1; then
+            echo "need_base=false" >> "$GITHUB_OUTPUT"
+            echo "Base image present; reusing it."
+          else
+            echo "need_base=true" >> "$GITHUB_OUTPUT"
+            echo "Base image missing; bootstrapping it from Dockerfile.base."
+          fi
+
+      - name: Build & push base image (bootstrap, only if missing)
+        if: steps.base.outputs.need_base == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.base
+          push: true
+          tags: ghcr.io/tadasant/zimmer-base:latest
+          cache-from: type=gha,scope=base
+          cache-to: type=gha,mode=max,scope=base
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          # Uses the Zimmer base image (Node/Playwright/gh/gems). It must be
-          # published once via the "Build base image" workflow; the Dockerfile
-          # defaults BASE_IMAGE to ghcr.io/tadasant/zimmer-base:latest.
+          # Uses the Zimmer base image (Node/Playwright/gh/gems), ensured to exist by
+          # the bootstrap step above. The Dockerfile defaults BASE_IMAGE to
+          # ghcr.io/tadasant/zimmer-base:latest.
           push: true
           tags: |
             ghcr.io/tadasant/zimmer:${{ steps.version.outputs.version }}
@@ -78,17 +106,17 @@ jobs:
         # Fire a repository_dispatch so tadasant-internal's auto-upgrade + IaC-sync
         # workflows run the instant a new image publishes, instead of waiting for
         # their polls. This NEVER fails the release: it is a no-op until the
-        # ZIMMER_INTERNAL_DISPATCH_TOKEN secret is set (a PAT with Contents:write on
+        # GH_TADASANT_INTERNAL_DISPATCH_TOKEN secret is set (a PAT with Contents:write on
         # tadasant-internal -- the repository_dispatch API is gated by Contents write;
         # there is no separate "dispatch" scope), and a non-2xx response only warns --
         # prod still catches up on its own schedule.
         env:
-          DISPATCH_TOKEN: ${{ secrets.ZIMMER_INTERNAL_DISPATCH_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.GH_TADASANT_INTERNAL_DISPATCH_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           if [ -z "${DISPATCH_TOKEN:-}" ]; then
-            echo "ZIMMER_INTERNAL_DISPATCH_TOKEN not set; skipping instant-cross dispatch."
+            echo "GH_TADASANT_INTERNAL_DISPATCH_TOKEN not set; skipping instant-cross dispatch."
             echo "(tadasant-internal still catches up via its scheduled polls.)"
             exit 0
           fi
