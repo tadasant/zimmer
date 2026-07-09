@@ -54,7 +54,9 @@ to a `resource` while state is ephemeral.
 - **TLS is mandatory.** The app sets `DATABASE_SSLMODE=require`. The compose Postgres
   used by staging speaks no TLS, which is why the default is `prefer`.
 - **The app connects over the private VPC host** (`private_host`), so credentials
-  never cross the public internet.
+  never cross the public internet. `private_host` is only routable from inside the
+  cluster's VPC, so `main.tf` pins the droplet's `vpc_uuid` to the cluster's
+  `private_network_uuid` rather than trusting both to land in the region default.
 - The `doadmin` password is stored as the `PROD_DB_PASSWORD` GitHub Actions secret on
   `tadasant-internal`.
 

@@ -190,8 +190,9 @@ locals {
   # stack runs its own throwaway Postgres container.
   use_managed_db = var.managed_db_cluster_name != ""
 
-  # Reach the cluster over DigitalOcean's private network (the cluster and the
-  # droplet share a VPC), so credentials never traverse the public internet.
+  # Reach the cluster over DigitalOcean's private network so credentials never
+  # traverse the public internet. The droplet is pinned into the cluster's VPC (see
+  # `vpc_uuid` below), which is what makes `private_host` routable.
   db_host     = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].private_host : "db"
   db_port     = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].port : 5432
   db_username = local.use_managed_db ? var.managed_db_username : "zimmer"
@@ -222,6 +223,21 @@ resource "digitalocean_droplet" "zimmer" {
   size     = var.droplet_size
   ssh_keys = var.ssh_key_fingerprints
   tags     = ["zimmer", "zimmer-${var.environment}"]
+
+  # The app reaches the managed cluster over its PRIVATE host, which is only routable
+  # from inside the cluster's VPC. Pin the droplet into that same VPC rather than
+  # relying on both landing in the region's default VPC by coincidence. Null (the
+  # staging path) lets DigitalOcean pick the region default.
+  vpc_uuid = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].private_network_uuid : null
+
+  lifecycle {
+    # Fail fast at plan time instead of booting a droplet that cannot authenticate and
+    # only surfacing as a health-check timeout ~10 minutes later.
+    precondition {
+      condition     = !local.use_managed_db || var.managed_db_password != ""
+      error_message = "managed_db_password must be set when managed_db_cluster_name is set (TF_VAR_managed_db_password, from the PROD_DB_PASSWORD secret)."
+    }
+  }
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
     environment        = var.environment
