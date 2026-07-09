@@ -4,7 +4,7 @@
 # only non-secret configuration and may be committed as an example.
 environment          = "staging"
 region               = "nyc3"
-droplet_size         = "s-4vcpu-8gb"
+droplet_size         = "s-2vcpu-4gb"
 image_ref            = "ghcr.io/tadasant/zimmer:latest"
 # The staging box is Tailscale-only (no public app ingress; the deploy health-checks
 # it over `tailscale ssh zimmer-staging`), so a public DNS A record is NOT required.

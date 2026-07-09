@@ -106,14 +106,30 @@ Staging is **destroy-on-demand**, not always-on. `Teardown staging` runs nightly
 (08:00 UTC) and **destroys** the droplet + firewall; `Deploy staging` recreates it
 when you need it. This matters because **a powered-off DigitalOcean droplet is still
 billed** — its disk/CPU/RAM/IP stay reserved — so only destroying it stops the
-charge. The box is `s-4vcpu-8gb` ($48/mo if left up; ~$0.07/hr while testing), sized
-to actually run a Claude Code agent session, not just serve the UI.
+charge.
+
+**Sizing.** Staging is `s-2vcpu-4gb` ($24/mo if left up; ~$0.036/hr while testing),
+sized for the **1–2 concurrent agent sessions** staging ever sees. Production is
+deliberately larger (see `tadasant-internal`), since it runs many concurrent
+sessions. These sizes are **estimates, not benchmarks** — each concurrent Claude Code
+session is roughly a Node process plus its MCP subprocesses on top of Rails +
+Postgres + Redis. If you see OOM kills, bump `droplet_size` in the tfvars and
+re-provision.
 
 ## DNS — stable MagicDNS, no public DNS
 
-Because the box is **Tailscale-only**, you reach it by its MagicDNS name
-**`http://zimmer-staging`** (or `http://zimmer-staging.<tailnet>.ts.net`) over the
-VPN — **public DNS is not required**. With the `TS_API_CLIENT_*` OAuth client set,
+Because the box is **Tailscale-only**, you reach it by its MagicDNS name over the
+VPN — **public DNS is not required**:
+
+| Environment | URL |
+|---|---|
+| staging | **`http://zimmer-staging`** |
+| production | **`http://zimmer`** |
+
+(Production drops the suffix — see the `tailnet_hostname` local in `main.tf`. The
+DigitalOcean droplet name and the tailnet ACL tag both stay `zimmer-<environment>`.)
+The fully-qualified `http://<name>.<tailnet>.ts.net` also works. With the
+`TS_API_CLIENT_*` OAuth client set,
 the name is **stable across redeploys** (the deploy deletes the destroyed droplet's
 stale tailnet node first). Without it, each redeploy drifts the name to
 `zimmer-staging-1`, `-2`, … A public `staging.zimmer.tadasant.com` A record would
