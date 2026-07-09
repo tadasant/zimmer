@@ -16,7 +16,8 @@ on:
         default: ""
 
 concurrency:
-  group: deploy-staging
+  # Shared with `Teardown staging` so a nightly teardown can't race a deploy.
+  group: staging-lifecycle
   cancel-in-progress: false
 
 permissions:
@@ -91,6 +92,15 @@ jobs:
             echo "reaping firewall $fw"; api -X DELETE "https://api.digitalocean.com/v2/firewalls/$fw" || true
           done
           sleep 5
+
+      # Delete the reaped droplet's leftover tailnet node so the new droplet
+      # reclaims the clean `zimmer-staging` MagicDNS name (otherwise it registers as
+      # zimmer-staging-1, -2, ...). No-op until the TS_API_CLIENT_* secrets are set.
+      - name: Reap stale tailnet node (stable MagicDNS name)
+        env:
+          TS_API_CLIENT_ID: ${{ secrets.TS_API_CLIENT_ID }}
+          TS_API_CLIENT_SECRET: ${{ secrets.TS_API_CLIENT_SECRET }}
+        run: bash scripts/tailnet-reap-node.sh zimmer-staging
 
       - name: Terraform apply (staging)
         working-directory: infra/terraform
