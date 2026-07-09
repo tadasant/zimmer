@@ -69,7 +69,7 @@ runcmd:
   # Tailscale -- join tailnet as zimmer-${environment}. ACLs (managed in the
   # Tailscale admin, NOT here) restrict who can reach this node.
   - curl -fsSL https://tailscale.com/install.sh | sh
-  - tailscale up --authkey='${tailscale_auth_key}' --hostname='zimmer-${environment}' --ssh
+  - tailscale up --authkey='${tailscale_auth_key}' --hostname='${tailnet_hostname}' --ssh
   # Pull + run Zimmer
   - echo '${ghcr_token}' | docker login ghcr.io -u '${ghcr_username}' --password-stdin
   - docker compose -f /opt/zimmer/docker-compose.yml pull

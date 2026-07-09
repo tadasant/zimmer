@@ -130,6 +130,16 @@ variable "sentry_dsn" {
   description = "Sentry/GlitchTip DSN for backend error tracking. Empty disables Sentry."
 }
 
+# ---- Locals -----------------------------------------------------------------
+
+locals {
+  # The tailnet MagicDNS name you actually browse to. Production is simply
+  # `zimmer` (http://zimmer); every other environment is suffixed
+  # (http://zimmer-staging). Independent of the DigitalOcean droplet name and of
+  # the tailnet ACL tag, both of which stay `zimmer-<environment>`.
+  tailnet_hostname = var.environment == "production" ? "zimmer" : "zimmer-${var.environment}"
+}
+
 # ---- Resources --------------------------------------------------------------
 
 resource "digitalocean_project" "zimmer" {
@@ -151,6 +161,7 @@ resource "digitalocean_droplet" "zimmer" {
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
     environment        = var.environment
+    tailnet_hostname   = local.tailnet_hostname
     image_ref          = var.image_ref
     tailscale_auth_key = var.tailscale_auth_key
     ghcr_username      = var.ghcr_username
@@ -220,5 +231,5 @@ output "droplet_name" {
 }
 
 output "tailscale_hostname" {
-  value = "zimmer-${var.environment}"
+  value = local.tailnet_hostname
 }
