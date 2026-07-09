@@ -40,33 +40,47 @@ from GitHub Actions, and can't mint API tokens.)
 
 ### Tailscale
 
-Three pieces:
+Tags: the droplet is tagged **`tag:zimmer-staging`** and the CI runner
+**`tag:zimmer-ci`** (production uses `tag:zimmer-production`). Three pieces:
 
-1. **Auth key** (the droplet joins the tailnet):
+1. **Droplet auth key** (the droplet joins the tailnet at boot):
    - Tailscale admin → **Settings → Keys → Generate auth key**
-   - Check **Reusable**, **Ephemeral**, tag **`tag:zimmer`**
+   - Check **Reusable**, **Ephemeral**, **Pre-approved**, tag **`tag:zimmer-staging`**
    - → GitHub secret `TAILSCALE_AUTH_KEY`
-2. **OAuth client** (CI joins the tailnet to reach the box):
-   - Tailscale admin → **Settings → OAuth clients → Generate**
-   - Scope **`auth_keys`** (write), tag **`tag:ci`**
-   - → GitHub secrets `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`
-3. **Tailnet ACL** (admin → **Access Controls**) — declare the tags and restrict
-   who can reach the Zimmer boxes to CI + your devices:
+2. **CI runner auth key** (the GitHub runner joins the tailnet for the health check
+   + in-place upgrade):
+   - Generate another **Reusable + Ephemeral + Pre-approved** auth key, tag
+     **`tag:zimmer-ci`** — a *pre-minted key*, because an OAuth client cannot mint
+     tagged keys for tags it doesn't own.
+   - → GitHub secret `TS_CI_AUTHKEY`
+3. **API OAuth client** (keeps the MagicDNS name stable + powers nightly teardown):
+   - Tailscale admin → **Settings → OAuth clients → Generate**, scope **`devices`**
+     (read + write).
+   - → GitHub secrets `TS_API_CLIENT_ID`, `TS_API_CLIENT_SECRET`
+   - Used by `scripts/tailnet-reap-node.sh` to delete a destroyed droplet's stale
+     tailnet node so the next deploy reclaims the clean `zimmer-staging` name.
+     **Optional** — deploys still work without it, the name just drifts to
+     `zimmer-staging-1`, `-2`, …
+4. **Tailnet ACL** (admin → **Access Controls**) — declare the tags and (for the
+   in-place upgrade) allow the CI runner to SSH into the boxes as root:
 
    ```jsonc
    {
-     "tagOwners": { "tag:zimmer": ["autogroup:admin"], "tag:ci": ["autogroup:admin"] },
-     "acls": [
-       { "action": "accept", "src": ["autogroup:member"], "dst": ["tag:zimmer:*"] },
-       { "action": "accept", "src": ["tag:ci"],          "dst": ["tag:zimmer:*"] }
-     ],
+     "tagOwners": {
+       "tag:zimmer-ci":         ["autogroup:admin"],
+       "tag:zimmer-staging":    ["autogroup:admin"],
+       "tag:zimmer-production": ["autogroup:admin"]
+     },
      "ssh": [
-       { "action": "accept", "src": ["autogroup:member", "tag:ci"], "dst": ["tag:zimmer"], "users": ["root"] }
+       { "action": "accept", "src": ["tag:zimmer-ci"], "dst": ["tag:zimmer-staging"],    "users": ["root"] },
+       { "action": "accept", "src": ["tag:zimmer-ci"], "dst": ["tag:zimmer-production"], "users": ["root"] }
      ]
    }
    ```
 
-   There is no API/MCP for Tailscale config — do this in the admin console.
+   (Grants default to allow-all on a fresh tailnet, so no explicit `grants`/`acls`
+   entry is needed for reachability; the `ssh` block is what the auto-upgrade needs.)
+   There is no MCP for Tailscale config from CI — do this in the admin console.
 
 ### GHCR pull token — `GHCR_PULL_TOKEN`
 
@@ -76,21 +90,35 @@ Three pieces:
 - GitHub → **Settings → Developer settings → PATs** → token with `read:packages`.
 - → GitHub secret `GHCR_PULL_TOKEN`. Unnecessary once the package is public.
 
-### Rails secret — `STAGING_SECRET_KEY_BASE`
+### Rails secret — `STAGING_SECRET_BASE`
 
-- `openssl rand -hex 64` → GitHub secret `STAGING_SECRET_KEY_BASE`.
+- `openssl rand -hex 64` → GitHub secret `STAGING_SECRET_BASE` (also used as the
+  Postgres password).
 
 ### One-time bootstrap
 
 - Run the **Build base image** workflow once (publishes `ghcr.io/tadasant/zimmer-base`).
 - Let a push to `main` publish the app image, then trigger **Deploy staging**.
 
-## DNS — optional, and a recommendation
+## Staging lifecycle & billing
+
+Staging is **destroy-on-demand**, not always-on. `Teardown staging` runs nightly
+(08:00 UTC) and **destroys** the droplet + firewall; `Deploy staging` recreates it
+when you need it. This matters because **a powered-off DigitalOcean droplet is still
+billed** — its disk/CPU/RAM/IP stay reserved — so only destroying it stops the
+charge. The box is `s-4vcpu-8gb` ($48/mo if left up; ~$0.07/hr while testing), sized
+to actually run a Claude Code agent session, not just serve the UI.
+
+## DNS — stable MagicDNS, no public DNS
 
 Because the box is **Tailscale-only**, you reach it by its MagicDNS name
-(`http://zimmer-staging`) over the VPN — **public DNS is not required**. A public
-`staging.zimmer.tadasant.com` A record would point at a public IP where the app
-port is firewalled off, so it's only a vanity pointer.
+**`http://zimmer-staging`** (or `http://zimmer-staging.<tailnet>.ts.net`) over the
+VPN — **public DNS is not required**. With the `TS_API_CLIENT_*` OAuth client set,
+the name is **stable across redeploys** (the deploy deletes the destroyed droplet's
+stale tailnet node first). Without it, each redeploy drifts the name to
+`zimmer-staging-1`, `-2`, … A public `staging.zimmer.tadasant.com` A record would
+point at a public IP where the app port is firewalled off, so it's only a vanity
+pointer.
 
 If you do want vanity URLs: **use Cloudflare, not Namecheap.**
 
@@ -105,12 +133,15 @@ If you do want vanity URLs: **use Cloudflare, not Namecheap.**
 
 ## Phase 3 — deploy production (`tadasant-internal` repo secrets)
 
-Same set as staging, production values: `DIGITALOCEAN_ACCESS_TOKEN`,
-`TAILSCALE_AUTH_KEY`, `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`, `GHCR_PULL_TOKEN`,
-and `PROD_SECRET_KEY_BASE`. Plus:
+Same idea as staging, production values. See `tadasant-internal`'s
+`zimmer/DEPLOY.md` for the authoritative list; in brief:
+`DIGITALOCEAN_ACCESS_TOKEN`, `TAILSCALE_AUTH_KEY` (tag `tag:zimmer-production`),
+`TS_CI_AUTHKEY` (tag `tag:zimmer-ci`), `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET`
+(stable DNS), the GHCR pull token, the sync token, and `PROD_SECRET_KEY_BASE`. Plus:
 
 - To make prod auto-upgrade the instant a new image publishes (not just the 30-min
-  poll), add a `repository_dispatch` step to `zimmer`'s release workflow using a
-  PAT stored as a `zimmer` secret with `contents:write` on `tadasant-internal`.
-- Ensure the Tailscale ACL allows `tag:ci` + your devices to reach
-  `zimmer-production`.
+  poll), the `zimmer` release workflow fires a `repository_dispatch` using a PAT
+  stored as a `zimmer` secret (`GH_TADASANT_INTERNAL_DISPATCH_TOKEN`) with
+  `contents:write` on `tadasant-internal`.
+- Ensure the Tailscale ACL allows `tag:zimmer-ci` to SSH into `tag:zimmer-production`
+  (the `ssh` block above).
