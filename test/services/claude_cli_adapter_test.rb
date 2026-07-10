@@ -1471,7 +1471,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
 
     # Only ENABLE_TOOL_SEARCH, CLAUDE_CODE_DISABLE_CRON, CLAUDE_CODE_DISABLE_AUTO_MEMORY, and CLAUDE_CODE_AUTO_COMPACT_WINDOW should be set (plus nil values for database vars)
     non_nil_vars = env_vars.reject { |_k, v| v.nil? }
-    assert_equal({ "ENABLE_TOOL_SEARCH" => "false", "CLAUDE_CODE_DISABLE_CRON" => "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY" => "1", "CLAUDE_CODE_AUTO_COMPACT_WINDOW" => "200000" }, non_nil_vars)
+    assert_equal({ "ENABLE_TOOL_SEARCH" => "false", "CLAUDE_CODE_DISABLE_CRON" => "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY" => "1", "CLAUDE_CODE_AUTO_COMPACT_WINDOW" => "1000000" }, non_nil_vars)
   end
 
   test "execute loads .env file from working directory" do
@@ -2043,17 +2043,17 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   # ===== CLAUDE_CODE_AUTO_COMPACT_WINDOW TESTS =====
   # Set auto-compact window to reduce context-length errors
 
-  test "spawn_process sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to 200000" do
+  test "spawn_process sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to 1000000" do
     command = [ "claude", "test" ]
     @adapter.send(:spawn_process, command, working_dir: @test_dir)
 
     spawned = @mock_process_manager.spawned_processes.first
     env_vars = spawned[:env]
 
-    assert_equal "200000", env_vars["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]
+    assert_equal "1000000", env_vars["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]
   end
 
-  test "spawn_process_with_stdin sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to 200000" do
+  test "spawn_process_with_stdin sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to 1000000" do
     command = [ "claude", "-p", "--input-format", "stream-json" ]
     stdin_content = '{"type":"user","message":{}}'
     @adapter.send(:spawn_process_with_stdin, command, working_dir: @test_dir, stdin_content: stdin_content)
@@ -2061,7 +2061,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     spawned = @mock_process_manager.spawned_processes.first
     env_vars = spawned[:env]
 
-    assert_equal "200000", env_vars["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]
+    assert_equal "1000000", env_vars["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]
   end
 
   test "spawn_process honors auto_compact_window override" do

@@ -167,7 +167,8 @@ class UnarchiveSessionService
       return Result.new(success?: false, error: "Failed to write transcript file") unless write_success
     end
 
-    # Regenerate MCP config (includes auto-injected self-session server)
+    # Regenerate MCP config (includes auto-injected self-session server, plus the
+    # subagent-spawning agent-orchestrator server for roots with default_subagent_roots)
     regenerate_mcp_config(working_directory)
 
     Result.new(success?: true)
@@ -202,7 +203,8 @@ class UnarchiveSessionService
       return Result.new(success?: false, error: "Failed to write transcript file") unless write_success
     end
 
-    # Regenerate MCP config (includes auto-injected self-session server)
+    # Regenerate MCP config (includes auto-injected self-session server, plus the
+    # subagent-spawning agent-orchestrator server for roots with default_subagent_roots)
     regenerate_mcp_config(new_working_directory)
 
     Result.new(success?: true)
@@ -327,6 +329,14 @@ class UnarchiveSessionService
       working_directory: working_directory,
       file_system: file_system
     )
+    # Both branches auto-inject the subagent-spawning agent-orchestrator server
+    # for a root with resolved default_subagent_roots: the prepare! path does it
+    # in RuntimeConfigPostProcessor#post_process!, and the baseline path in
+    # #ensure_baseline!. So a subagent-roots-only root (blank mcp_servers +
+    # skills + hooks + plugins) that lands in the else branch keeps its only
+    # start_session server across regeneration. The injection decision lives
+    # entirely in the post-processor (keyed on the resolved
+    # default_subagent_roots), so this branch needs no subagent check.
     if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
       air_service.prepare!
     else
@@ -338,6 +348,10 @@ class UnarchiveSessionService
     # whatever injected_mcp_servers was set during the original run, which can
     # diverge from what AIR actually wrote into the regenerated .mcp.json.
     store_injected_mcp_servers(air_service.injected_mcp_servers)
+
+    # An unarchive regenerates .mcp.json from scratch, so it can narrow the
+    # session's toolset just as a mid-run recreation can. Make that loud.
+    detect_lost_mcp_servers(session, air_service.injected_mcp_servers, context: "unarchive")
 
     @logger.info("AIR prepare completed for unarchived session", working_directory: working_directory)
   rescue => e

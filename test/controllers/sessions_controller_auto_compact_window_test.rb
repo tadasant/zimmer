@@ -32,7 +32,7 @@ class SessionsControllerAutoCompactWindowTest < ActionDispatch::IntegrationTest
       agent_runtime: "claude_code"
     }
 
-    assert_equal 200_000, Session.last.auto_compact_window
+    assert_equal 1_000_000, Session.last.auto_compact_window
   end
 
   test "create defaults auto_compact_window when the param is omitted entirely" do
@@ -45,7 +45,7 @@ class SessionsControllerAutoCompactWindowTest < ActionDispatch::IntegrationTest
       agent_root_name: "agent-orchestrator"
     }
 
-    assert_equal 200_000, Session.last.auto_compact_window
+    assert_equal 1_000_000, Session.last.auto_compact_window
   end
 
   test "create rejects an out-of-range auto_compact_window" do

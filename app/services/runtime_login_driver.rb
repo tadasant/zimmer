@@ -92,6 +92,19 @@ class RuntimeLoginDriver
     false
   end
 
+  # Extract the CLI's own failure explanation from its (ANSI-stripped) output so a
+  # login that ends without usable credentials reports WHY instead of a generic
+  # "did not produce credentials". The login CLIs print a human-readable reason
+  # ("Login failed: getaddrinfo ESERVFAIL platform.claude.com", "Invalid code",
+  # an expired-code notice) right before they give up; surfacing it turns an
+  # undiagnosable failure into an actionable one in the Quotas login panel.
+  # Returns a short trimmed string, or nil when the buffer has no recognizable
+  # failure line (so we never surface the verification URL/prompt as a "reason").
+  # @return [String, nil]
+  def login_failure_hint(_clean_buffer)
+    nil
+  end
+
   private
 
   # Candidate executable paths/names, most-specific first.

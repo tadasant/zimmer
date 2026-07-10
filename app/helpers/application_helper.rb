@@ -121,6 +121,22 @@ module ApplicationHelper
     content_tag(:pre, text, class: "whitespace-pre-wrap text-sm text-gray-700")
   end
 
+  # Persisted network-egress health for the global banner (see EgressHealthCheck).
+  # Returns the status hash when egress is degraded, otherwise nil so the banner
+  # renders nothing. Never raises — a cache hiccup must not break page rendering.
+  def network_egress_alert
+    status = EgressHealthCheck.status
+    status if status && status["status"] == "degraded"
+  end
+
+  # Format a stored iso8601 timestamp for the egress banner as "HH:MM UTC".
+  # Tolerant of a malformed value so the banner never crashes on bad cache data.
+  def egress_banner_time(iso8601)
+    Time.iso8601(iso8601.to_s).utc.strftime("%H:%M UTC")
+  rescue ArgumentError, TypeError
+    nil
+  end
+
   private
 
   # Memoize the markdown parser for better performance

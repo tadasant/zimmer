@@ -31,6 +31,27 @@ class AirPrepareService
   # neither should page.
   class RootResolutionError < AirPrepareError; end
 
+  # Raised when `air prepare` reports that a ${VAR} interpolated by one of the
+  # session's selected MCP servers (or hooks) could not be resolved from the
+  # environment or a secrets transform. Sibling to RootResolutionError, and for
+  # the same reason: this is a deterministic, non-retryable, session-scoped
+  # *configuration* problem — the selected artifact needs a secret that Zimmer's
+  # SecretsLoader does not carry — not broken-system behavior. Retrying never
+  # helps and nothing is wrong server-side, so AgentSessionJob fails the session
+  # gracefully at WARN rather than letting an unhandled error bubble to
+  # ActiveJob and page #eng-alerts. The fix is always operator-side: add the
+  # variable to Zimmer's `mcp_secrets` credentials, or stop selecting that server.
+  # Carries the offending variable names so the failure message can tell the
+  # operator exactly which secret to provision.
+  class SecretResolutionError < AirPrepareError
+    attr_reader :variable_names
+
+    def initialize(message, variable_names: [])
+      super(message)
+      @variable_names = variable_names
+    end
+  end
+
   AIR_CLI_VERSION = "0.13.0"
 
   # Hard wall-clock cap for a single `air prepare` invocation. AIR shells out to
@@ -74,6 +95,29 @@ class AirPrepareService
   # and ultimately to raise RootResolutionError (a graceful, non-paging failure)
   # rather than a plain AirPrepareError that would page as an unhandled job crash.
   ROOT_NOT_FOUND_PATTERN = /Root\s+"[^"]*"\s+not found/
+
+  # Signature AIR emits (exit 1) when a selected MCP server or hook interpolates a
+  # ${VAR} that neither the environment nor the @pulsemcp/air-secrets-env transform
+  # can resolve. Built by air-sdk's `unresolvedVarsMessage(configPath, unresolved)`
+  # (see @pulsemcp/air-sdk validate-config.js, pinned via AIR_CLI_VERSION):
+  #
+  #   Unresolved variable{s} in <targetDir>: ${A}, ${B}. Ensure all variables are
+  #   provided via environment or a secrets transform.
+  #
+  # The "Unresolved variable" prefix plus the `${…}` token list is the stable
+  # anchor. Note the message is pluralized and can carry several comma-separated
+  # variables, and air-sdk's own extractor (`/\$\{([^}]+)\}/g`) does not constrain
+  # the name charset — so neither do we. Matched in run_air_prepare_command! to
+  # raise SecretResolutionError immediately: no retry, no catalog refresh.
+  #
+  # Deliberately NOT multiline: AIR emits this as a single line (it can be preceded
+  # by unrelated warning lines in the same stderr). Letting `.` cross newlines would
+  # allow the prefix on one line to bind to a `${…}` on a later, unrelated one.
+  UNRESOLVED_VARIABLE_PATTERN =
+    /Unresolved variables? in .*?: (\$\{[^}]+\}(?:, \$\{[^}]+\})*)/
+
+  # Pulls the bare names out of the `${A}, ${B}` token list captured above.
+  VARIABLE_TOKEN_PATTERN = /\$\{([^}]+)\}/
 
   # Where the AIR CLI npm packages are installed. Overridable via ENV so CI
   # runners (which can't write to /opt) can redirect to a user-writable path.
@@ -304,6 +348,10 @@ class AirPrepareService
   # absent after a fresh catalog, it's a genuinely bad name — we raise
   # RootResolutionError (a graceful, non-paging failure) so AgentSessionJob can
   # fail the session cleanly instead of letting it page #eng-alerts.
+  #
+  # An unresolved ${VAR} gets the same graceful treatment via
+  # SecretResolutionError, but without the refresh-and-retry dance: a missing
+  # secret is not a propagation race, so it is raised on the first attempt.
   def run_air_prepare_command!(cmd, env)
     attempt = 0
     max_attempts = AIR_PREPARE_RETRY_DELAYS_SECONDS.length + 1
@@ -328,6 +376,7 @@ class AirPrepareService
         )
         transient = transient_air_failure?(error.message)
         root_not_found = ROOT_NOT_FOUND_PATTERN.match?(error.message)
+        unresolved_variables = unresolved_variable_names(error.message)
       rescue BoundedSubprocess::TimeoutError => e
         # A watchdog kill means `air prepare` hung — most likely the catalog clone
         # stalled on a half-open github.com connection. The process group has been
@@ -337,6 +386,19 @@ class AirPrepareService
         )
         transient = true
         root_not_found = false
+        unresolved_variables = []
+      end
+
+      # An unresolved ${VAR} is deterministic and operator-fixable: the selected
+      # MCP server needs a secret Zimmer doesn't carry. Retrying and refreshing the
+      # catalog are both pointless, so raise straight away — gracefully, so the
+      # job layer fails the session instead of crashing and paging #eng-alerts.
+      if unresolved_variables.any?
+        Rails.logger.warn(
+          "[AirPrepareService] AIR prepare could not resolve required variable(s) " \
+          "variables=#{unresolved_variables.join(",")} attempts=#{attempt} error=#{error.message}"
+        )
+        raise SecretResolutionError.new(error.message, variable_names: unresolved_variables)
       end
 
       # Root-not-found: bust the (possibly stale) catalog cache once and retry.
@@ -418,6 +480,15 @@ class AirPrepareService
   # clone hiccup worth retrying (vs. a deterministic config/catalog error).
   def transient_air_failure?(message)
     TRANSIENT_AIR_PREPARE_PATTERNS.match?(message.to_s)
+  end
+
+  # Names of the ${VAR}s AIR reported as unresolvable, or [] if the message isn't
+  # an unresolved-variable failure at all.
+  def unresolved_variable_names(message)
+    tokens = UNRESOLVED_VARIABLE_PATTERN.match(message.to_s)&.captures&.first
+    return [] if tokens.blank?
+
+    tokens.scan(VARIABLE_TOKEN_PATTERN).flatten
   end
 
   # Determine the agent root key for --root flag.

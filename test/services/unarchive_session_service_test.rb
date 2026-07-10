@@ -841,4 +841,55 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert result.success?
     assert_equal false, result.clone_restored
   end
+
+  test "regeneration restores the auto-injected subagent Zimmer server for a subagent-roots-only root" do
+    # Regression for the production wedge (sessions 9726/9890): a root whose only
+    # subagent-spawning capability is the auto-injected agent-orchestrator server
+    # (catalog-management declares NO default_mcp_servers/skills/hooks/plugins)
+    # lost that server on unarchive because the baseline regeneration path injected
+    # only the self-session server. This exercises the REAL post-processor end to end
+    # (no AirPrepareService stubbing) against the mock file system, proving the
+    # subagent server survives regeneration.
+    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
+
+    # Undo the setup-wide prepare! stub — this test drives the real else-branch
+    # (ensure_baseline_mcp_config!), which does not shell out to AIR.
+    AirPrepareService.any_instance.unstub(:prepare!)
+
+    @session.update!(
+      mcp_servers: [],
+      catalog_skills: nil,
+      catalog_hooks: nil,
+      catalog_plugins: nil,
+      metadata: {
+        "clone_path" => @clone_path,
+        "working_directory" => @working_directory,
+        "agent_root_key" => "catalog-management"
+      }
+    )
+    @mock_fs.mkdir_p(@clone_path)
+
+    result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+    assert result.success?
+
+    # The regenerated .mcp.json must carry the subagent-spawning server.
+    config = JSON.parse(@mock_fs.read(File.join(@working_directory, ".mcp.json")))
+    ao_server = config.dig("mcpServers", "agent-orchestrator")
+    assert_not_nil ao_server,
+      "regenerated .mcp.json must contain the auto-injected agent-orchestrator spawning server"
+    allowed = ao_server.dig("env", "ALLOWED_AGENT_ROOTS")
+    assert_includes allowed, "catalog-mgmt-research"
+    assert_includes allowed, "catalog-mgmt-save"
+    # A full-surface AO server (no TOOL_GROUPS restriction) covers the self_session
+    # tool group, so self-session capability is retained via this same server.
+    assert_nil ao_server.dig("env", "TOOL_GROUPS"),
+      "the subagent Zimmer server must expose the full tool surface, covering self_session"
+
+    # And custom_metadata must record it so the UI reflects the restored server.
+    @session.reload
+    assert_includes @session.custom_metadata["injected_mcp_servers"], "agent-orchestrator",
+      "custom_metadata.injected_mcp_servers must record the restored subagent Zimmer server"
+  ensure
+    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+  end
 end

@@ -1,7 +1,7 @@
 GEM
   remote: https://rubygems.org/
   specs:
-    aasm (5.5.2)
+    aasm (6.0.0)
       concurrent-ruby (~> 1.0)
     action_text-trix (2.1.18)
       railties
@@ -360,7 +360,7 @@ GEM
       bigdecimal
       concurrent-ruby (~> 1.0, >= 1.0.2)
       logger
-    slack-ruby-client (3.1.0)
+    slack-ruby-client (3.2.0)
       faraday (>= 2.0.1)
       faraday-mashify
       faraday-multipart

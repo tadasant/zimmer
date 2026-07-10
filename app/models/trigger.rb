@@ -401,7 +401,9 @@ class Trigger < ApplicationRecord
   end
 
   def follow_up_session!(session, prompt:)
-    # Sync MCP servers, catalog skills, and hooks to match current trigger configuration
+    # Sync MCP servers, catalog skills, hooks, and plugins to match current
+    # trigger configuration. A trigger that declares none of a given artifact
+    # never clears the session's — see #sync_session_artifact!.
     sync_mcp_servers!(session)
     sync_catalog_skills!(session)
     sync_catalog_hooks!(session)
@@ -495,33 +497,66 @@ class Trigger < ApplicationRecord
   # For running sessions, this only takes effect on the next process spawn,
   # not on the currently running process.
   def sync_mcp_servers!(session)
-    return if session.mcp_servers == mcp_servers
-
-    session.update!(mcp_servers: mcp_servers)
+    sync_session_artifact!(session, :mcp_servers, mcp_servers)
   end
 
   # Update the session's catalog skills to match the trigger's current configuration.
   # For running sessions, this only takes effect on the next process spawn.
   def sync_catalog_skills!(session)
-    return if session.catalog_skills == catalog_skills
-
-    session.update!(catalog_skills: catalog_skills)
+    sync_session_artifact!(session, :catalog_skills, catalog_skills)
   end
 
   # Update the session's catalog hooks to match the trigger's current configuration.
   # For running sessions, this only takes effect on the next process spawn.
   def sync_catalog_hooks!(session)
-    return if session.catalog_hooks == catalog_hooks
-
-    session.update!(catalog_hooks: catalog_hooks)
+    sync_session_artifact!(session, :catalog_hooks, catalog_hooks)
   end
 
   # Update the session's catalog plugins to match the trigger's current configuration.
   # For running sessions, this only takes effect on the next process spawn.
   def sync_catalog_plugins!(session)
-    return if session.catalog_plugins == catalog_plugins
+    sync_session_artifact!(session, :catalog_plugins, catalog_plugins)
+  end
 
-    session.update!(catalog_plugins: catalog_plugins)
+  # Push one artifact list from this trigger onto a session it is reusing.
+  #
+  # Two invariants, both learned from the session-9563 incident, in which a
+  # one-time wake trigger (created by the `wake_me_up_later` /
+  # `wake_me_up_when_session_changes_state` self-session tools, which never send
+  # artifact params, so every jsonb column defaults to `[]`) fired against a
+  # live session and stripped the MCP servers it had been provisioned with:
+  #
+  # 1. An EMPTY trigger list never overwrites a non-empty session list. "The
+  #    trigger declares no servers" means "this trigger has nothing to say about
+  #    servers", not "this session should have no servers". Clearing a live
+  #    session's artifacts is never the intent of a trigger fire, and there is a
+  #    dedicated endpoint (PATCH /sessions/:id/mcp_servers) for users who really
+  #    do want to remove them.
+  #
+  # 2. Any NARROWING — a sync that removes artifacts the session currently has —
+  #    is logged at WARN. A session losing its tools is broken system behavior
+  #    that will not self-resolve, so per the repo's logging philosophy it must
+  #    be noisy rather than silent.
+  #
+  # A trigger that DOES declare a non-empty list is still authoritative for that
+  # artifact, so recurring UI-authored triggers keep syncing as configured.
+  def sync_session_artifact!(session, attribute, desired)
+    current = session.public_send(attribute) || []
+    desired = desired || []
+
+    return if current == desired
+    return if desired.empty? && current.present?
+
+    removed = current - desired
+    if removed.any?
+      Rails.logger.warn(
+        "[Trigger#sync_session_artifact!] Trigger '#{name}' (ID: #{id}) is removing " \
+        "#{attribute} #{removed.inspect} from session #{session.id} on reuse. " \
+        "Session will run without them after its next process spawn."
+      )
+    end
+
+    session.update!(attribute => desired)
   end
 
   def resuscitate_session!(session)

@@ -970,4 +970,30 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     name = job.send(:get_author_name, message)
     assert_equal "U123", name
   end
+
+  # === Queue isolation & singleton concurrency ===
+  #
+  # A poll is long, external-API-bound work: SlackService retries rate-limited
+  # calls with blocking sleeps, so a run can hold its worker thread for minutes.
+  # On the shared `default` queue those runs starved the periodic jobs that also
+  # live there (HeartbeatSweepJob every 30s, cleanup crons), collapsing
+  # background throughput. The poller must run on the isolated `pollers` queue and
+  # be a singleton so overlapping cron ticks can't stack minutes-long runs and
+  # saturate the queue's whole thread pool.
+
+  test "runs on the dedicated pollers queue (not default)" do
+    assert_equal "pollers", SlackTriggerPollerJob.new.queue_name
+  end
+
+  test "enqueues onto the pollers queue" do
+    assert_enqueued_with(job: SlackTriggerPollerJob, queue: "pollers") do
+      SlackTriggerPollerJob.perform_later
+    end
+  end
+
+  test "is a singleton (total_limit 1) so overlapping polls cannot stack" do
+    config = SlackTriggerPollerJob.good_job_concurrency_config
+    assert_equal 1, config[:total_limit]
+    assert_equal "slack_trigger_poller", SlackTriggerPollerJob.new.good_job_concurrency_key
+  end
 end

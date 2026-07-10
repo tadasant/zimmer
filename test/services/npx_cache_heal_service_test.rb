@@ -235,18 +235,101 @@ class NpxCacheHealServiceTest < ActiveSupport::TestCase
     refute File.exist?(dir_b)
   end
 
-  test "npx_cache_resolution_failure? requires both a marker and an _npx reference" do
+  # The real TAR_ENTRY_ERROR extraction-race signature persisted by Zimmer for the
+  # terminal orphaning of session 9570 (`pulse-goodjobs-rw`). npm's bundled tar
+  # aborts mid-extraction against a half-written `_npx/<hash>` tree, then the
+  # connection just times out — so the persisted error carries the tar lines
+  # followed by "Connection timed out".
+  def tar_entry_error(hash)
+    cache = File.join(@npx_dir, hash, "node_modules")
+    [
+      "Starting connection with timeout of 180000ms",
+      "npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, lstat '#{cache}/ajv/dist/compile'",
+      "npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, lstat '#{cache}/hono/dist/types/jsx'",
+      "npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, " \
+      "lstat '#{cache}/@modelcontextprotocol/sdk/dist/esm/shared'",
+      "Connection timed out after 180000ms"
+    ].join(" | ")
+  end
+
+  # The ENOTEMPTY rename-race signature (playwright-custom / remote-fs-screenshots
+  # in the 2026-06-13 window): npm can't atomically swap a staging dir over a
+  # non-empty target while another install populates the same `_npx/<hash>`.
+  def enotempty_error(hash)
+    cache = File.join(@npx_dir, hash, "node_modules")
+    [
+      "npm error code ENOTEMPTY",
+      "npm error syscall rename",
+      "npm error errno -39",
+      "npm error ENOTEMPTY: directory not empty, rename '#{cache}/.playwright-XXXX' '#{cache}/playwright'",
+      "Connection timed out after 180000ms"
+    ].join(" | ")
+  end
+
+  test "removes the _npx hash tree named in a TAR_ENTRY_ERROR extraction race (session 9570 signature)" do
+    hash = "dbbb2997d8a4f060"
+    dir = make_hash_dir(hash)
+    other = make_hash_dir("deadbeefdeadbeef")
+
+    failed = [ { "name" => "pulse-goodjobs-rw", "error" => tar_entry_error(hash) } ]
+
+    result = NpxCacheHealService.heal_from_failures(
+      failed_servers: failed, working_directory: @working_directory, logger: @logger
+    )
+
+    assert result[:healed], "a TAR_ENTRY_ERROR referencing _npx must trigger healing"
+    assert_includes result[:removed_paths], dir
+    refute File.exist?(dir), "poisoned extraction-race hash tree should be removed"
+    assert File.exist?(other), "unrelated hash tree should be left intact"
+  end
+
+  test "removes the _npx hash tree named in an ENOTEMPTY rename race" do
+    hash = "0011223344556677"
+    dir = make_hash_dir(hash)
+
+    failed = [ { "name" => "playwright-custom", "error" => enotempty_error(hash) } ]
+
+    result = NpxCacheHealService.heal_from_failures(
+      failed_servers: failed, working_directory: @working_directory, logger: @logger
+    )
+
+    assert result[:healed], "an ENOTEMPTY rename error referencing _npx must trigger healing"
+    assert_includes result[:removed_paths], dir
+    refute File.exist?(dir), "poisoned rename-race hash tree should be removed"
+  end
+
+  test "is a no-op for an ENOTEMPTY that does not reference an _npx cache" do
+    # ENOTEMPTY can happen for unrelated directories; without an _npx reference the
+    # heal must not fire (and there is no _npx tree to safely target anyway).
+    make_hash_dir("49a1f4c1ceebda27")
+    failed = [ { "name" => "some-server",
+                 "error" => "npm error code ENOTEMPTY: directory not empty, rmdir '/opt/app/build/tmp'" } ]
+
+    result = NpxCacheHealService.heal_from_failures(
+      failed_servers: failed, working_directory: @working_directory, logger: @logger
+    )
+
+    refute result[:healed], "an ENOTEMPTY with no _npx reference must NOT trigger healing"
+    assert_empty result[:removed_paths]
+  end
+
+  test "npx_cache_corruption? requires both a marker and an _npx reference" do
     # MODULE_NOT_FOUND family
-    assert NpxCacheHealService.npx_cache_resolution_failure?("MODULE_NOT_FOUND in /x/_npx/abc")
-    assert NpxCacheHealService.npx_cache_resolution_failure?("Cannot find module 'ajv' _npx")
+    assert NpxCacheHealService.npx_cache_corruption?("MODULE_NOT_FOUND in /x/_npx/abc")
+    assert NpxCacheHealService.npx_cache_corruption?("Cannot find module 'ajv' _npx")
     # ESM directory-import / subpath-export family
-    assert NpxCacheHealService.npx_cache_resolution_failure?("ERR_UNSUPPORTED_DIR_IMPORT /x/_npx/abc/zod/v4")
-    assert NpxCacheHealService.npx_cache_resolution_failure?("ERR_PACKAGE_PATH_NOT_EXPORTED /x/_npx/abc/pkg")
-    assert NpxCacheHealService.npx_cache_resolution_failure?("is not supported resolving ES modules in _npx")
+    assert NpxCacheHealService.npx_cache_corruption?("ERR_UNSUPPORTED_DIR_IMPORT /x/_npx/abc/zod/v4")
+    assert NpxCacheHealService.npx_cache_corruption?("ERR_PACKAGE_PATH_NOT_EXPORTED /x/_npx/abc/pkg")
+    assert NpxCacheHealService.npx_cache_corruption?("is not supported resolving ES modules in _npx")
+    # Extraction-race family (TAR_ENTRY_ERROR / ENOTEMPTY)
+    assert NpxCacheHealService.npx_cache_corruption?("npm warn tar TAR_ENTRY_ERROR ENOENT ... /x/_npx/abc/node_modules/ajv")
+    assert NpxCacheHealService.npx_cache_corruption?("npm error code ENOTEMPTY ... rename /x/_npx/abc/node_modules/foo")
     # Marker present but no _npx reference — must not match
-    refute NpxCacheHealService.npx_cache_resolution_failure?("MODULE_NOT_FOUND somewhere else")
-    refute NpxCacheHealService.npx_cache_resolution_failure?("ERR_UNSUPPORTED_DIR_IMPORT /opt/app/zod/v4")
-    # _npx present but no resolution marker — must not match
-    refute NpxCacheHealService.npx_cache_resolution_failure?("connection timed out _npx")
+    refute NpxCacheHealService.npx_cache_corruption?("MODULE_NOT_FOUND somewhere else")
+    refute NpxCacheHealService.npx_cache_corruption?("ERR_UNSUPPORTED_DIR_IMPORT /opt/app/zod/v4")
+    refute NpxCacheHealService.npx_cache_corruption?("TAR_ENTRY_ERROR ENOENT /opt/app/node_modules/ajv")
+    refute NpxCacheHealService.npx_cache_corruption?("npm error code ENOTEMPTY rmdir /opt/app/build")
+    # _npx present but no corruption marker — must not match
+    refute NpxCacheHealService.npx_cache_corruption?("connection timed out _npx")
   end
 end

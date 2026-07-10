@@ -83,4 +83,45 @@ class SecretsInterpolatorTest < ActiveSupport::TestCase
     ENV.delete("SECRETS_INTERP_NONE")
     assert_nil @interpolator.get_env_value("SECRETS_INTERP_NONE")
   end
+
+  # --- X (Twitter) dynamic token vending (session-prep injection) ---
+
+  test "resolves ${X_OAUTH_ACCESS_TOKEN} to the freshest token from the X credential store" do
+    XOauthCredential.create!(
+      account_key: "tadasayy",
+      access_token_env_var: "X_OAUTH_ACCESS_TOKEN",
+      access_token: "live-x-access-token",
+      refresh_token: "r",
+      expires_at: 1.hour.from_now,
+      token_endpoint: XOauthCredential::DEFAULT_TOKEN_ENDPOINT
+    )
+
+    # This is the exact shape the x-twitter catalog entry will have — proving
+    # session-prep injects a valid access token into the generated .mcp.json env.
+    entry = {
+      "command" => "npx",
+      "args" => [ "-y", "x-twitter-mcp-server@latest" ],
+      "env" => {
+        "X_OAUTH_ACCESS_TOKEN" => "${X_OAUTH_ACCESS_TOKEN}",
+        "X_TWITTER_ENABLED_TOOLGROUPS" => "readonly,readwrite"
+      }
+    }
+    @interpolator.resolve_entry!(entry)
+
+    assert_equal "live-x-access-token", entry.dig("env", "X_OAUTH_ACCESS_TOKEN")
+    assert_equal "readonly,readwrite", entry.dig("env", "X_TWITTER_ENABLED_TOOLGROUPS")
+  end
+
+  test "the X token vendor takes priority over SecretsLoader for its variable" do
+    XOauthCredential.create!(
+      account_key: "tadasayy", access_token_env_var: "X_OAUTH_ACCESS_TOKEN",
+      access_token: "from-store", refresh_token: "r", expires_at: 1.hour.from_now,
+      token_endpoint: XOauthCredential::DEFAULT_TOKEN_ENDPOINT
+    )
+    SecretsLoader.stub(:exists?, ->(name) { name == "X_OAUTH_ACCESS_TOKEN" }) do
+      SecretsLoader.stub(:get, ->(_) { "stale-credentials-value" }) do
+        assert_equal "from-store", @interpolator.get_env_value("X_OAUTH_ACCESS_TOKEN")
+      end
+    end
+  end
 end

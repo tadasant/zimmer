@@ -2462,4 +2462,164 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal session.id, trigger.last_session_id,
       "last_session_id should be tracked via update_columns despite reuse_session: false"
   end
+
+  # ---------------------------------------------------------------------------
+  # Artifact sync must never silently strip a reused session's MCP servers.
+  #
+  # Regression for the "long-running session silently lost its MCP servers"
+  # defect (production session 9563). A wake trigger created via
+  # POST /api/v1/triggers (the `wake_me_up_later` /
+  # `wake_me_up_when_session_changes_state` self-session tools) never declares
+  # artifacts, so its jsonb columns default to []. When it fired,
+  # follow_up_session! synced that empty list onto the live session, wiping
+  # every user-provisioned MCP server mid-conversation with no log line.
+  # ---------------------------------------------------------------------------
+
+  def build_wake_trigger(session)
+    watched = Session.create!(
+      prompt: "Watched downstream session",
+      git_root: "https://github.com/test/repo",
+      branch: "main"
+    )
+
+    Trigger.create!(
+      name: "Wake me when session #{session.id} needs input",
+      status: "enabled",
+      agent_root_name: "agent-orchestrator",
+      prompt_template: "The watched session transitioned.",
+      reuse_session: true,
+      last_session_id: session.id,
+      mcp_servers: [],
+      catalog_skills: [],
+      catalog_hooks: [],
+      catalog_plugins: [],
+      trigger_conditions_attributes: [
+        {
+          condition_type: "ao_event",
+          configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id }
+        }
+      ]
+    ).reload
+  end
+
+  def build_reusable_session(mcp_servers:, catalog_skills: [])
+    session = Session.create!(
+      prompt: "Long-running task",
+      git_root: "https://github.com/test/repo",
+      branch: "main",
+      mcp_servers: mcp_servers,
+      catalog_skills: catalog_skills
+    )
+    session.update_column(:status, Session.statuses[:needs_input])
+    session
+  end
+
+  test "one-time wake trigger does not strip MCP servers from the session it reuses" do
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = build_reusable_session(
+      mcp_servers: [ "agent-orchestrator-prod-sessions", "digitalocean-tadasant", "tailscale-readwrite" ]
+    )
+    trigger = build_wake_trigger(session)
+    assert trigger.one_time_reuse_trigger?, "fixture should be a one-time reuse (wake) trigger"
+
+    trigger.create_session!(prompt: "Wake up")
+
+    assert_equal(
+      [ "agent-orchestrator-prod-sessions", "digitalocean-tadasant", "tailscale-readwrite" ],
+      session.reload.mcp_servers,
+      "a wake trigger must not overwrite the reused session's MCP servers with its own empty list"
+    )
+  end
+
+  test "one-time wake trigger does not strip catalog skills from the session it reuses" do
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = build_reusable_session(mcp_servers: [ "slack-workspace" ], catalog_skills: [ "wait-for-ci" ])
+    trigger = build_wake_trigger(session)
+
+    trigger.create_session!(prompt: "Wake up")
+
+    assert_equal [ "wait-for-ci" ], session.reload.catalog_skills,
+      "a wake trigger must not overwrite the reused session's catalog skills"
+  end
+
+  test "recurring reuse trigger with no MCP servers does not wipe the session's servers" do
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = build_reusable_session(mcp_servers: [ "slack-workspace", "digitalocean-tadasant" ])
+
+    # disabled_slack_trigger has mcp_servers: [] and a recurring slack condition,
+    # so it is NOT a one-time reuse trigger — it exercises the second guard.
+    trigger = triggers(:disabled_slack_trigger)
+    trigger.update!(status: "enabled", reuse_session: true, last_session_id: session.id)
+    assert_not trigger.one_time_reuse_trigger?
+
+    trigger.create_session!(prompt: "Follow-up")
+
+    assert_equal [ "slack-workspace", "digitalocean-tadasant" ], session.reload.mcp_servers,
+      "an empty trigger server list must never be synced over a non-empty session list"
+  end
+
+  test "recurring reuse trigger still syncs a non-empty MCP server list onto the session" do
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = build_reusable_session(mcp_servers: [ "digitalocean-tadasant" ])
+
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(reuse_session: true, last_session_id: session.id)
+    assert_equal [ "slack-workspace" ], trigger.mcp_servers
+
+    trigger.create_session!(prompt: "Follow-up")
+
+    assert_equal [ "slack-workspace" ], session.reload.mcp_servers,
+      "an explicit non-empty trigger server list is still authoritative for recurring triggers"
+  end
+
+  test "one-time reuse trigger that declares MCP servers still syncs them" do
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = build_reusable_session(mcp_servers: [ "digitalocean-tadasant" ])
+    watched = Session.create!(
+      prompt: "Watched downstream session",
+      git_root: "https://github.com/test/repo",
+      branch: "main"
+    )
+    # POST /api/v1/triggers permits mcp_servers, so a one-time reuse trigger CAN
+    # legitimately carry a non-empty list. Skipping sync for every one-time
+    # trigger would silently ignore it.
+    trigger = Trigger.create!(
+      name: "One-time reuse trigger with servers",
+      status: "enabled",
+      agent_root_name: "agent-orchestrator",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: session.id,
+      mcp_servers: [ "slack-workspace" ],
+      trigger_conditions_attributes: [
+        {
+          condition_type: "ao_event",
+          configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id }
+        }
+      ]
+    ).reload
+    assert trigger.one_time_reuse_trigger?
+
+    trigger.create_session!(prompt: "go")
+
+    assert_equal [ "slack-workspace" ], session.reload.mcp_servers,
+      "a one-time trigger that explicitly declares servers is still authoritative for them"
+  end
+
+  test "syncing a narrower MCP server list onto a session logs at warn" do
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = build_reusable_session(mcp_servers: [ "slack-workspace", "digitalocean-tadasant" ])
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(reuse_session: true, last_session_id: session.id)
+
+    Rails.logger.expects(:warn).at_least_once.with { |msg| msg.to_s.include?("digitalocean-tadasant") }
+
+    trigger.create_session!(prompt: "Follow-up")
+  end
 end

@@ -70,9 +70,18 @@ class SecretsInterpolator
     end
   end
 
-  # Look up a variable from SecretsLoader (encrypted credentials), falling back
-  # to process ENV. Returns nil when neither source defines it.
+  # Look up a variable, in priority order:
+  #   1. XOauthTokenVendor — a runtime-writable, self-refreshing token store for
+  #      X (Twitter) access tokens. Consulted first because these tokens rotate
+  #      at runtime and must reflect the freshest minted value, not a static
+  #      git-committed one. The vendor cheaply returns nil for any non-X var.
+  #   2. SecretsLoader — Rails encrypted credentials (mcp_secrets).
+  #   3. process ENV.
+  # Returns nil when no source defines it.
   def get_env_value(var_name)
+    dynamic = XOauthTokenVendor.resolve(var_name)
+    return dynamic if dynamic.present?
+
     if SecretsLoader.exists?(var_name)
       SecretsLoader.get(var_name)
     elsif ENV.key?(var_name)

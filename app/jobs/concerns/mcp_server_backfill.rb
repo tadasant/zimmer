@@ -64,4 +64,46 @@ module McpServerBackfill
     Rails.logger.warn("Failed to backfill default mcp_servers (session=#{session&.id}): #{e.message}")
     nil
   end
+
+  # Detect a regenerated .mcp.json that carries FEWER MCP servers than the
+  # session previously had, and return the lost names.
+  #
+  # Every mid-life regeneration path (mid-run clone recreation, fresh start on a
+  # reused clone, unarchive) rebuilds .mcp.json from scratch via `air prepare
+  # --without-defaults`. If anything upstream narrowed the session's artifact
+  # columns, that regeneration silently hands the agent a smaller toolset than
+  # it had a moment ago — and the agent has no way to notice. A session losing
+  # its tools is broken system behavior that will not self-resolve, so per the
+  # repo's logging philosophy this belongs at WARN, not INFO, and not unlogged.
+  #
+  # `custom_metadata["mcp_servers_status"]` is a hash keyed by server name that
+  # records the runtime status the session last reported for each server it had
+  # configured. Comparing its keys against the set AIR just wrote (user-selected
+  # + plugin-derived + auto-injected) catches a narrowing regardless of which
+  # upstream path caused it. Deliberate user removals prune themselves out of
+  # that hash via Session#forget_mcp_server_status!, so what remains here is an
+  # unexplained loss.
+  #
+  # @param session [Session] the session whose config was just regenerated
+  # @param injected_servers [Array<String>, nil] names AIR auto-injected this run
+  # @param context [String] short label for the regeneration path, used in logs
+  # @return [Array<String>] server names lost relative to the session's history
+  def detect_lost_mcp_servers(session, injected_servers, context:)
+    previously_seen = (session.custom_metadata || {})["mcp_servers_status"]
+    return [] if previously_seen.blank?
+
+    effective = (session.user_selected_mcp_servers + Array(injected_servers)).uniq
+    lost = previously_seen.keys - effective
+    return [] if lost.empty?
+
+    Rails.logger.warn(
+      "[McpServerBackfill] Regenerated MCP config dropped server(s) #{lost.inspect} " \
+      "(session=#{session.id}, agent_root=#{session.agent_root_key}, context=#{context}). " \
+      "The session previously connected to them and will now run without them."
+    )
+    lost
+  rescue => e
+    Rails.logger.warn("Failed to detect lost mcp_servers (session=#{session&.id}): #{e.message}")
+    []
+  end
 end
