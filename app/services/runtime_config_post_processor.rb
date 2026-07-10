@@ -41,11 +41,20 @@ class RuntimeConfigPostProcessor
 
   # Post-process the MCP config AIR wrote: inject servers, retarget, resolve
   # secrets, rewrite npx. Reads the runtime's config file, mutates it, writes it
-  # back. No-op when the file does not exist.
+  # back.
+  #
+  # AIR only writes a config file when the session has explicit MCP servers. A
+  # session that is skills/hooks/plugins-only (so it takes this prepare! branch)
+  # or a subagent-roots-only root can therefore reach here with no file on disk.
+  # We must NOT skip in that case: the subagent Zimmer server (for a root with
+  # default_subagent_roots) and the self-session Zimmer server are auto-injected
+  # here, not by AIR, so gating injection on an AIR-produced file would silently
+  # drop a parent root's only spawning server. Synthesize an empty skeleton when
+  # the file is absent so injection + retarget + secret resolution + persist all
+  # still run. See #ensure_baseline!, which shares this synthesize-when-absent
+  # behavior.
   def post_process!
-    return unless file_system.exists?(config_path)
-
-    config = parse_config(file_system.read(config_path))
+    config = read_or_synthesize_config
     servers = servers_map(config)
 
     inject_subagent_ao_server!(servers)
@@ -57,12 +66,23 @@ class RuntimeConfigPostProcessor
   end
 
   # Ensure a baseline MCP config exists for sessions without explicit MCP
-  # servers: create the config file if needed and inject the self-session Zimmer
-  # server so every session has basic self-management tools.
+  # servers: create the config file if needed and inject the auto-injected Zimmer
+  # servers so every session has basic self-management tools, and every parent
+  # root with default_subagent_roots keeps its subagent-spawning server.
+  #
+  # The subagent Zimmer server must be injected here too (not only in #post_process!):
+  # a root whose spawning capability comes purely from auto-injection (no
+  # default_mcp_servers/skills/hooks/plugins) routes through this baseline path
+  # on regeneration, and omitting the subagent injection here silently strips its
+  # only start_session server. The subagent injection deduplicates the
+  # self-session server (a full-surface Zimmer server with ALLOWED_AGENT_ROOTS
+  # already covers the self_session tool group), so the two injections never
+  # write duplicate Zimmer servers.
   def ensure_baseline!
-    config = file_system.exists?(config_path) ? parse_config(file_system.read(config_path)) : empty_config
+    config = read_or_synthesize_config
     servers = servers_map(config)
 
+    inject_subagent_ao_server!(servers)
     inject_self_session_ao_server!(servers)
 
     return if injected_mcp_servers.empty?
@@ -74,6 +94,14 @@ class RuntimeConfigPostProcessor
   end
 
   private
+
+  # Read the runtime's config file, or synthesize an empty skeleton when AIR did
+  # not write one. Shared by #post_process! and #ensure_baseline! so both run the
+  # auto-injections against a real server table regardless of whether an explicit
+  # MCP server produced a file on disk.
+  def read_or_synthesize_config
+    file_system.exists?(config_path) ? parse_config(file_system.read(config_path)) : empty_config
+  end
 
   # --- Format-specific hooks: each concrete runtime implements these. ---
 
@@ -88,7 +116,8 @@ class RuntimeConfigPostProcessor
     raise NotImplementedError, "#{self.class} must implement #parse_config"
   end
 
-  # @return [Hash] a fresh, empty config skeleton (used by ensure_baseline!)
+  # @return [Hash] a fresh, empty config skeleton (used by #read_or_synthesize_config
+  #   when AIR wrote no file)
   def empty_config
     raise NotImplementedError, "#{self.class} must implement #empty_config"
   end
