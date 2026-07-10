@@ -2784,7 +2784,7 @@ class AgentSessionJob < ApplicationJob
   # Fail a session gracefully after `air prepare` hit a session-*configuration*
   # problem: either the agent root can't be resolved from the AIR catalog even
   # after a cache refresh, or a selected MCP server interpolates a ${VAR} that
-  # AO's SecretsLoader doesn't carry. Both are deterministic, non-retryable, and
+  # Zimmer's SecretsLoader doesn't carry. Both are deterministic, non-retryable, and
   # operator-fixable — nothing is broken system-side — so they are logged at WARN
   # and the session is failed here, rather than allowed to bubble to ActiveJob as
   # a terminal job crash that pages #eng-alerts. Mirrors the oauth_required

@@ -175,7 +175,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   test "post_process! synthesizes a baseline config with the self-session server when AIR wrote none" do
     # A skills-only session takes the prepare! branch but AIR writes no config.
     # post_process! must synthesize one and inject the self-session server rather
-    # than leaving the session with no AO tools (mirrors the Claude processor).
+    # than leaving the session with no Zimmer tools (mirrors the Claude processor).
     @session.update!(mcp_servers: [], catalog_skills: [ "wait-for-ci" ], metadata: { "agent_root_key" => "agent-orchestrator" })
 
     processor = build_processor
@@ -184,12 +184,12 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert @mock_fs.exists?(config_file_path),
       "post_process! should synthesize the Codex config when AIR wrote none"
     self_server = read_config.dig("mcp_servers", "agent-orchestrator-staging-self-session")
-    assert_not_nil self_server, "Self-session AO server should be injected into the synthesized config"
+    assert_not_nil self_server, "Self-session Zimmer server should be injected into the synthesized config"
     assert_equal "self_session", self_server.dig("env", "TOOL_GROUPS")
     assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
   end
 
-  test "post_process! injects the subagent AO server when AIR wrote no Codex config for a subagent-roots root" do
+  test "post_process! injects the subagent Zimmer server when AIR wrote no Codex config for a subagent-roots root" do
     # Secondary defect, Codex flavor: a subagent-roots root with skills (prepare!
     # branch) but no explicit MCP servers gets no config from AIR. The subagent
     # spawning server must still be injected — not gated on an AIR-produced file.
