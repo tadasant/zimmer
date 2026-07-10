@@ -842,7 +842,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_equal false, result.clone_restored
   end
 
-  test "regeneration restores the auto-injected subagent AO server for a subagent-roots-only root" do
+  test "regeneration restores the auto-injected subagent Zimmer server for a subagent-roots-only root" do
     # Regression for the production wedge (sessions 9726/9890): a root whose only
     # subagent-spawning capability is the auto-injected agent-orchestrator server
     # (catalog-management declares NO default_mcp_servers/skills/hooks/plugins)
@@ -883,12 +883,12 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     # A full-surface AO server (no TOOL_GROUPS restriction) covers the self_session
     # tool group, so self-session capability is retained via this same server.
     assert_nil ao_server.dig("env", "TOOL_GROUPS"),
-      "the subagent AO server must expose the full tool surface, covering self_session"
+      "the subagent Zimmer server must expose the full tool surface, covering self_session"
 
     # And custom_metadata must record it so the UI reflects the restored server.
     @session.reload
     assert_includes @session.custom_metadata["injected_mcp_servers"], "agent-orchestrator",
-      "custom_metadata.injected_mcp_servers must record the restored subagent AO server"
+      "custom_metadata.injected_mcp_servers must record the restored subagent Zimmer server"
   ensure
     ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
   end

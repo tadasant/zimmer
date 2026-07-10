@@ -33,7 +33,7 @@ class EgressHealthCheckJob < ApplicationJob
     if now_degraded && !was_degraded
       # The banner goes up now, but a banner is passive — page a human too so an
       # unattended outage (the exact "silently broke for hours" failure mode this
-      # exists to close) reaches someone even with no AO tab open. Won't
+      # exists to close) reaches someone even with no Zimmer tab open. Won't
       # self-resolve without infra action, so warn once on the transition;
       # steady-state degraded ticks stay quiet (banner + AlertService dedup are
       # the ongoing signal) to avoid per-minute noise.

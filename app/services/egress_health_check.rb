@@ -32,7 +32,7 @@ class EgressHealthCheck
   # streak TTL.
   CACHE_TTL = 1.hour
 
-  # Public hostnames AO's agents must reach: the OAuth login-exchange host that
+  # Public hostnames Zimmer's agents must reach: the OAuth login-exchange host that
   # broke, plus the serving API host. Only ALL of them failing marks egress
   # degraded, so a genuine single-domain upstream blip never trips the banner —
   # a broken resolver fails every public lookup at once.

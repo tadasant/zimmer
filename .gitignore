@@ -59,6 +59,9 @@
 !.claude/skills/
 node_modules/
 
+# Runtime stderr capture from the Claude Code harness
+claude_stderr.log
+
 # MCP configuration (may contain API keys)
 .mcp.json
 # Copied from agents/mcp-servers/mcp.json at Docker build time
