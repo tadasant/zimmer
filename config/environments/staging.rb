@@ -81,12 +81,19 @@ Rails.application.configure do
   # Queue configuration with thread allocation (configurable via ENV):
   # - agents: Long-running AgentSessionJob instances
   # - pollers: Singleton polling jobs that shouldn't queue up
+  # - triggers: Latency-sensitive trigger firing (AoEventTriggerJob,
+  #     ScheduleTriggerJob). Isolated onto its own scheduler so state-change and
+  #     scheduled wakes are never starved behind the `default` queue's periodic/
+  #     bulk backlog (heartbeat sweeps, Slack polling, cleanup, etc.).
   # - default: Everything else - cleanup, title generation, etc.
-  # Note: max_threads should be >= sum of queue allocations
+  # Total scheduler threads must stay within the DB connection pool
+  # (config/database.yml `pool`), which is the real ceiling — not max_threads
+  # (a per-scheduler fallback used only for queues without an explicit count).
   agents_threads = ENV.fetch("GOOD_JOB_AGENTS_THREADS", 16).to_i
   pollers_threads = ENV.fetch("GOOD_JOB_POLLERS_THREADS", 3).to_i
+  triggers_threads = ENV.fetch("GOOD_JOB_TRIGGERS_THREADS", 2).to_i
   default_threads = ENV.fetch("GOOD_JOB_DEFAULT_THREADS", 4).to_i
-  config.good_job.queues = "agents:#{agents_threads};pollers:#{pollers_threads};default:#{default_threads}"
+  config.good_job.queues = "agents:#{agents_threads};pollers:#{pollers_threads};triggers:#{triggers_threads};default:#{default_threads}"
   config.good_job.max_threads = ENV.fetch("GOOD_JOB_MAX_THREADS", 24).to_i
   config.good_job.enable_cron = true
   config.good_job.enable_dashboard = true
