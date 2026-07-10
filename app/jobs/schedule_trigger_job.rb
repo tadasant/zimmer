@@ -8,7 +8,12 @@
 # 3. Creates sessions (or reuses existing ones) for due conditions
 # 4. Updates the condition's last_triggered_at timestamp
 class ScheduleTriggerJob < ApplicationJob
-  queue_as :default
+  # Runs on the dedicated `triggers` queue (alongside AoEventTriggerJob) rather
+  # than `default`. This is the time-based trigger-firing path — it fires the
+  # scheduled "wake me later" backstops that keep waiting sessions moving — so it
+  # is just as latency-sensitive as ao_event wakes and must not be starved behind
+  # the `default` queue's periodic/bulk backlog.
+  queue_as :triggers
 
   def perform
     # Wrap the entire iteration in an AlertBatcher scope so that a catalog

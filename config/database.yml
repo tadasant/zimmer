@@ -10,7 +10,13 @@
 default: &default
   adapter: postgresql
   encoding: unicode
-  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 25 } %>
+  # The connection pool must cover the worker's GoodJob scheduler threads
+  # (agents:16 + pollers:3 + triggers:2 + default:4 = 25) plus GoodJob's
+  # persistent notifier connection and transient cron/main-thread usage.
+  # Fallback default is 28 (25 threads + ~3 overhead). Ample headroom exists on
+  # the server (Postgres max_connections=100, typical usage ~22). Set
+  # RAILS_MAX_THREADS to override (it also sizes Puma's web thread pool).
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 28 } %>
   host: <%= ENV.fetch("DATABASE_HOST", "localhost") %>
   port: <%= ENV.fetch("DATABASE_PORT", "5432") %>
   username: <%= ENV.fetch("DATABASE_USERNAME", ENV['USER']) %>

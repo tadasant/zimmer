@@ -22,6 +22,10 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     @condition.reload
   end
 
+  test "runs on the dedicated triggers queue (not default)" do
+    assert_equal "triggers", ScheduleTriggerJob.new.queue_name
+  end
+
   test "processes due schedule conditions" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
