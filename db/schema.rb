@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_04_120000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_05_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -275,7 +275,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_04_120000) do
     t.bigint "blocked_by_session_id"
     t.integer "sort_order", default: 0, null: false
     t.boolean "push_notifications_enabled", default: false, null: false
-    t.integer "auto_compact_window", default: 200000, null: false
+    t.integer "auto_compact_window", default: 1000000, null: false
     t.bigint "category_id"
     t.index "((custom_metadata ->> 'github_pull_request_urls'::text))", name: "index_sessions_on_custom_metadata_pr_urls", where: "((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"

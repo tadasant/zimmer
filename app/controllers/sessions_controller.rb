@@ -2659,7 +2659,7 @@ class SessionsController < ApplicationController
 
   def session_params
     params.require(:session).permit(:prompt, :git_root, :subdirectory, :branch, :goal, :auto_compact_window, mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: []).tap do |permitted|
-      # Drop a blank auto_compact_window so the column default (200k) applies.
+      # Drop a blank auto_compact_window so the column default (1M) applies.
       # Codex (and any non-Claude runtime) disables the field, so it submits
       # empty; an empty string would otherwise fail the numericality validation.
       permitted.delete(:auto_compact_window) if permitted[:auto_compact_window].blank?

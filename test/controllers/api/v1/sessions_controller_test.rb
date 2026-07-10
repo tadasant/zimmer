@@ -259,7 +259,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal({ "key" => "value" }, json["session"]["custom_metadata"])
   end
 
-  test "should default auto_compact_window to 200_000 when omitted" do
+  test "should default auto_compact_window to 1_000_000 when omitted" do
     post api_v1_sessions_path, params: {
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
@@ -268,7 +268,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :created
     json = JSON.parse(response.body)
-    assert_equal 200_000, json["session"]["auto_compact_window"]
+    assert_equal 1_000_000, json["session"]["auto_compact_window"]
   end
 
   test "should accept explicit auto_compact_window override" do
