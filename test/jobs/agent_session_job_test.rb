@@ -1093,6 +1093,122 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "instead of collapsing to the self-session baseline"
   end
 
+  # Characterization guard (this behavior already holds; the test pins it down).
+  # A mid-run clone recreation whose `air prepare` fails must NOT fall through to
+  # the baseline config, which would strip every user-provisioned MCP server and
+  # leave the agent running tool-less. Failing loudly is the correct outcome, and
+  # nothing may quietly "recover" by degrading the session's toolset.
+  test "should not silently fall back to baseline MCP config when prepare! raises on clone recreation" do
+    ServersConfig.stubs(:exists?).returns(true)
+    session_id = SecureRandom.uuid
+    @session.update!(
+      session_id: session_id,
+      status: :running,
+      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!)
+      .raises(AirPrepareService::AirPrepareError, "AIR prepare failed (exit 1): boom")
+    # The whole point: a failed prepare! must never be papered over by the
+    # baseline path, which is what would silently strip the session's servers.
+    AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    new_clone_path = "/tmp/recreated-clone-prepare-fails"
+    job.file_system.mkdir_p(new_clone_path)
+
+    error = nil
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      error = assert_raises(AirPrepareService::AirPrepareError) do
+        job.perform(@session.id, "Follow up after restore")
+      end
+    end
+
+    assert_match(/AIR prepare failed/, error.message)
+    assert_equal [ "appsignal-pulsemcp-prod" ], @session.reload.mcp_servers,
+      "a failed prepare! must leave the session's configured servers intact"
+  end
+
+  # Regression for session 9563: when a regenerated .mcp.json carries fewer
+  # servers than the session has actually connected to, the loss must be written
+  # into the session's own log at warning level. Previously the session simply
+  # lost its tools with nothing recorded anywhere.
+  test "should log a warning when regenerated MCP config drops a previously connected server" do
+    ServersConfig.stubs(:exists?).returns(true)
+    session_id = SecureRandom.uuid
+    @session.update!(
+      session_id: session_id,
+      status: :running,
+      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      custom_metadata: {
+        "mcp_servers_status" => {
+          "appsignal-pulsemcp-prod" => { "status" => "connected" },
+          "digitalocean-tadasant" => { "status" => "connected" }
+        }
+      },
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!)
+    AirPrepareService.any_instance.stubs(:injected_mcp_servers)
+      .returns([ "agent-orchestrator-prod-self-session" ])
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager.wait_hook = ->(pid, flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    new_clone_path = "/tmp/recreated-clone-lost-servers"
+    job.file_system.mkdir_p(new_clone_path)
+    job.file_system.write("#{new_clone_path}/claude_stderr.log", "")
+
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(@session.id, "Follow up after restore")
+        end
+      end
+    end
+
+    @session.reload
+    lost_log = @session.logs.find { |log| log.content.include?("digitalocean-tadasant") }
+    assert_not_nil lost_log,
+      "losing a previously-connected MCP server must be recorded in the session log"
+    assert_equal "warning", lost_log.level,
+      "a session losing its tools is broken system behavior and must not be logged at info"
+  end
+
   test "should raise when follow-up finds clone missing and no git_root" do
     session_id = SecureRandom.uuid
     @session.update!(

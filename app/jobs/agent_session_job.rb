@@ -611,9 +611,36 @@ class AgentSessionJob < ApplicationJob
             level: "info"
           )
         else
+          # A session that genuinely configures no artifacts belongs on the
+          # baseline config, and says so at info. The case that must be loud —
+          # a session that HAD servers and no longer does — is caught below by
+          # detect_lost_mcp_servers, which fires on either branch.
+          log_buffer.add(
+            "AIR prepare skipped: session has no MCP servers, skills, hooks, or plugins configured; " \
+            "regenerating baseline MCP config only",
+            level: "info"
+          )
           air_service.ensure_baseline_mcp_config!
         end
         store_injected_mcp_servers(session, air_service.injected_mcp_servers)
+
+        # Surface any narrowing of the session's toolset into the session's own
+        # log so the user (and the agent, which reads its logs) can see that a
+        # server it had been using is gone, rather than discovering it by a tool
+        # call mysteriously not existing. See McpServerBackfill.
+        lost_servers = detect_lost_mcp_servers(
+          session,
+          air_service.injected_mcp_servers,
+          context: "follow_up"
+        )
+        if lost_servers.any?
+          log_buffer.add(
+            "MCP server(s) no longer configured for this session: #{lost_servers.join(', ')}. " \
+            "The regenerated .mcp.json does not include them, so their tools are unavailable " \
+            "for the remainder of this session unless they are re-added.",
+            level: "warning"
+          )
+        end
 
         # Check for OAuth requirements and inject credentials for follow-up prompts.
         # Necessary when MCP servers are added mid-session.

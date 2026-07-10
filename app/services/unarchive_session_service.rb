@@ -349,6 +349,10 @@ class UnarchiveSessionService
     # diverge from what AIR actually wrote into the regenerated .mcp.json.
     store_injected_mcp_servers(air_service.injected_mcp_servers)
 
+    # An unarchive regenerates .mcp.json from scratch, so it can narrow the
+    # session's toolset just as a mid-run recreation can. Make that loud.
+    detect_lost_mcp_servers(session, air_service.injected_mcp_servers, context: "unarchive")
+
     @logger.info("AIR prepare completed for unarchived session", working_directory: working_directory)
   rescue => e
     # Log but don't fail - config is not critical for unarchive
