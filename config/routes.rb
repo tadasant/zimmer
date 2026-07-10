@@ -16,6 +16,7 @@ Rails.application.routes.draw do
     resources :subagent_transcripts
     resources :trigger_conditions
     resources :triggers
+    resources :x_oauth_credentials
 
     root to: "sessions#index"
   end
@@ -59,7 +60,6 @@ Rails.application.routes.draw do
       resources :sessions do
         collection do
           get :search
-          get :dependency_graph
           post :refresh_all
           post :bulk_archive
         end
@@ -81,6 +81,7 @@ Rails.application.routes.draw do
           get :transcript
           patch :notes, action: :update_notes
           post :toggle_favorite
+          patch :heartbeat, action: :update_heartbeat
           patch :set_category
         end
 
@@ -259,8 +260,9 @@ Rails.application.routes.draw do
       patch :update_auto_compact_window
       patch :update_goal
       patch :toggle_favorite
-      patch :toggle_autonomous
       patch :toggle_push_notifications
+      patch :toggle_heartbeat
+      patch :update_heartbeat_interval
       patch :set_category
       patch :mark_blocked
       patch :unmark_blocked

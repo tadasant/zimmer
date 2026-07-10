@@ -1093,6 +1093,232 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "instead of collapsing to the self-session baseline"
   end
 
+  # Characterization guard (this behavior already holds; the test pins it down).
+  # A mid-run clone recreation whose `air prepare` fails must NOT fall through to
+  # the baseline config, which would strip every user-provisioned MCP server and
+  # leave the agent running tool-less. Failing loudly is the correct outcome, and
+  # nothing may quietly "recover" by degrading the session's toolset.
+  test "should not silently fall back to baseline MCP config when prepare! raises on clone recreation" do
+    ServersConfig.stubs(:exists?).returns(true)
+    session_id = SecureRandom.uuid
+    @session.update!(
+      session_id: session_id,
+      status: :running,
+      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!)
+      .raises(AirPrepareService::AirPrepareError, "AIR prepare failed (exit 1): boom")
+    # The whole point: a failed prepare! must never be papered over by the
+    # baseline path, which is what would silently strip the session's servers.
+    AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    new_clone_path = "/tmp/recreated-clone-prepare-fails"
+    job.file_system.mkdir_p(new_clone_path)
+
+    error = nil
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      error = assert_raises(AirPrepareService::AirPrepareError) do
+        job.perform(@session.id, "Follow up after restore")
+      end
+    end
+
+    assert_match(/AIR prepare failed/, error.message)
+    assert_equal [ "appsignal-pulsemcp-prod" ], @session.reload.mcp_servers,
+      "a failed prepare! must leave the session's configured servers intact"
+  end
+
+  # Regression for issue #4745 / prod session 10163: an unresolved ${VAR} required
+  # by a selected MCP server used to escape as a plain AirPrepareError, crash the
+  # job, log at .error, and page the critical "Zimmer ERROR logs present" Grafana rule.
+  # It's a session-configuration problem, so the job must fail the session
+  # gracefully at WARN — same treatment as RootResolutionError — and not re-raise.
+  test "should fail the session gracefully at warning when prepare! raises SecretResolutionError" do
+    ServersConfig.stubs(:exists?).returns(true)
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      mcp_servers: [ "reframe-secrets-service-account" ],
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    stderr = "AIR prepare failed (exit 1): Error: Unresolved variable in /tmp/clone: " \
+             "${REFRAME_MCP_PLATFORM_API_KEY}. Ensure all variables are provided via " \
+             "environment or a secrets transform."
+    AirPrepareService.any_instance.stubs(:prepare!).raises(
+      AirPrepareService::SecretResolutionError.new(
+        stderr, variable_names: [ "REFRAME_MCP_PLATFORM_API_KEY" ]
+      )
+    )
+    # A failed prepare! must never be papered over by the baseline path, and the
+    # session must not go on to spawn an agent process.
+    AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
+
+    job = AgentSessionJob.new
+    process_manager = MockProcessManager.new
+    job.process_manager = process_manager
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    new_clone_path = "/tmp/recreated-clone-secret-unresolvable"
+    job.file_system.mkdir_p(new_clone_path)
+
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      # The assertion that matters most: no exception escapes to ActiveJob.
+      job.perform(@session.id, "Follow up after restore")
+    end
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "air_secret_unresolvable", @session.metadata["failure_reason"]
+    assert_equal [ "REFRAME_MCP_PLATFORM_API_KEY" ], @session.metadata["unresolved_variables"]
+    assert_nil @session.running_job_id
+    assert_empty process_manager.spawned_processes,
+      "the session must not spawn an agent process after a failed prepare!"
+
+    warning = @session.logs.where(level: "warning")
+      .find { |l| l.content.include?("REFRAME_MCP_PLATFORM_API_KEY") }
+    assert warning, "expected a warning-level log naming the unresolved variable, got: " \
+      "#{@session.logs.map { |l| [ l.level, l.content ] }.inspect}"
+    assert_match(/mcp_secrets/, warning.content,
+      "the operator should be told where to add the missing secret")
+
+    assert_empty @session.logs.where(level: "error"),
+      "an unresolved variable must not emit .error logs — it must not page #eng-alerts"
+  end
+
+  # The follow-up/clone-recreation prepare! call site had no rescue at all, so a
+  # RootResolutionError raised there escaped to ActiveJob and paged — even though
+  # the same error is handled gracefully on the initial-launch path. Both call
+  # sites now share fail_session_for_air_config_error!.
+  test "should fail the session gracefully at warning when prepare! raises RootResolutionError" do
+    ServersConfig.stubs(:exists?).returns(true)
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!).raises(
+      AirPrepareService::RootResolutionError,
+      "AIR prepare failed (exit 1): Error: Root \"nonexistent-root\" not found."
+    )
+    AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    new_clone_path = "/tmp/recreated-clone-root-unresolvable"
+    job.file_system.mkdir_p(new_clone_path)
+
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      job.perform(@session.id, "Follow up after restore")
+    end
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "air_root_unresolvable", @session.metadata["failure_reason"]
+    assert_nil @session.metadata["unresolved_variables"],
+      "the root failure must not carry secret metadata"
+    assert @session.logs.where(level: "warning").any? { |l| l.content.include?("agent root could not be resolved") }
+    assert_empty @session.logs.where(level: "error"),
+      "an unresolvable root must not emit .error logs — it must not page #eng-alerts"
+  end
+
+  # Regression for session 9563: when a regenerated .mcp.json carries fewer
+  # servers than the session has actually connected to, the loss must be written
+  # into the session's own log at warning level. Previously the session simply
+  # lost its tools with nothing recorded anywhere.
+  test "should log a warning when regenerated MCP config drops a previously connected server" do
+    ServersConfig.stubs(:exists?).returns(true)
+    session_id = SecureRandom.uuid
+    @session.update!(
+      session_id: session_id,
+      status: :running,
+      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      custom_metadata: {
+        "mcp_servers_status" => {
+          "appsignal-pulsemcp-prod" => { "status" => "connected" },
+          "digitalocean-tadasant" => { "status" => "connected" }
+        }
+      },
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!)
+    AirPrepareService.any_instance.stubs(:injected_mcp_servers)
+      .returns([ "agent-orchestrator-prod-self-session" ])
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager.wait_hook = ->(pid, flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    new_clone_path = "/tmp/recreated-clone-lost-servers"
+    job.file_system.mkdir_p(new_clone_path)
+    job.file_system.write("#{new_clone_path}/claude_stderr.log", "")
+
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(@session.id, "Follow up after restore")
+        end
+      end
+    end
+
+    @session.reload
+    lost_log = @session.logs.find { |log| log.content.include?("digitalocean-tadasant") }
+    assert_not_nil lost_log,
+      "losing a previously-connected MCP server must be recorded in the session log"
+    assert_equal "warning", lost_log.level,
+      "a session losing its tools is broken system behavior and must not be logged at info"
+  end
+
   test "should raise when follow-up finds clone missing and no git_root" do
     session_id = SecureRandom.uuid
     @session.update!(
@@ -5924,6 +6150,60 @@ class AgentSessionJobTest < ActiveJob::TestCase
     log_buffer.flush
     assert @session.logs.where(level: "warning").any? { |l| l.content.include?("Healed corrupt _npx cache") },
       "expected a heal log entry"
+  ensure
+    FileUtils.rm_rf(clone_dir) if defined?(clone_dir) && clone_dir
+  end
+
+  test "check_and_handle_mcp_failure heals an extraction-race _npx cache (TAR_ENTRY_ERROR) and retries instead of orphaning" do
+    # Reproduce the session-9570 terminal orphaning: an `npx` server fails at
+    # package *extraction* time (TAR_ENTRY_ERROR) rather than module-resolution
+    # time, then the connection times out. Before this fix the heal path did not
+    # recognize the extraction signature, so the poisoned tree stuck and every
+    # retry crashed identically until the session was orphaned.
+    clones_base = File.join(Dir.home, ".agent-orchestrator", "clones")
+    clone_dir = File.join(clones_base, "ao-test-heal-tar-#{SecureRandom.hex(4)}")
+    working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
+    hash = "dbbb2997d8a4f060"
+    corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", hash)
+    modules = File.join(corrupt_dir, "node_modules")
+    FileUtils.mkdir_p(File.join(modules, "ajv", "dist"))
+
+    error = "Starting connection with timeout of 180000ms " \
+            "| npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, " \
+            "lstat '#{modules}/ajv/dist/compile' " \
+            "| Connection timed out after 180000ms"
+
+    @session.update!(
+      status: :running,
+      metadata: { "working_directory" => working_directory },
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ { "name" => "pulse-goodjobs-rw", "status" => "failed", "error" => error } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: pulse-goodjobs-rw"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    assert File.exist?(corrupt_dir), "precondition: poisoned extraction-race cache tree exists"
+
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    assert result, "MCP failure should be handled"
+    refute File.exist?(corrupt_dir), "poisoned _npx hash tree should be removed before retry"
+
+    @session.reload
+    # First failure (retry_count 0 < 3) schedules a retry rather than orphaning.
+    assert_equal 1, @session.metadata["mcp_retry_count"], "should schedule a retry, not orphan"
+    assert_equal "mcp_retry", @session.metadata["paused_by"]
+    refute_equal "failed", @session.status, "session must not be terminally failed on a healable extraction race"
+
+    log_buffer.flush
+    assert @session.logs.where(level: "warning").any? { |l| l.content.include?("Healed corrupt _npx cache") },
+      "expected a heal log entry for the extraction-race failure"
   ensure
     FileUtils.rm_rf(clone_dir) if defined?(clone_dir) && clone_dir
   end

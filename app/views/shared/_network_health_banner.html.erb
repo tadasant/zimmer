@@ -1,0 +1,15 @@
+<%# Global banner shown when the worker's primary DNS resolver can't reach the
+    public internet — the failure mode that silently broke agent logins (the
+    MagicDNS/exit-node outage). Driven by EgressHealthCheckJob via the shared
+    cache; renders nothing when egress is healthy. %>
+<% if (alert = network_egress_alert) %>
+  <div role="alert"
+       class="bg-red-600 text-white text-sm px-4 py-2 text-center shadow-md">
+    <span class="font-semibold">⚠ Network egress degraded.</span>
+    The worker's primary DNS resolver can't reach the internet — new agent logins and sessions may fail.
+    <% if alert["degraded_since"].present? %>
+      <span class="opacity-90">Since <%= egress_banner_time(alert["degraded_since"]) %>.</span>
+    <% end %>
+    <%= link_to "Health details", health_dashboard_path, class: "underline font-medium" %>
+  </div>
+<% end %>

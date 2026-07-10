@@ -1590,54 +1590,6 @@ class SessionsController < ApplicationController
     end
   end
 
-  def toggle_autonomous
-    @session = find_session
-
-    result = with_db_retry do
-      @session.update!(is_autonomous: !@session.is_autonomous)
-    end
-
-    return if performed?
-
-    if result != false
-      respond_to do |format|
-        format.html do
-          if referrer_is_sessions_index?
-            redirect_to root_path
-          else
-            redirect_to @session
-          end
-        end
-        format.json { render json: { success: true, is_autonomous: @session.is_autonomous } }
-        format.turbo_stream do
-          render turbo_stream: [
-            turbo_stream.replace(
-              "session_#{@session.id}",
-              partial: "sessions/session_card_frame",
-              locals: { agent_session: @session }
-            ),
-            turbo_stream.replace(
-              "session_#{@session.id}_header_actions",
-              partial: "sessions/session_header_actions",
-              locals: { agent_session: @session }
-            )
-          ]
-        end
-      end
-    else
-      respond_to do |format|
-        format.html do
-          if referrer_is_sessions_index?
-            redirect_to root_path, alert: "Failed to update autonomous status"
-          else
-            redirect_to @session, alert: "Failed to update autonomous status"
-          end
-        end
-        format.json { render json: { error: "Failed to update autonomous status" }, status: :unprocessable_entity }
-      end
-    end
-  end
-
   # Assign (or clear) a session's organizational category. Called when a card is
   # dragged into a category section on the dashboard. A blank/absent category_id
   # moves the session back to "Uncategorized".
@@ -1768,6 +1720,56 @@ class SessionsController < ApplicationController
     end
   end
 
+  # Enable/disable the per-session heartbeat. Accepts an optional explicit
+  # `enabled` boolean (used by the popout's on/off controls); with no param it
+  # flips the current state. Responds JSON — the heart control updates in place
+  # via Stimulus (mirrors the auto-compact-window inline editor pattern).
+  def toggle_heartbeat
+    @session = find_session
+
+    # Prefer an explicit boolean; fall back to flipping the current state when the
+    # param is absent or casts to nil (e.g. ""), so a bad value can never write a
+    # nil into the NOT NULL column.
+    casted = ActiveModel::Type::Boolean.new.cast(params[:enabled]) if params.key?(:enabled)
+    enabled = casted.nil? ? !@session.heartbeat_enabled : casted
+
+    result = with_db_retry do
+      @session.update!(heartbeat_enabled: enabled)
+    end
+
+    return if performed?
+
+    if result != false
+      respond_to do |format|
+        format.json { render json: heartbeat_json }
+        format.html { redirect_to @session }
+      end
+    else
+      respond_to do |format|
+        format.json { render json: { error: "Failed to update heartbeat" }, status: :unprocessable_entity }
+        format.html { redirect_to @session, alert: "Failed to update heartbeat" }
+      end
+    end
+  end
+
+  # Set how often the heartbeat beats. Validated against
+  # Session::HEARTBEAT_MIN/MAX_INTERVAL_SECONDS. Responds JSON.
+  def update_heartbeat_interval
+    @session = find_session
+
+    updated = with_db_retry do
+      @session.update(heartbeat_interval_seconds: params[:heartbeat_interval_seconds])
+    end
+
+    return if performed?
+
+    if updated
+      render json: heartbeat_json
+    else
+      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
+    end
+  end
+
   def toggle_favorite
     @session = find_session
 
@@ -1872,6 +1874,10 @@ class SessionsController < ApplicationController
         # Log the change
         added = mcp_servers - old_servers
         removed = old_servers - mcp_servers
+
+        # A deliberate removal is not an unexplained loss — forget its status so
+        # later config regenerations don't report it as one.
+        @session.forget_mcp_server_status!(removed)
 
         changes = []
         changes << "added: #{added.join(', ')}" if added.any?
@@ -2659,7 +2665,7 @@ class SessionsController < ApplicationController
 
   def session_params
     params.require(:session).permit(:prompt, :git_root, :subdirectory, :branch, :goal, :auto_compact_window, mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: []).tap do |permitted|
-      # Drop a blank auto_compact_window so the column default (200k) applies.
+      # Drop a blank auto_compact_window so the column default (1M) applies.
       # Codex (and any non-Claude runtime) disables the field, so it submits
       # empty; an empty string would otherwise fail the numericality validation.
       permitted.delete(:auto_compact_window) if permitted[:auto_compact_window].blank?
@@ -2847,6 +2853,16 @@ class SessionsController < ApplicationController
       # Otherwise, try to find by slug first, fall back to ID
       Session.find_by(slug: param) || Session.find(param)
     end
+  end
+
+  # JSON payload the heartbeat Stimulus controller reads back after toggling the
+  # heartbeat or changing its interval.
+  def heartbeat_json
+    {
+      success: true,
+      heartbeat_enabled: @session.heartbeat_enabled,
+      heartbeat_interval_seconds: @session.heartbeat_interval_seconds
+    }
   end
 
   # Best-effort reset of the session's GitHub-poll cadence back to the fast

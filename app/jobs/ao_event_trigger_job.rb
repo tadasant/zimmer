@@ -25,9 +25,24 @@
 #   session transitions. Conditions without watched_session_id fire for any
 #   transitioning autonomous session (broadcast semantics).
 class AoEventTriggerJob < ApplicationJob
-  queue_as :default
+  # Runs on the dedicated `triggers` queue rather than `default`. These wakes are
+  # latency-sensitive — a watched session transitioning to needs_input/failed/
+  # archived must resume its waiting requester promptly. On the shared `default`
+  # queue this job was starved for hours behind a backlog of periodic/bulk jobs
+  # (heartbeat sweeps, Slack polling, cleanup), so the enqueued wake never ran in
+  # time and requesters stalled until an unrelated deadline backstop fired.
+  queue_as :triggers
+
+  # Warn when the gap between enqueue and execution grows large enough that a
+  # state-change wake is effectively late. A silently-delayed wake is exactly the
+  # failure this queue split fixes; surfacing the latency keeps future queue
+  # starvation observable instead of invisible (see logging philosophy in
+  # CLAUDE.md — a self-resolving hiccup is .info, a genuinely late wake is .warn).
+  DISPATCH_LATENCY_WARN_THRESHOLD = 120 # seconds
 
   def perform(event_name, session_id)
+    warn_on_high_dispatch_latency(event_name, session_id)
+
     session = Session.find_by(id: session_id)
     return unless session
 
@@ -40,6 +55,26 @@ class AoEventTriggerJob < ApplicationJob
   end
 
   private
+
+  # Compute how long this job waited between being enqueued and being performed.
+  # ActiveJob populates `enqueued_at` at enqueue time and restores it on the
+  # worker, so no extra argument or timestamp plumbing is needed. Defensive: any
+  # parsing hiccup is swallowed — observability must never break trigger firing.
+  def warn_on_high_dispatch_latency(event_name, session_id)
+    return if enqueued_at.blank?
+
+    enqueued = enqueued_at.is_a?(Time) ? enqueued_at : Time.parse(enqueued_at.to_s)
+    latency = Time.current - enqueued
+    return if latency <= DISPATCH_LATENCY_WARN_THRESHOLD
+
+    Rails.logger.warn(
+      "[AoEventTriggerJob] High dispatch latency: #{latency.round(1)}s between enqueue and " \
+      "execution for #{event_name} (session #{session_id}). The `triggers` queue may be " \
+      "backlogged — state-change wakes are being delivered late."
+    )
+  rescue => e
+    Rails.logger.info "[AoEventTriggerJob] Could not compute dispatch latency: #{e.class}: #{e.message}"
+  end
 
   def fire_event(event_name, session)
     # Find all enabled triggers with ao_event conditions for this event_name

@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 require "automated_prompts"
 require "ostruct"
 
@@ -259,7 +260,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal({ "key" => "value" }, json["session"]["custom_metadata"])
   end
 
-  test "should default auto_compact_window to 200_000 when omitted" do
+  test "should default auto_compact_window to 1_000_000 when omitted" do
     post api_v1_sessions_path, params: {
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
@@ -268,7 +269,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :created
     json = JSON.parse(response.body)
-    assert_equal 200_000, json["session"]["auto_compact_window"]
+    assert_equal 1_000_000, json["session"]["auto_compact_window"]
   end
 
   test "should accept explicit auto_compact_window override" do
@@ -1532,13 +1533,43 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)["session"]
     expected_fields = %w[
       id slug title status agent_runtime prompt git_root branch subdirectory
-      execution_provider goal mcp_servers config metadata
-      custom_metadata session_id job_id running_job_id archived_at
-      created_at updated_at
+      execution_provider goal mcp_servers all_mcp_servers injected_mcp_servers
+      config metadata custom_metadata session_id job_id running_job_id
+      archived_at created_at updated_at
     ]
 
     expected_fields.each do |field|
       assert json.key?(field), "Expected field '#{field}' to be present"
     end
+  end
+
+  # Consumers (e.g. the Zimmer router) need an unambiguous answer to "which MCP
+  # servers does this session actually have wired?". `injected_mcp_servers` is
+  # only the auto-injected subset and legitimately omits every user-selected
+  # server on a healthy session, so it must never be read as that answer.
+  # `all_mcp_servers` is the effective set.
+  test "session response distinguishes selected, injected, and effective MCP servers" do
+    ServersConfig.stubs(:exists?).returns(true)
+    session = sessions(:running)
+    session.update!(
+      mcp_servers: [ "digitalocean-tadasant" ],
+      custom_metadata: { "injected_mcp_servers" => [ "agent-orchestrator-prod-self-session" ] }
+    )
+
+    get api_v1_session_path(session.id), headers: @headers
+    assert_response :success
+    json = JSON.parse(response.body)["session"]
+
+    assert_equal [ "digitalocean-tadasant" ], json["mcp_servers"],
+      "mcp_servers is only the explicitly selected list"
+    assert_equal [ "agent-orchestrator-prod-self-session" ], json["injected_mcp_servers"],
+      "injected_mcp_servers is only the auto-injected subset"
+    assert_equal [ "digitalocean-tadasant", "agent-orchestrator-prod-self-session" ],
+      json["all_mcp_servers"],
+      "all_mcp_servers is the effective set a consumer should read"
+
+    assert_not_includes json["injected_mcp_servers"], "digitalocean-tadasant",
+      "a healthy session's injected_mcp_servers omits selected servers — a narrow " \
+      "value here is not evidence that a server was lost"
   end
 end

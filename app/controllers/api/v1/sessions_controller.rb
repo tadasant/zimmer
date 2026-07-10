@@ -11,7 +11,7 @@ class Api::V1::SessionsController < Api::BaseController
   require "automated_prompts"
   include SessionSearchable
 
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :set_category ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_heartbeat, :set_category ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -535,6 +535,11 @@ class Api::V1::SessionsController < Api::BaseController
     if @session.update(mcp_servers: mcp_servers)
       added = mcp_servers - old_servers
       removed = old_servers - mcp_servers
+
+      # A deliberate removal is not an unexplained loss — forget its status so
+      # later config regenerations don't report it as one.
+      @session.forget_mcp_server_status!(removed)
+
       changes = []
       changes << "added: #{added.join(', ')}" if added.any?
       changes << "removed: #{removed.join(', ')}" if removed.any?
@@ -789,6 +794,52 @@ class Api::V1::SessionsController < Api::BaseController
     render json: { session: session_json(@session), favorited: @session.favorited }
   end
 
+  # PATCH /api/v1/sessions/:id/heartbeat
+  # Enable/disable the per-session heartbeat and/or set its interval. Both params
+  # are optional; omitting a param leaves that setting unchanged.
+  #
+  # Params:
+  #   - enabled: boolean — turn the heartbeat on/off
+  #   - interval_seconds: integer — how often the heart beats
+  #     (#{Session::HEARTBEAT_MIN_INTERVAL_SECONDS}–#{Session::HEARTBEAT_MAX_INTERVAL_SECONDS})
+  def update_heartbeat
+    attrs = {}
+
+    unless params[:enabled].nil?
+      casted = ActiveModel::Type::Boolean.new.cast(params[:enabled])
+      # cast("") / cast("maybe") => nil; reject rather than let a nil reach the
+      # NOT NULL column (which would surface as a 500, not a 422).
+      if casted.nil?
+        render json: { error: "Validation failed", message: "enabled must be a boolean" }, status: :unprocessable_entity
+        return
+      end
+      attrs[:heartbeat_enabled] = casted
+    end
+
+    unless params[:interval_seconds].nil?
+      interval = params[:interval_seconds]
+      unless interval.to_s.match?(/\A\d+\z/)
+        render json: { error: "Validation failed", message: "interval_seconds must be an integer" }, status: :unprocessable_entity
+        return
+      end
+      attrs[:heartbeat_interval_seconds] = interval.to_i
+    end
+
+    if attrs.empty?
+      render json: { error: "Missing parameter", message: "Provide enabled and/or interval_seconds" }, status: :unprocessable_entity
+      return
+    end
+
+    @session.update!(attrs)
+    render json: {
+      session: session_json(@session),
+      heartbeat_enabled: @session.heartbeat_enabled,
+      heartbeat_interval_seconds: @session.heartbeat_interval_seconds
+    }
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: "Validation failed", message: e.message }, status: :unprocessable_entity
+  end
+
   # PATCH /api/v1/sessions/:id/set_category
   # Assign (or clear) a session's organizational category. A blank/absent
   # category_id moves the session back to "Uncategorized".
@@ -843,18 +894,6 @@ class Api::V1::SessionsController < Api::BaseController
     end
 
     render json: { archived_count: archived_count, errors: errors }
-  end
-
-  # GET /api/v1/sessions/dependency_graph
-  # Returns a structured dependency graph of all non-archived sessions,
-  # capturing parent-child (invocation chain), blocking, and origin relationships.
-  #
-  # Query parameters:
-  #   - include_archived: Include archived sessions (default: false)
-  def dependency_graph
-    include_archived = params[:include_archived] == "true"
-    graph = SessionDependencyGraphService.call(include_archived: include_archived)
-    render json: { dependency_graph: graph }
   end
 
   # GET /api/v1/sessions/search
@@ -1036,6 +1075,15 @@ class Api::V1::SessionsController < Api::BaseController
       execution_provider: session.execution_provider,
       goal: session.goal,
       mcp_servers: session.mcp_servers,
+      # `mcp_servers` is only the explicitly-selected list. Consumers asking
+      # "which MCP servers does this session actually have wired?" must read
+      # `all_mcp_servers` — the effective set, including plugin-bundled and
+      # Zimmer-auto-injected servers. `injected_mcp_servers` is the auto-injected
+      # subset alone (e.g. the self-session server); on a healthy session it
+      # legitimately omits every user-selected server, so it must never be read
+      # as the effective set.
+      all_mcp_servers: session.all_mcp_servers,
+      injected_mcp_servers: session.injected_mcp_servers,
       catalog_skills: session.catalog_skills,
       catalog_hooks: session.catalog_hooks,
       catalog_plugins: session.catalog_plugins,
@@ -1043,6 +1091,8 @@ class Api::V1::SessionsController < Api::BaseController
       metadata: session.metadata,
       custom_metadata: session.custom_metadata,
       is_autonomous: session.is_autonomous,
+      heartbeat_enabled: session.heartbeat_enabled,
+      heartbeat_interval_seconds: session.heartbeat_interval_seconds,
       auto_compact_window: session.auto_compact_window,
       category_id: session.category_id,
       category: category_summary(session.category),

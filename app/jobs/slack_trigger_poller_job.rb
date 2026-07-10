@@ -16,7 +16,30 @@
 # - Also monitors thread replies for @mentions (so replying to a thread with @bot works)
 # - Only processes messages from allowed users (configured on TriggerCondition or Trigger::ALLOWED_BOT_MENTION_USER_IDS)
 class SlackTriggerPollerJob < ApplicationJob
-  queue_as :default
+  # Runs on the dedicated `pollers` queue (like every other *PollerJob), NOT on
+  # `default`. A single poll is a long, external-API-bound unit of work: it makes
+  # many Slack calls, and SlackService retries rate-limited calls with blocking
+  # `sleep`s (up to MAX_RETRIES per call), so a rate-limited run can hold its
+  # worker thread for minutes. On the shared `default` queue those minutes-long
+  # runs starved the latency-sensitive periodic jobs that also live there
+  # (HeartbeatSweepJob every 30s, the cleanup/refresh crons), collapsing
+  # background throughput. The `pollers` queue is isolated for exactly this kind
+  # of slow, self-contained polling job.
+  queue_as :pollers
+
+  # Singleton pattern: at most one poll unfinished (running or queued) at a time,
+  # matching every other poller (GithubCommentPollerJob, CliStatusRefreshJob, …).
+  # The cron enqueues a poll every minute, but a rate-limited run can take several
+  # minutes; without this cap those runs pile up — each holding a worker thread in
+  # a Slack-rate-limit `sleep` — until they saturate the queue's whole thread pool
+  # and no other polling work can run. total_limit: 1 makes an enqueue while a
+  # poll is still in flight a no-op, so a slow poll can never stack against itself.
+  # Polling is idempotent (timestamps only advance on success), so a skipped tick
+  # is simply picked up by the next cron run.
+  good_job_control_concurrency_with(
+    key: -> { "slack_trigger_poller" },
+    total_limit: 1
+  )
 
   # Cap on how many aged-out tracked threads to re-check per channel per poll,
   # bounding the extra conversations.replies calls. Prioritized by most-recent

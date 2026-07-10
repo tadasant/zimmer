@@ -195,12 +195,52 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
   end
 
-  test "post_process! is a no-op when the config file does not exist" do
+  test "post_process! synthesizes a baseline .mcp.json with the self-session server when AIR wrote no file" do
+    # A skills-only session (no explicit MCP servers) takes the prepare! branch
+    # but AIR writes no .mcp.json. post_process! must still create one and inject
+    # the self-session server rather than leaving the session with no Zimmer tools.
+    @session.update!(mcp_servers: [], catalog_skills: [ "wait-for-ci" ], metadata: { "agent_root_key" => "agent-orchestrator" })
+
     processor = build_processor
     processor.post_process!
 
-    refute @mock_fs.exists?(File.join(@working_dir, ".mcp.json"))
-    assert_empty processor.injected_mcp_servers
+    assert @mock_fs.exists?(File.join(@working_dir, ".mcp.json")),
+      "post_process! should synthesize a .mcp.json when AIR wrote none"
+    self_server = read_config.dig("mcpServers", "agent-orchestrator-staging-self-session")
+    assert_not_nil self_server, "Self-session Zimmer server should be injected into the synthesized config"
+    assert_equal "self_session", self_server.dig("env", "TOOL_GROUPS")
+    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+  end
+
+  test "post_process! injects the subagent Zimmer server when AIR wrote no .mcp.json for a subagent-roots root" do
+    # The secondary defect: a subagent-roots root that has skills (so it takes
+    # the prepare! branch) but no explicit MCP servers gets no .mcp.json from AIR.
+    # post_process! must still inject the subagent-spawning agent-orchestrator
+    # server so start_session works — it must not be gated on an AIR-produced file.
+    @session.update!(
+      mcp_servers: [],
+      catalog_skills: [ "wait-for-ci" ],
+      metadata: { "agent_root_key" => "catalog-management" }
+    )
+
+    processor = build_processor
+    processor.post_process!
+
+    assert @mock_fs.exists?(File.join(@working_dir, ".mcp.json")),
+      "post_process! should synthesize a .mcp.json when AIR wrote none"
+    result = read_config
+    ao_server = result.dig("mcpServers", "agent-orchestrator")
+    assert_not_nil ao_server,
+      "subagent-spawning agent-orchestrator server must be injected even without an AIR-produced .mcp.json"
+    allowed = ao_server.dig("env", "ALLOWED_AGENT_ROOTS")
+    assert_includes allowed, "catalog-mgmt-research"
+    assert_includes allowed, "catalog-mgmt-save"
+
+    # The full-surface subagent server already covers the self_session tool group,
+    # so the dedicated self-session server is deduped away (no duplicate Zimmer server).
+    assert_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
+      "Self-session server should be deduped when the subagent Zimmer server is present"
+    assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
   end
 
   # ---------------------------------------------------------------------------
@@ -328,6 +368,59 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_not_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
       "Self-session server SHOULD be injected alongside restricted Zimmer server"
     assert_equal "self_session", result.dig("mcpServers", "agent-orchestrator-staging-self-session", "env", "TOOL_GROUPS")
+    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+  end
+
+  test "ensure_baseline! injects the subagent Zimmer server for a subagent-roots-only root" do
+    # catalog-management has NO default_mcp_servers/skills/hooks/plugins, so
+    # its regeneration routes through the baseline path. Its only subagent-spawning
+    # capability is the auto-injected agent-orchestrator server. ensure_baseline!
+    # must inject it (with the resolved default_subagent_roots as ALLOWED_AGENT_ROOTS)
+    # or the session loses start_session entirely. This is the primary defect.
+    @session.update!(
+      mcp_servers: [],
+      catalog_skills: [],
+      catalog_hooks: [],
+      catalog_plugins: [],
+      metadata: { "agent_root_key" => "catalog-management" }
+    )
+
+    processor = build_processor
+    processor.ensure_baseline!
+
+    result = read_config
+    ao_server = result.dig("mcpServers", "agent-orchestrator")
+    assert_not_nil ao_server,
+      "ensure_baseline! must inject the subagent-spawning agent-orchestrator server for a subagent-roots root"
+    assert_equal "npx", ao_server["command"]
+    assert_includes ao_server["args"], "agent-orchestrator-mcp-server@latest"
+
+    allowed = ao_server.dig("env", "ALLOWED_AGENT_ROOTS")
+    assert_includes allowed, "catalog-mgmt-research"
+    assert_includes allowed, "catalog-mgmt-configs"
+    assert_includes allowed, "catalog-mgmt-proctor"
+    assert_includes allowed, "catalog-mgmt-save"
+
+    # The subagent server (TOOL_GROUPS blank) already covers the self_session tool
+    # group, so the dedicated self-session server is deduped away.
+    assert_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
+      "Self-session server should be deduped when the subagent Zimmer server is present"
+    assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
+  end
+
+  test "ensure_baseline! does NOT inject the subagent Zimmer server for a root without default_subagent_roots" do
+    # agent-orchestrator root has no default_subagent_roots: only the self-session
+    # server should be injected, never the subagent-spawning server.
+    @session.update!(mcp_servers: [], catalog_skills: [], metadata: { "agent_root_key" => "agent-orchestrator" })
+
+    processor = build_processor
+    processor.ensure_baseline!
+
+    result = read_config
+    assert_nil result.dig("mcpServers", "agent-orchestrator"),
+      "subagent agent-orchestrator server must NOT be injected for a root without default_subagent_roots"
+    assert_not_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
+      "Self-session server should still be injected"
     assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
   end
 

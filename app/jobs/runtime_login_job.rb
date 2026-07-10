@@ -74,7 +74,7 @@ class RuntimeLoginJob < ApplicationJob
       # waiting for an exit that won't happen. EOF (below) stays as the fallback
       # for CLIs that do exit on completion.
       if driver.credentials_ready?(config_dir)
-        return complete(attempt, account, driver, config_dir, pid)
+        return complete(attempt, account, driver, config_dir, pid, raw)
       end
 
       ready = IO.select([ reader ], nil, nil, POLL_INTERVAL)
@@ -86,7 +86,7 @@ class RuntimeLoginJob < ApplicationJob
           # Spurious wakeup — nothing to read yet.
         rescue Errno::EIO, EOFError
           # PTY child exited; capture whatever it wrote.
-          return complete(attempt, account, driver, config_dir, pid)
+          return complete(attempt, account, driver, config_dir, pid, raw)
         end
       end
 
@@ -168,14 +168,27 @@ class RuntimeLoginJob < ApplicationJob
   # either because the CLI exited (PTY EOF) or because it wrote usable
   # credentials while keeping its TUI open (proactive capture). Must not block on
   # the process: a still-running CLI is terminated and reaped by run()'s ensure.
-  def complete(attempt, account, driver, config_dir, pid)
+  #
+  # `raw` is the CLI's accumulated PTY output; on failure we mine it for the CLI's
+  # own reason (e.g. "Login failed: getaddrinfo ESERVFAIL platform.claude.com")
+  # so the Quotas panel shows why the login died instead of the opaque generic
+  # "did not produce credentials".
+  def complete(attempt, account, driver, config_dir, pid, raw = nil)
     driver.capture!(config_dir, account)
     attempt.update!(status: "succeeded", error_message: nil)
     Rails.logger.info "[RuntimeLoginJob] attempt=#{attempt.id} runtime=#{attempt.runtime} succeeded"
   rescue => e
     clear_pasted_code(attempt)
-    attempt.update!(status: "failed", error_message: truncate_error(e.message))
-    Rails.logger.warn "[RuntimeLoginJob] attempt=#{attempt.id} capture failed: #{e.class} - #{e.message}"
+    message = enrich_error(e.message, driver, raw)
+    attempt.update!(status: "failed", error_message: truncate_error(message))
+    Rails.logger.warn "[RuntimeLoginJob] attempt=#{attempt.id} capture failed: #{e.class} - #{message}"
+  end
+
+  # Append the CLI's own failure line to the capture error when one is present in
+  # the output, so a network/DNS/token-exchange failure surfaces its real cause.
+  def enrich_error(message, driver, raw)
+    hint = driver.login_failure_hint(driver.strip_ansi(raw.to_s))
+    hint.present? ? "#{message} — CLI reported: #{hint}" : message
   end
 
   def finish(attempt, pid, status, message)

@@ -67,11 +67,15 @@ Rails.application.configure do
   # Queue configuration matching production for dev/prod parity (configurable via ENV):
   # - agents: Long-running AgentSessionJob instances
   # - pollers: Singleton polling jobs
+  # - triggers: Latency-sensitive trigger firing (AoEventTriggerJob,
+  #     ScheduleTriggerJob) — isolated so wakes aren't starved by the `default`
+  #     queue's periodic/bulk backlog.
   # - default: Everything else
   agents_threads = ENV.fetch("GOOD_JOB_AGENTS_THREADS", 16).to_i
   pollers_threads = ENV.fetch("GOOD_JOB_POLLERS_THREADS", 3).to_i
+  triggers_threads = ENV.fetch("GOOD_JOB_TRIGGERS_THREADS", 2).to_i
   default_threads = ENV.fetch("GOOD_JOB_DEFAULT_THREADS", 4).to_i
-  config.good_job.queues = "agents:#{agents_threads};pollers:#{pollers_threads};default:#{default_threads}"
+  config.good_job.queues = "agents:#{agents_threads};pollers:#{pollers_threads};triggers:#{triggers_threads};default:#{default_threads}"
   config.good_job.max_threads = ENV.fetch("GOOD_JOB_MAX_THREADS", 24).to_i
   config.good_job.poll_interval = 5
   config.good_job.enable_cron = true
@@ -80,6 +84,11 @@ Rails.application.configure do
       cron: "*/5 * * * *", # Every 5 minutes
       class: "CleanupOrphanedSessionsJob",
       description: "Cleanup orphaned sessions every 5 minutes"
+    },
+    heartbeat_sweep: {
+      cron: "*/30 * * * * *", # Every 30 seconds
+      class: "HeartbeatSweepJob",
+      description: "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
     },
     github_pull_request_poller: {
       cron: "*/30 * * * * *", # Every 30 seconds
@@ -131,6 +140,11 @@ Rails.application.configure do
       class: "RefreshMcpOauthTokensJob",
       description: "Proactively refresh MCP OAuth tokens before they expire"
     },
+    refresh_x_oauth_tokens: {
+      cron: "*/15 * * * *", # Every 15 minutes (X access tokens live ~2h)
+      class: "RefreshXOauthTokensJob",
+      description: "Proactively refresh X (Twitter) OAuth access tokens before they expire"
+    },
     transcript_archive: {
       cron: "*/10 * * * *", # Every 10 minutes
       class: "TranscriptArchiveJob",
@@ -170,7 +184,16 @@ Rails.application.configure do
       cron: "*/5 * * * *", # Every 5 minutes
       class: "ZombieReaperJob",
       description: "Reap zombie subprocesses left by agent sessions (defense in depth alongside tini init shim)"
+    },
+    system_health_monitor: {
+      cron: "*/2 * * * *", # Every 2 minutes
+      class: "SystemHealthMonitorJob",
+      description: "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
     }
+    # NOTE: egress_health_check is intentionally prod-only (see production.rb) —
+    # like cert_expiry_monitor, a real per-minute outbound DNS probe on a
+    # developer's laptop (VPN, captive portal, offline) would waste I/O and flash
+    # a false "network egress degraded" banner locally.
   }
 
   # Raises error for missing translations.

@@ -427,60 +427,6 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
   end
 
   # ============================================================
-  # Dependency graph tests
-  # ============================================================
-
-  test "dependency_graph should return structured graph" do
-    get dependency_graph_api_v1_sessions_path, headers: @headers
-    assert_response :success
-
-    json = JSON.parse(response.body)
-    assert json.key?("dependency_graph")
-    graph = json["dependency_graph"]
-    assert graph.key?("nodes")
-    assert graph.key?("edges")
-    assert graph.key?("roots")
-    assert graph.key?("summary")
-    assert graph["nodes"].is_a?(Array)
-    assert graph["edges"].is_a?(Array)
-    assert graph["roots"].is_a?(Array)
-  end
-
-  test "dependency_graph excludes archived sessions by default" do
-    get dependency_graph_api_v1_sessions_path, headers: @headers
-    assert_response :success
-
-    json = JSON.parse(response.body)
-    statuses = json["dependency_graph"]["nodes"].map { |n| n["status"] }
-    assert_not_includes statuses, "archived"
-  end
-
-  test "dependency_graph includes archived sessions when requested" do
-    get dependency_graph_api_v1_sessions_path, params: { include_archived: "true" }, headers: @headers
-    assert_response :success
-
-    json = JSON.parse(response.body)
-    statuses = json["dependency_graph"]["nodes"].map { |n| n["status"] }
-    assert_includes statuses, "archived"
-  end
-
-  test "dependency_graph nodes include origin_type" do
-    get dependency_graph_api_v1_sessions_path, headers: @headers
-    assert_response :success
-
-    json = JSON.parse(response.body)
-    json["dependency_graph"]["nodes"].each do |node|
-      assert node.key?("origin_type"), "Node should include origin_type"
-      assert_includes %w[user-triggered heartbeat-triggered router-triggered agent-triggered], node["origin_type"]
-    end
-  end
-
-  test "dependency_graph should return 401 without API key" do
-    get dependency_graph_api_v1_sessions_path
-    assert_response :unauthorized
-  end
-
-  # ============================================================
   # Authentication tests for new endpoints
   # ============================================================
 
@@ -526,6 +472,75 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
 
   test "bulk_archive should return 401 without API key" do
     post bulk_archive_api_v1_sessions_path
+    assert_response :unauthorized
+  end
+
+  # ============================================================
+  # Heartbeat tests
+  # ============================================================
+
+  test "update_heartbeat enables the heartbeat" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { enabled: true }, headers: @headers, as: :json
+    assert_response :success
+
+    json = JSON.parse(response.body)
+    assert_equal true, json["heartbeat_enabled"]
+    assert_equal true, json["session"]["heartbeat_enabled"]
+    assert_equal true, session.reload.heartbeat_enabled
+  end
+
+  test "update_heartbeat sets the interval" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { interval_seconds: 300 }, headers: @headers, as: :json
+    assert_response :success
+
+    json = JSON.parse(response.body)
+    assert_equal 300, json["heartbeat_interval_seconds"]
+    assert_equal 300, session.reload.heartbeat_interval_seconds
+  end
+
+  test "update_heartbeat can set both enabled and interval at once" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { enabled: true, interval_seconds: 120 }, headers: @headers, as: :json
+    assert_response :success
+
+    session.reload
+    assert session.heartbeat_enabled
+    assert_equal 120, session.heartbeat_interval_seconds
+  end
+
+  test "update_heartbeat rejects an out-of-range interval" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { interval_seconds: 1 }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    assert_equal 60, session.reload.heartbeat_interval_seconds
+  end
+
+  test "update_heartbeat requires at least one parameter" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), headers: @headers, as: :json
+    assert_response :unprocessable_entity
+  end
+
+  test "update_heartbeat rejects a non-boolean enabled value with 422 (not 500)" do
+    session = sessions(:needs_input)
+    patch heartbeat_api_v1_session_path(session), params: { enabled: "" }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+  end
+
+  test "session_json includes heartbeat fields" do
+    session = sessions(:needs_input)
+    get api_v1_session_path(session), headers: @headers
+    assert_response :success
+
+    json = JSON.parse(response.body)["session"]
+    assert json.key?("heartbeat_enabled")
+    assert json.key?("heartbeat_interval_seconds")
+  end
+
+  test "update_heartbeat should return 401 without API key" do
+    patch heartbeat_api_v1_session_path(sessions(:needs_input)), params: { enabled: true }
     assert_response :unauthorized
   end
 end

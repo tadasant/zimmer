@@ -172,11 +172,42 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
   end
 
-  test "post_process! is a no-op when the config file does not exist" do
-    build_processor.post_process!
+  test "post_process! synthesizes a baseline config with the self-session server when AIR wrote none" do
+    # A skills-only session takes the prepare! branch but AIR writes no config.
+    # post_process! must synthesize one and inject the self-session server rather
+    # than leaving the session with no Zimmer tools (mirrors the Claude processor).
+    @session.update!(mcp_servers: [], catalog_skills: [ "wait-for-ci" ], metadata: { "agent_root_key" => "agent-orchestrator" })
 
-    refute @mock_fs.exists?(config_file_path),
-      "post_process! must not create a config file when AIR wrote none"
+    processor = build_processor
+    processor.post_process!
+
+    assert @mock_fs.exists?(config_file_path),
+      "post_process! should synthesize the Codex config when AIR wrote none"
+    self_server = read_config.dig("mcp_servers", "agent-orchestrator-staging-self-session")
+    assert_not_nil self_server, "Self-session Zimmer server should be injected into the synthesized config"
+    assert_equal "self_session", self_server.dig("env", "TOOL_GROUPS")
+    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+  end
+
+  test "post_process! injects the subagent Zimmer server when AIR wrote no Codex config for a subagent-roots root" do
+    # Secondary defect, Codex flavor: a subagent-roots root with skills (prepare!
+    # branch) but no explicit MCP servers gets no config from AIR. The subagent
+    # spawning server must still be injected — not gated on an AIR-produced file.
+    @session.update!(
+      mcp_servers: [],
+      catalog_skills: [ "wait-for-ci" ],
+      metadata: { "agent_root_key" => "catalog-management" }
+    )
+
+    processor = build_processor
+    processor.post_process!
+
+    assert @mock_fs.exists?(config_file_path)
+    ao_server = read_config.dig("mcp_servers", "agent-orchestrator")
+    assert_not_nil ao_server,
+      "subagent-spawning agent-orchestrator server must be injected even without an AIR-produced config"
+    assert_includes ao_server.dig("env", "ALLOWED_AGENT_ROOTS"), "catalog-mgmt-research"
+    assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
   end
 
   test "ensure_baseline! creates .codex/config.toml with the self-session server when none exists" do

@@ -850,4 +850,67 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     assert_not Trigger.exists?(sibling_failed.id),
       "Sibling wake should be destroyed — delivery succeeded via queuing"
   end
+
+  # === Queue routing ===
+  #
+  # Latency-sensitive wakes must run on the dedicated `triggers` queue, NOT the
+  # shared `default` queue. On `default` this job was starved for hours behind a
+  # periodic/bulk backlog and never fired the wake in time — the root cause this
+  # queue split fixes.
+
+  test "runs on the dedicated triggers queue (not default)" do
+    assert_equal "triggers", AoEventTriggerJob.new.queue_name
+  end
+
+  test "enqueues onto the triggers queue" do
+    assert_enqueued_with(job: AoEventTriggerJob, queue: "triggers") do
+      AoEventTriggerJob.perform_later("session_needs_input", 123)
+    end
+  end
+
+  # === Dispatch-latency observability ===
+  #
+  # A wake that sits in the queue too long is delivered late. Surface that as a
+  # .warn so future queue starvation is observable instead of silent.
+
+  # ActiveJob restores enqueued_at as a Time object at perform time (Rails 8.1),
+  # so the Time path is the real production path. A String can still appear (e.g.
+  # a manually enqueued/legacy payload), so both branches are exercised.
+  test "warns when enqueue-to-perform latency exceeds the threshold (Time enqueued_at — production path)" do
+    job = AoEventTriggerJob.new("session_needs_input", 123)
+    job.enqueued_at = Time.current - (AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD + 80)
+
+    Rails.logger.expects(:warn).with(regexp_matches(/High dispatch latency/)).once
+
+    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
+  end
+
+  test "warns when latency exceeds the threshold (String enqueued_at — fallback path)" do
+    job = AoEventTriggerJob.new("session_needs_input", 123)
+    job.enqueued_at = (Time.current - (AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD + 80)).iso8601
+
+    Rails.logger.expects(:warn).with(regexp_matches(/High dispatch latency/)).once
+
+    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
+  end
+
+  test "does not warn when dispatch latency is within the threshold" do
+    job = AoEventTriggerJob.new("session_needs_input", 123)
+    job.enqueued_at = Time.current - 1
+
+    Rails.logger.expects(:warn).never
+
+    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
+  end
+
+  test "does not warn (and does not raise) when enqueued_at is missing" do
+    job = AoEventTriggerJob.new("session_needs_input", 123)
+    job.enqueued_at = nil
+
+    Rails.logger.expects(:warn).never
+
+    assert_nothing_raised do
+      job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
+    end
+  end
 end

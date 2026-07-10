@@ -24,10 +24,35 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert report.key?(:process_health)
     assert report.key?(:session_health)
     assert report.key?(:system_health)
+    assert report.key?(:egress_health)
     assert report.key?(:sigterm_retry_health)
     assert report.key?(:api_error_retry_health)
     assert report.key?(:overall_status)
     assert report.key?(:generated_at)
+  end
+
+  test "egress_health reflects a degraded cache and drives overall status critical" do
+    original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    Rails.cache.write(EgressHealthCheck::CACHE_KEY, {
+      "status" => "degraded",
+      "detail" => "primary resolver 127.0.0.11 could not resolve api.anthropic.com",
+      "resolver" => "127.0.0.11",
+      "degraded_since" => Time.current.iso8601,
+      "checked_at" => Time.current.iso8601
+    })
+
+    report = @service.full_health_report
+    assert report[:egress_health][:status].critical?
+    assert_equal "127.0.0.11", report[:egress_health][:resolver]
+    assert report[:overall_status].critical?, "a degraded egress makes the system critical"
+  ensure
+    Rails.cache = original_cache
+  end
+
+  test "egress_health is healthy when no probe result is cached" do
+    report = @service.full_health_report
+    assert report[:egress_health][:status].healthy?
   end
 
   test "full_health_report generated_at is current time" do

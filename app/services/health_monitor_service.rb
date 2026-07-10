@@ -56,6 +56,7 @@ class HealthMonitorService
       process_health: process_health,
       session_health: session_health,
       system_health: system_health,
+      egress_health: egress_health,
       sigterm_retry_health: sigterm_retry_health,
       api_error_retry_health: api_error_retry_health,
       overall_status: calculate_overall_status,
@@ -258,6 +259,29 @@ class HealthMonitorService
       recent_errors: recent_errors,
       database_status: database_health_status,
       status: system_health_status(queue_stats[:pending_count])
+    }
+  end
+
+  # Network-egress (DNS) health, read from the shared cache EgressHealthCheckJob
+  # writes. Surfaces the same condition the global "network egress degraded"
+  # banner shows, so the dashboard the banner links to actually corroborates it
+  # instead of staying silent about the outage.
+  # @return [Hash] Egress health data
+  def egress_health
+    cached = EgressHealthCheck.status
+    degraded = cached && cached["status"] == "degraded"
+
+    {
+      status:
+        if degraded
+          HealthStatus.new(status: :critical, message: cached["detail"].presence || "Network egress degraded")
+        else
+          HealthStatus.new(status: :healthy, message: "DNS egress resolving")
+        end,
+      resolver: cached&.dig("resolver"),
+      detail: cached&.dig("detail"),
+      degraded_since: cached&.dig("degraded_since"),
+      checked_at: cached&.dig("checked_at")
     }
   end
 
@@ -661,8 +685,9 @@ class HealthMonitorService
     process_status = process_health[:status]
     session_status = session_health[:status]
     system_status = system_health[:status]
+    egress_status = egress_health[:status]
 
-    statuses = [ process_status, session_status, system_status ]
+    statuses = [ process_status, session_status, system_status, egress_status ]
 
     if statuses.any?(&:critical?)
       HealthStatus.new(status: :critical, message: "One or more critical issues detected")

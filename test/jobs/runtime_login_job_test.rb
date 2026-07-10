@@ -108,6 +108,39 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     end
   end
 
+  # A :paste driver whose "CLI" prints a token-exchange failure line and exits
+  # WITHOUT writing credentials — the shape of the real prod failure where the
+  # Claude CLI can't reach platform.claude.com (getaddrinfo ESERVFAIL) and gives
+  # up. capture! raises "did not produce credentials"; the job must enrich that
+  # with the CLI's own reason via login_failure_hint (delegated to the real
+  # ClaudeLoginDriver extraction here) so the panel shows the true cause.
+  class FakeExchangeFailurePasteDriver < RuntimeLoginDriver
+    def resolved_command
+      script = <<~SH
+        printf 'Open https://platform.claude.com/oauth/authorize?x=1\\n'
+        printf 'Paste code here:\\n'
+        read code
+        printf 'Login failed: getaddrinfo ESERVFAIL platform.claude.com\\n'
+        exit 1
+      SH
+      [ "/bin/sh", "-c", script ]
+    end
+
+    def env(_dir) = {}
+    def completion_mode = :paste
+    def paste_prompt = /Paste code here/
+
+    def parse_verification(clean)
+      { url: clean[%r{https://\S+oauth\S*}], code: nil }
+    end
+
+    def login_failure_hint(clean_buffer) = ClaudeLoginDriver.new.login_failure_hint(clean_buffer)
+
+    def capture!(_config_dir, _account)
+      raise "claude login did not produce credentials"
+    end
+  end
+
   setup do
     @account = ClaudeAccount.create!(
       email: "runtime-login-job@example.com", runtime: "codex",
@@ -180,6 +213,25 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
       assert_nil attempt.pasted_code
       assert_not claude.reload.active?
     end
+  end
+
+  test "paste path: a failed capture surfaces the CLI's own error reason" do
+    claude = ClaudeAccount.create!(
+      email: "runtime-login-job-exchange-fail@example.com", runtime: "claude_code",
+      status: :needs_reauth, is_current: false, priority: 63, oauth_config: {}
+    )
+    attempt = claude.runtime_login_attempts.create!(runtime: "claude_code", pasted_code: "some-code")
+
+    RuntimeLoginDriver.stub(:for, FakeExchangeFailurePasteDriver.new) do
+      RuntimeLoginJob.perform_now(attempt.id)
+    end
+
+    attempt.reload
+    assert_equal "failed", attempt.status
+    assert_match "did not produce credentials", attempt.error_message
+    assert_match "CLI reported: Login failed: getaddrinfo ESERVFAIL platform.claude.com",
+      attempt.error_message
+    assert_not claude.reload.active?
   end
 
   test "paste path: captures as soon as credentials land, without waiting for the CLI to exit" do

@@ -61,12 +61,19 @@ Rails.application.configure do
   # Queue configuration with thread allocation (configurable via ENV):
   # - agents: Long-running AgentSessionJob instances
   # - pollers: Singleton polling jobs that shouldn't queue up
+  # - triggers: Latency-sensitive trigger firing (AoEventTriggerJob,
+  #     ScheduleTriggerJob). Isolated onto its own scheduler so state-change and
+  #     scheduled wakes are never starved behind the `default` queue's periodic/
+  #     bulk backlog (heartbeat sweeps, Slack polling, cleanup, etc.).
   # - default: Everything else - cleanup, title generation, etc.
-  # Note: max_threads should be >= sum of queue allocations
+  # Total scheduler threads must stay within the DB connection pool
+  # (config/database.yml `pool`), which is the real ceiling — not max_threads
+  # (a per-scheduler fallback used only for queues without an explicit count).
   agents_threads = ENV.fetch("GOOD_JOB_AGENTS_THREADS", 16).to_i
   pollers_threads = ENV.fetch("GOOD_JOB_POLLERS_THREADS", 3).to_i
+  triggers_threads = ENV.fetch("GOOD_JOB_TRIGGERS_THREADS", 2).to_i
   default_threads = ENV.fetch("GOOD_JOB_DEFAULT_THREADS", 4).to_i
-  config.good_job.queues = "agents:#{agents_threads};pollers:#{pollers_threads};default:#{default_threads}"
+  config.good_job.queues = "agents:#{agents_threads};pollers:#{pollers_threads};triggers:#{triggers_threads};default:#{default_threads}"
   config.good_job.max_threads = ENV.fetch("GOOD_JOB_MAX_THREADS", 24).to_i
   config.good_job.enable_cron = true
   config.good_job.enable_dashboard = true
@@ -75,6 +82,11 @@ Rails.application.configure do
       cron: "*/5 * * * *", # Every 5 minutes
       class: "CleanupOrphanedSessionsJob",
       description: "Cleanup orphaned sessions every 5 minutes"
+    },
+    heartbeat_sweep: {
+      cron: "*/30 * * * * *", # Every 30 seconds
+      class: "HeartbeatSweepJob",
+      description: "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
     },
     github_pull_request_poller: {
       cron: "*/30 * * * * *", # Every 30 seconds
@@ -125,6 +137,11 @@ Rails.application.configure do
       cron: "*/30 * * * *", # Every 30 minutes
       class: "RefreshMcpOauthTokensJob",
       description: "Proactively refresh MCP OAuth tokens before they expire"
+    },
+    refresh_x_oauth_tokens: {
+      cron: "*/15 * * * *", # Every 15 minutes (X access tokens live ~2h)
+      class: "RefreshXOauthTokensJob",
+      description: "Proactively refresh X (Twitter) OAuth access tokens before they expire"
     },
     transcript_archive: {
       cron: "*/10 * * * *", # Every 10 minutes
@@ -190,6 +207,16 @@ Rails.application.configure do
       cron: "0 7 * * *", # Daily at 07:00 UTC (offset from claude_code_update at 06:00)
       class: "CertExpiryMonitorJob",
       description: "Check public TLS certs (ao/obs hosts) and alert when expiry nears — catches broken auto-renewal"
+    },
+    system_health_monitor: {
+      cron: "*/2 * * * *", # Every 2 minutes
+      class: "SystemHealthMonitorJob",
+      description: "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
+    },
+    egress_health_check: {
+      cron: "* * * * *", # Every minute
+      class: "EgressHealthCheckJob",
+      description: "Probe the primary DNS resolver's public egress; drive the network-degraded banner"
     }
   }
 

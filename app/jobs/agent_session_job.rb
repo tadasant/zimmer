@@ -605,15 +605,47 @@ class AgentSessionJob < ApplicationJob
           file_system: @file_system
         )
         if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
-          air_service.prepare!
+          begin
+            air_service.prepare!
+          rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError => e
+            fail_session_for_air_config_error!(session, log_buffer, e)
+            return
+          end
           log_buffer.add(
             "AIR prepare synced for follow-up prompt",
             level: "info"
           )
         else
+          # A session that genuinely configures no artifacts belongs on the
+          # baseline config, and says so at info. The case that must be loud —
+          # a session that HAD servers and no longer does — is caught below by
+          # detect_lost_mcp_servers, which fires on either branch.
+          log_buffer.add(
+            "AIR prepare skipped: session has no MCP servers, skills, hooks, or plugins configured; " \
+            "regenerating baseline MCP config only",
+            level: "info"
+          )
           air_service.ensure_baseline_mcp_config!
         end
         store_injected_mcp_servers(session, air_service.injected_mcp_servers)
+
+        # Surface any narrowing of the session's toolset into the session's own
+        # log so the user (and the agent, which reads its logs) can see that a
+        # server it had been using is gone, rather than discovering it by a tool
+        # call mysteriously not existing. See McpServerBackfill.
+        lost_servers = detect_lost_mcp_servers(
+          session,
+          air_service.injected_mcp_servers,
+          context: "follow_up"
+        )
+        if lost_servers.any?
+          log_buffer.add(
+            "MCP server(s) no longer configured for this session: #{lost_servers.join(', ')}. " \
+            "The regenerated .mcp.json does not include them, so their tools are unavailable " \
+            "for the remainder of this session unless they are re-added.",
+            level: "warning"
+          )
+        end
 
         # Check for OAuth requirements and inject credentials for follow-up prompts.
         # Necessary when MCP servers are added mid-session.
@@ -804,26 +836,8 @@ class AgentSessionJob < ApplicationJob
           if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
             begin
               air_service.prepare!
-            rescue AirPrepareService::RootResolutionError => e
-              # The session's agent root can't be resolved from the AIR catalog
-              # even after a cache refresh (AirPrepareService already busted the
-              # github cache once and retried). This is a configuration problem
-              # with the session, not broken-system behavior — fail the session
-              # gracefully (WARN, no re-raise) rather than letting the error
-              # bubble to ActiveJob as a terminal failure that pages #eng-alerts.
-              # Mirrors the oauth_required graceful-fail path.
-              log_buffer.add(
-                "Session failed: agent root could not be resolved from the AIR catalog (#{e.message})",
-                level: "warning"
-              )
-              log_buffer.flush
-              session.update!(
-                running_job_id: nil,
-                metadata: (session.metadata || {}).merge(
-                  "failure_reason" => "air_root_unresolvable"
-                )
-              )
-              session.fail! if session.may_fail?
+            rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError => e
+              fail_session_for_air_config_error!(session, log_buffer, e)
               return
             end
             log_buffer.add(
@@ -2149,12 +2163,15 @@ class AgentSessionJob < ApplicationJob
       # Regular MCP connection failure (not OAuth related) — retry with backoff
       # MCP failures are often transient (e.g., servers still starting after deploy).
 
-      # Before retrying, heal any corrupt/version-skewed `_npx/<hash>` cache that
-      # an `npx -y <pkg>@latest` server blamed for a Node module-resolution error
-      # (MODULE_NOT_FOUND or an ESM directory-import/subpath-export failure such as
-      # ERR_UNSUPPORTED_DIR_IMPORT). A corrupt cache otherwise sticks (npx treats
-      # it as "installed"), so the retry would crash identically; removing the tree
-      # forces a fresh, complete install on the next attempt (GitHub issues #3924 / #4109).
+      # Before retrying, heal any corrupt `_npx/<hash>` cache that an
+      # `npx -y <pkg>@latest` server blamed — whether it failed at package
+      # extraction time (TAR_ENTRY_ERROR / ENOTEMPTY from concurrent installs
+      # racing the same cache dir, the signature that orphaned session 9570) or
+      # later at module-resolution time (MODULE_NOT_FOUND or an ESM
+      # directory-import/subpath-export failure such as ERR_UNSUPPORTED_DIR_IMPORT).
+      # A corrupt cache otherwise sticks (npx treats it as "installed"), so the
+      # retry would crash identically; removing the tree forces a fresh, complete
+      # install on the next attempt (GitHub issues #3924 / #4109).
       heal_partial_npx_cache(session, failed_servers, log_buffer)
 
       mcp_retry_count = (session.metadata&.dig("mcp_retry_count") || 0).to_i
@@ -2205,8 +2222,9 @@ class AgentSessionJob < ApplicationJob
   end
 
   # Remove any partially-populated `_npx/<hash>` cache tree that a failed MCP
-  # server blamed for a transitive MODULE_NOT_FOUND, so the next retry installs
-  # it cleanly. No-op when the failure isn't an `_npx` module-resolution error.
+  # server blamed — for an extraction-time tar/rename error (TAR_ENTRY_ERROR /
+  # ENOTEMPTY) or a transitive MODULE_NOT_FOUND — so the next retry installs it
+  # cleanly. No-op when the failure isn't an `_npx` cache-corruption error.
   #
   # @param session [Session] The current session
   # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
@@ -2220,7 +2238,7 @@ class AgentSessionJob < ApplicationJob
 
     if result[:healed]
       log_buffer.add(
-        "Healed corrupt _npx cache (module-resolution failure) before retry — removed: " \
+        "Healed corrupt _npx cache before retry — removed: " \
         "#{result[:removed_paths].join(', ')}",
         level: "warning"
       )
@@ -2761,6 +2779,45 @@ class AgentSessionJob < ApplicationJob
 
     merged = (session.custom_metadata || {}).merge("injected_mcp_servers" => injected_servers)
     session.update!(custom_metadata: merged)
+  end
+
+  # Fail a session gracefully after `air prepare` hit a session-*configuration*
+  # problem: either the agent root can't be resolved from the AIR catalog even
+  # after a cache refresh, or a selected MCP server interpolates a ${VAR} that
+  # Zimmer's SecretsLoader doesn't carry. Both are deterministic, non-retryable, and
+  # operator-fixable — nothing is broken system-side — so they are logged at WARN
+  # and the session is failed here, rather than allowed to bubble to ActiveJob as
+  # a terminal job crash that pages #eng-alerts. Mirrors the oauth_required
+  # graceful-fail path. Callers must `return` immediately afterwards.
+  #
+  # @param session [Session] the session to fail
+  # @param log_buffer [LogBuffer] buffer for the warning line
+  # @param error [AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError]
+  def fail_session_for_air_config_error!(session, log_buffer, error)
+    case error
+    when AirPrepareService::SecretResolutionError
+      # Name the variables so an operator immediately knows which secret to add.
+      missing = error.variable_names.join(", ").presence || "unknown"
+      failure_reason = "air_secret_unresolvable"
+      extra_metadata = { "unresolved_variables" => error.variable_names }
+      message = "Session failed: AIR prepare could not resolve required secret(s) #{missing} — " \
+                "add them to Zimmer's mcp_secrets credentials, or deselect the MCP server that " \
+                "needs them (#{error.message})"
+    else
+      failure_reason = "air_root_unresolvable"
+      extra_metadata = {}
+      message = "Session failed: agent root could not be resolved from the AIR catalog (#{error.message})"
+    end
+
+    log_buffer.add(message, level: "warning")
+    log_buffer.flush
+    session.update!(
+      running_job_id: nil,
+      metadata: (session.metadata || {}).merge(
+        { "failure_reason" => failure_reason }.merge(extra_metadata)
+      )
+    )
+    session.fail! if session.may_fail?
   end
 
   # Check OAuth requirements for MCP servers and inject credentials if available.

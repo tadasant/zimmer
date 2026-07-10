@@ -74,7 +74,12 @@ class ClaudeTranscriptSource < TranscriptSource
     serialized.lines.map do |line|
       JSON.parse(line.strip)
     rescue JSON::ParserError => e
-      Rails.logger.error "Failed to parse transcript line: #{e.message}"
+      # A malformed line is expected and self-resolving during live transcript
+      # polling: the last line can be read mid-flush (truncated) while a session
+      # is still writing it. It is handled gracefully here (dropped via .compact,
+      # the rest of the transcript still parses), so it warrants .warn — not a
+      # paging .error.
+      Rails.logger.warn "Failed to parse transcript line: #{e.message}"
       nil
     end.compact
   end

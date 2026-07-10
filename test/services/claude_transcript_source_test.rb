@@ -88,6 +88,21 @@ class ClaudeTranscriptSourceTest < ActiveSupport::TestCase
     assert_equal [], @source.parse_events(nil)
   end
 
+  test "parse_events warns (never errors) on a malformed line" do
+    # Regression guard: a truncated/malformed transcript line is expected and
+    # self-resolving during live polling (a line read mid-flush). It must NOT
+    # log at ERROR, which trips the critical Zimmer error-logs paging alert that
+    # keys on severity_text=ERROR. See issue #4685.
+    serialized = "{\"a\":1}\n{\"b\": truncated"
+    log = capture_log_output do
+      assert_equal [ { "a" => 1 } ], @source.parse_events(serialized)
+    end
+
+    assert_match(/Failed to parse transcript line/, log)
+    refute_match(/\bERROR\b/, log, "malformed transcript line must not log at ERROR (it pages)")
+    refute_match(/\bFATAL\b/, log)
+  end
+
   test "read_events reads the file and parses it" do
     path = "#{@transcript_dir}/abc.jsonl"
     @file_system.write(path, "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n")
@@ -122,5 +137,21 @@ class ClaudeTranscriptSourceTest < ActiveSupport::TestCase
 
   test "mcp_log_paths returns empty array without a working_directory" do
     assert_equal [], @source.mcp_log_paths(working_directory: nil)
+  end
+
+  private
+
+  # Capture everything written to Rails.logger during the block as a String so
+  # tests can assert on log level (e.g. that a benign parse failure never lands
+  # at ERROR, which would page the Zimmer error-logs alert). Mirrors the pattern in
+  # codex_transcript_source_test.rb.
+  def capture_log_output
+    original_logger = Rails.logger
+    log_output = StringIO.new
+    Rails.logger = Logger.new(log_output)
+    yield
+    log_output.string
+  ensure
+    Rails.logger = original_logger
   end
 end

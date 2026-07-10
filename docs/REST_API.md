@@ -138,7 +138,9 @@ Sessions represent agent execution contexts. Each session tracks an agent's life
 | `config` | object | Additional configuration (e.g., `model`) |
 | `metadata` | object | System metadata (clone_path, exit_status, agent_root_key, etc.) |
 | `custom_metadata` | object | User-defined metadata |
-| `is_autonomous` | boolean | Whether the heartbeat agent manages this session |
+| `is_autonomous` | boolean | Whether this session participates in broadcast (unscoped) event-trigger automation (default true; set false for user-driven sessions that should not fire global triggers) |
+| `heartbeat_enabled` | boolean | Whether the per-session heartbeat is on (default false). When on, a `needs_input` session is nudged to keep working every `heartbeat_interval_seconds` |
+| `heartbeat_interval_seconds` | integer | How often the heartbeat beats, in seconds (default 60) |
 | `auto_compact_window` | integer | Token threshold for auto-compaction |
 | `category_id` | integer | ID of the category this session belongs to (null when Uncategorized) |
 | `category` | object | Compact category summary (`id`, `name`, `position`, `is_frozen`), or null when Uncategorized |
@@ -192,6 +194,8 @@ curl -H "X-API-Key: your_key" \
       "execution_provider": "local_filesystem",
       "goal": null,
       "mcp_servers": ["playwright-custom"],
+      "all_mcp_servers": ["playwright-custom", "agent-orchestrator-prod-self-session"],
+      "injected_mcp_servers": ["agent-orchestrator-prod-self-session"],
       "catalog_skills": [],
       "catalog_hooks": [],
       "catalog_plugins": [],
@@ -199,6 +203,8 @@ curl -H "X-API-Key: your_key" \
       "metadata": {"clone_path": "repo-main-123"},
       "custom_metadata": {},
       "is_autonomous": false,
+      "heartbeat_enabled": false,
+      "heartbeat_interval_seconds": 60,
       "auto_compact_window": 150000,
       "category_id": 3,
       "category": {"id": 3, "name": "Auth work", "position": 0, "is_frozen": false},
@@ -222,6 +228,16 @@ curl -H "X-API-Key: your_key" \
   }
 }
 ```
+
+**MCP server fields.** A session response carries three distinct MCP server lists. Read the right one:
+
+| Field | Contains |
+|---|---|
+| `mcp_servers` | Only the servers explicitly selected for the session. Writable via `PATCH /api/v1/sessions/:id/mcp_servers`. |
+| `all_mcp_servers` | **The effective set** — explicitly selected, plus plugin-bundled, plus auto-injected. This is what the session actually has wired. |
+| `injected_mcp_servers` | Only the servers Zimmer auto-injects (the self-session server, and the subagent-spawning `agent-orchestrator` server for roots declaring subagent roots). |
+
+`injected_mcp_servers` is a strict subset and is **not** evidence of what a session has available. On a perfectly healthy session it reads `["agent-orchestrator-prod-self-session"]` while several selected servers are connected. To answer "does this session already have server X?", check `all_mcp_servers`.
 
 ### Search Sessions
 
@@ -288,84 +304,6 @@ curl -H "X-API-Key: your_key" \
 
 ---
 
-### Dependency Graph
-
-```
-GET /api/v1/sessions/dependency_graph
-```
-
-Returns a structured dependency graph of all non-archived sessions, capturing parent-child (invocation chain), blocking, and origin relationships. Designed for the heartbeat agent to get a full picture of session topology in a single API call.
-
-**Query Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `include_archived` | string | Set to `"true"` to include archived sessions (default: `"false"`) |
-
-**Example Request:**
-```bash
-curl -H "X-API-Key: your_key" \
-  "https://your-domain.com/api/v1/sessions/dependency_graph"
-```
-
-**Example Response:**
-```json
-{
-  "dependency_graph": {
-    "nodes": [
-      {
-        "id": 555,
-        "slug": "user-task-20260220",
-        "title": "Fix login bug",
-        "status": "running",
-        "is_autonomous": true,
-        "origin_type": "user-triggered",
-        "parent_session_id": null,
-        "spawned_by": null,
-        "created_at": "2026-02-20T10:00:00Z",
-        "updated_at": "2026-02-20T10:30:00Z"
-      }
-    ],
-    "edges": [
-      {
-        "type": "spawned",
-        "from_id": 556,
-        "to_id": 559,
-        "label": "spawned"
-      }
-    ],
-    "roots": [555, 556],
-    "summary": {
-      "total": 3,
-      "by_status": {"running": 1, "archived": 1, "needs_input": 1},
-      "by_origin_type": {"user-triggered": 1, "heartbeat-triggered": 1, "router-triggered": 1}
-    }
-  }
-}
-```
-
-**Node Fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | integer | Session ID |
-| `slug` | string | URL-friendly identifier |
-| `title` | string | Session title |
-| `status` | string | Current status (running, needs_input, failed, etc.) |
-| `is_autonomous` | boolean | Whether the heartbeat manages this session |
-| `origin_type` | string | How the session was created: `user-triggered`, `heartbeat-triggered`, `router-triggered`, or `agent-triggered` |
-| `parent_session_id` | integer/null | ID of the session that spawned this one |
-| `spawned_by` | string/null | Value of `custom_metadata.spawned_by` |
-
-**Edge Types:**
-
-| Type | Description |
-|------|-------------|
-| `spawned` | Parent-child invocation chain. `from_id` spawned `to_id`. |
-| `blocked_by` | `from_id` is blocked on `to_id`. Detected from prompt/goal text referencing other session IDs. |
-
----
-
 ### Get Session
 
 ```
@@ -427,7 +365,7 @@ Creates a new session. If a `prompt` is provided, the agent job is automatically
 | `catalog_plugins` | array | No | List of plugin IDs (overrides agent root defaults) |
 | `config` | object | No | Additional configuration (e.g., `{"model": "sonnet"}`). When `model` is omitted, it resolves to the agent root's default, then the global session default (Settings page), then the runtime's catalog default; a model incompatible with the resolved runtime is replaced by that fallback. |
 | `custom_metadata` | object | No | User-defined metadata |
-| `is_autonomous` | boolean | No | Heartbeat-managed flag |
+| `is_autonomous` | boolean | No | Whether this session fires broadcast (unscoped) event triggers (default true) |
 | `parent_session_id` | integer | No | ID of the session that spawned this one |
 | `auto_compact_window` | integer | No | Custom auto-compact threshold |
 
@@ -487,7 +425,7 @@ Updates session attributes. Only certain fields can be updated via this endpoint
 | `title` | string | Session title |
 | `slug` | string | URL-friendly identifier |
 | `goal` | string | Goal for the session |
-| `is_autonomous` | boolean | Heartbeat-managed flag |
+| `is_autonomous` | boolean | Whether this session fires broadcast (unscoped) event triggers (default true) |
 | `custom_metadata` | object | User-defined metadata |
 
 For other fields, use:
@@ -937,6 +875,38 @@ curl -X POST -H "X-API-Key: your_key" \
 {
   "session": {"id": 1, "favorited": true},
   "favorited": true
+}
+```
+
+### Set Heartbeat
+
+```
+PATCH /api/v1/sessions/:id/heartbeat
+```
+
+Enable/disable the per-session heartbeat and/or set its interval. When on, a session sitting in `needs_input` is nudged to keep working toward its goal every `interval_seconds`. Both params are optional; omit one to leave that setting unchanged.
+
+**Body Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `enabled` | boolean | Turn the heartbeat on or off |
+| `interval_seconds` | integer | Beat cadence in seconds (30–86400) |
+
+**Example Request:**
+```bash
+curl -X PATCH -H "X-API-Key: your_key" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true, "interval_seconds": 60}' \
+  "https://your-domain.com/api/v1/sessions/1/heartbeat"
+```
+
+**Example Response:**
+```json
+{
+  "session": {"id": 1, "heartbeat_enabled": true, "heartbeat_interval_seconds": 60},
+  "heartbeat_enabled": true,
+  "heartbeat_interval_seconds": 60
 }
 ```
 

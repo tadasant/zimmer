@@ -114,14 +114,18 @@
                   <tr><td class="py-1 pr-3 font-mono">subdirectory</td><td class="py-1 pr-3">string</td><td class="py-1">Subdirectory within the repository</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">execution_provider</td><td class="py-1 pr-3">string</td><td class="py-1"><code>local_filesystem</code> or <code>remote_sandbox</code></td></tr>
                   <tr><td class="py-1 pr-3 font-mono">goal</td><td class="py-1 pr-3">string</td><td class="py-1">Goal for the session</td></tr>
-                  <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">List of MCP server names</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">MCP server names explicitly selected for the session</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">all_mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1"><strong>The effective set</strong> — selected + plugin-bundled + auto-injected. Read this to determine what the session actually has wired.</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">injected_mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">Only the servers Zimmer auto-injects (self-session server; <code>agent-orchestrator</code> for subagent roots). A strict subset — <strong>not</strong> evidence of what a session has available.</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_skills</td><td class="py-1 pr-3">array</td><td class="py-1">Skill names selected from the catalog</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_hooks</td><td class="py-1 pr-3">array</td><td class="py-1">Hook names selected from the catalog</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_plugins</td><td class="py-1 pr-3">array</td><td class="py-1">Plugin IDs selected from the catalog</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">config</td><td class="py-1 pr-3">object</td><td class="py-1">Additional configuration (e.g., <code>model</code>)</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">metadata</td><td class="py-1 pr-3">object</td><td class="py-1">System metadata (<code>clone_path</code>, <code>exit_status</code>, <code>agent_root_key</code>, etc.)</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">custom_metadata</td><td class="py-1 pr-3">object</td><td class="py-1">User-defined metadata</td></tr>
-                  <tr><td class="py-1 pr-3 font-mono">is_autonomous</td><td class="py-1 pr-3">boolean</td><td class="py-1">Whether the heartbeat agent manages this session</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">is_autonomous</td><td class="py-1 pr-3">boolean</td><td class="py-1">Whether this session participates in broadcast (unscoped) event-trigger automation (defaults to true; set false for user-driven sessions that should not fire global triggers)</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">heartbeat_enabled</td><td class="py-1 pr-3">boolean</td><td class="py-1">Whether the per-session heartbeat is on (defaults to false). When on, a needs_input session is nudged to keep working every <code>heartbeat_interval_seconds</code></td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">heartbeat_interval_seconds</td><td class="py-1 pr-3">integer</td><td class="py-1">How often the heartbeat beats, in seconds (default 60)</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">auto_compact_window</td><td class="py-1 pr-3">integer</td><td class="py-1">Token threshold for auto-compaction</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">category_id</td><td class="py-1 pr-3">integer</td><td class="py-1">ID of the category this session belongs to (null when Uncategorized)</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">category</td><td class="py-1 pr-3">object</td><td class="py-1">Compact category summary (<code>id</code>, <code>name</code>, <code>position</code>, <code>is_frozen</code>), or null when Uncategorized</td></tr>
@@ -200,15 +204,6 @@
             </details>
           </div>
 
-          <!-- Dependency Graph -->
-          <div class="px-4 py-4 sm:px-6">
-            <div class="flex items-center gap-2 mb-2">
-              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">GET</span>
-              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/dependency_graph</code>
-            </div>
-            <p class="text-sm text-gray-600 mb-2">Returns a structured graph (<code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">nodes</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">edges</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">roots</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">summary</code>) capturing parent-child invocation chains and blocking relationships across non-archived sessions. Pass <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">include_archived=true</code> to include archived sessions.</p>
-          </div>
-
           <!-- Get Session -->
           <div class="px-4 py-4 sm:px-6">
             <div class="flex items-center gap-2 mb-2">
@@ -257,7 +252,7 @@
                       <tr><td class="py-1 pr-3 font-mono">catalog_plugins</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">No</td><td class="py-1">List of plugin IDs (overrides agent root defaults)</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">config</td><td class="py-1 pr-3">object</td><td class="py-1 pr-3">No</td><td class="py-1">Additional configuration (e.g., <code>{"model":"sonnet"}</code>). When <code>model</code> is omitted, it resolves to the agent root's default, then the global session default (Settings page), then the runtime's catalog default; a model incompatible with the resolved runtime is replaced by that fallback.</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">custom_metadata</td><td class="py-1 pr-3">object</td><td class="py-1 pr-3">No</td><td class="py-1">User-defined metadata</td></tr>
-                      <tr><td class="py-1 pr-3 font-mono">is_autonomous</td><td class="py-1 pr-3">boolean</td><td class="py-1 pr-3">No</td><td class="py-1">Heartbeat-managed flag</td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">is_autonomous</td><td class="py-1 pr-3">boolean</td><td class="py-1 pr-3">No</td><td class="py-1">Whether this session fires broadcast (unscoped) event triggers (default true)</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">parent_session_id</td><td class="py-1 pr-3">integer</td><td class="py-1 pr-3">No</td><td class="py-1">ID of the session that spawned this one</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">auto_compact_window</td><td class="py-1 pr-3">integer</td><td class="py-1 pr-3">No</td><td class="py-1">Custom auto-compact threshold</td></tr>
                     </tbody>
@@ -482,6 +477,30 @@
               <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/toggle_favorite</code>
             </div>
             <p class="text-sm text-gray-600">Toggle the <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">favorited</code> flag. Favorited sessions sort to the top of the dashboard.</p>
+          </div>
+
+          <!-- Heartbeat -->
+          <div class="px-4 py-4 sm:px-6">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">PATCH</span>
+              <code class="text-sm font-mono text-gray-900">/api/v1/sessions/:id/heartbeat</code>
+            </div>
+            <p class="text-sm text-gray-600 mb-2">Enable/disable the per-session heartbeat and/or set its interval. When on, a session sitting in <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">needs_input</code> is nudged to keep working every <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">interval_seconds</code>. Both params are optional; omit one to leave it unchanged.</p>
+            <div class="overflow-x-auto">
+              <table class="text-sm text-gray-700 mb-2">
+                <thead><tr class="text-left text-gray-500"><th class="py-1 pr-3">Param</th><th class="py-1 pr-3">Type</th><th class="py-1">Description</th></tr></thead>
+                <tbody>
+                  <tr><td class="py-1 pr-3 font-mono">enabled</td><td class="py-1 pr-3">boolean</td><td class="py-1">Turn the heartbeat on or off</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">interval_seconds</td><td class="py-1 pr-3">integer</td><td class="py-1">Beat cadence in seconds (30–86400)</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
+              <pre class="text-xs text-gray-100 font-mono">curl -X PATCH -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true, "interval_seconds": 60}' \
+  "<%= request.base_url %>/api/v1/sessions/1/heartbeat"</pre>
+            </div>
           </div>
 
           <!-- Set Category -->

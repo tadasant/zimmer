@@ -57,11 +57,11 @@ class ClaudeCliAdapter
   # blocks the tool.
   DISALLOWED_TOOLS = [ "Monitor", "ScheduleWakeup", "Bash(sleep *)", "Skill(schedule)", "AskUserQuestion" ].freeze
 
-  # Default auto-compact window in tokens. Lowering Claude Code's default
-  # window makes the agent compact proactively, reducing the chance of
-  # hitting hard context-length errors. Per-session overrides flow in via
-  # the auto_compact_window kwarg on execute/resume.
-  DEFAULT_AUTO_COMPACT_WINDOW = 200_000
+  # Default auto-compact window in tokens. A large window lets a big transcript
+  # load fully before Claude Code compacts, avoiding compaction thrashing on
+  # long-running sessions. Per-session overrides flow in via the
+  # auto_compact_window kwarg on execute/resume.
+  DEFAULT_AUTO_COMPACT_WINDOW = 1_000_000
 
   # Threshold for switching to stdin-based prompt delivery
   # When a prompt exceeds this size, we use stream-json input via stdin
