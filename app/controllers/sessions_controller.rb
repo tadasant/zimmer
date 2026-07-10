@@ -1875,6 +1875,10 @@ class SessionsController < ApplicationController
         added = mcp_servers - old_servers
         removed = old_servers - mcp_servers
 
+        # A deliberate removal is not an unexplained loss — forget its status so
+        # later config regenerations don't report it as one.
+        @session.forget_mcp_server_status!(removed)
+
         changes = []
         changes << "added: #{added.join(', ')}" if added.any?
         changes << "removed: #{removed.join(', ')}" if removed.any?

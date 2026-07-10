@@ -535,6 +535,11 @@ class Api::V1::SessionsController < Api::BaseController
     if @session.update(mcp_servers: mcp_servers)
       added = mcp_servers - old_servers
       removed = old_servers - mcp_servers
+
+      # A deliberate removal is not an unexplained loss — forget its status so
+      # later config regenerations don't report it as one.
+      @session.forget_mcp_server_status!(removed)
+
       changes = []
       changes << "added: #{added.join(', ')}" if added.any?
       changes << "removed: #{removed.join(', ')}" if removed.any?
@@ -1070,6 +1075,15 @@ class Api::V1::SessionsController < Api::BaseController
       execution_provider: session.execution_provider,
       goal: session.goal,
       mcp_servers: session.mcp_servers,
+      # `mcp_servers` is only the explicitly-selected list. Consumers asking
+      # "which MCP servers does this session actually have wired?" must read
+      # `all_mcp_servers` — the effective set, including plugin-bundled and
+      # Zimmer-auto-injected servers. `injected_mcp_servers` is the auto-injected
+      # subset alone (e.g. the self-session server); on a healthy session it
+      # legitimately omits every user-selected server, so it must never be read
+      # as the effective set.
+      all_mcp_servers: session.all_mcp_servers,
+      injected_mcp_servers: session.injected_mcp_servers,
       catalog_skills: session.catalog_skills,
       catalog_hooks: session.catalog_hooks,
       catalog_plugins: session.catalog_plugins,

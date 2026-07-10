@@ -114,7 +114,9 @@
                   <tr><td class="py-1 pr-3 font-mono">subdirectory</td><td class="py-1 pr-3">string</td><td class="py-1">Subdirectory within the repository</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">execution_provider</td><td class="py-1 pr-3">string</td><td class="py-1"><code>local_filesystem</code> or <code>remote_sandbox</code></td></tr>
                   <tr><td class="py-1 pr-3 font-mono">goal</td><td class="py-1 pr-3">string</td><td class="py-1">Goal for the session</td></tr>
-                  <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">List of MCP server names</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">MCP server names explicitly selected for the session</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">all_mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1"><strong>The effective set</strong> — selected + plugin-bundled + auto-injected. Read this to determine what the session actually has wired.</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">injected_mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">Only the servers Zimmer auto-injects (self-session server; <code>agent-orchestrator</code> for subagent roots). A strict subset — <strong>not</strong> evidence of what a session has available.</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_skills</td><td class="py-1 pr-3">array</td><td class="py-1">Skill names selected from the catalog</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_hooks</td><td class="py-1 pr-3">array</td><td class="py-1">Hook names selected from the catalog</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_plugins</td><td class="py-1 pr-3">array</td><td class="py-1">Plugin IDs selected from the catalog</td></tr>

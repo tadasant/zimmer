@@ -828,10 +828,40 @@ class Session < ApplicationRecord
     derive_from_plugins(:mcp_servers, exclude: mcp_servers || []).keys
   end
 
-  # Returns the set of MCP server names that were auto-injected during session
-  # startup (not part of the explicit configuration).
+  # Returns ONLY the MCP server names Zimmer auto-injected during session startup —
+  # the self-session server, and the subagent-spawning agent-orchestrator server
+  # for roots that declare default_subagent_roots. It deliberately excludes every
+  # user-selected and plugin-bundled server.
+  #
+  # This is NOT the set of servers the session has wired, and must never be read
+  # as one. On a perfectly healthy session it reads `["...-self-session"]` while
+  # several user-selected servers are connected, so a narrow value here is not
+  # evidence that anything was lost. Callers asking "what does this session
+  # actually have?" want #all_mcp_servers. The UI reads this field only to tag
+  # which chips were injected rather than chosen.
   def injected_mcp_servers
     custom_metadata&.dig("injected_mcp_servers") || []
+  end
+
+  # Drop connection-status entries for MCP servers a user deliberately removed.
+  #
+  # `custom_metadata["mcp_servers_status"]` records the runtime status of each
+  # server the session has configured. It is otherwise append-only, so without
+  # this the removed server lingers as a status entry forever — leaving a stale
+  # chip in the UI, and making McpServerBackfill#detect_lost_mcp_servers report
+  # an intentional removal as an unexplained loss on every later config
+  # regeneration. Call this only from user-initiated removal paths; an
+  # unexplained disappearance must keep its history so it can be detected.
+  def forget_mcp_server_status!(removed_servers)
+    return if removed_servers.blank?
+
+    status = (custom_metadata || {})["mcp_servers_status"]
+    return if status.blank?
+
+    remaining = status.except(*removed_servers)
+    return if remaining == status
+
+    update!(custom_metadata: (custom_metadata || {}).merge("mcp_servers_status" => remaining))
   end
 
   # Plugin composition: returns a hash of { item_name => contributing_plugin_id }

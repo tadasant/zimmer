@@ -194,6 +194,8 @@ curl -H "X-API-Key: your_key" \
       "execution_provider": "local_filesystem",
       "goal": null,
       "mcp_servers": ["playwright-custom"],
+      "all_mcp_servers": ["playwright-custom", "agent-orchestrator-prod-self-session"],
+      "injected_mcp_servers": ["agent-orchestrator-prod-self-session"],
       "catalog_skills": [],
       "catalog_hooks": [],
       "catalog_plugins": [],
@@ -226,6 +228,16 @@ curl -H "X-API-Key: your_key" \
   }
 }
 ```
+
+**MCP server fields.** A session response carries three distinct MCP server lists. Read the right one:
+
+| Field | Contains |
+|---|---|
+| `mcp_servers` | Only the servers explicitly selected for the session. Writable via `PATCH /api/v1/sessions/:id/mcp_servers`. |
+| `all_mcp_servers` | **The effective set** — explicitly selected, plus plugin-bundled, plus auto-injected. This is what the session actually has wired. |
+| `injected_mcp_servers` | Only the servers Zimmer auto-injects (the self-session server, and the subagent-spawning `agent-orchestrator` server for roots declaring subagent roots). |
+
+`injected_mcp_servers` is a strict subset and is **not** evidence of what a session has available. On a perfectly healthy session it reads `["agent-orchestrator-prod-self-session"]` while several selected servers are connected. To answer "does this session already have server X?", check `all_mcp_servers`.
 
 ### Search Sessions
 
