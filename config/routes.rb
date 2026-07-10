@@ -16,6 +16,7 @@ Rails.application.routes.draw do
     resources :subagent_transcripts
     resources :trigger_conditions
     resources :triggers
+    resources :x_oauth_credentials
 
     root to: "sessions#index"
   end

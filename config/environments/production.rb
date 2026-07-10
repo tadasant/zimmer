@@ -138,6 +138,11 @@ Rails.application.configure do
       class: "RefreshMcpOauthTokensJob",
       description: "Proactively refresh MCP OAuth tokens before they expire"
     },
+    refresh_x_oauth_tokens: {
+      cron: "*/15 * * * *", # Every 15 minutes (X access tokens live ~2h)
+      class: "RefreshXOauthTokensJob",
+      description: "Proactively refresh X (Twitter) OAuth access tokens before they expire"
+    },
     transcript_archive: {
       cron: "*/10 * * * *", # Every 10 minutes
       class: "TranscriptArchiveJob",
