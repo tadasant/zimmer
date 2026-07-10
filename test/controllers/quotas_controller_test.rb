@@ -502,6 +502,8 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_equal "claude_code", account.runtime
     assert_equal 7, account.priority
     assert_not account.has_valid_config?, "OAuth account is created without credentials"
+    assert_equal "needs_reauth", account.status,
+      "a credential-less account must not be seeded as :active — it isn't servable and shouldn't wear an Active badge"
     assert_redirected_to quotas_path(runtime: "claude_code")
     assert_match "Authenticate it", flash[:notice]
   end
@@ -515,6 +517,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_equal "codex", account.runtime
     assert_equal "sk-codex-123", account.oauth_config["api_key"]
     assert account.has_valid_config?, "API-key account is usable immediately"
+    assert_equal "active", account.status, "a config-carrying account stays :active on create"
     assert_redirected_to quotas_path(runtime: "codex")
   end
 

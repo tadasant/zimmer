@@ -109,6 +109,12 @@ class QuotasController < ApplicationController
     if runtime == CodexAuthProvider::RUNTIME && api_key.present?
       account.oauth_config = { "api_key" => api_key }
     end
+    # The status column defaults to :active (enum 0), but a freshly-added account
+    # with no credentials yet isn't servable and shouldn't wear an "Active" badge
+    # in the pool — it's excluded from the `available` serve pool anyway (that
+    # scope requires a non-empty oauth_config). Seed it as :needs_reauth so the UI
+    # honestly reads "needs authentication" until capture! flips it to :active.
+    account.status = :needs_reauth unless account.has_valid_config?
     account.save!
 
     notice =

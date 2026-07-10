@@ -185,6 +185,10 @@ Rails.application.configure do
       class: "SystemHealthMonitorJob",
       description: "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
     }
+    # NOTE: egress_health_check is intentionally prod-only (see production.rb) —
+    # like cert_expiry_monitor, a real per-minute outbound DNS probe on a
+    # developer's laptop (VPN, captive portal, offline) would waste I/O and flash
+    # a false "network egress degraded" banner locally.
   }
 
   # Raises error for missing translations.

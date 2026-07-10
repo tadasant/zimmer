@@ -16,6 +16,16 @@ class ClaudeLoginDriver < RuntimeLoginDriver
   URL_REGEX = %r{https://(?:claude\.com/cai|platform\.claude\.com)/oauth/authorize\?\S+}
   # The CLI's stdin prompt that signals it is ready for the pasted auth code.
   PASTE_PROMPT = /Paste code here/i
+  # Lines the CLI prints when a login can't complete. `Login failed:` is the
+  # canonical one (it carries the underlying cause, e.g. a DNS/network error from
+  # the token exchange — "Login failed: getaddrinfo ESERVFAIL platform.claude.com");
+  # the others cover a rejected or expired pasted code. Ordered longest-signal
+  # first; the first pattern that matches the output wins.
+  FAILURE_LINE_PATTERNS = [
+    /Login failed:[^\n]*/i,
+    /Invalid code[^\n]*/i,
+    /(?:code|token)[^\n]*(?:expired|invalid)[^\n]*/i
+  ].freeze
 
   def command
     [ "auth", "login", "--claudeai" ]
@@ -87,6 +97,25 @@ class ClaudeLoginDriver < RuntimeLoginDriver
   rescue JSON::ParserError, Errno::ENOENT
     # A file is mid-write (or vanished); treat as not-ready and retry next tick.
     false
+  end
+
+  # Pull the CLI's own "Login failed: …" (or rejected/expired-code) line out of
+  # its output so a failed capture reports the real cause. Walks the cleaned
+  # buffer newest-line-first and returns the matched substring of the most recent
+  # line carrying any failure pattern: the CLI reprints the paste prompt and can
+  # emit several attempts, so the latest reason is the operative one and must not
+  # be shadowed by a stale earlier failure. nil when nothing matches, so the job
+  # never resorts to dumping the verification URL/prompt noise.
+  def login_failure_hint(clean_buffer)
+    return nil if clean_buffer.blank?
+
+    hit = clean_buffer.lines.reverse_each.filter_map do |line|
+      FAILURE_LINE_PATTERNS.filter_map { |pattern| line[pattern] }.first
+    end.first
+    return nil if hit.blank?
+
+    hit = hit.strip
+    hit.length > 200 ? "#{hit[0, 197]}..." : hit
   end
 
   private
