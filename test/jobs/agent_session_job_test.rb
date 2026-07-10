@@ -1141,6 +1141,116 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "a failed prepare! must leave the session's configured servers intact"
   end
 
+  # Regression for issue #4745 / prod session 10163: an unresolved ${VAR} required
+  # by a selected MCP server used to escape as a plain AirPrepareError, crash the
+  # job, log at .error, and page the critical "Zimmer ERROR logs present" Grafana rule.
+  # It's a session-configuration problem, so the job must fail the session
+  # gracefully at WARN — same treatment as RootResolutionError — and not re-raise.
+  test "should fail the session gracefully at warning when prepare! raises SecretResolutionError" do
+    ServersConfig.stubs(:exists?).returns(true)
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      mcp_servers: [ "reframe-secrets-service-account" ],
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    stderr = "AIR prepare failed (exit 1): Error: Unresolved variable in /tmp/clone: " \
+             "${REFRAME_MCP_PLATFORM_API_KEY}. Ensure all variables are provided via " \
+             "environment or a secrets transform."
+    AirPrepareService.any_instance.stubs(:prepare!).raises(
+      AirPrepareService::SecretResolutionError.new(
+        stderr, variable_names: [ "REFRAME_MCP_PLATFORM_API_KEY" ]
+      )
+    )
+    # A failed prepare! must never be papered over by the baseline path, and the
+    # session must not go on to spawn an agent process.
+    AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
+
+    job = AgentSessionJob.new
+    process_manager = MockProcessManager.new
+    job.process_manager = process_manager
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    new_clone_path = "/tmp/recreated-clone-secret-unresolvable"
+    job.file_system.mkdir_p(new_clone_path)
+
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      # The assertion that matters most: no exception escapes to ActiveJob.
+      job.perform(@session.id, "Follow up after restore")
+    end
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "air_secret_unresolvable", @session.metadata["failure_reason"]
+    assert_equal [ "REFRAME_MCP_PLATFORM_API_KEY" ], @session.metadata["unresolved_variables"]
+    assert_nil @session.running_job_id
+    assert_empty process_manager.spawned_processes,
+      "the session must not spawn an agent process after a failed prepare!"
+
+    warning = @session.logs.where(level: "warning")
+      .find { |l| l.content.include?("REFRAME_MCP_PLATFORM_API_KEY") }
+    assert warning, "expected a warning-level log naming the unresolved variable, got: " \
+      "#{@session.logs.map { |l| [ l.level, l.content ] }.inspect}"
+    assert_match(/mcp_secrets/, warning.content,
+      "the operator should be told where to add the missing secret")
+
+    assert_empty @session.logs.where(level: "error"),
+      "an unresolved variable must not emit .error logs — it must not page #eng-alerts"
+  end
+
+  # The follow-up/clone-recreation prepare! call site had no rescue at all, so a
+  # RootResolutionError raised there escaped to ActiveJob and paged — even though
+  # the same error is handled gracefully on the initial-launch path. Both call
+  # sites now share fail_session_for_air_config_error!.
+  test "should fail the session gracefully at warning when prepare! raises RootResolutionError" do
+    ServersConfig.stubs(:exists?).returns(true)
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      mcp_servers: [ "appsignal-pulsemcp-prod" ],
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!).raises(
+      AirPrepareService::RootResolutionError,
+      "AIR prepare failed (exit 1): Error: Root \"nonexistent-root\" not found."
+    )
+    AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    new_clone_path = "/tmp/recreated-clone-root-unresolvable"
+    job.file_system.mkdir_p(new_clone_path)
+
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      job.perform(@session.id, "Follow up after restore")
+    end
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "air_root_unresolvable", @session.metadata["failure_reason"]
+    assert_nil @session.metadata["unresolved_variables"],
+      "the root failure must not carry secret metadata"
+    assert @session.logs.where(level: "warning").any? { |l| l.content.include?("agent root could not be resolved") }
+    assert_empty @session.logs.where(level: "error"),
+      "an unresolvable root must not emit .error logs — it must not page #eng-alerts"
+  end
+
   # Regression for session 9563: when a regenerated .mcp.json carries fewer
   # servers than the session has actually connected to, the loss must be written
   # into the session's own log at warning level. Previously the session simply

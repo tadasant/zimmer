@@ -605,7 +605,12 @@ class AgentSessionJob < ApplicationJob
           file_system: @file_system
         )
         if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
-          air_service.prepare!
+          begin
+            air_service.prepare!
+          rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError => e
+            fail_session_for_air_config_error!(session, log_buffer, e)
+            return
+          end
           log_buffer.add(
             "AIR prepare synced for follow-up prompt",
             level: "info"
@@ -831,26 +836,8 @@ class AgentSessionJob < ApplicationJob
           if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
             begin
               air_service.prepare!
-            rescue AirPrepareService::RootResolutionError => e
-              # The session's agent root can't be resolved from the AIR catalog
-              # even after a cache refresh (AirPrepareService already busted the
-              # github cache once and retried). This is a configuration problem
-              # with the session, not broken-system behavior — fail the session
-              # gracefully (WARN, no re-raise) rather than letting the error
-              # bubble to ActiveJob as a terminal failure that pages #eng-alerts.
-              # Mirrors the oauth_required graceful-fail path.
-              log_buffer.add(
-                "Session failed: agent root could not be resolved from the AIR catalog (#{e.message})",
-                level: "warning"
-              )
-              log_buffer.flush
-              session.update!(
-                running_job_id: nil,
-                metadata: (session.metadata || {}).merge(
-                  "failure_reason" => "air_root_unresolvable"
-                )
-              )
-              session.fail! if session.may_fail?
+            rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError => e
+              fail_session_for_air_config_error!(session, log_buffer, e)
               return
             end
             log_buffer.add(
@@ -2792,6 +2779,45 @@ class AgentSessionJob < ApplicationJob
 
     merged = (session.custom_metadata || {}).merge("injected_mcp_servers" => injected_servers)
     session.update!(custom_metadata: merged)
+  end
+
+  # Fail a session gracefully after `air prepare` hit a session-*configuration*
+  # problem: either the agent root can't be resolved from the AIR catalog even
+  # after a cache refresh, or a selected MCP server interpolates a ${VAR} that
+  # AO's SecretsLoader doesn't carry. Both are deterministic, non-retryable, and
+  # operator-fixable — nothing is broken system-side — so they are logged at WARN
+  # and the session is failed here, rather than allowed to bubble to ActiveJob as
+  # a terminal job crash that pages #eng-alerts. Mirrors the oauth_required
+  # graceful-fail path. Callers must `return` immediately afterwards.
+  #
+  # @param session [Session] the session to fail
+  # @param log_buffer [LogBuffer] buffer for the warning line
+  # @param error [AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError]
+  def fail_session_for_air_config_error!(session, log_buffer, error)
+    case error
+    when AirPrepareService::SecretResolutionError
+      # Name the variables so an operator immediately knows which secret to add.
+      missing = error.variable_names.join(", ").presence || "unknown"
+      failure_reason = "air_secret_unresolvable"
+      extra_metadata = { "unresolved_variables" => error.variable_names }
+      message = "Session failed: AIR prepare could not resolve required secret(s) #{missing} — " \
+                "add them to Zimmer's mcp_secrets credentials, or deselect the MCP server that " \
+                "needs them (#{error.message})"
+    else
+      failure_reason = "air_root_unresolvable"
+      extra_metadata = {}
+      message = "Session failed: agent root could not be resolved from the AIR catalog (#{error.message})"
+    end
+
+    log_buffer.add(message, level: "warning")
+    log_buffer.flush
+    session.update!(
+      running_job_id: nil,
+      metadata: (session.metadata || {}).merge(
+        { "failure_reason" => failure_reason }.merge(extra_metadata)
+      )
+    )
+    session.fail! if session.may_fail?
   end
 
   # Check OAuth requirements for MCP servers and inject credentials if available.

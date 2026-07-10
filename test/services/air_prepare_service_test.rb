@@ -466,6 +466,111 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_equal 1, update_calls, "should attempt the refresh exactly once"
   end
 
+  test "run_air_prepare_command! raises SecretResolutionError on an unresolved variable without retrying" do
+    # Verbatim stderr from Zimmer prod session 10163 (2026-07-09T17:31:22Z), which
+    # selected the reframe-secrets-service-account MCP server whose artifact
+    # interpolates ${REFRAME_MCP_PLATFORM_API_KEY} — a variable absent from Zimmer's
+    # mcp_secrets credentials. A missing secret is deterministic and
+    # operator-fixable, so it must raise the graceful SecretResolutionError
+    # immediately: no backoff sleeps, no catalog refresh, no plain
+    # AirPrepareError (which AgentSessionJob would re-raise into a paging crash).
+    stderr = "Error: Unresolved variable in /home/rails/.agent-orchestrator/clones/" \
+             "mcp-servers-main-1783618282-5a347481: ${REFRAME_MCP_PLATFORM_API_KEY}. " \
+             "Ensure all variables are provided via environment or a secrets transform."
+    prepare_attempts = 0
+    update_calls = 0
+    sleeps = []
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      case command_array[1]
+      when "prepare"
+        prepare_attempts += 1
+        [ "", stderr, stub(success?: false, exitstatus: 1) ]
+      when "update"
+        update_calls += 1
+        [ "", "", stub(success?: true, exitstatus: 0) ]
+      else
+        raise "unexpected air command: #{command_array.inspect}"
+      end
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(s) { sleeps << s }
+      )
+      error = assert_raises(AirPrepareService::SecretResolutionError) { service.prepare! }
+      assert_equal [ "REFRAME_MCP_PLATFORM_API_KEY" ], error.variable_names
+      assert_match(/Unresolved variable/, error.message)
+    end
+
+    assert_equal 1, prepare_attempts, "an unresolved variable must not be retried"
+    assert_empty sleeps, "an unresolved variable must not use the transient backoff schedule"
+    assert_equal 0, update_calls, "an unresolved variable must not trigger a catalog refresh"
+  end
+
+  test "run_air_prepare_command! captures every variable from AIR's pluralized unresolved message" do
+    # air-sdk's unresolvedVarsMessage pluralizes and comma-joins when more than one
+    # ${VAR} is unresolved, and does not constrain the variable name charset.
+    stderr = "Error: Unresolved variables in /tmp/clone: ${REFRAME_MCP_PLATFORM_API_KEY}, " \
+             "${some_lowercase_var}. Ensure all variables are provided via environment " \
+             "or a secrets transform."
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      [ "", stderr, stub(success?: false, exitstatus: 1) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      )
+      error = assert_raises(AirPrepareService::SecretResolutionError) { service.prepare! }
+      assert_equal [ "REFRAME_MCP_PLATFORM_API_KEY", "some_lowercase_var" ], error.variable_names
+    end
+  end
+
+  test "an unresolved variable is not misclassified as a transient air prepare failure" do
+    # Guards the narrowness of the fix in both directions: the unresolved-variable
+    # signature must not overlap the transient patterns (which would retry it), and
+    # a generic AIR failure must NOT be downgraded to SecretResolutionError.
+    service = AirPrepareService.new(
+      session: @session,
+      working_directory: @working_dir,
+      file_system: @mock_fs
+    )
+    unresolved = "Error: Unresolved variable in /tmp/clone: ${FOO}. Ensure all variables " \
+                 "are provided via environment or a secrets transform."
+
+    refute service.send(:transient_air_failure?, unresolved)
+    assert_equal [ "FOO" ], service.send(:unresolved_variable_names, unresolved)
+
+    assert_empty service.send(:unresolved_variable_names, "Error: Root \"x\" not found.")
+    assert_empty service.send(:unresolved_variable_names, "Error: something else broke")
+    assert_empty service.send(:unresolved_variable_names, "fatal: unable to access github.com")
+
+    # The prefix on one line must never bind to a ${…} on a later, unrelated line.
+    assert_empty service.send(
+      :unresolved_variable_names,
+      "Unresolved variables in config scan\nsome error: ${HOME} was found"
+    )
+
+    # AIR prefixes real stderr with unrelated deprecation warnings; the signature
+    # must still be found on its own line (this is the shape prod session 10163 hit).
+    with_preamble = "warning: Plugin \"agent-transcript-capture\" declares its body inline.\n" \
+                    "warning: Inline plugin bodies are deprecated as of v0.13.0.\n" \
+                    "Error: Unresolved variables in /clones/x/agents/agent-roots/general-agent: " \
+                    "${APPSIGNAL_API_KEY}, ${REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY}. Ensure all " \
+                    "variables are provided via environment or a secrets transform."
+    assert_equal [ "APPSIGNAL_API_KEY", "REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY" ],
+      service.send(:unresolved_variable_names, with_preamble)
+  end
+
+  test "SecretResolutionError is a subclass of AirPrepareError" do
+    assert AirPrepareService::SecretResolutionError < AirPrepareService::AirPrepareError
+  end
+
   test "RootResolutionError is a subclass of AirPrepareError" do
     # Callers that rescue AirPrepareError broadly still catch root-resolution
     # failures; only AgentSessionJob's narrower rescue distinguishes them.
