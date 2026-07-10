@@ -207,6 +207,11 @@ Rails.application.configure do
       cron: "*/2 * * * *", # Every 2 minutes
       class: "SystemHealthMonitorJob",
       description: "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
+    },
+    egress_health_check: {
+      cron: "* * * * *", # Every minute
+      class: "EgressHealthCheckJob",
+      description: "Probe the primary DNS resolver's public egress; drive the network-degraded banner"
     }
   }
 

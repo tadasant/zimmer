@@ -125,6 +125,52 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
     end
   end
 
+  test "login_failure_hint surfaces the CLI's Login failed line (the real DNS/network cause)" do
+    raw = "Opening browser to sign in…\n" \
+      "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&state=xyz\n" \
+      "Paste code here if prompted > Login failed: getaddrinfo ESERVFAIL platform.claude.com\n"
+    assert_equal "Login failed: getaddrinfo ESERVFAIL platform.claude.com",
+      @driver.login_failure_hint(@driver.strip_ansi(raw))
+  end
+
+  test "login_failure_hint returns the last failure line when the CLI retried" do
+    raw = "Paste code here if prompted > Invalid code. Please make sure the full code was copied.\n" \
+      "Paste code here if prompted > Login failed: getaddrinfo ESERVFAIL platform.claude.com\n"
+    assert_equal "Login failed: getaddrinfo ESERVFAIL platform.claude.com",
+      @driver.login_failure_hint(@driver.strip_ansi(raw))
+  end
+
+  test "login_failure_hint prefers the most recent failure line across patterns" do
+    # A later expired/invalid-code line must win over an earlier "Login failed:"
+    # line even though a different pattern matches each — recency, not pattern order.
+    raw = "Login failed: token exchange transient blip\n" \
+      "The code you entered is invalid or has expired.\n"
+    hint = @driver.login_failure_hint(@driver.strip_ansi(raw))
+    assert_match(/invalid or has expired/, hint)
+    assert_no_match(/transient blip/, hint)
+  end
+
+  test "login_failure_hint matches a rejected pasted code" do
+    raw = "Paste code here if prompted > Invalid code. Please make sure the full code was copied.\n"
+    assert_equal "Invalid code. Please make sure the full code was copied.",
+      @driver.login_failure_hint(@driver.strip_ansi(raw))
+  end
+
+  test "login_failure_hint returns nil for benign output so URL/prompt noise is never surfaced" do
+    raw = "Opening browser to sign in…\n" \
+      "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&state=xyz\n" \
+      "Paste code here if prompted > \n"
+    assert_nil @driver.login_failure_hint(@driver.strip_ansi(raw))
+    assert_nil @driver.login_failure_hint("")
+  end
+
+  test "login_failure_hint truncates an overlong failure line" do
+    raw = "Login failed: #{"x" * 500}"
+    hint = @driver.login_failure_hint(raw)
+    assert_operator hint.length, :<=, 200
+    assert hint.end_with?("...")
+  end
+
   test "credentials_ready? finds credentials nested under .claude/" do
     Dir.mktmpdir do |dir|
       write_identity(dir, email: @account.email)
