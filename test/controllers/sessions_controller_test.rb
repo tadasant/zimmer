@@ -4070,6 +4070,66 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a[href=?][aria-pressed=?]", toggle_push_notifications_session_path(session), "false"
   end
 
+  # === heartbeat toggle + interval ===
+
+  test "toggle_heartbeat flips heartbeat_enabled and returns json" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+    assert_equal false, session.heartbeat_enabled
+
+    patch toggle_heartbeat_session_url(session), as: :json
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal true, json["success"]
+    assert_equal true, json["heartbeat_enabled"]
+    assert_equal 60, json["heartbeat_interval_seconds"]
+    assert_equal true, session.reload.heartbeat_enabled
+  end
+
+  test "toggle_heartbeat honors an explicit enabled param" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", heartbeat_enabled: true)
+
+    patch toggle_heartbeat_session_url(session), params: { enabled: false }, as: :json
+
+    assert_response :success
+    assert_equal false, session.reload.heartbeat_enabled
+  end
+
+  test "update_heartbeat_interval sets a valid interval" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+
+    patch update_heartbeat_interval_session_url(session), params: { heartbeat_interval_seconds: 300 }, as: :json
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal 300, json["heartbeat_interval_seconds"]
+    assert_equal 300, session.reload.heartbeat_interval_seconds
+  end
+
+  test "update_heartbeat_interval rejects an out-of-range interval" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+
+    patch update_heartbeat_interval_session_url(session), params: { heartbeat_interval_seconds: 1 }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal 60, session.reload.heartbeat_interval_seconds
+  end
+
+  test "should return 404 for toggle_heartbeat with invalid session" do
+    patch toggle_heartbeat_session_url(id: 99999), as: :json
+    assert_response :not_found
+  end
+
+  test "heart toggle should appear in session show page header actions" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
+
+    get session_url(session)
+    assert_response :success
+
+    # The heartbeat Stimulus control renders with the session id value.
+    assert_select "[data-controller='heartbeat'][data-heartbeat-session-id-value=?]", session.id.to_s
+  end
+
   test "toggle_favorite should redirect to session show when referrer is session show page" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
 
@@ -4103,83 +4163,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(session)
     session.reload
     assert_equal true, session.favorited
-  end
-
-  # Test toggle_autonomous action
-  test "should toggle autonomous from true to false" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", is_autonomous: true)
-
-    patch toggle_autonomous_session_url(session), headers: { "HTTP_REFERER" => root_url }
-
-    assert_redirected_to root_path
-    session.reload
-    assert_equal false, session.is_autonomous
-  end
-
-  test "should toggle autonomous from false to true" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", is_autonomous: false)
-
-    patch toggle_autonomous_session_url(session), headers: { "HTTP_REFERER" => root_url }
-
-    assert_redirected_to root_path
-    session.reload
-    assert_equal true, session.is_autonomous
-  end
-
-  test "should return json response for toggle_autonomous" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", is_autonomous: true)
-
-    patch toggle_autonomous_session_url(session), as: :json
-
-    assert_response :success
-    json_response = JSON.parse(response.body)
-    assert_equal true, json_response["success"]
-    assert_equal false, json_response["is_autonomous"]
-  end
-
-  test "should route to toggle_autonomous" do
-    assert_routing(
-      { method: :patch, path: "/sessions/1/toggle_autonomous" },
-      { controller: "sessions", action: "toggle_autonomous", id: "1" }
-    )
-  end
-
-  test "should render turbo_stream response for toggle_autonomous" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", is_autonomous: true)
-
-    patch toggle_autonomous_session_url(session), as: :turbo_stream
-
-    assert_response :success
-    assert_equal "text/vnd.turbo-stream.html; charset=utf-8", response.content_type
-    assert_match(/turbo-stream/, response.body)
-    assert_match(/action="replace"/, response.body)
-    assert_match(/session_#{session.id}/, response.body)
-    assert_match(/session_#{session.id}_header_actions/, response.body)
-  end
-
-  test "toggle_autonomous should redirect to session show when referrer is session show page" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", is_autonomous: true)
-
-    patch toggle_autonomous_session_url(session), headers: { "HTTP_REFERER" => session_url(session) }
-
-    assert_redirected_to session_path(session)
-    session.reload
-    assert_equal false, session.is_autonomous
-  end
-
-  test "toggle_autonomous should redirect to session show when no referrer" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", is_autonomous: true)
-
-    patch toggle_autonomous_session_url(session)
-
-    assert_redirected_to session_path(session)
-    session.reload
-    assert_equal false, session.is_autonomous
-  end
-
-  test "should return 404 for toggle_autonomous with invalid session" do
-    patch toggle_autonomous_session_url(id: 99999)
-    assert_response :not_found
   end
 
   test "new sessions default to is_autonomous true" do

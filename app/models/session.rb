@@ -26,6 +26,20 @@ class Session < ApplicationRecord
   scope :root_sessions, -> { where(parent_session_id: nil) }
   scope :children_of, ->(parent_id) { where(parent_session_id: parent_id) }
 
+  # Sessions with an active heartbeat.
+  scope :heartbeat_active, -> { where(heartbeat_enabled: true) }
+
+  # Heartbeat-enabled sessions that are due for their next beat: either they have
+  # never beaten, or one full interval has elapsed since the last beat. The
+  # interval is per-row, so the comparison adds it to the last-beat timestamp in
+  # SQL rather than assuming a fixed cadence. Used by HeartbeatSweepJob.
+  scope :heartbeat_due, ->(now = Time.current) {
+    heartbeat_active.where(
+      "heartbeat_last_beat_at IS NULL OR heartbeat_last_beat_at + (heartbeat_interval_seconds * interval '1 second') <= ?",
+      now
+    )
+  }
+
   # Sessions carrying the `blocked_on_elicitation` metadata marker (set by
   # block_on_elicitation, cleared by unblock_from_elicitation). Used by the
   # periodic reconciliation sweep in CleanupExpiredElicitationsJob to find
@@ -228,6 +242,26 @@ class Session < ApplicationRecord
   # while still preventing runaway/typo values from polluting the spawn env.
   MAX_AUTO_COMPACT_WINDOW = 1_000_000
 
+  # Heartbeat: how often (in seconds) an enabled heartbeat may beat. The floor
+  # keeps the recurring sweep from hammering a session; the ceiling caps a beat
+  # at once per day. The UI presents a curated subset of these values.
+  HEARTBEAT_MIN_INTERVAL_SECONDS = 30
+  HEARTBEAT_MAX_INTERVAL_SECONDS = 86_400
+  HEARTBEAT_DEFAULT_INTERVAL_SECONDS = 60
+
+  # Curated interval choices offered in the heartbeat popout (label => seconds).
+  # The default (1 minute) is the second entry so it lands selected out of the box.
+  HEARTBEAT_INTERVAL_OPTIONS = [
+    [ "30 seconds", 30 ],
+    [ "1 minute", 60 ],
+    [ "2 minutes", 120 ],
+    [ "5 minutes", 300 ],
+    [ "10 minutes", 600 ],
+    [ "15 minutes", 900 ],
+    [ "30 minutes", 1800 ],
+    [ "1 hour", 3600 ]
+  ].freeze
+
   # Validations
   # Prompt is now optional to allow for "clone only" sessions
   validates :prompt, length: { maximum: PROMPT_MAX_LENGTH, message: "is too long (maximum #{PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_blank: true
@@ -248,6 +282,7 @@ class Session < ApplicationRecord
   # This budget is runtime-scoped: the runtime adapter decides whether to surface
   # and honor it (Claude does; runtimes without a token-budget knob ignore it).
   validates :auto_compact_window, numericality: { only_integer: true, greater_than: 0, less_than_or_equal_to: MAX_AUTO_COMPACT_WINDOW }
+  validates :heartbeat_interval_seconds, numericality: { only_integer: true, greater_than_or_equal_to: HEARTBEAT_MIN_INTERVAL_SECONDS, less_than_or_equal_to: HEARTBEAT_MAX_INTERVAL_SECONDS }
   validate :mcp_servers_must_be_array
   validate :mcp_servers_must_exist_in_catalog, if: :mcp_servers_changed?
   validate :catalog_skills_must_be_array
@@ -267,6 +302,16 @@ class Session < ApplicationRecord
   # read the class slot they need and instantiate with their own dependencies.
   def runtime
     RuntimeRegistry.for(agent_runtime)
+  end
+
+  # Whether this session's heartbeat is due to beat again. Mirrors the
+  # `heartbeat_due` scope so HeartbeatSweepJob can re-check a single session
+  # under lock (guarding against two overlapping sweeps beating twice).
+  def heartbeat_due?(now = Time.current)
+    return false unless heartbeat_enabled?
+    return true if heartbeat_last_beat_at.nil?
+
+    heartbeat_last_beat_at + heartbeat_interval_seconds <= now
   end
 
   # True when replacing +stored+ with +incoming+ would drop conversation events —
