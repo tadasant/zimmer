@@ -13,15 +13,17 @@ write_files:
     permissions: "0640"
     content: |
       services:
+%{~ if !use_managed_db }
         db:
           image: postgres:16
           environment:
-            POSTGRES_USER: zimmer
-            POSTGRES_PASSWORD: ${secret_key_base}
+            POSTGRES_USER: ${db_username}
+            POSTGRES_PASSWORD: ${db_password}
             POSTGRES_DB: zimmer_${environment}
           volumes:
             - pgdata:/var/lib/postgresql/data
           restart: always
+%{~ endif }
         redis:
           image: redis:7
           restart: always
@@ -39,12 +41,16 @@ write_files:
           environment:
             RAILS_ENV: production
             SECRET_KEY_BASE: ${secret_key_base}
-            # The app's config/database.yml reads DATABASE_HOST/PORT/USERNAME/PASSWORD
-            # (NOT DATABASE_URL); point them at the compose `db` service.
-            DATABASE_HOST: db
-            DATABASE_PORT: "5432"
-            DATABASE_USERNAME: zimmer
-            DATABASE_PASSWORD: ${secret_key_base}
+            # The app's config/database.yml reads DATABASE_HOST/PORT/USERNAME/
+            # PASSWORD/SSLMODE (NOT DATABASE_URL). These point either at the compose
+            # `db` service or, in production, at the managed Postgres cluster over
+            # the private VPC network. `sslmode=require` is mandatory for managed
+            # Postgres; the compose Postgres speaks no TLS, hence "prefer".
+            DATABASE_HOST: ${db_host}
+            DATABASE_PORT: "${db_port}"
+            DATABASE_USERNAME: ${db_username}
+            DATABASE_PASSWORD: ${db_password}
+            DATABASE_SSLMODE: ${db_sslmode}
             REDIS_URL: redis://redis:6379/0
             # Observability (optional): the app's initializers are hard no-ops when
             # these are empty, so leaving them blank simply disables obs. Set the
@@ -53,10 +59,12 @@ write_files:
             OTEL_LOGS_EXPORTER_ENDPOINT: "${otel_logs_endpoint}"
             OTEL_LOGS_EXPORTER_BEARER_TOKEN: "${otel_logs_token}"
             SENTRY_DSN_BACKEND: "${sentry_dsn}"
-          depends_on: [db, redis]
+          depends_on: ${compose_depends_on}
           restart: always
+%{~ if !use_managed_db }
       volumes:
         pgdata: {}
+%{~ endif }
 
 runcmd:
   # Docker

@@ -1,6 +1,7 @@
 # Zimmer infrastructure (Terraform / DigitalOcean)
 
-One droplet running the Zimmer stack (app + Postgres + Redis via docker compose),
+One droplet running the Zimmer stack (app + Redis via docker compose; staging also
+runs a throwaway Postgres container, production uses Managed Postgres),
 joined to a Tailscale tailnet so the app is reachable **only over the VPN**. The
 same module serves staging and production — the only difference is the `.tfvars`
 and the secret values.
@@ -23,7 +24,8 @@ Pass as `TF_VAR_*` environment variables (GitHub Actions secrets in CI):
 | `TF_VAR_do_token` | DigitalOcean API token |
 | `TF_VAR_tailscale_auth_key` | Ephemeral, pre-authorized Tailscale auth key |
 | `TF_VAR_ghcr_token` | GHCR `read:packages` token to pull the (private) image |
-| `TF_VAR_secret_key_base` | Rails `SECRET_KEY_BASE` (also used as the DB password) |
+| `TF_VAR_secret_key_base` | Rails `SECRET_KEY_BASE` (also the DB password for the *staging* compose Postgres) |
+| `TF_VAR_managed_db_password` | Password for `managed_db_username` on the managed cluster. Required when `managed_db_cluster_name` is set (production); unused otherwise |
 
 ## Usage
 

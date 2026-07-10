@@ -74,3 +74,11 @@ vendor/bundle/
 # Dependabot PRs on the nested package-lock.json files.
 .npm-cache/
 /vendor/bundle
+
+# Terraform local state / provider cache
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

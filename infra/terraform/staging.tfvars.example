@@ -14,3 +14,8 @@ image_ref            = "ghcr.io/tadasant/zimmer:latest"
 domain               = ""
 ghcr_username        = "tadasant"
 ssh_key_fingerprints = [] # e.g. ["aa:bb:cc:..."] — DO-registered SSH key fingerprints
+# Staging deliberately runs a throwaway Postgres container on the droplet: it is
+# destroyed nightly and holds nothing worth keeping. Leaving
+# managed_db_cluster_name empty selects that compose `db` service. Production sets
+# it to a Managed Postgres cluster so the DB survives droplet re-creation.
+managed_db_cluster_name = ""
