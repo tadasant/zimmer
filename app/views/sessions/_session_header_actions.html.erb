@@ -8,6 +8,9 @@
     </svg>
   <% end %>
 
+  <!-- Heartbeat Toggle (heart icon + interval popout) -->
+  <%= render "sessions/session_heartbeat", agent_session: agent_session %>
+
   <!-- Push Notifications Toggle (bell icon) -->
   <%# Per-session opt-in: when on, a state transition into needs_input or failed enqueues a push notification. %>
   <%= link_to toggle_push_notifications_session_path(agent_session),

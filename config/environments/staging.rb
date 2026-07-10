@@ -96,6 +96,11 @@ Rails.application.configure do
       class: "CleanupOrphanedSessionsJob",
       description: "Cleanup orphaned sessions every 5 minutes"
     },
+    heartbeat_sweep: {
+      cron: "*/30 * * * * *", # Every 30 seconds
+      class: "HeartbeatSweepJob",
+      description: "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
+    },
     github_pull_request_poller: {
       cron: "*/30 * * * * *", # Every 30 seconds
       class: "GitHubPullRequestPollerJob",

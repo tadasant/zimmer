@@ -54,6 +54,19 @@ module AutomatedPrompts
     If you are unable to resolve the conflicts automatically, let the user know what conflicts exist so they can help.
   PROMPT
 
+  # Prompt sent by HeartbeatSweepJob when a session with an active per-session
+  # heartbeat is found in the needs_input state. The heartbeat nudges the agent
+  # to keep working toward its goal, and tells it how to stop the heartbeat via
+  # its Zimmer tools once there is genuinely nothing left to do (so
+  # the beat does not loop forever against a session parked for a human).
+  HEARTBEAT = <<~PROMPT.strip
+    [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
+
+    This session is under heartbeat monitoring because your human wants you to work toward full completion of the goal. If there is any way for you to continue making progress, please do so now.
+
+    If you are genuinely blocked and there is nothing you can do without human input, use your Zimmer tools to turn off this session's heartbeat (set heartbeat_enabled to false) so we don't keep beating over and over.
+  PROMPT
+
   # Build a merge conflict automated message for a specific PR URL
   #
   # @param pr_url [String] The full GitHub PR URL (e.g., "https://github.com/owner/repo/pull/123")

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_05_120000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_05_234410) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -277,6 +277,9 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_05_120000) do
     t.boolean "push_notifications_enabled", default: false, null: false
     t.integer "auto_compact_window", default: 1000000, null: false
     t.bigint "category_id"
+    t.boolean "heartbeat_enabled", default: false, null: false
+    t.integer "heartbeat_interval_seconds", default: 60, null: false
+    t.datetime "heartbeat_last_beat_at"
     t.index "((custom_metadata ->> 'github_pull_request_urls'::text))", name: "index_sessions_on_custom_metadata_pr_urls", where: "((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
     t.index ["id"], name: "index_sessions_on_id_where_transcript_present", where: "(transcript IS NOT NULL)"
@@ -289,6 +292,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_05_120000) do
     t.index ["created_at"], name: "index_sessions_on_created_at"
     t.index ["execution_provider"], name: "index_sessions_on_execution_provider"
     t.index ["favorited"], name: "index_sessions_on_favorited"
+    t.index ["heartbeat_enabled"], name: "index_sessions_on_heartbeat_enabled", where: "heartbeat_enabled"
     t.index ["parent_session_id"], name: "index_sessions_on_parent_session_id"
     t.index ["job_id"], name: "index_sessions_on_job_id"
     t.index ["session_id"], name: "index_sessions_on_session_id", unique: true
