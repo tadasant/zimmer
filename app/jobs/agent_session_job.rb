@@ -2149,12 +2149,15 @@ class AgentSessionJob < ApplicationJob
       # Regular MCP connection failure (not OAuth related) — retry with backoff
       # MCP failures are often transient (e.g., servers still starting after deploy).
 
-      # Before retrying, heal any corrupt/version-skewed `_npx/<hash>` cache that
-      # an `npx -y <pkg>@latest` server blamed for a Node module-resolution error
-      # (MODULE_NOT_FOUND or an ESM directory-import/subpath-export failure such as
-      # ERR_UNSUPPORTED_DIR_IMPORT). A corrupt cache otherwise sticks (npx treats
-      # it as "installed"), so the retry would crash identically; removing the tree
-      # forces a fresh, complete install on the next attempt (GitHub issues #3924 / #4109).
+      # Before retrying, heal any corrupt `_npx/<hash>` cache that an
+      # `npx -y <pkg>@latest` server blamed — whether it failed at package
+      # extraction time (TAR_ENTRY_ERROR / ENOTEMPTY from concurrent installs
+      # racing the same cache dir, the signature that orphaned session 9570) or
+      # later at module-resolution time (MODULE_NOT_FOUND or an ESM
+      # directory-import/subpath-export failure such as ERR_UNSUPPORTED_DIR_IMPORT).
+      # A corrupt cache otherwise sticks (npx treats it as "installed"), so the
+      # retry would crash identically; removing the tree forces a fresh, complete
+      # install on the next attempt (GitHub issues #3924 / #4109).
       heal_partial_npx_cache(session, failed_servers, log_buffer)
 
       mcp_retry_count = (session.metadata&.dig("mcp_retry_count") || 0).to_i
@@ -2205,8 +2208,9 @@ class AgentSessionJob < ApplicationJob
   end
 
   # Remove any partially-populated `_npx/<hash>` cache tree that a failed MCP
-  # server blamed for a transitive MODULE_NOT_FOUND, so the next retry installs
-  # it cleanly. No-op when the failure isn't an `_npx` module-resolution error.
+  # server blamed — for an extraction-time tar/rename error (TAR_ENTRY_ERROR /
+  # ENOTEMPTY) or a transitive MODULE_NOT_FOUND — so the next retry installs it
+  # cleanly. No-op when the failure isn't an `_npx` cache-corruption error.
   #
   # @param session [Session] The current session
   # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
@@ -2220,7 +2224,7 @@ class AgentSessionJob < ApplicationJob
 
     if result[:healed]
       log_buffer.add(
-        "Healed corrupt _npx cache (module-resolution failure) before retry — removed: " \
+        "Healed corrupt _npx cache before retry — removed: " \
         "#{result[:removed_paths].join(', ')}",
         level: "warning"
       )

@@ -1,28 +1,40 @@
 # frozen_string_literal: true
 
 # Heals a corrupt or mis-resolved per-clone npm `_npx/<hash>` cache that crashes
-# an `npx -y <pkg>@latest` MCP server on startup with a Node module-resolution
-# error.
+# an `npx -y <pkg>@latest` MCP server on startup — whether the corruption
+# surfaces at package *extraction* time (a half-written tar tree) or later at
+# module-*resolution* time (a require/import that can't be satisfied).
 #
 # Background (see GitHub issues #3924 / #4109):
 #   Zimmer isolates the npm cache per clone via NPM_CONFIG_CACHE=<working_dir>/.npm-cache
 #   (ClaudeCliAdapter#configure_mcp_env). When concurrent or retried `npx`
-#   invocations race into the same shared `_npx/<hash>` directory, one can read a
-#   half-written tree — a transitive dependency (e.g. `ajv`, pulled in by
-#   `ajv-formats` via the MCP SDK) is referenced on disk but not yet installed.
-#   The server then crashes in milliseconds with:
+#   invocations race into the same shared `_npx/<hash>` directory, the extraction
+#   itself can fail against a partially-populated tree, npm printing tar/rename
+#   errors while it tries to unpack the package into `_npx/<hash>/node_modules/...`:
+#
+#     npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, lstat
+#       '.../.npm-cache/_npx/dbbb2997d8a4f060/node_modules/ajv/dist/compile'
+#     npm error code ENOTEMPTY ... rename '.../_npx/<hash>/node_modules/.foo-XXXX'
+#       '.../_npx/<hash>/node_modules/foo' ... directory not empty
+#
+#   This is the signature that terminally orphaned production session 9570
+#   (`pulse-goodjobs-rw`): the connection then just times out on every retry
+#   because the poisoned `_npx/<hash>` tree is left behind.
+#
+#   The SAME half-written tree, when the extraction "succeeds" enough for npx to
+#   treat the directory as installed, instead surfaces later as a module-resolution
+#   failure — a transitive dependency (e.g. `ajv`, pulled in by `ajv-formats` via
+#   the MCP SDK) referenced on disk but not installed:
 #
 #     Error: Cannot find module 'ajv'
 #     Require stack:
 #     - .../.npm-cache/_npx/49a1f4c1ceebda27/node_modules/ajv-formats/dist/limit.js
 #       code: 'MODULE_NOT_FOUND'
 #
-#   The same per-clone cache also surfaces ESM *resolution* failures: when a
-#   half-written or version-skewed install leaves a package whose entry point
-#   resolves to a bare directory (or a subpath the package never exported), Node's
-#   ESM loader aborts before the server can connect. The real-world signature
-#   that motivated broadening this guard (the `agent-orchestrator-mcp-server`
-#   `zod/v4` crash) is:
+#   or as an ESM *resolution* failure, when a version-skewed install leaves a
+#   package whose entry point resolves to a bare directory (or a subpath the
+#   package never exported). The real-world signature that motivated the ESM
+#   variant (the `agent-orchestrator-mcp-server` `zod/v4` crash) is:
 #
 #     Error [ERR_UNSUPPORTED_DIR_IMPORT]: Directory import
 #     '.../.npm-cache/_npx/a5c0f8a8df975b78/node_modules/zod/v4' is not supported
@@ -30,22 +42,21 @@
 #     '.../_npx/a5c0f8a8df975b78/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js'
 #       code: 'ERR_UNSUPPORTED_DIR_IMPORT'
 #
-#   This is the same class of `_npx` corruption Zimmer already mitigates for
-#   ENOTEMPTY / tar-extraction errors (CacheClearService, SelfSessionInjector),
-#   but the partial-install / version-skew variants manifest as a module-resolution
-#   error rather than a tar error, so the existing guards miss them.
+#   These are all the same class of `_npx` corruption — extraction-race and
+#   partial-install / version-skew — and the heal is identical for every one.
 #
 #   A corrupt cache otherwise *sticks*, because `npx` treats the directory as
 #   "installed" and never re-extracts it. Removing the corrupt `_npx/<hash>`
 #   tree forces the next retry to do a fresh, complete install.
 #
-# Strategy (detect-and-heal): when an MCP connection failure carries a Node
-# module-resolution error originating from an `_npx` cache, this service deletes
-# the offending cache tree so Zimmer's existing MCP-retry path (AgentSessionJob)
-# re-installs it cleanly. It is targeted by default (deletes only the specific
-# `_npx/<hash>` directories named in the error) and falls back to clearing the
-# whole per-clone `_npx` directory when the error references the cache but no
-# specific hash path can be parsed out of it.
+# Strategy (detect-and-heal): when an MCP connection failure carries either an
+# npm extraction error (TAR_ENTRY_ERROR / ENOTEMPTY) or a Node module-resolution
+# error originating from an `_npx` cache, this service deletes the offending cache
+# tree so Zimmer's existing MCP-retry path (AgentSessionJob) re-installs it cleanly.
+# It is targeted by default (deletes only the specific `_npx/<hash>` directories
+# named in the error) and falls back to clearing the whole per-clone `_npx`
+# directory when the error references the cache but no specific hash path can be
+# parsed out of it.
 class NpxCacheHealService
   # Node module-resolution failure markers emitted when a require/import can't be
   # satisfied. A corrupt/version-skewed `_npx` install surfaces as one of these:
@@ -69,6 +80,29 @@ class NpxCacheHealService
     ERR_UNSUPPORTED_DIR_IMPORT |
     ERR_PACKAGE_PATH_NOT_EXPORTED |
     is\ not\ supported\ resolving\ ES\ modules
+  /xi
+
+  # npm package-*extraction* failure markers emitted while `npx` unpacks a package
+  # into `_npx/<hash>/node_modules/...`. When concurrent installs race the same
+  # cache dir, npm reads/writes a half-populated tree and aborts with one of these:
+  #
+  #   * TAR_ENTRY_ERROR — npm's bundled tar hit a missing/half-written entry mid
+  #     extraction (the `TAR_ENTRY_ERROR ENOENT ... lstat '.../_npx/<hash>/...'`
+  #     lines that orphaned session 9570).
+  #   * ENOTEMPTY — npm couldn't atomically rename a staging dir over a non-empty
+  #     target (`npm error code ENOTEMPTY ... rename ... directory not empty`).
+  #
+  # Both are highly specific to npm cache corruption; paired with the mandatory
+  # `_npx` reference in `npx_cache_corruption?`, an unrelated error would have to
+  # both carry one of these markers AND name an `_npx` path in the same failed
+  # server's error blob to trigger a heal. In practice a server's persisted error
+  # only contains stderr from its own npx invocation, so co-location implies the
+  # marker really is about that cache; the worst case if it isn't is a bounded,
+  # safe reinstall of the named `_npx/<hash>` tree (never out-of-clone deletion,
+  # never data loss — see safe_to_remove?).
+  EXTRACTION_FAILURE_MARKERS = /
+    TAR_ENTRY_ERROR |
+    ENOTEMPTY
   /xi
 
   # Absolute path to an `_npx/<hash>` cache directory. The hash is npm's
@@ -95,7 +129,7 @@ class NpxCacheHealService
 
       Array(failed_servers).each do |server|
         error = server["error"].to_s
-        next unless npx_cache_resolution_failure?(error)
+        next unless npx_cache_corruption?(error)
 
         paths = corrupt_cache_paths(error, working_directory)
         paths.each do |path|
@@ -117,13 +151,17 @@ class NpxCacheHealService
       { healed: false, removed_paths: removed.uniq }
     end
 
-    # @return [Boolean] true if the error text looks like a Node module-resolution
-    #   failure originating from an `_npx` cache. We require BOTH a resolution-failure
-    #   marker AND an `_npx` reference so a legitimately missing module or an
-    #   unrelated ESM error from a non-npx server never triggers a cache wipe.
-    def npx_cache_resolution_failure?(error)
+    # @return [Boolean] true if the error text looks like `_npx` cache corruption —
+    #   either an npm package-extraction failure (TAR_ENTRY_ERROR / ENOTEMPTY) or a
+    #   Node module-resolution failure — originating from an `_npx` cache. We require
+    #   BOTH a corruption marker AND an `_npx` reference so a legitimately missing
+    #   module, an unrelated ESM error from a non-npx server, or an ENOTEMPTY from an
+    #   unrelated directory never triggers a cache wipe.
+    def npx_cache_corruption?(error)
       text = error.to_s
-      text.match?(RESOLUTION_FAILURE_MARKERS) && text.include?("_npx")
+      return false unless text.include?("_npx")
+
+      text.match?(RESOLUTION_FAILURE_MARKERS) || text.match?(EXTRACTION_FAILURE_MARKERS)
     end
 
     private
