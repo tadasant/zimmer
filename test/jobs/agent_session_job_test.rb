@@ -5928,6 +5928,60 @@ class AgentSessionJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(clone_dir) if defined?(clone_dir) && clone_dir
   end
 
+  test "check_and_handle_mcp_failure heals an extraction-race _npx cache (TAR_ENTRY_ERROR) and retries instead of orphaning" do
+    # Reproduce the session-9570 terminal orphaning: an `npx` server fails at
+    # package *extraction* time (TAR_ENTRY_ERROR) rather than module-resolution
+    # time, then the connection times out. Before this fix the heal path did not
+    # recognize the extraction signature, so the poisoned tree stuck and every
+    # retry crashed identically until the session was orphaned.
+    clones_base = File.join(Dir.home, ".agent-orchestrator", "clones")
+    clone_dir = File.join(clones_base, "ao-test-heal-tar-#{SecureRandom.hex(4)}")
+    working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
+    hash = "dbbb2997d8a4f060"
+    corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", hash)
+    modules = File.join(corrupt_dir, "node_modules")
+    FileUtils.mkdir_p(File.join(modules, "ajv", "dist"))
+
+    error = "Starting connection with timeout of 180000ms " \
+            "| npm warn tar TAR_ENTRY_ERROR ENOENT: no such file or directory, " \
+            "lstat '#{modules}/ajv/dist/compile' " \
+            "| Connection timed out after 180000ms"
+
+    @session.update!(
+      status: :running,
+      metadata: { "working_directory" => working_directory },
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ { "name" => "pulse-goodjobs-rw", "status" => "failed", "error" => error } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: pulse-goodjobs-rw"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    assert File.exist?(corrupt_dir), "precondition: poisoned extraction-race cache tree exists"
+
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    assert result, "MCP failure should be handled"
+    refute File.exist?(corrupt_dir), "poisoned _npx hash tree should be removed before retry"
+
+    @session.reload
+    # First failure (retry_count 0 < 3) schedules a retry rather than orphaning.
+    assert_equal 1, @session.metadata["mcp_retry_count"], "should schedule a retry, not orphan"
+    assert_equal "mcp_retry", @session.metadata["paused_by"]
+    refute_equal "failed", @session.status, "session must not be terminally failed on a healable extraction race"
+
+    log_buffer.flush
+    assert @session.logs.where(level: "warning").any? { |l| l.content.include?("Healed corrupt _npx cache") },
+      "expected a heal log entry for the extraction-race failure"
+  ensure
+    FileUtils.rm_rf(clone_dir) if defined?(clone_dir) && clone_dir
+  end
+
   test "check_and_handle_mcp_failure terminates process on retry" do
     @session.update!(
       status: :running,
