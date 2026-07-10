@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_05_234410) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_06_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -440,6 +440,23 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_05_234410) do
     t.text "description"
     t.boolean "is_frozen", default: false, null: false
     t.index ["position"], name: "index_categories_on_position"
+  end
+
+  create_table "x_oauth_credentials", force: :cascade do |t|
+    t.string "account_key", null: false
+    t.string "access_token_env_var", null: false
+    t.text "access_token"
+    t.text "refresh_token"
+    t.datetime "expires_at"
+    t.string "scopes"
+    t.string "token_endpoint", default: "https://api.x.com/2/oauth2/token", null: false
+    t.datetime "last_refreshed_at"
+    t.datetime "last_refresh_attempted_at"
+    t.string "last_refresh_error"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["access_token_env_var"], name: "index_x_oauth_credentials_on_access_token_env_var", unique: true
+    t.index ["account_key"], name: "index_x_oauth_credentials_on_account_key", unique: true
   end
 
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id"
