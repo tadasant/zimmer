@@ -202,6 +202,11 @@ Rails.application.configure do
       cron: "0 7 * * *", # Daily at 07:00 UTC (offset from claude_code_update at 06:00)
       class: "CertExpiryMonitorJob",
       description: "Check public TLS certs (ao/obs hosts) and alert when expiry nears — catches broken auto-renewal"
+    },
+    system_health_monitor: {
+      cron: "*/2 * * * *", # Every 2 minutes
+      class: "SystemHealthMonitorJob",
+      description: "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
     }
   }
 

@@ -179,6 +179,11 @@ Rails.application.configure do
       cron: "*/5 * * * *", # Every 5 minutes
       class: "ZombieReaperJob",
       description: "Reap zombie subprocesses left by agent sessions (defense in depth alongside tini init shim)"
+    },
+    system_health_monitor: {
+      cron: "*/2 * * * *", # Every 2 minutes
+      class: "SystemHealthMonitorJob",
+      description: "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
     }
   }
 
