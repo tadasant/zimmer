@@ -16,9 +16,6 @@ class CableUpgradeTest < ActionDispatch::IntegrationTest
   end
 
   teardown do
-    # A successful upgrade registers the connection on the shared server asynchronously, along
-    # with its heartbeat timer; drop both so they cannot outlive the test.
-    ActionCable.server.restart
     ActionCable.server.config.logger = @original_logger
   end
 
