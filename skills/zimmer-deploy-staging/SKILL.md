@@ -32,7 +32,7 @@ is the way to exercise an **unmerged** change on a real box.
 - **Staging is not on a public URL.** `infra/terraform/staging.tfvars.example`
   sets `domain = ""` (DNS skipped) and the DigitalOcean firewall drops public
   `:80`. The box is reachable **only over the Tailscale tailnet**, as MagicDNS
-  host `zimmer-staging`. `https://zimmer.tadasant.com/operate/deploying/` mentions
+  host `zimmer-staging`. `https://docs.zimmer.tadasant.com/operate/deploying/` mentions
   `staging.zimmer.tadasant.com`, but that hostname does not resolve by default.
 
 ## Dispatching a deploy
@@ -114,6 +114,6 @@ flag the gap rather than inventing credentials.
 
 ## Related
 
-- `https://zimmer.tadasant.com/operate/deploying/` — the full deploy guide.
-- `https://zimmer.tadasant.com/operate/provisioning/` — branch protection, staging secrets, Tailscale ACLs/tags.
+- `https://docs.zimmer.tadasant.com/operate/deploying/` — the full deploy guide.
+- `https://docs.zimmer.tadasant.com/operate/provisioning/` — branch protection, staging secrets, Tailscale ACLs/tags.
 - `infra/terraform/README.md` — running Terraform by hand.

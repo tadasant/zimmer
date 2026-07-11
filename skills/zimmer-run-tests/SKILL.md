@@ -65,7 +65,7 @@ bin/rails test test/services/                      # one directory
 bin/rails test test/models/session_test.rb:42      # one test, by line
 ```
 
-`https://zimmer.tadasant.com/operate/testing/` recommends bounding local runs so a hang doesn't eat
+`https://docs.zimmer.tadasant.com/operate/testing/` recommends bounding local runs so a hang doesn't eat
 your session:
 
 ```bash

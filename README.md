@@ -54,9 +54,9 @@ Tailscale VPN with one manually-triggered workflow.
 - **Observability** — structured error reporting to Sentry/GlitchTip and OTLP log
   export.
 
-📖 **Full documentation: [zimmer.tadasant.com](https://zimmer.tadasant.com/)** — architecture, philosophy,
+📖 **Full documentation: [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com/)** — architecture, philosophy,
 diagrams, the REST API reference, the AIR chapter, and a candid
-[Known limitations](https://zimmer.tadasant.com/limitations/) page.
+[Known limitations](https://docs.zimmer.tadasant.com/limitations/) page.
 
 ## Quick start (development)
 
@@ -100,8 +100,8 @@ defined in Terraform under [`infra/terraform`](infra/terraform), and the deploy 
 manually-triggered (`workflow_dispatch`) GitHub Actions workflow that builds the
 image, applies the IaC, joins the tailnet, and health-checks the app over the VPN.
 
-- **Walkthrough:** [Deploying](https://zimmer.tadasant.com/operate/deploying/)
-- **Secrets & one-time provisioning:** [Provisioning](https://zimmer.tadasant.com/operate/provisioning/)
+- **Walkthrough:** [Deploying](https://docs.zimmer.tadasant.com/operate/deploying/)
+- **Secrets & one-time provisioning:** [Provisioning](https://docs.zimmer.tadasant.com/operate/provisioning/)
 - **IaC reference:** [infra/terraform/README.md](infra/terraform/README.md)
 
 Required GitHub Actions secrets for the staging deploy: `DIGITALOCEAN_ACCESS_TOKEN`,
@@ -160,9 +160,9 @@ Everything is configured through environment variables — no secrets in git.
 
 - **MCP (Model Context Protocol) servers** — attach tools to agent sessions,
   including OAuth-authenticated servers with automatic token refresh/rotation.
-  [MCP servers](https://zimmer.tadasant.com/air/mcp-servers/) · [MCP server OAuth](https://zimmer.tadasant.com/auth/mcp-oauth/)
+  [MCP servers](https://docs.zimmer.tadasant.com/air/mcp-servers/) · [MCP server OAuth](https://docs.zimmer.tadasant.com/auth/mcp-oauth/)
 - **Claude Code & Codex auth** — OAuth tokens + account rotation per runtime.
-  [Agent harness credentials](https://zimmer.tadasant.com/auth/harness/)
+  [Agent harness credentials](https://docs.zimmer.tadasant.com/auth/harness/)
 - **OpenTelemetry logs** — WARN/ERROR/FATAL `Rails.logger` lines and terminal job
   failures are shipped over OTLP/HTTP (e.g. to VictoriaLogs/Grafana) with
   `service.name` + `deployment.environment` resource attributes, so you can alert on
@@ -179,9 +179,9 @@ Everything is configured through environment variables — no secrets in git.
   (`app/services`).
 - **Pluggable runtimes** — a `RuntimeRegistry` maps a session's `agent_runtime` to a
   bundle of role classes (CLI adapter, transcript source/normalizer, MCP status
-  detector, auth provider, …). See [Adding an agent harness](https://zimmer.tadasant.com/extend/agent-harness/).
+  detector, auth provider, …). See [Adding an agent harness](https://docs.zimmer.tadasant.com/extend/agent-harness/).
 - **Extensions** — self-contained, individually-deletable bundles of optional behavior
-  that plug into core seams without core naming them. See [Extensions](https://zimmer.tadasant.com/extend/extensions/).
+  that plug into core seams without core naming them. See [Extensions](https://docs.zimmer.tadasant.com/extend/extensions/).
 - **AIR catalog** — agent roots / skills / plugins / MCP servers / hooks / references
   resolved via the public `@pulsemcp/air` CLI from `air.json` and the top-level
   artifact indexes (`skills/skills.json`, `roots.json`, `mcp.json`,
@@ -212,33 +212,33 @@ scripts/install-extension.sh --list
 scripts/install-extension.sh mcp_tool_search --container zimmer
 ```
 
-See [Extensions](https://zimmer.tadasant.com/extend/extensions/) for the contract, the install script, and how
+See [Extensions](https://docs.zimmer.tadasant.com/extend/extensions/) for the contract, the install script, and how
 to write one.
 
 ## Documentation
 
 The full documentation site lives in [`docs/`](docs) (Astro Starlight) and is published at
-**[zimmer.tadasant.com](https://zimmer.tadasant.com/)**.
+**[docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com/)**.
 
-- **Start here** — [What Zimmer is](https://zimmer.tadasant.com/intro/what-zimmer-is/) ·
-  [Philosophy](https://zimmer.tadasant.com/intro/philosophy/) · [Architecture](https://zimmer.tadasant.com/intro/architecture/)
-- **Using it** — [Run it locally](https://zimmer.tadasant.com/start/local/) ·
-  [Your first session](https://zimmer.tadasant.com/start/first-session/) ·
-  [Configuration](https://zimmer.tadasant.com/start/configuration/)
-- **Sessions** — [Lifecycle](https://zimmer.tadasant.com/sessions/lifecycle/) ·
-  [Goals](https://zimmer.tadasant.com/sessions/goals/) · [Triggers](https://zimmer.tadasant.com/sessions/triggers/) ·
-  [Transcripts](https://zimmer.tadasant.com/sessions/transcripts/) · [Elicitation](https://zimmer.tadasant.com/sessions/elicitation/)
-- **AIR** — [The mental model](https://zimmer.tadasant.com/air/overview/) ·
-  [How Zimmer consumes it](https://zimmer.tadasant.com/air/zimmer-integration/) ·
-  [Agent roots](https://zimmer.tadasant.com/air/agent-roots/)
-- **Extending** — [REST API](https://zimmer.tadasant.com/extend/rest-api/) ·
-  [Adding an agent harness](https://zimmer.tadasant.com/extend/agent-harness/) ·
-  [Extensions](https://zimmer.tadasant.com/extend/extensions/)
-- **Operating** — [Deploying](https://zimmer.tadasant.com/operate/deploying/) ·
-  [Provisioning](https://zimmer.tadasant.com/operate/provisioning/) ·
-  [Background jobs](https://zimmer.tadasant.com/operate/background-jobs/) ·
-  [Testing](https://zimmer.tadasant.com/operate/testing/)
-- **⚠️ [Known limitations](https://zimmer.tadasant.com/limitations/)** — the bugs, the brittleness, and the
+- **Start here** — [What Zimmer is](https://docs.zimmer.tadasant.com/intro/what-zimmer-is/) ·
+  [Philosophy](https://docs.zimmer.tadasant.com/intro/philosophy/) · [Architecture](https://docs.zimmer.tadasant.com/intro/architecture/)
+- **Using it** — [Run it locally](https://docs.zimmer.tadasant.com/start/local/) ·
+  [Your first session](https://docs.zimmer.tadasant.com/start/first-session/) ·
+  [Configuration](https://docs.zimmer.tadasant.com/start/configuration/)
+- **Sessions** — [Lifecycle](https://docs.zimmer.tadasant.com/sessions/lifecycle/) ·
+  [Goals](https://docs.zimmer.tadasant.com/sessions/goals/) · [Triggers](https://docs.zimmer.tadasant.com/sessions/triggers/) ·
+  [Transcripts](https://docs.zimmer.tadasant.com/sessions/transcripts/) · [Elicitation](https://docs.zimmer.tadasant.com/sessions/elicitation/)
+- **AIR** — [The mental model](https://docs.zimmer.tadasant.com/air/overview/) ·
+  [How Zimmer consumes it](https://docs.zimmer.tadasant.com/air/zimmer-integration/) ·
+  [Agent roots](https://docs.zimmer.tadasant.com/air/agent-roots/)
+- **Extending** — [REST API](https://docs.zimmer.tadasant.com/extend/rest-api/) ·
+  [Adding an agent harness](https://docs.zimmer.tadasant.com/extend/agent-harness/) ·
+  [Extensions](https://docs.zimmer.tadasant.com/extend/extensions/)
+- **Operating** — [Deploying](https://docs.zimmer.tadasant.com/operate/deploying/) ·
+  [Provisioning](https://docs.zimmer.tadasant.com/operate/provisioning/) ·
+  [Background jobs](https://docs.zimmer.tadasant.com/operate/background-jobs/) ·
+  [Testing](https://docs.zimmer.tadasant.com/operate/testing/)
+- **⚠️ [Known limitations](https://docs.zimmer.tadasant.com/limitations/)** — the bugs, the brittleness, and the
   open questions. Read this one.
 
 **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) · agent instructions in
@@ -257,13 +257,13 @@ bin/rails test              # unit + integration (system tests excluded)
 
 CI runs lint, Brakeman, a lockfile check, the retention-logic unit tests, the docs-site
 build, and the full test suite on every PR. Please read [CONTRIBUTING.md](CONTRIBUTING.md)
-and [Testing philosophy](https://zimmer.tadasant.com/operate/testing/) first.
+and [Testing philosophy](https://docs.zimmer.tadasant.com/operate/testing/) first.
 
 ## Known limitations
 
 - **Staging tfstate is ephemeral.** The deploy reaps prior resources before each apply
   so re-runs are idempotent, but for principled reconcile-based updates configure a
-  remote Terraform backend (DO Spaces) — see [Provisioning](https://zimmer.tadasant.com/operate/provisioning/).
+  remote Terraform backend (DO Spaces) — see [Provisioning](https://docs.zimmer.tadasant.com/operate/provisioning/).
 - **Single-node.** Zimmer targets one droplet; there is no built-in HA/clustering.
 - **Branch protection** on a private free-plan GitHub repo requires GitHub Pro (the
   `main` ruleset is provided at `.github/rulesets/main.json`).

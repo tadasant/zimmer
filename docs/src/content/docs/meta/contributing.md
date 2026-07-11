@@ -110,7 +110,7 @@ Pages project is another, and it needs a human with Cloudflare access.
    - **Build output directory:** `dist`
    - **Environment variable:** `SITE_URL` = the final public URL (see below)
 3. Deploy. Cloudflare gives you a `*.pages.dev` URL immediately.
-4. **Custom domain:** Pages → Custom domains → add `zimmer.tadasant.com`. Cloudflare already hosts the
+4. **Custom domain:** Pages → Custom domains → add `docs.zimmer.tadasant.com`. Cloudflare already hosts the
    `tadasant.com` zone, so it will create the CNAME for you.
 5. Update `site` in `docs/astro.config.mjs` if you pick a different hostname.
 

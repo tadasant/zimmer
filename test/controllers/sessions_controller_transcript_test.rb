@@ -3,7 +3,7 @@ require "test_helper"
 # Integration coverage for transcript rendering on the session show page.
 #
 # Both runtimes normalize their native JSONL into OpenTranscripts v0.1 events
-# (see OpenTranscript / https://zimmer.tadasant.com/sessions/transcripts/). Every event renders through
+# (see OpenTranscript / https://docs.zimmer.tadasant.com/sessions/transcripts/). Every event renders through
 # the single timeline_items/_item partial, keyed on the event :type. These
 # tests drive that path end-to-end through the controller, using realistic
 # Claude Code JSONL lines (a top-level "type" with a nested "message" envelope).
