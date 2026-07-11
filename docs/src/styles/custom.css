@@ -110,16 +110,54 @@ body {
 }
 
 /* =========================================================================
-   Links — a plain underline, coloured on hover. Interactive only.
+   Links — a plain underline, coloured on hover. Interactive only. The heading
+   anchor link (.sl-anchor-link) is excluded; it's styled separately below.
    ========================================================================= */
-.sl-markdown-content a:not(:where(.not-content *)) {
+.sl-markdown-content a:not(:where(.not-content *, .sl-anchor-link)) {
   color: var(--sl-color-text-accent);
   text-decoration: none;
   text-underline-offset: 0.15em;
 }
-.sl-markdown-content a:not(:where(.not-content *)):hover {
+.sl-markdown-content a:not(:where(.not-content *, .sl-anchor-link)):hover {
   text-decoration: underline;
   text-decoration-thickness: 1px;
+}
+
+/* Heading anchor link (the "copy link" affordance) — a muted icon, centered on
+   the heading, no underline. Reveal on heading hover (Starlight sets opacity). */
+.sl-anchor-link {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-inline-start: 0.35em;
+  color: var(--sl-color-gray-4);
+  text-decoration: none !important;
+}
+.sl-anchor-link:hover,
+.sl-anchor-link:focus-visible {
+  color: var(--sl-color-text-accent);
+}
+.sl-anchor-icon {
+  display: inline-flex;
+}
+.sl-anchor-icon svg {
+  display: block;
+  width: 0.72em;
+  height: 0.72em;
+}
+/* Brief "Copied" confirmation, driven by the click handler in Head.astro. */
+.sl-anchor-link[data-copied]::after {
+  content: "Copied";
+  margin-inline-start: 0.4em;
+  font-size: 0.62em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--sl-color-text-accent);
+}
+
+/* Offset anchor targets so a linked heading clears the fixed header. */
+html {
+  scroll-padding-top: 5rem;
 }
 
 /* =========================================================================
