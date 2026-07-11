@@ -11,7 +11,7 @@ image_ref            = "ghcr.io/tadasant/zimmer:latest"
 # `domain -> tailnet IP` A record are then managed by the `domain-cert-staging`
 # workflow (ACME DNS-01 via Cloudflare, token confined to CI), NOT by Terraform.
 # Requires the CLOUDFLARE_API_TOKEN Actions secret. See docs/DOMAIN.md.
-domain               = "" # e.g. "staging.zimmer.tadasant.com"
+domain               = "staging.zimmer.tadasant.com" # Caddy TLS terminator + domain-cert-staging cert; "" for plain http://zimmer-staging
 ghcr_username        = "tadasant"
 ssh_key_fingerprints = [] # e.g. ["aa:bb:cc:..."] — DO-registered SSH key fingerprints
 # Staging deliberately runs a throwaway Postgres container on the droplet: it is
