@@ -7,6 +7,7 @@ packages:
   - ca-certificates
   - curl
   - gnupg
+  - openssl
 
 write_files:
   - path: /opt/zimmer/docker-compose.yml
@@ -61,9 +62,47 @@ write_files:
             SENTRY_DSN_BACKEND: "${sentry_dsn}"
           depends_on: ${compose_depends_on}
           restart: always
+%{~ if domain != "" }
+        # Custom-domain HTTPS terminator, reachable only over the tailnet (the
+        # firewall opens no public 443; tailnet traffic arrives via the WireGuard
+        # tunnel). Stock Caddy -- no plugins: it does NOT do ACME. It just serves
+        # the cert files that the `domain-cert` workflow issues out-of-band and
+        # pushes to /opt/zimmer/certs, and reverse-proxies to the app. The app
+        # keeps publishing :80, so http://${tailnet_hostname} (MagicDNS) is
+        # unchanged and a Caddy misconfig cannot take the box down.
+        caddy:
+          image: caddy:2
+          ports:
+            - "443:443"
+          volumes:
+            - /opt/zimmer/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+            - /opt/zimmer/certs:/certs:ro
+          depends_on:
+            - app
+          restart: always
+%{~ endif }
 %{~ if !use_managed_db }
       volumes:
         pgdata: {}
+%{~ endif }
+%{~ if domain != "" }
+  - path: /opt/zimmer/caddy/Caddyfile
+    permissions: "0644"
+    content: |
+      {
+        # We supply certs ourselves (domain-cert workflow); Caddy must not try to
+        # obtain or manage any of its own, and needs no ACME / admin endpoint.
+        auto_https off
+        admin off
+      }
+      https://${domain} {
+        tls /certs/cert.pem /certs/key.pem
+        # Caddy sets X-Forwarded-Proto=https automatically (it terminated TLS) and
+        # preserves the client Host, so the app computes https://${domain} as its
+        # base_url/origin -- which now matches the browser. That is what fixes the
+        # assume_ssl-vs-plain-HTTP class (CSRF 422s, ActionCable origin rejects).
+        reverse_proxy app:80
+      }
 %{~ endif }
 
 runcmd:
@@ -78,6 +117,15 @@ runcmd:
   # Tailscale admin, NOT here) restrict who can reach this node.
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey='${tailscale_auth_key}' --hostname='${tailnet_hostname}' --ssh
+%{~ if domain != "" }
+  # Bootstrap a self-signed cert so Caddy can start on :443 before the domain-cert
+  # workflow has pushed the real one. The workflow overwrites these and reloads
+  # Caddy; until then, :443 serves a self-signed cert (browser warning) while
+  # http://${tailnet_hostname} keeps working normally. The workflow distinguishes
+  # this placeholder from a real cert by its issuer (self == subject).
+  - mkdir -p /opt/zimmer/certs /opt/zimmer/caddy
+  - test -f /opt/zimmer/certs/cert.pem || openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout /opt/zimmer/certs/key.pem -out /opt/zimmer/certs/cert.pem -subj '/CN=${domain}'
+%{~ endif }
   # Pull + run Zimmer
   - echo '${ghcr_token}' | docker login ghcr.io -u '${ghcr_username}' --password-stdin
   - docker compose -f /opt/zimmer/docker-compose.yml pull
