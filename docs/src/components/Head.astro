@@ -1,0 +1,72 @@
+---
+import Default from "@astrojs/starlight/components/Head.astro";
+---
+
+<Default><slot /></Default>
+
+<script>
+  import mermaid from "mermaid";
+
+  // Diagrams are rendered client-side rather than baked to SVG at build time.
+  // Static prerendering (rehype-mermaid) would need a headless Chromium in CI
+  // and would still commit us to a single colour scheme; rendering in the
+  // browser lets a diagram re-theme when the reader flips light/dark.
+  const THEMES = { light: "default", dark: "dark" } as const;
+
+  function currentTheme(): keyof typeof THEMES {
+    return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  }
+
+  let rendering = false;
+
+  async function renderAll() {
+    const nodes = Array.from(
+      document.querySelectorAll<HTMLElement>(".mermaid-diagram"),
+    );
+    if (nodes.length === 0 || rendering) return;
+    rendering = true;
+
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: THEMES[currentTheme()],
+      securityLevel: "strict",
+      fontFamily: "var(--sl-font)",
+      flowchart: { curve: "basis", useMaxWidth: true },
+      sequence: { useMaxWidth: true },
+    });
+
+    for (const [i, node] of nodes.entries()) {
+      const encoded = node.dataset.mermaid;
+      if (!encoded) continue;
+      const source = new TextDecoder().decode(
+        Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0)),
+      );
+      try {
+        const { svg } = await mermaid.render(`mermaid-${i}-${Date.now()}`, source);
+        node.innerHTML = svg;
+        node.dataset.rendered = "true";
+      } catch (error) {
+        node.innerHTML = `<pre class="mermaid-error">Diagram failed to render:\n${
+          error instanceof Error ? error.message : String(error)
+        }</pre>`;
+      }
+    }
+
+    rendering = false;
+  }
+
+  renderAll();
+  document.addEventListener("astro:page-load", renderAll);
+
+  // Starlight's theme switcher flips data-theme on <html>; re-render so the
+  // diagram's palette follows the page instead of staying stuck on the scheme
+  // that happened to be active at first paint.
+  new MutationObserver((records) => {
+    if (records.some((r) => r.attributeName === "data-theme")) {
+      document
+        .querySelectorAll<HTMLElement>(".mermaid-diagram")
+        .forEach((node) => delete node.dataset.rendered);
+      renderAll();
+    }
+  }).observe(document.documentElement, { attributes: true });
+</script>

@@ -1,7 +1,7 @@
 # TranscriptNormalizer for the OpenAI Codex runtime.
 #
 # Maps Codex's rollout JSONL onto OpenTranscripts v0.1 events (see OpenTranscript
-# and docs/OPEN_TRANSCRIPTS.md). Each rollout line is wrapped:
+# and https://zimmer.tadasant.com/sessions/transcripts/). Each rollout line is wrapped:
 #
 #   { "timestamp": "2026-05-29T21:39:15.456Z",
 #     "type": "response_item" | "event_msg" | "session_meta" | "turn_context" | "compacted",

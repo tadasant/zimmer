@@ -16,18 +16,47 @@ stack: PostgreSQL, Redis, GoodJob, Hotwire (Turbo + Stimulus), Tailwind.
   `bin/rails test test/models/session_test.rb`
 - Lint with `bin/rubocop`, security-scan with `bin/brakeman`.
 
+## Documentation lives in `docs/` — update it in the same PR
+
+`docs/` is the Zimmer documentation site (Astro Starlight, deployed to Cloudflare
+Pages). It is the canonical prose for how Zimmer works, and the premise is that it
+stays true commit-by-commit.
+
+**If your PR changes behavior, update the page that describes that behavior in the
+same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it to
+`docs/src/content/docs/limitations.md` — that page is a feature, not a confession.
+
+| You changed… | Update… |
+| --- | --- |
+| `app/models/concerns/session_state_machine.rb` | `sessions/lifecycle.md` |
+| `app/jobs/agent_session_job.rb`, the CLI adapters | `sessions/spawning.md` |
+| `config/routes.rb`, `app/controllers/api/**` | `extend/rest-api.md` **and** `app/views/api_docs/show.html.erb` |
+| `air.json`, `roots.json`, `mcp.json`, `skills/`, `plugins/`, `hooks/` | `air/*.md` |
+| `RuntimeRegistry`, a new runtime | `extend/agent-harness.md` |
+| `app/extensions/**` | `extend/extensions.md` |
+| OAuth, `ClaudeAccount`, `McpOauthCredential` | `auth/*.md` |
+| `infra/`, `.github/workflows/**`, `Dockerfile*` | `operate/deploying.md`, `operate/provisioning.md` |
+| `config/goals.json` | `sessions/goals.md` |
+| any cron job | `operate/background-jobs.md` |
+
+Pages are `docs/src/content/docs/**`. A new page must also be added to the `sidebar`
+array in `docs/astro.config.mjs` — Starlight does not auto-discover it. `cd docs &&
+npm run build` is what CI runs; the `docs_site` job fails the PR if it breaks.
+
+Diagrams are Mermaid fenced code blocks, rendered client-side. Keep them accurate to
+the code rather than illustrative.
+
 ## Architecture (orientation)
 
-- `app/models/session.rb` — the core Session state machine (AASM):
-  waiting → running → needs_input → failed / archived. See
-  [docs/SESSION_STATE_MACHINE.md](docs/SESSION_STATE_MACHINE.md).
+- `app/models/session.rb` + `app/models/concerns/session_state_machine.rb` — the core
+  Session state machine (AASM): waiting → running → needs_input → failed / archived.
 - `app/jobs/agent_session_job.rb` — spawns and monitors agent processes.
 - `app/services/` — service objects (process management, transcript polling,
   runtime registry, config services).
-- Pluggable runtimes: [docs/ADDING_AN_AGENT_HARNESS.md](docs/ADDING_AN_AGENT_HARNESS.md).
-- Removable extensions: [docs/AO_EXTENSIONS.md](docs/AO_EXTENSIONS.md).
-- REST API: [docs/REST_API.md](docs/REST_API.md) — keep it in sync with
-  `app/views/api_docs/show.html.erb` when you change endpoints.
+- `app/services/runtime_registry.rb` — the pluggable-runtime seam (`claude_code`, `codex`).
+- `app/services/ao/` — the removable-extension seam.
+
+The prose for all of the above is in `docs/`.
 
 ## AI artifacts (the AIR catalog)
 

@@ -182,6 +182,6 @@ Reach for `app/` only when the *resolution machinery itself* is wrong
 
 ## Related
 
-- `docs/MCP_CONFIGURATION.md` + `docs/mcp.schema.json` — the MCP entry schema.
-- `docs/ADDING_AN_AGENT_HARNESS.md` — adding a runtime (a different axis entirely).
+- The MCP entry schema — https://zimmer.tadasant.com/air/mcp-servers/ (+ `docs/public/mcp.schema.json`).
+- Adding a runtime (a different axis entirely) — https://zimmer.tadasant.com/extend/agent-harness/
 - `skills/zimmer-run-tests` — the suite, and why a bad catalog breaks all of it.
