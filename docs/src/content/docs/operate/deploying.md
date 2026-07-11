@@ -174,47 +174,65 @@ container boot silently run the old CLI and the old Chromium.
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | builds and pushes `zimmer:{version, latest, sha-…}` |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image |
 | `deploy-staging.yml` | manual only | see below |
-| `teardown-staging.yml` | daily cron 08:00 UTC | destroys the staging droplet (a powered-off droplet still bills) |
+| `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
 | `ghcr-retention.yml` | weekly cron | prunes GHCR to ≤50 versions |
 | `domain-cert-staging.yml` | weekly cron + manual | issues/renews the Let's Encrypt cert for `var.domain` via ACME DNS-01 and pushes it to the droplet (see [Custom-domain HTTPS](#custom-domain-https-over-the-tailnet)) |
 
-### Staging deploys are destroy-and-recreate
+### Staging deploys are Kamal container swaps onto a persistent droplet
 
-`deploy-staging.yml` does not do an in-place redeploy. It:
+The droplet is no longer cattle. Terraform provisions it **once** and then leaves it alone; Kamal
+deploys the app onto it. `deploy-staging.yml`:
 
 1. Builds the base image (`:staging`) and app image (`:staging-<sha>`).
-2. Reaps the prior droplet and firewall through the DigitalOcean API, because the Terraform state
-   is ephemeral (no backend block), so `apply` can't converge on its own.
-3. Reaps the stale Tailscale node.
-4. `terraform apply`.
-5. Joins the tailnet last, only for the health check: it resolves the peer IP from `tailscale
-   status --json` and curls `http://<ip>/up`, 40 times at 15-second intervals (a 10-minute budget).
+2. `terraform apply` — reconciles the **existing** droplet through remote state. It does not reap
+   anything, and a re-run updates in place rather than recreating.
+3. Joins the tailnet, resolves `zimmer-staging`'s peer IP from `tailscale status --json`, and loads
+   the Kamal deploy key.
+4. `kamal deploy -d staging --version=<tag> --skip-push`. kamal-proxy boots the new container
+   alongside the old one, health-checks it on `/up`, and only then flips traffic. A container that
+   never goes healthy leaves the old one serving.
+5. Re-verifies `/up` over the tailnet and asserts the **worker** container is running too — the
+   worker is where agent sessions actually execute.
 
-:::caution[The old deploy docs described a completely different sequence]
-`docs/DEPLOYING_ON_DIGITALOCEAN.md` claimed the workflow (1) joins the tailnet, (2) applies, then (3)
-"redeploys the app image over the tailnet." There is no in-place redeploy path in this repo.
+Two things follow from this that did not used to be true:
 
-It also named the secret `STAGING_SECRET_KEY_BASE` (it's `STAGING_SECRET_BASE`) and said CI joins the
-tailnet with a Tailscale OAuth client — the workflow uses a pre-minted `TS_CI_AUTHKEY`, and its own
-comment explains that an OAuth client *cannot* mint `tag:ci` keys.
-:::
+- **Rollback is one command.** `kamal rollback <version> -d staging` (the host retains the last 5
+  images).
+- **State survives a deploy.** `web` and `worker` share durable named volumes (`zimmer_data`,
+  `claude_home`, `gh_config`, `claude_local`), which are re-attached to each new container instead of
+  being destroyed with the droplet.
+
+### What changed, and why
+
+The old flow re-rendered the whole app stack into cloud-init's `user_data` — a **replace-forcing**
+attribute on `digitalocean_droplet`. Any change to the image or an env var therefore destroyed and
+rebuilt the droplet (and everything on its disk). Combined with ephemeral Terraform state, which
+forced the workflow to hand-reap the droplet and firewall through the DigitalOcean API before every
+`apply`, staging was torn down and rebuilt constantly.
+
+Now: the app stack lives in Kamal (`config/deploy.*.yml`), `user_data` is only a bootstrap, and the
+droplet carries `lifecycle { ignore_changes = [user_data], create_before_destroy = true }`. A config
+or app change can no longer replace the box.
 
 ## Terraform, briefly
 
 ```bash
 cd infra/terraform
 cp staging.tfvars.example staging.tfvars
-export TF_VAR_do_token=… TF_VAR_tailscale_auth_key=… TF_VAR_ghcr_token=… \
-       TF_VAR_secret_key_base=$(openssl rand -hex 64)
-terraform init -input=false
-terraform apply -input=false -auto-approve -var-file=staging.tfvars \
-  -var="image_ref=ghcr.io/tadasant/zimmer:<tag>"
+export TF_VAR_do_token=… TF_VAR_tailscale_auth_key=… TF_VAR_deploy_ssh_pubkey="$(cat ~/.ssh/kamal.pub)"
+export AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=…   # DO Spaces keys, for the state backend
+terraform init -input=false -backend-config=backend.staging.hcl
+terraform apply -input=false -auto-approve -var-file=staging.tfvars
 ```
 
-Creates: the droplet, the firewall, and optionally a DO project (`manage_project` defaults to `false`,
-because a DO project name is account-unique and would collide under ephemeral state). It does **not**
-create a DNS record — when `var.domain` is set, the `domain-cert` workflow owns the A record (pointing at
-the tailnet IP), which keeps the Cloudflare credential out of Terraform.
+Creates: the droplet, the firewall, a reserved IP (a stable public address across rebuilds), and a DO
+project. `manage_project` now defaults to **`true`** — a project name is account-unique, which used to
+409 under ephemeral state; with a remote backend Terraform reconciles it instead.
+
+Terraform no longer knows anything about the app: no image ref, no secrets, no database wiring. Those
+are Kamal's. It also does **not** create a DNS record — when `var.domain` is set, the `domain-cert`
+workflow owns the A record (pointing at the tailnet IP), which keeps the Cloudflare credential out of
+Terraform.
 
 Production references a pre-existing Managed Postgres cluster as a read-only data source. It never
 creates it. The cluster, and both its databases (`zimmer_production` and `zimmer_production_cable`),
