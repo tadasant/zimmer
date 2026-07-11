@@ -13,7 +13,9 @@
 # containers with zero downtime via kamal-proxy. This replaces the old model where
 # every app change re-rendered cloud-init and force-replaced the droplet.
 service: zimmer
-image: ghcr.io/tadasant/zimmer
+# Repository path only -- Kamal prepends registry.server, so this resolves to
+# ghcr.io/tadasant/zimmer. Including the registry here would double it.
+image: tadasant/zimmer
 
 # Force `-d <dest>` on every command so a bare `kamal deploy` can't hit the wrong
 # environment.
