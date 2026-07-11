@@ -6,12 +6,12 @@ environment          = "staging"
 region               = "nyc3"
 droplet_size         = "s-2vcpu-4gb"
 image_ref            = "ghcr.io/tadasant/zimmer:latest"
-# The staging box is Tailscale-only (no public app ingress; the deploy health-checks
-# it over `tailscale ssh zimmer-staging`), so a public DNS A record is NOT required.
-# Leave `domain` empty to skip DNS. Only set it (e.g. "staging.zimmer.tadasant.com")
-# once that parent zone (zimmer.tadasant.com) is a DigitalOcean-managed DNS domain —
-# otherwise `terraform apply` fails with "domain not found" (404).
-domain               = ""
+# Custom-domain HTTPS over the tailnet. Leave empty for plain http://zimmer-staging
+# (MagicDNS) only. Set it to turn on the Caddy TLS terminator; the cert and the
+# `domain -> tailnet IP` A record are then managed by the `domain-cert-staging`
+# workflow (ACME DNS-01 via Cloudflare, token confined to CI), NOT by Terraform.
+# Requires the CLOUDFLARE_API_TOKEN Actions secret. See docs/DOMAIN.md.
+domain               = "" # e.g. "staging.zimmer.tadasant.com"
 ghcr_username        = "tadasant"
 ssh_key_fingerprints = [] # e.g. ["aa:bb:cc:..."] — DO-registered SSH key fingerprints
 # Staging deliberately runs a throwaway Postgres container on the droplet: it is
