@@ -130,7 +130,6 @@ body {
    via ::after, which Starlight uses for the click area. */
 .sl-anchor-link {
   color: var(--sl-color-gray-4);
-  text-decoration: none !important;
 }
 .sl-anchor-link:hover,
 .sl-anchor-link:focus-visible {
@@ -141,52 +140,57 @@ body {
   opacity: 1 !important;
 }
 
-/* Offset anchor targets so a linked heading clears the fixed header. */
+/* Offset anchor targets so a linked heading clears the fixed header, and keep a
+   stable gutter so opening the lightbox doesn't shift the layout. */
 html {
   scroll-padding-top: 5rem;
+  scrollbar-gutter: stable;
 }
 
 /* =========================================================================
    Image / diagram lightbox — click any diagram or image to view it full size.
+   A native <dialog> (showModal) gives us the focus trap, Esc, and an inert
+   background for free.
    ========================================================================= */
-.mermaid-figure,
-.sl-markdown-content img:not(.sl-anchor-icon *) {
+.mermaid-diagram,
+.sl-markdown-content img {
   cursor: zoom-in;
 }
-.lightbox {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: none;
-  align-items: center;
-  justify-content: center;
+dialog.lightbox {
+  width: 100vw;
+  height: 100dvh;
+  max-width: 100vw;
+  max-height: 100dvh;
+  margin: 0;
   padding: clamp(1rem, 4vw, 3rem);
-  background: color-mix(in srgb, #05060a 88%, transparent);
-  backdrop-filter: blur(2px);
+  border: 0;
+  background: transparent;
+  overflow: hidden;
   cursor: zoom-out;
 }
-.lightbox.open {
-  display: flex;
-}
-.lightbox-stage {
-  max-width: 96vw;
-  max-height: 92vh;
+dialog.lightbox[open] {
   display: flex;
   align-items: center;
   justify-content: center;
 }
+dialog.lightbox::backdrop {
+  background: color-mix(in srgb, #05060a 88%, transparent);
+  backdrop-filter: blur(2px);
+}
+.lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
 .lightbox-stage :is(svg, img) {
-  width: auto;
-  height: auto;
-  max-width: 96vw;
-  max-height: 92vh;
   background: var(--sl-color-bg);
   border-radius: 0.5rem;
   padding: 1rem;
   box-sizing: border-box;
 }
 .lightbox-close {
-  position: absolute;
+  position: fixed;
   top: clamp(0.5rem, 2vw, 1.25rem);
   right: clamp(0.5rem, 2vw, 1.25rem);
   width: 2.25rem;
@@ -207,7 +211,7 @@ html {
   border-color: var(--sl-color-accent);
 }
 @media (prefers-reduced-motion: no-preference) {
-  .lightbox.open .lightbox-stage {
+  dialog.lightbox[open] .lightbox-stage {
     animation: lb-in 0.16s ease-out both;
   }
   @keyframes lb-in {
