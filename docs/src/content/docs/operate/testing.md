@@ -73,7 +73,7 @@ you suspect your change. Run `air resolve` and read *stderr*, not the exit code 
 
 ## Contract tests
 
-The one genuinely nice piece of test architecture here. Runtimes are enforced structurally rather than
+The one solid piece of test architecture here. Runtimes are enforced structurally rather than
 by convention:
 
 - **`test/contracts/runtime_cli_adapter_contract_test.rb`** asserts every registered adapter
@@ -86,7 +86,7 @@ by convention:
 It checks three of the retry strategy's five predicates. `auth_recovery_needed?`, which
 `ProcessLifecycleManager` genuinely calls, is not among them. A new runtime can pass the contract test
 and still `NoMethodError` in production. See
-[Adding an agent harness](/extend/agent-harness/#retry-strategy-five-predicates-not-four).
+[Adding an agent harness](/extend/agent-harness/#retry-strategy-the-five-predicates).
 :::
 
 ## Running tests
@@ -110,7 +110,7 @@ suite:
 - `FileSystemAdapter` and `ProcessManager` are injected, so process and filesystem behavior can be
   faked without stubbing globals. (Issue #10 is a test that reached for a global `File.stub` anyway,
   and now flakes.)
-- The state machine is tested as a state machine — transitions and guards, not just outcomes.
+- The state machine is tested as a state machine — its transitions and guards, down to the individual states.
 
 What it does *not* have is meaningful end-to-end coverage of the thing Zimmer does: spawn a
 real agent against a real repo. That path is covered by running it.

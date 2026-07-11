@@ -58,7 +58,7 @@ met.
 The stop condition is enforced only by the LLM choosing to obey English.
 
 This is the single biggest gap between what Zimmer's docs (and its own goal text) promise and
-what the code does. It's worth knowing before you trust an autonomous session's "done."
+what the code does. Know this before you trust an autonomous session's "done."
 :::
 
 A blank base prompt short-circuits the whole thing — a guard against spawning an agent whose
