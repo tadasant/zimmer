@@ -9,36 +9,40 @@ sidebar:
 
 **Non-secret** (set in `staging.tfvars` / `production.tfvars`):
 
+Terraform only provisions the **host**. The app image, its env, and the data stores are Kamal's
+(`config/deploy.*.yml`) — they are no longer Terraform variables at all.
+
 | Variable | Notes |
 | --- | --- |
 | `environment` | validated `staging` \| `production` |
 | `region` / `droplet_size` | default `nyc3` / `s-2vcpu-4gb` |
-| `image_ref` | default `ghcr.io/tadasant/zimmer:latest` |
-| `domain` | `""` by default. Set it to turn on [custom-domain HTTPS over the tailnet](/operate/deploying/#custom-domain-https-over-the-tailnet). Terraform no longer creates a DNS record — the `domain-cert` workflow owns the A record. |
-| `manage_project` | `false` by default — a DO project name is account-unique and collides under ephemeral state |
+| `domain` | `""` by default. Set it to turn on [custom-domain HTTPS over the tailnet](/operate/deploying/#custom-domain-https-over-the-tailnet) — cloud-init runs a Caddy terminator on `:443` fronting kamal-proxy. Terraform does not create the DNS record; the `domain-cert` workflow owns the A record. |
+| `manage_project` | **`true`** by default now — with remote state, Terraform reconciles the account-unique project name instead of 409ing |
 | `ssh_key_fingerprints` | |
-| `ghcr_username` | |
-| `managed_db_cluster_name` | `""` for staging (uses the compose `db`); set for production |
-| `managed_db_username` | default `doadmin` |
+| `managed_db_cluster_name` | `""` for staging (Kamal runs a throwaway Postgres accessory); set for production |
 
-**Secrets** (as `TF_VAR_*`, all marked sensitive):
+**Secrets** (as `TF_VAR_*`):
 
-`do_token` · `tailscale_auth_key` · `ghcr_token` · `secret_key_base` · `managed_db_password` ·
-optional `otel_logs_endpoint`, `otel_logs_token`, `sentry_dsn`.
+`do_token` · `tailscale_auth_key` · `deploy_ssh_pubkey` (public half of the Kamal deploy key;
+cloud-init authorizes it for root) · optional `ssh_host_ed25519_key` / `_pub` (pins the droplet's SSH
+host identity so it survives a rebuild — see [Hostname stability](#hostname-stability)).
 
-A `lifecycle.precondition` on the droplet fails the plan if `use_managed_db` is set but
-`managed_db_password` is empty.
+A `lifecycle.precondition` on the droplet fails the plan if `deploy_ssh_pubkey` is empty, since Kamal
+could not reach the box.
 
 ## GitHub Actions secrets
 
 | Secret | Used by |
 | --- | --- |
-| `DIGITALOCEAN_ACCESS_TOKEN` | deploy + teardown (droplet reaping) |
+| `DIGITALOCEAN_ACCESS_TOKEN` | `terraform apply` / `destroy` (the DO provider) |
+| `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` | the Terraform **state backend** on DO Spaces (passed as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
+| `KAMAL_SSH_KEY` / `KAMAL_SSH_PUBKEY` | Kamal's SSH control channel to the droplet (private half in CI; public half baked into cloud-init) |
 | `TAILSCALE_AUTH_KEY` | the droplet's cloud-init `tailscale up` |
-| `TS_CI_AUTHKEY` | **CI's own** tailnet join, for the health check |
+| `TS_CI_AUTHKEY` | **CI's own** tailnet join, to resolve the droplet's IP and health-check it |
 | `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET` | reaping the stale tailnet node |
-| `GHCR_PULL_TOKEN` | `docker login ghcr.io` on the droplet |
-| `STAGING_SECRET_BASE` | Rails `SECRET_KEY_BASE` for staging |
+| `GHCR_PULL_TOKEN` | Kamal's registry login, so the droplet can pull the image |
+| `STAGING_SECRET_BASE` | Rails `SECRET_KEY_BASE` for staging (also the throwaway Postgres password) |
+| `STAGING_API_KEYS` | REST API bearer keys |
 | `OTEL_LOGS_EXPORTER_ENDPOINT` / `_BEARER_TOKEN`, `SENTRY_DSN_BACKEND` | optional observability |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key, not an OAuth client]
@@ -111,20 +115,36 @@ This repo's deploy never SSHes — cloud-init's own comment calls SSH ACLs britt
 needed by the author's private production auto-upgrade workflow.
 :::
 
-## Ephemeral Terraform state
+## Remote Terraform state (DigitalOcean Spaces)
 
-There is no backend block. State lives on the CI runner and evaporates.
+State lives in a **DigitalOcean Spaces** bucket (`zimmer-tfstate`) via the S3-compatible backend, with
+S3-native locking (`use_lockfile`, Terraform ≥ 1.10 — Spaces has no DynamoDB). The backend block in
+`main.tf` is deliberately empty; each environment supplies bucket/key/endpoint through
+`-backend-config=backend.<env>.hcl`, which is what keeps `main.tf` byte-identical to the production
+mirror.
 
-The deploy compensates by hand-reaping the droplet and firewall through the DigitalOcean API before
-every `apply`. A project is account-unique and would 409 on a re-run, which is why `manage_project`
-defaults to `false`. (Terraform no longer manages a DNS record at all — the `domain-cert` workflow owns
-the A record now, out of band.)
+```bash
+terraform init -input=false -backend-config=backend.staging.hcl
+```
 
-Terraform can never converge, and `terraform destroy` can never work properly. This is a known,
-accepted trade-off for a single-operator staging environment, documented in the README. It would not
-survive a second operator.
+The Spaces access keys are passed as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (the
+`SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` Actions secrets).
+
+This is what lets `apply` **converge**. Previously state evaporated with the CI runner, so the deploy
+had to hand-reap the droplet and firewall through the DigitalOcean API before every run, `apply` could
+never reconcile, `terraform destroy` never worked properly, and `manage_project` had to default to
+`false` because an account-unique project name would 409 on a re-run. All of that is gone:
+`manage_project` is now `true`, teardown is a real `terraform destroy`, and there are no reap loops.
 
 ## Hostname stability
+
+Because the droplet is now persistent, a rebuild is rare — which is the main reason its identity stops
+drifting. Two things pin it when a rebuild does happen:
+
+- **`digitalocean_reserved_ip`** keeps the public IP stable across a `create_before_destroy` rebuild.
+- **`ssh_host_ed25519_key`** (optional; empty on staging) pins the SSH **host key**, so a rebuild does
+  not invalidate an SSH client's `known_hosts`. Without it, every re-provision rotates the host key and
+  breaks anything keyed to it.
 
 `scripts/tailnet-reap-node.sh` deletes the stale tailnet node so the MagicDNS name doesn't drift to
 `zimmer-staging-1`, `-2`, …
