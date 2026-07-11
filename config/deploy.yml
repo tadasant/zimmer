@@ -1,0 +1,66 @@
+# Kamal 2 base config for Zimmer — shared across destinations (staging, prod).
+#
+# Destination-specific overrides live in config/deploy.<dest>.yml; secrets in
+# .kamal/secrets.<dest>. Deploy with:  bin/kamal deploy -d staging
+#
+# Zimmer images are built + pushed by CI (release-image.yml / deploy-staging.yml),
+# so Kamal deploys a PREBUILT tag with `--skip-push` rather than building here. The
+# builder block below only exists so `kamal` can parse the config; no build runs in
+# the normal path.
+#
+# The host is a PERSISTENT droplet (Terraform provisions it once with
+# `ignore_changes = [user_data]`); Kamal owns everything above the host and swaps
+# containers with zero downtime via kamal-proxy. This replaces the old model where
+# every app change re-rendered cloud-init and force-replaced the droplet.
+service: zimmer
+image: ghcr.io/tadasant/zimmer
+
+# Force `-d <dest>` on every command so a bare `kamal deploy` can't hit the wrong
+# environment.
+require_destination: true
+
+registry:
+  server: ghcr.io
+  username:
+    - KAMAL_REGISTRY_USERNAME
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# kamal-proxy owns :80 on the host and does health-gated zero-downtime cutover:
+# the new container must answer /up before traffic switches, and a failed deploy
+# leaves the old container serving. When a custom domain is enabled, a host Caddy
+# terminates TLS in front of kamal-proxy (as in agent-orchestrator); staging's
+# first cut is plain HTTP over the tailnet, so ssl is off here.
+proxy:
+  ssl: false
+  app_port: 80
+  healthcheck:
+    path: /up
+    interval: 3
+    timeout: 5
+
+# The image entrypoint runs `bin/rails db:prepare` and then boots Thruster+Puma,
+# which can exceed Kamal's 30s default on a cold start (matches AO's observation).
+deploy_timeout: 120
+
+builder:
+  arch: amd64
+  driver: docker
+
+env:
+  clear:
+    # Staging runs the production Rails env, matching the pre-Kamal cloud-init.
+    RAILS_ENV: production
+    OTEL_SERVICE_NAME: zimmer
+    # Accessories share the Kamal docker network; reach them by container name
+    # (<service>-<accessory>).
+    REDIS_URL: redis://zimmer-redis:6379/0
+
+aliases:
+  console: app exec --interactive --reuse "bin/rails console"
+  logs: app logs -f
+
+# Keep the last N images on the host so `kamal rollback <version>` is instant.
+retain_containers: 5
+
+minimum_version: 2.0.0

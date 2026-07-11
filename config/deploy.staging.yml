@@ -1,0 +1,79 @@
+# Kamal staging destination. Merged over config/deploy.yml.
+# Secrets are read from .kamal/secrets.staging.
+#
+# STAGING_HOST is injected by the deploy workflow as the droplet's TAILNET address
+# (GitHub runners get no MagicDNS, so the workflow resolves the IP from
+# `tailscale status --json` and exports it). Both roles and both accessories run on
+# the single staging droplet.
+servers:
+  web:
+    hosts:
+      - <%= ENV["STAGING_HOST"] %>
+    options:
+      # tini-style PID 1 so agent-spawned grandchildren (gh, git, node, chrome,
+      # claude) are reaped instead of piling up as zombies.
+      init: true
+    volumes:
+      # Durable named volumes shared by web + worker so both see the same clones,
+      # Claude credentials, and gh auth. They survive kamal container swaps (the
+      # whole point of a persistent host) — no more losing state on every deploy.
+      - zimmer_data:/home/rails/.zimmer
+      - claude_home:/home/rails/.claude
+      - gh_config:/home/rails/.config/gh
+      - claude_local:/home/rails/.local
+  worker:
+    hosts:
+      - <%= ENV["STAGING_HOST"] %>
+    # production.rb sets good_job.execution_mode = :external, so jobs only run if a
+    # dedicated worker process is up. Same image/env/volumes as web.
+    cmd: bundle exec good_job start
+    proxy: false
+    options:
+      init: true
+    volumes:
+      - zimmer_data:/home/rails/.zimmer
+      - claude_home:/home/rails/.claude
+      - gh_config:/home/rails/.config/gh
+      - claude_local:/home/rails/.local
+      # DockerCleanupJob prunes stale agent containers; it needs the host socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+ssh:
+  user: root
+
+env:
+  clear:
+    # Plain HTTP over the tailnet for the first staging cut (MagicDNS name).
+    APP_HOST: zimmer-staging
+    DATABASE_HOST: zimmer-db
+    DATABASE_PORT: "5432"
+    DATABASE_USERNAME: zimmer
+    # The throwaway compose Postgres speaks no TLS.
+    DATABASE_SSLMODE: prefer
+  secret:
+    - SECRET_KEY_BASE
+    - API_KEYS
+    - DATABASE_PASSWORD
+
+# Staging's data stores run as Kamal accessories on the same droplet (throwaway;
+# they hold nothing durable). Production instead points DATABASE_HOST at the
+# Terraform-managed Managed Postgres and ships no db accessory.
+accessories:
+  db:
+    image: postgres:16
+    host: <%= ENV["STAGING_HOST"] %>
+    env:
+      clear:
+        POSTGRES_USER: zimmer
+        # Seeds the primary DB; db:prepare creates zimmer_production_cable too
+        # (POSTGRES_USER is the cluster superuser).
+        POSTGRES_DB: zimmer_production
+      secret:
+        - POSTGRES_PASSWORD
+    volumes:
+      - zimmer_pgdata:/var/lib/postgresql/data
+  redis:
+    image: redis:7
+    host: <%= ENV["STAGING_HOST"] %>
+    volumes:
+      - zimmer_redisdata:/data
