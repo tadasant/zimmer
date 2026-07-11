@@ -71,16 +71,16 @@ Entry points: `AirCatalogService`, `AgentRootsConfig`, `SkillsConfig`,
 
 Optional behavior lives in `app/extensions/<id>/` and must be fully removable —
 deleting the directory leaves a working app. See
-[Extensions](https://zimmer.tadasant.com/extend/extensions/).
+[Extensions](https://docs.zimmer.tadasant.com/extend/extensions/).
 
 ## Documentation
 
 The docs site lives in [`docs/`](docs) (Astro Starlight → Cloudflare Pages) and is
-published at [zimmer.tadasant.com](https://zimmer.tadasant.com/). **Update the relevant page in the same PR as
+published at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com/). **Update the relevant page in the same PR as
 the behavior change** — the mapping from code area to page is in
 [AGENTS.md](AGENTS.md#documentation-lives-in-docs--update-it-in-the-same-pr). New
 limitations, hacks, and known-broken edges belong on the
-[Known limitations](https://zimmer.tadasant.com/limitations/) page; it is a feature, not a confession.
+[Known limitations](https://docs.zimmer.tadasant.com/limitations/) page; it is a feature, not a confession.
 
 `cd docs && npm run build` is what the `docs_site` CI job runs.
 

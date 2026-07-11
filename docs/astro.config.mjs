@@ -5,7 +5,7 @@ import { remarkMermaid } from "./src/plugins/remark-mermaid.mjs";
 
 // The canonical public URL. Override with SITE_URL at build time (Cloudflare
 // Pages preview deployments get a per-branch hostname).
-const site = process.env.SITE_URL || "https://zimmer.tadasant.com";
+const site = process.env.SITE_URL || "https://docs.zimmer.tadasant.com";
 
 export default defineConfig({
   site,
