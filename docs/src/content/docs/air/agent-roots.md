@@ -53,11 +53,11 @@ each artifact's own entry.
 
 :::caution[Several roots point at a repo that isn't this one]
 Five roots (`agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*`
-phases) have `"url": "https://github.com/tadasant/zimmer-catalog.git"` — a **separate repository**
+phases) have `"url": "https://github.com/tadasant/zimmer-catalog.git"` — a separate repository
 that is not part of this project and whose contents this documentation cannot verify.
 
 This is a leftover from the monorepo split. `roots.json` also gives `agent-orchestrator` the
-`display_name` "Zimmer" — the *same* display name as the `zimmer` root — so the two are
+`display_name` "Zimmer" (the *same* display name as the `zimmer` root), so the two are
 indistinguishable in a picker. That looks like a bug.
 :::
 
@@ -103,16 +103,16 @@ flowchart TD
     G --> ART["catalog_skills / mcp_servers / catalog_hooks / catalog_plugins<br/>← root's computed defaults (from default_in_roots)"]
 ```
 
-Once seeded, **the session owns its own lists.** The UI's PATCH endpoints mutate them directly, and
+Once seeded, the session owns its own lists. The UI's PATCH endpoints mutate them directly, and
 `air prepare` is called with `--without-defaults` so AIR won't re-add anything the user removed.
 
 :::caution[The runtime/model fallback chain only works if you pass an `agent_root`]
 `docs/REST_API.md` claimed the fallback was: agent root's default → the global Settings default →
 `claude_code`. That's only true in the `agent_root` branch.
 
-With **no `agent_root` param**, `Api::V1::SessionsController#create` returns early from
-`resolve_agent_root_defaults!` and the runtime is just the database column default (`claude_code`).
-**The Settings-page default is never consulted.** Same for the model: it goes straight to
+With no `agent_root` param, `Api::V1::SessionsController#create` returns early from
+`resolve_agent_root_defaults!` and the runtime is the database column default (`claude_code`).
+The Settings-page default is never consulted. Same for the model: it goes straight to
 `ModelCatalog.default_for(runtime)`, skipping `AppSetting.resolved_default_model_for` entirely.
 
 So if you set a global default runtime of `codex` in Settings and then create a session via the API

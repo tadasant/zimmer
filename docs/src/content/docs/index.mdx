@@ -6,7 +6,7 @@ head:
   - tag: title
     content: Zimmer — Self-hostable orchestration for AI coding agents
 hero:
-  tagline: Self-hostable orchestration for AI coding agents. You give it a task and a repo; it gives you back a pull request — or a specific question about why it can't.
+  tagline: Self-hostable orchestration for AI coding agents. You give it a task and a repo; it hands you back a pull request to approve, or a specific question about why it couldn't.
   image:
     file: ../../assets/logo-dark.svg
   actions:
@@ -24,16 +24,21 @@ hero:
 
 import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
 
-## Start here
+Zimmer is open-source, standards-built, and made for a single circle of trust — you,
+or a couple, or business partners. You stay in control of what runs and what merges;
+Zimmer handles the toil of getting an agent from a prompt to a verified PR.
 
-<CardGrid stagger>
-  <Card title="It runs agents, not chats" icon="rocket">
-    A Zimmer session is a real coding agent process — Claude Code or Codex — running
-    headless against a real clone of a real repo. It commits, it pushes, it opens PRs.
+## What it does
+
+<CardGrid>
+  <Card title="It runs a real agent, headless" icon="server">
+    A session is a real Claude Code or Codex process running against a real clone of a
+    real repo. It commits, it pushes, it opens a PR, and it hands the result back for you
+    to approve.
   </Card>
-  <Card title="It has a lifecycle" icon="seti:config">
-    `waiting → running → needs_input → archived`. Every session is somewhere in that
-    machine, and the machine — not a human watching a terminal — decides what happens next.
+  <Card title="It has a lifecycle" icon="random">
+    `waiting → running → needs_input → archived`. Every session sits in one of those
+    states, and the state machine decides the next move, not a human babysitting a terminal.
   </Card>
   <Card title="It wires the context" icon="puzzle">
     Skills, MCP servers, agent roots, hooks, plugins, and references are resolved from a
@@ -45,41 +50,41 @@ import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
   </Card>
 </CardGrid>
 
-<Aside type="caution" title="These docs are deliberately blunt">
-Zimmer is a single-operator, self-hosted tool with rough edges, and this site names them —
-inline, on the page where they bite, and aggregated on [Known limitations](/limitations/).
-Where the code and the old docs disagreed, **the code won**, and the contradiction is
-written down. Where the code was genuinely ambiguous, you'll see an
-"unclear / needs confirmation" callout rather than a confident guess.
+<Aside type="tip" title="These docs are blunt on purpose">
+The premise is that you can read this site instead of the code. That only works if it tells
+you what the code would, so it names Zimmer's real bugs and limitations — inline where they
+bite, and aggregated on [Known limitations](/limitations/). Where the code and the old docs
+disagreed, the code wins and the contradiction is written down. Where the code was genuinely
+ambiguous, you get an "unclear — needs confirmation" note instead of a guess.
 </Aside>
 
-## The two-minute version
+## Where to go next
 
 <CardGrid>
   <LinkCard
     title="Philosophy"
     href="/intro/philosophy/"
-    description="The eight opinions baked into Zimmer: isolated clones, closed-loop autonomy, MCP as a blast radius, PR-as-review-gate, and why the catalog exists."
+    description="The opinions baked into Zimmer: isolated clones, closed-loop autonomy, MCP as a blast radius, PR-as-review-gate, and why the catalog exists."
   />
   <LinkCard
     title="Architecture"
     href="/intro/architecture/"
-    description="Rails app, GoodJob workers, agent subprocesses, Postgres, Redis — and the diagram that shows how a prompt becomes a running process."
+    description="Rails app, GoodJob workers, agent subprocesses, Postgres, Redis, and the diagram of how a prompt becomes a running process."
   />
   <LinkCard
-    title="Session lifecycle"
-    href="/sessions/lifecycle/"
-    description="The AASM state machine, every event and guard, and the three transitions the old docs never mentioned."
+    title="Run it locally"
+    href="/start/local/"
+    description="Prerequisites, setup, and the environment variables that actually matter."
   />
   <LinkCard
     title="AIR"
     href="/air/overview/"
-    description="The separate project that resolves an agent's context from a catalog. This is the canonical write-up."
+    description="The separate open-source project that resolves an agent's context from a catalog. This is the canonical write-up."
   />
   <LinkCard
     title="REST API"
     href="/extend/rest-api/"
-    description="Every endpoint, re-derived from routes.rb — including the six resources the old reference forgot."
+    description="Every endpoint, re-derived from the routes, including the six resources the old reference forgot."
   />
   <LinkCard
     title="Known limitations"

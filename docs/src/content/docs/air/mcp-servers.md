@@ -5,12 +5,12 @@ sidebar:
   order: 5
 ---
 
-An MCP server is a tool provider the agent can call. **The set of MCP servers on a session is the
-session's blast radius** — the complete list of things the agent can do outside its own clone.
+An MCP server is a tool provider the agent can call. The set of MCP servers on a session is the
+session's blast radius — the complete list of things the agent can do outside its own clone.
 
 ## The entry format
 
-MCP is the one artifact type with **no separate body** — the index entry *is* the connection config.
+MCP is the one artifact type with no separate body — the index entry *is* the connection config.
 From `mcp.json`:
 
 ```json
@@ -64,8 +64,8 @@ flowchart LR
     VAL -->|no| OUT
 ```
 
-The catalog carries the **placeholder**. The environment carries the **value**. The transform joins
-them at prepare time, and AIR then **validates that no `${VAR}` survived** and fails if any did.
+The catalog carries the placeholder. The environment carries the value. The transform joins
+them at prepare time, and AIR then validates that no `${VAR}` survived and fails if any did.
 
 That validation is the good part: a typo'd secret name fails loudly at prepare rather than silently
 handing the agent a server that 401s on every call.
@@ -75,7 +75,7 @@ Zimmer's `SecretsLoader` resolves values in this order: `XOauthTokenVendor` (for
 
 ## Selection is per session
 
-A session's server list is seeded from the agent root's defaults and then **owned by the session**.
+A session's server list is seeded from the agent root's defaults and then owned by the session.
 The UI and the API (`PATCH /api/v1/sessions/:id/mcp_servers`, max 50) mutate it directly, and `air
 prepare` runs with `--without-defaults` so AIR won't re-add what you removed.
 
@@ -88,7 +88,7 @@ title, or schedule its own wake-up. `session_json` exposes three fields for this
 
 A remote server (`http` / `streamable-http` / `sse`) with no static `Authorization` header is assumed
 to possibly need OAuth. Before spawn, `McpOauthCredentialInjector` checks each one; if any lacks a
-valid credential, the session is **parked in `failed`** with `failure_reason: oauth_required`, and
+valid credential, the session is parked in `failed` with `failure_reason: oauth_required`, and
 the UI renders Authorize buttons.
 
 → [MCP server OAuth](/auth/mcp-oauth/) for the full flow.
@@ -99,16 +99,16 @@ There is no protocol-level "did this server connect" signal that Zimmer consumes
 
 - **Claude**: `McpLogPollerService` scrapes the CLI's MCP log files.
 - **Codex**: `CodexMcpStatusDetector` string-matches tool names against `codex-rs`'s
-  `MCP_TOOL_NAME_DELIMITER = "__"`, and **reimplements Codex's internal
-  `sanitize_responses_api_tool_name` character rules in Ruby**.
+  `MCP_TOOL_NAME_DELIMITER = "__"`, and reimplements Codex's internal
+  `sanitize_responses_api_tool_name` character rules in Ruby.
 
 :::caution[Reimplementing another project's private internals]
 That Codex detector is a Ruby port of a Rust function that is not a public API. If Codex changes its
 tool-name sanitization, Zimmer's MCP status display silently goes wrong.
 
 A related bug was fixed only recently: sessions whose root had no MCP servers of its own but which
-got auto-injected ones would show **"pending" forever in the UI even though the server was connected
-and serving tools**.
+got auto-injected ones would show "pending" forever in the UI even though the server was connected
+and serving tools.
 :::
 
 ## Timeouts and caching

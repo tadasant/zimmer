@@ -40,8 +40,8 @@ flowchart TB
 
 ## The catalog is self-contained and offline
 
-Zimmer's `air.json` declares a catalog named `zimmer-catalog` with **no `catalogs` field and no
-`github://` URIs** — only six local index paths, `gitProtocol: "https"`, and two extensions
+Zimmer's `air.json` declares a catalog named `zimmer-catalog` with no `catalogs` field and no
+`github://` URIs — only six local index paths, `gitProtocol: "https"`, and two extensions
 (`@pulsemcp/air-adapter-claude`, `@pulsemcp/air-secrets-env`).
 
 Everything lands under `@local/`, which is why `--no-scope` is safe: there can't be a cross-scope
@@ -55,7 +55,7 @@ catalogs, no network), so the app's config services always resolve non-empty dat
 
 ### `air.json` vs `air.production.json`
 
-They are **content-identical today**. The split is a *seam*, not a difference — it lets the
+They are content-identical today. The split is a *seam* — it lets the
 production image pin its own catalog sources without touching the dev/test config. Selection is
 per-environment: `development`/`test` use `air.json`, `production`/`staging` use
 `air.production.json`. `AIR_CONFIG` always wins.
@@ -64,9 +64,9 @@ per-environment: `development`/`test` use `air.json`, `production`/`staging` use
 The comments in `config/environments/production.rb` and `staging.rb` still say
 `air.production.json` *"uses `github://` URIs to pull catalog content from tadasant/zimmer-catalog."*
 
-**It doesn't.** The file on disk is entirely local paths. As a result, all of `AirCatalogService`'s
+It doesn't. The file on disk is entirely local paths. As a result, all of `AirCatalogService`'s
 github-cache machinery (`~/.air/cache/github`, `resolved_sha_for`, `pinnable_catalogs`, catalog
-pins) is currently **dormant infrastructure** — correct code for a configuration nobody is running.
+pins) is currently dormant infrastructure — correct code for a configuration nobody is running.
 :::
 
 ## A dangling reference is treated as a failed resolve
@@ -74,9 +74,9 @@ pins) is currently **dormant infrastructure** — correct code for a configurati
 This is the sharpest coupling between the two systems, and the most brittle thing in Zimmer.
 
 [AIR exits 0](/air/overview/#the-failure-semantics-matter-more-than-youd-think) when it drops an
-unresolvable reference, printing a warning to stderr. So Zimmer **scans stderr for two literal
-strings** — `"references unknown"` and `"Dropping the reference"` — and, if both appear, raises
-`CatalogError` **despite the exit code being 0**.
+unresolvable reference, printing a warning to stderr. So Zimmer scans stderr for two literal
+strings (`"references unknown"` and `"Dropping the reference"`) and, if both appear, raises
+`CatalogError` despite the exit code being 0.
 
 Why so aggressive? Because a dropped reference is exactly what strips a root's `default_skills`,
 `default_mcp_servers`, and `default_hooks`. Persisting that tree would misconfigure every session
@@ -99,19 +99,19 @@ AIR version.
 
 ### The blast radius is the entire test suite
 
-`test/test_helper.rb` pre-warms the catalog **at boot, before `parallelize` forks its workers**.
-So a catalog that fails to resolve does not fail one test — it fails **every test that creates a
-session**, all at once, with `ActiveRecord::RecordInvalid`.
+`test/test_helper.rb` pre-warms the catalog at boot, before `parallelize` forks its workers.
+So a catalog that fails to resolve does not fail one test — it fails every test that creates a
+session, all at once, with `ActiveRecord::RecordInvalid`.
 
-A single dangling reference — a plugin bundling a skill that no longer exists, a `default_in_roots`
-naming an unknown root — reddens the whole suite. `CONTRIBUTING.md` says it: if you see a sudden
-wave of `RecordInvalid` across unrelated session tests, **suspect the catalog before you suspect
-your change.**
+A single dangling reference (a plugin bundling a skill that no longer exists, a `default_in_roots`
+naming an unknown root) reddens the whole suite. `CONTRIBUTING.md` says it: if you see a sudden
+wave of `RecordInvalid` across unrelated session tests, suspect the catalog before you suspect
+your change.
 
 :::danger[There is a missing hook body in the catalog right now]
 `hooks/hooks.json` declares `git-push-ci-reminder` with `"path": "git-push-ci-reminder"`, and
-`plugins/ci-workflow/.plugin/plugin.json` bundles that hook — but **`hooks/git-push-ci-reminder/`
-does not exist on disk.** The `hooks/` directory contains only `hooks.json`.
+`plugins/ci-workflow/.plugin/plugin.json` bundles that hook — but `hooks/git-push-ci-reminder/`
+does not exist on disk. The `hooks/` directory contains only `hooks.json`.
 
 This is a missing *body*, not a dangling *reference*, so it slips past the stderr marker check at
 resolve time. It will bite at `air prepare`, when the Claude adapter tries to copy a hook directory
@@ -130,7 +130,7 @@ On failure, `load!` walks down: in-memory tree → `CatalogSnapshot.latest` → 
 `@degraded = true`, logs at `error` once and `info` thereafter (no alert spam), and surfaces
 `degraded?` / `last_known_good_at` to health checks and the settings UI.
 
-**Only a first-ever cold boot with a broken catalog and no snapshot actually raises.** The
+Only a first-ever cold boot with a broken catalog and no snapshot raises. The
 consequence: a broken catalog can be invisible until restart.
 
 :::note[A background thread inside Puma, to paper over a container mismatch]
@@ -158,14 +158,14 @@ air prepare <adapter> \
 
 Two decisions here are load-bearing:
 
-**`--without-defaults` is deliberate.** Zimmer already stores the *final resolved* per-session
+`--without-defaults` is deliberate. Zimmer already stores the *final resolved* per-session
 artifact lists in the database — the UI's PATCH endpoints mutate them directly. AIR 0.0.30 flipped
 `--skill` semantics from "replace defaults" to "add to defaults." Without `--without-defaults`, a
 user removing a default artifact in the UI would watch AIR silently re-add it from the root
 defaults. So Zimmer uses AIR's root-defaults machinery at **read** time (to seed a new session) and
 explicitly bypasses it at **prepare** time.
 
-**Secrets flow through the environment, not through AIR.** `SecretsLoader.all` is merged into the
+Secrets flow through the environment, not through AIR. `SecretsLoader.all` is merged into the
 subprocess env; `@pulsemcp/air-secrets-env` substitutes the `${VAR}` placeholders into `.mcp.json`;
 AIR then fails the prepare if any `${VAR}` survived, which Zimmer catches as a graceful,
 non-paging `SecretResolutionError`.
@@ -196,10 +196,10 @@ runtime.
 
 `SkillsConfig`, `AgentRootsConfig`, `ServersConfig`, `PluginsConfig`, `HooksConfig`, and
 `ReferencesConfig` are thin read-models over `AirCatalogService.entries_for(:type)`. Each shapes
-raw resolve output into a Ruby value object, and each **swallows `CatalogError` into an empty array
-with a warning** — so a catalog failure degrades the UI rather than 500-ing it.
+raw resolve output into a Ruby value object, and each swallows `CatalogError` into an empty array
+with a warning — so a catalog failure degrades the UI rather than 500-ing it.
 
-**Never parse the index files directly.** That's the rule in `AGENTS.md` and it's a good one: the
+Never parse the index files directly. That's the rule in `AGENTS.md` and it's a good one: the
 indexes are AIR's input, not Zimmer's data model. The resolved tree is what Zimmer consumes, and it
 differs from the raw index (references canonicalized, `default_in_roots` inverted and deleted, paths
 absolutized).

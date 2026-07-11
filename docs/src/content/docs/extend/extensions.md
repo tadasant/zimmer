@@ -53,7 +53,7 @@ flowchart LR
 
 :::caution[Only one of those three is runtime-generic]
 `spawn_env_contribution` receives a `runtime` context, which implies it applies to any runtime. It
-doesn't: **`CodexRuntimeAdapter#spawn_process` never calls the registry.** Extension env contributions
+doesn't: `CodexRuntimeAdapter#spawn_process` never calls the registry. Extension env contributions
 are unreachable for Codex sessions.
 
 The other two mount points are Claude-specific by name (`ClaudePrintRunner`, `ClaudeSpawnEnv`).
@@ -61,10 +61,10 @@ The other two mount points are Claude-specific by name (`ClaudePrintRunner`, `Cl
 
 ## What ships: exactly one
 
-`McpToolSearchExtension` (`app/extensions/mcp_tool_search/`), id `mcp_tool_search`, experimental, **off
-by default**.
+`McpToolSearchExtension` (`app/extensions/mcp_tool_search/`), id `mcp_tool_search`, experimental, off
+by default.
 
-Its only hook is `spawn_env_contribution`, returning `{"ENABLE_TOOL_SEARCH" => "true"}` — but **only**
+Its only hook is `spawn_env_contribution`, returning `{"ENABLE_TOOL_SEARCH" => "true"}` — but only
 when `context[:runtime] == "claude_code"`. That flips Zimmer's baseline `ENABLE_TOOL_SEARCH=false`, so
 Claude Code searches MCP tools on demand rather than loading every tool schema into context up front.
 
@@ -73,7 +73,7 @@ Claude Code searches MCP tools on demand rather than loading every tool schema i
 `PtyTransportExtension` (bundling `PtyClaudeCliAdapter`, `PtyClaudePrintRunner`,
 `PtyClaudeRetryStrategy`) as shipping.
 
-**No such directory or class exists in this repo.** `BUILTIN_EXTENSION_CLASSES` contains only
+No such directory or class exists in this repo. `BUILTIN_EXTENSION_CLASSES` contains only
 `McpToolSearchExtension`. `pty_transport` survives only in code comments and in the (now deleted) docs.
 The old doc's "Verifying removability" section told you to rename `app/extensions/pty_transport/` — a
 directory that isn't there.
@@ -88,7 +88,7 @@ directory that isn't there.
 AppSetting.first_or_create!.set_extension_enabled("mcp_tool_search", true)
 ```
 
-**Install** — here's the wrinkle: **the core Docker image ships with no extensions at all.**
+**Install** — here's the wrinkle: the core Docker image ships with no extensions at all.
 `.dockerignore` excludes `/app/extensions/*/`. Even `mcp_tool_search` is absent from a built image.
 
 ```bash
@@ -125,10 +125,10 @@ Then add `"MyThingExtension"` to `Ao::ExtensionRegistry::BUILTIN_EXTENSION_CLASS
 `config/application.rb` does
 `Rails.autoloaders.main.collapse(Rails.root.join("app/extensions/*"))`.
 
-So `app/extensions/my_thing/my_widget.rb` must define **`MyWidget`**, not `MyThing::MyWidget`.
+So `app/extensions/my_thing/my_widget.rb` must define `MyWidget`, not `MyThing::MyWidget`.
 :::
 
-Register it in `config/initializers/ao_extensions.rb`? No — that file just calls `reset!` and
+Register it in `config/initializers/ao_extensions.rb`? No — that file only calls `reset!` and
 `register_builtins!` inside a `to_prepare` block (so it survives dev reloads). Adding the class name
 to `BUILTIN_EXTENSION_CLASSES` is the whole registration.
 

@@ -5,20 +5,12 @@ sidebar:
   order: 1
 ---
 
-Base URL `/api/v1`. Authentication is the **`X-API-Key`** header, compared against
+Base URL `/api/v1`. Authentication is the `X-API-Key` header, compared against
 `ENV["API_KEYS"]` (comma-separated) with a constant-time comparison.
 
 :::caution[API keys have no scope, no identity, and no audit trail]
-A key is an opaque string. Any valid key can read, mutate, and delete every session, trigger, and
-category. Keys are memoized per request from ENV, so **rotation requires a restart**. There is no
-record of which key did what.
-:::
-
-:::note[This page replaces a 1,600-line reference that had drifted]
-The old `docs/REST_API.md` omitted **six entire resources** (triggers, notifications, health, clis,
-transcript_archive, and `/api/secrets/keys`), claimed the API had no rate limiting (it does), and
-claimed `claude_code` was the only runtime (it isn't). Everything below is derived from
-`config/routes.rb` and the controllers.
+A key is an opaque string. Any valid key can do anything to any session, trigger, or category. Keys are
+memoized per request from ENV, so rotation requires a restart. There is no record of which key did what.
 :::
 
 ## Sessions
@@ -28,14 +20,14 @@ claimed `claude_code` was the only runtime (it isn't). Everything below is deriv
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/sessions` | filters: `status`, `agent_runtime`, `show_archived`, `page`, `per_page` |
-| `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`. Missing/oversized `q` → **400** (the only 400 in the API) |
+| `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`. Missing/oversized `q` → 400 (the only 400 in the API) |
 | `GET` | `/sessions/:id` | `include_transcript=true` adds the raw transcript |
-| `POST` | `/sessions` | → **201**. See below. |
+| `POST` | `/sessions` | → 201. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `custom_metadata` |
 | `DELETE` | `/sessions/:id` | → 204 |
 | `POST` | `/sessions/:id/archive` | → `{session, message, trash_after}` |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}` |
-| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal`, `force_immediate`. **202 if the session is running** (queued); 200 otherwise |
+| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal`, `force_immediate`. 202 if the session is running (queued); 200 otherwise |
 | `POST` | `/sessions/:id/pause` | running only |
 | `POST` | `/sessions/:id/sleep` | `needs_input` → sleeps; `running` → sets `pending_sleep` |
 | `POST` | `/sessions/:id/restart` | |
@@ -59,15 +51,15 @@ Permitted params: `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory
 `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`, `catalog_plugins[]`, `config{}`,
 `custom_metadata{}`.
 
-**Plus `agent_root`** — which is read directly from `params`, *outside* the strong-params permit list.
+One more: `agent_root`, which is read directly from `params`, *outside* the strong-params permit list.
 An invalid one → `422 {"error": "Invalid agent_root"}`.
 
-The `AgentSessionJob` is enqueued **only if `prompt` is present**.
+The `AgentSessionJob` is enqueued only if `prompt` is present.
 
 :::caution[Without `agent_root`, the Settings-page defaults are silently ignored]
 With no `agent_root`, `resolve_agent_root_defaults!` returns early: the runtime falls back to the DB
 column default (`claude_code`) and the model goes straight to `ModelCatalog.default_for(runtime)`.
-`AppSetting`'s global defaults are **never consulted**.
+`AppSetting`'s global defaults are never consulted.
 :::
 
 ### `session_json`
@@ -80,7 +72,7 @@ column default (`claude_code`) and the model goes straight to `ModelCatalog.defa
 `created_at`, `updated_at`, `session_notes`, `session_notes_updated_at`, `favorited`.
 
 :::note[`session` doesn't always mean the same shape]
-`POST /enqueued_messages/:id/interrupt` returns a **six-field subset** under the same `session` key.
+`POST /enqueued_messages/:id/interrupt` returns a six-field subset under the same `session` key.
 Two endpoints, same key, different shape.
 :::
 
@@ -88,16 +80,16 @@ Two endpoints, same key, different shape.
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,
 limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` · `GET /triggers/channels`
-(Slack; **503** when Slack is unconfigured).
+(Slack; 503 when Slack is unconfigured).
 
 Conditions are nested via `trigger_conditions_attributes`. The web UI's `triggers#invoke` route has
-**no API equivalent**.
+no API equivalent.
 
 ## Notifications
 
 `GET /notifications` (`status=read|unread`) · `GET /notifications/:id` ·
 `GET /notifications/badge` → `{pending_count}` · `PATCH /notifications/:id/mark_read` ·
-`PATCH /notifications/mark_all_read` · `DELETE /notifications/:id/dismiss` (**422 if unread**) ·
+`PATCH /notifications/mark_all_read` · `DELETE /notifications/:id/dismiss` (422 if unread) ·
 `DELETE /notifications/dismiss_all_read` · `POST /notifications/push` (`session_id` + `message`).
 
 ## Health
@@ -108,7 +100,7 @@ Conditions are nested via `trigger_conditions_attributes`. The web UI's `trigger
 
 :::caution[The only rate limit in the API lives here — and it's global]
 The three `POST`s share a `CLEANUP_COOLDOWN = 30.seconds`, keyed in `Rails.cache` as
-`health_api_rate_limit:<action>`. That key is **not scoped to an API key** — one client's cleanup
+`health_api_rate_limit:<action>`. That key is not scoped to an API key, so one client's cleanup
 locks out every other client for 30 seconds. Exceeded → `429 {"error": "Rate limited", "retry_after": 30}`.
 
 It also silently no-ops if `Rails.cache` is a null store.
@@ -124,7 +116,7 @@ It also silently no-ops if `Rails.cache` is a null store.
 The first two skip auth because the MCP child process has no API key. See
 [Elicitation](/sessions/elicitation/).
 
-Note the parameter is **`action_type`**, not `action` — `action` is a Rails reserved param.
+Note the parameter is `action_type`, not `action` — `action` is a Rails reserved param.
 
 ## The rest
 
@@ -139,7 +131,7 @@ Note the parameter is **`action_type`**, not `action` — `action` is a Rails re
 | **Config (read-only)** | `GET /configs` · `GET /mcp_servers` · `GET /skills` |
 
 :::danger[`GET /api/secrets/keys` has no authentication]
-`Api::SecretsController` inherits `ApplicationController`, **not** `Api::BaseController` — so it is
+`Api::SecretsController` inherits `ApplicationController`, not `Api::BaseController`, so it is
 outside the API-key gate entirely. It returns `{secrets: [{name, description}]}` — secret *names and
 descriptions*, not values.
 
@@ -172,7 +164,7 @@ oversized search `q`.
 
 ## Keeping this page honest
 
-`app/controllers/api/AGENTS.md` requires that **both** doc surfaces — this page and
+`app/controllers/api/AGENTS.md` requires that both doc surfaces — this page and
 `app/views/api_docs/show.html.erb` (the in-app `/api_docs` page) — be updated with every endpoint
 change. Both had drifted. `app/views/api_docs/show.html.erb` is still missing triggers,
 notifications, health, clis, and transcript_archive.

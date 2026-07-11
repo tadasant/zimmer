@@ -32,6 +32,23 @@ the others, so the doc contradicts its own body. The second kind is easy to miss
 because the stale text isn't a renamed symbol you can grep for — it's a still-
 plausible sentence whose *claim* is now wrong. Catch both.
 
+## Brand and voice — non-negotiable for any prose you write
+
+Two references travel with this skill and govern every word you add or rewrite:
+
+- **`references/brand`** (`references/BRAND.md`) — what Zimmer is, who it's for (a
+  single circle of trust: personal, a couple, or partners — never teams or
+  enterprise), and the opinions that follow. It decides framing: the trust model
+  is intent, not apology; the human stays in control; Zimmer handles the toil.
+- **`references/brand-voice`** (`references/BRAND_VOICE.md`) — how Zimmer sounds:
+  plain, direct, specific, honest, and free of AI-slop tells (the antithesis
+  reflex, em-dash overload, bold sprinkling, hype adjectives, filler verbs).
+
+Read both before touching user-facing prose (docs, README, UI copy). When you fix
+a stale fact, fix it *in Zimmer's voice* — don't leave slop behind just because it
+was there before. When a wording or framing choice is ambiguous, the brand
+reference decides it, not your instinct.
+
 ## When to use
 
 Run this **every time you are about to open a pull request** — as the final

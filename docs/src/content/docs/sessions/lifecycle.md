@@ -13,9 +13,9 @@ are as important as the state change itself.
 
 | State | DB value | Meaning |
 | --- | --- | --- |
-| `waiting` | 1 | Queued, or dormant awaiting a scheduled wake-up. **The initial state.** |
+| `waiting` | 1 | Queued, or dormant awaiting a scheduled wake-up. The initial state. |
 | `running` | 0 | An agent process is alive and a monitoring job owns it. |
-| `needs_input` | 2 | The agent's turn ended, or it's blocked on an elicitation. **This is your to-do list.** |
+| `needs_input` | 2 | The agent's turn ended, or it's blocked on an elicitation. This is your to-do list. |
 | `failed` | 4 | Terminal error. Resumable. |
 | `archived` | 3 | In the trash. Restorable until the clone is reaped. |
 
@@ -53,7 +53,7 @@ stateDiagram-v2
 ```
 
 :::note[The old `docs/SESSION_STATE_MACHINE.md` was missing five of these]
-It documented `start`, `sleep`, `pause`, `resume`, `fail`, and `archive`. It did **not**
+It documented `start`, `sleep`, `pause`, `resume`, `fail`, and `archive`. It did not
 document `block_on_elicitation`, `unblock_from_elicitation`, or the three `unarchive_to_*`
 events. It also claimed you cannot archive a running session — you can; `archive` transitions
 from `waiting`, `running`, `needs_input`, *and* `failed` (the UI exposes this as force-archiving
@@ -78,7 +78,7 @@ transition, and it does five things beyond changing status:
 5. `execute_pending_sleep` — if the agent called "wake me up later" *while running*, the sleep
    was deferred to here; now it fires.
 
-**The debounce is worth understanding.** Sessions sometimes flap `running → needs_input →
+The debounce is worth understanding. Sessions sometimes flap `running → needs_input →
 running` between turns, and without debouncing every flap would push a notification. So the
 push job is enqueued with a 60-second delay (`NEEDS_INPUT_DEBOUNCE`) carrying a monotonic
 marker from `custom_metadata["needs_input_count"]`. If the session churns during the window,
@@ -88,8 +88,8 @@ the marker won't match and the deferred job no-ops.
 
 Unguarded (`can_resume?` returns `true` unconditionally — the job handles preconditions).
 Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
-`blocked_on_elicitation` marker, any `pending_sleep`, and — importantly — it
-**cancels pending one-time wake-up triggers** targeting this session, so a scheduled wake
+`blocked_on_elicitation` marker, any `pending_sleep`, and, importantly, it
+cancels pending one-time wake-up triggers targeting this session, so a scheduled wake
 doesn't fire on a session you already resumed by hand.
 
 ### `sleep` — `needs_input → waiting`
@@ -101,9 +101,9 @@ and the actual transition happens on the next `pause`.
 ### `block_on_elicitation` / `unblock_from_elicitation` — `running ⇄ needs_input`
 
 This pair exists because an elicitation is *not* a turn ending. An MCP server made a
-synchronous request and is blocked waiting for the human; **the agent process is still alive**.
+synchronous request and is blocked waiting for the human; the agent process is still alive.
 So `block_on_elicitation` surfaces the session as `needs_input` (to get it on your homepage and
-into the notification path) but deliberately does **not** call `cleanup_running_job` — killing
+into the notification path) but does not call `cleanup_running_job` — killing
 the process would break the round-trip.
 
 A metadata marker (`blocked_on_elicitation`) distinguishes this from a real pause, and guards
@@ -115,8 +115,8 @@ the MCP server crashing mid-round-trip — the marker is left set with nothing t
 the session sits in `needs_input` showing a phantom "blocked on elicitation" forever.
 
 `CleanupExpiredElicitationsJob` sweeps for this every 5 minutes and calls
-`clear_stale_elicitation_block!`, which strips the marker but **deliberately leaves the session
-in `needs_input`** rather than flipping it to `running` — a minutes-old stranded block has no
+`clear_stale_elicitation_block!`, which strips the marker but deliberately leaves the session
+in `needs_input` rather than flipping it to `running` — a minutes-old stranded block has no
 live round-trip to resume into, and flipping it would create a phantom running session with no
 monitoring job.
 :::
@@ -124,7 +124,7 @@ monitoring job.
 ### `fail` — `waiting | running | needs_input → failed`
 
 Cleans up the running job, fires `session_failed` triggers, and enqueues a push notification
-that **bypasses the per-session opt-in**. The reasoning: by the time `fail!` fires, retries are
+that bypasses the per-session opt-in. The reasoning: by the time `fail!` fires, retries are
 already exhausted, so this is a final non-self-resolving event. A silent status flip would be
 worse than an unwanted push.
 
@@ -133,14 +133,14 @@ worse than an unwanted push.
 Sets `archived_at`, dismisses notifications, fires `session_archived` triggers, cleans up
 triggers watching this session, and sets a trash expiry.
 
-The clone is **not** deleted immediately. `DeferredCloneCleanupJob` runs after a short undo
+The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a short undo
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
 `TRASH_RETENTION_PERIOD`.
 
 :::caution[The retention period in the code comment is wrong]
 The comment on the `archive` event says artifacts "are preserved for 14 days before deletion."
-The `TRASH_RETENTION_PERIOD` constant that actually governs it is `4.days`. **Four days is what
-actually happens.** The comment is stale.
+The `TRASH_RETENTION_PERIOD` constant that actually governs it is `4.days`. Four days is what
+happens. The comment is stale.
 :::
 
 :::danger[The Undo button doesn't work]
@@ -161,8 +161,8 @@ end
 ```
 
 This is a deliberate trade: a broken notification service should not be able to wedge a
-session in `running`. The consequence is that **cleanup can silently not happen while the state
-still advances** — an archived session whose trash expiry failed to set, a paused session whose
+session in `running`. The consequence is that cleanup can silently not happen while the state
+still advances — an archived session whose trash expiry failed to set, a paused session whose
 notification never fired. `StaleCloneCleanupJob` exists as the safety net for the clone case.
 
 ## Who else moves sessions around

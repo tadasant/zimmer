@@ -14,7 +14,7 @@ behind the architecture. If you read one page on this site, read this one.
 The unit of work in Zimmer is a **session**: one task, one agent process, one git clone on
 disk, entirely its own.
 
-This sounds like an implementation detail. It is actually the constraint that makes
+This sounds like an implementation detail. It is the constraint that makes
 everything else possible. If agents shared a working tree, running two at once would mean
 one agent's uncommitted changes appearing in the other's `git status`, two agents fighting
 over the same branch, and a failure in one poisoning the other. Concurrency would be a
@@ -32,7 +32,7 @@ is a matter of re-spawning a process against a directory that still exists.
 :::caution[This durability contract is not actually honored in production]
 `app/services/clones_directory.rb` says clones survive container restarts because a Docker
 named volume is mounted at `~/.agent-orchestrator`, per `config/deploy.production.yml`.
-**That file does not exist in this repo**, and the Terraform in `infra/` mounts no volumes
+That file does not exist in this repo, and the Terraform in `infra/` mounts no volumes
 at all. On a droplet provisioned by this repo's Terraform, clones live in the container's
 writable layer and die with the container. See
 [Known limitations](/limitations/#clones-are-not-actually-persisted-in-the-shipped-infra).
@@ -66,7 +66,7 @@ transition has guards and side effects, and the side effects are the interesting
 notification. `archive` sets a trash expiry and schedules clone cleanup. `fail` preserves
 debug state.
 
-The philosophical point: **the orchestrator, not the LLM, owns the transitions.** An agent
+The philosophical point: the orchestrator, not the LLM, owns the transitions. An agent
 process exiting is an *input* to the state machine, not a decision by it. That's what makes
 it possible to build triggers, notifications, health monitoring, and recovery on top —
 they all key off states, and states are real.
@@ -84,11 +84,11 @@ and it means, in full: open a PR, wait for CI, confirm CI is green, run an indep
 fresh-eyes review, address every piece of that review's feedback, re-run CI, and *only then*
 come back to the human.
 
-The loop closes on external reality — a CI run, a review — not on the agent's self-assessment.
+The loop closes on external reality: a CI run or a review, not the agent's self-assessment.
 
 :::caution[A goal is prompt text and nothing more]
 This is worth being blunt about. `AgentSessionJob#build_prompt_with_goal` looks the goal up
-in `config/goals.json` and **appends its description to the prompt string**. That is the
+in `config/goals.json` and appends its description to the prompt string. That is the
 entire mechanism. There is no runtime enforcement: nothing checks that CI actually went
 green before the session pauses, and nothing stops an agent from declaring victory anyway.
 The stop condition is enforced only by the model choosing to obey English.
@@ -100,7 +100,7 @@ See [Goals and stop conditions](/sessions/goals/).
 The tools an agent has are the things it can do to the world. An agent with a Slack MCP
 server can post to Slack. An agent with a DigitalOcean MCP server can delete a droplet.
 
-So Zimmer treats **the MCP server list as the session's blast radius**, and makes it a
+So Zimmer treats the MCP server list as the session's blast radius, and makes it a
 per-session decision rather than a global one. Two sessions in the same repository can have
 completely different tool sets, and the session that only needs to read code gets nothing
 that can write to production.
@@ -109,7 +109,7 @@ This is why MCP servers are configured per-session and per-agent-root rather tha
 in some global config file — the question "what can this agent break?" should have an answer
 you can look up, and that answer should be different for different tasks.
 
-The corollary is that **credentials follow the tools.** MCP servers that need OAuth get
+The corollary is that credentials follow the tools. MCP servers that need OAuth get
 their own credential records, their own refresh loop, and their own injection step at spawn
 time. A session doesn't have your GitHub token because you have a GitHub token; it has it
 because it has an MCP server that needs one. See [MCP server OAuth](/auth/mcp-oauth/).
@@ -138,11 +138,11 @@ proctor, save). See [Agent roots](/air/agent-roots/).
 Here is the design decision that most people would get wrong, and it's worth sitting with.
 
 The naive approach: hard-code the skills and MCP servers into the orchestrator, or let each
-user hand-wire them in a settings page. Both fail the same way. Agent context is *content* —
-it changes as often as your codebase does — and content that lives in an app's database or
+user hand-wire them in a settings page. Both fail the same way. Agent context is *content*:
+it changes as often as your codebase does, and content that lives in an app's database or
 an app's source tree can't be reviewed, diffed, branched, or shared.
 
-So Zimmer doesn't own its agent context. It **resolves it from a catalog**, using
+So Zimmer doesn't own its agent context. It resolves it from a catalog, using
 [AIR](/air/overview/) — a separate open-source project whose entire job is turning
 version-controlled JSON indexes into a prepared session directory.
 
@@ -153,7 +153,7 @@ What this buys:
 - **The orchestrator stays generic.** Zimmer's code never names a skill. It asks the catalog
   what exists and injects what the session selected.
 - **The same catalog can serve other agents.** AIR has adapters for Claude Code, Codex,
-  Cursor, and others. The catalog is not Zimmer-shaped; it's agent-shaped.
+  Cursor, and others. The catalog is agent-shaped, so any of them can use it.
 - **Composition instead of a mega-config.** Artifacts declare which roots they're default-on
   in (`default_in_roots`), so adding a skill to a root is a one-line edit in the *skill's*
   entry rather than surgery on a giant roots file.
@@ -168,7 +168,7 @@ See [How Zimmer consumes AIR](/air/zimmer-integration/).
 Zimmer agents do not merge their own work. Ever. The goal descriptions say so explicitly,
 and the operating principles injected into every session's system prompt say so again.
 
-This is not distrust of the model so much as a recognition of where the human's attention is
+This is less about distrust of the model than about where the human's attention is
 scarcest and most valuable. You do not want to be watching an agent type. You *do* want to
 look at a finished, CI-green, self-reviewed diff and decide whether it should exist. The PR
 is the artifact designed for exactly that, and every code review tool in the world already
@@ -191,6 +191,5 @@ worker, credential-key algorithms that are string-for-string copies of another v
 private internals. Those are all documented here, on the page where they bite and on the
 [Known limitations](/limitations/) page.
 
-A docs site that quietly omits the broken parts isn't a docs site, it's marketing. The
-premise of this one is that you should be able to read it *instead of* reading the code —
-and that only works if it tells you the same things the code would.
+These docs name the broken parts on purpose. The premise of this one is that you can read it
+instead of reading the code, which only works if it tells you the same things the code would.

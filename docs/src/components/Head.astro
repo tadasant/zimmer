@@ -26,9 +26,42 @@ import Default from "@astrojs/starlight/components/Head.astro";
     if (nodes.length === 0 || rendering) return;
     rendering = true;
 
+    const dark = currentTheme() === "dark";
     mermaid.initialize({
       startOnLoad: false,
       theme: THEMES[currentTheme()],
+      // Paint the diagrams in Zimmer's own palette rather than stock Mermaid, and
+      // give the nodes enough fill contrast to sit above the figure panel. The
+      // accent border ties every diagram back to the logo.
+      themeVariables: dark
+        ? {
+            primaryColor: "#1a2340",
+            mainBkg: "#1a2340",
+            primaryBorderColor: "#5a6bd8",
+            nodeBorder: "#5a6bd8",
+            primaryTextColor: "#eceef2",
+            lineColor: "#8b90a0",
+            secondaryColor: "#24314f",
+            tertiaryColor: "#20222b",
+            clusterBkg: "#20222b",
+            clusterBorder: "#3a3d47",
+            edgeLabelBackground: "#20222b",
+            titleColor: "#eceef2",
+          }
+        : {
+            primaryColor: "#e5e9fb",
+            mainBkg: "#e5e9fb",
+            primaryBorderColor: "#3b4bc0",
+            nodeBorder: "#3b4bc0",
+            primaryTextColor: "#1e2456",
+            lineColor: "#545861",
+            secondaryColor: "#d5daf7",
+            tertiaryColor: "#f2f3f8",
+            clusterBkg: "#f2f3f8",
+            clusterBorder: "#c0c2c7",
+            edgeLabelBackground: "#f2f3f8",
+            titleColor: "#1e2456",
+          },
       securityLevel: "strict",
       fontFamily: "var(--sl-font)",
       flowchart: { curve: "basis", useMaxWidth: true },

@@ -5,9 +5,8 @@ sidebar:
   order: 3
 ---
 
-A **goal** is the session's definition of done. It's the mechanism behind closed-loop autonomy —
-the idea that an agent should not come back to you until it has *verified* its work, not merely
-written it.
+A **goal** is the session's definition of done. It's the mechanism behind closed-loop autonomy:
+an agent should verify its work before it comes back to you.
 
 ## The four goals that ship
 
@@ -15,13 +14,13 @@ From `config/goals.json`:
 
 | ID | What it demands |
 | --- | --- |
-| `codebase-question` | Research and answer inline. **Do not** create files, PRs, or branches. Stop in `needs_input`. |
-| `open-reviewed-green-pr` | Open a PR, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with **checked** boxes and proof. Then stop. **The default for most roots.** |
+| `codebase-question` | Research and answer inline. Do not create files, PRs, or branches. Stop in `needs_input`. |
+| `open-reviewed-green-pr` | Open a PR, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof. Then stop. The default for most roots. |
 | `open-reviewed-green-pr-with-version-bump` | Same, plus a mandatory version bump when server source changed. |
 | `e2e-verified-green-pr` | Same, plus: state the critical path up front, spin up a real dev server, drive it with browser automation, record video and screenshots, embed them in the PR. |
 
-Every one of them ends with the same two instructions: **stop and wait in `needs_input`**, and
-**do not archive yourself** — because an open session with an unreviewed PR is the user's to-do
+Every one of them ends with the same two instructions: stop and wait in `needs_input`, and
+do not archive yourself — because an open session with an unreviewed PR is the user's to-do
 list.
 
 ## How a goal is applied
@@ -47,8 +46,8 @@ sequenceDiagram
 ```
 
 That is the entire mechanism. `AgentSessionJob#build_prompt_with_goal` resolves the goal id to
-its description (or passes an unknown string through verbatim as free text) and **appends it to
-the prompt**.
+its description (or passes an unknown string through verbatim as free text) and appends it to
+the prompt.
 
 :::danger[A goal has zero runtime enforcement]
 Nothing in Zimmer checks that CI actually went green. Nothing verifies a review happened. Nothing
@@ -56,7 +55,7 @@ inspects the PR description for the `## Verification` section it demanded. The s
 `pause` event fires when the CLI process exits, full stop — it does not ask whether the goal was
 met.
 
-**The stop condition is enforced only by the LLM choosing to obey English.**
+The stop condition is enforced only by the LLM choosing to obey English.
 
 This is the single biggest gap between what Zimmer's docs (and its own goal text) promise and
 what the code does. It's worth knowing before you trust an autonomous session's "done."
@@ -76,7 +75,7 @@ Precedence, in order:
 It can be changed after the fact: `PATCH /api/v1/sessions/:id` accepts `goal`, and a follow-up
 prompt can carry a new one.
 
-The column is validated on **length only** (`GOAL_MAX_LENGTH`). Any string is a legal goal.
+The column is validated on length only (`GOAL_MAX_LENGTH`). Any string is a legal goal.
 
 ## The heartbeat
 

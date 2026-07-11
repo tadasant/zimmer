@@ -38,7 +38,7 @@ whole UI is organized around. A session has a status (`waiting`, `running`, `nee
 `failed`, `archived`), a prompt, a repo, a branch, a runtime, a goal, and lists of selected
 skills / MCP servers / hooks / plugins.
 
-Sessions are addressable by a numeric id **or** a slug, and the API resolves slug first.
+Sessions are addressable by a numeric id or a slug, and the API resolves slug first.
 
 → [The session lifecycle](/sessions/lifecycle/)
 
@@ -72,7 +72,7 @@ A stop condition attached to the session, chosen from `config/goals.json`. Four 
 `codebase-question`, `open-reviewed-green-pr` (the default for most roots),
 `open-reviewed-green-pr-with-version-bump`, and `e2e-verified-green-pr`.
 
-A goal is **appended to the prompt as text**. It has no runtime enforcement.
+A goal is appended to the prompt as text. It has no runtime enforcement.
 
 → [Goals and stop conditions](/sessions/goals/)
 
@@ -90,8 +90,8 @@ Zimmer's catalog ships five, all default-on for the `zimmer` root: `sync-docs`,
 
 ## MCP server
 
-A tool provider the agent can call, over stdio or HTTP. **This is the session's blast
-radius** — the set of things the agent can do outside its own clone. Selected per session.
+A tool provider the agent can call, over stdio or HTTP. This is the session's blast
+radius: the set of things the agent can do outside its own clone. Selected per session.
 
 Fourteen ship in Zimmer's catalog; only `playwright-custom` is default-on for the `zimmer`
 root.

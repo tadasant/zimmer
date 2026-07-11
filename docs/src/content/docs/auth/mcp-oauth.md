@@ -5,8 +5,8 @@ sidebar:
   order: 3
 ---
 
-When an MCP server needs OAuth, Zimmer runs the whole flow itself — discovery, registration, PKCE,
-token exchange, refresh — and then writes the tokens into the **agent CLI's own credential file** so
+When an MCP server needs OAuth, Zimmer runs the whole flow itself (discovery, registration, PKCE,
+token exchange, refresh) and then writes the tokens into the agent CLI's own credential file so
 the agent's MCP client finds them.
 
 That last step is why this is harder than it sounds: Zimmer has to produce a file in a format that
@@ -32,7 +32,7 @@ flowchart TD
     GATE --> UI["UI renders 'Authorize' buttons"]
 ```
 
-**A session that needs OAuth *fails*.** It doesn't hang, it doesn't prompt — it goes to `failed` with
+A session that needs OAuth fails fast rather than hanging or prompting: it goes to `failed` with
 `failure_reason: oauth_required`, and the UI turns that into Authorize buttons. Completing the flow
 resumes it.
 
@@ -90,23 +90,23 @@ it. `McpOauthCredential.compute_credential_key`:
 `streamable-http` is normalized to `http`.
 
 :::danger[This is a reimplementation of another project's internals]
-It is not a documented format. It is not an API. It is a hash algorithm reverse-engineered from
-Claude Code so the two agree on a dictionary key. If Claude Code changes how it computes that key,
+It is a hash algorithm reverse-engineered from Claude Code so the two agree on a dictionary key, with
+no documented format and no API behind it. If Claude Code changes how it computes that key,
 every MCP OAuth credential Zimmer holds becomes unfindable — and the failure mode is "the agent says
 it needs authorization," not an error.
 
 Codex is worse. `CodexMcpCredentialWriter`'s format was read out of
-`codex-rs/rmcp-client/src/oauth.rs @ rust-v0.133.0`, and it writes **two different, mutually
-incompatible schemas** — the file uses `server_url` + a `scopes` array + millisecond epochs, while
+`codex-rs/rmcp-client/src/oauth.rs @ rust-v0.133.0`, and it writes two different, mutually
+incompatible schemas — the file uses `server_url` + a `scopes` array + millisecond epochs, while
 the macOS Keychain path uses `url` + a nested `token_response` + a space-delimited `scope`. The
-Keychain path has **never been runtime-verified** ("Zimmer's CI/staging/production workers are all
+Keychain path has never been runtime-verified ("Zimmer's CI/staging/production workers are all
 Linux").
 :::
 
 ### And it only exists because of two open Codex bugs
 
 `CodexMcpCredentialWriter`'s header explains why Zimmer rewrites Codex's entire MCP credential store
-**on every single session spawn**:
+on every session spawn:
 
 - [`openai/codex#15122`](https://github.com/openai/codex/issues/15122) — credentials from `codex mcp
   login` don't persist across restarts.
@@ -120,19 +120,19 @@ to. It's a workaround for someone else's bugs, and it will need to be removed wh
 
 `RefreshMcpOauthTokensJob`, every 30 minutes. It refreshes credentials expiring within an hour — but
 throttled by `PROACTIVE_REFRESH_MIN_INTERVAL` (won't touch anything updated in the last 4 hours),
-deliberately, **to reduce exposure to rotating-refresh-token reuse detection**.
+deliberately, to reduce exposure to rotating-refresh-token reuse detection.
 
 It splits network errors carefully:
 
 - **Retryable** — the connection was never established, so the server never saw the request. Safe to
   retry in-band.
-- **Ambiguous** — the request went out and the response was lost. **Never retried in-band**; deferred
+- **Ambiguous** — the request went out and the response was lost. Never retried in-band; deferred
   to the next cron run. Retrying could burn a single-use refresh token.
 
 That distinction is the kind of care that's easy to skip and expensive to skip.
 
 On a permanent failure (`invalid_grant` / `invalid_client` / `unauthorized_client`) it nulls the
-refresh token but **keeps a still-valid access token** rather than force-expiring it.
+refresh token but keeps a still-valid access token rather than force-expiring it.
 
 ## Known problems
 

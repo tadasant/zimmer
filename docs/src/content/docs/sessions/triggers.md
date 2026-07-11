@@ -8,7 +8,7 @@ sidebar:
 A **trigger** is a session template plus one or more conditions. When any condition fires, the
 trigger creates a new session — or resumes an existing one.
 
-Conditions on a trigger are **ORed**. Any one firing fires the trigger.
+Conditions on a trigger are ORed. Any one firing fires the trigger.
 
 ## The three condition types
 
@@ -59,8 +59,8 @@ Either recurring (`interval` + `unit`, or `time` + `day_of_week` + `timezone`) o
 cron, so a schedule is minute-resolution at best.
 
 :::danger[A failed one-time wake is unrecoverable]
-`ScheduleTriggerJob` always advances `last_triggered_at` on error — to avoid an infinite retry
-loop — and **destroys one-time triggers even when the fire failed**. If your scheduled wake-up
+`ScheduleTriggerJob` always advances `last_triggered_at` on error, to avoid an infinite retry
+loop, and destroys one-time triggers even when the fire failed. If your scheduled wake-up
 errors, it's gone; you have to recreate it. Nothing tells you.
 :::
 
@@ -70,7 +70,7 @@ Fires when a *watched* session transitions to `session_needs_input`, `session_fa
 `session_archived`. Enqueued directly from the state machine's `pause` / `fail` / `archive`
 callbacks (deferred via `after_all_transactions_commit`, so the row is visible to the job).
 
-With `watched_session_id` it's **session-scoped and one-shot**. Without it, it's a broadcast, and
+With `watched_session_id` it's session-scoped and one-shot. Without it, it's a broadcast, and
 it only fires for `is_autonomous` sessions.
 
 ## Wake-up semantics
@@ -85,7 +85,7 @@ So an agent can say "wake me in an hour" mid-turn without stranding itself.
 
 **Immediate fire on already-matched state.** `Trigger#fire_ao_event_immediately_if_state_matches`
 row-locks each watched session *inside the creation transaction* and enqueues the job immediately
-if the watched session is **already** in the target state. This closes the footgun where you
+if the watched session is already in the target state. This closes the footgun where you
 register a watcher after the transition already happened and then sleep forever.
 
 **Sibling cleanup.** The recommended pattern is to register three `ao_event` watchers
@@ -118,7 +118,7 @@ Everything external is polled. There are no webhooks anywhere in Zimmer.
 | `CleanupStaleTriggersJob` | reaps leftovers |
 
 :::caution[A Slack rate-limit episode stalls all polling]
-`SlackService` retries up to 10 times with a **fixed 1-second delay** (not exponential backoff),
+`SlackService` retries up to 10 times with a fixed 1-second delay (not exponential backoff),
 using blocking `sleep` inside a job thread. `SlackTriggerPollerJob`'s own comment acknowledges
 this would "saturate the queue's whole thread pool," so the job is confined to a `pollers` queue
 with `total_limit: 1`.
