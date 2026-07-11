@@ -8,7 +8,7 @@
 #   3. issues/renews a Let's Encrypt cert for the domain via ACME DNS-01 through
 #      Cloudflare (only when the box's current cert is missing, self-signed, for
 #      the wrong name, or expiring within 30 days), and
-#   4. pushes ONLY the cert + key onto the droplet and reloads its Caddy.
+#   4. pushes ONLY the cert + key onto the droplet and restarts its Caddy.
 #
 # The Cloudflare token is used here, in CI, and is never placed on the droplet:
 # the box runs a plugin-less Caddy that only serves the pushed files (see
@@ -46,11 +46,18 @@ case "$TS_IP" in
 esac
 
 # ---------------------------------------------------------------- 2. A record
+# Keep the token out of the process argv (it would show in `ps`): write the auth
+# header to a 0600 curl config once (printf is a builtin, so no argv exposure) and
+# feed it with -K. cleanup() tears this down (and the lego tmp dir) on any exit.
+CURL_CFG="$(mktemp)"; chmod 600 "$CURL_CFG"
+printf 'header = "Authorization: Bearer %s"\n' "$CF_API_TOKEN" > "$CURL_CFG"
+cleanup() { rm -f "${CURL_CFG:-}"; rm -rf "${tmp:-}"; }
+trap cleanup EXIT
 cf() {
   # cf METHOD PATH [DATA]
   local method="$1" path="$2" data="${3:-}"
-  curl -fsS -X "$method" "https://api.cloudflare.com/client/v4${path}" \
-    -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
+  curl -fsS -K "$CURL_CFG" -X "$method" "https://api.cloudflare.com/client/v4${path}" \
+    -H "Content-Type: application/json" \
     ${data:+--data "$data"}
 }
 
@@ -70,26 +77,42 @@ fi
 need_issue="$FORCE_ISSUE"
 if [ "$need_issue" != "true" ]; then
   # Read the cert currently on the box (may be absent or the self-signed bootstrap).
-  info="$(ssh_box "openssl x509 -in /opt/zimmer/certs/cert.pem -noout -issuer -subject -enddate -checkend $((RENEW_DAYS*86400)) 2>/dev/null; echo rc=\$?" || true)"
-  issuer="$(printf '%s\n' "$info" | sed -n 's/^issuer=//p')"
-  subject="$(printf '%s\n' "$info" | sed -n 's/^subject=//p')"
-  rc="$(printf '%s\n' "$info" | sed -n 's/^rc=//p')"
-  if [ -z "$issuer" ]; then
-    need_issue=true; log "no readable cert on box -> issue"
-  elif [ "$issuer" = "$subject" ]; then
-    need_issue=true; log "cert is self-signed (issuer==subject) -> issue"
-  elif ! printf '%s' "$subject" | grep -q "CN *= *${DOMAIN}"; then
-    need_issue=true; log "cert subject is not ${DOMAIN} -> issue"
-  elif [ "$rc" != "0" ]; then
-    need_issue=true; log "cert expires within ${RENEW_DAYS}d -> issue"
+  # The remote command always ends `echo rc=$?`, so ssh_box exits 0 whenever the
+  # SSH transport itself worked -- a non-zero exit here means we could NOT reach the
+  # box, which we must treat as fail-closed: skip issuance and keep serving the
+  # current cert, rather than mistaking an unreachable box for a missing cert and
+  # burning a Let's Encrypt issuance on every transient blip.
+  if info="$(ssh_box "openssl x509 -in /opt/zimmer/certs/cert.pem -noout -issuer -subject -checkend $((RENEW_DAYS*86400)) 2>/dev/null; echo rc=\$?")"; then
+    issuer="$(printf '%s\n' "$info" | sed -n 's/^issuer=//p')"
+    subject="$(printf '%s\n' "$info" | sed -n 's/^subject=//p')"
+    rc="$(printf '%s\n' "$info" | sed -n 's/^rc=//p')"
+    # Normalize spaces so the match is robust across openssl's "CN = x" / "CN=x"
+    # output, and compare as a literal substring (no regex -- the dots in a domain
+    # would otherwise be wildcards).
+    subject_ns="$(printf '%s' "$subject" | tr -d ' ')"
+    if [ -z "$issuer" ]; then
+      need_issue=true; log "no readable cert on box -> issue"
+    elif [ "$issuer" = "$subject" ]; then
+      need_issue=true; log "cert is self-signed (issuer==subject) -> issue"
+    else
+      case "$subject_ns" in
+        *"CN=${DOMAIN}"*)
+          if [ "$rc" != "0" ]; then
+            need_issue=true; log "cert expires within ${RENEW_DAYS}d -> issue"
+          else
+            log "cert on box is valid for >${RENEW_DAYS}d and matches ${DOMAIN} -> skip issuance"
+          fi ;;
+        *) need_issue=true; log "cert subject is not ${DOMAIN} -> issue" ;;
+      esac
+    fi
   else
-    log "cert on box is valid for >${RENEW_DAYS}d and matches ${DOMAIN} -> skip issuance"
+    log "could not reach ${TS_HOST} to inspect its cert -> fail closed, skip issuance this run"
   fi
 fi
 
 if [ "$need_issue" = "true" ]; then
   log "issuing via ACME DNS-01 (Cloudflare), lego ${LEGO_VERSION}"
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  tmp="$(mktemp -d)" # removed by cleanup() on exit
   curl -fsSL "https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}/lego_${LEGO_VERSION}_linux_amd64.tar.gz" \
     | tar -xz -C "$tmp" lego
   CLOUDFLARE_DNS_API_TOKEN="$CF_API_TOKEN" "$tmp/lego" \
@@ -100,10 +123,11 @@ if [ "$need_issue" = "true" ]; then
   key="$tmp/.lego/certificates/${DOMAIN}.key"
   test -s "$crt" && test -s "$key"
 
-  # Push atomically, then reload Caddy so it re-reads the files. The cert dir is a
-  # read-only bind mount into the container; the files live on the host.
+  # Push atomically, then restart Caddy so it re-reads the files. The cert dir is a
+  # read-only bind mount into the container; the files live on the host. The private
+  # key is created with a 0600 umask so it is never briefly world-readable on disk.
   ssh_box 'cat > /opt/zimmer/certs/cert.pem.new' < "$crt"
-  ssh_box 'cat > /opt/zimmer/certs/key.pem.new'  < "$key"
+  ssh_box '(umask 077; cat > /opt/zimmer/certs/key.pem.new)' < "$key"
   ssh_box 'set -e
     cd /opt/zimmer/certs
     chmod 600 key.pem.new; chmod 644 cert.pem.new

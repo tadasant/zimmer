@@ -7,7 +7,6 @@ packages:
   - ca-certificates
   - curl
   - gnupg
-  - openssl
 
 write_files:
   - path: /opt/zimmer/docker-compose.yml
@@ -119,7 +118,7 @@ runcmd:
   - tailscale up --authkey='${tailscale_auth_key}' --hostname='${tailnet_hostname}' --ssh
 %{~ if domain != "" }
   # Bootstrap a self-signed cert so Caddy can start on :443 before the domain-cert
-  # workflow has pushed the real one. The workflow overwrites these and reloads
+  # workflow has pushed the real one. The workflow overwrites these and restarts
   # Caddy; until then, :443 serves a self-signed cert (browser warning) while
   # http://${tailnet_hostname} keeps working normally. The workflow distinguishes
   # this placeholder from a real cert by its issuer (self == subject).

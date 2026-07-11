@@ -28,8 +28,10 @@ do that. Instead the work is split:
 - **In CI** (`scripts/domain-cert.sh`, run by `domain-cert-*.yml`): discovers the
   droplet's tailnet IP, upserts the Cloudflare `domain -> tailnet IP` A record,
   issues/renews the Let's Encrypt cert via **ACME DNS-01 through Cloudflare**, and
-  pushes **only the cert** onto the droplet over `tailscale ssh`, then reloads
-  Caddy. The Cloudflare token lives only in GitHub Actions — never on the box.
+  pushes **only the cert** onto the droplet over `tailscale ssh`, then restarts
+  Caddy (the Caddyfile sets `admin off`, so there is no live-reload endpoint; a
+  container restart re-reads the files). The Cloudflare token lives only in GitHub
+  Actions — never on the box.
 
 The A record points at the **tailnet IP** (`100.x`), so tailnet peers resolve and
 reach it while everyone else gets an unroutable address — same tailnet-only
