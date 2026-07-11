@@ -147,6 +147,11 @@ If you do want vanity URLs: **use Cloudflare, not Namecheap.**
   delegate `zimmer.tadasant.com`) to Cloudflare, then the IaC can manage records and
   you'd add `CLOUDFLARE_API_TOKEN` as a secret.
 
+This is now implemented for real HTTPS — but the A record points at the **tailnet
+IP**, not a public one, so it is reachable only over the tailnet (no public exposure)
+*and* carries a trusted cert. The token stays in CI; the box holds no DNS credential.
+See `docs/DOMAIN.md` for the full design.
+
 ## Phase 3 — deploy production (`tadasant-internal` repo secrets)
 
 Same idea as staging, production values. See `tadasant-internal`'s

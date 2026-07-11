@@ -27,8 +27,11 @@ These require credentials/consoles that automation cannot mint for you:
 3. **GHCR pull token** — a PAT with `read:packages` (while the `zimmer` image
    package is private) → GH secret `GHCR_PULL_TOKEN`. Once the package is public
    this is unnecessary.
-4. **DNS** — `staging.zimmer.tadasant.com` must be in DO DNS (the Terraform can
-   create the A record if `domain` is set and the zone is on DO).
+4. **DNS (optional, custom-domain HTTPS only)** — plain `http://zimmer-staging`
+   (MagicDNS) needs no DNS at all. To put real HTTPS on a custom name, set `domain`
+   and add the `CLOUDFLARE_API_TOKEN` secret; the `domain-cert-staging` workflow
+   (not Terraform) then upserts the `domain -> tailnet IP` A record on Cloudflare and
+   issues the cert. See `docs/DOMAIN.md`.
 5. **SECRET_KEY_BASE** — `openssl rand -hex 64` → GH secret
    `STAGING_SECRET_KEY_BASE`.
 6. **Base + app images** — run the **Build base image** workflow once
