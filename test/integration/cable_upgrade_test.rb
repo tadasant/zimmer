@@ -16,6 +16,9 @@ class CableUpgradeTest < ActionDispatch::IntegrationTest
   end
 
   teardown do
+    # A successful upgrade registers the connection on the shared server asynchronously, along
+    # with its heartbeat timer; drop both so they cannot outlive the test.
+    ActionCable.server.restart
     ActionCable.server.config.logger = @original_logger
   end
 
@@ -23,6 +26,7 @@ class CableUpgradeTest < ActionDispatch::IntegrationTest
     upgrade(origin: "http://zimmer", host: "zimmer")
 
     assert_equal UPGRADED, response.status
+    assert_match(/Successfully upgraded to WebSocket/, @cable_log.string)
     assert_no_match(/Request origin not allowed/, @cable_log.string)
     assert_no_match(/Failed to upgrade to WebSocket/, @cable_log.string)
   end

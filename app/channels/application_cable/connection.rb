@@ -1,20 +1,25 @@
 module ApplicationCable
-  # ActionCable rejects a WebSocket upgrade unless `Origin` equals "#{proto}://#{Host}",
-  # where proto comes from Rack::Request#ssl? (ActionCable::Connection::Base#allow_request_origin?).
+  # ActionCable accepts a WebSocket upgrade when Origin equals "#{proto}://#{Host}", taking
+  # proto from Rack::Request#ssl? (ActionCable::Connection::Base#allow_request_origin?).
   #
-  # Zimmer's droplets answer on plain HTTP: docker compose publishes port 80 and the
-  # DigitalOcean firewall drops it at the edge, so the app is reached only over the Tailscale
-  # tunnel by its MagicDNS name (http://zimmer). But production and staging also set
-  # `config.assume_ssl`, whose middleware marks *every* request as TLS-terminated. So ssl?
-  # is true, Rails expects "https://zimmer", the browser sends "http://zimmer", and the
-  # upgrade is refused: Turbo Streams never connect and the JS consumer retries forever.
+  # Zimmer's droplets answer on plain HTTP — compose publishes port 80, the DigitalOcean
+  # firewall drops it at the edge, and the app is reached over the Tailscale tunnel by its
+  # MagicDNS name — yet production and staging set `config.assume_ssl`, whose middleware marks
+  # every request as TLS-terminated. So ssl? is true for a request that arrived over http://,
+  # ActionCable expects an https:// origin, and the app rejects its own clients.
   #
-  # Ignoring the scheme for the app's own host closes that gap without weakening cross-site
-  # WebSocket hijacking protection: the origin's host and port must still equal the Host
-  # header the request arrived on, so a third-party origin is never accepted — the only
-  # origins newly admitted are the app's own, over the other scheme. Anything else still
-  # falls through to ActionCable's check (including `allowed_request_origins`, and the
-  # ERROR log on genuine rejections).
+  # Matching the origin's host and port against the Host header, and ignoring the scheme,
+  # restores ActionCable's same-origin-as-host semantics for a deployment that has no TLS.
+  # It admits nothing a plain-HTTP Rails app would not already admit, but note what that
+  # baseline is worth: same-origin-as-host trusts the Host header, and this app leaves
+  # `config.hosts` empty, so HostAuthorization does not constrain it. A cable connection
+  # carries no identity (no `identified_by`) and Turbo's streams require an HMAC-signed
+  # stream name, so an origin that slipped through would gain an anonymous socket and no
+  # data. Setting `config.hosts` is the proper complement — see
+  # https://github.com/tadasant/zimmer/issues/24.
+  #
+  # Every other origin still falls through to ActionCable's own check, which honors
+  # `allowed_request_origins` and logs the rejection.
   class Connection < ActionCable::Connection::Base
     ORIGIN_SCHEMES = %w[http https].freeze
 
@@ -35,6 +40,8 @@ module ApplicationCable
         origin.hostname.downcase == host && origin.port == (port || origin.default_port)
       end
 
+      # URI#hostname unwraps IPv6 brackets and drops any userinfo, so "http://zimmer@evil.com"
+      # resolves to evil.com rather than zimmer.
       def parsed_origin
         origin = env["HTTP_ORIGIN"].presence
         return unless origin
@@ -45,8 +52,9 @@ module ApplicationCable
         nil
       end
 
-      # "zimmer", "zimmer:3000" and "[::1]:3000" are all valid Host headers; URI#hostname
-      # unwraps the brackets on the origin side, so unwrap them here too.
+      # "zimmer", "zimmer:3000" and "[::1]:3000" are all valid Host headers. Rack::Request#port
+      # is no help here: with no port in the Host header it derives one from the scheme, which
+      # assume_ssl has already falsified to 443.
       def requested_host_and_port
         host = env["HTTP_HOST"].presence
         return unless host
