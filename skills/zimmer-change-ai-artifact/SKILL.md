@@ -138,11 +138,15 @@ Also confirm each registered skill actually has a body:
 ```bash
 ruby -rjson -e '
   JSON.parse(File.read("skills/skills.json")).each do |id, e|
+    next unless e.is_a?(Hash)   # skip the top-level "$schema" string
     body = File.join("skills", e["path"], "SKILL.md")
     puts "#{File.exist?(body) ? "OK  " : "MISS"} #{id} -> #{body}"
   end
 '
 ```
+
+The suite enforces this too — see the `every registered skill has a SKILL.md body
+on disk` test in `test/services/skills_config_test.rb`.
 
 Then run the config-service tests, which assert on real catalog contents:
 

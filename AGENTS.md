@@ -72,6 +72,11 @@ Two rules worth internalizing before you touch them:
 
 ## Known coupling
 
-Session creation validates `agent_root` against an artifact **catalog**. Standalone
-that catalog is not yet wired, so session-creating tests currently fail — see
-[CONTRIBUTING.md](CONTRIBUTING.md#known-coupling-the-agent-artifact-catalog).
+Session creation validates `agent_root` — and `catalog_skills` — against the
+artifact catalog above. The catalog is wired and self-contained, so this resolves
+offline and the suite is green. But the coupling is real and global: a catalog
+that fails to resolve does not fail one test, it fails **all** session-creating
+tests at once (`test/test_helper.rb` pre-warms the catalog at boot, before
+`parallelize` forks its workers). A sudden wave of `ActiveRecord::RecordInvalid`
+across unrelated session tests almost always means a broken catalog, not a broken
+model — see [CONTRIBUTING.md](CONTRIBUTING.md#known-coupling-the-agent-artifact-catalog).
