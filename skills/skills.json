@@ -9,6 +9,10 @@
     "user_invocable": true,
     "default_in_roots": [
       "zimmer"
+    ],
+    "references": [
+      "brand",
+      "brand-voice"
     ]
   },
   "zimmer-start-dev-server": {

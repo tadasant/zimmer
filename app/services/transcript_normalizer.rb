@@ -14,7 +14,7 @@
 # Output contract (the shape #normalize returns)
 # ---------------------------------------------------------------------------
 # #normalize returns an ARRAY of OpenTranscripts events (see OpenTranscript and
-# docs/OPEN_TRANSCRIPTS.md). One source line may fan out into several events
+# https://docs.zimmer.tadasant.com/sessions/transcripts/). One source line may fan out into several events
 # (e.g. an assistant line -> AssistantMessage + Thinking + ToolCall), or into
 # none (bookkeeping lines that are not rendered). Each event is a symbol-keyed
 # Hash carrying the spec fields (:id, :ts, :type, ...) plus Zimmer render/order

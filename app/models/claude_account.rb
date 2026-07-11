@@ -183,7 +183,7 @@ class ClaudeAccount < ApplicationRecord
   #
   # Every path that persists Claude credentials — into the DB or onto the shared
   # filesystem — gates on this so an incomplete set can never enter the pool and
-  # brick rotation. See docs/CLAUDE_CODE_OAUTH_ASSUMPTIONS.md.
+  # brick rotation. See https://docs.zimmer.tadasant.com/auth/harness/.
   def self.complete_claude_oauth?(credentials_json)
     oauth = credentials_json.is_a?(Hash) ? credentials_json["claudeAiOauth"] : nil
     oauth.is_a?(Hash) && oauth["accessToken"].present? && oauth["refreshToken"].present?
@@ -201,7 +201,7 @@ class ClaudeAccount < ApplicationRecord
   # Trusting ~/.claude.json to describe the shared credentials is what let one
   # account's tokens be grafted onto another account's DB row. See
   # ClaudeAuthProvider.credentials_owner_path and
-  # docs/CLAUDE_CODE_OAUTH_ASSUMPTIONS.md.
+  # https://docs.zimmer.tadasant.com/auth/harness/.
   def self.credentials_owner_email
     path = ClaudeAuthProvider.credentials_owner_path
     return nil unless File.exist?(path)

@@ -32,6 +32,23 @@ the others, so the doc contradicts its own body. The second kind is easy to miss
 because the stale text isn't a renamed symbol you can grep for — it's a still-
 plausible sentence whose *claim* is now wrong. Catch both.
 
+## Brand and voice — non-negotiable for any prose you write
+
+Two references travel with this skill and govern every word you add or rewrite:
+
+- **`references/brand`** (`references/BRAND.md`) — what Zimmer is, who it's for (a
+  single circle of trust: personal, a couple, or partners — never teams or
+  enterprise), and the opinions that follow. It decides framing: the trust model
+  is intent, not apology; the human stays in control; Zimmer handles the toil.
+- **`references/brand-voice`** (`references/BRAND_VOICE.md`) — how Zimmer sounds:
+  plain, direct, specific, honest, and free of AI-slop tells (the antithesis
+  reflex, em-dash overload, bold sprinkling, hype adjectives, filler verbs).
+
+Read both before touching user-facing prose (docs, README, UI copy). When you fix
+a stale fact, fix it *in Zimmer's voice* — don't leave slop behind just because it
+was there before. When a wording or framing choice is ambiguous, the brand
+reference decides it, not your instinct.
+
 ## When to use
 
 Run this **every time you are about to open a pull request** — as the final
@@ -51,38 +68,54 @@ Cast a wide net, then narrow to what the diff actually affects:
 | `README.md` | Project overview, prerequisites, local setup, architecture summary. |
 | `AGENTS.md` (`CLAUDE.md` is a symlink to it) | House rules for humans and coding agents: working practices, architecture orientation, conventions. |
 | `CONTRIBUTING.md` | Contributor workflow and any known-broken/known-coupling caveats. |
-| `docs/` | The deep references — see below. |
-| `docs/AGENTS.md` | Guidance for the docs tree itself. |
+| **`docs/`** | **The documentation site** (Astro Starlight → Cloudflare Pages). Pages live in `docs/src/content/docs/**`. This is the canonical prose. |
 | Artifact indexes | `skills/skills.json`, `roots.json`, `mcp.json`, `plugins/`, `hooks/`, `references/`, and the `air.json` / `air.production.json` that wire them. |
 | Doc comments | Class/module header comments in `app/services/`, `app/models/`, `app/jobs/` — Zimmer leans on these heavily as the real explanation of a service. |
 
-Two `docs/` pages have **hard sync requirements** that AGENTS.md calls out
-explicitly — treat these as non-negotiable:
+### Which docs-site page does this diff touch?
 
-- **`docs/REST_API.md` must stay in sync with `app/views/api_docs/show.html.erb`.**
-  Any endpoint, parameter, or response-shape change means editing *both*. The
-  ERB view is the rendered API docs page; the Markdown is the reference. They
-  drift silently because nothing tests that they agree.
-- **`docs/SESSION_STATE_MACHINE.md`** documents the AASM states in
-  `app/models/session.rb` (waiting → running → needs_input → failed / archived).
-  Any transition, guard, or callback change belongs here.
+Pages are under `docs/src/content/docs/`:
 
-Other `docs/` pages, by the change that should trigger them:
+| Code area | Page |
+| --- | --- |
+| `app/models/concerns/session_state_machine.rb` | `sessions/lifecycle.md` |
+| `app/jobs/agent_session_job.rb`, CLI adapters, `ProcessLifecycleManager` | `sessions/spawning.md` |
+| `config/goals.json`, goal handling | `sessions/goals.md` |
+| transcript polling / normalizers / `OpenTranscript` | `sessions/transcripts.md` |
+| `Trigger`, `TriggerCondition`, trigger jobs | `sessions/triggers.md` |
+| `Elicitation`, elicitation controllers | `sessions/elicitation.md` |
+| `config/routes.rb`, `app/controllers/api/**` | `extend/rest-api.md` |
+| `RuntimeRegistry`, a new/changed runtime | `extend/agent-harness.md` |
+| `app/extensions/**`, `Ao::ExtensionRegistry` | `extend/extensions.md` |
+| `app/services/transcript_hooks/**` | `extend/transcript-hooks.md` |
+| `air.json`, `roots.json`, `mcp.json`, `skills/`, `plugins/`, `hooks/`, `AirCatalogService`, `AirPrepareService` | `air/*.md` |
+| OAuth, `ClaudeAccount`, `McpOauthCredential`, `RuntimeAuthProvider` | `auth/*.md` |
+| `infra/`, `Dockerfile*`, `.github/workflows/**` | `operate/deploying.md`, `operate/provisioning.md` |
+| any GoodJob cron entry | `operate/background-jobs.md` |
+| test conventions, CI jobs | `operate/testing.md` |
+| architecture, philosophy, core vocabulary | `intro/*.md` |
 
-- `ADDING_AN_AGENT_HARNESS.md` — a new/changed pluggable runtime (`RuntimeRegistry`,
-  runtime adapters, auth, staging/prod parity).
-- `AO_EXTENSIONS.md`, `AUTHORING_AN_AO_EXTENSION.md`, `EXTENSIONS_INSTALL.md` —
-  anything under `app/extensions/` or the extension loading/install path.
-- `MCP_CONFIGURATION.md` + `mcp.schema.json` — the shape of `mcp.json` or how MCP
-  servers are configured/injected.
-- `DEPLOYING_ON_DIGITALOCEAN.md`, `PROVISIONING.md` — `infra/terraform/`, the
-  deploy/teardown workflows, or provisioning steps.
-- `OAUTH_ARCHITECTURE.md`, `CLAUDE_CODE_OAUTH_ASSUMPTIONS.md`, `CODEX_AUTH.md`,
-  `X_OAUTH_TOKEN_VENDING.md`, `AUTH_ROTATION_ARCHITECTURE.html` — auth, account
-  pooling, token vending.
-- `TRANSCRIPT_HOOKS.md`, `OPEN_TRANSCRIPTS.md` — transcript polling, hooks, schema.
-- `ELICITATION_FLOW.md` — MCP elicitation/fallback.
-- `TESTING_PHILOSOPHY.md` — testing conventions.
+**Two hard sync requirements — treat these as non-negotiable:**
+
+- **`docs/src/content/docs/extend/rest-api.md` must stay in sync with
+  `app/views/api_docs/show.html.erb`.** Any endpoint, parameter, or response-shape
+  change means editing *both*. Nothing tests that they agree, so they drift silently.
+- **`docs/src/content/docs/sessions/lifecycle.md`** documents the AASM states and
+  events in `app/models/concerns/session_state_machine.rb`. Any transition, guard, or
+  callback change belongs there — including the state diagram.
+
+**New brittleness goes on the limitations page.** If the diff introduces (or reveals) a
+hack, a hardcoded assumption, a known-broken edge, or a "we don't know yet," add it to
+`docs/src/content/docs/limitations.md` *and* as an inline `:::caution` / `:::danger`
+callout on the relevant page. That page is a deliberate feature of this site, not a
+confession — under-reporting it is the failure mode, not over-reporting it.
+
+**Adding a page?** It must also go into the `sidebar` array in `docs/astro.config.mjs`.
+Starlight does not auto-discover pages into the nav.
+
+**Diagrams** are Mermaid fenced code blocks. If you changed a flow that a diagram
+depicts, change the diagram — they are meant to be accurate to the code, not
+illustrative.
 
 ## Scope constraint — this repo only
 
@@ -113,7 +146,7 @@ boundaries.
    paths, or values the diff changed — those hits are your candidate stale spots:
 
    ```bash
-   git grep -n "<old-name-or-flag-or-path>" -- '*.md' 'docs/' '*.erb' '*.json'
+   git grep -n "<old-name-or-flag-or-path>" -- '*.md' 'docs/src/' '*.erb' '*.json'
    ```
 
    A pure internal change that no doc mentions usually needs **no** doc edit —
@@ -152,8 +185,11 @@ boundaries.
    - Commands and code samples in the docs are real (they exist in `bin/`,
      `scripts/`, `lib/tasks/`, or `.github/workflows/`).
    - Internal links and file paths still resolve.
-   - If you touched `docs/REST_API.md`, confirm `app/views/api_docs/show.html.erb`
-     says the same thing.
+   - If you touched `docs/src/content/docs/extend/rest-api.md`, confirm
+     `app/views/api_docs/show.html.erb` says the same thing.
+   - **The site still builds:** `cd docs && npm run build`. This is what the
+     `docs_site` CI job runs — a bad frontmatter field or a page missing from the
+     sidebar fails the PR.
 
 6. **Report** which docs you updated and why, or state explicitly that the diff
    required no doc changes. Note any out-of-scope/downstream docs that look stale
