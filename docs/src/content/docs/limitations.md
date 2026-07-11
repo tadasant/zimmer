@@ -15,7 +15,9 @@ so you can go look. Items marked **🔴** would bite a new operator immediately.
 
 ## Deployment
 
-### 🔴 The shipped Terraform provisions no job worker
+### The shipped Terraform provisions no job worker
+
+**🔴 This one would bite a new operator immediately.**
 
 `config/environments/production.rb:59` sets `good_job.execution_mode = :external`, which requires a
 separate `bundle exec good_job start` process.
@@ -30,7 +32,9 @@ catalog refresh. The staging health check only curls `/up`, so the deploy report
 
 Production presumably runs a different compose file from a private repo. The IaC here is incomplete.
 
-### 🔴 Clones are not actually persisted in the shipped infra
+### Clones are not actually persisted in the shipped infra
+
+**🔴 This one would bite a new operator immediately.**
 
 `app/services/clones_directory.rb:8-21` states that clones survive restarts via a Docker named volume
 mounted per `config/deploy.production.yml`.
@@ -43,7 +47,9 @@ needing it).
 
 Everything lives in the container's writable layer. A routine deploy wipes every clone.
 
-### 🔴 Three required env vars are never set by the deploy
+### Three required env vars are never set by the deploy
+
+**🔴 This one would bite a new operator immediately.**
 
 `RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and none appear in
 `cloud-init.yaml.tftpl`. On a stock droplet the REST API 401s on everything, every MCP OAuth callback
@@ -100,7 +106,9 @@ that name — so it works, and you accumulate dead nodes with no error.
 
 ## Security
 
-### 🔴 The web UI has no authentication at all
+### The web UI has no authentication at all
+
+**🔴 This one would bite a new operator immediately.**
 
 `ApplicationController` has no `before_action` for auth, no session auth, no Devise, no HTTP Basic. There
 are no login routes and no `User` model in the auth path.
@@ -124,7 +132,9 @@ There are also six `# TODO: Add proper authorization checks` comments in `sessio
 (`:63`, `:687`, `:724`, `:751`, `:790`, and `:1475` — the last on transcripts, which "contain sensitive
 conversation data").
 
-### 🔴 Nothing is encrypted at rest
+### Nothing is encrypted at rest
+
+**🔴 This one would bite a new operator immediately.**
 
 No model declares `encrypts`. No `active_record.encryption` config exists. Every OAuth token, client
 secret, and PKCE verifier is a plaintext column. `XOauthCredential`'s own header: *"Security relies on
@@ -187,7 +197,9 @@ text. No validation, no trusted identifiers.
 
 ## Agent harness
 
-### 🔴 Failure classification is regex against CLI prose
+### Failure classification is regex against CLI prose
+
+**🔴 This one would bite a new operator immediately.**
 
 Everything Zimmer knows about *why* a session died comes from string-matching English:
 
@@ -203,7 +215,9 @@ stopped firing: the session fell through to the transient-rate-limit path, retri
 already-capped account, and failed — **with no log line saying rotation should have happened.** The
 failure mode is silent by construction.
 
-### 🔴 `CodexRetryStrategy` classifies almost nothing
+### `CodexRetryStrategy` classifies almost nothing
+
+**🔴 This one would bite a new operator immediately.**
 
 It returns `false` from `context_length_error?`, `api_error_for_retry?`, **and**
 `auth_recovery_needed?`, and only matches `/no rollout found/i`. Exit 0 is treated as success.
@@ -348,7 +362,9 @@ Used when a server advertises no DCR endpoint.
 
 ## AIR catalog
 
-### 🔴 A dangling reference fails the entire test suite
+### A dangling reference fails the entire test suite
+
+**🔴 This one would bite a new operator immediately.**
 
 AIR **exits 0** when it drops an unresolvable reference. Zimmer's only detection is
 **string-matching AIR's stderr** for `"references unknown"` + `"Dropping the reference"`.
@@ -361,7 +377,9 @@ your change."*
 
 If AIR ever rewords that warning, Zimmer silently starts accepting degraded catalogs.
 
-### 🔴 The only hook in the catalog has no body
+### The only hook in the catalog has no body
+
+**🔴 This one would bite a new operator immediately.**
 
 `hooks/hooks.json` declares `git-push-ci-reminder` with `"path": "git-push-ci-reminder"`. The `hooks/`
 directory contains **only `hooks.json`** — there is no such directory.
@@ -418,8 +436,8 @@ correctness guarantee."*
 
 ### The trash retention comment contradicts the constant
 
-The `archive` event's comment says artifacts are "preserved for 14 days." `TRASH_RETENTION_PERIOD =
-4.days`, twelve lines below.
+The `archive` event's comment says artifacts are "preserved for 14 days." The
+`TRASH_RETENTION_PERIOD` constant that governs it is `4.days`.
 
 ### State-machine side effects fail silently
 
@@ -509,7 +527,9 @@ On session create, from raw `params`.
 
 ## Hardcoded values that shouldn't be
 
-### 🔴 `OrchestratorSystemPromptBuilder` hardcodes `zimmer.example.com`
+### `OrchestratorSystemPromptBuilder` hardcodes `zimmer.example.com`
+
+**🔴 This one would bite a new operator immediately.**
 
 `orchestrator_system_prompt_builder.rb:94-102` — a `case Rails.env` with literal
 `https://zimmer.example.com` (production) and `https://staging.zimmer.example.com`, **with no ENV
@@ -564,7 +584,9 @@ Also:
 
 ## Testing
 
-### 🔴 System tests do not run in CI
+### System tests do not run in CI
+
+**🔴 This one would bite a new operator immediately.**
 
 The `test` job runs "unit + integration; **system tests excluded**." Four of the ten open issues are UI
 regressions — exactly the class a system test would catch.
