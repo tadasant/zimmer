@@ -175,3 +175,14 @@ jobs:
           echo "::error::Health check did not pass in time"
           echo "--- tailscale status ---"; tailscale status 2>&1 || true
           exit 1
+
+  # Each staging deploy reaps + recreates the droplet, so it comes up with a new
+  # tailnet IP and only the self-signed Caddy bootstrap cert -- staging.zimmer.tadasant.com
+  # is stale until the A record is re-pointed and a real cert pushed. Chain
+  # domain-cert-staging so the deploy self-heals the domain instead of leaving it
+  # broken until the cert workflow is run by hand. Only meaningful when `domain` is
+  # set in staging.tfvars (staging currently sets it), keeping the HTTPS front door live.
+  cert:
+    needs: deploy
+    uses: ./.github/workflows/domain-cert-staging.yml
+    secrets: inherit
