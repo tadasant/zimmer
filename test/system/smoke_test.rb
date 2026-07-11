@@ -12,7 +12,7 @@ class SmokeTest < ApplicationSystemTestCase
 
     # Setup test directories in mock file system
     home_dir = File.expand_path("~")
-    @mock_fs.mkdir_p(File.join(home_dir, ".agent-orchestrator", "clones"))
+    @mock_fs.mkdir_p(File.join(home_dir, ".zimmer", "clones"))
     @mock_fs.mkdir_p(File.join(home_dir, ".claude", "projects"))
 
     # Configure mock process behavior for Claude CLI
@@ -76,7 +76,7 @@ class SmokeTest < ApplicationSystemTestCase
       repo_name = File.basename(repo_url, ".git")
       timestamp = Time.now.to_i
       random = SecureRandom.hex(4)
-      clone_path = File.expand_path("~/.agent-orchestrator/clones/#{repo_name}-#{options[:branch]}-#{timestamp}-#{random}")
+      clone_path = File.expand_path("~/.zimmer/clones/#{repo_name}-#{options[:branch]}-#{timestamp}-#{random}")
 
       # Create the clone directory structure in mock FS
       mock_fs.mkdir_p(clone_path)

@@ -119,6 +119,28 @@ variable "secret_key_base" {
   description = "Rails SECRET_KEY_BASE for the app."
 }
 
+variable "rails_master_key" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = <<-EOT
+    RAILS_MASTER_KEY that decrypts config/credentials/*. Empty is safe: there is
+    no require_master_key and secrets_loader.rb rescues a missing key, so the app
+    boots without it (staging has no committed production.yml.enc). Production
+    supplies the real key so encrypted credentials can be read.
+  EOT
+}
+
+variable "api_keys" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = <<-EOT
+    Comma-separated bearer keys for the REST API (API_KEYS). Empty disables the
+    API (every request 401s). Staging sets it from the STAGING_API_KEYS secret.
+  EOT
+}
+
 # ---- Observability (all optional; empty = the app's obs initializers no-op) --
 
 variable "otel_logs_endpoint" {
@@ -196,6 +218,13 @@ locals {
   # the tailnet ACL tag, both of which stay `zimmer-<environment>`.
   tailnet_hostname = var.environment == "production" ? "zimmer" : "zimmer-${var.environment}"
 
+  # Canonical external host the app uses for URL generation and MCP OAuth
+  # callbacks (APP_HOST). Prefer the custom domain when set (custom-domain HTTPS
+  # from #30 -- staging.zimmer.tadasant.com / zimmer.tadasant.com); otherwise
+  # fall back to the tailnet MagicDNS name. Without it McpOauthService defaults
+  # to localhost:3000 and every OAuth callback breaks.
+  app_host = var.domain != "" ? var.domain : local.tailnet_hostname
+
   # When a managed cluster is named, the app talks to it and the compose stack
   # ships no `db` service and no `pgdata` volume. Otherwise (staging, local) the
   # stack runs its own throwaway Postgres container.
@@ -261,11 +290,14 @@ resource "digitalocean_droplet" "zimmer" {
     db_sslmode         = local.db_sslmode
     compose_depends_on = local.compose_depends_on
     domain             = var.domain
+    app_host           = local.app_host
     image_ref          = var.image_ref
     tailscale_auth_key = var.tailscale_auth_key
     ghcr_username      = var.ghcr_username
     ghcr_token         = var.ghcr_token
     secret_key_base    = var.secret_key_base
+    rails_master_key   = var.rails_master_key
+    api_keys           = var.api_keys
     otel_logs_endpoint = var.otel_logs_endpoint
     otel_logs_token    = var.otel_logs_token
     sentry_dsn         = var.sentry_dsn

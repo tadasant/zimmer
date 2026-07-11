@@ -198,7 +198,7 @@ class NpxCacheHealService
     end
 
     # Guard against deleting anything outside a Zimmer clone's npm cache. Only paths
-    # that live under ~/.agent-orchestrator/clones AND inside a `.npm-cache/_npx`
+    # that live under ~/.zimmer/clones AND inside a `.npm-cache/_npx`
     # segment are eligible.
     def safe_to_remove?(path)
       return false if path.blank?

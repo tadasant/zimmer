@@ -474,7 +474,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # operator-fixable, so it must raise the graceful SecretResolutionError
     # immediately: no backoff sleeps, no catalog refresh, no plain
     # AirPrepareError (which AgentSessionJob would re-raise into a paging crash).
-    stderr = "Error: Unresolved variable in /home/rails/.agent-orchestrator/clones/" \
+    stderr = "Error: Unresolved variable in /home/rails/.zimmer/clones/" \
              "mcp-servers-main-1783618282-5a347481: ${REFRAME_MCP_PLATFORM_API_KEY}. " \
              "Ensure all variables are provided via environment or a secrets transform."
     prepare_attempts = 0

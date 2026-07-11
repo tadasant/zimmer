@@ -12,7 +12,7 @@ require "open3"
 # the current version without waiting for the next CliStatusRefreshJob run.
 #
 # In production, Claude Code is installed to ~/.local/share/claude/versions/
-# which is volume-mounted (agent-orchestrator_claude-local) for persistence
+# which is volume-mounted (the claude_local named volume) for persistence
 # across container restarts and deploys.
 class ClaudeCodeUpdateJob < ApplicationJob
   queue_as :default

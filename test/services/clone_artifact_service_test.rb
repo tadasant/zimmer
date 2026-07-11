@@ -386,7 +386,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
   test "artifacts_path_for returns path under home directory" do
     path = @service.artifacts_path_for(42)
 
-    assert_includes path, ".agent-orchestrator/artifacts/42"
+    assert_includes path, ".zimmer/artifacts/42"
   end
 
   private

@@ -15,10 +15,10 @@ class ClonesDirectoryTest < ActiveSupport::TestCase
     end
   end
 
-  test "defaults to ~/.agent-orchestrator/clones under the home directory" do
+  test "defaults to ~/.zimmer/clones under the home directory" do
     ENV.delete("AGENT_CLONES_DIR")
 
-    expected = File.join(File.expand_path("~"), ".agent-orchestrator", "clones")
+    expected = File.join(File.expand_path("~"), ".zimmer", "clones")
     assert_equal expected, ClonesDirectory.base
   end
 
@@ -40,7 +40,7 @@ class ClonesDirectoryTest < ActiveSupport::TestCase
     original_home = ENV["HOME"]
     Dir.mktmpdir("clones-dir-home") do |tmp_home|
       ENV["HOME"] = tmp_home
-      assert_equal File.join(tmp_home, ".agent-orchestrator", "clones"), ClonesDirectory.base
+      assert_equal File.join(tmp_home, ".zimmer", "clones"), ClonesDirectory.base
     ensure
       ENV["HOME"] = original_home
     end
@@ -49,7 +49,7 @@ class ClonesDirectoryTest < ActiveSupport::TestCase
   test "blank AGENT_CLONES_DIR falls back to the default" do
     ENV["AGENT_CLONES_DIR"] = ""
 
-    expected = File.join(File.expand_path("~"), ".agent-orchestrator", "clones")
+    expected = File.join(File.expand_path("~"), ".zimmer", "clones")
     assert_equal expected, ClonesDirectory.base
   end
 end

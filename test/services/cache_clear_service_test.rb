@@ -134,7 +134,7 @@ class CacheClearServiceTest < ActiveSupport::TestCase
     ENV["HOME"] = @temp_dir
 
     # Create clones directory with per-clone npm caches at various depths
-    clones_dir = File.join(@temp_dir, ".agent-orchestrator", "clones")
+    clones_dir = File.join(@temp_dir, ".zimmer", "clones")
     clone1_cache = File.join(clones_dir, "repo-main-123-abc", "agent-orchestrator", ".npm-cache")
     clone2_cache = File.join(clones_dir, "repo-main-456-def", "agents", "subagent", ".npm-cache")
 
@@ -158,7 +158,7 @@ class CacheClearServiceTest < ActiveSupport::TestCase
     ENV["HOME"] = @temp_dir
 
     # Create clones directory but no .npm-cache dirs inside
-    clones_dir = File.join(@temp_dir, ".agent-orchestrator", "clones")
+    clones_dir = File.join(@temp_dir, ".zimmer", "clones")
     FileUtils.mkdir_p(File.join(clones_dir, "repo-main-123-abc"))
 
     results = CacheClearService.clear_all
@@ -182,7 +182,7 @@ class CacheClearServiceTest < ActiveSupport::TestCase
     ENV["HOME"] = @temp_dir
 
     # Create only a per-clone cache (no global npm cache)
-    clones_dir = File.join(@temp_dir, ".agent-orchestrator", "clones")
+    clones_dir = File.join(@temp_dir, ".zimmer", "clones")
     clone_cache = File.join(clones_dir, "repo-main-123-abc", ".npm-cache")
     FileUtils.mkdir_p(clone_cache)
     File.write(File.join(clone_cache, "test_file"), "test")

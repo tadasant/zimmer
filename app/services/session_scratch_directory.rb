@@ -13,11 +13,10 @@
 # from scratch (see the Zimmer-side fix for the Discovery pipeline scratch wipe).
 #
 # This module hands each session a directory that lives INSIDE the durable
-# `agent-orchestrator_agent-clones` named volume (mounted at
-# /home/rails/.agent-orchestrator in both the web and worker containers — see
-# config/deploy.production.yml), so its contents survive container restarts and
-# deploys exactly like the git clones do. The path is exported to the agent as
-# AO_SESSION_SCRATCH_DIR.
+# `zimmer_data` named volume (mounted at /home/rails/.zimmer in both the app and
+# worker containers — see infra/terraform/cloud-init.yaml.tftpl), so its
+# contents survive container restarts and deploys exactly like the git clones
+# do. The path is exported to the agent as AO_SESSION_SCRATCH_DIR.
 #
 # Durability + stability contract
 # -------------------------------
@@ -52,7 +51,7 @@ module SessionScratchDirectory
     return File.expand_path(configured) if configured
 
     # Sibling of the clones base, under the same durable mount. dirname of the
-    # clones base is the durable `~/.agent-orchestrator` root in production.
+    # clones base is the durable `~/.zimmer` root in production.
     File.join(File.dirname(ClonesDirectory.base), SCRATCH_SUBDIR)
   end
 

@@ -94,7 +94,7 @@ module AssertionHelpers
   # @param path [String] The expected directory path
   #
   # Example:
-  #   assert_directory_exists(@mock_fs, path: "~/.agent-orchestrator/clones")
+  #   assert_directory_exists(@mock_fs, path: "~/.zimmer/clones")
   def assert_directory_exists(file_system, path:)
     assert file_system.directory?(path), "Expected directory to exist: #{path}"
   end

@@ -83,8 +83,8 @@ class UnarchiveSessionService
 
     # Check if clone and working directory both exist (quick unarchive within undo window)
     # Must check BOTH paths because for sessions with subdirectories, they differ:
-    # - clone_path: /home/rails/.agent-orchestrator/clones/repo-main-12345-abcd
-    # - working_directory: /home/rails/.agent-orchestrator/clones/repo-main-12345-abcd/subdir
+    # - clone_path: /home/rails/.zimmer/clones/repo-main-12345-abcd
+    # - working_directory: /home/rails/.zimmer/clones/repo-main-12345-abcd/subdir
     clone_path = session.metadata&.dig("clone_path")
     working_directory = session.metadata&.dig("working_directory")
     clone_fully_exists = clone_path.present? &&

@@ -49,7 +49,7 @@ class CliStatusService
 
         # Option 2: Via SSH (on the server)
         ssh root@zimmer.example.com
-        docker exec -it $(docker ps -q --filter name=agent-orchestrator-worker | head -1) bash
+        docker exec -it $(docker ps -q --filter name=zimmer-worker | head -1) bash
 
         # Then run the device-flow login (works across orgs, exempt from
         # classic-PAT bans, does not auto-expire):
@@ -72,7 +72,7 @@ class CliStatusService
 
         # Option 2: Via SSH (on the server)
         ssh root@zimmer.example.com
-        docker exec -it $(docker ps -q --filter name=agent-orchestrator-worker | head -1) bash
+        docker exec -it $(docker ps -q --filter name=zimmer-worker | head -1) bash
 
         # Then run the OAuth login flow:
         claude /login
@@ -94,7 +94,7 @@ class CliStatusService
 
         # Option 2: Via SSH (on the server)
         ssh root@zimmer.example.com
-        docker exec -it $(docker ps -q --filter name=agent-orchestrator-worker | head -1) bash
+        docker exec -it $(docker ps -q --filter name=zimmer-worker | head -1) bash
 
         # Then run the OAuth login flow:
         codex login
