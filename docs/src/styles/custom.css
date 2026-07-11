@@ -16,8 +16,8 @@
   --sl-font: var(--font-body);
   --sl-font-mono: var(--font-mono);
 
-  /* Reading measure — comfortable for a serif at this size. */
-  --sl-content-width: 47rem;
+  /* Reading measure — tuned to ~72 characters for the serif. */
+  --sl-content-width: 44rem;
   --sl-line-height: 1.75;
 
   /* Motion */
@@ -180,13 +180,15 @@ body {
    ========================================================================= */
 .sl-markdown-content code:not(:where(pre *)) {
   font-family: var(--font-mono);
-  font-size: 0.83em;
+  font-size: 0.86em;
   font-weight: 480;
   padding: 0.12em 0.38em;
   border-radius: 5px;
   border: 1px solid var(--sl-color-gray-5);
   background: var(--sl-color-bg-inline-code);
-  white-space: nowrap;
+  /* Break long tokens (paths, Ruby#methods) instead of overflowing the measure
+     on narrow viewports. */
+  overflow-wrap: anywhere;
 }
 .sl-markdown-content :is(h1, h2, h3, h4) code:not(:where(pre *)) {
   font-size: 0.9em;
@@ -234,6 +236,24 @@ body {
 .starlight-aside--danger {
   --sl-color-asides-text-accent: #e5706e;
   --sl-color-asides-border: color-mix(in srgb, #e5706e 42%, transparent);
+}
+/* Light mode: the accents above are tuned for dark ink; on warm paper the bold
+   label + icon need darker tones to clear WCAG AA, and a firmer severity bar. */
+:root[data-theme="light"] .starlight-aside--note {
+  --sl-color-asides-text-accent: #3a4a92;
+  --sl-color-asides-border: color-mix(in srgb, #3a4a92 55%, transparent);
+}
+:root[data-theme="light"] .starlight-aside--tip {
+  --sl-color-asides-text-accent: #10745a;
+  --sl-color-asides-border: color-mix(in srgb, #10745a 55%, transparent);
+}
+:root[data-theme="light"] .starlight-aside--caution {
+  --sl-color-asides-text-accent: #8a5510;
+  --sl-color-asides-border: color-mix(in srgb, #8a5510 55%, transparent);
+}
+:root[data-theme="light"] .starlight-aside--danger {
+  --sl-color-asides-text-accent: #b23330;
+  --sl-color-asides-border: color-mix(in srgb, #b23330 55%, transparent);
 }
 .starlight-aside a {
   color: var(--sl-color-white);
@@ -309,9 +329,6 @@ body {
 }
 .sl-markdown-content tbody tr:hover {
   background: color-mix(in srgb, var(--sl-color-accent) 6%, transparent);
-}
-.sl-markdown-content table code {
-  white-space: nowrap;
 }
 
 /* =========================================================================
