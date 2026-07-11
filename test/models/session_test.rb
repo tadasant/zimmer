@@ -2534,7 +2534,7 @@ class SessionTest < ActiveSupport::TestCase
       default_branch: "main",
       subdirectory: nil,
       default_mcp_servers: [ "agent-orchestrator-prod-sessions" ],
-      default_skills: [ "wait-for-ci" ],
+      default_skills: [ "zimmer-run-tests" ],
       default_hooks: [ "git-push-ci-reminder" ],
       default_plugins: [ "screenshots-videos" ]
     )
@@ -2555,7 +2555,7 @@ class SessionTest < ActiveSupport::TestCase
     )
 
     assert_equal [ "agent-orchestrator-prod-sessions" ], session.mcp_servers
-    assert_equal [ "wait-for-ci" ], session.catalog_skills
+    assert_equal [ "zimmer-run-tests" ], session.catalog_skills
     assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
     # Plugins must be persisted from default_plugins so a later --without-defaults
     # AIR prepare! can reconstruct the plugin-derived MCP servers.
@@ -2591,7 +2591,7 @@ class SessionTest < ActiveSupport::TestCase
       default_branch: "main",
       subdirectory: nil,
       default_mcp_servers: [ "agent-orchestrator-prod-sessions" ],
-      default_skills: [ "wait-for-ci" ],
+      default_skills: [ "zimmer-run-tests" ],
       default_hooks: [ "git-push-ci-reminder" ],
       default_plugins: [ "screenshots-videos" ]
     )
@@ -2604,7 +2604,7 @@ class SessionTest < ActiveSupport::TestCase
     )
 
     assert_equal [ "agent-orchestrator-prod-sessions" ], session.mcp_servers
-    assert_equal [ "wait-for-ci" ], session.catalog_skills
+    assert_equal [ "zimmer-run-tests" ], session.catalog_skills
     assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
     assert_equal [ "screenshots-videos" ], session.catalog_plugins
   end
@@ -2666,7 +2666,7 @@ class SessionTest < ActiveSupport::TestCase
       default_branch: "main",
       subdirectory: nil,
       default_mcp_servers: [ "agent-orchestrator-prod-sessions" ],
-      default_skills: [ "wait-for-ci" ],
+      default_skills: [ "zimmer-run-tests" ],
       default_hooks: [],
       default_plugins: [ "screenshots-videos" ]
     )
@@ -2677,13 +2677,13 @@ class SessionTest < ActiveSupport::TestCase
       agent_root_name: "test-root",
       prompt: "Test",
       mcp_servers: [ "slack-workspace" ],
-      catalog_skills: [ "analyze-agent-transcript" ],
+      catalog_skills: [ "zimmer-change-ai-artifact" ],
       catalog_hooks: [ "git-push-ci-reminder" ],
       catalog_plugins: [ "meeting-wrangling" ]
     )
 
     assert_equal [ "slack-workspace" ], session.mcp_servers
-    assert_equal [ "analyze-agent-transcript" ], session.catalog_skills
+    assert_equal [ "zimmer-change-ai-artifact" ], session.catalog_skills
     assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
     assert_equal [ "meeting-wrangling" ], session.catalog_plugins
   end
@@ -3274,12 +3274,12 @@ class SessionTest < ActiveSupport::TestCase
     session = sessions(:active_session)
     session.update!(catalog_plugins: [ "ci-workflow" ], catalog_skills: [])
 
-    assert_equal({ "wait-for-ci" => "ci-workflow" }, session.plugin_derived_skills)
+    assert_equal({ "zimmer-run-tests" => "ci-workflow" }, session.plugin_derived_skills)
   end
 
   test "plugin_derived_skills excludes skills already directly selected" do
     session = sessions(:active_session)
-    session.update!(catalog_plugins: [ "ci-workflow" ], catalog_skills: [ "wait-for-ci" ])
+    session.update!(catalog_plugins: [ "ci-workflow" ], catalog_skills: [ "zimmer-run-tests" ])
 
     assert_equal({}, session.plugin_derived_skills)
   end

@@ -13,7 +13,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     @session = sessions(:active_session)
     @session.update!(
       mcp_servers: [ "playwright-custom" ],
-      catalog_skills: [ "wait-for-ci" ],
+      catalog_skills: [ "zimmer-run-tests" ],
       metadata: { "agent_root_key" => "agent-orchestrator" }
     )
     @working_dir = Dir.mktmpdir
@@ -199,7 +199,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     # A skills-only session (no explicit MCP servers) takes the prepare! branch
     # but AIR writes no .mcp.json. post_process! must still create one and inject
     # the self-session server rather than leaving the session with no Zimmer tools.
-    @session.update!(mcp_servers: [], catalog_skills: [ "wait-for-ci" ], metadata: { "agent_root_key" => "agent-orchestrator" })
+    @session.update!(mcp_servers: [], catalog_skills: [ "zimmer-run-tests" ], metadata: { "agent_root_key" => "agent-orchestrator" })
 
     processor = build_processor
     processor.post_process!
@@ -219,7 +219,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     # server so start_session works — it must not be gated on an AIR-produced file.
     @session.update!(
       mcp_servers: [],
-      catalog_skills: [ "wait-for-ci" ],
+      catalog_skills: [ "zimmer-run-tests" ],
       metadata: { "agent_root_key" => "catalog-management" }
     )
 

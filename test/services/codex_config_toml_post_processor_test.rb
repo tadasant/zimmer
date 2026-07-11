@@ -20,7 +20,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     @session = sessions(:active_session)
     @session.update!(
       mcp_servers: [ "playwright-custom" ],
-      catalog_skills: [ "wait-for-ci" ],
+      catalog_skills: [ "zimmer-run-tests" ],
       metadata: { "agent_root_key" => "agent-orchestrator" },
       agent_runtime: "codex"
     )
@@ -176,7 +176,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     # A skills-only session takes the prepare! branch but AIR writes no config.
     # post_process! must synthesize one and inject the self-session server rather
     # than leaving the session with no Zimmer tools (mirrors the Claude processor).
-    @session.update!(mcp_servers: [], catalog_skills: [ "wait-for-ci" ], metadata: { "agent_root_key" => "agent-orchestrator" })
+    @session.update!(mcp_servers: [], catalog_skills: [ "zimmer-run-tests" ], metadata: { "agent_root_key" => "agent-orchestrator" })
 
     processor = build_processor
     processor.post_process!
@@ -195,7 +195,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     # spawning server must still be injected — not gated on an AIR-produced file.
     @session.update!(
       mcp_servers: [],
-      catalog_skills: [ "wait-for-ci" ],
+      catalog_skills: [ "zimmer-run-tests" ],
       metadata: { "agent_root_key" => "catalog-management" }
     )
 

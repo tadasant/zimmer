@@ -685,7 +685,7 @@ class TriggerTest < ActiveSupport::TestCase
       url: "https://github.com/test/repo",
       default_branch: "main",
       subdirectory: nil,
-      default_skills: [ "ao-start-dev-server", "wait-for-ci" ]
+      default_skills: [ "zimmer-start-dev-server", "zimmer-run-tests" ]
     )
     AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
@@ -698,7 +698,7 @@ class TriggerTest < ActiveSupport::TestCase
     # and must fall back to the agent root's defaults — matching the REST create path
     # (Api::V1::SessionsController#resolve_agent_root_defaults!, which uses .blank?).
     # Passing [] straight through would silently drop the root defaults.
-    assert_equal [ "ao-start-dev-server", "wait-for-ci" ], session.catalog_skills
+    assert_equal [ "zimmer-start-dev-server", "zimmer-run-tests" ], session.catalog_skills
   end
 
   test "create_session! syncs catalog_skills when reusing session" do
@@ -2535,12 +2535,12 @@ class TriggerTest < ActiveSupport::TestCase
   test "one-time wake trigger does not strip catalog skills from the session it reuses" do
     AgentSessionJob.stubs(:enqueue_with_prompt)
 
-    session = build_reusable_session(mcp_servers: [ "slack-workspace" ], catalog_skills: [ "wait-for-ci" ])
+    session = build_reusable_session(mcp_servers: [ "slack-workspace" ], catalog_skills: [ "zimmer-run-tests" ])
     trigger = build_wake_trigger(session)
 
     trigger.create_session!(prompt: "Wake up")
 
-    assert_equal [ "wait-for-ci" ], session.reload.catalog_skills,
+    assert_equal [ "zimmer-run-tests" ], session.reload.catalog_skills,
       "a wake trigger must not overwrite the reused session's catalog skills"
   end
 
