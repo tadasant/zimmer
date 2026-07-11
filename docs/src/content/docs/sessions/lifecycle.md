@@ -139,7 +139,7 @@ window and then either deletes the clone (if it's clean) or preserves unpushed a
 
 :::caution[The retention period in the code comment is wrong]
 The comment on the `archive` event says artifacts "are preserved for 14 days before deletion."
-The constant twelve lines below it says `TRASH_RETENTION_PERIOD = 4.days`. **Four days is what
+The `TRASH_RETENTION_PERIOD` constant that actually governs it is `4.days`. **Four days is what
 actually happens.** The comment is stale.
 :::
 
@@ -175,5 +175,6 @@ The state machine is not the only actor:
 - **`CleanupOrphanedSessionsJob`** (every 5 min) catches sessions marked `running` whose process
   is gone.
 - **`ZombieReaperJob`** reaps dead child processes.
-- **`SessionRecoveryService`** handles SIGTERM'd sessions (deploys, OOM) with a bounded retry
-  ladder — `MAX_RETRIES = 3`.
+- **`SessionRecoveryService`** handles hung and interrupted sessions on a best-effort basis;
+  `SigtermRetryService` covers SIGTERM'd sessions (deploys, OOM) with a bounded retry ladder
+  (`MAX_RETRIES = 3`).
