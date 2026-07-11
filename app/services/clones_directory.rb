@@ -6,12 +6,11 @@
 # Durability contract
 # -------------------
 # In production this MUST resolve to durable storage that survives container
-# restarts AND Kamal deploys. That durability is provided by the
-# `agent-orchestrator_agent-clones` Docker named volume, mounted at
-# /home/rails/.agent-orchestrator on both the web and worker containers (see
-# config/deploy.production.yml). The default below (`~/.agent-orchestrator/clones`)
-# resolves inside that mount, so clones persist across deploys with no physical
-# relocation required.
+# restarts AND deploys. That durability is provided by the `zimmer_data` Docker
+# named volume, mounted at /home/rails/.zimmer on both the app and worker
+# containers (see infra/terraform/cloud-init.yaml.tftpl). The default below
+# (`~/.zimmer/clones`) resolves inside that mount, so clones persist across
+# deploys with no physical relocation required.
 #
 # Override the location with the AGENT_CLONES_DIR environment variable. If you
 # point it OUTSIDE the mounted named volume you MUST add a corresponding durable
@@ -27,7 +26,7 @@
 # can never disagree about where clones live — a divergence that would otherwise
 # let the orphan sweep delete live clones because it was scanning the wrong base.
 module ClonesDirectory
-  DEFAULT_HOME_SUBDIR = ".agent-orchestrator"
+  DEFAULT_HOME_SUBDIR = ".zimmer"
   CLONES_SUBDIR = "clones"
 
   module_function

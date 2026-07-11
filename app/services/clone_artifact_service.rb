@@ -12,13 +12,13 @@ require "open3"
 # On unarchive, artifacts can be applied to a fresh clone to restore the unpushed state.
 #
 # Artifact storage layout:
-#   ~/.agent-orchestrator/artifacts/{session_id}/
+#   ~/.zimmer/artifacts/{session_id}/
 #     bundle.pack         — git bundle of unpushed commits (if any)
 #     working_tree.patch  — diff of all uncommitted changes vs HEAD (if any)
 #     metadata.json       — artifact metadata (branch, commit SHA, upstream ref, created_at)
 #
 class CloneArtifactService
-  ARTIFACTS_BASE_DIR = ".agent-orchestrator/artifacts"
+  ARTIFACTS_BASE_DIR = ".zimmer/artifacts"
 
   class ArtifactError < StandardError; end
 

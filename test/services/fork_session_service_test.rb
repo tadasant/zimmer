@@ -16,7 +16,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
 
     # Set up mock file system
     @mock_fs = MockFileSystemAdapter.new
-    @clone_path = "/home/test/.agent-orchestrator/clones/test-repo-main-12345-abcd"
+    @clone_path = "/home/test/.zimmer/clones/test-repo-main-12345-abcd"
     @mock_fs.mkdir_p(@clone_path)
     @mock_fs.write(File.join(@clone_path, ".mcp.json"), JSON.pretty_generate({
       "mcpServers" => { "playwright-custom" => { "command" => "npx", "args" => [ "-y", "playwright-mcp" ] } }

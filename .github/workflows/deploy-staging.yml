@@ -110,6 +110,10 @@ jobs:
           TF_VAR_ghcr_username: ${{ github.actor }}
           TF_VAR_ghcr_token: ${{ secrets.GHCR_PULL_TOKEN }}
           TF_VAR_secret_key_base: ${{ secrets.STAGING_SECRET_BASE }}
+          # REST API bearer keys. RAILS_MASTER_KEY is intentionally left unset:
+          # the TF var defaults to "" and staging has no committed
+          # config/credentials/production.yml.enc to decrypt.
+          TF_VAR_api_keys: ${{ secrets.STAGING_API_KEYS }}
           # Optional observability — leave the secrets unset to keep obs off.
           TF_VAR_otel_logs_endpoint: ${{ secrets.OTEL_LOGS_EXPORTER_ENDPOINT }}
           TF_VAR_otel_logs_token: ${{ secrets.OTEL_LOGS_EXPORTER_BEARER_TOKEN }}

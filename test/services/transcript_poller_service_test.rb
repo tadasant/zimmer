@@ -211,7 +211,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
   test "get_transcript_directory replaces underscores with dashes in path" do
     # Setup session with working_directory containing underscores
-    path_with_underscores = "/Users/admin/.agent-orchestrator/clones/agents-main-1764135379-fb59401d/agent-roots/pulsemcp-server-queue/00_preparer"
+    path_with_underscores = "/Users/admin/.zimmer/clones/agents-main-1764135379-fb59401d/agent-roots/pulsemcp-server-queue/00_preparer"
     @session.update!(metadata: { "working_directory" => path_with_underscores })
 
     service = TranscriptPollerService.new(@session, file_system: @mock_file_system)

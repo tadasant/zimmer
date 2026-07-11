@@ -17,8 +17,8 @@ class PathSanitizerTest < ActiveSupport::TestCase
   end
 
   test "sanitizes all special characters together" do
-    path = "/Users/admin/.agent-orchestrator/clones/pulsemcp-main-1764273034-168756be"
-    expected = "-Users-admin--agent-orchestrator-clones-pulsemcp-main-1764273034-168756be"
+    path = "/Users/admin/.zimmer/clones/pulsemcp-main-1764273034-168756be"
+    expected = "-Users-admin--zimmer-clones-pulsemcp-main-1764273034-168756be"
     assert_equal expected, PathSanitizer.sanitize(path)
   end
 

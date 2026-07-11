@@ -206,7 +206,7 @@ Executes Claude Code locally using git clones for isolation.
 
 1. **Setup Phase:**
    - Clones repository to `tmp/repos/{repo-name}` (bare clone)
-   - Creates git clone at `~/.agent-orchestrator/clones/session-{id}` for the specified branch
+   - Creates git clone at `~/.zimmer/clones/session-{id}` for the specified branch
    - Generates `.mcp.json` config file in clone
    - Returns success result with paths
 
@@ -223,7 +223,7 @@ Executes Claude Code locally using git clones for isolation.
 
 **Directory Structure:**
 ```
-~/.agent-orchestrator/       # Global location outside git working directory
+~/.zimmer/       # Global location outside git working directory
 └── clones/
     └── {repo-name}-{branch}-{timestamp}-{random}/  # Isolated clone for session
         └── .mcp.json                               # MCP server configuration
@@ -233,7 +233,7 @@ tmp/repos/                   # Within Rails app directory
 ```
 
 **Configuration:**
-- Clones are stored in `~/.agent-orchestrator/clones/` (global, outside repo)
+- Clones are stored in `~/.zimmer/clones/` (global, outside repo)
 - Bare repos are stored in `tmp/repos/` (within Rails app)
 
 **Environment Variables:**
@@ -300,7 +300,7 @@ t.index :execution_provider
 
 **Execution Layer:**
 - `ANTHROPIC_API_KEY`: Required for Claude Code execution
-- Clone directory is fixed at `~/.agent-orchestrator/clones/`
+- Clone directory is fixed at `~/.zimmer/clones/`
 - Bare repos directory is `tmp/repos/` within the Rails app
 
 **MCP Servers:**
@@ -374,12 +374,12 @@ bin/rails test test/lib/execution/
 
 **Error: "Clone already exists"**
 - Previous cleanup may have failed
-- Manually remove: `rm -rf ~/.agent-orchestrator/clones/{clone-dir}`
+- Manually remove: `rm -rf ~/.zimmer/clones/{clone-dir}`
 - Run cleanup: `Execution::SessionExecutor.new(session).cleanup`
 
 **Disk Space Issues**
-- Check available space in `~/.agent-orchestrator/clones/` and `tmp/repos/`
-- Clean up old clones: `rm -rf ~/.agent-orchestrator/clones/*` (be careful in production)
+- Check available space in `~/.zimmer/clones/` and `tmp/repos/`
+- Clean up old clones: `rm -rf ~/.zimmer/clones/*` (be careful in production)
 
 ## License
 
