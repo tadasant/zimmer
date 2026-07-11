@@ -9,7 +9,7 @@
 # Example:
 #   TranscriptHooks::Registry.register(TranscriptHooks::MyCustomHook)
 #
-# For more details, see docs/TRANSCRIPT_HOOKS.md
+# For more details, see https://docs.zimmer.tadasant.com/extend/transcript-hooks/
 
 Rails.application.config.after_initialize do
   # Register built-in hooks

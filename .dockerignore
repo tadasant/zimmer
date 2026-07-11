@@ -47,5 +47,9 @@
 # Extensions are NOT baked into the core image. The extension registry
 # auto-skips any missing app/extensions/<id>/ directory and falls back to the
 # native path, so the core image ships without them. Operators opt in per
-# extension via scripts/install-extension.sh (see docs/EXTENSIONS_INSTALL.md).
+# extension via scripts/install-extension.sh.
 /app/extensions/*/
+
+# The documentation site is a standalone Astro project deployed to Cloudflare
+# Pages. The Rails image never serves it.
+/docs

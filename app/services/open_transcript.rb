@@ -9,7 +9,7 @@
 #
 # The schema is mirrored from the source of truth in pulsemcp/ai-artifacts
 # (open-transcripts spec + the `open_transcripts.py` / `cc_jsonl.py` reference
-# converters). See docs/OPEN_TRANSCRIPTS.md for the vendored schema doc and the
+# converters). See https://docs.zimmer.tadasant.com/sessions/transcripts/ for the vendored schema doc and the
 # pointer back to the canonical definition.
 #
 # Representation choices for Zimmer:

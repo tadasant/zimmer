@@ -1,0 +1,123 @@
+---
+title: Configuration reference
+description: Every config file and environment variable, what reads it, and which ones the shipped deploy forgets to set.
+sidebar:
+  order: 3
+---
+
+## The config files
+
+| File | What it is | Read by |
+| --- | --- | --- |
+| `air.json` | The AIR catalog wiring (dev/test) | `AirCatalogService` via the AIR CLI |
+| `air.production.json` | Same, for the in-image catalog (prod/staging) | ditto |
+| `roots.json` | Agent root definitions | `AgentRootsConfig` |
+| `mcp.json` | MCP server registry | `ServersConfig` |
+| `skills/skills.json` | Skill index | `SkillsConfig` |
+| `plugins/plugins.json` | Plugin index | `PluginsConfig` |
+| `hooks/hooks.json` | Hook index | `HooksConfig` |
+| `references/references.json` | Reference index | `ReferencesConfig` |
+| `config/goals.json` | Goal / stop-condition catalog | `GoalsConfig` |
+
+:::caution[Never parse the AIR indexes directly]
+The six artifact indexes are AIR's input, not Zimmer's data model. The resolved tree differs from
+the raw index: references are canonicalized, `default_in_roots` is inverted into per-root defaults
+*and then deleted*, and paths are absolutized.
+
+Everything in Zimmer reads them through `AirCatalogService`. Code that reads `roots.json` with
+`JSON.parse` is code that will be subtly wrong.
+:::
+
+`config/goals.json` is the exception — it's a plain static file, not an AIR artifact, and
+`GoalsConfig` reads it directly.
+
+## Environment variables
+
+### Required in production
+
+| Var | Purpose | Set by the shipped deploy? |
+| --- | --- | --- |
+| `SECRET_KEY_BASE` | Rails secret | ✅ (Terraform) |
+| `DATABASE_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_SSLMODE` | Postgres | ✅ |
+| `REDIS_URL` | Cache | ✅ |
+| `RAILS_MASTER_KEY` | Rails credentials | ❌ not set |
+| `API_KEYS` | REST API auth | ❌ not set — the API 401s on everything |
+| `APP_HOST` | MCP OAuth redirect URI | ❌ not set — every OAuth flow points at `localhost:3000` |
+
+:::danger[Three required vars the Terraform doesn't set]
+`RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and none of them appear
+in `infra/terraform/cloud-init.yaml.tftpl`. On a stock droplet: the REST API is unusable, MCP OAuth
+is broken, and anything reading Rails encrypted credentials (`mcp_secrets`, `mcp_oauth_clients`) can't.
+:::
+
+### Agent + tooling
+
+| Var | Purpose |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Claude Code, when not using OAuth |
+| `ANTHROPIC_BASE_URL` | Test-only; triggers reading the OAuth token off disk and passing it as an API key |
+| `CODEX_HOME` | Codex config dir. Default `~/.codex` |
+| `CLAUDE_CONFIG_DIR` | Login isolation only (a scratch dir during the login flow) |
+| `AIR_CONFIG` | Which `air.json` to resolve. Always wins over the per-environment default. |
+| `AIR_CATALOG_REF` | Staging-only catalog pinning |
+
+### Paths
+
+| Var | Default |
+| --- | --- |
+| `AGENT_CLONES_DIR` | `~/.agent-orchestrator/clones` |
+| `AGENT_SCRATCH_DIR` | per-session durable scratch |
+| `REPO_BASE_PATH` | `tmp/repos` (bare repos) |
+| `EXECUTION_REPOS_DIR` | — |
+
+### Concurrency and logging
+
+`WEB_CONCURRENCY`, `RAILS_MAX_THREADS`, `GOOD_JOB_MAX_THREADS`, `REDIS_POOL_SIZE`,
+`RAILS_LOG_LEVEL`, `PIDFILE`, `PROCESS_*`.
+
+### Observability
+
+`SENTRY_DSN_BACKEND`, `OTEL_SERVICE_NAME`, `OTEL_LOGS_EXPORTER_ENDPOINT`,
+`OTEL_LOGS_EXPORTER_BEARER_TOKEN`.
+
+### MCP server secrets
+
+Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at prepare time:
+`FLY_IO_API_TOKEN`, `OP_SERVICE_ACCOUNT_TOKEN`, `PULSEMCP_SUBREGISTRY_API_KEY`, …
+
+`SecretsLoader` resolves in this order: `XOauthTokenVendor` → Rails credentials (`mcp_secrets`) →
+`ENV`.
+
+## Settings you change in the UI
+
+`/settings` writes to a single `AppSetting` row:
+
+- **Default runtime** (`claude_code` | `codex`) and default model.
+- **Extension toggles** — the `extension_states` JSONB map. See [Extensions](/extend/extensions/).
+- Catalog refresh controls.
+
+:::caution[The global default runtime is ignored by the API unless you pass an `agent_root`]
+`Api::V1::SessionsController#create` only consults `AppSetting.default_runtime` through
+`AgentRootsConfig`. With no `agent_root` param, it returns early and the runtime is the database
+column default — `claude_code`.
+
+Set the global default to `codex`, create a session via the API without an `agent_root`, and you get
+Claude Code. The old `docs/REST_API.md` documented the intended chain, not the actual one.
+:::
+
+## Hard-coded limits
+
+| Limit | Value |
+| --- | --- |
+| Prompt max length | 500,000 chars |
+| Session notes max | 50,000 chars |
+| Search query max | 1,000 chars |
+| MCP servers per session | 50 |
+| Skills / hooks per session | 100 each |
+| Plugins per session | 50 |
+| API pagination | default 25, max 100 |
+| MCP server startup timeout | 180,000 ms (3 min) |
+| Elicitation expiry | 10 minutes |
+| `needs_input` push debounce | 60 seconds |
+| Trash retention (dirty clones) | 4 days |
+| Large-prompt stream-json threshold | 100 KB |

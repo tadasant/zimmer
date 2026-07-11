@@ -308,7 +308,7 @@ t.index :execution_provider
 
 ### MCP Servers
 
-Configure available MCP servers in `config/mcp.json`. See `docs/MCP_CONFIGURATION.md` for the schema and `ServersConfig` service for details.
+Configure available MCP servers in `config/mcp.json`. See `https://docs.zimmer.tadasant.com/air/mcp-servers/` for the schema and `ServersConfig` service for details.
 
 ## Testing
 

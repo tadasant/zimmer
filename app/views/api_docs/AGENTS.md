@@ -2,9 +2,9 @@
 
 You are modifying `show.html.erb`, the rendered HTML reference at `/api_docs`.
 
-## ⚠️ Mirror every change to `docs/REST_API.md`
+## ⚠️ Mirror every change to `docs/src/content/docs/extend/rest-api.md`
 
-This view and **`docs/REST_API.md`** are two parallel representations of the same content. They must describe the same endpoints, params, response fields, status codes, and terminology. If you edit one, edit the other in the same PR.
+This view and **`docs/src/content/docs/extend/rest-api.md`** (published at https://docs.zimmer.tadasant.com/extend/rest-api/) are two parallel representations of the same content. They must describe the same endpoints, params, response fields, status codes, and terminology. If you edit one, edit the other in the same PR.
 
 If your diff only modifies one of them, double-check that the other is already accurate — and call out in the PR description which surface was already correct.
 

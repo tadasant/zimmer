@@ -4,5 +4,15 @@
     "title": "Engineering Practices",
     "description": "Shared engineering conventions for Zimmer contributors (testing, git workflow, code style).",
     "file": "ENGINEERING_PRACTICES.md"
+  },
+  "brand": {
+    "title": "Zimmer Brand & Philosophy",
+    "description": "What Zimmer is, who it's for (a single circle of trust — personal, couple, or partners — not teams or enterprise), and the opinions that follow: open source, standards-driven, human-in-control, handles the toil, secure downstream without enterprise auth. Read before writing anything user-facing.",
+    "file": "BRAND.md"
+  },
+  "brand-voice": {
+    "title": "Zimmer Brand Voice",
+    "description": "How Zimmer sounds in writing (docs, README, UI copy, PRs): plain, direct, honest, specific. Includes the AI-slop tells to cut. Downstream of the brand reference; apply it to all prose.",
+    "file": "BRAND_VOICE.md"
   }
 }

@@ -1,7 +1,7 @@
 # TranscriptNormalizer for the Claude Code runtime.
 #
 # Maps Claude's JSONL message schema onto OpenTranscripts v0.1 events (see
-# OpenTranscript and docs/OPEN_TRANSCRIPTS.md). A Claude transcript line looks
+# OpenTranscript and https://docs.zimmer.tadasant.com/sessions/transcripts/). A Claude transcript line looks
 # like:
 #
 #   { "type": "assistant",
@@ -23,7 +23,7 @@
 # This port mirrors the reference `open_transcripts.py` / `cc_jsonl.py`
 # converters with two documented Zimmer differences: no secret redaction, and
 # per-line normalization (timestamps fall back to the session's created_at
-# rather than carrying forward across lines). See docs/OPEN_TRANSCRIPTS.md.
+# rather than carrying forward across lines). See https://docs.zimmer.tadasant.com/sessions/transcripts/.
 class ClaudeTranscriptNormalizer < TranscriptNormalizer
   SUBAGENT_TOOL_NAMES = %w[Task Agent].freeze
 

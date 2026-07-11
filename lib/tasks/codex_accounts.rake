@@ -5,7 +5,7 @@
 # across runtimes). Two credential kinds are supported:
 #
 #   - ChatGPT OAuth — capture the ~/.codex/auth.json envelope after running
-#     `codex login --device-auth` (see docs/CODEX_AUTH.md).
+#     `codex login --device-auth` (see https://docs.zimmer.tadasant.com/auth/harness/).
 #   - OPENAI_API_KEY — register a static API key via `codex_accounts:add_api_key`.
 #
 # Every task here is scoped to the codex runtime so it never touches Claude Code
