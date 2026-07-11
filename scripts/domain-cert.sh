@@ -109,9 +109,11 @@ if [ "$need_issue" = "true" ]; then
     chmod 600 key.pem.new; chmod 644 cert.pem.new
     mv cert.pem.new cert.pem
     mv key.pem.new  key.pem
-    cid=$(docker compose -f /opt/zimmer/docker-compose.yml ps -q caddy)
-    docker exec "$cid" caddy reload --config /etc/caddy/Caddyfile'
-  log "pushed cert and reloaded Caddy"
+    # restart (not `caddy reload`): the Caddyfile sets `admin off`, so the admin
+    # API reload endpoint is unavailable. A restart re-reads the cert files from the
+    # bind-mounted /certs; the app keeps serving on :80 through the ~1s blip.
+    docker compose -f /opt/zimmer/docker-compose.yml restart caddy'
+  log "pushed cert and restarted Caddy"
 fi
 
 # ---------------------------------------------------------------- 4. verify

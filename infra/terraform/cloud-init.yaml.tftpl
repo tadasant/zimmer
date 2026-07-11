@@ -96,12 +96,12 @@ write_files:
         admin off
       }
       https://${domain} {
-        tls /certs/cert.pem /certs/key.pem
-        # Caddy sets X-Forwarded-Proto=https automatically (it terminated TLS) and
-        # preserves the client Host, so the app computes https://${domain} as its
-        # base_url/origin -- which now matches the browser. That is what fixes the
-        # assume_ssl-vs-plain-HTTP class (CSRF 422s, ActionCable origin rejects).
-        reverse_proxy app:80
+      	tls /certs/cert.pem /certs/key.pem
+      	# Caddy sets X-Forwarded-Proto=https automatically (it terminated TLS) and
+      	# preserves the client Host, so the app computes https://${domain} as its
+      	# base_url/origin -- which now matches the browser. That is what fixes the
+      	# assume_ssl-vs-plain-HTTP class (CSRF 422s, ActionCable origin rejects).
+      	reverse_proxy app:80
       }
 %{~ endif }
 
