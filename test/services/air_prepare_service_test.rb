@@ -15,7 +15,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     @session = sessions(:active_session)
     @session.update!(
       mcp_servers: [ "playwright-custom" ],
-      catalog_skills: [ "wait-for-ci" ],
+      catalog_skills: [ "zimmer-run-tests" ],
       metadata: { "agent_root_key" => "agent-orchestrator" }
     )
     @working_dir = Dir.mktmpdir
@@ -177,7 +177,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes cmd_args, "--root"
     assert_includes cmd_args, "agent-orchestrator"
     assert_includes cmd_args, "--skill"
-    assert_includes cmd_args, "wait-for-ci"
+    assert_includes cmd_args, "zimmer-run-tests"
     assert_includes cmd_args, "--mcp-server"
     assert_includes cmd_args, "playwright-custom"
   end
@@ -797,7 +797,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "prepare! repeats flags per value to support multiple IDs" do
     @session.update!(
-      catalog_skills: [ "wait-for-ci", "ao-deploy-staging" ],
+      catalog_skills: [ "zimmer-run-tests", "zimmer-deploy-staging" ],
       mcp_servers: [ "playwright-custom", "context7" ]
     )
     captured_cmd = nil
@@ -816,8 +816,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
     cmd_args = captured_cmd[1..]
     assert_equal 2, cmd_args.count("--skill"), "--skill should repeat once per skill ID"
-    assert_includes cmd_args, "wait-for-ci"
-    assert_includes cmd_args, "ao-deploy-staging"
+    assert_includes cmd_args, "zimmer-run-tests"
+    assert_includes cmd_args, "zimmer-deploy-staging"
     assert_equal 2, cmd_args.count("--mcp-server"), "--mcp-server should repeat once per server ID"
     assert_includes cmd_args, "playwright-custom"
     assert_includes cmd_args, "context7"
