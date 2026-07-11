@@ -8,9 +8,9 @@ class NpxCacheHealServiceTest < ActiveSupport::TestCase
     @original_home = ENV["HOME"]
     ENV["HOME"] = @temp_dir
 
-    # Mirror the production layout: ~/.agent-orchestrator/clones/<clone>/<subdir>
+    # Mirror the production layout: ~/.zimmer/clones/<clone>/<subdir>
     @working_directory = File.join(
-      @temp_dir, ".agent-orchestrator", "clones", "pulsemcp-main-abc",
+      @temp_dir, ".zimmer", "clones", "pulsemcp-main-abc",
       "agents", "agent-roots", "tadas-groceries"
     )
     @npx_dir = File.join(@working_directory, ".npm-cache", "_npx")
@@ -186,7 +186,7 @@ class NpxCacheHealServiceTest < ActiveSupport::TestCase
   test "refuses to delete a path that uses .. to escape the clones base" do
     # Raw string literally begins with the clones base, but `..` segments resolve
     # it out of the clones tree. The guard must expand the path before checking.
-    clones_base = File.join(@temp_dir, ".agent-orchestrator", "clones")
+    clones_base = File.join(@temp_dir, ".zimmer", "clones")
     raw = File.join(clones_base, "pulsemcp-main-abc", "..", "..", "..",
       "evil", ".npm-cache", "_npx", "deadbeefdeadbeef")
     target = File.expand_path(raw)

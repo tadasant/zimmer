@@ -50,7 +50,7 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     assert_includes path, "claude-add-feature"
     refute_includes path, "claude/add-feature"
     # The path should be a flat directory under the clones base path
-    assert_equal File.join(File.expand_path("~"), ".agent-orchestrator", "clones"), File.dirname(path)
+    assert_equal File.join(File.expand_path("~"), ".zimmer", "clones"), File.dirname(path)
   end
 
   test "should sanitize multiple slashes in branch name for clone path" do
@@ -59,12 +59,12 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     # The directory name itself should not contain slashes from the branch
     refute_includes File.basename(path), "/"
     # Verify it's still a flat directory under clones
-    assert_equal File.join(File.expand_path("~"), ".agent-orchestrator", "clones"), File.dirname(path)
+    assert_equal File.join(File.expand_path("~"), ".zimmer", "clones"), File.dirname(path)
   end
 
-  test "should generate path in ~/.agent-orchestrator/clones directory" do
+  test "should generate path in ~/.zimmer/clones directory" do
     path = GitCloneService.send(:generate_clone_path, "test-repo", "main")
-    assert_includes path, ".agent-orchestrator/clones"
+    assert_includes path, ".zimmer/clones"
   end
 
   # Test git command execution concepts (without actual git calls)
@@ -437,7 +437,7 @@ class GitCloneServiceTest < ActiveSupport::TestCase
   test "cleans up partial clone on branch failure" do
     # Get the base clone directory to check for leftover clones
     home_dir = File.expand_path("~")
-    base_clone_dir = File.join(home_dir, ".agent-orchestrator", "clones")
+    base_clone_dir = File.join(home_dir, ".zimmer", "clones")
 
     # Capture existing directories before the clone attempt
     # Use a Set for efficient lookup and to handle parallel test isolation
@@ -465,7 +465,7 @@ class GitCloneServiceTest < ActiveSupport::TestCase
 
   test "cleans up partial clone on repository failure" do
     home_dir = File.expand_path("~")
-    base_clone_dir = File.join(home_dir, ".agent-orchestrator", "clones")
+    base_clone_dir = File.join(home_dir, ".zimmer", "clones")
 
     # Capture existing directories before the clone attempt
     # Use a Set for efficient lookup and to handle parallel test isolation
@@ -490,7 +490,7 @@ class GitCloneServiceTest < ActiveSupport::TestCase
 
   test "cleans up partial clone on subdirectory failure" do
     home_dir = File.expand_path("~")
-    base_clone_dir = File.join(home_dir, ".agent-orchestrator", "clones")
+    base_clone_dir = File.join(home_dir, ".zimmer", "clones")
 
     # Capture existing directories before the clone attempt
     # Use a Set for efficient lookup and to handle parallel test isolation

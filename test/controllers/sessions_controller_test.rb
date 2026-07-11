@@ -704,7 +704,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "Root row shows agent root key and clipboard carries full path when subdirectory is set" do
     session = sessions(:running)
     home_dir = File.expand_path("~")
-    clone_base = File.join(home_dir, ".agent-orchestrator", "clones")
+    clone_base = File.join(home_dir, ".zimmer", "clones")
     session.update!(
       subdirectory: "agent-orchestrator",
       metadata: {
@@ -732,7 +732,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "Root row shows agent root key and clipboard carries clone_path when no subdirectory" do
     session = sessions(:running)
     home_dir = File.expand_path("~")
-    clone_base = File.join(home_dir, ".agent-orchestrator", "clones")
+    clone_base = File.join(home_dir, ".zimmer", "clones")
     session.update!(
       subdirectory: nil,
       metadata: {
@@ -1742,11 +1742,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "should sanitize path with dots and underscores on refresh" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt")
     # Use a path with dots and underscores like real clone paths
-    working_directory = "/Users/admin/.agent-orchestrator/clones/pulsemcp-main-1764273034-168756be"
+    working_directory = "/Users/admin/.zimmer/clones/pulsemcp-main-1764273034-168756be"
     session.update!(metadata: { "working_directory" => working_directory })
 
     # Expected sanitized path: all '/', '.', and '_' replaced with '-'
-    expected_sanitized = "-Users-admin--agent-orchestrator-clones-pulsemcp-main-1764273034-168756be"
+    expected_sanitized = "-Users-admin--zimmer-clones-pulsemcp-main-1764273034-168756be"
     expected_transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", expected_sanitized)
 
     transcript_content = '{"role":"user","content":"Test message"}' + "\n"

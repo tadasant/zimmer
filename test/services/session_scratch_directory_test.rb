@@ -59,7 +59,7 @@ class SessionScratchDirectoryTest < ActiveSupport::TestCase
     original_home = ENV["HOME"]
     Dir.mktmpdir("scratch-dir-home") do |tmp_home|
       ENV["HOME"] = tmp_home
-      assert_equal File.join(tmp_home, ".agent-orchestrator", "session-scratch"),
+      assert_equal File.join(tmp_home, ".zimmer", "session-scratch"),
         SessionScratchDirectory.base
     ensure
       ENV["HOME"] = original_home

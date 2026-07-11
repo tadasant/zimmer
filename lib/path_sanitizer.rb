@@ -8,8 +8,8 @@
 # that logic to ensure consistency across the codebase.
 #
 # @example
-#   PathSanitizer.sanitize("/Users/admin/.agent-orchestrator/clones/repo_name")
-#   # => "-Users-admin--agent-orchestrator-clones-repo-name"
+#   PathSanitizer.sanitize("/Users/admin/.zimmer/clones/repo_name")
+#   # => "-Users-admin--zimmer-clones-repo-name"
 module PathSanitizer
   # Returns the base directory for Claude CLI cache files.
   # This differs between macOS and Linux:

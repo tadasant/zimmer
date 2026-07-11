@@ -14,7 +14,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     # snapshot below) is deterministic regardless of the runner's HOME/clones dir.
     # The value mirrors the natural production path (HOME=/home/rails).
     @original_scratch_dir = ENV["AGENT_SCRATCH_DIR"]
-    ENV["AGENT_SCRATCH_DIR"] = "/home/rails/.agent-orchestrator/session-scratch"
+    ENV["AGENT_SCRATCH_DIR"] = "/home/rails/.zimmer/session-scratch"
   end
 
   teardown do

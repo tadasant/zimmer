@@ -806,7 +806,7 @@ class AgentSessionJob < ApplicationJob
           )
 
           # Store clone paths in session metadata
-          # clone_path: base clone directory (e.g., ~/.agent-orchestrator/clones/agents-main-123-abc)
+          # clone_path: base clone directory (e.g., ~/.zimmer/clones/agents-main-123-abc)
           # working_directory: actual working directory (may be subdirectory)
           # full_clone_path: full path including subdirectory if present (for copy button)
           # Clear any transient-clone-retry counter now that the clone succeeded.

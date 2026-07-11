@@ -121,8 +121,8 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
     # rollout is the most recently modified file in the shared tree, but it
     # belongs to a different clone. The fallback must pick THIS session's older
     # rollout, never the newer foreign one.
-    own_clone = "/home/rails/.agent-orchestrator/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
-    foreign_clone = "/home/rails/.agent-orchestrator/clones/pulsemcp-main-FOREIGN/agents/agent-roots/2-prepare"
+    own_clone = "/home/rails/.zimmer/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
+    foreign_clone = "/home/rails/.zimmer/clones/pulsemcp-main-FOREIGN/agents/agent-roots/2-prepare"
     @session.update!(session_id: SecureRandom.uuid, metadata: { "working_directory" => own_clone })
     @file_system.mkdir_p(@day_dir)
 
@@ -137,8 +137,8 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
   end
 
   test "fallback returns nil when only foreign-clone rollouts exist (this session's rollout not written yet)" do
-    own_clone = "/home/rails/.agent-orchestrator/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
-    foreign_clone = "/home/rails/.agent-orchestrator/clones/pulsemcp-main-FOREIGN/agents/agent-roots/2-prepare"
+    own_clone = "/home/rails/.zimmer/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
+    foreign_clone = "/home/rails/.zimmer/clones/pulsemcp-main-FOREIGN/agents/agent-roots/2-prepare"
     @session.update!(session_id: SecureRandom.uuid, metadata: { "working_directory" => own_clone })
     @file_system.mkdir_p(@day_dir)
 
@@ -152,7 +152,7 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
   test "fallback selects the most recent among this session's own rollouts" do
     # Within one clone there can be several rollouts (e.g. resume creates a new
     # file). Among matching-cwd rollouts the most-recently-modified wins.
-    own_clone = "/home/rails/.agent-orchestrator/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
+    own_clone = "/home/rails/.zimmer/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
     @session.update!(session_id: SecureRandom.uuid, metadata: { "working_directory" => own_clone })
     @file_system.mkdir_p(@day_dir)
 
@@ -167,8 +167,8 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
   end
 
   test "fallback handles a compressed foreign rollout without selecting it" do
-    own_clone = "/home/rails/.agent-orchestrator/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
-    foreign_clone = "/home/rails/.agent-orchestrator/clones/pulsemcp-main-FOREIGN/agents/agent-roots/2-prepare"
+    own_clone = "/home/rails/.zimmer/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
+    foreign_clone = "/home/rails/.zimmer/clones/pulsemcp-main-FOREIGN/agents/agent-roots/2-prepare"
     @session.update!(session_id: SecureRandom.uuid, metadata: { "working_directory" => own_clone })
     @file_system.mkdir_p(@day_dir)
 
@@ -186,7 +186,7 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
     # A torn/garbage session_meta line must not cause a candidate to be picked.
     # The newer foreign candidate here is unreadable; selection must still land
     # on this session's own rollout (or nil), never the malformed file.
-    own_clone = "/home/rails/.agent-orchestrator/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
+    own_clone = "/home/rails/.zimmer/clones/pulsemcp-main-OWN/agents/agent-roots/token-spend-economics"
     @session.update!(session_id: SecureRandom.uuid, metadata: { "working_directory" => own_clone })
     @file_system.mkdir_p(@day_dir)
 

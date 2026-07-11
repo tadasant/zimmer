@@ -73,7 +73,7 @@ module MockHelpers
     mock = MockFileSystemAdapter.new
 
     # Setup standard directories
-    mock.mkdir_p(File.join(File.expand_path("~"), ".agent-orchestrator", "clones"))
+    mock.mkdir_p(File.join(File.expand_path("~"), ".zimmer", "clones"))
     mock.mkdir_p(File.expand_path("~/.claude/projects"))
 
     # Add initial files

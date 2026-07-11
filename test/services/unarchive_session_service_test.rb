@@ -17,7 +17,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
     # Set up mock file system
     @mock_fs = MockFileSystemAdapter.new
-    @clone_path = "/home/test/.agent-orchestrator/clones/test-repo-main-12345-abcd"
+    @clone_path = "/home/test/.zimmer/clones/test-repo-main-12345-abcd"
     @working_directory = @clone_path
 
     # Create an archived session
@@ -74,7 +74,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
   test "full unarchive when clone was deleted recreates clone" do
     # Clone does NOT exist (deleted during archive)
     # Mock GitCloneService to return success
-    new_clone_path = "/home/test/.agent-orchestrator/clones/test-repo-main-99999-efgh"
+    new_clone_path = "/home/test/.zimmer/clones/test-repo-main-99999-efgh"
 
     mock_create_clone = lambda do |_git_root, **_kwargs|
       { clone_path: new_clone_path, working_directory: new_clone_path }
@@ -466,7 +466,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       "exception_class" => "RuntimeError"
     ))
 
-    new_clone_path = "/home/test/.agent-orchestrator/clones/test-repo-main-99999-efgh"
+    new_clone_path = "/home/test/.zimmer/clones/test-repo-main-99999-efgh"
 
     mock_create_clone = lambda do |_git_root, **_kwargs|
       { clone_path: new_clone_path, working_directory: new_clone_path }
@@ -546,7 +546,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     # Do NOT create full_working_directory - simulates incomplete/corrupted clone
 
     # Mock GitCloneService to return a fresh clone
-    new_clone_path = "/home/test/.agent-orchestrator/clones/test-repo-main-99999-efgh"
+    new_clone_path = "/home/test/.zimmer/clones/test-repo-main-99999-efgh"
     new_working_directory = File.join(new_clone_path, subdirectory)
 
     mock_create_clone = lambda do |_git_root, **kwargs|
@@ -584,7 +584,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
     @mock_fs.mkdir_p(@clone_path)
 
-    new_clone_path = "/home/test/.agent-orchestrator/clones/test-repo-main-99999-ijkl"
+    new_clone_path = "/home/test/.zimmer/clones/test-repo-main-99999-ijkl"
 
     mock_create_clone = lambda do |_git_root, **kwargs|
       { clone_path: new_clone_path, working_directory: new_clone_path }

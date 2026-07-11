@@ -54,7 +54,7 @@ write_files:
           # Durable state that must survive a droplet re-create / deploy. Named
           # volumes live on the droplet disk under /var/lib/docker/volumes and are
           # shared by app + worker so both see the same clones and credentials.
-          - agent_orchestrator:/home/rails/.agent-orchestrator  # git clones + session scratch
+          - zimmer_data:/home/rails/.zimmer                     # git clones + session scratch
           - claude_home:/home/rails/.claude                     # shared Claude credentials (account rotation + login flow)
           - gh_config:/home/rails/.config/gh                    # gh auth token
           - claude_local:/home/rails/.local                     # claude CLI self-update target
@@ -116,7 +116,7 @@ write_files:
           restart: always
 %{~ endif }
       volumes:
-        agent_orchestrator: {}
+        zimmer_data: {}
         claude_home: {}
         gh_config: {}
         claude_local: {}
