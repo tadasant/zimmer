@@ -178,7 +178,7 @@ class SkillsConfigTest < ActiveSupport::TestCase
     assert_equal skill.name, hash[:name]
     assert_equal skill.title, hash[:title]
     assert_equal skill.description, hash[:description]
-    assert_equal "agent-orchestrator", hash[:category]
+    assert_equal "zimmer", hash[:category]
     assert_includes [ true, false ], hash[:user_invocable]
   end
 
@@ -211,7 +211,7 @@ class SkillsConfigTest < ActiveSupport::TestCase
   test "should return unique sorted categories" do
     categories = SkillsConfig.categories
     assert categories.is_a?(Array)
-    assert_includes categories, "agent-orchestrator"
+    assert_includes categories, "zimmer"
     assert_equal categories, categories.sort
     assert_equal categories, categories.uniq
   end
@@ -219,7 +219,7 @@ class SkillsConfigTest < ActiveSupport::TestCase
   test "should group skills by category" do
     grouped = SkillsConfig.grouped_by_category
     assert grouped.is_a?(Hash)
-    assert grouped.key?("agent-orchestrator")
-    assert grouped["agent-orchestrator"].all? { |s| s.category == "agent-orchestrator" }
+    assert grouped.key?("zimmer")
+    assert grouped["zimmer"].all? { |s| s.category == "zimmer" }
   end
 end
