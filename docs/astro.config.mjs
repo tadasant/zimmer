@@ -40,9 +40,8 @@ export default defineConfig({
       customCss: [
         // Self-hosted variable fonts (bundled + hashed by Astro — no external
         // requests, works offline, CI-safe). Order matters: fonts before theme.
-        "@fontsource-variable/newsreader/opsz.css",
-        "@fontsource-variable/newsreader/opsz-italic.css",
-        "@fontsource-variable/schibsted-grotesk/wght.css",
+        "@fontsource-variable/ibm-plex-sans/wght.css",
+        "@fontsource-variable/ibm-plex-sans/wght-italic.css",
         "@fontsource-variable/jetbrains-mono/wght.css",
         "./src/styles/custom.css",
       ],
