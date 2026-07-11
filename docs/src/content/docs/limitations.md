@@ -117,8 +117,8 @@ end
 ```
 
 It renders `claude_accounts` (whose `oauth_config` JSONB holds plaintext Anthropic and OpenAI access and
-refresh tokens), `mcp_oauth_credentials`, and `x_oauth_credentials` as editable resources. On a public
-perimeter, that hands an anonymous visitor your refresh tokens. There are also six
+refresh tokens), `mcp_oauth_credentials`, `x_oauth_credentials`, and `runtime_login_attempts` as editable
+resources. On a public perimeter, that hands an anonymous visitor your refresh tokens. There are also six
 `# TODO: Add proper authorization checks` comments in `sessions_controller.rb` (`:63`, `:687`, `:724`,
 `:751`, `:790`, and `:1475`, the last on transcripts, which "contain sensitive conversation data").
 
