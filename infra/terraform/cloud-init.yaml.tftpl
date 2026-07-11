@@ -25,13 +25,15 @@ write_files:
           # Decrypts Rails encrypted credentials (config/credentials/*). Empty on
           # staging (no committed production.yml.enc); secrets_loader.rb rescues a
           # missing key and there is no require_master_key, so the app still boots.
-          RAILS_MASTER_KEY: ${rails_master_key}
+          # Quoted so an empty value renders as an explicit "" (a bare `KEY:` is
+          # YAML null, which compose treats as inherit-from-host, not empty).
+          RAILS_MASTER_KEY: "${rails_master_key}"
           # REST API auth: comma-separated bearer keys. Empty disables the API.
-          API_KEYS: ${api_keys}
+          API_KEYS: "${api_keys}"
           # Canonical external host for URL generation + MCP OAuth callbacks.
           # Without it McpOauthService falls back to localhost:3000 and every
           # OAuth callback breaks.
-          APP_HOST: ${app_host}
+          APP_HOST: "${app_host}"
           # The app's config/database.yml reads DATABASE_HOST/PORT/USERNAME/
           # PASSWORD/SSLMODE (NOT DATABASE_URL). These point either at the compose
           # `db` service or, in production, at the managed Postgres cluster over
@@ -92,7 +94,9 @@ write_files:
         # :external, so jobs only run if a dedicated `good_job start` process is
         # up. Without it, sessions enqueue and never execute (the Claude login
         # CLI, pollers, cron, and cleanup all stall). Same image/env/volumes as
-        # app via the anchor.
+        # app via the anchor. Only the app entrypoint runs db:prepare, so on a
+        # cold droplet the worker may crash-loop briefly against an unmigrated
+        # schema until the app migrates; restart: always makes that self-healing.
         worker:
           <<: *app-base
           command: ["bundle", "exec", "good_job", "start"]
@@ -167,4 +171,16 @@ runcmd:
   # Pull + run Zimmer
   - echo '${ghcr_token}' | docker login ghcr.io -u '${ghcr_username}' --password-stdin
   - docker compose -f /opt/zimmer/docker-compose.yml pull
+  # Create + fix ownership of the durable named volumes BEFORE the stack starts.
+  # The container runs as UID 1000 (rails). Docker only inherits the image dir's
+  # ownership into a fresh named volume when the mountpoint already EXISTS in the
+  # image; the image creates ~/.local and ~/.claude but NOT ~/.zimmer or
+  # ~/.config/gh, so those two volumes would come up root-owned and uid 1000
+  # could not write them -- every session would fail to clone (and gh auth would
+  # fail) while the /up health check still passed. `run` first-mounts every named
+  # volume (as root); chown then hands them to rails. `--entrypoint chown`
+  # bypasses the image entrypoint (which would otherwise background `claude
+  # update` as root into ~/.local). Non-recursive is enough: fresh volumes are
+  # empty, and on redeploys the app already owns the contents. Idempotent.
+  - docker compose -f /opt/zimmer/docker-compose.yml run --rm --no-deps -u 0 --entrypoint chown app rails:rails /home/rails/.zimmer /home/rails/.claude /home/rails/.config/gh /home/rails/.local
   - docker compose -f /opt/zimmer/docker-compose.yml up -d

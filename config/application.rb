@@ -44,7 +44,8 @@ module Zimmer
     # (GitCloneService, ForkSessionService, the LocalFilesystem execution provider)
     # and the garbage collector (StaleCloneCleanupJob, OrphanCloneFilesystemCleanupJob).
     # Clones live on durable storage that survives container restarts AND deploys
-    # (the agent-orchestrator_agent-clones named volume; see config/deploy.production.yml).
+    # (the `zimmer_data` named volume mounted at ~/.zimmer; see
+    # infra/terraform/cloud-init.yaml.tftpl).
 
     # Path to the air.json that drives catalog discovery (skills, mcp servers,
     # agent roots, references, hooks, plugins). Defaults to ~/.air/air.json which
