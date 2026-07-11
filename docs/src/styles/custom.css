@@ -192,8 +192,13 @@ body {
   --sl-color-asides-text-accent: #b23330;
   --sl-color-asides-border: color-mix(in srgb, #b23330 50%, transparent);
 }
+/* Keep in-callout links looking like links: use the aside's own accent, not the
+   heading colour, for both the text and the underline. */
 .starlight-aside a {
-  color: var(--sl-color-white);
+  color: var(--sl-color-asides-text-accent);
+  text-decoration-color: color-mix(in srgb, var(--sl-color-asides-text-accent) 50%, transparent);
+}
+.starlight-aside a:hover {
   text-decoration-color: var(--sl-color-asides-text-accent);
 }
 
@@ -210,7 +215,7 @@ body {
   font-weight: 600;
 }
 .card .icon {
-  color: var(--sl-color-accent);
+  color: var(--sl-color-text-accent);
   border-color: var(--sl-color-gray-5);
   background: color-mix(in srgb, var(--sl-color-accent) 10%, transparent);
 }
