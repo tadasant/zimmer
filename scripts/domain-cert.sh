@@ -82,28 +82,28 @@ if [ "$need_issue" != "true" ]; then
   # box, which we must treat as fail-closed: skip issuance and keep serving the
   # current cert, rather than mistaking an unreachable box for a missing cert and
   # burning a Let's Encrypt issuance on every transient blip.
-  if info="$(ssh_box "openssl x509 -in /opt/zimmer/certs/cert.pem -noout -issuer -subject -checkend $((RENEW_DAYS*86400)) 2>/dev/null; echo rc=\$?")"; then
+  if info="$(ssh_box "openssl x509 -in /opt/zimmer/certs/cert.pem -noout -issuer -subject -ext subjectAltName -checkend $((RENEW_DAYS*86400)) 2>/dev/null; echo rc=\$?")"; then
     issuer="$(printf '%s\n' "$info" | sed -n 's/^issuer=//p')"
     subject="$(printf '%s\n' "$info" | sed -n 's/^subject=//p')"
     rc="$(printf '%s\n' "$info" | sed -n 's/^rc=//p')"
-    # Normalize spaces so the match is robust across openssl's "CN = x" / "CN=x"
-    # output, and compare as a literal substring (no regex -- the dots in a domain
-    # would otherwise be wildcards).
-    subject_ns="$(printf '%s' "$subject" | tr -d ' ')"
+    # Match the domain against the Subject Alternative Name, not the Subject CN:
+    # Let's Encrypt is phasing out the CN (SAN-only certs), so a CN match would go
+    # stale and force a needless re-issue every run. Space-normalize the whole blob
+    # and look for the literal token "DNS:${DOMAIN}" (dots literal -- no regex).
+    covers_domain=false
+    case "$(printf '%s' "$info" | tr -d ' ')" in
+      *"DNS:${DOMAIN}"*) covers_domain=true ;;
+    esac
     if [ -z "$issuer" ]; then
       need_issue=true; log "no readable cert on box -> issue"
     elif [ "$issuer" = "$subject" ]; then
       need_issue=true; log "cert is self-signed (issuer==subject) -> issue"
+    elif [ "$covers_domain" != "true" ]; then
+      need_issue=true; log "cert SAN does not cover ${DOMAIN} -> issue"
+    elif [ "$rc" != "0" ]; then
+      need_issue=true; log "cert expires within ${RENEW_DAYS}d -> issue"
     else
-      case "$subject_ns" in
-        *"CN=${DOMAIN}"*)
-          if [ "$rc" != "0" ]; then
-            need_issue=true; log "cert expires within ${RENEW_DAYS}d -> issue"
-          else
-            log "cert on box is valid for >${RENEW_DAYS}d and matches ${DOMAIN} -> skip issuance"
-          fi ;;
-        *) need_issue=true; log "cert subject is not ${DOMAIN} -> issue" ;;
-      esac
+      log "cert on box is valid for >${RENEW_DAYS}d and covers ${DOMAIN} -> skip issuance"
     fi
   else
     log "could not reach ${TS_HOST} to inspect its cert -> fail closed, skip issuance this run"
