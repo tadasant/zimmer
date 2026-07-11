@@ -104,11 +104,15 @@ import Default from "@astrojs/starlight/components/Head.astro";
     }
   }).observe(document.documentElement, { attributes: true });
 
-  // Clicking a heading's anchor link copies its deep link to the clipboard
-  // (and still updates the URL hash), with a brief "Copied" confirmation.
+  // Clicking a heading's anchor link copies its deep link to the clipboard and
+  // updates the URL hash. On success the link icon is swapped for a checkmark
+  // for ~1.4s (no overlapping text; Starlight's icon centering is reused).
+  const CHECK_SVG =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
   document.addEventListener("click", (event) => {
-    // Let modified / non-left clicks behave normally (open in new tab, etc.).
     const e = event as MouseEvent;
+    // Let modified / non-left clicks behave normally (open in new tab, etc.).
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
 
     const link = (event.target as HTMLElement)?.closest?.(
@@ -121,11 +125,93 @@ import Default from "@astrojs/starlight/components/Head.astro";
     const url = location.origin + location.pathname + location.search + hash;
     history.pushState(null, "", hash);
 
-    // Only flash "Copied" when the write actually succeeded.
-    const confirmCopied = () => {
+    const iconHost = link.querySelector<HTMLElement>(".sl-anchor-icon");
+    // Only confirm (swap to checkmark) when the write actually succeeded.
+    const confirm = () => {
+      if (!iconHost || link.hasAttribute("data-copied")) return;
+      const original = iconHost.innerHTML;
+      iconHost.innerHTML = CHECK_SVG;
       link.setAttribute("data-copied", "");
-      window.setTimeout(() => link.removeAttribute("data-copied"), 1400);
+      window.setTimeout(() => {
+        iconHost.innerHTML = original;
+        link.removeAttribute("data-copied");
+      }, 1400);
     };
-    navigator.clipboard?.writeText?.(url).then(confirmCopied, () => {});
+    navigator.clipboard?.writeText?.(url).then(confirm, () => {});
+  });
+
+  // ---- Image / diagram lightbox --------------------------------------------
+  // Click any diagram or content image to view it full-screen; Esc / backdrop /
+  // the close button dismisses it.
+  const lightbox = document.createElement("div");
+  lightbox.className = "lightbox";
+  lightbox.setAttribute("role", "dialog");
+  lightbox.setAttribute("aria-modal", "true");
+  lightbox.setAttribute("aria-label", "Enlarged view");
+  lightbox.innerHTML =
+    '<button class="lightbox-close" aria-label="Close">✕</button><div class="lightbox-stage"></div>';
+  const stage = lightbox.querySelector<HTMLElement>(".lightbox-stage")!;
+  document.body.appendChild(lightbox);
+
+  function openLightbox(node: SVGElement | HTMLImageElement) {
+    stage.replaceChildren(node);
+    lightbox.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function closeLightbox() {
+    lightbox.classList.remove("open");
+    stage.replaceChildren();
+    document.body.style.overflow = "";
+  }
+
+  lightbox.addEventListener("click", (event) => {
+    // Backdrop or close button closes; clicking the image itself does not.
+    if (
+      event.target === lightbox ||
+      (event.target as HTMLElement).closest(".lightbox-close")
+    ) {
+      closeLightbox();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && lightbox.classList.contains("open")) closeLightbox();
+  });
+
+  document.addEventListener("click", (event) => {
+    const el = event.target as HTMLElement;
+    if (el.closest(".lightbox")) return;
+
+    const figure = el.closest(".mermaid-figure");
+    if (figure) {
+      const svg = figure.querySelector("svg");
+      if (svg) {
+        const clone = svg.cloneNode(true) as SVGElement;
+        clone.removeAttribute("style"); // drop Mermaid's max-width cap
+
+        // An SVG with a viewBox but no explicit size collapses, so size it to
+        // "contain" the viewport (as large as fits, preserving aspect ratio).
+        const vb = svg.viewBox?.baseVal;
+        const vbW = vb && vb.width ? vb.width : svg.getBoundingClientRect().width || 800;
+        const vbH = vb && vb.height ? vb.height : svg.getBoundingClientRect().height || 600;
+        const avW = window.innerWidth * 0.9;
+        const avH = window.innerHeight * 0.86;
+        const scale = Math.min(avW / vbW, avH / vbH);
+        clone.style.width = Math.round(vbW * scale) + "px";
+        clone.style.height = Math.round(vbH * scale) + "px";
+        clone.style.maxWidth = "none";
+        clone.style.maxHeight = "none";
+
+        openLightbox(clone);
+      }
+      return;
+    }
+
+    const img = el.closest(".sl-markdown-content img") as HTMLImageElement | null;
+    if (img) {
+      const clone = new Image();
+      clone.src = img.currentSrc || img.src;
+      clone.alt = img.alt;
+      openLightbox(clone);
+    }
   });
 </script>

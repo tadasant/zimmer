@@ -123,13 +123,12 @@ body {
   text-decoration-thickness: 1px;
 }
 
-/* Heading anchor link (the "copy link" affordance) — a muted icon, centered on
-   the heading, no underline. Reveal on heading hover (Starlight sets opacity). */
+/* Heading anchor link (the "copy link" affordance). Starlight's own
+   anchor-links.css handles sizing, spacing, and vertical centering — do NOT
+   override those. Only recolour it (muted, accent on hover) and drop the
+   underline. The click-to-copy checkmark is swapped in by JS (Head.astro), not
+   via ::after, which Starlight uses for the click area. */
 .sl-anchor-link {
-  display: inline-flex;
-  align-items: center;
-  vertical-align: middle;
-  margin-inline-start: 0.35em;
   color: var(--sl-color-gray-4);
   text-decoration: none !important;
 }
@@ -137,27 +136,84 @@ body {
 .sl-anchor-link:focus-visible {
   color: var(--sl-color-text-accent);
 }
-.sl-anchor-icon {
-  display: inline-flex;
-}
-.sl-anchor-icon svg {
-  display: block;
-  width: 0.72em;
-  height: 0.72em;
-}
-/* Brief "Copied" confirmation, driven by the click handler in Head.astro. */
-.sl-anchor-link[data-copied]::after {
-  content: "Copied";
-  margin-inline-start: 0.4em;
-  font-size: 0.62em;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--sl-color-text-accent);
+.sl-anchor-link[data-copied] {
+  color: #34b27b; /* success green while the checkmark shows */
+  opacity: 1 !important;
 }
 
 /* Offset anchor targets so a linked heading clears the fixed header. */
 html {
   scroll-padding-top: 5rem;
+}
+
+/* =========================================================================
+   Image / diagram lightbox — click any diagram or image to view it full size.
+   ========================================================================= */
+.mermaid-figure,
+.sl-markdown-content img:not(.sl-anchor-icon *) {
+  cursor: zoom-in;
+}
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(1rem, 4vw, 3rem);
+  background: color-mix(in srgb, #05060a 88%, transparent);
+  backdrop-filter: blur(2px);
+  cursor: zoom-out;
+}
+.lightbox.open {
+  display: flex;
+}
+.lightbox-stage {
+  max-width: 96vw;
+  max-height: 92vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-stage :is(svg, img) {
+  width: auto;
+  height: auto;
+  max-width: 96vw;
+  max-height: 92vh;
+  background: var(--sl-color-bg);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+.lightbox-close {
+  position: absolute;
+  top: clamp(0.5rem, 2vw, 1.25rem);
+  right: clamp(0.5rem, 2vw, 1.25rem);
+  width: 2.25rem;
+  height: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.4rem;
+  background: var(--sl-color-gray-6);
+  color: var(--sl-color-gray-1);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.lightbox-close:hover {
+  color: var(--sl-color-white);
+  border-color: var(--sl-color-accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lightbox.open .lightbox-stage {
+    animation: lb-in 0.16s ease-out both;
+  }
+  @keyframes lb-in {
+    from { opacity: 0; transform: scale(0.98); }
+    to { opacity: 1; transform: scale(1); }
+  }
 }
 
 /* =========================================================================
