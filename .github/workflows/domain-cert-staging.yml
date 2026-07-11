@@ -1,0 +1,74 @@
+name: Domain cert (staging)
+
+# Custom-domain HTTPS for the staging droplet, out-of-band (scripts/domain-cert.sh):
+# issues/renews the Let's Encrypt cert via ACME DNS-01 through Cloudflare, upserts
+# the `staging.zimmer.tadasant.com -> tailnet IP` A record, and pushes ONLY the cert
+# onto the box. The Cloudflare token stays in CI — never on the droplet.
+#
+# Runs on a weekly schedule (renew-if-needed; the script no-ops when the cert is
+# still valid for >30 days), on demand, and via workflow_call so deploy-staging can
+# chain it after a fresh droplet comes up.
+#
+# Prod has its own copy of this in tadasant/tadasant-internal, pointed at the prod
+# host + zone; the shared logic is scripts/domain-cert.sh so the two cannot drift.
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      force_issue:
+        description: "Issue a fresh cert even if the current one is still valid"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      force_issue:
+        type: boolean
+        default: false
+
+concurrency:
+  group: domain-cert-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cert:
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      DOMAIN: staging.zimmer.tadasant.com
+      TS_HOST: zimmer-staging
+      CF_ZONE_ID: "7724dafbdb549223d8f0a9a51f5709da" # tadasant.com
+      ACME_EMAIL: tadas@tadasant.com
+      FORCE_ISSUE: ${{ inputs.force_issue && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the Cloudflare token
+        # Pass the secret via env, never interpolated into the script body: inlining
+        # `${{ secrets.* }}` into a run: block is a template-injection sink (and would
+        # break on a token containing shell metacharacters).
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CF_API_TOKEN" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set. Mint a token scoped to"
+            echo "::error::Zone:DNS:Edit + Zone:Zone:Read on tadasant.com and add it as"
+            echo "::error::the CLOUDFLARE_API_TOKEN Actions secret. See docs/DOMAIN.md."
+            exit 1
+          fi
+
+      # Join the tailnet as tag:zimmer-ci so we can `tailscale ssh` the droplet and
+      # reach https://staging.zimmer.tadasant.com (which resolves to its tailnet IP).
+      - name: Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TS_CI_AUTHKEY }}
+
+      - name: Issue/renew + push cert
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash scripts/domain-cert.sh

@@ -14,7 +14,7 @@ sidebar:
 | `environment` | validated `staging` \| `production` |
 | `region` / `droplet_size` | default `nyc3` / `s-2vcpu-4gb` |
 | `image_ref` | default `ghcr.io/tadasant/zimmer:latest` |
-| `domain` | `""` by default — no DNS record is created |
+| `domain` | `""` by default. Set it to turn on [custom-domain HTTPS over the tailnet](/operate/deploying/#custom-domain-https-over-the-tailnet). Terraform no longer creates a DNS record — the `domain-cert` workflow owns the A record. |
 | `manage_project` | `false` by default — a DO project name is account-unique and collides under ephemeral state |
 | `ssh_key_fingerprints` | |
 | `ghcr_username` | |
@@ -116,8 +116,9 @@ needed by the author's private production auto-upgrade workflow.
 There is no backend block. State lives on the CI runner and evaporates.
 
 The deploy compensates by hand-reaping the droplet and firewall through the DigitalOcean API before
-every `apply`. Anything else account-unique — a project, a DNS record — would 409 on a re-run, which is
-exactly why `manage_project` defaults to `false` and `domain` defaults to `""`.
+every `apply`. A project is account-unique and would 409 on a re-run, which is why `manage_project`
+defaults to `false`. (Terraform no longer manages a DNS record at all — the `domain-cert` workflow owns
+the A record now, out of band.)
 
 Terraform can never converge, and `terraform destroy` can never work properly. This is a known,
 accepted trade-off for a single-operator staging environment, documented in the README. It would not

@@ -6,7 +6,8 @@ sidebar:
 ---
 
 Zimmer deploys to a single DigitalOcean droplet running Docker Compose, reachable only over
-Tailscale. There is no Kubernetes, no load balancer, no TLS terminator, and no HA.
+Tailscale. There is no Kubernetes, no load balancer, and no HA. TLS is optional and off by default —
+setting `var.domain` adds a tailnet-only HTTPS front door (see [below](#custom-domain-https-over-the-tailnet)).
 
 ## The topology
 
@@ -36,12 +37,70 @@ flowchart TB
     FW -.-> droplet
 ```
 
-There is no TLS anywhere. The app container serves plain HTTP on :80. `production.rb` sets
+By default there is no TLS. The app container serves plain HTTP on :80, and `production.rb` sets
 `assume_ssl` and `force_ssl`, which works *only* because `assume_ssl` makes Rails pretend the request
-arrived over TLS. The actual encryption is WireGuard, via Tailscale. A future public ingress would
+arrived over TLS. The actual encryption is WireGuard, via Tailscale. A future *public* ingress would
 break this subtly and badly.
 
-Supervision is dockerd + `restart: always`. That's the whole story.
+Setting `var.domain` adds a real HTTPS front door (see below), still tailnet-only, which makes
+`assume_ssl` true in reality. Supervision is dockerd + `restart: always`.
+
+## Custom-domain HTTPS over the tailnet
+
+Plain HTTP with `assume_ssl` is a known sharp edge: because Rails computes `https://` origins that
+never match the browser's `http://`, every CSRF-protected form POST 422s and every ActionCable upgrade
+is rejected. Setting `var.domain` (e.g. `zimmer.tadasant.com`) fixes this class at the source by putting
+a genuine cert on a custom name — while staying reachable only over the tailnet.
+
+The trick is that TLS behind a tailnet is awkward: the firewall opens no public 80/443, so ACME
+HTTP-01/TLS-ALPN-01 can't work — only DNS-01 can. Rather than park a Cloudflare token on the droplet for
+on-box renewal, the work is split so **the box holds no DNS credential**:
+
+```mermaid
+flowchart LR
+    subgraph droplet["Droplet (gated on var.domain)"]
+        CADDY["caddy:2 on :443<br/>plugin-less, NO ACME<br/>serves /opt/zimmer/certs/{cert,key}.pem<br/>proxies to app"]
+        APP2["app on :80<br/>(unchanged)"]
+        CADDY --> APP2
+    end
+    subgraph ci["GitHub Actions — domain-cert-*.yml"]
+        SH["scripts/domain-cert.sh<br/>ACME DNS-01 via Cloudflare<br/>weekly, no-op unless cert missing/<30d"]
+    end
+    CF[("Cloudflare DNS<br/>A record → tailnet IP (100.x)")]
+    SH -->|"upsert A record"| CF
+    SH -->|"push cert over tailscale ssh<br/>+ restart caddy"| CADDY
+    U["Tailnet peer"] -->|"https://zimmer.tadasant.com"| CADDY
+```
+
+- **On the droplet** (`cloud-init.yaml.tftpl`, only when `var.domain` is set): a stock, plugin-less
+  `caddy:2` container on `:443` that does no ACME. It serves the cert files at
+  `/opt/zimmer/certs/{cert,key}.pem` and reverse-proxies to the app. The app keeps publishing `:80`, so
+  the MagicDNS `http://…` path is unchanged and a Caddy misconfig can't take the box down. A self-signed
+  placeholder is written at boot so Caddy can start before the real cert arrives.
+- **In CI** (`scripts/domain-cert.sh`, run by `domain-cert-staging.yml`): discovers the droplet's tailnet
+  IP, upserts a Cloudflare `domain → tailnet IP (100.x)` A record, issues/renews the Let's Encrypt cert
+  via ACME DNS-01 through Cloudflare, pushes **only the cert** onto the box over `tailscale ssh`, and
+  restarts Caddy (the Caddyfile sets `admin off`, so there's no live-reload endpoint — a restart re-reads
+  the bind-mounted files). The Cloudflare token lives only in GitHub Actions.
+
+The A record points at the **tailnet IP**, so tailnet peers resolve and reach it while everyone else
+gets an unroutable address — same tailnet-only exposure as the MagicDNS name, now with a real cert.
+
+:::note[Turning it on]
+Mint a Cloudflare API token scoped to **Zone:DNS:Edit + Zone:Zone:Read on the parent zone only**, add it
+as the `CLOUDFLARE_API_TOKEN` Actions secret (staging → `tadasant/zimmer`, production →
+`tadasant/tadasant-internal`), set `domain` in the environment's tfvars, deploy, then run the
+`domain-cert-*` workflow once (`workflow_dispatch`) to issue the first cert. The weekly schedule renews
+thereafter — a no-op unless the cert is missing, self-signed, wrong-name, or within 30 days of expiry, so
+it issues only ~every 60 days. `domain=""` renders byte-identically to the plain-HTTP setup, so existing
+deployments are unaffected.
+:::
+
+:::caution[Certs survive an image upgrade, but not a droplet replacement]
+Certs live in a host directory, so they persist across image auto-upgrades (container recreate). A
+droplet **replacement** (a fresh `provision`) drops them; the next `domain-cert-*` run re-registers the A
+record and re-issues.
+:::
 
 ## The two gaps that will bite you
 
@@ -117,6 +176,7 @@ container boot silently run the old CLI and the old Chromium.
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | daily cron 08:00 UTC | destroys the staging droplet (a powered-off droplet still bills) |
 | `ghcr-retention.yml` | weekly cron | prunes GHCR to ≤50 versions |
+| `domain-cert-staging.yml` | weekly cron + manual | issues/renews the Let's Encrypt cert for `var.domain` via ACME DNS-01 and pushes it to the droplet (see [Custom-domain HTTPS](#custom-domain-https-over-the-tailnet)) |
 
 ### Staging deploys are destroy-and-recreate
 
@@ -151,9 +211,10 @@ terraform apply -input=false -auto-approve -var-file=staging.tfvars \
   -var="image_ref=ghcr.io/tadasant/zimmer:<tag>"
 ```
 
-Creates: the droplet, the firewall, optionally a DNS record (only if `domain != ""` — it's `""` by
-default), and optionally a DO project (`manage_project` defaults to `false`, because a DO project
-name is account-unique and would collide under ephemeral state).
+Creates: the droplet, the firewall, and optionally a DO project (`manage_project` defaults to `false`,
+because a DO project name is account-unique and would collide under ephemeral state). It does **not**
+create a DNS record — when `var.domain` is set, the `domain-cert` workflow owns the A record (pointing at
+the tailnet IP), which keeps the Cloudflare credential out of Terraform.
 
 Production references a pre-existing Managed Postgres cluster as a read-only data source. It never
 creates it. The cluster, and both its databases (`zimmer_production` and `zimmer_production_cable`),
