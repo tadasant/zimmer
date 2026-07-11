@@ -1,0 +1,64 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/skills.schema.json",
+  "sync-docs": {
+    "id": "sync-docs",
+    "title": "Sync Docs",
+    "description": "Pre-PR step: review Zimmer's documentation against the branch diff and update whatever has gone stale — README.md, AGENTS.md / CLAUDE.md, CONTRIBUTING.md, docs/, the REST API reference — so docs ship in the same PR and never drift from code. Default, always-on: run it as the final routine before opening a PR. Vendored copy of the central Reframe sync-docs skill, adapted to Zimmer's documentation surface.",
+    "path": "sync-docs",
+    "category": "zimmer",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "zimmer-start-dev-server": {
+    "id": "zimmer-start-dev-server",
+    "title": "Start the Zimmer Dev Server",
+    "description": "Bring up a local Zimmer instance (Rails 8 + Tailwind watcher via foreman, `bin/dev`) to develop against, exercise a change by hand, or take screenshots. Covers the Postgres + Redis prerequisites the app does NOT provision for you (there is no docker-compose here), the bin/dev vs bin/setup split, port handling, and the failure modes that look like a broken app but are really a missing service. Use before any change that needs verifying in a running app rather than only in tests.",
+    "path": "zimmer-start-dev-server",
+    "category": "zimmer",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "zimmer-run-tests": {
+    "id": "zimmer-run-tests",
+    "title": "Run Zimmer's Tests",
+    "description": "Run the right slice of Zimmer's test suite for a change and reproduce CI locally. Covers the four tiers (Minitest unit/integration, Capybara system tests, Playwright e2e scripts, the standalone GHCR retention test), which of them CI actually gates on (system tests and e2e are NOT in CI), the Postgres + Redis prerequisites, and the Rubocop / Brakeman / Gemfile.lock jobs that fail PRs as often as the tests do.",
+    "path": "zimmer-run-tests",
+    "category": "zimmer",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ],
+    "references": [
+      "engineering-practices"
+    ]
+  },
+  "zimmer-deploy-staging": {
+    "id": "zimmer-deploy-staging",
+    "title": "Deploy Zimmer to Staging",
+    "description": "Deploy a Zimmer change to the on-demand staging environment. The `Deploy staging` workflow is workflow_dispatch-only and takes a `ref` input, so it can build and deploy an UNMERGED feature branch — the main reason to use it. Covers dispatching the run, why the droplet is reachable only over the Tailscale tailnet (no public URL), watching the deploy, nightly teardown, rollback, and what an agent session can and cannot do without DO/Tailscale credentials. There is NO production deploy workflow in this repo.",
+    "path": "zimmer-deploy-staging",
+    "category": "zimmer",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "zimmer-change-ai-artifact": {
+    "id": "zimmer-change-ai-artifact",
+    "title": "Change a Zimmer AI Artifact",
+    "description": "Add or change an AI artifact in this repo — a skill, agent root, MCP server, plugin, hook, or reference. Zimmer ships a self-contained AIR catalog: the top-level indexes wired by air.json ARE the catalog, resolved offline. Covers where each artifact type lives, how `default_in_roots` makes an artifact default-on via AIR's inversion pass, the no-dangling-references invariant the whole test suite depends on, and how to verify a change with `air resolve` before pushing. An artifact change is NOT an app bug.",
+    "path": "zimmer-change-ai-artifact",
+    "category": "zimmer",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ],
+    "references": [
+      "engineering-practices"
+    ]
+  }
+}
