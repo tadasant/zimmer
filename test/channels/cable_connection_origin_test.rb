@@ -57,8 +57,17 @@ class CableConnectionOriginTest < ActiveSupport::TestCase
     assert allowed?(origin: "http://Zimmer", host: "zimmer")
   end
 
+  test "accepts a matching IPv6 host" do
+    assert allowed?(origin: "http://[::1]:3000", host: "[::1]:3000")
+  end
+
   test "rejects a cross-origin request" do
     refute allowed?(origin: "https://evil.example.com", host: "zimmer")
+  end
+
+  test "rejects an origin that smuggles the request host into userinfo" do
+    refute allowed?(origin: "http://zimmer@evil.example.com", host: "zimmer")
+    refute allowed?(origin: "http://zimmer:80@evil.example.com", host: "zimmer")
   end
 
   test "rejects an origin whose host merely resembles the request host" do
@@ -77,7 +86,46 @@ class CableConnectionOriginTest < ActiveSupport::TestCase
     refute allowed?(origin: "null", host: "zimmer")
   end
 
+  test "rejects an origin on the request host's port when the host itself differs" do
+    refute allowed?(origin: "http://evil.example.com:3000", host: "zimmer:3000")
+  end
+
+  test "rejects a portless origin when the request host carries a port" do
+    refute allowed?(origin: "http://zimmer", host: "zimmer:3000")
+  end
+
   test "rejects a request with no origin header" do
     refute allowed?(origin: nil, host: "zimmer")
   end
+
+  # The relaxation is additive: origins it does not match still reach ActionCable's own check,
+  # which stays authoritative for both of its escape hatches.
+  test "falls through to allowed_request_origins for a configured cross-host origin" do
+    with_cable_config(allowed_request_origins: [ "https://configured.example.com" ]) do
+      assert allowed?(origin: "https://configured.example.com", host: "zimmer")
+      refute allowed?(origin: "https://evil.example.com", host: "zimmer")
+    end
+  end
+
+  test "falls through to disable_request_forgery_protection" do
+    with_cable_config(disable_request_forgery_protection: true) do
+      assert allowed?(origin: "https://evil.example.com", host: "zimmer")
+    end
+  end
+
+  test "honors allow_same_origin_as_host being disabled" do
+    with_cable_config(allow_same_origin_as_host: false) do
+      refute allowed?(origin: "http://zimmer", host: "zimmer")
+    end
+  end
+
+  private
+    def with_cable_config(**overrides)
+      config = ActionCable.server.config
+      previous = overrides.keys.index_with { |key| config.public_send(key) }
+      overrides.each { |key, value| config.public_send("#{key}=", value) }
+      yield
+    ensure
+      previous.each { |key, value| config.public_send("#{key}=", value) }
+    end
 end
