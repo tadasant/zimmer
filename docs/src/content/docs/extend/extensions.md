@@ -66,7 +66,7 @@ by default.
 
 Its only hook is `spawn_env_contribution`, returning `{"ENABLE_TOOL_SEARCH" => "true"}` — but only
 when `context[:runtime] == "claude_code"`. That flips Zimmer's baseline `ENABLE_TOOL_SEARCH=false`, so
-Claude Code searches MCP tools on demand rather than loading every tool schema into context up front.
+Claude Code loads tool schemas on demand instead of all of them up front.
 
 :::danger[The old docs described a second extension that does not exist]
 `docs/AO_EXTENSIONS.md` described "the two built-in extensions" and documented `pty_transport` /

@@ -6,7 +6,8 @@ sidebar:
 ---
 
 A **runtime** (agent harness) is a `RuntimeRegistry::Bundle` — a struct with twelve slots, one for each
-seam where driving a vendor CLI differs. It is not a Ruby class.
+seam where driving a vendor CLI differs. The bundle is plain data — a struct of class references
+Zimmer looks up at runtime.
 
 ```ruby
 Bundle = Struct.new(
@@ -84,7 +85,7 @@ equality via `instance_method(:execute).parameters`. Add your adapter (and a moc
 
 Also `include CliSpawnEnv` — don't reimplement env scrubbing.
 
-### Retry strategy: five predicates, not four
+### Retry strategy: the five predicates
 
 ```ruby
 normal_completion_exit?(status)
