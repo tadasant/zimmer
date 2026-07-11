@@ -46,6 +46,12 @@ npm run build` is what CI runs; the `docs_site` job fails the PR if it breaks.
 Diagrams are Mermaid fenced code blocks, rendered client-side. Keep them accurate to
 the code rather than illustrative.
 
+**Brand and voice.** All user-facing prose (docs, README, UI copy) follows
+`references/BRAND.md` (what Zimmer is and who it's for — a single circle of trust,
+not teams or enterprise) and `references/BRAND_VOICE.md` (plain, direct, honest, no
+AI slop). Both travel with the `sync-docs` skill. Write new prose in that voice;
+don't leave slop behind when you fix a stale fact.
+
 ## Architecture (orientation)
 
 - `app/models/session.rb` + `app/models/concerns/session_state_machine.rb` — the core

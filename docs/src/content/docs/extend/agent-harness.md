@@ -5,8 +5,8 @@ sidebar:
   order: 2
 ---
 
-A **runtime** (agent harness) is not a class. It's a `RuntimeRegistry::Bundle` — a struct with twelve
-slots, one for each seam where driving a vendor CLI differs.
+A **runtime** (agent harness) is a `RuntimeRegistry::Bundle` — a struct with twelve slots, one for each
+seam where driving a vendor CLI differs. It is not a Ruby class.
 
 ```ruby
 Bundle = Struct.new(
@@ -32,15 +32,15 @@ Core code never says "Claude." It asks `RuntimeRegistry.for(runtime)`.
 | `mcp_status_detector_class` | `McpLogPollerService` | `CodexMcpStatusDetector` |
 | `config_post_processor_class` | `ClaudeMcpConfigPostProcessor` | `CodexConfigTomlPostProcessor` |
 | `mcp_credential_writer_class` | `ClaudeMcpCredentialWriter` | `CodexMcpCredentialWriter` |
-| `prompt_contribution_class` | `ClaudeRuntimePromptContribution` | **`nil`** |
-| `auth_provider_class` | **`nil`** | **`nil`** |
+| `prompt_contribution_class` | `ClaudeRuntimePromptContribution` | `nil` |
+| `auth_provider_class` | `nil` | `nil` |
 | `config_preparer_class` | `nil` | `nil` |
 
 :::note[Three slots are dead weight]
-`auth_provider_class` is `nil` for **both** runtimes even though both classes exist — auth resolves
+`auth_provider_class` is `nil` for both runtimes even though both classes exist — auth resolves
 through `RuntimeAuthProvider.for` instead. `prompt_contribution_class` is `nil` for Codex even though
-`CodexRuntimePromptContribution` exists — it resolves through `RuntimePromptContribution.for`.
-`config_preparer_class` is `nil` everywhere and **nothing reads it**.
+`CodexRuntimePromptContribution` exists; it resolves through `RuntimePromptContribution.for`.
+`config_preparer_class` is `nil` everywhere and nothing reads it.
 :::
 
 ## The three registries that bypass the bundle
@@ -78,8 +78,8 @@ disallowed_tools    # default []
 runtime_env_vars    # default {}
 ```
 
-Enforced by `test/contracts/runtime_cli_adapter_contract_test.rb`, which asserts **keyword-set
-equality** via `instance_method(:execute).parameters`. Add your adapter (and a mock) to
+Enforced by `test/contracts/runtime_cli_adapter_contract_test.rb`, which asserts keyword-set
+equality via `instance_method(:execute).parameters`. Add your adapter (and a mock) to
 `RuntimeCliAdapterContractTest::ADAPTERS`.
 
 Also `include CliSpawnEnv` — don't reimplement env scrubbing.
@@ -95,8 +95,8 @@ auth_recovery_needed?(working_dir:)          # ← the one the docs forget
 ```
 
 :::danger[The documented interface is incomplete, and so is the contract test]
-`runtime_cli_adapter.rb`'s own docstring lists **four** predicates. The contract test checks
-**three**. But `ProcessLifecycleManager` calls **five** — including `auth_recovery_needed?`.
+`runtime_cli_adapter.rb`'s own docstring lists four predicates. The contract test checks
+three. But `ProcessLifecycleManager` calls five, including `auth_recovery_needed?`.
 
 A new runtime that implements exactly what the docs say will `NoMethodError` on the auth-recovery
 path, at runtime, in production, on a session that was already failing.
@@ -116,8 +116,8 @@ find_main_transcript(transcript_directory:, session:)  # ← NOT on the base cla
 ```
 
 :::danger[`find_main_transcript` is required but not declared]
-`TranscriptPollerService` calls it on every poll. Both concrete sources implement it. It is **absent
-from the abstract base class**.
+`TranscriptPollerService` calls it on every poll. Both concrete sources implement it. It is absent
+from the abstract base class.
 
 A new source that implements only the documented and abstract methods will `NoMethodError` on its
 first poll.
@@ -133,7 +133,7 @@ extract_subagent_links(raw_event)
 extract_subagent_spawns(raw_event)
 ```
 
-**`mints_own_session_id?` is a correctness landmine.** If you return `true` for a runtime whose
+`mints_own_session_id?` is a correctness landmine. If you return `true` for a runtime whose
 session id Zimmer generates, forked sessions collide on the unique `session_id` index.
 
 ### The rest
@@ -156,13 +156,13 @@ session id Zimmer generates, forked sessions collide on the unique `session_id` 
 2. `ModelCatalog::MODELS["<runtime>"]` — exactly one entry with `default: true`.
 3. CLI adapter — `include RuntimeCliAdapter` + `CliSpawnEnv`. Identical kwargs.
    `<runtime>_stderr.log`, `pgroup: true`, NULL stdin/stdout.
-4. Retry strategy — **all five** predicates.
+4. Retry strategy — all five predicates.
 5. Transcript source + normalizer — including `find_main_transcript` and `mints_own_session_id?`.
 6. Prompt contribution → register in `RuntimePromptContribution.for`.
 7. Config post-processor.
 8. MCP credential writer.
 9. MCP status detector.
-10. Auth provider → `RuntimeAuthProvider.for` **and** `RUNTIMES`. Login driver →
+10. Auth provider → `RuntimeAuthProvider.for` and `RUNTIMES`. Login driver →
     `RuntimeLoginDriver.for`.
 11. `Dockerfile.base` — pin the CLI and the matching `@pulsemcp/air-adapter-<runtime>`. Add to
     `CliStatusService::CLI_TOOLS`.
@@ -173,21 +173,21 @@ session id Zimmer generates, forked sessions collide on the unique `session_id` 
 Codex is the honest reference implementation, and it is *incomplete*:
 
 :::danger[`CodexRetryStrategy` classifies almost nothing]
-It returns **`false`** from `context_length_error?`, `api_error_for_retry?`, and
+It returns `false` from `context_length_error?`, `api_error_for_retry?`, and
 `auth_recovery_needed?`, and only matches `/no rollout found/i`. Exit code 0 is still treated as
 success.
 
-Which means, for a Codex session: **no context-length compaction retry, no API-error retry, no quota
-rotation, and no auth recovery.** Everything the Claude path does to keep a session alive, Codex
+Which means, for a Codex session: no context-length compaction retry, no API-error retry, no quota
+rotation, and no auth recovery. Everything the Claude path does to keep a session alive, Codex
 sessions do without.
 :::
 
 Other known gaps:
 
-- **Shared code still says "Claude."** `TranscriptPollerService` logs *"Waiting for Claude CLI to
-  create transcript directory…"* for **every** runtime.
-- **`ELICITATION_SESSION_ID` is Claude-only** — elicitations
+- Shared code still says "Claude." `TranscriptPollerService` logs *"Waiting for Claude CLI to
+  create transcript directory…"* for every runtime.
+- `ELICITATION_SESSION_ID` is Claude-only — elicitations
   [silently no-op on Codex](/sessions/elicitation/#known-problems).
-- **`Ao::ExtensionRegistry.spawn_env_contributions` is Claude-only** — extension env contributions are
+- `Ao::ExtensionRegistry.spawn_env_contributions` is Claude-only — extension env contributions are
   unreachable from Codex, despite the hook receiving a `runtime` context.
-- **`SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.**
+- `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.

@@ -9,6 +9,21 @@ This site lives in **`docs/`** in the [`tadasant/zimmer`](https://github.com/tad
 repository. It is an [Astro Starlight](https://starlight.astro.build/) site, deployed to **Cloudflare
 Pages**.
 
+## Brand and voice
+
+Before you write, read the two references that govern all of Zimmer's user-facing prose. They live in
+the repo at `references/` and travel with the `sync-docs` skill:
+
+- **`references/BRAND.md`** — what Zimmer is and who it's for. The short version: self-hostable,
+  open-source, standards-driven orchestration for a *single circle of trust* (one person, a couple, or
+  partners — not teams or enterprise). The human stays in control; Zimmer handles the toil. Frame the
+  trust model as intent, not apology.
+- **`references/BRAND_VOICE.md`** — how Zimmer sounds: plain, direct, specific, honest, and free of the
+  AI-slop tells (the "not X, it's Y" reflex, em-dash overload, bold sprinkling, hype adjectives). Read
+  it aloud; if it sounds like a brochure, cut until it doesn't.
+
+Every page on this site should pass both. When you edit one, keep it in voice.
+
 ## The rule
 
 :::tip[Update the docs in the same PR as the behavior change]
@@ -16,8 +31,8 @@ This is the whole premise. The site is only worth reading *instead of* the code 
 only ever true if it's updated in lockstep.
 
 If your PR changes behavior, find the page that describes that behavior and change it too. If your PR
-introduces a limitation, a hack, or a known-broken edge, **add it to
-[Known limitations](/limitations/)** — that page is a feature, not a confession.
+introduces a limitation, a hack, or a known-broken edge, add it to
+[Known limitations](/limitations/) — that page exists to record the sharp edges.
 
 `AGENTS.md` / `CLAUDE.md` carry a short version of this rule for agents working in the repo.
 :::
@@ -29,7 +44,7 @@ has an obvious answer:
 | --- | --- |
 | `app/models/concerns/session_state_machine.rb` | [The session lifecycle](/sessions/lifecycle/) |
 | `app/jobs/agent_session_job.rb`, the CLI adapters | [Spawning and monitoring](/sessions/spawning/) |
-| `config/routes.rb`, `app/controllers/api/**` | [The REST API](/extend/rest-api/) — **and** `app/views/api_docs/show.html.erb` |
+| `config/routes.rb`, `app/controllers/api/**` | [The REST API](/extend/rest-api/) — and `app/views/api_docs/show.html.erb` |
 | `air.json`, `roots.json`, `mcp.json`, `skills/`, `plugins/`, `hooks/` | The [AIR section](/air/overview/) |
 | `RuntimeRegistry`, a new runtime | [Adding an agent harness](/extend/agent-harness/) |
 | `app/extensions/**` | [Extensions](/extend/extensions/) |
@@ -78,7 +93,7 @@ colour scheme. Rendering in the browser costs a JS payload but lets a diagram fo
 Both are defensible; this one was chosen for CI simplicity and correct dark mode.
 :::
 
-Diagrams should be **accurate to the code**, not illustrative. If you change the state machine, change
+Diagrams should be accurate to the code, not illustrative. If you change the state machine, change
 the state diagram.
 
 ## Callouts
@@ -96,7 +111,7 @@ useful than a confident guess, and it's an issue waiting to be filed.
 
 ## Deploying
 
-The site is **not yet provisioned**. Committing the build config is one step; creating the Cloudflare
+The site is not yet provisioned. Committing the build config is one step; creating the Cloudflare
 Pages project is another, and it needs a human with Cloudflare access.
 
 **To deploy it the first time:**
@@ -119,7 +134,7 @@ Every subsequent push to `main` redeploys automatically, and every PR gets a pre
 :::caution[This site is public; Zimmer is not]
 The Zimmer app is tailnet-only by design. This documentation site is a static, public artifact — it
 contains no secrets, but it *does* candidly describe Zimmer's security posture (including
-[that it has no authentication](/limitations/#the-web-ui-has-no-authentication-at-all)).
+[that it has no authentication](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows)).
 
 That's a deliberate trade: the information is already in a public repository, and an operator who
 doesn't know their admin panel is unauthenticated is in more danger than one who does. If you'd rather

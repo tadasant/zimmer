@@ -65,20 +65,20 @@ flowchart TB
 ## The processes
 
 **Web (Puma, fronted by Thruster in production).** Serves the UI and the REST API. It runs
-no cron. It *does* run one background thread — `PeriodicCatalogRefresher` — which re-runs
+no cron. It *does* run one background thread, `PeriodicCatalogRefresher`, which re-runs
 `air update` every 300 seconds, because the catalog cache lives on a per-container
 filesystem and the web container would otherwise serve a catalog frozen at boot.
 
 **Worker (GoodJob).** Everything that matters happens here: `AgentSessionJob` spawns agents
 and monitors them, and roughly two dozen cron jobs poll GitHub, poll Slack, refresh OAuth
 tokens, reap zombies, and clean up clones. In development GoodJob runs `:async` (in-process
-with Puma); in production and staging it's `:external`, meaning **a separate `bundle exec
-good_job start` process is required**.
+with Puma); in production and staging it's `:external`, meaning a separate `bundle exec
+good_job start` process is required.
 
 :::danger[The shipped Terraform does not run a worker]
 `infra/terraform/cloud-init.yaml.tftpl` renders a `docker-compose.yml` with exactly three
-services — `app`, `redis`, and (staging only) `db`. There is **no worker service and no
-`good_job start` anywhere in `infra/`, the Dockerfile, or the workflows**, while
+services — `app`, `redis`, and (staging only) `db`. There is no worker service and no
+`good_job start` anywhere in `infra/`, the Dockerfile, or the workflows, while
 `config/environments/production.rb:59` sets `execution_mode = :external`.
 
 On a droplet provisioned by this repo's Terraform, sessions enqueue and never run, and no
@@ -89,15 +89,15 @@ add a worker service yourself. See
 
 **Agent subprocess.** A real headless `claude` or `codex` process, spawned with
 `pgroup: true` so the whole process group can be killed as a unit. Its stdin and stdout go
-to `/dev/null`; stderr goes to a log file inside the clone. **The transcript file on disk is
-the only channel Zimmer reads output from** — both CLIs are launched with a JSON streaming
+to `/dev/null`; stderr goes to a log file inside the clone. The transcript file on disk is
+the only channel Zimmer reads output from: both CLIs are launched with a JSON streaming
 flag, but the stream itself is discarded.
 
 ## Data
 
 **PostgreSQL** holds everything: sessions, logs, transcripts (the entire JSONL file is stored
 as a string on `sessions.transcript`), triggers, notifications, OAuth credentials, and the
-catalog snapshot. It also backs Action Cable via `solid_cable`, on a **second database**
+catalog snapshot. It also backs Action Cable via `solid_cable`, on a second database
 (`zimmer_<env>_cable`) that must exist before boot.
 
 **Redis** is the Rails cache only. There is no Redis-backed queue — GoodJob uses Postgres.
@@ -163,7 +163,7 @@ The steps that most often surprise people:
 ## Runtimes are a bundle of seams
 
 Zimmer supports two agent harnesses today, `claude_code` and `codex`, and a third would be
-additive. A "runtime" is not a class — it's a `RuntimeRegistry::Bundle` struct with twelve
+additive. A "runtime" is a `RuntimeRegistry::Bundle` struct rather than a class, with twelve
 slots, one per place where driving a vendor CLI differs: the CLI adapter, the retry strategy,
 the transcript source and normalizer, the MCP status detector, the prompt contribution, the
 config post-processor, the auth provider, the credential writer.

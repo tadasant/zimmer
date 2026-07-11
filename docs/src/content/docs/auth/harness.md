@@ -5,24 +5,24 @@ sidebar:
   order: 2
 ---
 
-Zimmer keeps a **pool of vendor accounts** and rotates between them when one hits its rate limit.
+Zimmer keeps a pool of vendor accounts and rotates between them when one hits its rate limit.
 That's the feature. Underneath it is the most fragile machinery in the project, and it's fragile for
 a reason that isn't Zimmer's fault.
 
 :::danger[This is built on an undocumented, moving target]
 `docs/CLAUDE_CODE_OAUTH_ASSUMPTIONS.md` (now folded into this page and
-[Known limitations](/limitations/)) exists because Zimmer automates OAuth token management **on top
-of Claude Code's OAuth implementation, which is an undocumented internal**. Every constant below —
-the token endpoint, the CLI's client ID, the file paths, the on-disk JSON shape, the login prompt
-text — is a fact about someone else's private implementation that can change without notice.
+[Known limitations](/limitations/)) exists because Zimmer automates OAuth token management on top
+of Claude Code's OAuth implementation, which is an undocumented internal. Every constant below (the
+token endpoint, the CLI's client ID, the file paths, the on-disk JSON shape, the login prompt text)
+is a fact about someone else's private implementation that can change without notice.
 
-The assumptions doc was last verified against CLI `2.1.177` on **2026-06-14**. Two production
+The assumptions doc was last verified against CLI `2.1.177` on 2026-06-14. Two production
 outages caused by exactly this are written up in the source.
 :::
 
 ## The model
 
-`ClaudeAccount` is the pool for **both** runtimes, discriminated by a `runtime` column
+`ClaudeAccount` is the pool for both runtimes, discriminated by a `runtime` column
 (`claude_code` | `codex`). The naming is a leftover.
 
 Everything goes through `RuntimeAuthProvider.for(runtime)` → `ClaudeAuthProvider` or
@@ -33,9 +33,9 @@ Everything goes through `RuntimeAuthProvider.for(runtime)` → `ClaudeAuthProvid
 | Token endpoint | `platform.claude.com/v1/oauth/token` | `auth.openai.com/oauth/token` |
 | Client ID | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (the CLI's public ID) | `app_EMoamEEZ73f0CkXaXp7hrann` |
 | Files | `~/.claude.json` (identity), `~/.claude/.credentials.json` (tokens) | `~/.codex/auth.json` |
-| Token TTL | from `expiresAt` (~8h, inferred) | **24h, inferred** — `auth.json` has no expiry field |
+| Token TTL | from `expiresAt` (~8h, inferred) | 24h, inferred — `auth.json` has no expiry field |
 | Rotation | `AccountRotationService`, 5-minute interval | inline in the provider, 24h |
-| Identity check on capture | email must match | **none** |
+| Identity check on capture | email must match | none |
 
 ## The refresh loop
 
@@ -76,16 +76,16 @@ expires.
 
 ### Refresh tokens are single-use and rotating
 
-Every refresh returns a **new** refresh token and invalidates the old one — *and* invalidates the
+Every refresh returns a new refresh token and invalidates the old one — *and* invalidates the
 sibling access token. Two consequences the code has to defend against:
 
-1. **The new pair must be persisted atomically.** A crash between "got new tokens" and "wrote them"
+1. The new pair must be persisted atomically. A crash between "got new tokens" and "wrote them"
    bricks the account. `refresh_token!` writes both in one `update!`.
-2. **A future `expiresAt` is not proof a token is live.** If someone else refreshed, your
+2. A future `expiresAt` is not proof a token is live. If someone else refreshed, your
    still-unexpired access token is already dead. The code does *not* enforce this — `token_expired?`
    still keys purely off `expiresAt`. The defense is the completeness invariant, not expiry logic.
 
-**A credential set with no refresh token is a dead end.** `ClaudeAccount.complete_claude_oauth?`
+A credential set with no refresh token is a dead end. `ClaudeAccount.complete_claude_oauth?`
 refuses to persist or adopt one, because the CLI sometimes rewrites `.credentials.json` *without* the
 `claudeAiOauth` block at all, and adopting that blindly would brick the whole pool.
 
@@ -93,8 +93,8 @@ refuses to persist or adopt one, because the CLI sometimes rewrites `.credential
 
 Here is the structural problem the marker solves.
 
-In the deployment shape this code was written for, `~/.claude.json` (**identity**) is container-local
-while `~/.claude/.credentials.json` (**tokens**) is a shared bind-mount. So any code that reads the
+In the deployment shape this code was written for, `~/.claude.json` (identity) is container-local
+while `~/.claude/.credentials.json` (tokens) is a shared bind-mount. So any code that reads the
 local identity file to decide *who owns the shared tokens* gets a confidently wrong answer on the
 wrong container. That is the root cause of the 2026-06-11 cross-account token-contamination outage.
 
@@ -106,8 +106,8 @@ recording which account they belong to. `filesystem_credentials_owned_by_self?` 
 `ClaudeAccount#sync_tokens_from_filesystem!` both claim there is a *"legacy `~/.claude.json` fallback
 while no marker exists yet."*
 
-There isn't. `filesystem_credentials_owned_by_self?` returns **`false`** when the marker is absent and
-refuses to sync — and its own comment says so, explicitly contradicting the docstring 100 lines above
+There isn't. `filesystem_credentials_owned_by_self?` returns `false` when the marker is absent and
+refuses to sync, and its own comment says so, explicitly contradicting the docstring 100 lines above
 it. The private method is correct; the doc and the docstring are stale.
 :::
 
@@ -137,11 +137,11 @@ That regex, run against the **transcript message text**, is the sole trigger for
 multi-account rotation feature. It is not an HTTP status. It is not a structured error code. It is
 Anthropic's prose.
 
-**On 2026-06-14 the CLI changed "hit your limit" to "hit your session limit"** — which the regex
-happens to still match — but a previous wording change did not, and rotation silently stopped firing.
+On 2026-06-14 the CLI changed "hit your limit" to "hit your session limit," which the regex
+happens to still match. A previous wording change did not, and rotation silently stopped firing.
 The session fell through to the transient-rate-limit path, retried six times against an
-already-capped account, exhausted its retries, and failed — **with no log line saying rotation should
-have fired**. The failure mode is silent.
+already-capped account, exhausted its retries, and failed, with no log line saying rotation should
+have fired. The failure mode is silent.
 :::
 
 ## Mid-run auth loss
@@ -182,7 +182,7 @@ sequenceDiagram
     U->>W: click "Switch" → provider.activate!
 ```
 
-`RuntimeLoginAttempt` is being used as a **cross-container message bus**: the web process writes
+`RuntimeLoginAttempt` is being used as a cross-container message bus: the web process writes
 `pasted_code`, the worker process reads it. That's why `poll_state` must use
 `RuntimeLoginAttempt.uncached` — ActiveRecord's per-request query cache would otherwise hide the
 write. It's documented at length in the code, and it's a landmine.
@@ -198,12 +198,12 @@ Codex is the same story, with `codex login --device-auth` and a device-code rege
 :::
 
 :::caution[One credential file, two writers]
-`ClaudeAccount#write_credentials_to_filesystem!` does a **whole-file overwrite** of
+`ClaudeAccount#write_credentials_to_filesystem!` does a whole-file overwrite of
 `~/.claude/.credentials.json`. `ClaudeMcpCredentialWriter` read-merges an `mcpOAuth` map into the
 *same* file.
 
-So an account rotation replaces the file with account B's stored blob — **dropping any `mcpOAuth`
-entries written after B's blob was last captured**. It self-heals (the injector rewrites `mcpOAuth`
+So an account rotation replaces the file with account B's stored blob — dropping any `mcpOAuth`
+entries written after B's blob was last captured. It self-heals (the injector rewrites `mcpOAuth`
 on the next spawn), but it's an undeclared coupling between two subsystems that don't know about each
 other.
 :::

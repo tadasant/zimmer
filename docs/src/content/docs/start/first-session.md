@@ -30,7 +30,7 @@ starts it (`resume` transitions from `waiting`).
 
 ## What happens next
 
-Within a minute or so it should flip to `running`. If it doesn't, that's a symptom, not a wait —
+Within a minute or so it should flip to `running`. If it doesn't, treat that as a symptom and
 see [Expected timings](#expected-timings) below.
 
 While it runs you'll see the timeline stream in over Turbo: user messages, assistant messages,
@@ -52,20 +52,20 @@ Three things can happen, and the status code tells you which:
 | Session state | Result | Status |
 | --- | --- | --- |
 | `needs_input` or `waiting` | delivered immediately, session resumes | `200` |
-| `running` | **queued** as an `EnqueuedMessage`, delivered when the turn ends | `202` |
+| `running` | queued as an `EnqueuedMessage`, delivered when the turn ends | `202` |
 | `running` + `force_immediate: true` | the process is interrupted and the message delivered now | `200` |
 
-The `202` case is the one that surprises people. A follow-up to a *running* session doesn't
-interrupt it — it lines up behind the current turn. Pass `force_immediate` if you mean "stop what
+The `202` case is the one that surprises people. A follow-up to a *running* session lines up behind
+the current turn rather than interrupting it. Pass `force_immediate` if you mean "stop what
 you're doing."
 
 ## Reading the UI
 
-**The `needs_input` list is your to-do list.** That's the design intent — sessions sitting there are
+The `needs_input` list is your to-do list. That's the design intent — sessions sitting there are
 waiting on you, and agents are instructed not to archive themselves out of it while you still need
 to read something.
 
-A session showing "blocked on elicitation" is different: the agent process is **still alive**, and an
+A session showing "blocked on elicitation" is different: the agent process is still alive, and an
 MCP server is waiting for you to answer a question. See [Elicitation](/sessions/elicitation/).
 
 ## Expected timings
@@ -81,8 +81,8 @@ If something takes materially longer than this, the problem is probably the syst
 | Catalog refresh (web) | every 5 minutes |
 
 :::danger[If a session sits in `waiting` forever, check that a worker is running]
-This is the single most likely cause. In production, `execution_mode = :external` means GoodJob needs
-a **separate `bundle exec good_job start` process** — and the shipped Terraform doesn't create one.
+This is the most likely cause. In production, `execution_mode = :external` means GoodJob needs
+a separate `bundle exec good_job start` process — and the shipped Terraform doesn't create one.
 
 Locally, GoodJob runs in-process with Puma, so `bin/dev` is enough.
 
@@ -92,7 +92,7 @@ See [Known limitations](/limitations/#the-shipped-terraform-provisions-no-job-wo
 ## If it fails with `oauth_required`
 
 The session went to `failed` because one of its MCP servers needs OAuth and has no valid credential.
-The UI will show Authorize buttons. Click through the flow and the session **resumes automatically**,
+The UI will show Authorize buttons. Click through the flow and the session resumes automatically,
 replaying the original prompt. See [MCP server OAuth](/auth/mcp-oauth/).
 
 ## Useful session controls

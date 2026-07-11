@@ -24,9 +24,9 @@ declares.
 | `zimmer-change-ai-artifact` | The guide to changing the catalog itself. |
 
 :::caution[Only Zimmer-specific skills belong in `skills/`]
-Generic workflow skills (`pr`, `wait-for-ci`, `code-review`, …) come from the **orchestrator's
-default skill set**, injected separately. Duplicating one in Zimmer's catalog collides on shortname
-and **AIR hard-fails the entire resolve** — which, thanks to the boot-time pre-warm,
+Generic workflow skills (`pr`, `wait-for-ci`, `code-review`, …) come from the orchestrator's
+default skill set, injected separately. Duplicating one in Zimmer's catalog collides on shortname
+and AIR hard-fails the entire resolve — which, thanks to the boot-time pre-warm,
 [reddens the whole test suite](/air/zimmer-integration/#the-blast-radius-is-the-entire-test-suite).
 :::
 
@@ -95,7 +95,7 @@ Zimmer's catalog declares exactly one: `git-push-ci-reminder`.
 }
 ```
 
-But `hooks/` contains **only `hooks.json`** — there is no `hooks/git-push-ci-reminder/` directory.
+But `hooks/` contains only `hooks.json` — there is no `hooks/git-push-ci-reminder/` directory.
 
 And `plugins/ci-workflow/.plugin/plugin.json` bundles this hook, and `ci-workflow` is
 `default_in_roots: ["agent-orchestrator"]`. So every session on the `agent-orchestrator` root
@@ -106,7 +106,7 @@ doesn't trip Zimmer's stderr marker check), and surfaces at `air prepare` when t
 copy a directory that isn't there. See [Known limitations](/limitations/#the-only-hook-in-the-catalog-has-no-body).
 :::
 
-**Don't confuse these with [transcript hooks](/extend/transcript-hooks/)**, which are a Ruby-side
+Don't confuse these with [transcript hooks](/extend/transcript-hooks/), which are a Ruby-side
 plugin system that runs inside Zimmer when transcript messages arrive. Different thing, same word.
 
 ## Adding an artifact
@@ -116,7 +116,7 @@ The full procedure lives in `skills/zimmer-change-ai-artifact/SKILL.md`. The sho
 1. Add the body (`skills/<id>/SKILL.md`, `hooks/<id>/HOOK.json`, `references/<file>.md`).
 2. Register it in the index (`skills/skills.json`, etc.).
 3. Add `default_in_roots: ["<root>"]` to make it default-on for that root.
-4. **Verify with `air resolve` before pushing.** A dangling reference will not fail the resolve — it
+4. Verify with `air resolve` before pushing. A dangling reference will not fail the resolve — it
    will exit 0, drop your artifact's reference, and then break the test suite.
 
 ```bash
@@ -124,5 +124,5 @@ The full procedure lives in `skills/zimmer-change-ai-artifact/SKILL.md`. The sho
 AIR_CONFIG=$PWD/air.json npx @pulsemcp/air-cli@0.13.0 resolve --json --no-scope
 ```
 
-Watch **stderr**, not the exit code. Lines containing `references unknown` and `Dropping the
+Watch stderr, not the exit code. Lines containing `references unknown` and `Dropping the
 reference` are what Zimmer treats as a hard failure.

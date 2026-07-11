@@ -14,8 +14,8 @@ sidebar:
 | `environment` | validated `staging` \| `production` |
 | `region` / `droplet_size` | default `nyc3` / `s-2vcpu-4gb` |
 | `image_ref` | default `ghcr.io/tadasant/zimmer:latest` |
-| `domain` | **`""` by default** — no DNS record is created |
-| `manage_project` | **`false` by default** — a DO project name is account-unique and collides under ephemeral state |
+| `domain` | `""` by default — no DNS record is created |
+| `manage_project` | `false` by default — a DO project name is account-unique and collides under ephemeral state |
 | `ssh_key_fingerprints` | |
 | `ghcr_username` | |
 | `managed_db_cluster_name` | `""` for staging (uses the compose `db`); set for production |
@@ -42,7 +42,7 @@ A `lifecycle.precondition` on the droplet fails the plan if `use_managed_db` is 
 | `OTEL_LOGS_EXPORTER_ENDPOINT` / `_BEARER_TOKEN`, `SENTRY_DSN_BACKEND` | optional observability |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key, not an OAuth client]
-A Tailscale **OAuth client cannot mint `tag:ci` keys**. `deploy-staging.yml`'s own comment says so.
+A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own comment says so.
 `docs/DEPLOYING_ON_DIGITALOCEAN.md` told you to use `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; that was
 wrong and would fail.
 :::
@@ -53,7 +53,7 @@ wrong and would fail.
 The GHCR token, the Tailscale auth key, `SECRET_KEY_BASE`, and the database password are all
 interpolated into the cloud-init template — which becomes the droplet's `user_data`.
 
-That is **readable from the DigitalOcean metadata service by anything running on the box**, including
+That is readable from the DigitalOcean metadata service by anything running on the box, including
 every agent process Zimmer spawns. It's also written into the (ephemeral, but still on-runner)
 Terraform state.
 :::
@@ -65,7 +65,7 @@ For staging, that's always.
 
 :::danger[SSH is open to `0.0.0.0/0`]
 `digitalocean_firewall.zimmer` allows `22/tcp` from anywhere. The comment says "lock down to your admin
-CIDRs in tfvars if desired" — but **there is no variable to do that with**.
+CIDRs in tfvars if desired" — but there is no variable to do that with.
 :::
 
 :::danger[Nothing is encrypted at rest in the database]
@@ -76,8 +76,8 @@ plaintext columns — and the [unauthenticated `/supervisor` panel](/auth/overvi
 
 ## The three env vars the deploy forgets
 
-`RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and **none appear in
-`cloud-init.yaml.tftpl`**. On a stock droplet:
+`RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and none appear in
+`cloud-init.yaml.tftpl`. On a stock droplet:
 
 - the REST API 401s on everything (`API_KEYS` empty),
 - every MCP OAuth callback URL points at `localhost:3000` (`APP_HOST` defaults there),
@@ -90,8 +90,8 @@ Not created by Terraform — referenced as a read-only data source. Per
 
 - Cluster `zimmer-production-pg`, PG16, `db-s-1vcpu-1gb`, 1 node, `nyc3`
 - User `doadmin`
-- A **tag-scoped firewall** allowing the `zimmer-production` tag
-- **Two databases**: `zimmer_production` and `zimmer_production_cable` — both must pre-exist. The
+- A tag-scoped firewall allowing the `zimmer-production` tag
+- Two databases: `zimmer_production` and `zimmer_production_cable` — both must pre-exist. The
   second is Action Cable's, via `solid_cable`.
 
 The app connects over the cluster's `private_host` with `sslmode=require`.
@@ -107,19 +107,19 @@ DigitalOcean tags are `zimmer` and `zimmer-<env>`. These are three different nam
 overlapping concepts.
 
 `PROVISIONING.md` also required an `ssh` block in the ACL "so CI can SSH in for an in-place upgrade."
-**This repo's deploy never SSHes** — cloud-init's own comment calls SSH ACLs brittle. That ACL is only
+This repo's deploy never SSHes — cloud-init's own comment calls SSH ACLs brittle. That ACL is only
 needed by the author's private production auto-upgrade workflow.
 :::
 
 ## Ephemeral Terraform state
 
-There is **no backend block**. State lives on the CI runner and evaporates.
+There is no backend block. State lives on the CI runner and evaporates.
 
 The deploy compensates by hand-reaping the droplet and firewall through the DigitalOcean API before
 every `apply`. Anything else account-unique — a project, a DNS record — would 409 on a re-run, which is
 exactly why `manage_project` defaults to `false` and `domain` defaults to `""`.
 
-**Terraform can never converge, and `terraform destroy` can never work properly.** This is a known,
+Terraform can never converge, and `terraform destroy` can never work properly. This is a known,
 accepted trade-off for a single-operator staging environment, documented in the README. It would not
 survive a second operator.
 

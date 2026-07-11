@@ -32,8 +32,8 @@ flowchart TB
 
 ## 1. Human → Zimmer: there is no authentication
 
-This is not a simplification. `ApplicationController` has **no `before_action` for auth, no session
-auth, no Devise, no OmniAuth, no HTTP Basic**. There are no login routes. There is no `User` model in
+This is not a simplification. `ApplicationController` has no `before_action` for auth, no session
+auth, no Devise, no OmniAuth, no HTTP Basic. There are no login routes. There is no `User` model in
 the auth path.
 
 Everything is open to anyone who can reach the host:
@@ -41,8 +41,8 @@ Everything is open to anyone who can reach the host:
 - the session dashboard and every transcript,
 - `/settings`, `/quotas` (including the OAuth login flow),
 - the GoodJob dashboard at `/jobs`,
-- and **`/supervisor`** — the Administrate admin panel, which exposes `claude_accounts` (whose
-  `oauth_config` JSONB holds **plaintext access and refresh tokens**), `mcp_oauth_credentials`,
+- and `/supervisor` — the Administrate admin panel, which exposes `claude_accounts` (whose
+  `oauth_config` JSONB holds plaintext access and refresh tokens), `mcp_oauth_credentials`,
   `x_oauth_credentials`, and `runtime_login_attempts` as *editable* resources.
 
 `app/controllers/supervisor/application_controller.rb` is the whole story:
@@ -56,13 +56,13 @@ end
 ```
 
 :::danger[The security model is "put it on a tailnet"]
-And Zimmer's own Terraform does exactly that: the DigitalOcean firewall allows only `22/tcp` and
-Tailscale's `41641/udp`. **Port 80 is closed at the edge.** The app is reachable only over the
-tailnet, at `http://zimmer`.
+That is deliberate: the network perimeter is the authentication boundary, and Zimmer's own Terraform
+enforces it. The DigitalOcean firewall allows only `22/tcp` and Tailscale's `41641/udp`, port 80 is
+closed at the edge, and the app is reachable only over the tailnet, at `http://zimmer`.
 
-This works. But it means the *entire* security posture is network perimeter, and any deployment that
-exposes port 80 — a reverse proxy, a public load balancer, a well-meaning `docker run -p 80:80` on a
-box with a public IP — hands an anonymous visitor your Anthropic refresh tokens.
+The sharp edge is real. The entire security posture rests on that perimeter, so any deployment that
+exposes port 80 (a reverse proxy, a public load balancer, a well-meaning `docker run -p 80:80` on a
+box with a public IP) hands an anonymous visitor your Anthropic refresh tokens.
 
 There are also at least six `# TODO: Add proper authorization checks` comments scattered through
 `sessions_controller.rb`.
@@ -85,7 +85,7 @@ Three endpoints skip it entirely:
 - `POST /api/v1/elicitations` and `GET /api/v1/elicitations/:id` — required by the MCP
   fallback-elicitation protocol, since the MCP child process has no key.
 - `GET /api/secrets/keys` — because `Api::SecretsController` inherits `ApplicationController`, not
-  `Api::BaseController`. It leaks secret **names and descriptions** (not values), unauthenticated.
+  `Api::BaseController`. It leaks secret names and descriptions (not values), unauthenticated.
 
 :::caution[`API_KEYS` isn't set by the shipped deploy]
 The cloud-init compose file sets no `API_KEYS`, so on a stock Terraform droplet the REST API 401s on
@@ -116,7 +116,7 @@ In `db/schema.rb`:
 
 - `mcp_oauth_credentials.access_token`, `.refresh_token`, `.client_secret` — plain `text` / `string`
 - `mcp_oauth_pending_flows.code_verifier`, `.client_secret` — plain
-- `claude_accounts.oauth_config` — plain `jsonb`, holding Anthropic and OpenAI access **and refresh**
+- `claude_accounts.oauth_config` — plain `jsonb`, holding Anthropic and OpenAI access and refresh
   tokens
 - `x_oauth_credentials` — plain
 - `runtime_login_attempts.pasted_code` — plain `string`
@@ -124,8 +124,8 @@ In `db/schema.rb`:
 `XOauthCredential`'s own header admits it: *"access_token / refresh_token are stored as plain text…
 Security relies on database access controls."*
 
-Combined with an unauthenticated Administrate panel that renders those columns, **database access
-controls are the only control, and the admin panel bypasses them.**
+Combined with an unauthenticated Administrate panel that renders those columns, database access
+controls are the only control, and the admin panel bypasses them.
 :::
 
 ## The environment variables that matter
@@ -139,7 +139,7 @@ controls are the only control, and the admin panel bypasses them.**
 | `ANTHROPIC_API_KEY` | Local dev, when not using OAuth |
 
 :::caution[`APP_HOST` unset breaks every MCP OAuth flow]
-`McpOauthService` does `ENV.fetch("APP_HOST") { "localhost:3000" }`. It is **not set in the shipped
-cloud-init**, so on a stock deploy every OAuth callback URL points at `localhost:3000` and every flow
+`McpOauthService` does `ENV.fetch("APP_HOST") { "localhost:3000" }`. It is not set in the shipped
+cloud-init, so on a stock deploy every OAuth callback URL points at `localhost:3000` and every flow
 fails.
 :::

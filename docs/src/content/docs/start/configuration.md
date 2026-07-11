@@ -20,7 +20,7 @@ sidebar:
 | `config/goals.json` | Goal / stop-condition catalog | `GoalsConfig` |
 
 :::caution[Never parse the AIR indexes directly]
-The six artifact indexes are AIR's **input**, not Zimmer's data model. The resolved tree differs from
+The six artifact indexes are AIR's input, not Zimmer's data model. The resolved tree differs from
 the raw index: references are canonicalized, `default_in_roots` is inverted into per-root defaults
 *and then deleted*, and paths are absolutized.
 
@@ -40,13 +40,13 @@ Everything in Zimmer reads them through `AirCatalogService`. Code that reads `ro
 | `SECRET_KEY_BASE` | Rails secret | ✅ (Terraform) |
 | `DATABASE_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_SSLMODE` | Postgres | ✅ |
 | `REDIS_URL` | Cache | ✅ |
-| `RAILS_MASTER_KEY` | Rails credentials | ❌ **not set** |
-| `API_KEYS` | REST API auth | ❌ **not set** — the API 401s on everything |
-| `APP_HOST` | MCP OAuth redirect URI | ❌ **not set** — every OAuth flow points at `localhost:3000` |
+| `RAILS_MASTER_KEY` | Rails credentials | ❌ not set |
+| `API_KEYS` | REST API auth | ❌ not set — the API 401s on everything |
+| `APP_HOST` | MCP OAuth redirect URI | ❌ not set — every OAuth flow points at `localhost:3000` |
 
 :::danger[Three required vars the Terraform doesn't set]
-`RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and **none of them appear
-in `infra/terraform/cloud-init.yaml.tftpl`**. On a stock droplet: the REST API is unusable, MCP OAuth
+`RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and none of them appear
+in `infra/terraform/cloud-init.yaml.tftpl`. On a stock droplet: the REST API is unusable, MCP OAuth
 is broken, and anything reading Rails encrypted credentials (`mcp_secrets`, `mcp_oauth_clients`) can't.
 :::
 
@@ -58,7 +58,7 @@ is broken, and anything reading Rails encrypted credentials (`mcp_secrets`, `mcp
 | `ANTHROPIC_BASE_URL` | Test-only; triggers reading the OAuth token off disk and passing it as an API key |
 | `CODEX_HOME` | Codex config dir. Default `~/.codex` |
 | `CLAUDE_CONFIG_DIR` | Login isolation only (a scratch dir during the login flow) |
-| `AIR_CONFIG` | Which `air.json` to resolve. **Always wins** over the per-environment default. |
+| `AIR_CONFIG` | Which `air.json` to resolve. Always wins over the per-environment default. |
 | `AIR_CATALOG_REF` | Staging-only catalog pinning |
 
 ### Paths
@@ -92,13 +92,13 @@ Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at 
 
 `/settings` writes to a single `AppSetting` row:
 
-- **Default runtime** (`claude_code` | `codex`) and **default model**.
+- **Default runtime** (`claude_code` | `codex`) and default model.
 - **Extension toggles** — the `extension_states` JSONB map. See [Extensions](/extend/extensions/).
 - Catalog refresh controls.
 
 :::caution[The global default runtime is ignored by the API unless you pass an `agent_root`]
-`Api::V1::SessionsController#create` only consults `AppSetting.default_runtime` **through**
-`AgentRootsConfig`. With no `agent_root` param, it returns early and the runtime is just the database
+`Api::V1::SessionsController#create` only consults `AppSetting.default_runtime` through
+`AgentRootsConfig`. With no `agent_root` param, it returns early and the runtime is the database
 column default — `claude_code`.
 
 Set the global default to `codex`, create a session via the API without an `agent_root`, and you get

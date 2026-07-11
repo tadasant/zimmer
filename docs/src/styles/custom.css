@@ -1,9 +1,9 @@
 /* Zimmer docs theme.
-   Accent is a cool slate-indigo — close enough to the app's Tailwind palette to
-   feel related, distinct enough that the docs don't look like a broken copy. */
+   Accent is a slate-blue pulled off the common Tailwind-indigo default toward
+   infrastructure blue, so the site reads as plumbing rather than a landing page. */
 :root {
   --sl-color-accent-low: #1a2340;
-  --sl-color-accent: #4c5fd7;
+  --sl-color-accent: #4a5aa8;
   --sl-color-accent-high: #c3cbf5;
   --sl-color-white: #ffffff;
   --sl-color-gray-1: #eceef2;
@@ -12,12 +12,15 @@
   --sl-color-gray-4: #545861;
   --sl-color-gray-5: #353841;
   --sl-color-gray-6: #24272f;
+  /* Darker than gray-6 so panels (mermaid figures, code blocks) recede and the
+     content on them lifts forward. */
+  --sl-color-gray-7: #1b1d24;
   --sl-color-black: #17181c;
 }
 
 :root[data-theme="light"] {
   --sl-color-accent-low: #d5daf7;
-  --sl-color-accent: #3b4bc0;
+  --sl-color-accent: #3a4a92;
   --sl-color-accent-high: #1e2456;
   --sl-color-white: #17181c;
   --sl-color-gray-1: #24272f;

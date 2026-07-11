@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-A **transcript hook** runs **inside Zimmer** whenever new transcript messages are broadcast. It reads
+A **transcript hook** runs inside Zimmer whenever new transcript messages are broadcast. It reads
 the agent's output and writes conclusions into `session.custom_metadata`.
 
 :::note[Different from AIR hooks]
@@ -43,28 +43,28 @@ flowchart LR
 
 Three properties worth knowing:
 
-1. **They run only when new messages are actually broadcast.** A poll that finds nothing new runs no
+1. They run only when new messages are actually broadcast. A poll that finds nothing new runs no
    hooks.
-2. **They run after the transcript is saved**, so a hook can rely on `session.transcript` being current.
-3. **They're sequential and error-isolated.** One hook raising doesn't stop the others.
+2. They run after the transcript is saved, so a hook can rely on `session.transcript` being current.
+3. They're sequential and error-isolated. One hook raising doesn't stop the others.
 
 ## The one that ships
 
-**`GithubPrUrlHook`** scrapes `https://github.com/{owner}/{repo}/pull/{n}` out of the transcript and
+`GithubPrUrlHook` scrapes `https://github.com/{owner}/{repo}/pull/{n}` out of the transcript and
 writes it to `session.custom_metadata["github_pull_request_url"]`.
 
 That one field is load-bearing. It's what `GitHubPullRequestPollerJob` (CI status),
 `GithubCommentPollerJob` (review comments), and `GitHubMergeConflictPollerJob` all key off. If the hook
-misses the URL, **none of Zimmer's GitHub integration works for that session** — the agent's PR exists,
+misses the URL, none of Zimmer's GitHub integration works for that session — the agent's PR exists,
 but Zimmer doesn't know about it, so it can't tell the agent when CI goes red or when someone comments.
 
 :::caution[It only scans tool-result content]
-`GithubPrUrlHook` matches against **tool-result content only** — not assistant messages, not user
+`GithubPrUrlHook` matches against tool-result content only — not assistant messages, not user
 messages.
 
 In practice that means the URL has to come back from a tool call, which it does when the agent runs
-`gh pr create` and the Bash tool result contains the URL. But an agent that opens a PR some other way —
-or that mentions the URL only in its own prose — leaves the field empty, and the GitHub pollers never
+`gh pr create` and the Bash tool result contains the URL. But an agent that opens a PR some other way,
+or that mentions the URL only in its own prose, leaves the field empty, and the GitHub pollers never
 engage. There's no warning when this happens.
 :::
 
@@ -94,7 +94,7 @@ TranscriptHooks::Registry.register(TranscriptHooks::MyHook)
 ```
 
 :::caution[`custom_metadata` is a lost-update hazard]
-Hooks write to `session.custom_metadata` with a read-modify-write, which is **not atomic** — the same
+Hooks write to `session.custom_metadata` with a read-modify-write, which is not atomic — the same
 problem `AgentSessionJob` documents about session `metadata`. Two hooks (or a hook and the job) writing
 concurrently can clobber each other.
 

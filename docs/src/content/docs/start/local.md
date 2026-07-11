@@ -35,8 +35,8 @@ css: while true; do bin/rails tailwindcss:watch || sleep 5; done
 ```
 
 :::note[There is no worker line in Procfile.dev — that's correct]
-In development, GoodJob runs in `:async` mode **in-process with Puma**
-(`config/environments/development.rb`). Jobs and cron just work.
+In development, GoodJob runs in `:async` mode in-process with Puma
+(`config/environments/development.rb`). Jobs and cron work.
 
 In production and staging, `execution_mode = :external` and a separate `bundle exec good_job start`
 process is required — which the
@@ -45,7 +45,7 @@ process is required — which the
 
 ## Two databases
 
-`config/database.yml` and `config/cable.yml` expect **two** databases per environment:
+`config/database.yml` and `config/cable.yml` expect two databases per environment:
 `zimmer_development` and `zimmer_development_cable`. The second is Action Cable's, via
 `solid_cable`. `bin/rails db:setup` creates both.
 
@@ -73,7 +73,7 @@ On boot, `config/initializers/air_catalog.rb` runs `AirCatalogService.refresh!`,
 `npm install`s the AIR CLI (pinned to `0.13.0`) into `AIR_INSTALL_DIR` and then shells out to
 `air resolve`. The first boot is slow because of that install.
 
-If the catalog fails to resolve, the app **downgrades to a warning** and serves a stale snapshot —
+If the catalog fails to resolve, the app downgrades to a warning and serves a stale snapshot —
 but the test suite is less forgiving. See below.
 
 ## Running tests
@@ -85,12 +85,12 @@ bin/rubocop                                   # lint
 bin/brakeman                                  # security scan
 ```
 
-Run **targeted** tests locally and let CI run the full suite.
+Run targeted tests locally and let CI run the full suite.
 
 :::caution[If the whole suite suddenly goes red, suspect the catalog]
-`test/test_helper.rb` pre-warms the AIR catalog at boot, **before `parallelize` forks its workers**.
-So a catalog that doesn't resolve doesn't fail one test — it fails **every test that creates a
-session**, all at once, with `ActiveRecord::RecordInvalid`.
+`test/test_helper.rb` pre-warms the AIR catalog at boot, before `parallelize` forks its workers.
+So a catalog that doesn't resolve doesn't fail one test — it fails every test that creates a
+session, all at once, with `ActiveRecord::RecordInvalid`.
 
 A wave of `RecordInvalid` across unrelated session tests almost always means a broken catalog, not a
 broken model. Check `air resolve` before you debug your change.
@@ -98,6 +98,6 @@ broken model. Check `air resolve` before you debug your change.
 
 ## System tests do not run in CI
 
-`.github/workflows/ci.yml` runs "unit + integration; **system tests excluded**." The browser suite
+`.github/workflows/ci.yml` runs "unit + integration; system tests excluded." The browser suite
 never runs on a PR. Combined with the four open UI bugs (issues #12–#15), that's the obvious hole —
 see [Testing philosophy](/operate/testing/).
