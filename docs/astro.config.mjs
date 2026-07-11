@@ -37,7 +37,15 @@ export default defineConfig({
         baseUrl: "https://github.com/tadasant/zimmer/edit/main/docs/",
       },
       lastUpdated: true,
-      customCss: ["./src/styles/custom.css"],
+      customCss: [
+        // Self-hosted variable fonts (bundled + hashed by Astro — no external
+        // requests, works offline, CI-safe). Order matters: fonts before theme.
+        "@fontsource-variable/newsreader/opsz.css",
+        "@fontsource-variable/newsreader/opsz-italic.css",
+        "@fontsource-variable/schibsted-grotesk/wght.css",
+        "@fontsource-variable/jetbrains-mono/wght.css",
+        "./src/styles/custom.css",
+      ],
       components: {
         // Injects the client-side Mermaid renderer on every page.
         Head: "./src/components/Head.astro",

@@ -1,87 +1,511 @@
-/* Zimmer docs theme.
-   Accent is a slate-blue pulled off the common Tailwind-indigo default toward
-   infrastructure blue, so the site reads as plumbing rather than a landing page. */
+/* =========================================================================
+   Zimmer documentation — editorial technical-manual theme.
+
+   Direction: this site is meant to be read *instead of* the code, so it is set
+   like an honest manual. A literary serif (Newsreader) carries the long prose;
+   a confident grotesk (Schibsted Grotesk) does the structural work in headings
+   and UI; JetBrains Mono carries code and the wordmark. Warm paper in light,
+   deep cool ink in dark, one slate-blue accent used with intent.
+   ========================================================================= */
+
 :root {
-  --sl-color-accent-low: #1a2340;
+  --font-body: "Newsreader Variable", Georgia, "Times New Roman", serif;
+  --font-display: "Schibsted Grotesk Variable", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --sl-font: var(--font-body);
+  --sl-font-mono: var(--font-mono);
+
+  /* Reading measure — comfortable for a serif at this size. */
+  --sl-content-width: 47rem;
+  --sl-line-height: 1.75;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* ---- Dark: deep cool ink ------------------------------------------------ */
+:root {
+  --sl-color-white: #f3f4f8; /* headings / brightest */
+  --sl-color-gray-1: #dbdee6;
+  --sl-color-gray-2: #b7bcc7; /* body text */
+  --sl-color-gray-3: #878d9c; /* captions / muted */
+  --sl-color-gray-4: #5a5f6c;
+  --sl-color-gray-5: #363b46; /* borders */
+  --sl-color-gray-6: #21242c; /* panels */
+  --sl-color-gray-7: #181a21; /* deeper panels */
+  --sl-color-black: #0f1116; /* page background */
+
+  --sl-color-accent-low: #1c2340;
   --sl-color-accent: #4a5aa8;
-  --sl-color-accent-high: #c3cbf5;
-  --sl-color-white: #ffffff;
-  --sl-color-gray-1: #eceef2;
-  --sl-color-gray-2: #c0c2c7;
-  --sl-color-gray-3: #888b96;
-  --sl-color-gray-4: #545861;
-  --sl-color-gray-5: #353841;
-  --sl-color-gray-6: #24272f;
-  /* Darker than gray-6 so panels (mermaid figures, code blocks) recede and the
-     content on them lifts forward. */
-  --sl-color-gray-7: #1b1d24;
-  --sl-color-black: #17181c;
+  --sl-color-accent-high: #c7ccf2;
+
+  /* Links read brighter than the UI accent so they carry on the serif body. */
+  --sl-color-text-accent: #9aa6ee;
+
+  --sl-color-bg: #0f1116;
+  --sl-color-bg-nav: rgba(15, 17, 22, 0.72);
+  --sl-color-bg-sidebar: #0c0e12;
+  --sl-color-bg-inline-code: #20242e;
+
+  --paper-grain: 0.04;
+  --hero-glow: rgba(74, 90, 168, 0.22);
 }
 
+/* ---- Light: warm paper -------------------------------------------------- */
 :root[data-theme="light"] {
-  --sl-color-accent-low: #d5daf7;
+  --sl-color-white: #1a1c22; /* headings */
+  --sl-color-gray-1: #2b2d34; /* body text */
+  --sl-color-gray-2: #3d404a;
+  --sl-color-gray-3: #5f636e; /* captions */
+  --sl-color-gray-4: #8b8f9b;
+  --sl-color-gray-5: #dcd8ce; /* borders (warm) */
+  --sl-color-gray-6: #efece4; /* panels (warm) */
+  --sl-color-gray-7: #f6f2ea; /* deeper panels */
+  --sl-color-black: #faf7f1; /* page background (warm paper) */
+
+  --sl-color-accent-low: #dcdff4;
   --sl-color-accent: #3a4a92;
-  --sl-color-accent-high: #1e2456;
-  --sl-color-white: #17181c;
-  --sl-color-gray-1: #24272f;
-  --sl-color-gray-2: #353841;
-  --sl-color-gray-3: #545861;
-  --sl-color-gray-4: #888b96;
-  --sl-color-gray-5: #c0c2c7;
-  --sl-color-gray-6: #eceef2;
-  --sl-color-gray-7: #f5f6f8;
-  --sl-color-black: #ffffff;
+  --sl-color-accent-high: #1a2154;
+
+  --sl-color-text-accent: #3a4a92;
+
+  --sl-color-bg: #faf7f1;
+  --sl-color-bg-nav: rgba(250, 247, 241, 0.78);
+  --sl-color-bg-sidebar: #f4efe6;
+  --sl-color-bg-inline-code: #efeadf;
+
+  --paper-grain: 0.03;
+  --hero-glow: rgba(58, 74, 146, 0.14);
 }
 
-/* Mermaid diagrams. The rendered SVG is dropped in by the client script in
-   src/components/Head.astro. */
-.mermaid-figure {
-  margin: 1.75rem 0;
-  padding: 1.25rem 1rem;
+/* =========================================================================
+   Atmosphere — a barely-there grain + a single accent glow, so pages have
+   depth instead of a flat fill. Kept low enough that text stays crisp.
+   ========================================================================= */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1; /* behind all content, above the page background */
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: var(--paper-grain);
+  mix-blend-mode: overlay;
+}
+
+/* =========================================================================
+   Typography
+   ========================================================================= */
+body {
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.sl-markdown-content {
+  font-size: 1.075rem;
+  font-weight: 420;
+  letter-spacing: 0.003em;
+}
+
+/* Grotesk carries all structural type: headings, wordmark, nav, labels. */
+:is(h1, h2, h3, h4, h5, h6),
+.site-title,
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-display);
+  font-weight: 640;
+  letter-spacing: -0.014em;
+  line-height: 1.16;
+}
+
+.sl-markdown-content h1,
+.content-panel h1 {
+  font-weight: 680;
+  letter-spacing: -0.022em;
+  font-size: clamp(2.1rem, 1.6rem + 2.2vw, 2.9rem);
+  line-height: 1.08;
+}
+.sl-markdown-content h2 {
+  font-size: 1.6rem;
+  margin-top: 2.6rem;
+  padding-top: 1.4rem;
+  border-top: 1px solid var(--sl-color-gray-5);
+}
+.sl-markdown-content h3 {
+  font-size: 1.24rem;
+  margin-top: 2rem;
+}
+.sl-markdown-content h4 {
+  font-size: 1.02rem;
+  text-transform: none;
+  color: var(--sl-color-white);
+}
+
+/* The lede: Starlight renders the page description under the title. */
+.sl-markdown-content > p:first-of-type,
+.hero .tagline {
+  font-size: 1.16rem;
+  line-height: 1.6;
+  color: var(--sl-color-gray-2);
+}
+
+.sl-markdown-content strong {
+  font-weight: 640;
+  color: var(--sl-color-white);
+}
+.sl-markdown-content em {
+  font-style: italic;
+}
+
+/* =========================================================================
+   Links — an offset accent underline that fills in on hover.
+   ========================================================================= */
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--sl-color-text-accent);
+  text-decoration: none;
+  background-image: linear-gradient(var(--sl-color-text-accent), var(--sl-color-text-accent));
+  background-size: 100% 1px;
+  background-position: 0 1.15em;
+  background-repeat: no-repeat;
+  transition: background-size 0.2s var(--ease-out), color 0.2s var(--ease-out);
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+  background-size: 100% 2px;
+  color: var(--sl-color-white);
+}
+
+/* =========================================================================
+   Code
+   ========================================================================= */
+.sl-markdown-content code:not(:where(pre *)) {
+  font-family: var(--font-mono);
+  font-size: 0.83em;
+  font-weight: 480;
+  padding: 0.12em 0.38em;
+  border-radius: 5px;
   border: 1px solid var(--sl-color-gray-5);
+  background: var(--sl-color-bg-inline-code);
+  white-space: nowrap;
+}
+.sl-markdown-content :is(h1, h2, h3, h4) code:not(:where(pre *)) {
+  font-size: 0.9em;
+}
+.expressive-code {
+  --ec-brdRad: 0.6rem;
+}
+.expressive-code .frame {
+  box-shadow: 0 1px 0 var(--sl-color-gray-5), 0 12px 28px -18px rgba(0, 0, 0, 0.55);
+}
+
+/* =========================================================================
+   Callouts (Starlight asides) — a left accent bar and a grotesk label, tinted
+   per severity, instead of a heavy filled box.
+   ========================================================================= */
+.starlight-aside {
+  border: 1px solid var(--sl-color-asides-border, var(--sl-color-gray-5));
+  border-left-width: 3px;
   border-radius: 0.5rem;
-  background: var(--sl-color-gray-7, var(--sl-color-gray-6));
+  padding: 1rem 1.15rem;
+  background: color-mix(in srgb, var(--sl-color-asides-text-accent, var(--sl-color-accent)) 7%, var(--sl-color-bg));
+}
+.starlight-aside__title {
+  font-family: var(--font-display);
+  font-weight: 640;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  font-size: 0.94rem;
+}
+.starlight-aside__icon {
+  color: var(--sl-color-asides-text-accent);
+}
+.starlight-aside--note {
+  --sl-color-asides-text-accent: #8fa1f0;
+  --sl-color-asides-border: color-mix(in srgb, #8fa1f0 40%, transparent);
+}
+.starlight-aside--tip {
+  --sl-color-asides-text-accent: #5bc2a8;
+  --sl-color-asides-border: color-mix(in srgb, #5bc2a8 40%, transparent);
+}
+.starlight-aside--caution {
+  --sl-color-asides-text-accent: #e0a63b;
+  --sl-color-asides-border: color-mix(in srgb, #e0a63b 42%, transparent);
+}
+.starlight-aside--danger {
+  --sl-color-asides-text-accent: #e5706e;
+  --sl-color-asides-border: color-mix(in srgb, #e5706e 42%, transparent);
+}
+.starlight-aside a {
+  color: var(--sl-color-white);
+  text-decoration-color: var(--sl-color-asides-text-accent);
+}
+
+/* =========================================================================
+   Cards (CardGrid) — quiet panel, accent hairline that reveals on hover.
+   ========================================================================= */
+.card {
+  position: relative;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--sl-color-gray-6) 55%, var(--sl-color-bg));
+  overflow: hidden;
+  transition: border-color 0.25s var(--ease-out), transform 0.25s var(--ease-out),
+    box-shadow 0.25s var(--ease-out);
+}
+.card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto auto 0;
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(90deg, var(--sl-color-accent), transparent 70%);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.3s var(--ease-out);
+}
+.card:hover {
+  border-color: color-mix(in srgb, var(--sl-color-accent) 55%, var(--sl-color-gray-5));
+  transform: translateY(-3px);
+  box-shadow: 0 18px 36px -24px rgba(0, 0, 0, 0.6);
+}
+.card:hover::after {
+  transform: scaleX(1);
+}
+.card .title {
+  font-family: var(--font-display);
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+.card .icon {
+  color: var(--sl-color-accent);
+  border-color: var(--sl-color-gray-5);
+  background: color-mix(in srgb, var(--sl-color-accent) 12%, transparent);
+}
+
+/* =========================================================================
+   Tables — grotesk header, hairline rules, subtle row hover.
+   ========================================================================= */
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+  font-size: 0.94rem;
+  border-collapse: collapse;
+}
+.sl-markdown-content thead th {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+  border-bottom: 2px solid var(--sl-color-gray-5);
+}
+.sl-markdown-content :is(td, th) {
+  border-bottom: 1px solid var(--sl-color-gray-5);
+  padding: 0.55rem 0.8rem;
+}
+.sl-markdown-content tbody tr {
+  transition: background 0.15s var(--ease-out);
+}
+.sl-markdown-content tbody tr:hover {
+  background: color-mix(in srgb, var(--sl-color-accent) 6%, transparent);
+}
+.sl-markdown-content table code {
+  white-space: nowrap;
+}
+
+/* =========================================================================
+   Blockquote + rule motif
+   ========================================================================= */
+.sl-markdown-content blockquote {
+  border-left: 3px solid var(--sl-color-accent);
+  padding-left: 1.1rem;
+  font-style: italic;
+  color: var(--sl-color-gray-2);
+}
+.sl-markdown-content hr {
+  border: none;
+  height: 1.5rem;
+  margin: 2.4rem 0;
+  background: none;
+  text-align: center;
+}
+.sl-markdown-content hr::before {
+  content: "◆ ◆ ◆";
+  color: var(--sl-color-gray-4);
+  font-size: 0.5rem;
+  letter-spacing: 0.6em;
+}
+
+/* =========================================================================
+   Chrome — wordmark, sidebar, nav, TOC.
+   ========================================================================= */
+.site-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 1.32rem;
+}
+header.header {
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--sl-color-gray-5);
+}
+/* Sidebar group labels: small grotesk caps. */
+.sidebar-content summary .group-label > span,
+.sidebar-content > ul > li > details > summary,
+.sidebar-content h2 {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 0.72rem;
+  font-weight: 620;
+  color: var(--sl-color-gray-3);
+}
+.sidebar-content a {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  font-weight: 460;
+}
+/* Active sidebar item: accent bar + weight. */
+.sidebar-content a[aria-current="page"] {
+  font-weight: 640;
+  color: var(--sl-color-white);
+  background: color-mix(in srgb, var(--sl-color-accent) 16%, transparent);
+  border-inline-start: 2px solid var(--sl-color-accent);
+}
+/* Right-hand "On this page" */
+starlight-toc nav > h2 {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 0.7rem;
+  color: var(--sl-color-gray-3);
+}
+starlight-toc a {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+}
+starlight-toc a[aria-current="true"] {
+  color: var(--sl-color-text-accent);
+  font-weight: 620;
+}
+
+/* =========================================================================
+   Hero — atmosphere behind the mark, a staggered page-load reveal, and
+   refined actions.
+   ========================================================================= */
+.hero {
+  padding-block: clamp(1rem, 4vw, 3rem);
+}
+.hero h1 {
+  font-size: clamp(2.8rem, 2rem + 4vw, 4.6rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 0.98;
+}
+.hero .tagline {
+  max-width: 34ch;
+  font-size: clamp(1.1rem, 1rem + 0.5vw, 1.35rem);
+}
+.hero > img,
+.hero > .hero-html {
+  filter: drop-shadow(0 0 3rem var(--hero-glow)) drop-shadow(0 1rem 2rem rgba(0, 0, 0, 0.35));
+}
+/* Primary action */
+.hero .actions a[href].button:where(:not(.minimal)) {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  border-radius: 0.55rem;
+  box-shadow: 0 10px 24px -14px var(--sl-color-accent);
+  transition: transform 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
+}
+.hero .actions a[href].button:where(:not(.minimal)):hover {
+  transform: translateY(-2px);
+}
+.hero .actions a[href].button.minimal {
+  font-family: var(--font-display);
+  font-weight: 520;
+}
+
+/* Staggered reveal on first paint. */
+@media (prefers-reduced-motion: no-preference) {
+  .hero > * {
+    animation: rise 0.7s var(--ease-out) both;
+  }
+  .hero > h1 { animation-delay: 0.02s; }
+  .hero > .tagline { animation-delay: 0.1s; }
+  .hero > .actions { animation-delay: 0.18s; }
+  .hero > img,
+  .hero > .hero-html { animation-delay: 0s; animation-duration: 0.9s; }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* =========================================================================
+   Details — selection, scrollbar, focus, and keeping content above the grain.
+   ========================================================================= */
+::selection {
+  background: color-mix(in srgb, var(--sl-color-accent) 38%, transparent);
+  color: var(--sl-color-white);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sl-color-gray-5) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--sl-color-gray-5);
+  border-radius: 10px;
+  border: 2px solid var(--sl-color-bg);
+}
+
+:where(a, button, summary, input):focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* =========================================================================
+   Mermaid diagrams — rendered client-side by src/components/Head.astro, in the
+   brand palette. The panel recedes so the branded nodes sit above it.
+   ========================================================================= */
+.mermaid-figure {
+  margin: 2rem 0;
+  padding: 1.5rem 1.25rem;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.7rem;
+  background: var(--sl-color-gray-7);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--sl-color-white) 4%, transparent);
   overflow-x: auto;
 }
-
 .mermaid-diagram {
   display: flex;
   justify-content: center;
   min-height: 2rem;
 }
-
 .mermaid-diagram svg {
   max-width: 100%;
   height: auto;
 }
-
 .mermaid-figure figcaption {
-  margin-top: 0.75rem;
+  margin-top: 0.85rem;
   text-align: center;
-  font-size: var(--sl-text-sm);
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
   color: var(--sl-color-gray-3);
 }
-
 .mermaid-error {
-  color: #d94f4f;
-  font-size: var(--sl-text-xs);
+  color: #e5706e;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
   white-space: pre-wrap;
-}
-
-/* The limitations pages lean hard on tables; keep them readable rather than
-   letting a long "consequence" column squeeze the rest to nothing. */
-.sl-markdown-content table {
-  display: table;
-  width: 100%;
-  font-size: var(--sl-text-sm);
-}
-
-.sl-markdown-content table code {
-  white-space: nowrap;
-}
-
-/* Homepage hero */
-.hero > img,
-.hero > .hero-html {
-  filter: drop-shadow(0 0 2rem var(--sl-color-accent-low));
 }
