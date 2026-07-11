@@ -8,10 +8,10 @@ This file's guidance applies to every controller in this directory subtree — `
 
 The REST API has **two documentation surfaces that must stay in sync** with this code:
 
-1. **`docs/REST_API.md`** — canonical Markdown reference
+1. **`docs/src/content/docs/extend/rest-api.md`** — the canonical reference, published at https://zimmer.tadasant.com/extend/rest-api/
 2. **`app/views/api_docs/show.html.erb`** — rendered HTML page at `/api_docs`
 
-If your change does any of the following, update **both** doc files in the same PR:
+If your change does any of the following, update **both** doc surfaces in the same PR:
 
 - Add, remove, or rename an endpoint
 - Add, remove, or rename a request parameter (incl. permit-list changes)

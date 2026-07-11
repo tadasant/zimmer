@@ -96,7 +96,7 @@ class ApiErrorRetryService
   # limit window is used before the session fails.
   #
   # The Claude CLI's limit wording is a moving target (see
-  # docs/CLAUDE_CODE_OAUTH_ASSUMPTIONS.md → "Usage-limit message formats"). It has
+  # https://zimmer.tadasant.com/auth/harness/ → "Usage-limit message formats"). It has
   # introduced a descriptor word between "your" and "limit" ("session", "weekly"),
   # so the pattern must NOT require the literal "hit your limit". The bug this
   # guards against: "You've hit your session limit · resets 5:50pm (UTC)" failed

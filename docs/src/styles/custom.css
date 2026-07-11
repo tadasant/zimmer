@@ -1,0 +1,84 @@
+/* Zimmer docs theme.
+   Accent is a cool slate-indigo — close enough to the app's Tailwind palette to
+   feel related, distinct enough that the docs don't look like a broken copy. */
+:root {
+  --sl-color-accent-low: #1a2340;
+  --sl-color-accent: #4c5fd7;
+  --sl-color-accent-high: #c3cbf5;
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #eceef2;
+  --sl-color-gray-2: #c0c2c7;
+  --sl-color-gray-3: #888b96;
+  --sl-color-gray-4: #545861;
+  --sl-color-gray-5: #353841;
+  --sl-color-gray-6: #24272f;
+  --sl-color-black: #17181c;
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: #d5daf7;
+  --sl-color-accent: #3b4bc0;
+  --sl-color-accent-high: #1e2456;
+  --sl-color-white: #17181c;
+  --sl-color-gray-1: #24272f;
+  --sl-color-gray-2: #353841;
+  --sl-color-gray-3: #545861;
+  --sl-color-gray-4: #888b96;
+  --sl-color-gray-5: #c0c2c7;
+  --sl-color-gray-6: #eceef2;
+  --sl-color-gray-7: #f5f6f8;
+  --sl-color-black: #ffffff;
+}
+
+/* Mermaid diagrams. The rendered SVG is dropped in by the client script in
+   src/components/Head.astro. */
+.mermaid-figure {
+  margin: 1.75rem 0;
+  padding: 1.25rem 1rem;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  background: var(--sl-color-gray-7, var(--sl-color-gray-6));
+  overflow-x: auto;
+}
+
+.mermaid-diagram {
+  display: flex;
+  justify-content: center;
+  min-height: 2rem;
+}
+
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-figure figcaption {
+  margin-top: 0.75rem;
+  text-align: center;
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-3);
+}
+
+.mermaid-error {
+  color: #d94f4f;
+  font-size: var(--sl-text-xs);
+  white-space: pre-wrap;
+}
+
+/* The limitations pages lean hard on tables; keep them readable rather than
+   letting a long "consequence" column squeeze the rest to nothing. */
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+  font-size: var(--sl-text-sm);
+}
+
+.sl-markdown-content table code {
+  white-space: nowrap;
+}
+
+/* Homepage hero */
+.hero > img,
+.hero > .hero-html {
+  filter: drop-shadow(0 0 2rem var(--sl-color-accent-low));
+}

@@ -2,9 +2,8 @@
 
 Everything here is an **Zimmer Extension**: a self-contained, individually-deletable
 bundle of optional behavior resolved through `Ao::ExtensionRegistry`. Read
-**[docs/AO_EXTENSIONS.md](../../docs/AO_EXTENSIONS.md)** (design + invariants) and
-**[docs/AUTHORING_AN_AO_EXTENSION.md](../../docs/AUTHORING_AN_AO_EXTENSION.md)**
-(how-to) before adding or changing anything in this directory.
+**[Extensions](https://zimmer.tadasant.com/extend/extensions/)** — the contract, the invariants, and how to
+write one — before adding or changing anything in this directory.
 
 ## The invariants that make this directory work
 

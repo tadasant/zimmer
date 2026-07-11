@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" role="img" aria-label="Zimmer">
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="#3b4bc0"/>
+  <path d="M9 10h14l-14 12h14" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="9" cy="10" r="2.6" fill="#ffffff"/>
+  <circle cx="23" cy="22" r="2.6" fill="#c3cbf5"/>
+</svg>
