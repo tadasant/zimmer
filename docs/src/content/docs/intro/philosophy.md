@@ -66,7 +66,7 @@ transition has guards and side effects, and the side effects are the interesting
 notification. `archive` sets a trash expiry and schedules clone cleanup. `fail` preserves
 debug state.
 
-The philosophical point: the orchestrator owns the transitions; an agent process only feeds them inputs. An agent
+The philosophical point: the orchestrator owns the transitions, and the agent only feeds them inputs. A
 process exiting is an *input* to the state machine; the machine decides the transition. That's what makes
 it possible to build triggers, notifications, health monitoring, and recovery on top —
 they all key off states, and states are real.
@@ -153,12 +153,11 @@ What this buys:
   what exists and injects what the session selected.
 - **The same catalog can serve other agents.** AIR has adapters for Claude Code, Codex,
   Cursor, and others. The catalog is agent-shaped, so any of them can use it.
-- **Composable artifacts.** Artifacts declare which roots they're default-on
-  in (`default_in_roots`), so adding a skill to a root is a one-line edit in the *skill's*
-  entry (`default_in_roots`).
+- **Composable artifacts.** Each artifact declares which roots it's default-on in via
+  `default_in_roots`, so adding a skill to a root is a one-line edit in the *skill's* own entry.
 
-The cost is a hard dependency on an external CLI and an extra failure mode: if the catalog
-fails to resolve, a failed resolve takes down all session creation at once. Zimmer takes
+The cost is a hard dependency on an external CLI and an extra failure mode: a catalog that
+fails to resolve takes down all session creation at once. Zimmer takes
 that seriously enough to keep a last-known-good snapshot in the database and degrade to it.
 See [How Zimmer consumes AIR](/air/zimmer-integration/).
 

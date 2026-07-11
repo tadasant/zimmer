@@ -40,7 +40,7 @@ The formal schema is published by AIR at
 — which is what `mcp.json`'s own `$schema` key points at. A snapshot is also served from this site at
 [`/mcp.schema.json`](/mcp.schema.json).
 
-:::note[The local schema copy is a snapshot, not the source of truth]
+:::note[The local schema copy is only a convenience snapshot]
 The old `docs/mcp.schema.json` had a `$id` pointing at a path inside `tadasant/zimmer-catalog` that
 no longer exists in this repo's layout, while `mcp.json` validates against AIR's published schema.
 The local file is a convenience copy for offline validation.

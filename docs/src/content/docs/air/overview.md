@@ -104,8 +104,8 @@ cross-file surgery in a giant `roots.json` that everyone edits and everyone conf
 
 During resolution AIR inverts these declarations into per-root membership, computing
 `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`, `default_references`,
-and `default_subagent_roots` on each root — and then deletes `default_in_roots` from the output
-entirely. It's an authoring field; AIR deletes it before the resolved output.
+and `default_subagent_roots` on each root — and then strips `default_in_roots` from the output
+entirely. It's an authoring field, gone by the time you see the resolved tree.
 
 A root whose `default_in_roots` names *another root* is how **subagent roots** are declared. That's
 how Zimmer's four `catalog-mgmt-*` phases attach themselves to the `catalog-management` lead root.
