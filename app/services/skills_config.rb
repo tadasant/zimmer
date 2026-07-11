@@ -16,7 +16,7 @@ class SkillsConfig
       @title = config["title"] || name
       @description = config["description"]
       @path = config["path"]
-      @category = path_category(@path)
+      @category = config["category"].presence || path_category(@path)
       @references = config["references"] || []
       @user_invocable = config.fetch("user_invocable", false)
     end
@@ -45,8 +45,14 @@ class SkillsConfig
 
     private
 
-    # Derive a human-readable category from the skill's resolved directory name.
-    # Uses the parent directory (e.g. "agent-orchestrator" in "/.../skills/agent-orchestrator/ao-bump-mcp-versions").
+    # Fallback category for entries that don't declare one: the resolved
+    # directory's parent (e.g. "agent-orchestrator" in
+    # "/.../skills/agent-orchestrator/ao-bump-mcp-versions"). This only yields a
+    # useful label when a catalog groups its skills into subdirectories by
+    # category. Catalogs that lay skills out flat (one directory per skill, as
+    # Zimmer's `skills/` does) should set `category` explicitly in skills.json —
+    # otherwise every skill would land under a group named after the containing
+    # directory. The UI groups the skill picker by this value.
     def path_category(path)
       return nil if path.blank?
       File.basename(File.dirname(path))

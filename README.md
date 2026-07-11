@@ -50,7 +50,9 @@ Tailscale VPN with one manually-triggered workflow.
 - **MCP elicitation** support (interactive approval prompts from MCP servers) —
   [docs/ELICITATION_FLOW.md](docs/ELICITATION_FLOW.md).
 - **AIR catalog** integration — agent roots, skills, plugins, MCP servers, hooks, and
-  references resolved from a self-contained local catalog (`air.json` + `catalog/`).
+  references resolved from a self-contained local catalog (`air.json` + the top-level
+  artifact indexes: `skills/`, `roots.json`, `mcp.json`, `plugins/`, `hooks/`,
+  `references/`).
 - **Removable extensions** for optional behavior kept out of the core image —
   [docs/AO_EXTENSIONS.md](docs/AO_EXTENSIONS.md).
 - **Background jobs** via GoodJob (session execution, cleanup, token rotation) with a
@@ -189,8 +191,11 @@ Everything is configured through environment variables — no secrets in git.
 - **Extensions** — self-contained, individually-deletable bundles of optional behavior
   that plug into core seams without core naming them. See [docs/AO_EXTENSIONS.md](docs/AO_EXTENSIONS.md).
 - **AIR catalog** — agent roots / skills / plugins / MCP servers / hooks / references
-  resolved from `air.json` + `catalog/` via the public `@pulsemcp/air` CLI, fully
-  offline by default.
+  resolved via the public `@pulsemcp/air` CLI from `air.json` and the top-level
+  artifact indexes (`skills/skills.json`, `roots.json`, `mcp.json`,
+  `plugins/plugins.json`, `hooks/hooks.json`, `references/references.json`), fully
+  offline by default. Skills in `skills/` are Zimmer-specific and are injected
+  automatically into sessions on the `zimmer` root via `default_in_roots`.
 - **Isolated execution** — each session runs in its own git clone with a durable
   per-session scratch directory.
 

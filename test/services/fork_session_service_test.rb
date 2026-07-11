@@ -25,7 +25,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     # Create source session
     # Use playwright-custom as the MCP server because it doesn't require any env vars
     # (all its env vars are hardcoded in mcp.json)
-    # Use ao-start-dev-server as a catalog skill because it exists in the test catalog
+    # Use zimmer-start-dev-server as a catalog skill because it exists in the test catalog
     @source_session = Session.create!(
       prompt: "Test prompt",
       agent_runtime: "claude_code",
@@ -36,7 +36,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       session_id: SecureRandom.uuid,
       transcript: @transcript_content,
       mcp_servers: [ "playwright-custom" ],
-      catalog_skills: [ "ao-start-dev-server" ],
+      catalog_skills: [ "zimmer-start-dev-server" ],
       catalog_hooks: [ "git-push-ci-reminder" ],
       catalog_plugins: [ "ci-workflow" ],
       goal: "Complete the task",
@@ -354,7 +354,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     # Verify that catalog_skills are preserved when forking a session.
     # Without this, forked sessions lose their skill configuration and
     # AirPrepareService won't inject skills on the next execution.
-    assert_equal [ "ao-start-dev-server" ], @source_session.catalog_skills
+    assert_equal [ "zimmer-start-dev-server" ], @source_session.catalog_skills
 
     result = ForkSessionService.call(
       source_session: @source_session,
@@ -363,7 +363,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     )
 
     assert result.success?
-    assert_equal [ "ao-start-dev-server" ], result.forked_session.catalog_skills,
+    assert_equal [ "zimmer-start-dev-server" ], result.forked_session.catalog_skills,
       "Forked session must inherit catalog_skills from source session"
   end
 

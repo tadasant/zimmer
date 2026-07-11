@@ -29,6 +29,39 @@ stack: PostgreSQL, Redis, GoodJob, Hotwire (Turbo + Stimulus), Tailwind.
 - REST API: [docs/REST_API.md](docs/REST_API.md) — keep it in sync with
   `app/views/api_docs/show.html.erb` when you change endpoints.
 
+## AI artifacts (the AIR catalog)
+
+Zimmer ships a **self-contained** AIR catalog: the top-level artifact indexes are
+the catalog, resolved offline by the `@pulsemcp/air` CLI. `air.json` (dev/test)
+and `air.production.json` (in-image) wire six types:
+
+| Type | Index | Bodies |
+| --- | --- | --- |
+| Skills | `skills/skills.json` | `skills/<id>/SKILL.md` |
+| Agent roots | `roots.json` | — |
+| MCP servers | `mcp.json` | — |
+| Plugins | `plugins/plugins.json` | `plugins/<id>/.plugin/plugin.json` |
+| Hooks | `hooks/hooks.json` | `hooks/<id>/` |
+| References | `references/references.json` | `references/<file>.md` |
+
+The app reads all six through `AirCatalogService` (which shells out to
+`air resolve`); `SkillsConfig` / `AgentRootsConfig` / `PluginsConfig` /
+`ReferencesConfig` are thin readers over it. Never parse the indexes directly.
+
+Two rules worth internalizing before you touch them:
+
+- **Only Zimmer-specific skills belong in `skills/`.** Generic workflow skills
+  (`pr`, `wait-for-ci`, …) come from the orchestrator's default skill set;
+  duplicating one here collides on shortname and AIR hard-fails the whole resolve.
+- **No dangling references.** A skill/MCP/hook/plugin/root reference to something
+  that does not exist makes AIR drop it, which `AirCatalogService` treats as a
+  failed resolve — degrading the app to a stale snapshot and failing the test
+  suite globally (`test/test_helper.rb` pre-warms the catalog at boot).
+
+`skills/zimmer-change-ai-artifact/SKILL.md` is the full guide, including how
+`default_in_roots` makes an artifact default-on and how to verify with
+`air resolve` before pushing.
+
 ## Conventions
 
 - Keep controllers thin; put logic in models/services.
@@ -39,6 +72,11 @@ stack: PostgreSQL, Redis, GoodJob, Hotwire (Turbo + Stimulus), Tailwind.
 
 ## Known coupling
 
-Session creation validates `agent_root` against an artifact **catalog**. Standalone
-that catalog is not yet wired, so session-creating tests currently fail — see
-[CONTRIBUTING.md](CONTRIBUTING.md#known-coupling-the-agent-artifact-catalog).
+Session creation validates `agent_root` — and `catalog_skills` — against the
+artifact catalog above. The catalog is wired and self-contained, so this resolves
+offline and the suite is green. But the coupling is real and global: a catalog
+that fails to resolve does not fail one test, it fails **all** session-creating
+tests at once (`test/test_helper.rb` pre-warms the catalog at boot, before
+`parallelize` forks its workers). A sudden wave of `ActiveRecord::RecordInvalid`
+across unrelated session tests almost always means a broken catalog, not a broken
+model — see [CONTRIBUTING.md](CONTRIBUTING.md#known-coupling-the-agent-artifact-catalog).

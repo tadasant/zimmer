@@ -53,7 +53,7 @@ class PluginsConfigTest < ActiveSupport::TestCase
     assert_equal "ci-workflow", plugin.id
     assert_equal "CI Workflow", plugin.title
     assert_equal "1.0.0", plugin.version
-    assert_includes plugin.skills, "wait-for-ci"
+    assert_includes plugin.skills, "zimmer-run-tests"
     assert_includes plugin.hooks, "git-push-ci-reminder"
     assert_includes plugin.keywords, "ci"
   end
