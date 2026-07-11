@@ -21,7 +21,7 @@ write_files:
         image: ${image_ref}
         environment:
           RAILS_ENV: production
-          SECRET_KEY_BASE: ${secret_key_base}
+          SECRET_KEY_BASE: "${secret_key_base}"
           # Decrypts Rails encrypted credentials (config/credentials/*). Empty on
           # staging (no committed production.yml.enc); secrets_loader.rb rescues a
           # missing key and there is no require_master_key, so the app still boots.
@@ -42,7 +42,9 @@ write_files:
           DATABASE_HOST: ${db_host}
           DATABASE_PORT: "${db_port}"
           DATABASE_USERNAME: ${db_username}
-          DATABASE_PASSWORD: ${db_password}
+          # Quoted so a password containing a YAML-special leading char (a managed
+          # Postgres password is not YAML-aware) can't mis-parse the compose file.
+          DATABASE_PASSWORD: "${db_password}"
           DATABASE_SSLMODE: ${db_sslmode}
           REDIS_URL: redis://redis:6379/0
           # Observability (optional): the app's initializers are hard no-ops when
@@ -182,5 +184,10 @@ runcmd:
   # bypasses the image entrypoint (which would otherwise background `claude
   # update` as root into ~/.local). Non-recursive is enough: fresh volumes are
   # empty, and on redeploys the app already owns the contents. Idempotent.
-  - docker compose -f /opt/zimmer/docker-compose.yml run --rm --no-deps -u 0 --entrypoint chown app rails:rails /home/rails/.zimmer /home/rails/.claude /home/rails/.config/gh /home/rails/.local
-  - docker compose -f /opt/zimmer/docker-compose.yml up -d
+  #
+  # Chained with `&&` into a single runcmd item deliberately: cloud-init's runcmd
+  # script runs without `set -e`, so as separate items a failed chown would still
+  # fall through to `up -d` and bring the stack up with root-owned volumes --
+  # exactly the silent, /up-still-green failure this step exists to prevent. `&&`
+  # makes it fail-closed: no chown, no start.
+  - docker compose -f /opt/zimmer/docker-compose.yml run --rm --no-deps -u 0 --entrypoint chown app rails:rails /home/rails/.zimmer /home/rails/.claude /home/rails/.config/gh /home/rails/.local && docker compose -f /opt/zimmer/docker-compose.yml up -d
