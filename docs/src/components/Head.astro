@@ -107,6 +107,10 @@ import Default from "@astrojs/starlight/components/Head.astro";
   // Clicking a heading's anchor link copies its deep link to the clipboard
   // (and still updates the URL hash), with a brief "Copied" confirmation.
   document.addEventListener("click", (event) => {
+    // Let modified / non-left clicks behave normally (open in new tab, etc.).
+    const e = event as MouseEvent;
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+
     const link = (event.target as HTMLElement)?.closest?.(
       "a.sl-anchor-link",
     ) as HTMLAnchorElement | null;
@@ -117,14 +121,11 @@ import Default from "@astrojs/starlight/components/Head.astro";
     const url = location.origin + location.pathname + location.search + hash;
     history.pushState(null, "", hash);
 
-    const done = () => {
+    // Only flash "Copied" when the write actually succeeded.
+    const confirmCopied = () => {
       link.setAttribute("data-copied", "");
       window.setTimeout(() => link.removeAttribute("data-copied"), 1400);
     };
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(url).then(done, done);
-    } else {
-      done();
-    }
+    navigator.clipboard?.writeText?.(url).then(confirmCopied, () => {});
   });
 </script>
