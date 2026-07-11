@@ -101,12 +101,12 @@ The tools an agent has are the things it can do to the world. An agent with a Sl
 server can post to Slack. An agent with a DigitalOcean MCP server can delete a droplet.
 
 So Zimmer treats the MCP server list as the session's blast radius, and makes it a
-per-session decision rather than a global one. Two sessions in the same repository can have
+per-session decision instead of a global one. Two sessions in the same repository can have
 completely different tool sets, and the session that only needs to read code gets nothing
 that can write to production.
 
-This is why MCP servers are configured per-session and per-agent-root rather than per-user
-in some global config file — the question "what can this agent break?" should have an answer
+This is why MCP servers are configured per-session and per-agent-root, not per-user
+in some global config file. The question "what can this agent break?" should have an answer
 you can look up, and that answer should be different for different tasks.
 
 The corollary is that credentials follow the tools. MCP servers that need OAuth get

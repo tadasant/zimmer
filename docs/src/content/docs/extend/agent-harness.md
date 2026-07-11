@@ -84,7 +84,7 @@ equality via `instance_method(:execute).parameters`. Add your adapter (and a moc
 
 Also `include CliSpawnEnv` — don't reimplement env scrubbing.
 
-### Retry strategy — **five** predicates, not four
+### Retry strategy: five predicates, not four
 
 ```ruby
 normal_completion_exit?(status)
