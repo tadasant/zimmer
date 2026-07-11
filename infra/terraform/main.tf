@@ -64,7 +64,18 @@ variable "image_ref" {
 variable "domain" {
   type        = string
   default     = ""
-  description = "Optional FQDN to create an A record for (e.g. staging.zimmer.tadasant.com). Empty = no DNS."
+  description = <<-EOT
+    Optional FQDN for custom-domain HTTPS over the tailnet (e.g.
+    zimmer.tadasant.com). When set, the droplet runs a Caddy TLS terminator on
+    :443 for this name, reachable only over the tailnet like everything else.
+
+    Caddy does NOT obtain its own certificate and the droplet holds NO DNS
+    credential: the `domain-cert` workflow issues the cert out-of-band (ACME
+    DNS-01, Cloudflare token confined to CI), registers the `domain -> tailnet
+    IP` A record, and pushes only the cert onto the box. So this variable just
+    turns the terminator on; the DNS record and cert are managed by that
+    workflow, not by Terraform. Empty = plain HTTP over the tailnet only.
+  EOT
 }
 
 variable "manage_project" {
@@ -249,6 +260,7 @@ resource "digitalocean_droplet" "zimmer" {
     db_password        = local.db_password
     db_sslmode         = local.db_sslmode
     compose_depends_on = local.compose_depends_on
+    domain             = var.domain
     image_ref          = var.image_ref
     tailscale_auth_key = var.tailscale_auth_key
     ghcr_username      = var.ghcr_username
@@ -295,17 +307,13 @@ resource "digitalocean_firewall" "zimmer" {
   }
 }
 
-# Optional public DNS A record. The app is Tailscale-only, so this is mainly a
-# convenience pointer; it resolves to the droplet's public IP but the app port
-# is not publicly reachable.
-resource "digitalocean_record" "zimmer" {
-  count  = var.domain == "" ? 0 : 1
-  domain = join(".", slice(split(".", var.domain), 1, length(split(".", var.domain))))
-  type   = "A"
-  name   = split(".", var.domain)[0]
-  value  = digitalocean_droplet.zimmer.ipv4_address
-  ttl    = 300
-}
+# No DNS record here. `var.domain`'s A record must point at the droplet's
+# TAILNET IP (100.x) so tailnet peers reach it and nobody else can -- not the
+# public IP this used to publish, which the firewall blocks anyway. The tailnet
+# IP is assigned at `tailscale up` (boot), so Terraform cannot know it at plan
+# time; the `domain-cert` workflow discovers it and upserts the Cloudflare record
+# from CI, alongside issuing the cert. Keeping DNS out of Terraform also keeps the
+# Cloudflare credential out of the provisioning path entirely.
 
 # ---- Outputs ----------------------------------------------------------------
 
