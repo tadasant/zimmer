@@ -60,6 +60,22 @@ RUN mkdir -p /tmp/agent-orchestrator-images /tmp/agent-orchestrator-files && \
     chown rails:rails /tmp/agent-orchestrator-images /tmp/agent-orchestrator-files && \
     chmod 755 /tmp/agent-orchestrator-images /tmp/agent-orchestrator-files
 
+# Create the DURABLE volume mountpoints, owned by rails (uid 1000), BEFORE the
+# volumes are mounted over them.
+#
+# Docker only seeds a fresh named volume with the image directory's ownership when
+# that mountpoint already EXISTS in the image. The base image creates ~/.config and
+# ~/.codex but NOT ~/.zimmer, ~/.config/gh, ~/.claude, or ~/.local -- so those
+# volumes would come up root:root and uid 1000 could not write them. Every agent
+# session would then fail to clone (and `gh auth` would fail) while /up still
+# returned 200 -- a silent failure the health check cannot see.
+#
+# The pre-Kamal cloud-init worked around this with a `docker compose run … chown`
+# step before `up -d`. Kamal has no equivalent hook in the deploy path, so the fix
+# belongs in the image, where it also survives a volume being recreated.
+RUN mkdir -p /home/rails/.zimmer /home/rails/.claude /home/rails/.config/gh /home/rails/.local && \
+    chown rails:rails /home/rails/.zimmer /home/rails/.claude /home/rails/.config/gh /home/rails/.local
+
 # Switch to non-root user for security
 USER 1000:1000
 
