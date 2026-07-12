@@ -96,7 +96,7 @@ TranscriptHooks::Registry.register(TranscriptHooks::MyHook)
 :::caution[`custom_metadata` is a lost-update hazard]
 Hooks write to `session.custom_metadata` with a read-modify-write, which is not atomic — the same
 problem `AgentSessionJob` documents about session `metadata`. Two hooks (or a hook and the job) writing
-concurrently can clobber each other.
+concurrently can clobber each other. Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
 
 Keep hooks fast and keep their writes to distinct keys.
 :::

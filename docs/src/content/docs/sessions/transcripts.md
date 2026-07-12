@@ -44,7 +44,7 @@ kept in sync with upstream — a silent-drift hazard with no test guarding it. Z
 diverges intentionally: no secret redaction, per-line normalization with no cross-line
 timestamp carry-forward, and several fields hardcoded to null.
 
-The "no secret redaction" part matters if you ever expose a transcript outside your tailnet.
+The "no secret redaction" part matters if you ever expose a transcript outside your tailnet. Tracked in [#51](https://github.com/tadasant/zimmer/issues/51).
 :::
 
 ## The regression guard
@@ -104,12 +104,12 @@ atomic rename). It's served by `GET /api/v1/transcript_archive/download`.
 
 The API's `#transcript` renderer handles only `user`, `assistant`, `tool_use`, and `tool_result`
 entry types and silently drops everything else — thinking blocks, system entries. It also
-assumes `content` is a string.
+assumes `content` is a string. Tracked in [#83](https://github.com/tadasant/zimmer/issues/83).
 
 :::danger[Transcripts have no authorization check]
 `app/controllers/sessions_controller.rb:1475` carries a live TODO:
 `# TODO: Add authorization check here - transcript contains sensitive conversation data`.
 
 Since [the web UI has no authentication at all](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows),
-anyone who can reach the host can read every transcript.
+anyone who can reach the host can read every transcript. Tracked in [#44](https://github.com/tadasant/zimmer/issues/44).
 :::

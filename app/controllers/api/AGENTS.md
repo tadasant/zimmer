@@ -22,7 +22,7 @@ If your change does any of the following, update **both** doc surfaces in the sa
 
 After your code change, grep both doc files for the affected endpoint path, the changed param name, and any renamed concept. Reconcile any mismatches.
 
-See the parent `agents/agent-orchestrator/CLAUDE.md` ("Updating the REST API (and Its Docs)") for rationale and history.
+See the repo-root `AGENTS.md` for the wider convention, and `docs/src/content/docs/extend/rest-api.md` for the API reference itself.
 
 ## Public-contract reminder
 

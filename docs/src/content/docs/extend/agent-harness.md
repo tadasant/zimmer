@@ -100,7 +100,7 @@ auth_recovery_needed?(working_dir:)          # ← the one the docs forget
 three. But `ProcessLifecycleManager` calls five, including `auth_recovery_needed?`.
 
 A new runtime that implements exactly what the docs say will `NoMethodError` on the auth-recovery
-path, at runtime, in production, on a session that was already failing.
+path, at runtime, in production, on a session that was already failing. Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
 :::
 
 ### `TranscriptSource`

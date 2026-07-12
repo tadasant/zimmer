@@ -139,7 +139,7 @@ window and then either deletes the clone (if it's clean) or preserves unpushed a
 :::caution[The retention period in the code comment is wrong]
 The comment on the `archive` event says artifacts "are preserved for 14 days before deletion."
 The `TRASH_RETENTION_PERIOD` constant that actually governs it is `4.days`. Four days is what
-happens. The comment is stale.
+happens. The comment is stale. Tracked in [#72](https://github.com/tadasant/zimmer/issues/72).
 :::
 
 :::danger[The Undo button doesn't work]

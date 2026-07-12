@@ -52,7 +52,7 @@ Permitted params: `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory
 `custom_metadata{}`.
 
 One more: `agent_root`, which is read directly from `params`, *outside* the strong-params permit list.
-An invalid one → `422 {"error": "Invalid agent_root"}`.
+An invalid one → `422 {"error": "Invalid agent_root"}`. Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
 
 The `AgentSessionJob` is enqueued only if `prompt` is present.
 
@@ -150,7 +150,7 @@ Three shapes, inconsistently applied:
 ```
 
 That third one comes from `Api::BaseController#unprocessable_entity` (the `RecordInvalid` rescue).
-Parse defensively.
+Parse defensively. Tracked in [#82](https://github.com/tadasant/zimmer/issues/82).
 
 **Status codes in use:** 200 · 201 · 202 (follow-up queued) · 204 · 400 (search only) · 401 · 404 ·
 409 (follow-up position collision, interrupt races) · 422 · 429 (health cooldown) · 500 · 503 (Slack
