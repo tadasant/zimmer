@@ -168,15 +168,16 @@ temporary; the plan is a tadasant-dedicated runner on DigitalOcean, tracked in
 See [Running on the shared self-hosted runner](#running-on-the-shared-self-hosted-runner)
 for what that requires of a Rails job.
 
-The exception is `alert-ci-failure.yml`, which runs on `ubuntu-latest` on purpose: the
-moment you most need the alert is the moment the shared runner pool is what's broken,
-and an alert that needs a healthy runner to tell you the runners are unhealthy is no
-alert at all.
+The exception is `alert-ci-failure.yml`, which runs on `ubuntu-latest` on purpose: an
+alert that needs a healthy self-hosted runner in order to tell you the self-hosted
+runners are unhealthy is no alert at all. That buys less than it sounds like — it covers
+a *degraded* pool, where jobs run and fail, but not a pool that is flat **offline**, in
+which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · GHCR-retention logic · docs site build |
-| `alert-ci-failure.yml` | any of the below completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
+| `alert-ci-failure.yml` | any other workflow here completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | builds and pushes `zimmer:{version, latest, sha-…}` |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image |
 | `deploy-staging.yml` | manual only | see below |
@@ -200,9 +201,13 @@ alert is a silently broken alert and this is the only place it can surface.
 
 Three details worth knowing before you touch it:
 
-- It fires on `conclusion == 'failure'` — never on "not success". `ci.yml` sets
-  `cancel-in-progress`, so two pushes to `main` in quick succession cancel the first
-  run, and a *cancelled* run must not page anyone.
+- It fires on an **allowlist** of conclusions — `failure`, `startup_failure`,
+  `timed_out` — never on "not success". `ci.yml` sets `cancel-in-progress`, so two
+  pushes to `main` in quick succession cancel the first run, and a *cancelled* run must
+  not page anyone. The corollary is that a run which never starts is never alerted on:
+  if the self-hosted pool is offline, main-branch runs **queue**, and GitHub cancels
+  them after ~24h as `cancelled`, which is indistinguishable from a deliberate cancel
+  ([Limitations](/limitations/#a-queued-run-that-never-starts-is-never-alerted-on)).
 - The workflows it watches are listed by name in the file, because `workflow_run` has no
   wildcard. **Add every new workflow to that list** or its failures on `main` will be
   silent ([Limitations](/limitations/#the-ci-failure-alert-lists-the-workflows-it-watches-by-hand)).

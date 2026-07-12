@@ -89,6 +89,19 @@ listener cannot be exercised from a PR — the first real proof that it fires is
 `main` after it merges. `workflow_dispatch` is wired up on it to cover the other half (that Slack
 delivery itself works) without waiting for a genuine breakage.
 
+### A queued run that never starts is never alerted on
+
+`alert-ci-failure.yml` fires on an allowlist of conclusions (`failure`, `startup_failure`,
+`timed_out`) rather than on "not `success`", because `ci.yml` sets `cancel-in-progress` and a
+*cancelled* run must not page anyone.
+
+That leaves one real hole. If the shared self-hosted runner pool goes **offline**, main-branch runs
+don't fail — they queue, and GitHub cancels them after ~24h with `conclusion: cancelled`, which is
+the same conclusion a deliberate cancel produces. So the alert is silent for exactly the outage it
+is most often imagined to cover. Running the alert job on `ubuntu-latest` protects against a
+*degraded* pool (jobs run, jobs fail, the alert goes out), not an absent one. Noticing that CI has
+gone quiet is still a human job.
+
 ---
 
 ## Security

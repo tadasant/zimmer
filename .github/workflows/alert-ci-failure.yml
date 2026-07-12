@@ -49,16 +49,21 @@ jobs:
     # runner pool is itself what is broken, that is exactly when the alert has to fire.
     runs-on: ubuntu-latest
 
-    # `conclusion == 'failure'`, never `!= 'success'`. A *cancelled* run must stay
+    # An allowlist of conclusions, never `!= 'success'`. A *cancelled* run must stay
     # quiet, and cancellations are routine here — `ci.yml` sets `cancel-in-progress`,
     # so any two pushes to main in quick succession cancel the first one's run.
+    #
+    # `startup_failure` and `timed_out` are in the list because neither is a `failure`
+    # and both are otherwise silent deaths: a workflow whose YAML is invalid on `main`
+    # never gets as far as a job, and a hung job that hits its timeout would sail past
+    # a bare `== 'failure'` gate.
     #
     # Failures on a PR branch are the PR author's business and already show up as a red
     # check on the PR, so they are excluded twice over: `head_branch == 'main'` and the
     # `pull_request` / `pull_request_target` event check.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'failure' &&
+      (contains(fromJSON('["failure","startup_failure","timed_out"]'), github.event.workflow_run.conclusion) &&
       github.event.workflow_run.head_branch == 'main' &&
       !startsWith(github.event.workflow_run.event, 'pull_request'))
 
@@ -85,19 +90,35 @@ jobs:
             exit 0
           fi
 
+          # Slack's `text` is mrkdwn, where `<…>` is link syntax and `<!channel>` is a
+          # broadcast ping. jq (below) makes untrusted input safe as *JSON*; it does
+          # nothing about the markup layer. A commit subject and an author name are
+          # controlled by whoever landed the commit, so an unescaped `<!channel>` in a
+          # git author name would page everyone in #alerts, and an unescaped
+          # `<https://evil/|View the failed run>` would sit in the message looking
+          # exactly like the real link. Escape the three characters Slack reserves.
+          slack_escape() {
+            printf '%s' "${1:-}" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+          }
+
           if [ "${SMOKE_TEST}" = "true" ]; then
             text=":white_check_mark: *Slack alerting smoke test* — \`${REPO}\`
           Manually dispatched \`alert-ci-failure.yml\`. If you are reading this in #alerts, the bot token, the channel ID and the bot's membership in this channel are all correct. Real alerts only fire on genuine \`main\` failures."
           else
             # First line of the commit message only; the body is noise in a chat message.
-            subject="$(printf '%s' "${COMMIT_MESSAGE:-}" | head -n 1)"
-            short_sha="$(printf '%s' "${COMMIT_SHA:-}" | cut -c1-7)"
+            # Parameter expansion rather than `| head -n 1`: past the 64KiB pipe buffer,
+            # `head` exits after line 1, `printf` takes the SIGPIPE, and `pipefail` turns
+            # that into exit 141 — no alert *and* a second red X on main.
+            subject="$(slack_escape "${COMMIT_MESSAGE%%$'\n'*}")"
+            author="$(slack_escape "${COMMIT_AUTHOR:-unknown}")"
+            workflow="$(slack_escape "${WORKFLOW_NAME}")"
+            short_sha="${COMMIT_SHA:0:7}"
             run_url="https://github.com/${REPO}/actions/runs/${RUN_ID}"
 
             text=":rotating_light: *CI failure on \`main\`* — \`${REPO}\`
-          *Workflow:* ${WORKFLOW_NAME}
+          *Workflow:* ${workflow}
           *Commit:* \`${short_sha}\` ${subject}
-          *Author:* ${COMMIT_AUTHOR:-unknown}
+          *Author:* ${author}
           <${run_url}|View the failed run>"
           fi
 
