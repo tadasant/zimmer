@@ -41,7 +41,8 @@ could not reach the box.
 | `TS_CI_AUTHKEY` | **CI's own** tailnet join, to resolve the droplet's IP and health-check it |
 | `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET` | reaping the stale tailnet node |
 | `GHCR_PULL_TOKEN` | Kamal's registry login, so the droplet can pull the image |
-| `STAGING_SECRET_BASE` | Rails `SECRET_KEY_BASE` for staging (also the throwaway Postgres password) |
+| `STAGING_SECRET_BASE` | Rails `SECRET_KEY_BASE` for staging |
+| `STAGING_DB_PASSWORD` | the staging Postgres accessory's password — a stable secret, deliberately *not* derived from `SECRET_KEY_BASE` (rotating the latter must stay safe; `POSTGRES_PASSWORD` only takes effect on first initdb) |
 | `STAGING_API_KEYS` | REST API bearer keys |
 | `OTEL_LOGS_EXPORTER_ENDPOINT` / `_BEARER_TOKEN`, `SENTRY_DSN_BACKEND` | optional observability |
 
@@ -53,52 +54,41 @@ wrong and would fail.
 
 ## Where secrets end up that they shouldn't
 
-:::danger[Secrets are baked into the droplet's `user_data`]
-The GHCR token, the Tailscale auth key, `SECRET_KEY_BASE`, and the database password are all
-interpolated into the cloud-init template — which becomes the droplet's `user_data`.
+:::caution[The Tailscale auth key is in the droplet's `user_data`]
+The app secrets — `SECRET_KEY_BASE`, the database password, the GHCR token — now flow through Kamal's
+`env.secret` from GitHub Actions, **not** through cloud-init. What cloud-init still interpolates into
+`user_data` is the `tailscale_auth_key` (plus the deploy public key and, optionally, the SSH host
+key).
 
-That is readable from the DigitalOcean metadata service by anything running on the box, including
-every agent process Zimmer spawns. It's also written into the (ephemeral, but still on-runner)
-Terraform state.
-:::
-
-:::danger[Staging's Postgres password *is* `secret_key_base`]
-`local.db_password` in `main.tf` falls back to `secret_key_base` when no managed-DB password is set.
-For staging, that's always.
+`user_data` is readable from the DigitalOcean metadata service by anything on the box, including every
+agent process Zimmer spawns. An ephemeral, reusable tailnet auth key limits the blast radius, but a
+long-lived one there is worth avoiding.
 :::
 
 :::danger[SSH is open to `0.0.0.0/0`]
-`digitalocean_firewall.zimmer` allows `22/tcp` from anywhere. The comment says "lock down to your admin
-CIDRs in tfvars if desired" — but there is no variable to do that with.
+`digitalocean_firewall.zimmer` allows `22/tcp` from anywhere. SSH is genuinely needed — it is Kamal's
+deploy channel — but there is no variable to scope it to a set of admin CIDRs.
+([#120](https://github.com/tadasant/zimmer/issues/120))
 :::
 
 :::danger[Nothing is encrypted at rest in the database]
 No model declares `encrypts`; there is no `active_record.encryption` config. Anthropic and OpenAI
 refresh tokens, MCP OAuth access and refresh tokens, client secrets, and PKCE verifiers are all
 plaintext columns — and the [unauthenticated `/supervisor` panel](/auth/overview/) renders them.
+([#43](https://github.com/tadasant/zimmer/issues/43))
 :::
 
-## The three env vars the deploy forgets
+## App env vars
 
-`RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and none appear in
-`cloud-init.yaml.tftpl`. On a stock droplet:
+`API_KEYS` and `APP_HOST` are set by Kamal (`config/deploy.staging.yml`), so the REST API works and
+MCP OAuth callbacks resolve to the real host. `RAILS_MASTER_KEY` is set in a self-hosted production
+config but [deliberately unset on staging](/limitations/#rails_master_key-is-unset-on-staging-deliberate),
+which is why anything reading Rails encrypted credentials (`mcp_secrets`) is inert on staging.
 
-- the REST API 401s on everything (`API_KEYS` empty),
-- every MCP OAuth callback URL points at `localhost:3000` (`APP_HOST` defaults there),
-- anything reading Rails encrypted credentials (`mcp_secrets`, `mcp_oauth_clients`) fails.
-
-## Managed Postgres (production)
-
-Not created by Terraform — referenced as a read-only data source. Per
-`infra/terraform/data-stores/README.md`, it must already exist:
-
-- Cluster `zimmer-production-pg`, PG16, `db-s-1vcpu-1gb`, 1 node, `nyc3`
-- User `doadmin`
-- A tag-scoped firewall allowing the `zimmer-production` tag
-- Two databases: `zimmer_production` and `zimmer_production_cable` — both must pre-exist. The
-  second is Action Cable's, via `solid_cable`.
-
-The app connects over the cluster's `private_host` with `sslmode=require`.
+The staging database is a Postgres accessory container Kamal runs on the droplet — nothing external
+to provision. A self-hosted production deployment supplies its own database (Terraform can reference
+an existing cluster as a read-only data source rather than creating it); that lives in your own
+private infrastructure, out of scope for these docs.
 
 ## Tailscale ACLs
 
@@ -134,14 +124,16 @@ This is what lets `apply` **converge**. Previously state evaporated with the CI 
 had to hand-reap the droplet and firewall through the DigitalOcean API before every run, `apply` could
 never reconcile, `terraform destroy` never worked properly, and `manage_project` had to default to
 `false` because an account-unique project name would 409 on a re-run. All of that is gone:
-`manage_project` is now `true`, teardown is a real `terraform destroy`, and there are no reap loops.
+teardown is a real `terraform destroy`, and there are no reap loops. (`manage_project` stays `false`:
+a pre-existing DO project 409s on its account-unique name, and importing one is not worth it.)
 
 ## Hostname stability
 
 Because the droplet is now persistent, a rebuild is rare — which is the main reason its identity stops
 drifting. Two things pin it when a rebuild does happen:
 
-- **`digitalocean_reserved_ip`** keeps the public IP stable across a `create_before_destroy` rebuild.
+- **`digitalocean_reserved_ip`** is a separate resource, so the public IP survives a droplet rebuild
+  (the droplet itself is deliberately *not* `create_before_destroy` — the tailnet hostname is fixed).
 - **`ssh_host_ed25519_key`** (optional; empty on staging) pins the SSH **host key**, so a rebuild does
   not invalidate an SSH client's `known_hosts`. Without it, every re-provision rotates the host key and
   breaks anything keyed to it.
@@ -152,5 +144,5 @@ drifting. Two things pin it when a rebuild does happen:
 :::caution[It silently no-ops when `TS_API_CLIENT_*` are unset]
 And then the name *does* drift. The health check compensates by trying **every** online peer named
 `zimmer-staging` — which works, but means you can end up with a pile of dead nodes in your tailnet and
-no error telling you.
+no error telling you. ([#123](https://github.com/tadasant/zimmer/issues/123))
 :::

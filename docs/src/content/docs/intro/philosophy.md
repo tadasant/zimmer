@@ -20,7 +20,7 @@ one agent's uncommitted changes appearing in the other's `git status`, two agent
 over the same branch, and a failure in one poisoning the other. Concurrency would be a
 liability.
 
-So Zimmer gives every session its own clone under `~/.agent-orchestrator/clones/`. Ten
+So Zimmer gives every session its own clone under `~/.zimmer/clones/`. Ten
 sessions on the same repository are ten directories. They cannot see each other. An agent
 that goes badly wrong destroys exactly one clone, and the blast radius stops there.
 
@@ -29,14 +29,8 @@ lets a session be *resumed*: the agent's transcript, its `.mcp.json`, its inject
 and its git state all live in that directory, so picking a session back up two days later
 is a matter of re-spawning a process against a directory that still exists.
 
-:::caution[This durability contract is not actually honored in production]
-`app/services/clones_directory.rb` says clones survive container restarts because a Docker
-named volume is mounted at `~/.agent-orchestrator`, per `config/deploy.production.yml`.
-That file does not exist in this repo, and the Terraform in `infra/` mounts no volumes
-at all. On a droplet provisioned by this repo's Terraform, clones live in the container's
-writable layer and die with the container. See
-[Known limitations](/limitations/#clones-are-not-actually-persisted-in-the-shipped-infra).
-:::
+The Kamal deploy backs this with a durable named volume (`zimmer_data`) mounted at `~/.zimmer`
+on both the `web` and `worker` roles, so clones survive a container recreate and a deploy.
 
 ## 2. The lifecycle is an explicit state machine
 

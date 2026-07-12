@@ -100,6 +100,7 @@ But `hooks/` contains only `hooks.json` — there is no `hooks/git-push-ci-remin
 And `plugins/ci-workflow/.plugin/plugin.json` bundles this hook, and `ci-workflow` is
 `default_in_roots: ["agent-orchestrator"]`. So every session on the `agent-orchestrator` root
 activates a hook whose body doesn't exist.
+Tracked in [#65](https://github.com/tadasant/zimmer/issues/65).
 
 This slips past resolve-time validation (a missing *body* is not a dangling *reference*, so it
 doesn't trip Zimmer's stderr marker check), and surfaces at `air prepare` when the adapter tries to

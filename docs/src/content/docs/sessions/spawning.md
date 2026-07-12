@@ -93,6 +93,7 @@ unreachable for Codex, despite the hook receiving a `runtime` context that impli
 Once spawned, the job loops: check the process is alive, poll the transcript file, broadcast new
 messages, repeat. There is a 0.15 second sleep between each broadcast — it must exceed
 SolidCable's 100 ms polling interval, and it's a real throughput cost on a bursty transcript.
+Tracked in [#108](https://github.com/tadasant/zimmer/issues/108).
 
 Two independent output channels:
 
@@ -141,6 +142,7 @@ rotation silently stopped firing and the system retried six times against an alr
 account before giving up — with no log saying rotation should have happened. That outage is
 written up in the code. See
 [Known limitations](/limitations/#failure-classification-is-regex-against-cli-prose).
+Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 :::
 
 ## Metadata races
@@ -156,4 +158,4 @@ FAST PATH, not the correctness guarantee." Lost updates are possible.
 A monitoring job whose lock is older than `STALE_UNLOCKED_JOB_AGE` (2 minutes) is *superseded* by
 a new one. Without this, "follow-up jobs silently skip execution because they see a stale
 'running' job." A two-minute magic number is the thing standing between you and a
-dropped prompt.
+dropped prompt. Tracked in [#71](https://github.com/tadasant/zimmer/issues/71).

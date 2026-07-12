@@ -63,9 +63,12 @@ closed at the edge, and the app is reachable only over the tailnet, at `http://z
 The sharp edge is real. The entire security posture rests on that perimeter, so any deployment that
 exposes port 80 (a reverse proxy, a public load balancer, a well-meaning `docker run -p 80:80` on a
 box with a public IP) hands an anonymous visitor your Anthropic refresh tokens.
+Tracked in [#42](https://github.com/tadasant/zimmer/issues/42) and
+[#43](https://github.com/tadasant/zimmer/issues/43).
 
 There are also at least six `# TODO: Add proper authorization checks` comments scattered through
 `sessions_controller.rb`.
+Tracked in [#44](https://github.com/tadasant/zimmer/issues/44).
 :::
 
 ## 2. Client → REST API: `X-API-Key`
@@ -86,11 +89,6 @@ Three endpoints skip it entirely:
   fallback-elicitation protocol, since the MCP child process has no key.
 - `GET /api/secrets/keys` — because `Api::SecretsController` inherits `ApplicationController`, not
   `Api::BaseController`. It leaks secret names and descriptions (not values), unauthenticated.
-
-:::caution[`API_KEYS` isn't set by the shipped deploy]
-The cloud-init compose file sets no `API_KEYS`, so on a stock Terraform droplet the REST API 401s on
-everything.
-:::
 
 ## 3. Zimmer → the agent vendor
 

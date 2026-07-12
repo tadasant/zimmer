@@ -11,55 +11,18 @@ code rather than the old docs, which were themselves often wrong.
 Every item names a file so you can verify it. Nothing is left out for looking bad. Items whose first
 line starts with 🔴 would bite a new operator immediately.
 
+Nearly every item below links to the issue tracking it. The few that don't are deliberate — a
+platform limit or a design choice we don't intend to change (Push notifications without the Push
+API; the `RAILS_MASTER_KEY` staging omission below) — and each says so in place.
+
 ---
 
 ## Deployment
 
-### The shipped Terraform provisions no job worker
-
-🔴 `config/environments/production.rb:59` sets `good_job.execution_mode = :external`, which requires a
-separate `bundle exec good_job start` process.
-
-`infra/terraform/cloud-init.yaml.tftpl` renders a compose file with exactly three services: `app`,
-`redis`, and (staging only) `db`. There is no worker service, and no `good_job start` anywhere in
-`infra/`, the `Dockerfile`, or the workflows.
-
-**Consequence:** on the documented turnkey DigitalOcean path, *no background job ever executes*.
-Sessions enqueue and sit forever. No cron fires — no orphan cleanup, no token refresh, no pollers, no
-catalog refresh. The staging health check only curls `/up`, so the deploy reports success.
-
-Production presumably runs a different compose file from a private repo. The IaC here is incomplete.
-
-### Production is still on the old compose stack, and shares the Terraform module
-
-🔴 **The most important thing to know right now.** `infra/terraform/main.tf` and
-`cloud-init.yaml.tftpl` are mirrored **byte-identical** into the private production repo, enforced by
-an `iac-sync` guard. Staging has been cut over to Kamal; **production has not**. It still runs the old
-docker-compose stack, driven by its own workflows.
-
-That means the mirrored module is now *ahead of* production:
-
-- `main.tf` declares `backend "s3" {}`, so production's `terraform init` fails until it also supplies a
-  `-backend-config`. Its state is ephemeral today, so it additionally needs a one-time
-  `terraform import` of the live droplet/firewall/project — otherwise a first apply would try to
-  **create** a second one and 409 on the account-unique firewall name.
-- The mirrored `cloud-init.yaml.tftpl` no longer contains the app stack at all. `ignore_changes =
-  [user_data]` protects the running production box, but if it is ever replaced it would boot with
-  Docker + Tailscale + Caddy and **no app**.
-
-Production's `iac-sync` PR must therefore **not** be merged on its own. Its cutover has to land
-atomically: backend config + `terraform import` + a Kamal production config + its workflow rewrite,
-together. Until then, production keeps running and upgrading in place exactly as before.
-
-### The first deploy onto the new model needs a one-time reap
-
-Remote state starts empty, so the very first `terraform apply` does not know about a pre-existing
-`zimmer-staging` droplet/firewall/project — and DO firewall and project names are **account-unique**,
-so it would 409. The old droplet also can't simply be imported: it was booted by the old cloud-init and
-has no Kamal deploy key authorized, so Kamal could never reach it.
-
-The cutover is therefore: destroy the old droplet + firewall + project once, then `apply`. This is a
-one-time cost, and it is the last time staging gets recreated.
+The deploy is Kamal onto a persistent, Tailscale-only droplet: Terraform bootstraps the box (Docker,
+Tailscale, Caddy, the deploy key), and Kamal owns the app stack — a `web` role and a `worker` role
+running `bundle exec good_job start`, with durable named volumes for clones and credentials. The
+items below are the sharp edges that survived that migration.
 
 ### `user_data` is frozen, so the deploy key and the Caddyfile can't be updated in place
 
@@ -71,7 +34,9 @@ deliberately re-creating the droplet, which is exactly the churn this model exis
 
 Rotating the deploy key is rare; changing the domain is rarer. But neither is a no-op.
 
-### RAILS_MASTER_KEY is unset on staging
+Tracked in [#121](https://github.com/tadasant/zimmer/issues/121).
+
+### RAILS_MASTER_KEY is unset on staging (deliberate)
 
 `RAILS_MASTER_KEY` is deliberately absent from staging's Kamal config: there is no committed
 `config/credentials/production.yml.enc` to decrypt, `secrets_loader.rb` rescues a missing key, and there
@@ -81,8 +46,10 @@ is no `require_master_key` — so the app boots without it. Anything reading Rai
 
 ### SSH is open to `0.0.0.0/0`
 
-The firewall comment says "lock down to your admin CIDRs in tfvars if desired." There is no variable
-to do that with.
+`infra/terraform/main.tf:257-261` opens `22/tcp` to the whole internet. SSH is genuinely needed — it
+is Kamal's deploy channel — but there is no variable to scope it to a set of admin CIDRs.
+
+Tracked in [#120](https://github.com/tadasant/zimmer/issues/120).
 
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 
@@ -91,19 +58,23 @@ in a database index becomes `redis://…:6379/0/0`. The old compose stack set `r
 hit exactly that.
 
 `config/deploy.yml` now sets `REDIS_URL: redis://zimmer-redis:6379` — **no trailing `/0`** — so the
-app's own suffixing produces a single, correct index. The trap is still there for anyone who "helpfully"
-adds the `/0` back.
+app's own suffixing produces a single, correct index. The trap is still there for anyone who
+"helpfully" adds the `/0` back. ([#20](https://github.com/tadasant/zimmer/issues/20))
 
 ### `claude update` runs in the background at boot
 
-`bin/docker-entrypoint` backgrounds `claude update` and the Playwright browser install. Sessions started
-in the first ~30 seconds after a container boot use the old CLI and Chromium.
+`bin/docker-entrypoint` backgrounds `claude update` and the Playwright browser install. Sessions
+started in the first ~30 seconds after a container boot use the old CLI and Chromium.
+
+Tracked in [#122](https://github.com/tadasant/zimmer/issues/122).
 
 ### The tailnet reaper no-ops without credentials, and says nothing
 
 `scripts/tailnet-reap-node.sh` does nothing when `TS_API_CLIENT_*` are unset, so the MagicDNS name
 drifts to `zimmer-staging-1`, `-2`, … The health check compensates by trying every online peer with
 that name — so it works, and you accumulate dead nodes with no error.
+
+Tracked in [#123](https://github.com/tadasant/zimmer/issues/123).
 
 ---
 
@@ -132,6 +103,8 @@ resources. On a public perimeter, that hands an anonymous visitor your refresh t
 `# TODO: Add proper authorization checks` comments in `sessions_controller.rb` (`:63`, `:687`, `:724`,
 `:751`, `:790`, and `:1475`, the last on transcripts, which "contain sensitive conversation data").
 
+Tracked in [#42](https://github.com/tadasant/zimmer/issues/42) and [#44](https://github.com/tadasant/zimmer/issues/44).
+
 ### Nothing is encrypted at rest
 
 🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. No model declares
@@ -140,21 +113,29 @@ verifier is a plaintext column. `XOauthCredential`'s own header says the quiet p
 database access controls."* The sharp edge is the same one as above — the unauthenticated admin panel
 bypasses those controls, so a broken perimeter exposes the tokens in the clear.
 
+Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
+
 ### The elicitation endpoints are unauthenticated
 
 `POST /api/v1/elicitations` and `GET /api/v1/elicitations/:id` skip the API key (required by the MCP
 fallback protocol — the child process has no key). Anyone who can reach the host can create an
 elicitation for any session id, or enumerate and poll any elicitation by `request_id`.
 
+Tracked in [#45](https://github.com/tadasant/zimmer/issues/45).
+
 ### `GET /api/secrets/keys` is unauthenticated
 
 `Api::SecretsController` inherits `ApplicationController`, not `Api::BaseController`. It leaks secret
 *names and descriptions* (not values).
 
+Tracked in [#45](https://github.com/tadasant/zimmer/issues/45).
+
 ### API keys have no scope, identity, or audit trail
 
 Opaque strings from `ENV["API_KEYS"]`, memoized per request. Any valid key can do anything to anything.
 Rotation requires a restart. No record of which key did what.
+
+Tracked in [#46](https://github.com/tadasant/zimmer/issues/46).
 
 ### The MCP OAuth loopback check is a substring match
 
@@ -164,10 +145,14 @@ redirect_uri.include?("localhost") || redirect_uri.include?("127.0.0.1")
 
 `https://localhost.evil.com` matches.
 
+Tracked in [#47](https://github.com/tadasant/zimmer/issues/47).
+
 ### No timeout on the OAuth token exchange
 
 `McpOauthService#exchange_code_for_tokens` uses `Net::HTTP.post_form` with no timeout, unlike its
 siblings which set 30 seconds.
+
+Tracked in [#48](https://github.com/tadasant/zimmer/issues/48).
 
 ### Agents run unsandboxed on the app host
 
@@ -175,6 +160,8 @@ siblings which set 30 seconds.
 returns `Result.failure("not yet implemented")`. Local filesystem is the only real provider. Agents run
 as the app user, on the app host, with the app's git and `gh` credentials, spawned with
 `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`.
+
+Tracked in [#49](https://github.com/tadasant/zimmer/issues/49).
 
 ### Two hardcoded Slack user IDs, by name, in source
 
@@ -186,12 +173,16 @@ ALLOWED_BOT_MENTION_USER_IDS = %w[U08AENQUFBR U08AX7WMX1S] # Mike, Tadas
 
 The default allowlist for who may trigger an agent via Slack bot-mention.
 
+Tracked in [#52](https://github.com/tadasant/zimmer/issues/52).
+
 ### Triggers make the agent a trusted courier for untrusted input
 
 [Issue #18](https://github.com/tadasant/zimmer/issues/18): there is nothing between "Slack event
 arrived" and "agent running" except a `gsub` on a `prompt_template`. Untrusted Slack text is
 interpolated into the prompt, and the agent is then trusted to act on identifiers it read out of that
 text. No validation, no trusted identifiers.
+
+Tracked in [#50](https://github.com/tadasant/zimmer/issues/50).
 
 ---
 
@@ -213,6 +204,8 @@ the session fell through to the transient-rate-limit path, retried six times aga
 account, and failed, with no log line saying rotation should have happened. The failure mode is silent
 by construction.
 
+Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
+
 ### `CodexRetryStrategy` classifies almost nothing
 
 🔴 It returns `false` from `context_length_error?`, `api_error_for_retry?`, and
@@ -222,11 +215,15 @@ For a Codex session that means: no context-length compaction retry, no API-error
 rotation, and no auth recovery. Everything the Claude path does to keep a session alive, Codex does
 without.
 
+Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
+
 ### The retry-strategy interface is under-declared
 
 `ProcessLifecycleManager` calls five predicates. The base class docstring lists four. The
 contract test checks three. A new runtime that implements exactly what's documented will
 `NoMethodError` on the auth-recovery path — at runtime, in production, on an already-failing session.
+
+Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
 
 ### `find_main_transcript` is required but not on the base class
 
@@ -234,21 +231,29 @@ contract test checks three. A new runtime that implements exactly what's documen
 the abstract `TranscriptSource`. A new source implementing only the declared interface `NoMethodError`s
 on its first poll.
 
+Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
+
 ### Elicitations silently do nothing on Codex
 
 `ELICITATION_SESSION_ID` is injected only by `ClaudeSpawnEnv`. `CodexRuntimeAdapter` never sets it, so
 Codex sessions' MCP servers have no session id to send. The controller logs a warning; the user sees
 nothing; the agent hangs until its MCP call times out.
 
+Tracked in [#55](https://github.com/tadasant/zimmer/issues/55).
+
 ### Extension env contributions are unreachable from Codex
 
 `Ao::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — despite the hook
 receiving a `runtime` context that implies it's generic.
 
+Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
+
 ### Shared code still says "Claude"
 
 `TranscriptPollerService` logs *"Waiting for Claude CLI to create transcript directory…"* for every
 runtime. `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
+
+Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 
 ### Transcript file selection falls back to mtime
 
@@ -256,11 +261,15 @@ runtime. `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscript
 most recently modified non-`agent-*.jsonl` file. The code's own comment says it's "avoiding the pitfall
 of selecting by mtime" while doing exactly that as a fallback.
 
+Tracked in [#57](https://github.com/tadasant/zimmer/issues/57).
+
 ### The login flow screen-scrapes a TUI
 
 Hardcoded: the command (`claude auth login --claudeai`), the authorize-URL host regex, the literal
 prompt `/Paste code here/i`, and the binary path `/home/rails/.local/bin/claude`. Codex likewise, with a
 device-code regex tuned to an *observed* 4–5 character split.
+
+Tracked in [#58](https://github.com/tadasant/zimmer/issues/58).
 
 ---
 
@@ -289,6 +298,10 @@ is a fact about someone else's private code that can change without notice. Last
    blindly would brick the pool.
 9. Token lifetime ~8h — inferred, not specified.
 
+Tracked in [#58](https://github.com/tadasant/zimmer/issues/58). None of this can be *fixed* — there is
+no public API to fix it against — so the issue asks for a canary that fails loudly when one of these
+facts stops being true.
+
 ### The owner-marker "legacy fallback" doesn't exist
 
 `docs/AUTH_ROTATION_ARCHITECTURE.html` (invariant I2) and the docstring on
@@ -298,6 +311,8 @@ marker exists yet."*
 `filesystem_credentials_owned_by_self?` has no fallback (no marker means refuse to sync), and its
 own comment says so, contradicting the docstring 100 lines above it.
 
+Tracked in [#59](https://github.com/tadasant/zimmer/issues/59).
+
 ### One credential file, two writers
 
 `ClaudeAccount#write_credentials_to_filesystem!` whole-file overwrites `.credentials.json`;
@@ -305,15 +320,21 @@ own comment says so, contradicting the docstring 100 lines above it.
 `mcpOAuth` entries written after the incoming account's blob was captured. It self-heals on the next
 spawn, but it's an undeclared coupling.
 
+Tracked in [#60](https://github.com/tadasant/zimmer/issues/60).
+
 ### `extract_oauth_email` exists four times
 
 `ClaudeAccount.filesystem_oauth_email` (class), `ClaudeAccount#extract_oauth_email` (dead code —
 nothing calls it, yet `CLAUDE_CODE_OAUTH_ASSUMPTIONS.md` pointed readers at it),
 `AccountRotationService#extract_oauth_email`, `ClaudeLoginDriver#extract_email`.
 
+Tracked in [#59](https://github.com/tadasant/zimmer/issues/59).
+
 ### The rotation safety check fails open
 
 `account_rotation_service.rb:437` — `return true if stored_config.blank? # Can't verify, assume ok`.
+
+Tracked in [#61](https://github.com/tadasant/zimmer/issues/61).
 
 ---
 
@@ -327,6 +348,8 @@ nothing calls it, yet `CLAUDE_CODE_OAUTH_ASSUMPTIONS.md` pointed readers at it),
 `codex-rs/rmcp-client/src/oauth.rs @ rust-v0.133.0`, and it writes two mutually incompatible schemas
 (file vs macOS Keychain). The Keychain path has never been runtime-verified — all workers are Linux.
 
+Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
+
 ### The Claude credential-key algorithm is a string copy of a private internal
 
 `McpOauthCredential.compute_credential_key` replicates Claude Code's `server|SHA256(compact_json)[0,16]`
@@ -334,25 +357,35 @@ key format, including string-munging `": "` → `":"` to fake compact JSON. If C
 every stored credential becomes unfindable — and the symptom is "the agent says it needs authorization,"
 not an error.
 
+Tracked in [#62](https://github.com/tadasant/zimmer/issues/62).
+
 ### Codex MCP status reimplements a Rust function in Ruby
 
 `CodexMcpStatusDetector` mirrors `codex-rs`'s `MCP_TOOL_NAME_DELIMITER = "__"` and its
 `sanitize_responses_api_tool_name` character rules.
+
+Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
 ### Servers without `offline_access` become one-shot credentials
 
 Scope acquisition just joins the server's advertised `scopes_supported`. No `offline_access` ⇒ no refresh
 token ⇒ the credential becomes single-use and dies with no way to refresh.
 
+Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
+
 ### "Assume OAuth might be required"
 
 `mcp_oauth_credential_injector.rb:137` — *"If we don't know if OAuth is required, assume it might be"* for
 remote servers.
 
+Tracked in [#103](https://github.com/tadasant/zimmer/issues/103).
+
 ### The fallback `client_id` is the literal string `"agent-orchestrator"`
 
 Used when a server advertises no DCR endpoint.
 **Unclear / needs confirmation:** whether any real server accepts this.
+
+Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 
 ---
 
@@ -371,6 +404,8 @@ your change."*
 
 If AIR ever rewords that warning, Zimmer quietly starts accepting degraded catalogs.
 
+Tracked in [#66](https://github.com/tadasant/zimmer/issues/66).
+
 ### The only hook in the catalog has no body
 
 🔴 `hooks/hooks.json` declares `git-push-ci-reminder` with `"path": "git-push-ci-reminder"`. The `hooks/`
@@ -381,6 +416,8 @@ And `plugins/ci-workflow/.plugin/plugin.json` bundles that hook, and `ci-workflo
 doesn't exist. A missing *body* isn't a dangling *reference*, so it slips past the stderr check and
 surfaces at `air prepare`.
 
+Tracked in [#65](https://github.com/tadasant/zimmer/issues/65).
+
 ### The environment configs describe a catalog that no longer exists
 
 `production.rb` and `staging.rb` comments say `air.production.json` *"uses `github://` URIs to pull from
@@ -388,20 +425,30 @@ tadasant/zimmer-catalog."* It doesn't — it's entirely local paths. All of `Air
 github-cache machinery (catalog pins, `resolved_sha_for`, `pinnable_catalogs`) is dormant
 infrastructure, and its tests skip themselves.
 
+Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
+
 ### A background thread inside Puma, to fix a container mismatch
 
 `~/.air/cache` is per-container, and the `*/15` refresh cron runs only in the worker — so the web
 container's catalog would drift stale for a full deploy cycle. `PeriodicCatalogRefresher` runs a bespoke
 background thread *inside Puma* every 300s to compensate.
 
+Tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
+
 ### The AIR CLI version is pinned in two places
 
 `Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0`; `AirPrepareService::AIR_CLI_VERSION` must match.
 Nothing enforces it.
 
+Tracked in [#68](https://github.com/tadasant/zimmer/issues/68).
+
 ### Two catalog configs, kept mirrored by hand
 
-`air.json` and `air.production.json` are content-identical today and must be kept that way manually.
+`air.json` and `air.production.json` declare the same six sources and must be kept that way manually.
+They differ only in their `description` and their formatting, and nothing checks that the sources still
+agree.
+
+Tracked in [#68](https://github.com/tadasant/zimmer/issues/68).
 
 ### Five roots point at a different repository
 
@@ -409,6 +456,8 @@ Nothing enforces it.
 `"url": "https://github.com/tadasant/zimmer-catalog.git"` — a separate repo not part of this project.
 `agent-orchestrator` also has `display_name: "Zimmer"`, the same as the `zimmer` root, making them
 indistinguishable in a picker. That looks like a bug.
+
+Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 
 ---
 
@@ -421,20 +470,28 @@ atomic… consider using PostgreSQL's jsonb ops."* Correctness-adjacent flags li
 (`interrupt_terminate_pid`, `pending_follow_up_prompt`), described as *"best-effort FAST PATH, not the
 correctness guarantee."*
 
+Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
+
 ### A 2-minute magic number guards against prompt loss
 
 `STALE_UNLOCKED_JOB_AGE` — a job whose lock is older than 2 minutes is superseded, because otherwise
 "follow-up jobs silently skip execution because they see a stale 'running' job."
+
+Tracked in [#71](https://github.com/tadasant/zimmer/issues/71).
 
 ### The trash retention comment contradicts the constant
 
 The `archive` event's comment says artifacts are "preserved for 14 days." The
 `TRASH_RETENTION_PERIOD` constant that governs it is `4.days`.
 
+Tracked in [#72](https://github.com/tadasant/zimmer/issues/72).
+
 ### State-machine side effects fail without surfacing
 
 Nearly every callback is wrapped in a bare `rescue` that logs and swallows, so cleanup can be skipped
 while the state advances anyway.
+
+Tracked in [#73](https://github.com/tadasant/zimmer/issues/73).
 
 ### Prompt attachments live on container-local `/tmp`
 
@@ -443,17 +500,25 @@ while the state advances anyway.
 container writes the file and the worker container reads it, and `/tmp` is not shared. Ephemeral, no
 S3, despite a "pluggable" comment.
 
+Tracked in [#74](https://github.com/tadasant/zimmer/issues/74).
+
 ### The session page auto-refreshes with a `<meta>` tag
 
 `session.rb:573` — a 5-second meta-refresh window, in a Hotwire app.
+
+Tracked in [#102](https://github.com/tadasant/zimmer/issues/102).
 
 ### Elicitations expire in 10 minutes
 
 Step away for a coffee and the agent's approval request dies. Not configurable.
 
+Tracked in [#75](https://github.com/tadasant/zimmer/issues/75).
+
 ### Orphaned clones linger for up to 48 hours
 
 `OrphanCloneFilesystemCleanupJob` — `AGE_THRESHOLD = 48.hours`, `BATCH_LIMIT = 20`.
+
+Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 
 ---
 
@@ -464,20 +529,28 @@ Step away for a coffee and the agent's approval request dies. Not configurable.
 `ScheduleTriggerJob` advances `last_triggered_at` on error (to avoid an infinite retry loop) and
 destroys one-time triggers even when the fire failed. Nothing tells you.
 
+Tracked in [#76](https://github.com/tadasant/zimmer/issues/76).
+
 ### A Slack rate-limit episode stalls all Slack polling
 
 `SlackService` retries 10× with a fixed 1-second blocking `sleep` in a job thread.
 `SlackTriggerPollerJob` is confined to a `pollers` queue with `total_limit: 1` to stop it saturating the
 pool — so throttling means *no* Slack polling, and ticks are dropped.
 
+Tracked in [#77](https://github.com/tadasant/zimmer/issues/77).
+
 ### `thread_ts` is not supported for bot mentions
 
 You can watch a thread for new messages, but not for bot mentions.
+
+Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
 
 ### Everything is polled; there are no webhooks
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and
 a steady API burn.
+
+Tracked in [#79](https://github.com/tadasant/zimmer/issues/79).
 
 ---
 
@@ -488,16 +561,22 @@ a steady API burn.
 `refreshed_count` is initialized to 0 and never incremented. The old docs' example showed
 `"refreshed": 5`.
 
+Tracked in [#80](https://github.com/tadasant/zimmer/issues/80).
+
 ### The Settings-page default runtime is ignored without an `agent_root`
 
 `Api::V1::SessionsController#create` only reads `AppSetting.default_runtime` *through* `AgentRootsConfig`.
 With no `agent_root`, it returns early and you get the DB column default, `claude_code`. Same for the
 model.
 
+Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
+
 ### Three different error shapes
 
 `{error, message: String}`, `{error, messages: Array}`, and `{error, message: Array}` (singular key,
 array value, from the `RecordInvalid` rescue). Parse defensively.
+
+Tracked in [#82](https://github.com/tadasant/zimmer/issues/82).
 
 ### The only rate limit is global
 
@@ -505,15 +584,22 @@ array value, from the `RecordInvalid` rescue). Parse defensively.
 `health_api_rate_limit:<action>` — not scoped to an API key. One client's cleanup locks out
 everyone for 30s. It no-ops with no error under a null cache store.
 
+Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
+
 ### The in-app API docs page is still stale
 
 `app/views/api_docs/show.html.erb` omits triggers, notifications, health, clis, and transcript_archive —
 even though `app/controllers/api/AGENTS.md` requires both doc surfaces to be updated with every endpoint
 change.
 
+Tracked in [#34](https://github.com/tadasant/zimmer/issues/34) (removing the page) and
+[#95](https://github.com/tadasant/zimmer/issues/95) (nothing tests that the two surfaces agree).
+
 ### `agent_root` is read outside strong params
 
 On session create, from raw `params`.
+
+Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
 
 ---
 
@@ -529,18 +615,26 @@ Every session URL Zimmer hands to its own agents in production points at a place
 (`SelfSessionInjector` has the same placeholders as *defaults*, but at least accepts
 `AGENT_ORCHESTRATOR_PROD_BASE_URL`.)
 
+Tracked in [#84](https://github.com/tadasant/zimmer/issues/84).
+
 ### `QuotaCheckService` pins a concrete model version
 
 `PROBE_MODEL = "claude-haiku-4-5-20251001"` — in a codebase that ships `ClaudeModelConfigurationAudit`,
 a service whose only job is to warn you not to pin concrete model versions.
 
+Tracked in [#85](https://github.com/tadasant/zimmer/issues/85).
+
 ### Model IDs are a hardcoded Ruby array
 
 `ModelCatalog::MODELS`. A new model requires a code change and a deploy.
 
+Tracked in [#85](https://github.com/tadasant/zimmer/issues/85).
+
 ### `X_OAUTH` bootstrap requires a localhost callback
 
 `DEFAULT_REDIRECT_URI = "http://localhost:8080/callback"` — you must pre-register that on your X app.
+
+Tracked in [#104](https://github.com/tadasant/zimmer/issues/104).
 
 ---
 
@@ -561,14 +655,17 @@ All four are open issues:
 
 Also:
 
-- Closing the tab can lose your notes. Session and dashboard notes are saved on disconnect via
-  `sendBeacon` — "best-effort… nothing to do if it fails."
+- Notes autosave as you type (a 1.5s debounce) and flush again on disconnect via a keepalive
+  `fetch`. The disconnect flush is best-effort, so an abrupt close can drop the last sub-debounce
+  keystrokes — not the note.
 - The Turbo circuit breaker stops UI updates for 60 seconds when it trips (`THRESHOLD = 5`,
   `RESET_TIME = 60`), with no banner telling you.
+  ([#86](https://github.com/tadasant/zimmer/issues/86))
 - Push notifications don't work on anything without the Push API (iOS Safari outside standalone PWA).
 - The OAuth login poller gives up after N consecutive failed polls — a transient blip abandons the
-  flow.
+  flow. ([#101](https://github.com/tadasant/zimmer/issues/101))
 - Alerts inside a 1-hour dedup window are swallowed, even genuinely new ones.
+  ([#86](https://github.com/tadasant/zimmer/issues/86))
 
 ---
 
@@ -578,6 +675,8 @@ Also:
 
 🔴 The `test` job runs "unit + integration; system tests excluded." Four of the ten open issues are UI
 regressions — exactly the class a system test would catch.
+
+Tracked in [#87](https://github.com/tadasant/zimmer/issues/87).
 
 ### Four open flaky-test issues
 
@@ -590,9 +689,13 @@ noted as having turned `main` red), [#5](https://github.com/tadasant/zimmer/issu
 `preregistered_oauth_config_test.rb`, `secrets_loader_test.rb`, `references_config_test.rb`, and
 `air_catalog_ref_rewriter_test.rb` (×2). Catalog pinning has zero CI coverage.
 
+Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
+
 ### The contract test doesn't cover the whole contract
 
 It checks 3 of the retry strategy's 5 predicates.
+
+Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
 
 ---
 
@@ -612,11 +715,15 @@ the entire mechanism. Nothing checks that CI went green, that a review happened,
 `## Verification` section the goal demanded. The stop condition is enforced only by the LLM obeying
 English.
 
+Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
+
 ### `GithubPrUrlHook` scans tool results only
 
 Not assistant messages, not user messages. An agent that opens a PR any other way leaves
 `custom_metadata["github_pull_request_url"]` empty — and then none of Zimmer's GitHub integration
 engages for that session. No warning.
+
+Tracked in [#89](https://github.com/tadasant/zimmer/issues/89).
 
 ---
 
@@ -625,15 +732,15 @@ engages for that session. No warning.
 Things the code doesn't answer, flagged here rather than guessed at:
 
 - Does the double-suffixed Redis URL (`redis://redis:6379/0/0`) actually work? The client may tolerate
-  it or may fall back to db 0.
+  it or may fall back to db 0. ([#20](https://github.com/tadasant/zimmer/issues/20))
 - Does any real MCP server accept `client_id: "agent-orchestrator"`? It looks like it would only work
-  against a server that ignores `client_id` entirely.
+  against a server that ignores `client_id` entirely. ([#64](https://github.com/tadasant/zimmer/issues/64))
 - What is `tadasant/zimmer-catalog`, and are the five roots pointing at it still live? It's a separate
-  repo this documentation can't see.
+  repo this documentation can't see. ([#67](https://github.com/tadasant/zimmer/issues/67))
 - Is `config_preparer_class` (a `RuntimeRegistry::Bundle` slot) meant to do something? It's `nil` for
-  every runtime and nothing reads it.
+  every runtime and nothing reads it. ([#97](https://github.com/tadasant/zimmer/issues/97))
 - Which of the two contradictory GoodJob-cron comments is right about sub-minute cron support? The
   config contains both six-field (`*/30 * * * * *`) entries *and* a comment saying seconds aren't
-  supported.
+  supported. ([#106](https://github.com/tadasant/zimmer/issues/106))
 - Does the macOS Keychain path in `CodexMcpCredentialWriter` work? It has never been runtime-verified
-  — every worker is Linux.
+  — every worker is Linux. ([#63](https://github.com/tadasant/zimmer/issues/63))

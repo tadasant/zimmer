@@ -45,11 +45,13 @@ ALLOWED_BOT_MENTION_USER_IDS = %w[U08AENQUFBR U08AX7WMX1S] # Mike, Tadas
 
 The default allowlist for who may trigger an agent via bot-mention is the author and one
 colleague, compiled into the source. Single-workspace, single-team assumption.
+Tracked in [#52](https://github.com/tadasant/zimmer/issues/52).
 :::
 
 :::caution[`thread_ts` doesn't work for bot mentions]
 `TriggerCondition` explicitly rejects it: *"thread_ts is not supported for bot_mention
 conditions."* You can watch a thread for new messages, but not for bot mentions.
+Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
 :::
 
 ### `schedule`
@@ -62,6 +64,7 @@ cron, so a schedule is minute-resolution at best.
 `ScheduleTriggerJob` always advances `last_triggered_at` on error, to avoid an infinite retry
 loop, and destroys one-time triggers even when the fire failed. If your scheduled wake-up
 errors, it's gone; you have to recreate it. Nothing tells you.
+Tracked in [#76](https://github.com/tadasant/zimmer/issues/76).
 :::
 
 ### `ao_event`
@@ -133,4 +136,5 @@ arrived" and "agent running" except a `gsub` on a `prompt_template`. Untrusted S
 interpolated straight into the prompt, and the agent is then trusted to act on identifiers it
 read out of that text — making it a *trusted courier* for untrusted input. The proposal is a
 third primitive (`Workflow`) between Trigger and Session.
+Tracked in [#50](https://github.com/tadasant/zimmer/issues/50).
 :::

@@ -71,6 +71,7 @@ as the `zimmer` root — so the two are already indistinguishable in a picker.
 
 **The roots that actually work today:** `zimmer`, `general-agent` (the default), and
 `tadasant-internal`.
+Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 :::
 
 ## Subagent roots
