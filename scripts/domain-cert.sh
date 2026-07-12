@@ -36,14 +36,29 @@ RENEW_DAYS="${RENEW_DAYS:-30}"
 FORCE_ISSUE="${FORCE_ISSUE:-false}"
 
 log() { echo "[domain-cert] $*"; }
-ssh_box() { tailscale ssh "root@${TS_HOST}" "$@"; }
 
-# ---------------------------------------------------------------- 1. tailnet IP
-TS_IP="$(ssh_box 'tailscale ip -4' | tr -d '\r' | head -1)"
+# GitHub runners get no MagicDNS, so `tailscale ssh root@<name>` cannot resolve the
+# hostname ("lookup <name> ... server misbehaving") -- and after a droplet rebuild a
+# stale node can briefly shadow the name too. Resolve the box's tailnet IP from
+# `tailscale status --json` (the online peer with this hostname) and SSH to the IP,
+# the same technique the deploy workflow uses. Resolved once, before any ssh_box call.
+TS_IP="$(tailscale status --json 2>/dev/null \
+  | jq -r --arg h "$TS_HOST" '.Peer[]? | select(.HostName==$h and .Online==true) | .TailscaleIPs[0]' \
+  | head -1)"
 case "$TS_IP" in
-  100.*) log "droplet tailnet IP: $TS_IP" ;;
-  *) echo "::error::unexpected tailnet IP for ${TS_HOST}: '${TS_IP}'"; exit 1 ;;
+  100.*) log "resolved ${TS_HOST} -> tailnet IP $TS_IP" ;;
+  *) echo "::error::could not resolve an online tailnet IP for ${TS_HOST} (got '${TS_IP}')"; exit 1 ;;
 esac
+
+# Push over key-based SSH when a deploy key is provided (CERT_SSH_KEY) -- this works
+# on any runner and does not depend on the tailnet SSH policy (self-hosted CI runners
+# do not reliably satisfy the `tailscale ssh` identity check). Fall back to
+# `tailscale ssh` when no key is set, for environments that rely on it.
+if [ -n "${CERT_SSH_KEY:-}" ]; then
+  ssh_box() { ssh -i "$CERT_SSH_KEY" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "root@${TS_IP}" "$@"; }
+else
+  ssh_box() { tailscale ssh "root@${TS_IP}" "$@"; }
+fi
 
 # ---------------------------------------------------------------- 2. A record
 # Keep the token out of the process argv (it would show in `ps`): write the auth
