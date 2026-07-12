@@ -5,6 +5,30 @@ and a repo; it runs a real Claude Code or Codex session in an isolated clone, st
 the transcript, and hands you back a pull request to approve — or a specific question
 about why it couldn't. You stay in control of what runs and what merges.
 
+## Why run it
+
+- **It isn't a bet on one vendor.** The agent harness is a registry behind a contract:
+  Claude Code and Codex both ship today, and you pick the model per session (Claude or
+  OpenAI). MCP servers are a JSON entry, not a code change. Nothing in the design assumes
+  whose agent wins — which is the point, because nobody knows yet.
+- **A boring stack on one cheap box.** Rails 8, PostgreSQL, Redis, GoodJob, Hotwire. It's
+  a Docker image that Kamal ships to any Linux host you can SSH into; a single small
+  droplet runs the whole thing. No per-seat bill, no exotic infra to keep alive.
+- **You sign in — you don't paste keys.** Claude and Codex authenticate against your own
+  account over OAuth, `gh` uses the device flow, and MCP servers register themselves and
+  refresh their own tokens. Static secrets live in Rails encrypted credentials, never in
+  the repo. (They are *not* encrypted at rest in the database — that, and the rest of the
+  security model, is on the [Known limitations](https://docs.zimmer.tadasant.com/limitations/) page.)
+- **It follows you off the laptop.** Install it as a PWA and it web-pushes your phone when
+  a session finishes, fails, or stops to ask you something.
+- **A UI shaped around work that outlives your attention.** Pinned sessions and
+  categories, "blocked by" dependencies between sessions, live PR and CI status on each
+  session, search across full transcripts, opt-in heartbeats that nudge an idle agent, and
+  goals that spell out what "done" actually requires.
+
+The honest exception: cloning works against any git remote, but the PR, CI, and
+review-comment automation is GitHub-specific today.
+
 It's a Rails 8 app (Ruby 3.4, PostgreSQL, Redis, GoodJob, Hotwire, Tailwind), packaged
 as a Docker image and deployed to a single DigitalOcean droplet on a Tailscale tailnet.
 
