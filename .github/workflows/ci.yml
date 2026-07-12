@@ -1,8 +1,19 @@
 name: CI
 
-# Standalone CI for the Zimmer Rails app. Runs on GitHub-hosted runners with
-# Postgres + Redis service containers — no self-hosted runners, no AIR catalog
-# machinery (that was monorepo-specific).
+# Standalone CI for the Zimmer Rails app. Runs on PulseMCP's shared self-hosted
+# GitHub Actions runner pool (label `self-hosted`), which zimmer piggybacks on via
+# repo-level runner registration to stay off the GitHub-hosted Actions minute quota.
+# Postgres + Redis come up as service containers on *dynamic* host ports so
+# concurrent jobs on the shared box never collide; gems install into a per-runner
+# path for the same reason. This piggyback is temporary — see docs/operate/deploying.md
+# ("The workflows") and the DigitalOcean migration tracker (tadasant-internal#25).
+#
+# ruby/setup-ruby runs with `self-hosted: true` (the pulsemcp-org standard): it selects
+# the Ruby already staged in each runner's own $RUNNER_TOOL_CACHE rather than trying to
+# download+extract into the hardcoded /opt/hostedtoolcache, which the runner user can't
+# write. The tadasant-zimmer-ci-{1,2} runners were registered with a Node toolcache but
+# no Ruby one, so their Ruby 3.4.6 toolcache was seeded out of band; that manual seed is
+# not yet in IaC — see issue #118 (DigitalOcean migration) to codify it.
 on:
   pull_request:
     branches: [main]
@@ -15,42 +26,64 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: true
+          bundler-cache: false
+          self-hosted: true
+      - name: Install gems (per-runner path)
+        run: |
+          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
+          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
+          bundle install --jobs 4 --retry 3
       - name: Rubocop
         run: bin/rubocop -f github --parallel
 
   security:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: true
+          bundler-cache: false
+          self-hosted: true
+      - name: Install gems (per-runner path)
+        run: |
+          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
+          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
+          bundle install --jobs 4 --retry 3
       - name: Brakeman
         run: bin/brakeman --no-pager -q
 
   verify_lockfile:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: true
+          bundler-cache: false
+          self-hosted: true
       - name: Ensure Gemfile.lock is up to date
         run: |
+          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
+          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
           bundle lock
           git diff --exit-code Gemfile.lock
 
-  test:
-    runs-on: ubuntu-latest
+  # Unit + integration suite (system tests are excluded — `bin/rails test` does not
+  # descend into test/system). The job KEY is `test-unit`, which the shared runner's
+  # heavy-test semaphore recognizes and gates; a bare `test` would go ungated. There
+  # is deliberately no `test-system` job: zimmer, like its AO parent, does not run
+  # Chrome-driven system tests in CI, so there is nothing for the system semaphore to
+  # gate. PARALLEL_WORKERS is pinned so a shard cannot fan out to :number_of_processors
+  # (32 on the box) and starve co-tenants.
+  test-unit:
+    runs-on: self-hosted
 
     services:
       postgres:
@@ -60,7 +93,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: zimmer_test
         ports:
-          - 5432:5432
+          - 5432/tcp
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -69,7 +102,7 @@ jobs:
       redis:
         image: redis:7
         ports:
-          - 6379:6379
+          - 6379/tcp
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -78,18 +111,33 @@ jobs:
 
     env:
       RAILS_ENV: test
+      # GitHub-hosted runners export CI=true automatically; this self-hosted runner
+      # does not, and config/environments/test.rb ties `config.eager_load` to
+      # ENV["CI"]. Without it, eager loading is off and lazy autoload trips over
+      # good_job's Zeitwerk layout (GoodJob::Job) at runtime. Set it explicitly, as
+      # the AO parent workflow does, so the suite loads the same way it does on hosted.
+      CI: true
       DATABASE_HOST: localhost
-      DATABASE_PORT: 5432
       DATABASE_USERNAME: postgres
       DATABASE_PASSWORD: postgres
-      REDIS_URL: redis://localhost:6379
+      PARALLEL_WORKERS: 8
 
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve dynamic service ports
+        run: |
+          echo "DATABASE_PORT=${{ job.services.postgres.ports[5432] }}" >> "$GITHUB_ENV"
+          echo "REDIS_URL=redis://localhost:${{ job.services.redis.ports[6379] }}" >> "$GITHUB_ENV"
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: true
+          bundler-cache: false
+          self-hosted: true
+      - name: Install gems (per-runner path)
+        run: |
+          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
+          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
+          bundle install --jobs 4 --retry 3
       - name: Prepare test database
         run: bin/rails db:test:prepare
       - name: Run tests (unit + integration; system tests excluded)
@@ -100,7 +148,7 @@ jobs:
   # sidebar fails here rather than at deploy time. No Ruby needed — this is the
   # one Node-only job.
   docs_site:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -118,11 +166,12 @@ jobs:
   # Standalone unit tests for the GHCR retention selector. Pure Ruby, no Rails
   # boot required, so it runs fast and independently of the app suite.
   retention_logic:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
+          self-hosted: true
       - name: Test GHCR retention selection logic
         run: ruby scripts/ghcr_retention_test.rb
