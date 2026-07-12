@@ -48,9 +48,13 @@ Zimmer handles the toil of getting an agent from a prompt to a verified PR.
     The goal is to juggle as few long-lived secrets as possible. Claude and Codex
     authenticate against your own account over OAuth, `gh` uses the device flow, and MCP
     servers [register themselves and refresh their own tokens](/auth/mcp-oauth/) — dynamic
-    client registration, PKCE, automatic refresh. Short-lived credentials the runtime
-    manages beat a long-lived API key pasted into a config file, and a key that was never
-    pasted anywhere is a key that can't leak into a transcript.
+    client registration, PKCE, automatic refresh.
+
+    Which matters on the bad day. Agents read and write a lot of text, and sooner or later a
+    credential lands somewhere it shouldn't — a log line, a transcript, a pasted diff. If it
+    was a long-lived API key, you get to choose between a permanent exposure and spending the
+    next five hours manually rotating every copy of it. If it was a short-lived token the
+    runtime already rotates, it expires on its own and you re-auth in a browser.
   </Card>
   <Card title="It follows you off the laptop" icon="rocket">
     Install Zimmer as a PWA and it web-pushes your phone when a session finishes, fails, or
