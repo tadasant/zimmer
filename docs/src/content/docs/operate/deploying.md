@@ -160,7 +160,7 @@ container boot silently run the old CLI and the old Chromium.
 
 ## The workflows
 
-Every workflow runs on **`runs-on: self-hosted`** — PulseMCP's shared Hetzner
+Every workflow but one runs on **`runs-on: self-hosted`** — PulseMCP's shared Hetzner
 runner pool, which zimmer piggybacks on through repo-level runner registration so
 its CI stays off the GitHub-hosted Actions minute quota. This piggyback is
 temporary; the plan is a tadasant-dedicated runner on DigitalOcean, tracked in
@@ -168,15 +168,58 @@ temporary; the plan is a tadasant-dedicated runner on DigitalOcean, tracked in
 See [Running on the shared self-hosted runner](#running-on-the-shared-self-hosted-runner)
 for what that requires of a Rails job.
 
+The exception is `alert-ci-failure.yml`, which runs on `ubuntu-latest` on purpose: an
+alert that needs a healthy self-hosted runner in order to tell you the self-hosted
+runners are unhealthy is no alert at all. That buys less than it sounds like — it covers
+a *degraded* pool, where jobs run and fail, but not a pool that is flat **offline**, in
+which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
+
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · GHCR-retention logic · docs site build |
+| `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | builds and pushes `zimmer:{version, latest, sha-…}` |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image |
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
 | `ghcr-retention.yml` | weekly cron | prunes GHCR to ≤50 versions |
 | `domain-cert-staging.yml` | weekly cron + manual | issues/renews the Let's Encrypt cert for `var.domain` via ACME DNS-01 and pushes it to the droplet (see [Custom-domain HTTPS](#custom-domain-https-over-the-tailnet)) |
+
+### CI failure alerts
+
+When **any** workflow in this repo fails on `main`, `alert-ci-failure.yml` posts the
+repo, the workflow, the commit subject, the author and a link to the run into **#alerts**
+in the Tadasant Slack workspace. `tadasant-internal` and `strad` carry the identical
+listener under the identical secret names; the three are meant to stay symmetric, so
+change them together.
+
+It listens with `workflows: ["*"]`, which matches every workflow in the repo — so a
+workflow added later is covered the day it lands, with nobody having to remember to wire
+it up.
+
+It needs two repo secrets — `SLACK_BOT_TOKEN` and `SLACK_ALERTS_CHANNEL_ID`
+([Provisioning and secrets](/operate/provisioning/#slack-ci-failure-alerts)). Without
+them it logs a warning and exits 0: a missing alert secret must not turn into a second
+red X on `main`. With them, a Slack rejection *does* fail the job, because a rejected
+alert is a silently broken alert and this is the only place it can surface.
+
+Three details worth knowing before you touch it:
+
+- It fires on an **allowlist** of conclusions — `failure`, `startup_failure`,
+  `timed_out` — never on "not success". `ci.yml` sets `cancel-in-progress`, so two
+  pushes to `main` in quick succession cancel the first run, and a *cancelled* run must
+  not page anyone. The corollary is that a run which never starts is never alerted on:
+  if the self-hosted pool is offline, main-branch runs **queue**, and GitHub cancels
+  them after ~24h as `cancelled`, which is indistinguishable from a deliberate cancel
+  ([Limitations](/limitations/#a-queued-run-that-never-starts-is-never-alerted-on)).
+- `["*"]` matches the alert **itself**, and `workflow_run` chains several levels deep, so
+  the job excludes itself by comparing against the literal name `'CI failure alert'`.
+  **Rename the workflow and you must update that literal**, or it starts alerting on its
+  own runs ([Limitations](/limitations/#the-ci-failure-alert-cant-be-exercised-from-a-pr)).
+- `workflow_run` only ever triggers from the copy of the file on the **default branch**,
+  so editing it on a PR branch changes nothing until it merges. To prove Slack delivery
+  works, run the workflow's `workflow_dispatch` trigger by hand — it posts a smoke-test
+  message instead of an alert.
 
 ### Running on the shared self-hosted runner
 
