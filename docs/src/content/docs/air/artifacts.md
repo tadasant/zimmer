@@ -126,3 +126,49 @@ AIR_CONFIG=$PWD/air.json npx @pulsemcp/air-cli@0.13.0 resolve --json --no-scope
 
 Watch stderr, not the exit code. Lines containing `references unknown` and `Dropping the
 reference` are what Zimmer treats as a hard failure.
+
+## Pointing an instance at your own catalog
+
+The public image ships a small, self-contained catalog (`air.production.json` at the image root,
+resolving `./roots.json`, `./mcp.json`, etc.). That is what a stock deployment — and **staging** —
+serves. It's deliberately minimal; it is not meant to be *your* catalog.
+
+To run a deployment on your **own** catalog (private agent roots, MCP servers, skills), you deliver a
+catalog onto the box and point the app at it with the **`AIR_CONFIG`** env var:
+
+- `config/environments/production.rb` reads `config.air_json_path` from `AIR_CONFIG`, falling back to
+  the in-image `air.production.json` when `AIR_CONFIG` is unset **or set to a path that doesn't exist
+  yet**. So a not-yet-delivered catalog degrades to the in-image one instead of zero roots; once your
+  catalog is on disk and the app restarts, `AIR_CONFIG` wins.
+- AIR resolves a catalog's index paths **relative to the `air.json`/`air.production.json` file's own
+  directory**. So keep your `air.production.json` and its `artifacts/` (or `roots.json`, `mcp.json`, …)
+  siblings in one directory, and point `AIR_CONFIG` at that file.
+
+### How Tadas's production does it (a worked example)
+
+Production's real catalog lives in the private `tadasant/tadasant-internal` repo (`air.json` +
+`artifacts/`). It is delivered like this — the same pattern any self-hoster can copy:
+
+1. **Mount two persistent host directories** into both the `web` and `worker` roles
+   (`config/deploy.production.yml`), and set `AIR_CONFIG`:
+   ```yaml
+   volume:
+     - /opt/zimmer/catalog:/rails/catalog:ro                 # your air.production.json + artifacts/
+     - /opt/zimmer/credentials:/rails/config/credentials:ro  # your production.yml.enc (mcp_secrets)
+   env:
+     clear:
+       AIR_CONFIG: /rails/catalog/air.production.json
+   ```
+   Bind-mounting host paths (not the container's writable layer) is what makes the catalog **survive a
+   Kamal deploy** — a new container re-attaches the same mounts. Mounting on **both** roles is what makes
+   agent sessions (which run in the `worker`) see the same catalog and `mcp_secrets` as the web UI.
+2. **Deliver the catalog + credentials** to those host paths with a workflow
+   (`.github/workflows/artifacts-sync-prod.yml` in `tadasant-internal`): it SSHes to the box and writes
+   your `air.json → /opt/zimmer/catalog/air.production.json`, `artifacts/ → /opt/zimmer/catalog/artifacts`,
+   and `production.yml.enc → /opt/zimmer/credentials/`, then restarts the app so the catalog cache
+   refreshes. Re-run it whenever your catalog changes; it does **not** need to re-run after a normal
+   deploy, because the mount persists.
+
+`mcp_secrets` (the `${VAR}` values your `mcp.json` references) come from
+`config/credentials/production.yml.enc`, decrypted by `RAILS_MASTER_KEY`. Deliver the `.enc` file the
+same way (mounted alongside), and pass `RAILS_MASTER_KEY` as a Kamal secret.
