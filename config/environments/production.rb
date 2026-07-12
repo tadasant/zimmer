@@ -3,13 +3,23 @@ require "active_support/core_ext/integer/time"
 Rails.application.configure do
   # Settings specified here will take precedence over those in config/application.rb.
 
-  # Production reads the in-image air.production.json, which uses github:// URIs to
-  # pull catalog content (skills, mcp servers, roots, etc.) from tadasant/zimmer-catalog.
-  # Deployed images only ship agents/agent-orchestrator, so the dev air.json's
-  # ../skills/... relative paths would not resolve here. AIR_CONFIG env still wins.
-  config.air_json_path = ENV.fetch("AIR_CONFIG") {
-    Rails.root.join("air.production.json").to_s
-  }
+  # Catalog source. `AIR_CONFIG` lets an operator point this instance at their OWN
+  # AIR catalog -- e.g. a private catalog delivered onto the box and mounted at
+  # /rails/catalog (see docs: self-hosting / custom catalog). When unset, or set but
+  # not yet present on disk, it falls back to the self-contained catalog baked into
+  # the image (`air.production.json`).
+  #
+  # The "set but missing" fallback matters during bootstrap: on a fresh box the
+  # mounted catalog volume may be empty until the catalog is delivered, and
+  # AirCatalogService resolves a non-existent air_json_path to an EMPTY catalog (zero
+  # roots). Falling back to the in-image catalog keeps the app usable until the real
+  # one lands; once it does and the app restarts, AIR_CONFIG wins.
+  config.air_json_path =
+    if (configured = ENV["AIR_CONFIG"]).present? && File.exist?(configured)
+      configured
+    else
+      Rails.root.join("air.production.json").to_s
+    end
 
   # Code is not reloaded between requests.
   config.enable_reloading = false
