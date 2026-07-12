@@ -98,6 +98,10 @@ gem "rubyzip"
 # which CodexConfigTomlPostProcessor reads and rewrites after `air prepare`.
 gem "toml-rb"
 
+# Official MCP Ruby SDK — powers Zimmer's native MCP server at POST /mcp
+# (JSON-RPC framing, protocol negotiation, the streamable-HTTP transport)
+gem "mcp"
+
 # Zstandard decompression for OpenAI Codex rollout transcripts
 # (newer Codex CLI versions write ~/.codex/sessions/.../rollout-*.jsonl.zst)
 gem "zstd-ruby"

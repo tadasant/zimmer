@@ -2533,14 +2533,14 @@ class SessionTest < ActiveSupport::TestCase
       url: "https://github.com/test/repo.git",
       default_branch: "main",
       subdirectory: nil,
-      default_mcp_servers: [ "agent-orchestrator-prod-sessions" ],
+      default_mcp_servers: [ "zimmer-sessions" ],
       default_skills: [ "zimmer-run-tests" ],
       default_hooks: [ "git-push-ci-reminder" ],
       default_plugins: [ "screenshots-videos" ]
     )
     AgentRootsConfig.stubs(:find!).with("test-root").returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    ServersConfig.stubs(:exists?).with("agent-orchestrator-prod-sessions").returns(true)
+    ServersConfig.stubs(:exists?).with("zimmer-sessions").returns(true)
     SkillsConfig.stubs(:exists?).returns(true)
     HooksConfig.stubs(:exists?).returns(true)
     PluginsConfig.stubs(:exists?).returns(true)
@@ -2554,7 +2554,7 @@ class SessionTest < ActiveSupport::TestCase
       catalog_plugins: []
     )
 
-    assert_equal [ "agent-orchestrator-prod-sessions" ], session.mcp_servers
+    assert_equal [ "zimmer-sessions" ], session.mcp_servers
     assert_equal [ "zimmer-run-tests" ], session.catalog_skills
     assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
     # Plugins must be persisted from default_plugins so a later --without-defaults
@@ -2567,7 +2567,7 @@ class SessionTest < ActiveSupport::TestCase
       url: "https://github.com/test/repo.git",
       default_branch: "main",
       subdirectory: nil,
-      default_mcp_servers: [ "agent-orchestrator-prod-sessions" ],
+      default_mcp_servers: [ "zimmer-sessions" ],
       default_skills: [],
       default_hooks: [],
       default_plugins: []
@@ -2590,7 +2590,7 @@ class SessionTest < ActiveSupport::TestCase
       url: "https://github.com/test/repo.git",
       default_branch: "main",
       subdirectory: nil,
-      default_mcp_servers: [ "agent-orchestrator-prod-sessions" ],
+      default_mcp_servers: [ "zimmer-sessions" ],
       default_skills: [ "zimmer-run-tests" ],
       default_hooks: [ "git-push-ci-reminder" ],
       default_plugins: [ "screenshots-videos" ]
@@ -2603,7 +2603,7 @@ class SessionTest < ActiveSupport::TestCase
       prompt: "Test"
     )
 
-    assert_equal [ "agent-orchestrator-prod-sessions" ], session.mcp_servers
+    assert_equal [ "zimmer-sessions" ], session.mcp_servers
     assert_equal [ "zimmer-run-tests" ], session.catalog_skills
     assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
     assert_equal [ "screenshots-videos" ], session.catalog_plugins
@@ -2665,7 +2665,7 @@ class SessionTest < ActiveSupport::TestCase
       url: "https://github.com/test/repo.git",
       default_branch: "main",
       subdirectory: nil,
-      default_mcp_servers: [ "agent-orchestrator-prod-sessions" ],
+      default_mcp_servers: [ "zimmer-sessions" ],
       default_skills: [ "zimmer-run-tests" ],
       default_hooks: [],
       default_plugins: [ "screenshots-videos" ]

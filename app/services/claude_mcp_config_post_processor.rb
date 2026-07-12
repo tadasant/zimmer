@@ -29,12 +29,14 @@ class ClaudeMcpConfigPostProcessor < RuntimeConfigPostProcessor
     JSON.pretty_generate(config)
   end
 
-  def build_server_entry(catalog_server)
-    if catalog_server.stdio?
-      { "command" => catalog_server.command, "args" => catalog_server.args.dup, "env" => catalog_server.env.dup }
-    else
-      { "url" => catalog_server.url, "headers" => catalog_server.headers.dup }
-    end
+  def http_headers_key
+    "headers"
+  end
+
+  # Claude Code keys off the explicit `type` to pick a transport; an entry with a
+  # url but no type is treated as stdio and fails on the missing command.
+  def build_http_entry(url:, headers:)
+    { "type" => "http", "url" => url, http_headers_key => headers.dup }
   end
 
   def resolve_and_rewrite!(servers)

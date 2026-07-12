@@ -20,9 +20,9 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert_includes server_names, "figma"
     assert_includes server_names, "tally"
     assert_includes server_names, "notion"
-    assert_includes server_names, "agent-orchestrator-prod-self-session"
-    assert_includes server_names, "agent-orchestrator-staging-self-session"
-    assert_includes server_names, "agent-orchestrator-prod-sessions"
+    assert_includes server_names, "zimmer"
+    assert_includes server_names, "zimmer-sessions"
+    assert_includes server_names, "zimmer-self-session"
   end
 
   # Test finding servers
@@ -133,29 +133,31 @@ class ServersConfigTest < ActiveSupport::TestCase
     refute server.remote?
   end
 
-  # Test environment variable detection
-  test "should identify required environment variables" do
-    server = ServersConfig.find("agent-orchestrator-prod-self-session")
-    required_vars = server.required_env_vars
+  # Test environment variable detection. Zimmer's own MCP entries are remote
+  # (streamable-http) and carry their API key in a header, so the interpolation
+  # they exercise is header interpolation, not env.
+  test "should identify required header variables" do
+    server = ServersConfig.find("zimmer-self-session")
+    required_headers = server.required_headers
 
-    assert required_vars.is_a?(Array)
-    assert_includes required_vars, "AGENT_ORCHESTRATOR_PROD_API_KEY"
+    assert required_headers.is_a?(Array)
+    assert_includes required_headers, "AGENT_ORCHESTRATOR_PROD_API_KEY"
   end
 
-  test "should identify optional environment variables" do
-    server = ServersConfig.find("agent-orchestrator-prod-self-session")
-    optional_vars = server.optional_env_vars
+  test "should identify optional header variables" do
+    server = ServersConfig.find("zimmer-self-session")
+    optional_headers = server.optional_headers
 
     # Only AGENT_ORCHESTRATOR_PROD_API_KEY is interpolated (required); no ${VAR:-default} optionals.
-    assert optional_vars.is_a?(Array)
-    assert_empty optional_vars
+    assert optional_headers.is_a?(Array)
+    assert_empty optional_headers
   end
 
-  test "should get all env vars" do
-    server = ServersConfig.find("agent-orchestrator-prod-self-session")
-    all_vars = server.all_env_vars
+  test "a stdio server with hardcoded env has no interpolated vars" do
+    server = ServersConfig.find("playwright-custom")
 
-    assert_includes all_vars, "AGENT_ORCHESTRATOR_PROD_API_KEY"
+    assert_empty server.required_env_vars
+    assert_empty server.all_env_vars
   end
 
   # Test to_h method
@@ -243,18 +245,30 @@ class ServersConfigTest < ActiveSupport::TestCase
 
   # Test interpolation pattern detection
   test "should detect required var without default" do
-    server = ServersConfig.find("agent-orchestrator-prod-self-session")
-    required_vars = server.required_env_vars
+    server = ServersConfig.find("zimmer-self-session")
 
-    # The config uses ${AGENT_ORCHESTRATOR_PROD_API_KEY} interpolation
-    assert_includes required_vars, "AGENT_ORCHESTRATOR_PROD_API_KEY"
+    # The config uses ${AGENT_ORCHESTRATOR_PROD_API_KEY} interpolation in the
+    # X-API-Key header.
+    assert_includes server.required_headers, "AGENT_ORCHESTRATOR_PROD_API_KEY"
   end
 
   test "should return empty optional vars when all are hardcoded" do
-    server = ServersConfig.find("agent-orchestrator-prod-self-session")
-    optional_vars = server.optional_env_vars
+    server = ServersConfig.find("zimmer-self-session")
 
     # All interpolated vars are required; nothing uses a ${VAR:-default} optional form.
-    assert_empty optional_vars
+    assert_empty server.optional_headers
+  end
+
+  test "Zimmer's own MCP entries are remote and scoped by query string" do
+    full = ServersConfig.find("zimmer")
+    sessions = ServersConfig.find("zimmer-sessions")
+    self_session = ServersConfig.find("zimmer-self-session")
+
+    assert full.remote?
+    assert_equal "streamable-http", full.type
+    assert full.url.end_with?("/mcp"), "the full-surface entry carries no tool_groups scoping"
+    assert_includes sessions.url, "tool_groups=sessions"
+    assert_includes self_session.url, "tool_groups=self_session"
+    assert_equal "${AGENT_ORCHESTRATOR_PROD_API_KEY}", self_session.headers["X-API-Key"]
   end
 end

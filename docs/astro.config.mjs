@@ -102,6 +102,7 @@ export default defineConfig({
           label: "Extending Zimmer",
           items: [
             { label: "The REST API", slug: "extend/rest-api" },
+            { label: "Zimmer's MCP server", slug: "extend/mcp-server" },
             { label: "Adding an agent harness", slug: "extend/agent-harness" },
             { label: "Extensions", slug: "extend/extensions" },
             { label: "Transcript hooks", slug: "extend/transcript-hooks" },

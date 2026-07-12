@@ -82,7 +82,7 @@ class NpxCacheHealServiceTest < ActiveSupport::TestCase
     dir = make_hash_dir(hash)
     other = make_hash_dir("deadbeefdeadbeef")
 
-    failed = [ { "name" => "agent-orchestrator-prod-sessions", "error" => dir_import_error(hash) } ]
+    failed = [ { "name" => "zimmer-sessions", "error" => dir_import_error(hash) } ]
 
     result = NpxCacheHealService.heal_from_failures(
       failed_servers: failed, working_directory: @working_directory, logger: @logger

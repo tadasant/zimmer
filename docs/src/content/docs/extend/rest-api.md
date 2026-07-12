@@ -8,6 +8,12 @@ sidebar:
 Base URL `/api/v1`. Authentication is the `X-API-Key` header, compared against
 `ENV["API_KEYS"]` (comma-separated) with a constant-time comparison.
 
+:::tip[Agents should use MCP, not this]
+Zimmer also serves a native MCP endpoint at `POST /mcp` — same API key, same service objects, 18
+tools. If the caller is an agent rather than a script, that is the surface to point it at.
+→ [Zimmer's MCP server](/extend/mcp-server/).
+:::
+
 :::caution[API keys have no scope, no identity, and no audit trail]
 A key is an opaque string. Any valid key can do anything to any session, trigger, or category. Keys are
 memoized per request from ENV, so rotation requires a restart. There is no record of which key did what.

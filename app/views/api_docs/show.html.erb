@@ -32,6 +32,15 @@
             </div>
           </div>
           <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-2">MCP endpoint</h3>
+            <p class="text-sm text-gray-600 mb-2">Agents should use Zimmer's native MCP server instead of this REST API: <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">POST /mcp</code> (streamable HTTP, 18 tools, same API key). Scope a connection with <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">?tool_groups=</code> (<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">sessions</code>, <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">notifications</code>, <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">triggers</code>, <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">health</code>, each with a <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">_readonly</code> variant, plus <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">self_session</code>) and <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">?allowed_agent_roots=</code>. See <a href="https://docs.zimmer.tadasant.com/extend/mcp-server/" class="text-blue-600 hover:underline">the MCP server docs</a>.</p>
+            <div class="bg-gray-900 rounded-md p-4 overflow-x-auto">
+              <pre class="text-xs text-gray-100 font-mono">curl -H "X-API-Key: your_api_key" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  <%= request.base_url %>/mcp</pre>
+            </div>
+          </div>
+          <div>
             <h3 class="text-sm font-medium text-gray-900 mb-2">Pagination</h3>
             <p class="text-sm text-gray-600">List endpoints support <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">page</code> and <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">per_page</code> (max 100) query parameters. Responses include a <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">pagination</code> object with <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">page</code>, <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">per_page</code>, <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">total_count</code>, and <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">total_pages</code>.</p>
           </div>
@@ -116,7 +125,7 @@
                   <tr><td class="py-1 pr-3 font-mono">goal</td><td class="py-1 pr-3">string</td><td class="py-1">Goal for the session</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">MCP server names explicitly selected for the session</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">all_mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1"><strong>The effective set</strong> — selected + plugin-bundled + auto-injected. Read this to determine what the session actually has wired.</td></tr>
-                  <tr><td class="py-1 pr-3 font-mono">injected_mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">Only the servers Zimmer auto-injects (self-session server; <code>agent-orchestrator</code> for subagent roots). A strict subset — <strong>not</strong> evidence of what a session has available.</td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">injected_mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">Only the servers Zimmer auto-injects (<code>zimmer-self-session</code>; <code>zimmer</code> for subagent roots). A strict subset — <strong>not</strong> evidence of what a session has available.</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_skills</td><td class="py-1 pr-3">array</td><td class="py-1">Skill names selected from the catalog</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_hooks</td><td class="py-1 pr-3">array</td><td class="py-1">Hook names selected from the catalog</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">catalog_plugins</td><td class="py-1 pr-3">array</td><td class="py-1">Plugin IDs selected from the catalog</td></tr>

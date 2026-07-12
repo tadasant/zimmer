@@ -900,9 +900,11 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
     mcp_config_path = File.join(@working_dir, ".mcp.json")
     assert @mock_fs.exists?(mcp_config_path), ".mcp.json should be created by the post-processor"
-    self_server = JSON.parse(@mock_fs.read(mcp_config_path)).dig("mcpServers", "agent-orchestrator-staging-self-session")
+    self_server = JSON.parse(@mock_fs.read(mcp_config_path)).dig("mcpServers", "zimmer-self-session")
     assert_not_nil self_server, "Self-session Zimmer server should be injected via delegation"
-    assert_equal [ "agent-orchestrator-staging-self-session" ], service.injected_mcp_servers
+    assert_equal "http", self_server["type"], "The self-session server is Zimmer's own native MCP endpoint"
+    assert_includes self_server["url"], "/mcp?tool_groups=self_session"
+    assert_equal [ "zimmer-self-session" ], service.injected_mcp_servers
   end
 
   private

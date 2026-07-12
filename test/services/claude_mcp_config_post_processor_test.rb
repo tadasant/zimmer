@@ -8,7 +8,32 @@ require "mocha/minitest"
 # sessions. These exercise the processor directly (no AIR CLI / Open3): the
 # processor only reads, mutates, and writes the MCP config via the injected
 # file system, so there is nothing to shell out to.
+#
+# Zimmer serves MCP natively, so the servers it auto-injects are streamable-HTTP
+# entries pointing back at this instance's own /mcp endpoint, scoped by query
+# string:
+#
+#   zimmer-self-session : /mcp?tool_groups=self_session   (every session)
+#   zimmer              : /mcp?allowed_agent_roots=<...>  (roots with subagents)
+#
+# In Claude's `.mcp.json` that is `{"type": "http", "url": …, "headers": {…}}`.
 class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
+  SELF_SESSION_SERVER = "zimmer-self-session"
+  SUBAGENT_SERVER = "zimmer"
+  SUBAGENT_ROOTS = %w[catalog-mgmt-research catalog-mgmt-configs catalog-mgmt-proctor catalog-mgmt-save].freeze
+
+  # Env vars the instance-resolution logic reads. Saved and restored around each
+  # test so an ambient .env value can never make an assertion pass (or fail) by
+  # accident, and so a test that deletes one does not leak that deletion.
+  MANAGED_ENV_VARS = %w[
+    AGENT_ORCHESTRATOR_LOCAL_BASE_URL
+    AGENT_ORCHESTRATOR_LOCAL_API_KEY
+    AGENT_ORCHESTRATOR_STAGING_BASE_URL
+    AGENT_ORCHESTRATOR_STAGING_API_KEY
+    AGENT_ORCHESTRATOR_PROD_BASE_URL
+    AGENT_ORCHESTRATOR_PROD_API_KEY
+  ].freeze
+
   setup do
     @session = sessions(:active_session)
     @session.update!(
@@ -19,14 +44,21 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     @working_dir = Dir.mktmpdir
     @mock_fs = MockFileSystemAdapter.new
 
-    # Self-session catalog entry requires AGENT_ORCHESTRATOR_STAGING_API_KEY
-    ENV["AGENT_ORCHESTRATOR_STAGING_API_KEY"] = "test-staging-api-key"
+    @original_env = ENV.to_hash.slice(*MANAGED_ENV_VARS)
+    MANAGED_ENV_VARS.each { |var| ENV.delete(var) }
+    # Tests run with Rails.env == "test", which resolves to the LOCAL instance.
+    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
   end
 
   teardown do
     FileUtils.rm_rf(@working_dir) if @working_dir && File.exist?(@working_dir)
-    ENV.delete("AGENT_ORCHESTRATOR_STAGING_API_KEY")
+    MANAGED_ENV_VARS.each { |var| ENV.delete(var) }
+    @original_env.each { |var, value| ENV[var] = value }
   end
+
+  # ---------------------------------------------------------------------------
+  # Secret resolution + npx rewrite (format-agnostic value logic)
+  # ---------------------------------------------------------------------------
 
   test "post_process! resolves env interpolations" do
     write_config(
@@ -51,6 +83,24 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     ENV.delete("TEST_SECRET_KEY")
   end
 
+  test "post_process! resolves header interpolations on http entries" do
+    write_config(
+      "acme-http" => {
+        "type" => "http",
+        "url" => "https://acme.example.com/mcp",
+        "headers" => { "Authorization" => "${TEST_HEADER_TOKEN}" }
+      }
+    )
+
+    ENV["TEST_HEADER_TOKEN"] = "tok-123"
+
+    build_processor.post_process!
+
+    assert_equal "tok-123", read_config.dig("mcpServers", "acme-http", "headers", "Authorization")
+  ensure
+    ENV.delete("TEST_HEADER_TOKEN")
+  end
+
   test "post_process! injects npx prefix" do
     write_config(
       "test-npx-server" => {
@@ -67,14 +117,18 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_includes args, "/tmp"
   end
 
-  test "post_process! injects Zimmer MCP server when root has default_subagent_roots" do
-    # Use catalog-management which has default_subagent_roots
+  # ---------------------------------------------------------------------------
+  # Injection: the subagent server (roots with default_subagent_roots)
+  # ---------------------------------------------------------------------------
+
+  test "post_process! injects the full-surface zimmer server when root has default_subagent_roots" do
+    # catalog-management is the root with default_subagent_roots.
     @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
     write_config(
-      "agent-orchestrator-ai-artifact-engineering" => {
+      "playwright-custom" => {
         "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
+        "args" => [ "-y", "@anthropic/playwright-mcp-server" ],
         "env" => {}
       }
     )
@@ -82,23 +136,23 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     processor = build_processor
     processor.post_process!
 
-    result = read_config
-    ao_server = result.dig("mcpServers", "agent-orchestrator")
-    assert_not_nil ao_server, "agent-orchestrator MCP server should be injected"
-    assert_equal "npx", ao_server["command"]
-    assert_includes ao_server["args"], "agent-orchestrator-mcp-server@latest"
+    zimmer = read_config.dig("mcpServers", SUBAGENT_SERVER)
+    assert_not_nil zimmer, "zimmer MCP server should be injected"
+    assert_equal "http", zimmer["type"], "Claude needs an explicit transport type on an http entry"
+    assert_nil zimmer["command"], "The native MCP entry is HTTP, not an npx stdio process"
 
-    allowed = ao_server.dig("env", "ALLOWED_AGENT_ROOTS")
-    assert_not_nil allowed
-    assert_includes allowed, "catalog-mgmt-research"
-    assert_includes allowed, "catalog-mgmt-configs"
-    assert_includes allowed, "catalog-mgmt-proctor"
-    assert_includes allowed, "catalog-mgmt-save"
+    params = query_params(zimmer["url"])
+    assert_equal "http://localhost:3000/mcp", url_without_query(zimmer["url"]),
+      "Injected server must point at this instance's own /mcp endpoint"
+    assert_nil params["tool_groups"],
+      "The subagent server is full-surface — scoping it by tool group would strip start_session"
+    assert_equal SUBAGENT_ROOTS.sort, params["allowed_agent_roots"].split(",").sort
 
-    assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
+    assert_equal({ "X-API-Key" => "local-test-key" }, zimmer["headers"])
+    assert_equal [ SUBAGENT_SERVER ], processor.injected_mcp_servers
   end
 
-  test "post_process! does NOT inject subagent Zimmer server when root has no default_subagent_roots but injects self-session server" do
+  test "post_process! does NOT inject the subagent server when root has no default_subagent_roots but injects self-session server" do
     # agent-orchestrator root has no default_subagent_roots
     @session.update!(metadata: { "agent_root_key" => "agent-orchestrator" })
 
@@ -114,17 +168,21 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     processor.post_process!
 
     result = read_config
-    assert_nil result.dig("mcpServers", "agent-orchestrator"),
-      "subagent agent-orchestrator MCP server should NOT be injected"
+    assert_nil result.dig("mcpServers", SUBAGENT_SERVER),
+      "subagent zimmer MCP server should NOT be injected"
 
     # Self-session server IS injected since no Zimmer server was present
-    self_server = result.dig("mcpServers", "agent-orchestrator-staging-self-session")
+    self_server = result.dig("mcpServers", SELF_SESSION_SERVER)
     assert_not_nil self_server, "self-session Zimmer server should be injected"
-    assert_equal "self_session", self_server.dig("env", "TOOL_GROUPS")
-    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+    assert_equal self_session_url, self_server["url"]
+    assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
-  test "post_process! injects session-scoped Zimmer server with TOOL_GROUPS=self_session" do
+  # ---------------------------------------------------------------------------
+  # Injection: the self-session server
+  # ---------------------------------------------------------------------------
+
+  test "post_process! injects the self-session server scoped to tool_groups=self_session" do
     @session.update!(mcp_servers: [ "playwright-custom" ])
 
     write_config(
@@ -135,26 +193,28 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       }
     )
 
-    processor = build_processor
-    processor.post_process!
+    build_processor.post_process!
 
-    self_server = read_config.dig("mcpServers", "agent-orchestrator-staging-self-session")
+    self_server = read_config.dig("mcpServers", SELF_SESSION_SERVER)
     assert_not_nil self_server, "Self-session Zimmer server should be injected"
-    assert_equal "npx", self_server["command"]
-    assert_includes self_server["args"], "agent-orchestrator-mcp-server@latest"
-    assert_equal "self_session", self_server.dig("env", "TOOL_GROUPS")
-    assert_nil self_server.dig("env", "ALLOWED_AGENT_ROOTS"),
+    assert_equal "http", self_server["type"]
+    assert_equal self_session_url, self_server["url"]
+    assert_equal({ "X-API-Key" => "local-test-key" }, self_server["headers"])
+
+    params = query_params(self_server["url"])
+    assert_equal "self_session", params["tool_groups"]
+    assert_nil params["allowed_agent_roots"],
       "Self-session server should not restrict agent roots"
   end
 
-  test "post_process! injects self-session server alongside restricted Zimmer server with TOOL_GROUPS" do
-    @session.update!(mcp_servers: [ "agent-orchestrator-prod-sessions" ])
-
+  test "post_process! injects self-session server alongside a scoped zimmer-sessions server" do
+    # A Zimmer entry scoped to other tool groups does NOT cover self_session, so
+    # the self-session server is still needed.
     write_config(
-      "agent-orchestrator-prod-sessions" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => { "TOOL_GROUPS" => "sessions" }
+      "zimmer-sessions" => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
+        "headers" => { "X-API-Key" => "prod-key" }
       }
     )
 
@@ -162,13 +222,14 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     processor.post_process!
 
     result = read_config
-    assert_not_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
-      "Self-session server SHOULD be injected alongside restricted Zimmer server"
-    assert_equal "self_session", result.dig("mcpServers", "agent-orchestrator-staging-self-session", "env", "TOOL_GROUPS")
-    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+    self_server = result.dig("mcpServers", SELF_SESSION_SERVER)
+    assert_not_nil self_server,
+      "Self-session server SHOULD be injected alongside a Zimmer server scoped to other tool groups"
+    assert_equal "self_session", query_params(self_server["url"])["tool_groups"]
+    assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
-  test "post_process! does NOT inject self-session alongside auto-injected subagent Zimmer server (ALLOWED_AGENT_ROOTS set, TOOL_GROUPS blank)" do
+  test "post_process! does NOT inject self-session alongside the auto-injected full-surface zimmer server" do
     @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
     write_config(
@@ -183,16 +244,14 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     processor.post_process!
 
     result = read_config
-    assert_not_nil result.dig("mcpServers", "agent-orchestrator"),
+    assert_not_nil result.dig("mcpServers", SUBAGENT_SERVER),
       "Subagent Zimmer server should be injected"
-    # The subagent Zimmer server has TOOL_GROUPS blank, which means the self_session tool
-    # group is already registered. ALLOWED_AGENT_ROOTS does not hide tools at registration
-    # time; it only triggers call-time guards on tools that create new sessions/triggers.
-    # Injecting a second Zimmer server here causes two concurrent `npx … agent-orchestrator-mcp-server@latest`
-    # processes to race on npm's shared `_npx/<hash>` cache directory.
-    assert_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
-      "Self-session server should NOT be injected when subagent Zimmer server already covers self_session tools"
-    assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
+    # The subagent Zimmer entry carries no tool_groups, so it already exposes the
+    # full surface — including every self_session tool. A second Zimmer entry
+    # would be pure duplication (two MCP connections to the same endpoint).
+    assert_nil result.dig("mcpServers", SELF_SESSION_SERVER),
+      "Self-session server should NOT be injected when the full-surface zimmer server already covers it"
+    assert_equal [ SUBAGENT_SERVER ], processor.injected_mcp_servers
   end
 
   test "post_process! synthesizes a baseline .mcp.json with the self-session server when AIR wrote no file" do
@@ -206,17 +265,17 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     assert @mock_fs.exists?(File.join(@working_dir, ".mcp.json")),
       "post_process! should synthesize a .mcp.json when AIR wrote none"
-    self_server = read_config.dig("mcpServers", "agent-orchestrator-staging-self-session")
+    self_server = read_config.dig("mcpServers", SELF_SESSION_SERVER)
     assert_not_nil self_server, "Self-session Zimmer server should be injected into the synthesized config"
-    assert_equal "self_session", self_server.dig("env", "TOOL_GROUPS")
-    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+    assert_equal self_session_url, self_server["url"]
+    assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
   test "post_process! injects the subagent Zimmer server when AIR wrote no .mcp.json for a subagent-roots root" do
     # The secondary defect: a subagent-roots root that has skills (so it takes
     # the prepare! branch) but no explicit MCP servers gets no .mcp.json from AIR.
-    # post_process! must still inject the subagent-spawning agent-orchestrator
-    # server so start_session works — it must not be gated on an AIR-produced file.
+    # post_process! must still inject the subagent-spawning zimmer server so
+    # start_session works — it must not be gated on an AIR-produced file.
     @session.update!(
       mcp_servers: [],
       catalog_skills: [ "zimmer-run-tests" ],
@@ -229,18 +288,17 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert @mock_fs.exists?(File.join(@working_dir, ".mcp.json")),
       "post_process! should synthesize a .mcp.json when AIR wrote none"
     result = read_config
-    ao_server = result.dig("mcpServers", "agent-orchestrator")
-    assert_not_nil ao_server,
-      "subagent-spawning agent-orchestrator server must be injected even without an AIR-produced .mcp.json"
-    allowed = ao_server.dig("env", "ALLOWED_AGENT_ROOTS")
-    assert_includes allowed, "catalog-mgmt-research"
-    assert_includes allowed, "catalog-mgmt-save"
+    zimmer = result.dig("mcpServers", SUBAGENT_SERVER)
+    assert_not_nil zimmer,
+      "subagent-spawning zimmer server must be injected even without an AIR-produced .mcp.json"
+    allowed = query_params(zimmer["url"])["allowed_agent_roots"].to_s.split(",")
+    assert_equal SUBAGENT_ROOTS.sort, allowed.sort
 
     # The full-surface subagent server already covers the self_session tool group,
     # so the dedicated self-session server is deduped away (no duplicate Zimmer server).
-    assert_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
+    assert_nil result.dig("mcpServers", SELF_SESSION_SERVER),
       "Self-session server should be deduped when the subagent Zimmer server is present"
-    assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
+    assert_equal [ SUBAGENT_SERVER ], processor.injected_mcp_servers
   end
 
   # ---------------------------------------------------------------------------
@@ -256,20 +314,49 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     config_path = File.join(@working_dir, ".mcp.json")
     assert @mock_fs.exists?(config_path), ".mcp.json should be created"
 
-    self_server = read_config.dig("mcpServers", "agent-orchestrator-staging-self-session")
+    self_server = read_config.dig("mcpServers", SELF_SESSION_SERVER)
     assert_not_nil self_server, "Self-session Zimmer server should be injected"
-    assert_equal "self_session", self_server.dig("env", "TOOL_GROUPS")
-    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+    assert_equal "http", self_server["type"]
+    assert_equal self_session_url, self_server["url"]
+    assert_equal({ "X-API-Key" => "local-test-key" }, self_server["headers"])
+    assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
-  test "ensure_baseline! applies npx prefix to injected server" do
+  test "ensure_baseline! writes the self-session server as a native http entry, not an npx stdio process" do
+    # Zimmer speaks MCP itself: nothing is spawned to reach it, so the injected
+    # entry must carry no command/args (and therefore never hits the npx rewrite).
     @session.update!(mcp_servers: [], catalog_skills: [])
 
     build_processor.ensure_baseline!
 
-    args = read_config.dig("mcpServers", "agent-orchestrator-staging-self-session", "args")
-    assert_includes args, "--prefix"
-    assert_includes args, "/tmp"
+    self_server = read_config.dig("mcpServers", SELF_SESSION_SERVER)
+    assert_nil self_server["command"], "Injected self-session server must not shell out to npx"
+    assert_nil self_server["args"], "Injected self-session server must not shell out to npx"
+    assert_equal %w[type url headers], self_server.keys
+  end
+
+  test "ensure_baseline! still resolves secrets and rewrites npx on pre-existing servers" do
+    # ensure_baseline! runs resolve_and_rewrite! over the whole table whenever an
+    # injection fires, so pre-existing entries get the same treatment as in post_process!.
+    @session.update!(mcp_servers: [], catalog_skills: [])
+    ENV["BASELINE_TEST_SECRET"] = "resolved_secret"
+
+    write_config(
+      "some-npx-server" => {
+        "command" => "npx",
+        "args" => [ "-y", "some-package" ],
+        "env" => { "API_KEY" => "${BASELINE_TEST_SECRET}" }
+      }
+    )
+
+    build_processor.ensure_baseline!
+
+    entry = read_config.dig("mcpServers", "some-npx-server")
+    assert_includes entry["args"], "--prefix"
+    assert_includes entry["args"], "/tmp"
+    assert_equal "resolved_secret", entry.dig("env", "API_KEY")
+  ensure
+    ENV.delete("BASELINE_TEST_SECRET")
   end
 
   test "ensure_baseline! injects into pre-existing .mcp.json without Zimmer server" do
@@ -291,23 +378,59 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       "Should have both existing and injected servers"
     assert_not_nil result.dig("mcpServers", "some-other-server"),
       "Pre-existing server should be preserved"
-    assert_not_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
+    assert_not_nil result.dig("mcpServers", SELF_SESSION_SERVER),
       "Self-session server should be injected"
-    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+    assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
-  test "ensure_baseline! does NOT inject alongside subagent-restricted Zimmer server (ALLOWED_AGENT_ROOTS set, TOOL_GROUPS blank)" do
+  test "ensure_baseline! does NOT inject alongside a full-surface zimmer server scoped only by allowed_agent_roots" do
     @session.update!(mcp_servers: [], catalog_skills: [])
 
     write_config(
-      "agent-orchestrator" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "test-key",
-          "ALLOWED_AGENT_ROOTS" => "some-root"
-        }
+      SUBAGENT_SERVER => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp?allowed_agent_roots=some-root",
+        "headers" => { "X-API-Key" => "test-key" }
+      }
+    )
+
+    processor = build_processor
+    processor.ensure_baseline!
+
+    # allowed_agent_roots restricts which roots can be spawned; it does not scope
+    # the tool surface, so this entry still exposes every self_session tool.
+    assert_nil read_config.dig("mcpServers", SELF_SESSION_SERVER),
+      "Self-session server should NOT be injected when a full-surface Zimmer server is already present"
+    assert_empty processor.injected_mcp_servers
+  end
+
+  test "ensure_baseline! skips when an unscoped zimmer server is already present" do
+    @session.update!(mcp_servers: [], catalog_skills: [])
+
+    write_config(
+      SUBAGENT_SERVER => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp",
+        "headers" => { "X-API-Key" => "test-key" }
+      }
+    )
+
+    processor = build_processor
+    processor.ensure_baseline!
+
+    assert_nil read_config.dig("mcpServers", SELF_SESSION_SERVER),
+      "Self-session server should NOT be injected when an unscoped Zimmer server is present"
+    assert_empty processor.injected_mcp_servers
+  end
+
+  test "ensure_baseline! injects alongside a scoped zimmer-sessions server in .mcp.json" do
+    @session.update!(mcp_servers: [], catalog_skills: [])
+
+    write_config(
+      "zimmer-sessions" => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
+        "headers" => { "X-API-Key" => "prod-key" }
       }
     )
 
@@ -315,68 +438,21 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     processor.ensure_baseline!
 
     result = read_config
-    # An Zimmer server with TOOL_GROUPS blank already registers the full self_session tool
-    # group, so the self-session server is redundant.
-    assert_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
-      "Self-session server should NOT be injected when a Zimmer server with TOOL_GROUPS blank is already present"
-    assert_empty processor.injected_mcp_servers
-  end
-
-  test "ensure_baseline! skips when Zimmer server with TOOL_GROUPS blank is already present" do
-    @session.update!(mcp_servers: [], catalog_skills: [])
-
-    write_config(
-      "agent-orchestrator" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "test-key"
-        }
-      }
-    )
-
-    processor = build_processor
-    processor.ensure_baseline!
-
-    assert_nil read_config.dig("mcpServers", "agent-orchestrator-staging-self-session"),
-      "Self-session server should NOT be injected when a Zimmer server with TOOL_GROUPS blank is present"
-    assert_empty processor.injected_mcp_servers
-  end
-
-  test "ensure_baseline! injects alongside restricted Zimmer server in .mcp.json" do
-    @session.update!(mcp_servers: [], catalog_skills: [])
-
-    write_config(
-      "agent-orchestrator-prod-sessions" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "test-key",
-          "TOOL_GROUPS" => "sessions"
-        }
-      }
-    )
-
-    processor = build_processor
-    processor.ensure_baseline!
-
-    result = read_config
-    assert_not_nil result.dig("mcpServers", "agent-orchestrator-prod-sessions"),
-      "Existing restricted Zimmer server should be preserved"
-    assert_not_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
-      "Self-session server SHOULD be injected alongside restricted Zimmer server"
-    assert_equal "self_session", result.dig("mcpServers", "agent-orchestrator-staging-self-session", "env", "TOOL_GROUPS")
-    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+    assert_not_nil result.dig("mcpServers", "zimmer-sessions"),
+      "Existing scoped Zimmer server should be preserved"
+    self_server = result.dig("mcpServers", SELF_SESSION_SERVER)
+    assert_not_nil self_server,
+      "Self-session server SHOULD be injected alongside a Zimmer server scoped to other tool groups"
+    assert_equal "self_session", query_params(self_server["url"])["tool_groups"]
+    assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
   test "ensure_baseline! injects the subagent Zimmer server for a subagent-roots-only root" do
     # catalog-management has NO default_mcp_servers/skills/hooks/plugins, so
     # its regeneration routes through the baseline path. Its only subagent-spawning
-    # capability is the auto-injected agent-orchestrator server. ensure_baseline!
-    # must inject it (with the resolved default_subagent_roots as ALLOWED_AGENT_ROOTS)
-    # or the session loses start_session entirely. This is the primary defect.
+    # capability is the auto-injected zimmer server. ensure_baseline! must inject it
+    # (with the resolved default_subagent_roots as allowed_agent_roots) or the
+    # session loses start_session entirely. This is the primary defect.
     @session.update!(
       mcp_servers: [],
       catalog_skills: [],
@@ -389,23 +465,20 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     processor.ensure_baseline!
 
     result = read_config
-    ao_server = result.dig("mcpServers", "agent-orchestrator")
-    assert_not_nil ao_server,
-      "ensure_baseline! must inject the subagent-spawning agent-orchestrator server for a subagent-roots root"
-    assert_equal "npx", ao_server["command"]
-    assert_includes ao_server["args"], "agent-orchestrator-mcp-server@latest"
+    zimmer = result.dig("mcpServers", SUBAGENT_SERVER)
+    assert_not_nil zimmer,
+      "ensure_baseline! must inject the subagent-spawning zimmer server for a subagent-roots root"
+    assert_equal "http", zimmer["type"]
+    assert_equal "http://localhost:3000/mcp", url_without_query(zimmer["url"])
 
-    allowed = ao_server.dig("env", "ALLOWED_AGENT_ROOTS")
-    assert_includes allowed, "catalog-mgmt-research"
-    assert_includes allowed, "catalog-mgmt-configs"
-    assert_includes allowed, "catalog-mgmt-proctor"
-    assert_includes allowed, "catalog-mgmt-save"
+    allowed = query_params(zimmer["url"])["allowed_agent_roots"].to_s.split(",")
+    assert_equal SUBAGENT_ROOTS.sort, allowed.sort
 
-    # The subagent server (TOOL_GROUPS blank) already covers the self_session tool
+    # The full-surface subagent server already covers the self_session tool
     # group, so the dedicated self-session server is deduped away.
-    assert_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
+    assert_nil result.dig("mcpServers", SELF_SESSION_SERVER),
       "Self-session server should be deduped when the subagent Zimmer server is present"
-    assert_equal [ "agent-orchestrator" ], processor.injected_mcp_servers
+    assert_equal [ SUBAGENT_SERVER ], processor.injected_mcp_servers
   end
 
   test "ensure_baseline! does NOT inject the subagent Zimmer server for a root without default_subagent_roots" do
@@ -417,95 +490,88 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     processor.ensure_baseline!
 
     result = read_config
-    assert_nil result.dig("mcpServers", "agent-orchestrator"),
-      "subagent agent-orchestrator server must NOT be injected for a root without default_subagent_roots"
-    assert_not_nil result.dig("mcpServers", "agent-orchestrator-staging-self-session"),
+    assert_nil result.dig("mcpServers", SUBAGENT_SERVER),
+      "subagent zimmer server must NOT be injected for a root without default_subagent_roots"
+    assert_not_nil result.dig("mcpServers", SELF_SESSION_SERVER),
       "Self-session server should still be injected"
-    assert_equal [ "agent-orchestrator-staging-self-session" ], processor.injected_mcp_servers
+    assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
   # ---------------------------------------------------------------------------
-  # Env-aware retargeting of agent-orchestrator-* MCP server entries
+  # Env-aware retargeting of Zimmer MCP server entries
   # ---------------------------------------------------------------------------
-  # Fundamental problem these tests guard against: roots.json declares
-  # `agent-orchestrator-prod` in default_mcp_servers for several roots
-  # (ao-router, ao-heartbeat, etc.). When AIR resolves the catalog, those
-  # entries default to https://zimmer.example.com. A local-dev or staging session
-  # inheriting that default would orchestrate PRODUCTION Zimmer instead of its own
-  # instance. The post-processor rewrites BASE_URL/API_KEY at .mcp.json-write
-  # time so the catalog stays env-agnostic.
+  # Fundamental problem these tests guard against: mcp.json's `zimmer` /
+  # `zimmer-*` entries carry a production URL (https://zimmer.example.com/mcp),
+  # and roots.json puts them in default_mcp_servers. A local-dev or staging
+  # session inheriting one would orchestrate PRODUCTION Zimmer instead of its own
+  # instance. The post-processor rewrites the ORIGIN (and the X-API-Key header) at
+  # config-write time, preserving the query-string scoping, so the catalog stays
+  # env-agnostic.
 
-  test "post_process! retargets agent-orchestrator-prod entry to local in dev env" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
-
+  test "post_process! retargets a catalog zimmer entry to the local instance in test env" do
     write_config(
-      "agent-orchestrator-prod" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "prod-key-should-be-replaced"
-        }
+      SUBAGENT_SERVER => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp",
+        "headers" => { "X-API-Key" => "prod-key-should-be-replaced" }
       }
     )
 
     build_processor.post_process!
 
-    prod_server = read_config.dig("mcpServers", "agent-orchestrator-prod")
-    assert_equal "http://localhost:3000", prod_server.dig("env", "AGENT_ORCHESTRATOR_BASE_URL"),
-      "agent-orchestrator-prod BASE_URL should be retargeted to localhost in test/dev env " \
+    zimmer = read_config.dig("mcpServers", SUBAGENT_SERVER)
+    assert_equal "http://localhost:3000/mcp", zimmer["url"],
+      "The zimmer entry's origin should be retargeted to localhost in test/dev env " \
       "so the session orchestrates the local Zimmer instance, not production"
-    assert_equal "local-test-key", prod_server.dig("env", "AGENT_ORCHESTRATOR_API_KEY"),
-      "agent-orchestrator-prod API_KEY should be retargeted to local key in test/dev env"
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    assert_equal "local-test-key", zimmer.dig("headers", "X-API-Key"),
+      "The zimmer entry's API key should be retargeted to the local key in test/dev env"
   end
 
-  test "post_process! retargets all agent-orchestrator-* entries" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
-
+  test "post_process! retargets all zimmer-* entries and preserves their query-string scoping" do
     write_config(
-      "agent-orchestrator-prod" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "prod-key"
-        }
+      SUBAGENT_SERVER => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp",
+        "headers" => { "X-API-Key" => "prod-key" }
       },
-      "agent-orchestrator-prod-sessions" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "prod-key",
-          "TOOL_GROUPS" => "sessions",
-          "ALLOWED_AGENT_ROOTS" => "some-root"
-        }
+      "zimmer-sessions" => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp?tool_groups=sessions&allowed_agent_roots=some-root",
+        "headers" => { "X-API-Key" => "prod-key" }
       }
     )
 
     build_processor.post_process!
     result = read_config
 
-    prod = result.dig("mcpServers", "agent-orchestrator-prod")
-    assert_equal "http://localhost:3000", prod.dig("env", "AGENT_ORCHESTRATOR_BASE_URL")
-    assert_equal "local-test-key", prod.dig("env", "AGENT_ORCHESTRATOR_API_KEY")
+    zimmer = result.dig("mcpServers", SUBAGENT_SERVER)
+    assert_equal "http://localhost:3000/mcp", zimmer["url"]
+    assert_equal "local-test-key", zimmer.dig("headers", "X-API-Key")
 
-    sessions_entry = result.dig("mcpServers", "agent-orchestrator-prod-sessions")
-    assert_equal "http://localhost:3000", sessions_entry.dig("env", "AGENT_ORCHESTRATOR_BASE_URL")
-    assert_equal "local-test-key", sessions_entry.dig("env", "AGENT_ORCHESTRATOR_API_KEY")
-    assert_equal "sessions", sessions_entry.dig("env", "TOOL_GROUPS"),
-      "Retarget should NOT clobber non-URL/non-KEY env vars like TOOL_GROUPS"
-    assert_equal "some-root", sessions_entry.dig("env", "ALLOWED_AGENT_ROOTS"),
-      "Retarget should NOT clobber non-URL/non-KEY env vars like ALLOWED_AGENT_ROOTS"
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    sessions_entry = result.dig("mcpServers", "zimmer-sessions")
+    assert_equal "http://localhost:3000/mcp?tool_groups=sessions&allowed_agent_roots=some-root",
+      sessions_entry["url"],
+      "Retarget must rewrite only the origin — the query string carries the entry's scoping"
+    assert_equal "local-test-key", sessions_entry.dig("headers", "X-API-Key")
   end
 
-  test "post_process! does NOT retarget non-agent-orchestrator entries" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
+  test "post_process! creates the headers table on a zimmer entry that has none" do
+    # A catalog entry can arrive without headers (e.g. its ${VAR} resolved to blank
+    # and was dropped). Retarget must still stamp the current instance's API key.
+    write_config(
+      "zimmer-sessions" => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp?tool_groups=sessions"
+      }
+    )
 
+    build_processor.post_process!
+
+    assert_equal "local-test-key",
+      read_config.dig("mcpServers", "zimmer-sessions", "headers", "X-API-Key")
+  end
+
+  test "post_process! does NOT retarget non-Zimmer entries" do
     write_config(
       "playwright-custom" => {
         "command" => "npx",
@@ -514,18 +580,29 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
           "SOMETHING_BASE_URL" => "https://example.com",
           "SOMETHING_API_KEY" => "do-not-touch"
         }
+      },
+      # A third-party server that happens to be served at /mcp must not be
+      # mistaken for one of ours: the match is on the entry name, not the URL.
+      "figma" => {
+        "type" => "http",
+        "url" => "https://mcp.figma.com/mcp",
+        "headers" => { "Authorization" => "do-not-touch" }
       }
     )
 
     build_processor.post_process!
+    result = read_config
 
-    pw = read_config.dig("mcpServers", "playwright-custom")
+    pw = result.dig("mcpServers", "playwright-custom")
     assert_equal "https://example.com", pw.dig("env", "SOMETHING_BASE_URL"),
       "Non-Zimmer servers must not be touched by retargeting"
     assert_equal "do-not-touch", pw.dig("env", "SOMETHING_API_KEY"),
       "Non-Zimmer servers must not be touched by retargeting"
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+
+    figma = result.dig("mcpServers", "figma")
+    assert_equal "https://mcp.figma.com/mcp", figma["url"],
+      "A third-party server served at /mcp must not be retargeted at Zimmer"
+    assert_equal({ "Authorization" => "do-not-touch" }, figma["headers"])
   end
 
   test "post_process! does NOT retarget in production env" do
@@ -534,79 +611,68 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     # here is the simplest way to exercise the env-conditional branch.
     Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
       write_config(
-        "agent-orchestrator-prod" => {
-          "command" => "npx",
-          "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-          "env" => {
-            "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-            "AGENT_ORCHESTRATOR_API_KEY" => "real-prod-key"
-          }
+        SUBAGENT_SERVER => {
+          "type" => "http",
+          "url" => "https://zimmer.example.com/mcp",
+          "headers" => { "X-API-Key" => "real-prod-key" }
         }
       )
 
       build_processor.post_process!
 
-      prod = read_config.dig("mcpServers", "agent-orchestrator-prod")
-      assert_equal "https://zimmer.example.com", prod.dig("env", "AGENT_ORCHESTRATOR_BASE_URL"),
-        "In production env, agent-orchestrator-prod BASE_URL must be pass-through " \
+      zimmer = read_config.dig("mcpServers", SUBAGENT_SERVER)
+      assert_equal "https://zimmer.example.com/mcp", zimmer["url"],
+        "In production env, a zimmer entry's URL must be pass-through " \
         "(the catalog already points at the right place)"
-      assert_equal "real-prod-key", prod.dig("env", "AGENT_ORCHESTRATOR_API_KEY"),
-        "In production env, agent-orchestrator-prod API_KEY must be pass-through"
+      assert_equal "real-prod-key", zimmer.dig("headers", "X-API-Key"),
+        "In production env, a zimmer entry's API key must be pass-through"
     end
   end
 
-  test "post_process! retargets agent-orchestrator-prod to staging URL in staging env" do
+  test "post_process! retargets a zimmer entry to the staging instance in staging env" do
     ENV["AGENT_ORCHESTRATOR_STAGING_BASE_URL"] = "https://staging.zimmer.example.com"
-    # AGENT_ORCHESTRATOR_STAGING_API_KEY is set in test setup
+    ENV["AGENT_ORCHESTRATOR_STAGING_API_KEY"] = "test-staging-api-key"
 
     Rails.stub(:env, ActiveSupport::StringInquirer.new("staging")) do
       write_config(
-        "agent-orchestrator-prod" => {
-          "command" => "npx",
-          "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-          "env" => {
-            "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-            "AGENT_ORCHESTRATOR_API_KEY" => "prod-key-not-staging"
-          }
+        "zimmer-sessions" => {
+          "type" => "http",
+          "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
+          "headers" => { "X-API-Key" => "prod-key-not-staging" }
         }
       )
 
       build_processor.post_process!
 
-      prod = read_config.dig("mcpServers", "agent-orchestrator-prod")
-      assert_equal "https://staging.zimmer.example.com", prod.dig("env", "AGENT_ORCHESTRATOR_BASE_URL"),
-        "In staging env, agent-orchestrator-prod BASE_URL should be retargeted to staging"
-      assert_equal "test-staging-api-key", prod.dig("env", "AGENT_ORCHESTRATOR_API_KEY"),
-        "In staging env, agent-orchestrator-prod API_KEY should be the staging key"
+      entry = read_config.dig("mcpServers", "zimmer-sessions")
+      assert_equal "https://staging.zimmer.example.com/mcp?tool_groups=sessions", entry["url"],
+        "In staging env, a zimmer entry should be retargeted to the staging instance"
+      assert_equal "test-staging-api-key", entry.dig("headers", "X-API-Key"),
+        "In staging env, a zimmer entry should carry the staging key"
     end
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_STAGING_BASE_URL")
   end
 
-  test "inject_subagent_ao_server! uses local target in dev env" do
+  test "the injected subagent server points at the local instance in dev/test env" do
     # When a parent root with default_subagent_roots spawns subagents, the
-    # auto-injected agent-orchestrator MCP server must point at the LOCAL Zimmer
-    # instance in dev, not production.
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
+    # auto-injected zimmer MCP server must point at the LOCAL Zimmer instance in
+    # dev, not production.
     @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
     write_config("noop" => { "command" => "true", "args" => [], "env" => {} })
 
     build_processor.post_process!
 
-    injected = read_config.dig("mcpServers", "agent-orchestrator")
+    injected = read_config.dig("mcpServers", SUBAGENT_SERVER)
     assert_not_nil injected, "Subagent Zimmer server should be injected for catalog-management"
-    assert_equal "http://localhost:3000", injected.dig("env", "AGENT_ORCHESTRATOR_BASE_URL"),
-      "Auto-injected subagent Zimmer server BASE_URL must be the local instance, not prod"
-    assert_equal "local-test-key", injected.dig("env", "AGENT_ORCHESTRATOR_API_KEY"),
-      "Auto-injected subagent Zimmer server API_KEY must be the local key, not prod"
-    assert_not_nil injected.dig("env", "ALLOWED_AGENT_ROOTS"),
-      "Auto-injected subagent Zimmer server must keep ALLOWED_AGENT_ROOTS"
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    assert_equal "http://localhost:3000/mcp", url_without_query(injected["url"]),
+      "Auto-injected subagent Zimmer server must target the local instance, not prod"
+    assert_equal "local-test-key", injected.dig("headers", "X-API-Key"),
+      "Auto-injected subagent Zimmer server must carry the local key, not the prod key"
+    assert_not_nil query_params(injected["url"])["allowed_agent_roots"],
+      "Auto-injected subagent Zimmer server must keep its allowed_agent_roots scoping"
   end
 
-  test "inject_subagent_ao_server! uses prod target in production env" do
+  test "the injected subagent server points at the prod instance in production env" do
     ENV["AGENT_ORCHESTRATOR_PROD_API_KEY"] = "real-prod-key"
     @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
@@ -615,77 +681,60 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
       build_processor.post_process!
 
-      injected = read_config.dig("mcpServers", "agent-orchestrator")
+      injected = read_config.dig("mcpServers", SUBAGENT_SERVER)
       assert_not_nil injected
-      assert_equal "https://zimmer.example.com", injected.dig("env", "AGENT_ORCHESTRATOR_BASE_URL")
-      assert_equal "real-prod-key", injected.dig("env", "AGENT_ORCHESTRATOR_API_KEY")
+      assert_equal "https://zimmer.example.com/mcp", url_without_query(injected["url"])
+      assert_equal "real-prod-key", injected.dig("headers", "X-API-Key")
     end
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_PROD_API_KEY")
   end
 
   test "retarget honors AGENT_ORCHESTRATOR_LOCAL_BASE_URL override" do
     ENV["AGENT_ORCHESTRATOR_LOCAL_BASE_URL"] = "http://localhost:9999"
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
 
     write_config(
-      "agent-orchestrator-prod" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "prod-key"
-        }
+      "zimmer-sessions" => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
+        "headers" => { "X-API-Key" => "prod-key" }
       }
     )
 
     build_processor.post_process!
+    result = read_config
 
-    prod = read_config.dig("mcpServers", "agent-orchestrator-prod")
-    assert_equal "http://localhost:9999", prod.dig("env", "AGENT_ORCHESTRATOR_BASE_URL"),
-      "When AGENT_ORCHESTRATOR_LOCAL_BASE_URL is set, retarget should use that exact value"
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_BASE_URL")
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    assert_equal "http://localhost:9999/mcp?tool_groups=sessions",
+      result.dig("mcpServers", "zimmer-sessions", "url"),
+      "When AGENT_ORCHESTRATOR_LOCAL_BASE_URL is set, retarget should use that exact origin"
+    assert_equal "http://localhost:9999/mcp?tool_groups=self_session",
+      result.dig("mcpServers", SELF_SESSION_SERVER, "url"),
+      "The injected self-session entry should be built against the same overridden origin"
   end
 
-  test "ensure_baseline! inject_self_session + retarget produces localhost-targeted self-session in dev env" do
-    # Reproduce the bug class the user reported: Zimmer running locally, but the
-    # auto-injected self-session MCP server points at staging URL and gets a 401.
-    # The catalog only defines staging/prod self-session entries, so in dev,
-    # the self-session injector falls back to the staging catalog entry.
-    # Retarget must then rewrite BASE_URL/API_KEY to the local instance.
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
-    @session.update!(mcp_servers: [])  # no user-selected Zimmer server → self-session injection fires
+  test "ensure_baseline! injection + retarget produces a localhost-targeted self-session entry in dev env" do
+    # The bug class this guards: Zimmer running locally, but the auto-injected
+    # self-session MCP server points at the production URL and gets a 401.
+    @session.update!(mcp_servers: [])
 
     write_config({})
 
     build_processor.ensure_baseline!
 
-    self_session = read_config.dig("mcpServers", "agent-orchestrator-staging-self-session")
-    assert_not_nil self_session,
-      "ensure_baseline! should inject the staging-flavored self-session entry in dev"
-    assert_equal "http://localhost:3000", self_session.dig("env", "AGENT_ORCHESTRATOR_BASE_URL"),
-      "Self-session BASE_URL must be retargeted to localhost in dev, not staging.zimmer.example.com"
-    assert_equal "local-test-key", self_session.dig("env", "AGENT_ORCHESTRATOR_API_KEY"),
-      "Self-session API_KEY must be retargeted to the local key in dev, not the staging key"
-    assert_equal "self_session", self_session.dig("env", "TOOL_GROUPS"),
-      "Retarget must preserve TOOL_GROUPS=self_session on the self-session entry"
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    self_session = read_config.dig("mcpServers", SELF_SESSION_SERVER)
+    assert_not_nil self_session, "ensure_baseline! should inject the self-session entry"
+    assert_equal "http://localhost:3000/mcp?tool_groups=self_session", self_session["url"],
+      "Self-session URL must target localhost in dev, not zimmer.example.com — and keep its tool_groups scoping"
+    assert_equal "local-test-key", self_session.dig("headers", "X-API-Key"),
+      "Self-session API key must be the local key in dev, not the prod key"
   end
 
   test "post_process! logs warning when retargeting with blank API key" do
     ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
 
     write_config(
-      "agent-orchestrator-prod" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "prod-key"
-        }
+      SUBAGENT_SERVER => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp",
+        "headers" => { "X-API-Key" => "prod-key" }
       }
     )
 
@@ -695,9 +744,9 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     build_processor.post_process!
 
-    assert_match(/Retargeted agent-orchestrator-\* servers.*blank API_KEY/,
+    assert_match(/Retargeted Zimmer MCP servers.*blank API key/,
       log_output.string,
-      "Expected warning when API_KEY is blank after retarget")
+      "Expected warning when the API key is blank after retarget")
     assert_match(/AGENT_ORCHESTRATOR_LOCAL_API_KEY/,
       log_output.string,
       "Warning should name the env var the dev needs to set")
@@ -706,13 +755,11 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "post_process! does NOT warn when retargeted API key is present" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
-
     write_config(
-      "agent-orchestrator-prod" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => { "AGENT_ORCHESTRATOR_API_KEY" => "prod-key" }
+      SUBAGENT_SERVER => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp",
+        "headers" => { "X-API-Key" => "prod-key" }
       }
     )
 
@@ -722,33 +769,28 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     build_processor.post_process!
 
-    refute_match(/blank API_KEY/, log_output.string,
-      "Should not warn when API key is present after retarget")
+    refute_match(/blank API key/, log_output.string,
+      "Should not warn when the API key is present after retarget")
   ensure
     Rails.logger = original_logger if original_logger
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
   end
 
   # ---------------------------------------------------------------------------
   # Golden file — byte-for-byte stability of the written .mcp.json
   # ---------------------------------------------------------------------------
-  # Locks in the exact serialized output for a representative config so the
-  # Phase-1 extraction (and any future change to the post-processor) cannot
-  # silently alter the bytes Zimmer writes. The input deliberately includes a Zimmer
-  # server with TOOL_GROUPS blank so self-session injection is deduped away —
-  # this keeps the output independent of the runtime catalog and fully
-  # deterministic.
+  # Locks in the exact serialized output for a representative config so any future
+  # change to the post-processor cannot silently alter the bytes Zimmer writes.
+  # The input deliberately includes a full-surface Zimmer server so self-session
+  # injection is deduped away — this keeps the output independent of the runtime
+  # catalog and fully deterministic.
   test "post_process! produces byte-for-byte stable .mcp.json (golden file)" do
     ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
 
     write_config(
-      "agent-orchestrator-prod" => {
-        "command" => "npx",
-        "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-        "env" => {
-          "AGENT_ORCHESTRATOR_BASE_URL" => "https://zimmer.example.com",
-          "AGENT_ORCHESTRATOR_API_KEY" => "prod-key"
-        }
+      SUBAGENT_SERVER => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp",
+        "headers" => { "X-API-Key" => "prod-key" }
       },
       "some-npx-server" => {
         "command" => "npx",
@@ -761,13 +803,10 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     expected = {
       "mcpServers" => {
-        "agent-orchestrator-prod" => {
-          "command" => "npx",
-          "args" => [ "-y", "--prefix", "/tmp", "agent-orchestrator-mcp-server@latest" ],
-          "env" => {
-            "AGENT_ORCHESTRATOR_BASE_URL" => "http://localhost:3000",
-            "AGENT_ORCHESTRATOR_API_KEY" => "local-key"
-          }
+        SUBAGENT_SERVER => {
+          "type" => "http",
+          "url" => "http://localhost:3000/mcp",
+          "headers" => { "X-API-Key" => "local-key" }
         },
         "some-npx-server" => {
           "command" => "npx",
@@ -780,8 +819,6 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_equal JSON.pretty_generate(expected),
       @mock_fs.read(File.join(@working_dir, ".mcp.json")),
       "Written .mcp.json must match the golden serialization byte-for-byte"
-  ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
   end
 
   private
@@ -803,5 +840,18 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
   def read_config
     JSON.parse(@mock_fs.read(File.join(@working_dir, ".mcp.json")))
+  end
+
+  # The /mcp endpoint of the instance under test, scoped to the self-session tools.
+  def self_session_url
+    "http://localhost:3000/mcp?tool_groups=self_session"
+  end
+
+  def query_params(url)
+    Rack::Utils.parse_query(URI.parse(url).query)
+  end
+
+  def url_without_query(url)
+    url.to_s.split("?").first
   end
 end

@@ -84,6 +84,13 @@ self-session server (`SelfSessionInjector`), which is how an agent can archive i
 title, or schedule its own wake-up. `session_json` exposes three fields for this:
 `mcp_servers` (what you chose), `injected_mcp_servers`, and `all_mcp_servers`.
 
+The injected servers are Zimmer's own: streamable-HTTP entries pointing at this instance's native
+`/mcp` endpoint (`zimmer-self-session`, and `zimmer` for roots with `default_subagent_roots`).
+Zimmer synthesizes them rather than resolving them from the catalog, and retargets any `zimmer*`
+entry at the instance preparing the session so a staging session never orchestrates production.
+
+→ [Zimmer's MCP server](/extend/mcp-server/) for the tool surface, the scoped variants, and auth.
+
 ## Remote servers and OAuth
 
 A remote server (`http` / `streamable-http` / `sse`) with no static `Authorization` header is assumed

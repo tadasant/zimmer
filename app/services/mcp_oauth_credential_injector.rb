@@ -57,12 +57,12 @@ class McpOauthCredentialInjector
       # Only check remote servers (they may require OAuth)
       next unless %w[http streamable-http sse].include?(server_config[:type])
 
-      # If mcp.json configures a static Authorization header for this server, that
+      # If mcp.json configures a static credential header for this server, that
       # header IS the credential — no OAuth flow is needed. Skip OAuth checks so
       # the gate doesn't block the session when the server's URL also happens to
       # advertise OAuth metadata (e.g. Cloudflare's hosted MCP).
-      if static_authorization_header?(server_config)
-        Rails.logger.info "[McpOauthCredentialInjector] Skipping OAuth checks for #{server_name}: static Authorization header configured in mcp.json"
+      if static_credential_header?(server_config)
+        Rails.logger.info "[McpOauthCredentialInjector] Skipping OAuth checks for #{server_name}: static credential header configured in mcp.json"
         next
       end
 
@@ -215,17 +215,22 @@ class McpOauthCredentialInjector
     end
   end
 
-  # True when the server config has a non-empty `Authorization` header.
+  # Header names that carry a static credential: `Authorization` for bearer-token
+  # servers, `X-API-Key` for API-key servers — including Zimmer's own native MCP
+  # server, which authenticates with the same API key as the rest of its API.
+  CREDENTIAL_HEADERS = %w[authorization x-api-key].freeze
+
+  # True when the server config has a non-empty credential header.
   # HTTP header names are case-insensitive (RFC 7230) so we match in any case.
   # The value may still contain `${VAR}` placeholders at this stage — those are
-  # resolved later by AirPrepareService. We treat the presence of an Authorization
-  # entry as the operator's intent to use a static header credential.
-  def static_authorization_header?(server_config)
+  # resolved later by AirPrepareService. We treat the presence of such a header
+  # as the operator's intent to use a static header credential.
+  def static_credential_header?(server_config)
     headers = server_config[:headers]
     return false if headers.blank?
 
     headers.any? do |key, value|
-      key.to_s.downcase == "authorization" && value.to_s.strip.present?
+      CREDENTIAL_HEADERS.include?(key.to_s.downcase) && value.to_s.strip.present?
     end
   end
 end
