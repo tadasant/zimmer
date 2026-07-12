@@ -16,9 +16,11 @@ about why it couldn't. You stay in control of what runs and what merges.
   droplet runs the whole thing. No per-seat bill, no exotic infra to keep alive.
 - **You sign in — you don't paste keys.** The goal is to juggle as few long-lived secrets
   as possible. Claude and Codex authenticate against your own account over OAuth, `gh` uses
-  the device flow, and MCP servers register themselves and refresh their own tokens. Short-
-  lived credentials the runtime manages beat an API key pasted into a config file — and
-  never sitting in one is the surest way to keep it out of a transcript.
+  the device flow, and MCP servers register themselves and refresh their own tokens. This
+  matters on the bad day: when a long-lived API key ends up in a log or a transcript, your
+  options are to live with the exposure or spend the evening hunting down every config that
+  has a copy of it. A short-lived token the runtime already rotates expires on its own, and
+  you re-auth in a browser.
 - **It follows you off the laptop.** Install it as a PWA and it web-pushes your phone when
   a session finishes, fails, or stops to ask you something.
 - **A UI shaped around work that outlives your attention.** Pinned sessions and
