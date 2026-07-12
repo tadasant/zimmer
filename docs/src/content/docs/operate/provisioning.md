@@ -44,6 +44,7 @@ could not reach the box.
 | `STAGING_SECRET_BASE` | Rails `SECRET_KEY_BASE` for staging |
 | `STAGING_DB_PASSWORD` | the staging Postgres accessory's password — a stable secret, deliberately *not* derived from `SECRET_KEY_BASE` (rotating the latter must stay safe; `POSTGRES_PASSWORD` only takes effect on first initdb) |
 | `STAGING_API_KEYS` | REST API bearer keys |
+| `STAGING_RAILS_MASTER_KEY` | decrypts the committed `config/credentials/staging.yml.enc` (`mcp_secrets`: `SLACK_BOT_TOKEN`, `ENG_ALERTS_SLACK_CHANNEL_ID`). Optional — without it the deploy still succeeds, but Slack and every credential-bearing MCP server go quiet ([why](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent)) |
 | `OTEL_LOGS_EXPORTER_ENDPOINT` / `_BEARER_TOKEN`, `SENTRY_DSN_BACKEND` | optional observability |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
@@ -81,9 +82,10 @@ plaintext columns — and the [unauthenticated `/supervisor` panel](/auth/overvi
 ## App env vars
 
 `API_KEYS` and `APP_HOST` are set by Kamal (`config/deploy.staging.yml`), so the REST API works and
-MCP OAuth callbacks resolve to the real host. `RAILS_MASTER_KEY` is set in a self-hosted production
-config but [deliberately unset on staging](/limitations/#rails_master_key-is-unset-on-staging-deliberate),
-which is why anything reading Rails encrypted credentials (`mcp_secrets`) is inert on staging.
+MCP OAuth callbacks resolve to the real host. `RAILS_MASTER_KEY` is set too, from the
+`STAGING_RAILS_MASTER_KEY` secret — it decrypts the committed `config/credentials/staging.yml.enc`,
+which is what makes `mcp_secrets` (and therefore Slack) work on staging. It stays
+[optional, and degrades silently when absent](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent).
 
 The staging database is a Postgres accessory container Kamal runs on the droplet — nothing external
 to provision. A self-hosted production deployment supplies its own database (Terraform can reference

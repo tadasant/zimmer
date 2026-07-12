@@ -66,11 +66,16 @@ env:
     DATABASE_SSLMODE: prefer
   secret:
     - SECRET_KEY_BASE
+    # Decrypts the committed config/credentials/staging.yml.enc, so SecretsLoader
+    # can serve mcp_secrets (SLACK_BOT_TOKEN, ENG_ALERTS_SLACK_CHANNEL_ID) to
+    # SlackService, AlertService, and any MCP server with a ${VAR} placeholder.
+    # Blank or unset simply leaves the credentials inert -- see .kamal/secrets.staging.
+    - RAILS_MASTER_KEY
     - API_KEYS
     - DATABASE_PASSWORD
     # The API key the injected self-session MCP server uses to call this instance's
-    # own REST API. Staging has no RAILS_MASTER_KEY (so no encrypted mcp_secrets);
-    # SecretsInterpolator falls back to process ENV, which is what this supplies.
+    # own REST API. It lives in process ENV rather than mcp_secrets (SecretsInterpolator
+    # falls back to ENV), because the deploy workflow derives it from API_KEYS.
     - AGENT_ORCHESTRATOR_STAGING_API_KEY
     # Observability. The app's initializers are hard no-ops when these are empty,
     # so an unset secret simply disables shipping -- but they must be PRESENT here,

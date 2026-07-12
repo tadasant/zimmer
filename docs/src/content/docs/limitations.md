@@ -13,7 +13,7 @@ line starts with 🔴 would bite a new operator immediately.
 
 Nearly every item below links to the issue tracking it. The few that don't are deliberate — a
 platform limit or a design choice we don't intend to change (Push notifications without the Push
-API; the `RAILS_MASTER_KEY` staging omission below) — and each says so in place.
+API; `RAILS_MASTER_KEY` staying optional on staging, below) — and each says so in place.
 
 ---
 
@@ -36,13 +36,22 @@ Rotating the deploy key is rare; changing the domain is rarer. But neither is a 
 
 Tracked in [#121](https://github.com/tadasant/zimmer/issues/121).
 
-### RAILS_MASTER_KEY is unset on staging (deliberate)
+### RAILS_MASTER_KEY is optional on staging, and silently degrades when absent
 
-`RAILS_MASTER_KEY` is deliberately absent from staging's Kamal config: there is no committed
-`config/credentials/production.yml.enc` to decrypt, `secrets_loader.rb` rescues a missing key, and there
-is no `require_master_key` — so the app boots without it. Anything reading Rails encrypted credentials
-(i.e. `mcp_secrets`) is therefore inert on staging. `API_KEYS` and `APP_HOST` *are* set (in
-`config/deploy.staging.yml`); they used to be missing entirely.
+Staging *can* read encrypted credentials: `config/credentials/staging.yml.enc` is committed, and
+`deploy-staging.yml` passes the `STAGING_RAILS_MASTER_KEY` secret through `.kamal/secrets.staging` as
+`RAILS_MASTER_KEY`. What remains sharp is what happens without it.
+
+The key is not required, on purpose — failing the deploy would break staging for any fork or
+self-hoster that has not set the secret. And it cannot fail loudly at runtime either: ActiveSupport
+reads the key as `ENV["RAILS_MASTER_KEY"].presence` (`active_support/encrypted_file.rb`), so blank and
+unset are the same thing, `secrets_loader.rb` rescues the miss, and there is no `require_master_key`.
+The app boots, healthy, serving **no** `mcp_secrets` — Slack triggers and `AlertService` go quiet, and
+any MCP server with a `${VAR}` placeholder fails at session start. `deploy-staging.yml` emits a
+`::warning::` when the secret is empty, which is the only signal you get.
+
+Production is unaffected: its `.enc` is bind-mounted onto the droplet rather than committed, and
+`PROD_RAILS_MASTER_KEY` is mandatory in practice.
 
 ### SSH is open to `0.0.0.0/0`
 

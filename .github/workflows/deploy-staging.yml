@@ -187,6 +187,7 @@ jobs:
           STAGING_SECRET_BASE: ${{ secrets.STAGING_SECRET_BASE }}
           STAGING_API_KEYS: ${{ secrets.STAGING_API_KEYS }}
           STAGING_DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
+          STAGING_RAILS_MASTER_KEY: ${{ secrets.STAGING_RAILS_MASTER_KEY }}
           SENTRY_DSN_BACKEND: ${{ secrets.SENTRY_DSN_BACKEND }}
           OTEL_LOGS_EXPORTER_ENDPOINT: ${{ secrets.OTEL_LOGS_EXPORTER_ENDPOINT }}
           OTEL_LOGS_EXPORTER_BEARER_TOKEN: ${{ secrets.OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
@@ -200,6 +201,17 @@ jobs:
             echo "::error::SecretsInterpolator treats blank-but-set exactly like unset, so every session"
             echo "::error::would fail with MissingVariableError -- the bug this wiring exists to prevent."
             exit 1
+          fi
+          # RAILS_MASTER_KEY is deliberately NOT fatal, unlike the key above. It decrypts
+          # config/credentials/staging.yml.enc, and ActiveSupport reads it as
+          # `ENV["RAILS_MASTER_KEY"].presence` -- so blank behaves exactly like unset:
+          # the credentials stay inert and the app boots, which is how staging ran before
+          # it had a key at all. Failing here would turn a degraded deploy into a broken
+          # one for anyone (a fork, a self-hoster) who has not set the secret.
+          if [ -z "${STAGING_RAILS_MASTER_KEY:-}" ]; then
+            echo "::warning::STAGING_RAILS_MASTER_KEY is unset, so config/credentials/staging.yml.enc stays encrypted."
+            echo "::warning::Staging will boot, but SecretsLoader serves nothing: Slack triggers and AlertService"
+            echo "::warning::go quiet, and every MCP server with a \${VAR} from mcp_secrets fails to start a session."
           fi
           kamal accessory boot all -d staging
           kamal deploy -d staging \

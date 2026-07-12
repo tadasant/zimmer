@@ -41,7 +41,7 @@ Everything in Zimmer reads them through `AirCatalogService`. Code that reads `ro
 | `REDIS_URL` | Cache | ✅ (Kamal) |
 | `API_KEYS` | REST API auth | ✅ (Kamal) |
 | `APP_HOST` | MCP OAuth redirect URI | ✅ (Kamal) |
-| `RAILS_MASTER_KEY` | Rails credentials | ✅ in a self-hosted production config; [unset on staging by design](/limitations/#rails_master_key-is-unset-on-staging-deliberate) |
+| `RAILS_MASTER_KEY` | Rails credentials | ✅ in a self-hosted production config; on staging it is [optional, and degrades silently when absent](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent) |
 
 The env, secrets, and data-store wiring all live in `config/deploy.*.yml` and `.kamal/secrets.*`,
 not in Terraform — Terraform only provisions the host.
