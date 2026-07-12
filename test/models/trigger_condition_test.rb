@@ -610,15 +610,65 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_includes @slack_condition.errors[:configuration], "must include channel_id for Slack conditions"
   end
 
-  test "allowed_user_ids returns hard-coded IDs by default" do
+  # An unconfigured Zimmer lets ANY workspace member @mention or DM the bot. The old
+  # behavior -- a hard-coded pair of Slack user IDs ported from another workspace --
+  # meant a fresh install silently ignored everyone, including its own owner.
+  test "allowed_user_ids is empty by default, meaning everyone is allowed" do
     condition = trigger_conditions(:bot_mention_slack_condition)
-    assert_equal Trigger::ALLOWED_BOT_MENTION_USER_IDS, condition.allowed_user_ids
+
+    assert_empty condition.allowed_user_ids
+    assert condition.allow_all_users?
+    assert condition.user_allowed?("U_ANYONE")
   end
 
-  test "allowed_user_ids returns config override when present" do
+  test "SLACK_BOT_MENTION_ALLOWED_USER_IDS restricts to exactly those users" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+
+    with_allowed_user_ids_secret("U111,U222") do
+      assert_equal %w[U111 U222], condition.allowed_user_ids
+      assert_not condition.allow_all_users?
+      assert condition.user_allowed?("U111")
+      assert_not condition.user_allowed?("U_NOT_ON_THE_LIST")
+    end
+  end
+
+  test "SLACK_BOT_MENTION_ALLOWED_USER_IDS tolerates whitespace and empty entries" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+
+    with_allowed_user_ids_secret(" U111 , ,U222,") do
+      assert_equal %w[U111 U222], condition.allowed_user_ids
+    end
+  end
+
+  # Blank must mean "everyone", not "nobody" -- SecretsInterpolator treats a
+  # blank-but-set secret as set, so this is the difference between an open default
+  # and a bot that silently answers no one.
+  test "a blank SLACK_BOT_MENTION_ALLOWED_USER_IDS allows everyone" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+
+    with_allowed_user_ids_secret("   ") do
+      assert condition.allow_all_users?
+      assert condition.user_allowed?("U_ANYONE")
+    end
+  end
+
+  test "a condition's own allowed_user_ids overrides the deployment-wide allow-list" do
     condition = trigger_conditions(:bot_mention_slack_condition)
     condition.configuration["allowed_user_ids"] = %w[U111 U222]
-    assert_equal %w[U111 U222], condition.allowed_user_ids
+
+    with_allowed_user_ids_secret("U999") do
+      assert_equal %w[U111 U222], condition.allowed_user_ids
+      assert condition.user_allowed?("U111")
+      assert_not condition.user_allowed?("U999")
+    end
+  end
+
+  test "user_allowed? rejects a blank user id even when everyone is allowed" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+
+    assert condition.allow_all_users?
+    assert_not condition.user_allowed?(nil)
+    assert_not condition.user_allowed?("")
   end
 
   test "dm_timestamps returns empty hash by default" do
@@ -709,5 +759,14 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "mark_polled! updates last_message_ts when provided" do
     @slack_condition.mark_polled!(message_ts: "1704153600.000000")
     assert_equal "1704153600.000000", @slack_condition.last_message_ts
+  end
+
+  private
+
+  # The deployment-wide allow-list resolves through SecretsLoader (encrypted
+  # credentials) first, ENV second -- the same order SlackService uses for its token.
+  def with_allowed_user_ids_secret(value)
+    SecretsLoader.stubs(:get).with("SLACK_BOT_MENTION_ALLOWED_USER_IDS").returns(value)
+    yield
   end
 end

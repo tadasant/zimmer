@@ -55,11 +55,53 @@ class TriggerCondition < ApplicationRecord
     condition_type == "slack" && thread_ts.present?
   end
 
-  # Get the allowed user IDs for bot_mention conditions.
-  # Falls back to the hard-coded constant on Trigger if not specified in config.
+  # The deployment-wide allow-list for bot_mention conditions: a comma-separated
+  # list of Slack user IDs in SLACK_BOT_MENTION_ALLOWED_USER_IDS, resolved from
+  # encrypted credentials first and process ENV second (the same order
+  # SlackService#slack_bot_token and AlertService#channel_id use).
+  #
+  # Blank or unset means EVERYONE, not nobody. An unconfigured Zimmer lets any
+  # workspace member @mention or DM the bot; a deployment narrows it by setting
+  # this. The bound on "everyone" is that the bot only ever sees channels it has
+  # been invited to, and DMs people choose to open with it.
+  def self.default_allowed_user_ids
+    raw = SecretsLoader.get("SLACK_BOT_MENTION_ALLOWED_USER_IDS") ||
+      ENV["SLACK_BOT_MENTION_ALLOWED_USER_IDS"]
+
+    raw.to_s.split(",").filter_map { |id| id.strip.presence }
+  end
+
+  # Allowed user IDs for bot_mention conditions: this condition's own explicit
+  # list if it has one (set from the UI/API), else the deployment-wide default.
+  # Empty means unrestricted -- ask allow_all_users? rather than reading this as
+  # "nobody", and see the DM caveat there.
+  # Memoized: the poller asks this once per message and once per thread reply, and
+  # SecretsLoader deliberately does not memoize (it re-reads credentials on every
+  # call so a deploy's new secrets are picked up mid-process). A condition object
+  # lives for one poll, so caching here is safe and saves that work per message.
   def allowed_user_ids
-    ids = configuration["allowed_user_ids"]
-    ids.present? ? Array(ids) : Trigger::ALLOWED_BOT_MENTION_USER_IDS
+    @allowed_user_ids ||= begin
+      ids = configuration["allowed_user_ids"]
+      ids.present? ? Array(ids) : self.class.default_allowed_user_ids
+    end
+  end
+
+  # True when no allow-list applies, i.e. every workspace member may trigger.
+  #
+  # Callers MUST branch on this rather than passing allowed_user_ids around: the
+  # DM path enumerates the allow-list (SlackService.list_dm_channels filters
+  # conversations.list down to DMs with those users), and "everyone" cannot be
+  # expressed as a list of IDs. Treating the empty list as a filter silently means
+  # "nobody" and DMs stop working.
+  def allow_all_users?
+    allowed_user_ids.empty?
+  end
+
+  # Whether a Slack user may fire this condition.
+  def user_allowed?(user_id)
+    return false if user_id.blank?
+
+    allow_all_users? || allowed_user_ids.include?(user_id)
   end
 
   # Get the per-user DM timestamps for bot_mention conditions.

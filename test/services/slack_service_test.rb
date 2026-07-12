@@ -93,6 +93,55 @@ class SlackServiceTest < ActiveSupport::TestCase
     assert_empty channels
   end
 
+  # nil and [] are NOT the same thing here, and the difference is load-bearing: an
+  # unrestricted bot_mention condition (the default) has an empty allow-list, and
+  # "everyone" cannot be enumerated as a list of user IDs, so it passes nil. These
+  # exercise the real method body -- the poller tests stub this method out, so only
+  # these would catch it blowing up or filtering everything away.
+  test "list_dm_channels with nil user_ids returns every DM" do
+    SlackService.stubs(:client).returns(stub_im_client)
+
+    channels = SlackService.list_dm_channels(user_ids: nil)
+
+    assert_equal %w[D1 D2], channels.map(&:id)
+  end
+
+  test "list_dm_channels defaults to every DM when user_ids is omitted" do
+    SlackService.stubs(:client).returns(stub_im_client)
+
+    assert_equal %w[D1 D2], SlackService.list_dm_channels.map(&:id)
+  end
+
+  test "list_dm_channels with user_ids returns only those users' DMs" do
+    SlackService.stubs(:client).returns(stub_im_client)
+
+    channels = SlackService.list_dm_channels(user_ids: %w[U222])
+
+    assert_equal %w[D2], channels.map(&:id)
+  end
+
+  test "list_dm_channels with an empty user_ids array returns nothing" do
+    SlackService.stubs(:client).returns(stub_im_client)
+
+    assert_empty SlackService.list_dm_channels(user_ids: [])
+  end
+
+  private
+
+  def stub_im_client
+    mock_client = mock("slack_client")
+    mock_client.stubs(:conversations_list).returns(
+      OpenStruct.new(
+        channels: [
+          OpenStruct.new(id: "D1", user: "U111"),
+          OpenStruct.new(id: "D2", user: "U222")
+        ],
+        response_metadata: nil
+      )
+    )
+    mock_client
+  end
+
   test "get_channel_history calls Slack API with correct parameters" do
     mock_client = mock("slack_client")
     mock_response = OpenStruct.new(
