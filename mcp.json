@@ -63,7 +63,7 @@
     "type": "streamable-http",
     "url": "https://zimmer.example.com/mcp",
     "headers": {
-      "X-API-Key": "${AGENT_ORCHESTRATOR_PROD_API_KEY}"
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
   "zimmer-sessions": {
@@ -72,7 +72,7 @@
     "type": "streamable-http",
     "url": "https://zimmer.example.com/mcp?tool_groups=sessions",
     "headers": {
-      "X-API-Key": "${AGENT_ORCHESTRATOR_PROD_API_KEY}"
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
   "zimmer-self-session": {
@@ -81,7 +81,7 @@
     "type": "streamable-http",
     "url": "https://zimmer.example.com/mcp?tool_groups=self_session",
     "headers": {
-      "X-API-Key": "${AGENT_ORCHESTRATOR_PROD_API_KEY}"
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
   "figma": {

@@ -32,8 +32,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     AirPrepareService.send(:remove_const, :AIR_INSTALL_DIR)
     AirPrepareService.const_set(:AIR_INSTALL_DIR, @tmp_air_dir)
 
-    # Self-session catalog entry requires AGENT_ORCHESTRATOR_STAGING_API_KEY
-    ENV["AGENT_ORCHESTRATOR_STAGING_API_KEY"] = "test-staging-api-key"
+    # Self-session catalog entry requires ZIMMER_STAGING_API_KEY
+    ENV["ZIMMER_STAGING_API_KEY"] = "test-staging-api-key"
   end
 
   teardown do
@@ -41,7 +41,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     AirPrepareService.const_set(:AIR_INSTALL_DIR, @original_air_dir)
     FileUtils.rm_rf(@working_dir) if @working_dir && File.exist?(@working_dir)
     FileUtils.rm_rf(@tmp_air_dir) if @tmp_air_dir && File.exist?(@tmp_air_dir)
-    ENV.delete("AGENT_ORCHESTRATOR_STAGING_API_KEY")
+    ENV.delete("ZIMMER_STAGING_API_KEY")
   end
 
   test "ensure_air_installed! re-installs when binary is missing despite version marker" do

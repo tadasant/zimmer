@@ -26,12 +26,12 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   # test so an ambient .env value can never make an assertion pass (or fail) by
   # accident, and so a test that deletes one does not leak that deletion.
   MANAGED_ENV_VARS = %w[
-    AGENT_ORCHESTRATOR_LOCAL_BASE_URL
-    AGENT_ORCHESTRATOR_LOCAL_API_KEY
-    AGENT_ORCHESTRATOR_STAGING_BASE_URL
-    AGENT_ORCHESTRATOR_STAGING_API_KEY
-    AGENT_ORCHESTRATOR_PROD_BASE_URL
-    AGENT_ORCHESTRATOR_PROD_API_KEY
+    ZIMMER_LOCAL_BASE_URL
+    ZIMMER_LOCAL_API_KEY
+    ZIMMER_STAGING_BASE_URL
+    ZIMMER_STAGING_API_KEY
+    ZIMMER_PROD_BASE_URL
+    ZIMMER_PROD_API_KEY
   ].freeze
 
   setup do
@@ -47,7 +47,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     @original_env = ENV.to_hash.slice(*MANAGED_ENV_VARS)
     MANAGED_ENV_VARS.each { |var| ENV.delete(var) }
     # Tests run with Rails.env == "test", which resolves to the LOCAL instance.
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
+    ENV["ZIMMER_LOCAL_API_KEY"] = "local-test-key"
   end
 
   teardown do
@@ -630,8 +630,8 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "post_process! retargets a zimmer entry to the staging instance in staging env" do
-    ENV["AGENT_ORCHESTRATOR_STAGING_BASE_URL"] = "https://staging.zimmer.example.com"
-    ENV["AGENT_ORCHESTRATOR_STAGING_API_KEY"] = "test-staging-api-key"
+    ENV["ZIMMER_STAGING_BASE_URL"] = "https://staging.zimmer.example.com"
+    ENV["ZIMMER_STAGING_API_KEY"] = "test-staging-api-key"
 
     Rails.stub(:env, ActiveSupport::StringInquirer.new("staging")) do
       write_config(
@@ -673,7 +673,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "the injected subagent server points at the prod instance in production env" do
-    ENV["AGENT_ORCHESTRATOR_PROD_API_KEY"] = "real-prod-key"
+    ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
     @session.update!(metadata: { "agent_root_key" => "catalog-management" })
 
     Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
@@ -688,8 +688,8 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     end
   end
 
-  test "retarget honors AGENT_ORCHESTRATOR_LOCAL_BASE_URL override" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_BASE_URL"] = "http://localhost:9999"
+  test "retarget honors ZIMMER_LOCAL_BASE_URL override" do
+    ENV["ZIMMER_LOCAL_BASE_URL"] = "http://localhost:9999"
 
     write_config(
       "zimmer-sessions" => {
@@ -704,7 +704,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     assert_equal "http://localhost:9999/mcp?tool_groups=sessions",
       result.dig("mcpServers", "zimmer-sessions", "url"),
-      "When AGENT_ORCHESTRATOR_LOCAL_BASE_URL is set, retarget should use that exact origin"
+      "When ZIMMER_LOCAL_BASE_URL is set, retarget should use that exact origin"
     assert_equal "http://localhost:9999/mcp?tool_groups=self_session",
       result.dig("mcpServers", SELF_SESSION_SERVER, "url"),
       "The injected self-session entry should be built against the same overridden origin"
@@ -728,7 +728,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "post_process! logs warning when retargeting with blank API key" do
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    ENV.delete("ZIMMER_LOCAL_API_KEY")
 
     write_config(
       SUBAGENT_SERVER => {
@@ -747,7 +747,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_match(/Retargeted Zimmer MCP servers.*blank API key/,
       log_output.string,
       "Expected warning when the API key is blank after retarget")
-    assert_match(/AGENT_ORCHESTRATOR_LOCAL_API_KEY/,
+    assert_match(/ZIMMER_LOCAL_API_KEY/,
       log_output.string,
       "Warning should name the env var the dev needs to set")
   ensure
@@ -784,7 +784,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   # injection is deduped away — this keeps the output independent of the runtime
   # catalog and fully deterministic.
   test "post_process! produces byte-for-byte stable .mcp.json (golden file)" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
+    ENV["ZIMMER_LOCAL_API_KEY"] = "local-key"
 
     write_config(
       SUBAGENT_SERVER => {

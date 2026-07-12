@@ -56,8 +56,11 @@ env:
     # artifacts-sync-prod). production.rb falls back to the in-image catalog when this
     # file is not present yet (fresh box, before the first sync).
     AIR_CONFIG: /rails/catalog/air.production.json
-    # Point the injected self-session MCP server at THIS instance.
+    # Point the injected self-session MCP server at THIS instance. Both names carry
+    # the same value through the AGENT_ORCHESTRATOR_* -> ZIMMER_* rename; the reader
+    # (SelfSessionInjector#self_target) now reads the ZIMMER_ name.
     AGENT_ORCHESTRATOR_PROD_BASE_URL: https://zimmer.tadasant.com
+    ZIMMER_PROD_BASE_URL: https://zimmer.tadasant.com
     # Managed Postgres (off-droplet), reached over the private VPC. Host/port are
     # injected from `terraform output`; TLS is mandatory for Managed Postgres.
     DATABASE_HOST: <%= ENV["PRODUCTION_DB_HOST"] %>
@@ -71,7 +74,10 @@ env:
     - API_KEYS
     - DATABASE_PASSWORD
     # The injected prod self-session MCP server calls this instance's own REST API.
+    # Both names, one value, for the in-flight ZIMMER_* rename; the reader uses the
+    # ZIMMER_ name now, and prod's encrypted mcp_secrets carries it too.
     - AGENT_ORCHESTRATOR_PROD_API_KEY
+    - ZIMMER_PROD_API_KEY
     - SENTRY_DSN_BACKEND
     - OTEL_LOGS_EXPORTER_ENDPOINT
     - OTEL_LOGS_EXPORTER_BEARER_TOKEN

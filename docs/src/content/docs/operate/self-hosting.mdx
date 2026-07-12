@@ -93,7 +93,7 @@ With the prerequisites in hand, the rest is mechanical. Do it yourself, or hand 
    | --- | --- |
    | `.github/workflows/deploy-staging.yml` | the `ghcr.io/tadasant/zimmer` and `ghcr.io/tadasant/zimmer-base` image tags → your GHCR namespace |
    | `config/deploy.yml` | `image: tadasant/zimmer` → `image: <you>/zimmer` (Kamal prepends the registry) |
-   | `config/deploy.staging.yml` | `APP_HOST` and `AGENT_ORCHESTRATOR_STAGING_BASE_URL` → your host. Terraform's `domain` only turns on the TLS terminator; **it does not feed Rails.** Leave these and every generated URL and OAuth callback points at someone else's host. |
+   | `config/deploy.staging.yml` | `APP_HOST` and `ZIMMER_STAGING_BASE_URL` → your host. Terraform's `domain` only turns on the TLS terminator; **it does not feed Rails.** Leave these and every generated URL and OAuth callback points at someone else's host. |
    | `infra/terraform/backend.staging.hcl` | `bucket` / endpoint → your Spaces bucket |
    | `.github/workflows/domain-cert-staging.yml` | `DOMAIN`, `CF_ZONE_ID`, `ACME_EMAIL` → yours (only if you're using a custom domain) |
 
@@ -194,7 +194,7 @@ Then do the following, pausing to confirm with me at each step that produces ext
 1. FIRST, repoint the fork at me — a fresh fork does NOT deploy until you do. The repo is Zimmer's own deployment and hardcodes 'tadasant' in several places; the image build would push to ghcr.io/tadasant/... which my GITHUB_TOKEN cannot write to, and it would 403. Ask me for my GitHub username/org and my host, then edit and commit:
    - .github/workflows/deploy-staging.yml: the ghcr.io/tadasant/zimmer and ghcr.io/tadasant/zimmer-base image tags -> my GHCR namespace.
    - config/deploy.yml: 'image: tadasant/zimmer' -> 'image: <me>/zimmer'.
-   - config/deploy.staging.yml: APP_HOST and AGENT_ORCHESTRATOR_STAGING_BASE_URL -> my host. (Terraform's 'domain' only turns on the TLS terminator; it does NOT feed Rails. Leaving these points every generated URL and OAuth callback at someone else's host.)
+   - config/deploy.staging.yml: APP_HOST and ZIMMER_STAGING_BASE_URL -> my host. (Terraform's 'domain' only turns on the TLS terminator; it does NOT feed Rails. Leaving these points every generated URL and OAuth callback at someone else's host.)
    - infra/terraform/backend.staging.hcl: bucket/endpoint -> my Spaces bucket.
    - .github/workflows/domain-cert-staging.yml: DOMAIN, CF_ZONE_ID, ACME_EMAIL -> mine (only if I'm using a custom domain).
 

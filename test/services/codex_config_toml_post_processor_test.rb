@@ -31,12 +31,12 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   # test so an ambient .env value can never make an assertion pass (or fail) by
   # accident, and so a test that deletes one does not leak that deletion.
   MANAGED_ENV_VARS = %w[
-    AGENT_ORCHESTRATOR_LOCAL_BASE_URL
-    AGENT_ORCHESTRATOR_LOCAL_API_KEY
-    AGENT_ORCHESTRATOR_STAGING_BASE_URL
-    AGENT_ORCHESTRATOR_STAGING_API_KEY
-    AGENT_ORCHESTRATOR_PROD_BASE_URL
-    AGENT_ORCHESTRATOR_PROD_API_KEY
+    ZIMMER_LOCAL_BASE_URL
+    ZIMMER_LOCAL_API_KEY
+    ZIMMER_STAGING_BASE_URL
+    ZIMMER_STAGING_API_KEY
+    ZIMMER_PROD_BASE_URL
+    ZIMMER_PROD_API_KEY
   ].freeze
 
   setup do
@@ -53,7 +53,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     @original_env = ENV.to_hash.slice(*MANAGED_ENV_VARS)
     MANAGED_ENV_VARS.each { |var| ENV.delete(var) }
     # Tests run with Rails.env == "test", which resolves to the LOCAL instance.
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
+    ENV["ZIMMER_LOCAL_API_KEY"] = "local-key"
   end
 
   teardown do
@@ -135,13 +135,13 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   # *local* key into http_headers, and inline_forwarded_env_http_headers! would then
   # overwrite it with the production key — handing a dev session prod credentials.
   test "post_process! does not let AIR's header forwarding clobber a retargeted Zimmer key" do
-    stub_secrets("AGENT_ORCHESTRATOR_PROD_API_KEY" => "prod-key-do-not-use")
+    stub_secrets("ZIMMER_PROD_API_KEY" => "prod-key-do-not-use")
 
     write_config(
       "zimmer-sessions" => {
         "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
         "http_headers" => {},
-        "env_http_headers" => { "X-API-Key" => "AGENT_ORCHESTRATOR_PROD_API_KEY" }
+        "env_http_headers" => { "X-API-Key" => "ZIMMER_PROD_API_KEY" }
       }
     )
 
@@ -397,7 +397,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "post_process! does NOT retarget in production env" do
-    ENV["AGENT_ORCHESTRATOR_PROD_API_KEY"] = "real-prod-key"
+    ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
 
     Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
       write_config(

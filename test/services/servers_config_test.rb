@@ -141,14 +141,14 @@ class ServersConfigTest < ActiveSupport::TestCase
     required_headers = server.required_headers
 
     assert required_headers.is_a?(Array)
-    assert_includes required_headers, "AGENT_ORCHESTRATOR_PROD_API_KEY"
+    assert_includes required_headers, "ZIMMER_PROD_API_KEY"
   end
 
   test "should identify optional header variables" do
     server = ServersConfig.find("zimmer-self-session")
     optional_headers = server.optional_headers
 
-    # Only AGENT_ORCHESTRATOR_PROD_API_KEY is interpolated (required); no ${VAR:-default} optionals.
+    # Only ZIMMER_PROD_API_KEY is interpolated (required); no ${VAR:-default} optionals.
     assert optional_headers.is_a?(Array)
     assert_empty optional_headers
   end
@@ -247,9 +247,9 @@ class ServersConfigTest < ActiveSupport::TestCase
   test "should detect required var without default" do
     server = ServersConfig.find("zimmer-self-session")
 
-    # The config uses ${AGENT_ORCHESTRATOR_PROD_API_KEY} interpolation in the
+    # The config uses ${ZIMMER_PROD_API_KEY} interpolation in the
     # X-API-Key header.
-    assert_includes server.required_headers, "AGENT_ORCHESTRATOR_PROD_API_KEY"
+    assert_includes server.required_headers, "ZIMMER_PROD_API_KEY"
   end
 
   test "should return empty optional vars when all are hardcoded" do
@@ -269,6 +269,6 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert full.url.end_with?("/mcp"), "the full-surface entry carries no tool_groups scoping"
     assert_includes sessions.url, "tool_groups=sessions"
     assert_includes self_session.url, "tool_groups=self_session"
-    assert_equal "${AGENT_ORCHESTRATOR_PROD_API_KEY}", self_session.headers["X-API-Key"]
+    assert_equal "${ZIMMER_PROD_API_KEY}", self_session.headers["X-API-Key"]
   end
 end
