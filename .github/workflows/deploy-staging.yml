@@ -128,11 +128,16 @@ jobs:
           echo "::error::zimmer-staging never came online on the tailnet"
           exit 1
 
-      # Use the repo-pinned Kamal (Gemfile.lock: kamal 2.12.0) via bin/kamal, so CI
-      # runs the same version the repo declares rather than whatever 2.x floats today.
-      - uses: ruby/setup-ruby@v1
-        with:
-          bundler-cache: true
+      # Pin Kamal to the exact version the repo locks (Gemfile.lock: kamal 2.12.0) so
+      # CI can't drift onto a different 2.x. Installed standalone rather than through
+      # `bundle install`, which would build the app's native gems (pg, nokogiri) on the
+      # runner for no reason -- Kamal only needs itself.
+      - name: Install Kamal (pinned to Gemfile.lock)
+        run: |
+          set -euo pipefail
+          v=$(awk '/^    kamal \(/{gsub(/[()]/,"");print $2; exit}' Gemfile.lock)
+          echo "installing kamal ${v} (from Gemfile.lock)"
+          gem install kamal -v "$v" --no-document
 
       # Deploy onto the persistent host. `accessory boot` is already idempotent in
       # Kamal 2 (it skips a container that exists), so this is NOT `|| true`-guarded:
@@ -152,8 +157,8 @@ jobs:
           OTEL_LOGS_EXPORTER_BEARER_TOKEN: ${{ secrets.OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
         run: |
           set -euo pipefail
-          bin/kamal accessory boot all -d staging
-          bin/kamal deploy -d staging \
+          kamal accessory boot all -d staging
+          kamal deploy -d staging \
             --version="${{ steps.img.outputs.tag }}" \
             --skip-push
 
