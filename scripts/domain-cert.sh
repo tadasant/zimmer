@@ -50,7 +50,15 @@ case "$TS_IP" in
   *) echo "::error::could not resolve an online tailnet IP for ${TS_HOST} (got '${TS_IP}')"; exit 1 ;;
 esac
 
-ssh_box() { tailscale ssh "root@${TS_IP}" "$@"; }
+# Push over key-based SSH when a deploy key is provided (CERT_SSH_KEY) -- this works
+# on any runner and does not depend on the tailnet SSH policy (self-hosted CI runners
+# do not reliably satisfy the `tailscale ssh` identity check). Fall back to
+# `tailscale ssh` when no key is set, for environments that rely on it.
+if [ -n "${CERT_SSH_KEY:-}" ]; then
+  ssh_box() { ssh -i "$CERT_SSH_KEY" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "root@${TS_IP}" "$@"; }
+else
+  ssh_box() { tailscale ssh "root@${TS_IP}" "$@"; }
+fi
 
 # ---------------------------------------------------------------- 2. A record
 # Keep the token out of the process argv (it would show in `ps`): write the auth
