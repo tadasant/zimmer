@@ -14,6 +14,15 @@ on:
         description: "Branch/tag/SHA to build & deploy"
         required: false
         default: ""
+      recreate_droplet:
+        description: >-
+          Force-rebuild the droplet (terraform -replace). Needed ONLY when the
+          bootstrap itself must change -- rotating the Kamal deploy key, changing the
+          domain/Caddyfile -- because `ignore_changes = [user_data]` deliberately
+          hides those from the plan. Normal app deploys must leave this off.
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: staging-lifecycle
@@ -73,8 +82,19 @@ jobs:
         with:
           terraform_version: "1.10.5"
 
+      # Only when rebuilding the droplet: free the `zimmer-staging` MagicDNS name, so
+      # the replacement reclaims it instead of registering as zimmer-staging-1. On a
+      # normal deploy the droplet persists and its node must NOT be reaped.
+      - name: Reap stale tailnet node (only when recreating)
+        if: ${{ inputs.recreate_droplet }}
+        env:
+          TS_API_CLIENT_ID: ${{ secrets.TS_API_CLIENT_ID }}
+          TS_API_CLIENT_SECRET: ${{ secrets.TS_API_CLIENT_SECRET }}
+        run: bash scripts/tailnet-reap-node.sh zimmer-staging
+
       # Provision (or reconcile) the persistent staging droplet + reserved IP through
-      # remote state. Idempotent: a re-run updates in place, it does NOT recreate.
+      # remote state. Idempotent: a re-run updates in place, it does NOT recreate --
+      # unless recreate_droplet forces -replace (see the input's description).
       - name: Terraform apply (staging)
         working-directory: infra/terraform
         env:
@@ -87,7 +107,12 @@ jobs:
           set -euo pipefail
           terraform init -input=false -backend-config=backend.staging.hcl
           cp staging.tfvars.example staging.tfvars
-          terraform apply -input=false -auto-approve -var-file=staging.tfvars
+          replace=""
+          if [ "${{ inputs.recreate_droplet }}" = "true" ]; then
+            echo "::warning::recreate_droplet=true — replacing the droplet (bootstrap change)."
+            replace="-replace=digitalocean_droplet.zimmer"
+          fi
+          terraform apply -input=false -auto-approve -var-file=staging.tfvars $replace
 
       # Join the tailnet so we can resolve the droplet's tailnet IP, SSH to it with
       # Kamal, and health-check the app.

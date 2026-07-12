@@ -40,6 +40,14 @@ proxy:
     path: /up
     interval: 3
     timeout: 5
+  # kamal-proxy publishes 80 AND 443 on the host by default -- even with ssl: false.
+  # Caddy already owns those (it terminates TLS for the custom domain), so the two
+  # collide: "failed to bind host port 0.0.0.0:443/tcp: address already in use".
+  # Move kamal-proxy to 8080/8443 and let Caddy front it, which is the same topology
+  # agent-orchestrator uses.
+  run:
+    http_port: 8080
+    https_port: 8443
 
 # The image entrypoint runs `bin/rails db:prepare` and then boots Thruster+Puma,
 # which can exceed Kamal's 30s default on a cold start (matches AO's observation).

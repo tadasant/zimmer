@@ -32,14 +32,15 @@ write_files:
     permissions: "0644"
     content: ${ssh_host_ed25519_key_pub}
 %{ endif ~}
-%{ if domain != "" ~}
-  # Caddy terminates TLS for the custom domain on :443 and reverse-proxies to
-  # kamal-proxy on :80 (which does the health-gated zero-downtime container swap).
+  # Caddy is the edge: it owns :80 and (with a domain) :443, and reverse-proxies to
+  # kamal-proxy on :8080. kamal-proxy still does the health-gated zero-downtime
+  # container swap behind it -- it just cannot own :80/:443 itself, because it binds
+  # BOTH by default (even with ssl off) and would collide with Caddy.
+  #
   # Stock Caddy, no plugins: it does NOT do ACME. The `domain-cert` workflow issues
-  # the cert out-of-band (DNS-01 via Cloudflare, token confined to CI) and pushes
-  # only the cert here. Runs with --network host so `localhost:80` reaches
-  # kamal-proxy. Reachable only over the tailnet -- the DO firewall opens no public
-  # :443.
+  # the cert out-of-band (DNS-01 via Cloudflare, token confined to CI) and pushes only
+  # the cert here. Runs with --network host so `localhost:8080` reaches kamal-proxy.
+  # Reachable only over the tailnet -- the DO firewall opens no public :80/:443.
   - path: /opt/zimmer/caddy/Caddyfile
     permissions: "0644"
     content: |
@@ -47,9 +48,15 @@ write_files:
         auto_https off
         admin off
       }
+      # Plain HTTP over the tailnet (http://${tailnet_hostname}), and what CI
+      # health-checks.
+      :80 {
+      	reverse_proxy localhost:8080
+      }
+%{ if domain != "" ~}
       https://${domain} {
       	tls /certs/cert.pem /certs/key.pem
-      	reverse_proxy localhost:80
+      	reverse_proxy localhost:8080
       }
 %{ endif ~}
 
@@ -74,14 +81,16 @@ runcmd:
 %{ if ssh_host_ed25519_key != "" ~}
   - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 %{ endif ~}
+  # --- Caddy (edge: :80, and :443 when a domain is set) --------------------------
+  - mkdir -p /opt/zimmer/certs
 %{ if domain != "" ~}
-  # --- Caddy (TLS for ${domain}) -------------------------------------------------
   # Bootstrap a self-signed cert so Caddy can start on :443 before the domain-cert
   # workflow pushes the real one; that workflow overwrites these and restarts the
   # container. It distinguishes the placeholder by its issuer (self == subject).
-  - mkdir -p /opt/zimmer/certs
   - test -f /opt/zimmer/certs/cert.pem || (umask 077; openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout /opt/zimmer/certs/key.pem -out /opt/zimmer/certs/cert.pem -subj '/CN=${domain}'; chmod 644 /opt/zimmer/certs/cert.pem)
+%{ endif ~}
   # `zimmer-caddy` is the name scripts/domain-cert.sh restarts after pushing a cert.
+  # Caddy starts before kamal-proxy exists and simply 502s until the first deploy
+  # boots it; restart: always makes that self-healing.
   - docker rm -f zimmer-caddy 2>/dev/null || true
   - docker run -d --name zimmer-caddy --restart always --network host -v /opt/zimmer/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/zimmer/certs:/certs:ro caddy:2
-%{ endif ~}
