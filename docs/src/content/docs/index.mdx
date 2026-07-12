@@ -29,6 +29,51 @@ Zimmer is open-source, standards-built, and made for a single circle of trust �
 or a couple, or business partners. You stay in control of what runs and what merges;
 Zimmer handles the toil of getting an agent from a prompt to a verified PR.
 
+## Why run it
+
+<CardGrid>
+  <Card title="It isn't a bet on one vendor" icon="seti:plan">
+    The agent harness is a [registry behind a contract](/extend/agent-harness/) — Claude
+    Code and Codex both ship today, and you pick the model per session (Claude or OpenAI).
+    [MCP servers](/air/mcp-servers/) are a JSON entry, not a code change. Nothing in the design
+    assumes whose agent wins, which is the point: nobody knows yet, and the orchestration
+    layer outlives the answer.
+  </Card>
+  <Card title="A boring stack on one cheap box" icon="seti:db">
+    Rails 8, PostgreSQL, Redis, GoodJob, Hotwire. It's a Docker image that Kamal ships to
+    any Linux host you can SSH into, and a single small droplet runs the whole thing. No
+    per-seat bill, no exotic infra to keep alive, nothing you haven't operated before.
+  </Card>
+  <Card title="You sign in — you don't paste keys" icon="approve-check">
+    The goal is to juggle as few long-lived secrets as possible. Claude and Codex
+    authenticate against your own account over OAuth, `gh` uses the device flow, and MCP
+    servers [register themselves and refresh their own tokens](/auth/mcp-oauth/) — dynamic
+    client registration, PKCE, automatic refresh.
+
+    Which matters on the bad day. Agents read and write a lot of text, and sooner or later a
+    credential lands somewhere it shouldn't — a log line, a transcript, a pasted diff. If it
+    was a long-lived API key, you get to choose between a permanent exposure and spending the
+    next five hours manually rotating every copy of it. If it was a short-lived token the
+    runtime already rotates, it expires on its own and you re-auth in a browser.
+  </Card>
+  <Card title="It follows you off the laptop" icon="rocket">
+    Install Zimmer as a PWA and it web-pushes your phone when a session finishes, fails, or
+    stops to ask you something. Agent work that takes an hour shouldn't need you to sit and
+    watch it for an hour.
+  </Card>
+  <Card title="Built for work that outlives your attention" icon="setting">
+    Pinned sessions and categories, "blocked by" dependencies between sessions, live PR and
+    CI status on each session, search across full transcripts, opt-in
+    [heartbeats](/sessions/lifecycle/) that nudge an idle agent, and
+    [goals](/sessions/goals/) that spell out what "done" actually requires.
+  </Card>
+  <Card title="The honest exception" icon="warning">
+    Cloning works against any git remote, but the PR, CI, and review-comment automation is
+    GitHub-specific today — it shells out to `gh`. If you live on GitLab, that half of
+    Zimmer isn't there for you yet.
+  </Card>
+</CardGrid>
+
 ## Start here
 
 Three ways in, shortest first. Pick the one that matches what you want right now.
@@ -68,10 +113,6 @@ New to the idea? Read [What Zimmer is](/intro/what-zimmer-is/) first, then come 
   <Card title="It wires the context" icon="puzzle">
     Skills, MCP servers, agent roots, hooks, plugins, and references are resolved from a
     catalog by [AIR](/air/overview/) and injected into the clone before the agent starts.
-  </Card>
-  <Card title="It tells you what's broken" icon="warning">
-    These docs include a [Known limitations](/limitations/) page that names real bugs in
-    real files. Read it before you trust anything else.
   </Card>
 </CardGrid>
 
