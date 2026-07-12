@@ -4,7 +4,7 @@ require "test_helper"
 
 class SelfSessionInjectorTest < ActiveSupport::TestCase
   test "endpoint_url points at this instance's native MCP endpoint, with scoping" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_BASE_URL"] = "http://localhost:4000"
+    ENV["ZIMMER_LOCAL_BASE_URL"] = "http://localhost:4000"
     injector = SelfSessionInjector.new(env: "development")
 
     assert_equal "http://localhost:4000/mcp", injector.endpoint_url
@@ -13,14 +13,14 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
     assert_equal "http://localhost:4000/mcp?allowed_agent_roots=zimmer%2Cdocs",
       injector.endpoint_url(allowed_agent_roots: "zimmer,docs")
   ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_BASE_URL")
+    ENV.delete("ZIMMER_LOCAL_BASE_URL")
   end
 
   test "headers carry the instance's API key" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
+    ENV["ZIMMER_LOCAL_API_KEY"] = "local-key"
     assert_equal({ "X-API-Key" => "local-key" }, SelfSessionInjector.new(env: "development").headers)
   ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    ENV.delete("ZIMMER_LOCAL_API_KEY")
   end
 
   test "self_session_capable_present? matrix" do
@@ -59,7 +59,7 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
   end
 
   test "inject! yields the native self-session entry when nothing covers the surface" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
+    ENV["ZIMMER_LOCAL_API_KEY"] = "local-key"
     injector = SelfSessionInjector.new(env: "development")
     yielded = nil
 
@@ -72,7 +72,7 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
     assert_equal "http://localhost:3000/mcp?tool_groups=self_session", yielded[1]
     assert_equal({ "X-API-Key" => "local-key" }, yielded[2])
   ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    ENV.delete("ZIMMER_LOCAL_API_KEY")
   end
 
   test "inject! skips and does not yield when a full-surface Zimmer server is present" do
@@ -88,27 +88,27 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
   end
 
   test "self_target resolves per environment" do
-    prod_base_url = ENV.delete("AGENT_ORCHESTRATOR_PROD_BASE_URL")
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
+    prod_base_url = ENV.delete("ZIMMER_PROD_BASE_URL")
+    ENV["ZIMMER_LOCAL_API_KEY"] = "local-key"
     target = SelfSessionInjector.new(env: "development").self_target
     assert_equal "http://localhost:3000", target[:base_url]
     assert_equal "local-key", target[:api_key]
 
-    ENV["AGENT_ORCHESTRATOR_PROD_API_KEY"] = "prod-key"
+    ENV["ZIMMER_PROD_API_KEY"] = "prod-key"
     prod = SelfSessionInjector.new(env: "production").self_target
     assert_equal "https://zimmer.example.com", prod[:base_url]
     assert_equal "prod-key", prod[:api_key]
   ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
-    ENV.delete("AGENT_ORCHESTRATOR_PROD_API_KEY")
-    ENV["AGENT_ORCHESTRATOR_PROD_BASE_URL"] = prod_base_url if prod_base_url
+    ENV.delete("ZIMMER_LOCAL_API_KEY")
+    ENV.delete("ZIMMER_PROD_API_KEY")
+    ENV["ZIMMER_PROD_BASE_URL"] = prod_base_url if prod_base_url
   end
 
-  test "self_target honors AGENT_ORCHESTRATOR_LOCAL_BASE_URL override" do
-    ENV["AGENT_ORCHESTRATOR_LOCAL_BASE_URL"] = "http://localhost:9999"
+  test "self_target honors ZIMMER_LOCAL_BASE_URL override" do
+    ENV["ZIMMER_LOCAL_BASE_URL"] = "http://localhost:9999"
     target = SelfSessionInjector.new(env: "development").self_target
     assert_equal "http://localhost:9999", target[:base_url]
   ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_BASE_URL")
+    ENV.delete("ZIMMER_LOCAL_BASE_URL")
   end
 end

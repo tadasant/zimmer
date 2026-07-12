@@ -656,7 +656,7 @@ override.
 
 Every session URL Zimmer hands to its own agents in production points at a placeholder domain.
 (`SelfSessionInjector` has the same placeholders as *defaults*, but at least accepts
-`AGENT_ORCHESTRATOR_PROD_BASE_URL`.)
+`ZIMMER_PROD_BASE_URL`.)
 
 Tracked in [#84](https://github.com/tadasant/zimmer/issues/84).
 

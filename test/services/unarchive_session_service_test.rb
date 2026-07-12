@@ -850,7 +850,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     # only the self-session server. This exercises the REAL post-processor end to end
     # (no AirPrepareService stubbing) against the mock file system, proving the
     # subagent server survives regeneration.
-    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-test-key"
+    ENV["ZIMMER_LOCAL_API_KEY"] = "local-test-key"
 
     # Undo the setup-wide prepare! stub — this test drives the real else-branch
     # (ensure_baseline_mcp_config!), which does not shell out to AIR.
@@ -891,6 +891,6 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_includes @session.custom_metadata["injected_mcp_servers"], "zimmer",
       "custom_metadata.injected_mcp_servers must record the restored subagent Zimmer server"
   ensure
-    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
+    ENV.delete("ZIMMER_LOCAL_API_KEY")
   end
 end

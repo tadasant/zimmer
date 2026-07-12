@@ -102,26 +102,26 @@ class SelfSessionInjector
 
   # BASE_URL and API_KEY for the Zimmer instance this Rails process IS.
   #
-  # The env var names still carry the AGENT_ORCHESTRATOR_ prefix because they are
-  # provisioned as deploy secrets (config/deploy.*.yml, .kamal/secrets.*) and are
-  # also what the external AIR catalog interpolates; renaming them is an
-  # ops-coordinated change, not a code change.
+  # The env var names carry the ZIMMER_ prefix, provisioned as deploy secrets
+  # (config/deploy.*.yml, .kamal/secrets.*), as prod's encrypted mcp_secrets, and as
+  # what the AIR catalog interpolates. The prod/staging names are dual-set alongside
+  # the legacy AGENT_ORCHESTRATOR_* names (same values) until those are retired.
   def self_target
     @self_target ||= case @env
     when "production"
       {
-        base_url: get_env_value("AGENT_ORCHESTRATOR_PROD_BASE_URL") || "https://zimmer.example.com",
-        api_key: get_env_value("AGENT_ORCHESTRATOR_PROD_API_KEY").to_s
+        base_url: get_env_value("ZIMMER_PROD_BASE_URL") || "https://zimmer.example.com",
+        api_key: get_env_value("ZIMMER_PROD_API_KEY").to_s
       }
     when "staging"
       {
-        base_url: get_env_value("AGENT_ORCHESTRATOR_STAGING_BASE_URL") || "https://staging.zimmer.example.com",
-        api_key: get_env_value("AGENT_ORCHESTRATOR_STAGING_API_KEY").to_s
+        base_url: get_env_value("ZIMMER_STAGING_BASE_URL") || "https://staging.zimmer.example.com",
+        api_key: get_env_value("ZIMMER_STAGING_API_KEY").to_s
       }
     else
       {
-        base_url: get_env_value("AGENT_ORCHESTRATOR_LOCAL_BASE_URL") || default_local_base_url,
-        api_key: get_env_value("AGENT_ORCHESTRATOR_LOCAL_API_KEY").to_s
+        base_url: get_env_value("ZIMMER_LOCAL_BASE_URL") || default_local_base_url,
+        api_key: get_env_value("ZIMMER_LOCAL_API_KEY").to_s
       }
     end
   end

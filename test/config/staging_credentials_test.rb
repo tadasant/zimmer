@@ -69,9 +69,10 @@ class StagingCredentialsTest < ActiveSupport::TestCase
   end
 
   # The AGENT_ORCHESTRATOR_* -> ZIMMER_* rename is a cross-repo lockstep: Zimmer's own
-  # readers still use the old names, so BOTH must carry the same value until the reader
-  # flip lands. Half a rename resolves the key to empty, and an empty X-API-Key is a
-  # 401 -- every session's MCP server silently fails to connect.
+  # readers (SelfSessionInjector#self_target) now use the ZIMMER_ name, but the legacy
+  # AGENT_ORCHESTRATOR_ name stays set to the SAME value as a safety net until it is
+  # retired in a later step. Dropping either now resolves the key to empty, and an empty
+  # X-API-Key is a 401 -- every session's MCP server silently fails to connect.
   test "both the old and new self-session name are set, to the same value" do
     kamal = KAMAL_SECRETS.read
 
