@@ -17,7 +17,7 @@ Terraform only provisions the **host**. The app image, its env, and the data sto
 | `environment` | validated `staging` \| `production` |
 | `region` / `droplet_size` | default `nyc3` / `s-2vcpu-4gb` |
 | `domain` | `""` by default. Set it to turn on [custom-domain HTTPS over the tailnet](/operate/deploying/#custom-domain-https-over-the-tailnet) — cloud-init runs a Caddy terminator on `:443` fronting kamal-proxy. Terraform does not create the DNS record; the `domain-cert` workflow owns the A record. |
-| `manage_project` | **`true`** by default now — with remote state, Terraform reconciles the account-unique project name instead of 409ing |
+| `manage_project` | still `false`. Remote state fixes the case where Terraform *created* the project, but a **pre-existing** one (both envs have one) still 409s on its account-unique name. Turning it on needs a one-time `terraform import` first; a DO Project is just a console folder, so it isn't worth the failure mode. |
 | `ssh_key_fingerprints` | |
 | `managed_db_cluster_name` | `""` for staging (Kamal runs a throwaway Postgres accessory); set for production |
 
