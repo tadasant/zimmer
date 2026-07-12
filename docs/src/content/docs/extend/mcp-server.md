@@ -14,6 +14,11 @@ There is no separate process. The tools call Zimmer's models and services in-pro
 [the REST API](/extend/rest-api/) calls — so there is nothing to install, nothing to keep in version
 lockstep, and no HTTP hop back into the app.
 
+The protocol itself is the [official MCP Ruby SDK](https://github.com/modelcontextprotocol/ruby-sdk)
+(the `mcp` gem): JSON-RPC framing, version negotiation, the streamable-HTTP transport, and argument
+validation against each tool's schema. Zimmer supplies the two things the SDK cannot know — who may
+call (the API key) and what this connection may see (the scoped tool list).
+
 ## Point a client at it
 
 Any MCP client that speaks streamable HTTP works. The whole configuration is a URL and an API key:
@@ -142,22 +147,26 @@ a session waits on CI, on a deploy, or on a session it spawned, without burning 
 
 ## Protocol
 
-Stateless streamable HTTP. Every POST carries one complete JSON-RPC message (or a batch) and gets one
-complete JSON response, so any web worker can serve any request and no `Mcp-Session-Id` is issued.
-`GET /mcp` (server-initiated SSE) returns 405 — there is no server-push channel.
+The SDK's `StreamableHTTPTransport`, run **stateless** with JSON responses: every POST carries one
+complete JSON-RPC message and gets one complete JSON response, so no `Mcp-Session-Id` is issued and
+any Puma worker can serve any request. Building the server per request is also what lets one endpoint
+serve every scoped variant. `GET /mcp` (server-initiated SSE) and `DELETE /mcp` (session termination)
+are 405 — there is no stream and no session to terminate. Batched bodies are rejected, as the spec
+requires since 2025-11-25.
 
-Supported protocol revisions: `2025-06-18`, `2025-03-26`, `2024-11-05`. The client's requested version
-is echoed back when Zimmer supports it, otherwise Zimmer answers with its newest.
+The SDK owns version negotiation, the JSON-RPC error codes, and **argument validation**: a
+`tools/call` whose arguments don't match the tool's `input_schema` comes back as an error result the
+model can correct, before any Zimmer code runs.
 
-Implemented methods: `initialize`, `tools/list`, `tools/call`, `ping`, and the client notifications
-(answered with `202 Accepted`, no body). Zimmer advertises the `tools` capability only — no resources,
-no prompts, no sampling.
+`McpController` disables the SDK's DNS-rebinding (`Host`/`Origin`) check. That check defends a
+*locally bound* server against a browser; Zimmer is a deployed Rails app whose `config.hosts` already
+validates `Host`, and whose credential is an explicit header rather than an ambient cookie.
 
 ```mermaid
 sequenceDiagram
     participant C as MCP client (Claude Code / Codex)
     participant R as McpController (POST /mcp)
-    participant S as Mcp::Server
+    participant S as MCP::Server (Ruby SDK)
     participant T as Mcp::Tools::*
     participant M as Models / services
 
@@ -182,10 +191,11 @@ as a JSON-RPC error, which the model never sees.
 
 ## Adding a tool
 
-1. Write `app/services/mcp/tools/<name>.rb`, subclass `Mcp::Tool`, declare `tool_name`,
-   `description`, `input_schema`, and implement `#call(args)` (string keys). Return a String (sent as
-   text) or a Hash/Array (sent as pretty JSON). Raise `Mcp::ToolError` for anything the model should
-   see and act on.
+1. Write `app/services/mcp/tools/<name>.rb`, subclass `Mcp::Tool` (which is an `MCP::Tool` from the
+   SDK, plus Zimmer's calling convention), declare `tool_name`, `description`, `input_schema`, and
+   implement `#call(args)` (string keys). Return a String (sent as text) or a Hash/Array (sent as
+   pretty JSON). Raise `Mcp::ToolError` for anything the model should see and act on. The schema is
+   enforced for you — arguments are validated against it before `#call` runs.
 2. Call the models and services directly. If the logic already exists behind a service object, call
    it — the MCP layer validates arguments, calls, and formats; it does not own business logic.
 3. Register it in `Mcp::Registry::ALL_TOOLS` with its domain group and whether it is a write

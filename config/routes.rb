@@ -38,8 +38,9 @@ Rails.application.routes.draw do
 
   # Zimmer's native MCP server (streamable HTTP). Scoped variants are selected
   # with query params: /mcp?tool_groups=self_session[&allowed_agent_roots=a,b].
-  post "mcp", to: "mcp#handle", as: :mcp
-  match "mcp", to: "mcp#unsupported", via: [ :get, :delete ]
+  # The SDK's transport dispatches POST / GET / DELETE itself (GET and DELETE are
+  # 405 in stateless mode), so every verb routes to the same action.
+  match "mcp", to: "mcp#handle", via: [ :post, :get, :delete ], as: :mcp
 
   # API routes
   namespace :api do

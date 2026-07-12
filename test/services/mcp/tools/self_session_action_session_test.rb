@@ -8,12 +8,13 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
   end
 
   test "keeps the action_session name but exposes only the self-management actions" do
-    definition = Mcp::Tools::SelfSessionActionSession.definition
+    definition = Mcp::Tools::SelfSessionActionSession.to_h
+    schema = definition[:inputSchema]
 
-    assert_equal "action_session", definition["name"]
-    assert_equal %w[update_notes update_title set_heartbeat archive], definition["inputSchema"]["properties"]["action"]["enum"]
-    assert_equal %w[session_id action], definition["inputSchema"]["required"]
-    assert_match(/self-management/, definition["description"])
+    assert_equal "action_session", definition[:name]
+    assert_equal %w[update_notes update_title set_heartbeat archive], schema[:properties][:action][:enum]
+    assert_equal %w[session_id action], schema[:required]
+    assert_match(/self-management/, definition[:description])
   end
 
   test "refuses an action outside the self-management subset" do

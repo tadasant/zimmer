@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "mcp"
+
 # Zimmer's native MCP endpoint (streamable HTTP transport).
 #
 #   POST /mcp                                    → the full tool surface
@@ -7,65 +9,83 @@
 #   POST /mcp?tool_groups=self_session           → the self-management subset
 #   POST /mcp?tool_groups=sessions&allowed_agent_roots=zimmer
 #
-# Auth is the same API key the rest of the API uses: an `X-API-Key` header
-# matched against the API_KEYS env var (see Api::BaseController). MCP clients
-# that only speak `Authorization: Bearer …` are accepted too — the bearer token
-# is matched against the same key list, so there is exactly one credential to
-# provision.
+# The protocol itself (JSON-RPC framing, version negotiation, tools/list,
+# tools/call, ping, notifications) is the official MCP Ruby SDK's. This controller
+# supplies the two things the SDK cannot know: who is allowed to call (the API
+# key), and what this connection may see (the scoped tool list).
 #
-# The transport is stateless: each POST is a complete JSON-RPC message and gets a
-# complete JSON response, so no Mcp-Session-Id is issued and any web worker can
-# serve any request. GET (server-initiated SSE) is not supported, which the spec
-# permits a server to signal with 405.
+# Auth is the same API key the rest of the API uses: an `X-API-Key` header matched
+# against the API_KEYS env var (see Api::BaseController). MCP clients that only
+# speak `Authorization: Bearer …` are accepted too — the bearer token is matched
+# against the same key list, so there is exactly one credential to provision.
+#
+# The transport runs stateless: each POST is a complete JSON-RPC message and gets
+# a complete JSON response, so no Mcp-Session-Id is issued and any Puma worker can
+# serve any request. A server built per request is also what lets the same
+# endpoint serve every scoped variant.
 class McpController < Api::BaseController
-  # A JSON-RPC notification (a message with no `id`) gets an empty 202, per the
-  # streamable-HTTP transport.
   def handle
-    messages, batch = parse_body
+    status, headers, body = transport.handle_request(request)
 
-    server = Mcp::Server.new(context: mcp_context)
-    responses = messages.map { |message| server.handle(message) }.compact
+    headers.each { |key, value| response.set_header(key, value) }
 
-    if responses.empty?
-      head :accepted
-    elsif batch
-      render json: responses
-    else
-      render json: responses.first
-    end
-  rescue JSON::ParserError => e
-    render json: Mcp::JsonRpc.error(nil, Mcp::JsonRpc::PARSE_ERROR, "Parse error: #{e.message}"), status: :bad_request
-  end
+    # A JSON-RPC notification is answered with an empty 202, and a cancelled
+    # request with no body at all.
+    payload = Array(body).first
+    return head(status) if payload.blank?
 
-  # The spec lets a server that does not offer server-initiated streams reject
-  # GET; DELETE only applies to stateful sessions, which this transport does not
-  # issue.
-  def unsupported
-    render json: Mcp::JsonRpc.error(nil, Mcp::JsonRpc::METHOD_NOT_FOUND, "Method Not Allowed: this MCP endpoint only accepts POST"),
-           status: :method_not_allowed
+    render json: payload, status: status
   end
 
   private
 
-  def parse_body
-    raw = request.raw_post
-    raise JSON::ParserError, "empty request body" if raw.blank?
+  def transport
+    MCP::Server::Transports::StreamableHTTPTransport.new(
+      mcp_server,
+      stateless: true,
+      # Respond with plain JSON rather than an SSE frame, and accept a client that
+      # asks only for `Accept: application/json`. Nothing this server does needs a
+      # stream: there are no long-running tools, no progress notifications, and no
+      # server-initiated messages.
+      enable_json_response: true,
+      # The SDK's Host/Origin check defends a locally-bound server against DNS
+      # rebinding by a browser. Zimmer is a deployed Rails app: Rails' own
+      # `config.hosts` validates Host, requests carry no ambient credential (the
+      # API key is an explicit header, never a cookie), and the allow-list would
+      # have to be maintained per deployment host. Rely on those instead.
+      dns_rebinding_protection: false
+    )
+  end
 
-    parsed = JSON.parse(raw)
-    parsed.is_a?(Array) ? [ parsed, true ] : [ [ parsed ], false ]
+  def mcp_server
+    MCP::Server.new(
+      name: Mcp::SERVER_NAME,
+      title: Mcp::SERVER_TITLE,
+      version: Mcp::SERVER_VERSION,
+      instructions: instructions,
+      tools: mcp_context.tools,
+      server_context: mcp_context
+    )
+  end
+
+  def instructions
+    "Zimmer's native MCP server. Tools operate on this Zimmer instance's sessions, " \
+      "notifications, triggers, and system health. Enabled tool groups: #{mcp_context.tool_groups.join(', ')}."
   end
 
   # Scoping is read from the query string, never from `params` — Rails merges a
   # JSON body's top-level keys into params, so a client could otherwise widen its
   # own tool_groups by putting them in the JSON-RPC envelope.
   def mcp_context
-    query = request.query_parameters
+    @mcp_context ||= begin
+      query = request.query_parameters
 
-    Mcp::Context.new(
-      tool_groups: query["tool_groups"],
-      allowed_agent_roots: query["allowed_agent_roots"],
-      base_url: request.base_url
-    )
+      Mcp::Context.new(
+        tool_groups: query["tool_groups"],
+        allowed_agent_roots: query["allowed_agent_roots"],
+        base_url: request.base_url
+      )
+    end
   end
 
   # MCP clients configured with a bearer token send `Authorization: Bearer <key>`

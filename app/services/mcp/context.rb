@@ -17,6 +17,20 @@ module Mcp
   class Context
     attr_reader :tool_groups, :allowed_agent_roots, :base_url
 
+    # The SDK wraps whatever is handed to `MCP::Server.new(server_context:)` in an
+    # MCP::ServerContext (which carries progress/cancellation plumbing and
+    # delegates everything else here). Tools want the real Context, so unwrap it.
+    def self.unwrap(server_context)
+      return server_context if server_context.is_a?(self)
+
+      server_context.zimmer_context
+    end
+
+    # Identity, so #unwrap resolves through MCP::ServerContext's delegation.
+    def zimmer_context
+      self
+    end
+
     # @param tool_groups [String, Array<String>, nil] comma-separated groups, or nil for the default set
     # @param allowed_agent_roots [String, Array<String>, nil] comma-separated root names, or nil for no restriction
     # @param base_url [String, nil] the externally reachable base URL of this Zimmer instance,

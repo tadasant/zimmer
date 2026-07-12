@@ -8,11 +8,25 @@ class McpControllerTest < ActionDispatch::IntegrationTest
   setup do
     @api_key = "test_api_key_12345"
     ENV["API_KEYS"] = @api_key
-    @headers = { "X-API-Key" => @api_key, "Content-Type" => "application/json" }
+    # What an MCP client sends: JSON body, and an Accept that allows either a JSON
+    # response or an SSE frame.
+    @headers = {
+      "X-API-Key" => @api_key,
+      "Content-Type" => "application/json",
+      "Accept" => "application/json, text/event-stream"
+    }
   end
 
   teardown do
     ENV.delete("API_KEYS")
+  end
+
+  def initialize_params(protocol_version)
+    {
+      "protocolVersion" => protocol_version,
+      "capabilities" => {},
+      "clientInfo" => { "name" => "test-client", "version" => "1.0" }
+    }
   end
 
   def rpc(method, params = {}, id: 1, headers: @headers, path: "/mcp")
@@ -24,17 +38,23 @@ class McpControllerTest < ActionDispatch::IntegrationTest
 
   test "rejects a request with no API key" do
     post "/mcp", params: { jsonrpc: "2.0", id: 1, method: "tools/list" }.to_json,
-                 headers: { "Content-Type" => "application/json" }
+                 headers: @headers.except("X-API-Key")
     assert_response :unauthorized
   end
 
   test "rejects a request with the wrong API key" do
-    rpc("tools/list", headers: { "X-API-Key" => "nope", "Content-Type" => "application/json" })
+    rpc("tools/list", headers: @headers.merge("X-API-Key" => "nope"))
     assert_response :unauthorized
   end
 
   test "accepts the API key as a bearer token" do
-    body = rpc("tools/list", headers: { "Authorization" => "Bearer #{@api_key}", "Content-Type" => "application/json" })
+    body = rpc("tools/list", headers: @headers.except("X-API-Key").merge("Authorization" => "Bearer #{@api_key}"))
+    assert_response :success
+    assert body["result"]["tools"].any?
+  end
+
+  test "accepts a client that only accepts JSON" do
+    body = rpc("tools/list", headers: @headers.merge("Accept" => "application/json"))
     assert_response :success
     assert body["result"]["tools"].any?
   end
@@ -42,16 +62,16 @@ class McpControllerTest < ActionDispatch::IntegrationTest
   # --- Protocol ---
 
   test "initialize echoes a supported protocol version and advertises tools" do
-    body = rpc("initialize", { "protocolVersion" => "2025-03-26", "capabilities" => {} })
+    body = rpc("initialize", initialize_params("2025-03-26"))
     assert_response :success
     assert_equal "2025-03-26", body["result"]["protocolVersion"]
     assert_equal "zimmer", body["result"]["serverInfo"]["name"]
     assert body["result"]["capabilities"].key?("tools")
   end
 
-  test "initialize falls back to the latest protocol version for an unknown request" do
-    body = rpc("initialize", { "protocolVersion" => "1999-01-01" })
-    assert_equal Mcp::Server::LATEST_PROTOCOL_VERSION, body["result"]["protocolVersion"]
+  test "initialize answers an unknown requested version with a supported one" do
+    body = rpc("initialize", initialize_params("1999-01-01"))
+    assert_includes MCP::Configuration::SUPPORTED_STABLE_PROTOCOL_VERSIONS, body["result"]["protocolVersion"]
   end
 
   test "notifications get an empty 202" do
@@ -65,14 +85,14 @@ class McpControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "unknown method returns JSON-RPC method-not-found" do
-    body = rpc("resources/list")
-    assert_equal Mcp::JsonRpc::METHOD_NOT_FOUND, body["error"]["code"]
+    body = rpc("zimmer/nope")
+    assert_equal(-32601, body["error"]["code"])
   end
 
   test "malformed JSON returns a parse error" do
     post "/mcp", params: "{not json", headers: @headers
     assert_response :bad_request
-    assert_equal Mcp::JsonRpc::PARSE_ERROR, JSON.parse(response.body)["error"]["code"]
+    assert_equal(-32700, JSON.parse(response.body)["error"]["code"])
   end
 
   test "GET is rejected: this transport has no server-initiated stream" do
@@ -135,19 +155,18 @@ class McpControllerTest < ActionDispatch::IntegrationTest
   test "tools/call on a tool outside the enabled groups is rejected" do
     body = rpc("tools/call", { "name" => "start_session", "arguments" => {} }, path: "/mcp?tool_groups=self_session")
 
-    assert_equal Mcp::JsonRpc::INVALID_PARAMS, body["error"]["code"]
-    assert_match(/Unknown tool/, body["error"]["message"])
+    assert_equal(-32602, body["error"]["code"])
+    assert_match(/Tool not found/, body["error"]["data"].to_s)
   end
 
-  test "a batch of messages is answered with a batch of responses" do
+  # JSON-RPC batching was removed from the MCP spec (2025-11-25); one message per POST.
+  test "a batched body is rejected as an invalid request" do
     post "/mcp", params: [
       { jsonrpc: "2.0", id: 1, method: "ping" },
       { jsonrpc: "2.0", id: 2, method: "tools/list" }
     ].to_json, headers: @headers
 
-    assert_response :success
-    body = JSON.parse(response.body)
-    assert_equal [ 1, 2 ], body.map { |m| m["id"] }
+    assert_equal(-32600, JSON.parse(response.body)["error"]["code"])
   end
 
   # --- allowed_agent_roots scoping ---

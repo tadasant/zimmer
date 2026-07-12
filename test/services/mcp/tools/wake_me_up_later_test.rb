@@ -147,11 +147,11 @@ class Mcp::Tools::WakeMeUpLaterTest < ActiveSupport::TestCase
 
   test "description re-renders the current server time on every call" do
     travel_to Time.utc(2030, 4, 15, 9, 30, 0) do
-      assert_match "**Current server time:** 2030-04-15T09:30:00Z (UTC)", Mcp::Tools::WakeMeUpLater.description
+      assert_match "**Current server time:** 2030-04-15T09:30:00Z (UTC)", Mcp::Tools::WakeMeUpLater.rendered_description
     end
 
     travel_to Time.utc(2030, 4, 15, 10, 45, 0) do
-      assert_match "**Current server time:** 2030-04-15T10:45:00Z (UTC)", Mcp::Tools::WakeMeUpLater.definition["description"]
+      assert_match "**Current server time:** 2030-04-15T10:45:00Z (UTC)", Mcp::Tools::WakeMeUpLater.to_h[:description]
     end
   end
 end

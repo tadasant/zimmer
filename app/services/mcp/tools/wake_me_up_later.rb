@@ -36,7 +36,7 @@ module Mcp
       # The description interpolates the current server time, so it is rendered per
       # tools/list call rather than frozen at class-definition time — the model uses
       # it as the reference point for computing relative wake-ups.
-      def self.description
+      def self.rendered_description
         <<~DESC
           Schedule this session to be woken up at a specific time. The session will be put to sleep (waiting status) and a one-time trigger will fire at the specified time to resume it with the given prompt. If the session is manually resumed before the scheduled time, the trigger will be silently dropped.
 
