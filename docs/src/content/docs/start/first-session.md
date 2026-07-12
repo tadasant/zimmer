@@ -56,7 +56,7 @@ Three things can happen, and the status code tells you which:
 | `running` + `force_immediate: true` | the process is interrupted and the message delivered now | `200` |
 
 The `202` case is the one that surprises people. A follow-up to a *running* session lines up behind
-the current turn rather than interrupting it. Pass `force_immediate` if you mean "stop what
+the current turn instead of interrupting it. Pass `force_immediate` if you mean "stop what
 you're doing."
 
 ## Reading the UI
@@ -70,7 +70,7 @@ MCP server is waiting for you to answer a question. See [Elicitation](/sessions/
 
 ## Expected timings
 
-If something takes materially longer than this, the problem is probably the system, not your patience:
+If something takes materially longer than this, the problem is probably the system:
 
 | Operation | Expected |
 | --- | --- |

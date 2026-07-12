@@ -10,8 +10,8 @@ the agent's output and writes conclusions into `session.custom_metadata`.
 
 :::note[Different from AIR hooks]
 [AIR hooks](/air/artifacts/#hooks) are scripts registered into the *agent's* settings and fired by the
-agent's own lifecycle. Transcript hooks are Ruby classes that run in the Zimmer worker. Same word,
-different systems.
+agent's own lifecycle. Transcript hooks are Ruby classes that run in the Zimmer worker. The two share
+a name and nothing else.
 :::
 
 ## The contract

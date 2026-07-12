@@ -103,7 +103,7 @@ fires usefully."* It's a correct design given the primitives, but it means a sin
 **Loop prevention.** A session whose `metadata["trigger_id"]` equals the trigger will never
 re-fire that trigger.
 
-## Polling, not webhooks
+## Everything is polled
 
 Everything external is polled. There are no webhooks anywhere in Zimmer.
 

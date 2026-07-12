@@ -102,7 +102,7 @@ catalog snapshot. It also backs Action Cable via `solid_cable`, on a second data
 
 **Redis** is the Rails cache only. There is no Redis-backed queue — GoodJob uses Postgres.
 
-**The filesystem** is load-bearing and under-appreciated. Clones live in
+**The filesystem** is load-bearing. Clones live in
 `~/.agent-orchestrator/clones/`. Agent credentials live in `~/.claude/.credentials.json` and
 `~/.codex/auth.json`, and are read by the CLI, written by Zimmer, and *also* rewritten by the
 CLI behind Zimmer's back. See [Agent harness credentials](/auth/harness/).
@@ -153,7 +153,7 @@ The steps that most often surprise people:
 
 - **The clone happens before AIR runs**, because AIR's prepare step needs a target directory
   and auto-detects the root from the git remote (though Zimmer passes `--root` explicitly).
-- **OAuth is a gate, not a prompt.** If a remote MCP server needs OAuth and has no valid
+- **OAuth is a hard gate.** If a remote MCP server needs OAuth and has no valid
   credential, the session *fails* with `failure_reason: oauth_required` and the UI renders
   Authorize buttons. Completing the flow resumes it. See [MCP server OAuth](/auth/mcp-oauth/).
 - **`--without-defaults` is passed deliberately.** Zimmer stores the final resolved artifact

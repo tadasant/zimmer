@@ -89,11 +89,11 @@ Run targeted tests locally and let CI run the full suite.
 
 :::caution[If the whole suite suddenly goes red, suspect the catalog]
 `test/test_helper.rb` pre-warms the AIR catalog at boot, before `parallelize` forks its workers.
-So a catalog that doesn't resolve doesn't fail one test — it fails every test that creates a
-session, all at once, with `ActiveRecord::RecordInvalid`.
+So a catalog that doesn't resolve reddens every session-creating test at once, with
+`ActiveRecord::RecordInvalid`.
 
-A wave of `RecordInvalid` across unrelated session tests almost always means a broken catalog, not a
-broken model. Check `air resolve` before you debug your change.
+A wave of `RecordInvalid` across unrelated session tests almost always means a broken catalog.
+Check `air resolve` before you debug your change.
 :::
 
 ## System tests do not run in CI

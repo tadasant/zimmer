@@ -32,8 +32,8 @@ flowchart TD
     GATE --> UI["UI renders 'Authorize' buttons"]
 ```
 
-A session that needs OAuth fails fast rather than hanging or prompting: it goes to `failed` with
-`failure_reason: oauth_required`, and the UI turns that into Authorize buttons. Completing the flow
+A session that needs OAuth fails fast: it goes to `failed` with
+`failure_reason: oauth_required` instead of hanging or prompting, and the UI turns that into Authorize buttons. Completing the flow
 resumes it.
 
 ## The authorization flow
@@ -92,8 +92,8 @@ it. `McpOauthCredential.compute_credential_key`:
 :::danger[This is a reimplementation of another project's internals]
 It is a hash algorithm reverse-engineered from Claude Code so the two agree on a dictionary key, with
 no documented format and no API behind it. If Claude Code changes how it computes that key,
-every MCP OAuth credential Zimmer holds becomes unfindable — and the failure mode is "the agent says
-it needs authorization," not an error.
+every MCP OAuth credential Zimmer holds becomes unfindable — and the failure mode is silent: the agent
+just says it needs authorization.
 
 Codex is worse. `CodexMcpCredentialWriter`'s format was read out of
 `codex-rs/rmcp-client/src/oauth.rs @ rust-v0.133.0`, and it writes two different, mutually
@@ -132,7 +132,7 @@ It splits network errors carefully:
 That distinction is the kind of care that's easy to skip and expensive to skip.
 
 On a permanent failure (`invalid_grant` / `invalid_client` / `unauthorized_client`) it nulls the
-refresh token but keeps a still-valid access token rather than force-expiring it.
+refresh token but keeps a still-valid access token instead of force-expiring it.
 
 ## Known problems
 

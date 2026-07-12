@@ -3,7 +3,7 @@
   "sync-docs": {
     "id": "sync-docs",
     "title": "Sync Docs",
-    "description": "Pre-PR step: review Zimmer's documentation against the branch diff and update whatever has gone stale — README.md, AGENTS.md / CLAUDE.md, CONTRIBUTING.md, docs/, the REST API reference — so docs ship in the same PR and never drift from code. Default, always-on: run it as the final routine before opening a PR. Vendored copy of the central Reframe sync-docs skill, adapted to Zimmer's documentation surface.",
+    "description": "Pre-PR step: review Zimmer's documentation against the branch diff and update whatever has gone stale \u2014 README.md, AGENTS.md / CLAUDE.md, CONTRIBUTING.md, docs/, the REST API reference \u2014 so docs ship in the same PR and never drift from code. Default, always-on: run it as the final routine before opening a PR. Vendored copy of the central Reframe sync-docs skill, adapted to Zimmer's documentation surface.",
     "path": "sync-docs",
     "category": "zimmer",
     "user_invocable": true,
@@ -12,7 +12,8 @@
     ],
     "references": [
       "brand",
-      "brand-voice"
+      "brand-voice",
+      "anti-slop-rubric"
     ]
   },
   "zimmer-start-dev-server": {
@@ -43,7 +44,7 @@
   "zimmer-deploy-staging": {
     "id": "zimmer-deploy-staging",
     "title": "Deploy Zimmer to Staging",
-    "description": "Deploy a Zimmer change to the on-demand staging environment. The `Deploy staging` workflow is workflow_dispatch-only and takes a `ref` input, so it can build and deploy an UNMERGED feature branch — the main reason to use it. Covers dispatching the run, why the droplet is reachable only over the Tailscale tailnet (no public URL), watching the deploy, nightly teardown, rollback, and what an agent session can and cannot do without DO/Tailscale credentials. There is NO production deploy workflow in this repo.",
+    "description": "Deploy a Zimmer change to the on-demand staging environment. The `Deploy staging` workflow is workflow_dispatch-only and takes a `ref` input, so it can build and deploy an UNMERGED feature branch \u2014 the main reason to use it. Covers dispatching the run, why the droplet is reachable only over the Tailscale tailnet (no public URL), watching the deploy, nightly teardown, rollback, and what an agent session can and cannot do without DO/Tailscale credentials. There is NO production deploy workflow in this repo.",
     "path": "zimmer-deploy-staging",
     "category": "zimmer",
     "user_invocable": true,
@@ -54,7 +55,7 @@
   "zimmer-change-ai-artifact": {
     "id": "zimmer-change-ai-artifact",
     "title": "Change a Zimmer AI Artifact",
-    "description": "Add or change an AI artifact in this repo — a skill, agent root, MCP server, plugin, hook, or reference. Zimmer ships a self-contained AIR catalog: the top-level indexes wired by air.json ARE the catalog, resolved offline. Covers where each artifact type lives, how `default_in_roots` makes an artifact default-on via AIR's inversion pass, the no-dangling-references invariant the whole test suite depends on, and how to verify a change with `air resolve` before pushing. An artifact change is NOT an app bug.",
+    "description": "Add or change an AI artifact in this repo \u2014 a skill, agent root, MCP server, plugin, hook, or reference. Zimmer ships a self-contained AIR catalog: the top-level indexes wired by air.json ARE the catalog, resolved offline. Covers where each artifact type lives, how `default_in_roots` makes an artifact default-on via AIR's inversion pass, the no-dangling-references invariant the whole test suite depends on, and how to verify a change with `air resolve` before pushing. An artifact change is NOT an app bug.",
     "path": "zimmer-change-ai-artifact",
     "category": "zimmer",
     "user_invocable": true,

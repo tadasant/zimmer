@@ -30,26 +30,24 @@ flowchart LR
     G -->|"you review"| U
 ```
 
-## What makes it different from just running `claude` in a terminal
+## What makes it different from running `claude` in a terminal
 
 Running a coding agent by hand works fine for one task at a time, while you watch. Zimmer
 exists for the case where that stops being true:
 
 It survives you closing the laptop. A session is a database row and a supervised
-subprocess, not a terminal buffer. It keeps running when you walk away, and it is still
+subprocess. It keeps running when you walk away, and it is still
 there when you come back — with its full transcript, its state, and its next question.
 
 It runs many at once. Sessions are isolated clones on disk. Ten agents can be working
 on ten branches of the same repository, and none of them can see or stomp on each other's
 working tree.
 
-It has a lifecycle instead of a vibe. Every session is in exactly one of five states,
-and the transitions between them are enforced by a state machine, not by an agent deciding
-it feels done. See [the session lifecycle](/sessions/lifecycle/).
+It has a lifecycle. Every session is in exactly one of five states,
+and the transitions between them are enforced by a state machine. See [the session lifecycle](/sessions/lifecycle/).
 
 It wires the context deliberately. Which skills, which MCP servers, and which repo-specific
-guidance the agent gets is resolved from a versioned catalog per session, not from whatever
-is in your `~/.claude` directory today. See [AIR](/air/overview/).
+guidance the agent gets is resolved from a versioned catalog per session. See [AIR](/air/overview/).
 
 It closes the loop. The default goal spells out what "done" requires: open a PR, wait for
 CI, confirm CI is green, run a review, address the review, and only then come back to the
