@@ -1,0 +1,245 @@
+---
+title: Self-hosting Zimmer
+description: Stand up your own Zimmer from scratch — the accounts you set up by hand first, then the deploy, by hand or handed to an agent.
+sidebar:
+  order: 0
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+import AgentPrompt from "../../../components/AgentPrompt.astro";
+
+This is the end-to-end walkthrough for running your own Zimmer: one DigitalOcean droplet, reachable only over your Tailscale tailnet, with **Terraform provisioning the host** and **Kamal deploying the app** onto it. The app has no public ingress (the firewall drops `:80` at the edge) and there's no one-click button, because a self-host has real pre-work first — accounts and credentials only you can create.
+
+So the flow is two-part. First you do the [prerequisites](#prerequisites-you-set-up-yourself) yourself. Then you run the [rest of the setup](#stand-it-up) — either following along by hand, or handing a self-contained prompt to a coding agent.
+
+For the shape of what you're deploying — the topology, the images, the Kamal deploy, the workflows — read [Deploying](/operate/deploying/); for the full variable and secret inventory, [Provisioning and secrets](/operate/provisioning/). This page is the walkthrough that ties them together and stops short of duplicating them.
+
+:::note[Both environments deploy this way]
+This is the model Zimmer itself runs, staging and production alike: Terraform provisions a persistent droplet, then Kamal (`config/deploy.yml` merged with `config/deploy.staging.yml` or `config/deploy.production.yml`) deploys `web` and `worker` onto it with a health-gated container swap. The only real difference is the database — staging runs a throwaway Postgres as a Kamal accessory; production points at a Managed Postgres cluster (`managed_db_cluster_name`) so the data survives a droplet rebuild. This walkthrough follows the staging-style path, which is entirely self-contained in the public repo; for anything you rely on, use a managed cluster.
+:::
+
+## Prerequisites you set up yourself
+
+Regardless of whether you follow the rest by hand or hand it to an agent, do this pre-work yourself first. Each item is an account, a credential, or a secret that an agent can't create for you — and shouldn't hold on your behalf. Sort these out, collect the values, and the rest is mechanical.
+
+The app's secrets flow through Kamal (`env.secret`, sourced from your GitHub Actions secrets), so they stay out of the droplet's `user_data`. The **Tailscale auth key** does not — cloud-init still bakes it in, and `user_data` is readable from the DigitalOcean metadata service by anything on the box, including every agent process a session spawns. Use an ephemeral, reusable auth key rather than a long-lived one, and prefer scoped, rotatable tokens throughout. See [Where secrets end up that they shouldn't](/operate/provisioning/#where-secrets-end-up-that-they-shouldnt).
+
+### A place to run the deploy: GitHub + the repo
+
+You need a copy of this repository under your own GitHub account — fork or mirror `tadasant/zimmer`. That copy is where the deploy workflow runs, where the Actions secrets live, and what publishes the container image to your GHCR.
+
+- A **GitHub account**, and Git credentials on the machine you work from (`gh auth login`, or an SSH key registered with GitHub) so you can clone your fork and push to it.
+- A **GHCR pull token** — a GitHub token with `read:packages` — so Kamal can log the droplet into GHCR and pull the image (`GHCR_PULL_TOKEN`).
+
+Git shows up a second time, and it's the one people miss: **the agents Zimmer runs are themselves Git users.** Every session clones a repo, commits on a branch, and opens a PR, so the running instance needs its own GitHub login.
+
+- A **GitHub account for the instance** — your own is fine — with access to the repositories your [agent roots](/air/agent-roots/) point at, and rights to push branches and open pull requests there.
+- There is **no token to pre-mint for this.** Zimmer authenticates Git through `gh`: you run a one-time `gh auth login` device flow *inside the container* after the first deploy ([step 10](#stand-it-up)). `Dockerfile.base` bakes a credential helper (`credential.https://github.com.helper = !/usr/bin/gh auth git-credential`), so plain `git` inside a session authenticates through `gh` — there is no `GH_TOKEN` env var fallback.
+
+### The host: a DigitalOcean account
+
+- A **DigitalOcean account** and an **API token** with write access (`do_token` / the `DIGITALOCEAN_ACCESS_TOKEN` Actions secret). Terraform uses it to create the droplet, firewall, and reserved IP.
+- A **DigitalOcean Spaces bucket** for Terraform's remote state (the shipped `backend.staging.hcl` uses `zimmer-tfstate` in `nyc3`), plus a **Spaces access-key pair**. The keys are passed to `terraform init` as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (the `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` Actions secrets). Remote state is what lets `apply` converge on a persistent droplet instead of recreating it.
+- **Production only:** a **Managed Postgres cluster**, created out of band. Terraform reads it as a data source and never creates it, so it must already exist. The cluster's primary user (`doadmin`) comes with it, but **both databases** (`<name>_production` and `<name>_production_cable`) must be created by hand. The spec is in `infra/terraform/data-stores/README.md`. Staging skips this and runs a throwaway Postgres accessory.
+
+### The deploy channel: a Kamal SSH key
+
+Kamal reaches the droplet over SSH to swap containers. It is not your login key — mint a dedicated keypair for it.
+
+- An **SSH keypair for Kamal**. The public half is `deploy_ssh_pubkey` (`KAMAL_SSH_PUBKEY`), which cloud-init authorizes for `root` on the droplet; the private half is `KAMAL_SSH_KEY`, held only in CI. A `lifecycle.precondition` fails the plan if the public key is empty, since Kamal could not otherwise reach the box.
+
+### The network: a Tailscale account
+
+Zimmer is reachable only over your tailnet. The droplet joins it at boot and the UI is served over that VPN, never a public port.
+
+- A **Tailscale account** and tailnet.
+- A **pre-authorized, ephemeral auth key** for the droplet to join (`tailscale_auth_key` / `TAILSCALE_AUTH_KEY`).
+- A **separate pre-minted auth key tagged `tag:ci`** for CI's own tailnet join, so it can resolve the droplet's IP and health-check it (`TS_CI_AUTHKEY`). This must be a real auth key, not an OAuth client — a Tailscale OAuth client cannot mint `tag:ci` keys.
+- A **Tailscale API client** (`TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET`) so the deploy can reap the stale tailnet node and keep the MagicDNS name from drifting to `zimmer-staging-1`, `-2`, …
+- Tailnet **ACL policy** that defines `tag:ci`. Edit it in the Tailscale admin console.
+
+### The agent's brain: an Anthropic and/or OpenAI account
+
+Zimmer runs coding agents, so it needs at least one agent harness logged in. Without this, sessions spawn but no agent runs.
+
+- An **Anthropic account** for Claude Code, and/or an **OpenAI account** for Codex. Like the GitHub login above, this is an OAuth flow you run inside the container after the first deploy (`claude /login` / `codex login`, [step 10](#stand-it-up)). Claude's credentials persist on the `claude_home` volume; **Codex's do not** — nothing mounts `~/.codex`, so a `codex login` is wiped by the next deploy unless you add a volume for it. See [agent harness credentials](/auth/harness/).
+
+### Effectively required: a Cloudflare zone for HTTPS
+
+Nominally optional — you can reach Zimmer at its plain tailnet MagicDNS name (`http://zimmer`, or `http://zimmer-staging`). In practice the shipped `deploy-staging` workflow chains its cert job unconditionally and that job hard-fails without a Cloudflare token, so skipping this means every deploy run goes red unless you delete the `cert` job from your fork (see step 8). Plain HTTP over the tailnet has a known sharp edge — `assume_ssl` makes Rails compute `https://` origins that never match the browser's `http://`, so CSRF-protected POSTs 422 and ActionCable upgrades get rejected. A custom domain fixes that class at the source. See [Custom-domain HTTPS over the tailnet](/operate/deploying/#custom-domain-https-over-the-tailnet).
+
+- A **Cloudflare account** holding your domain's DNS zone.
+- A **Cloudflare API token** scoped to **Zone:DNS:Edit + Zone:Zone:Read on that one zone** (`CLOUDFLARE_API_TOKEN`). The `domain-cert-*` workflow uses it to issue the Let's Encrypt cert via ACME DNS-01 and to upsert the `domain → tailnet IP` A record. The token lives only in Actions; the droplet never holds it.
+
+### The secrets you just generate
+
+- A Rails **`SECRET_KEY_BASE`**: `openssl rand -hex 64` (`STAGING_SECRET_BASE`). A secret only you hold.
+- A **database password** for the Postgres accessory: another `openssl rand -hex 32` (`STAGING_DB_PASSWORD`). It is deliberately *not* derived from `SECRET_KEY_BASE` — the Postgres data volume is durable and `POSTGRES_PASSWORD` only takes effect on the first `initdb`, so a separate, stable password keeps rotating `SECRET_KEY_BASE` safe.
+- **`API_KEYS`** (`STAGING_API_KEYS`): comma-separated bearer keys for the REST API. Empty leaves the API off (every request 401s).
+
+## Stand it up
+
+With the prerequisites in hand, the rest is mechanical. Do it yourself, or hand the prompt in the **Hand it to an agent** tab to Claude Code (or any coding agent) and let it drive.
+
+<Tabs>
+<TabItem label="Do it yourself">
+
+1. **Get the code.** Fork or mirror `tadasant/zimmer` to your GitHub account and clone it.
+
+2. **Point the fork at yourself.** The repo is Zimmer's own deployment, so a handful of values are hardcoded to `tadasant`. A fresh fork **will not deploy** until you rewrite them — the image build pushes to `ghcr.io/tadasant/…`, which your `GITHUB_TOKEN` has no rights to. Change these and commit:
+
+   | File | What to change |
+   | --- | --- |
+   | `.github/workflows/deploy-staging.yml` | the `ghcr.io/tadasant/zimmer` and `ghcr.io/tadasant/zimmer-base` image tags → your GHCR namespace |
+   | `config/deploy.yml` | `image: tadasant/zimmer` → `image: <you>/zimmer` (Kamal prepends the registry) |
+   | `config/deploy.staging.yml` | `APP_HOST` and `AGENT_ORCHESTRATOR_STAGING_BASE_URL` → your host. Terraform's `domain` only turns on the TLS terminator; **it does not feed Rails.** Leave these and every generated URL and OAuth callback points at someone else's host. |
+   | `infra/terraform/backend.staging.hcl` | `bucket` / endpoint → your Spaces bucket |
+   | `.github/workflows/domain-cert-staging.yml` | `DOMAIN`, `CF_ZONE_ID`, `ACME_EMAIL` → yours (only if you're using a custom domain) |
+
+3. **Create the Terraform state bucket.** Make a DigitalOcean Spaces bucket for state (the shipped `infra/terraform/backend.staging.hcl` expects `zimmer-tfstate` in `nyc3`) and mint a Spaces access-key pair.
+
+4. **Set the GitHub Actions secrets** on your fork (`gh secret set NAME`). The full list and what each is used for is in [Provisioning → GitHub Actions secrets](/operate/provisioning/#github-actions-secrets). At minimum: `DIGITALOCEAN_ACCESS_TOKEN`, `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY`, `KAMAL_SSH_KEY`, `KAMAL_SSH_PUBKEY`, `TAILSCALE_AUTH_KEY`, `TS_CI_AUTHKEY`, `TS_API_CLIENT_ID`, `TS_API_CLIENT_SECRET`, `GHCR_PULL_TOKEN`, `STAGING_SECRET_BASE`, `STAGING_DB_PASSWORD`, `STAGING_API_KEYS`, and `CLOUDFLARE_API_TOKEN` (see the caution in step 8 — the cert job runs on every deploy, so this is effectively required).
+
+5. **Define `tag:ci` in your Tailscale ACL** so CI's health-check node can join.
+
+6. **Write your tfvars.** Edit `infra/terraform/staging.tfvars.example` **and commit it** — set `region`, `droplet_size`, `domain` (or `""` for MagicDNS only), and `managed_db_cluster_name`. Terraform only provisions the host here; the app image, env, and data stores are Kamal's.
+
+   :::caution[Edit the `.example` file, not `staging.tfvars`]
+   `*.tfvars` is gitignored, and the deploy workflow does its own `cp staging.tfvars.example staging.tfvars` on the runner — so a local `staging.tfvars` never reaches CI. The committed `.example` **is** the config the workflow deploys. Copy it to `staging.tfvars` only if you're running `terraform` locally.
+   :::
+
+7. **Deploy.** Run the `deploy-staging` workflow on your fork (`gh workflow run deploy-staging.yml`, or the Actions tab). It builds the images, `terraform apply`s the host through remote state, then `kamal deploy -d staging` boots the new containers alongside the old ones, health-checks `/up`, and only then flips traffic. The first run against an empty state bucket provisions the droplet; later runs swap containers in place. The full sequence is in [Deploying → Staging deploys are Kamal container swaps](/operate/deploying/#staging-deploys-are-kamal-container-swaps-onto-a-persistent-droplet).
+
+8. **Custom domain.** Set `domain` in tfvars, add `CLOUDFLARE_API_TOKEN`, and point `DOMAIN` / `CF_ZONE_ID` / `ACME_EMAIL` in `domain-cert-staging.yml` at your own zone. The `deploy-staging` workflow chains a `cert` job after the deploy, so the cert is issued and the `domain → tailnet IP` A record upserted automatically; the weekly schedule renews thereafter.
+
+   :::caution[The cert job runs even if you don't want a custom domain]
+   `deploy-staging.yml` chains `cert: needs: deploy` with **no condition**, and `domain-cert-staging.yml` exits 1 when `CLOUDFLARE_API_TOKEN` is empty. So a MagicDNS-only deployment still gets a **red workflow run** even though the app deployed and is healthy. Either supply the Cloudflare token, or delete the `cert` job from your fork's workflow.
+   :::
+
+9. **Verify.** Join the same tailnet from your machine, curl the health endpoint (`http://zimmer-staging/up`), and open the UI at the MagicDNS name (`http://zimmer-staging`, or your custom domain over HTTPS). The deploy also asserts the **`worker`** container is up — that's where agent sessions execute, so a session stuck in `waiting` means the worker didn't come up. Rollback is one command: `kamal rollback <version> -d staging` (the host keeps the last 5 images).
+
+10. **Log the instance in — Git first.** The app is up, but it can't do anything useful yet: an agent that can't authenticate to GitHub can't clone, can't push a branch, and can't open a PR. These are interactive OAuth device flows, so they can't be baked into a secret — you run them once, by hand, inside the container:
+
+    ```bash
+    bin/kamal app exec -i --reuse -d staging bash    # or: ssh root@<droplet>, then
+                                                     # docker exec -it $(docker ps -q --filter name=zimmer-worker | head -1) bash
+
+    gh auth login          # GitHub — the sole source of git auth
+    claude /login          # and/or: codex login
+    ```
+
+    For `gh` and `claude` this is **once, not per deploy**: `gh`'s token lands in `~/.config/gh` and Claude's in `~/.claude`, both durable named volumes (`gh_config`, `claude_home`) shared by `web` and `worker` and re-attached across Kamal container swaps. Confirm with `gh auth status` and `claude whoami`; the UI surfaces the same state (`CliStatusService` refreshes it every two minutes).
+
+    :::caution[Skip this and every session fails]
+    Without `gh auth login`, the first thing a session does — clone the repo — fails, and the agent never starts. Without a harness login, the session spawns but no agent runs. Neither failure shows up in the deploy's `/up` health check.
+    :::
+
+    :::caution[Codex does not persist — there is no `~/.codex` volume]
+    `codex login` writes to `$CODEX_HOME` (`~/.codex`), and the Kamal config mounts no volume there — so the credentials live in the container's writable layer and are **wiped by the next deploy**. Claude Code is the harness that survives a container swap today. If you rely on Codex, add a `codex_home:/home/rails/.codex` volume to both roles in `config/deploy.<env>.yml`.
+    :::
+
+11. **Make it yours: point it at your own catalog.** You now have a working Zimmer — running *Zimmer's* [catalog](/air/overview/). The image ships a small, self-contained one, and a stock deploy (staging included) serves exactly that. It is deliberately minimal; it is not meant to be your catalog. Your agent roots, your MCP servers, and your skills live in a catalog you own.
+
+    Deliver it to the box and point the app at it with `AIR_CONFIG`. The wiring exists today in `config/deploy.production.yml`; a staging-shaped deploy ships neither the mounts nor the env var, so you add them:
+
+    ```yaml
+    # config/deploy.<env>.yml — on BOTH the web and worker roles
+    volume:
+      - /opt/zimmer/catalog:/rails/catalog:ro                 # your air.production.json + artifacts/
+      - /opt/zimmer/credentials:/rails/config/credentials:ro  # your production.yml.enc (mcp_secrets)
+    env:
+      clear:
+        AIR_CONFIG: /rails/catalog/air.production.json
+    ```
+
+    Bind-mounting **host** paths is what makes the catalog survive a Kamal deploy — a new container re-attaches the same mounts — and mounting on **both** roles is what makes agent sessions (which run in the `worker`) resolve the same roots and secrets the web UI shows. Sync the files to those paths from your own repo with a workflow, and re-run it when the catalog changes, not on every deploy.
+
+    :::caution[Deliver the catalog *before* you set `AIR_CONFIG` on a staging-shaped deploy]
+    Only `config/environments/production.rb` guards `AIR_CONFIG` with a `File.exist?` check that falls back to the in-image catalog. `config/environments/staging.rb` reads the var straight through — and `config/deploy.staging.yml` sets `RAILS_ENV: staging`. So on this walkthrough's path, pointing `AIR_CONFIG` at a catalog you haven't delivered yet resolves to **zero roots**, not a safe fallback. Sync the files first, then set the var.
+    :::
+
+    → The full mechanism, with a worked example, is in [Pointing an instance at your own catalog](/air/artifacts/#pointing-an-instance-at-your-own-catalog).
+
+</TabItem>
+<TabItem label="Hand it to an agent">
+
+### What the agent needs access to
+
+Give it these, and nothing more. Everything else is a value you paste in when it asks.
+
+| Tool | What it does with it | Minimum permissions |
+| --- | --- | --- |
+| **GitHub** — an MCP server, or just a logged-in `gh` CLI. **Required.** | Rewrites the hardcoded `tadasant` values in your fork, sets the Actions secrets, commits the tfvars, dispatches `deploy-staging`, reads the run logs. | Repository-scoped: **Metadata** read · **Secrets** read+write · **Actions** read+write · **Contents** read+write · **Workflows** read+write (it has to edit `.github/workflows/` to repoint the image tags). No org or admin access. |
+| **DigitalOcean** — optional. | Confirms the Spaces state bucket and the droplet exist. | **Read-only** (Spaces + droplets). Skip it entirely if you created the bucket yourself. |
+| **Tailscale** — optional. | Confirms the droplet joined the tailnet and reads its IP. | **Devices: read.** ACL edits stay yours — no MCP server does that step for you. |
+| **Browser (Playwright)** — optional. | Loads the UI to eyeball it. | None, but the agent's machine has to be on your tailnet to reach it. |
+
+:::note[The agent never holds your infrastructure credentials]
+Every secret it collects goes straight into GitHub Actions, and the deploy itself runs in CI — so the agent needs no DigitalOcean, Tailscale, or Kamal credential of its own, and nothing lands on its disk. GitHub access is the only thing it genuinely needs.
+:::
+
+Copy this prompt and paste it into Claude Code (or any coding agent) working in your fork. It assumes every prerequisite above is done and that you'll supply the secret values when it asks — it will not invent them.
+
+<AgentPrompt
+  label="Copy agent prompt"
+  prompt={`You are setting up a self-hosted Zimmer deployment for me. Every prerequisite is already done: I have GitHub/GHCR, DigitalOcean (with a Spaces bucket for Terraform state), a Kamal SSH keypair, Tailscale, and (optionally) Cloudflare accounts, and I hold all the credential values. Your job is the mechanical setup on my fork of the repo. Do not invent, guess, or fabricate any secret value — when you need one, stop and ask me for it, and never commit a secret to git.
+
+Access you need: GitHub only — an MCP server or a logged-in 'gh' CLI, scoped to this repository with Metadata: read, Secrets: read+write, Actions: read+write, Contents: read+write, and Workflows: read+write (you must edit .github/workflows/ to repoint the image tags). You do NOT need (and must not ask me for) DigitalOcean, Tailscale, or Kamal credentials of your own: every secret you collect goes straight into GitHub Actions and the deploy runs in CI. A read-only DigitalOcean or Tailscale MCP server is optional, only to confirm the Spaces bucket / droplet / tailnet node exists. If you are missing the GitHub access above, stop and tell me before doing anything else.
+
+Work in this repository (my fork of tadasant/zimmer). Read docs/src/content/docs/operate/deploying.md and provisioning.md first so you understand the topology (Terraform provisions the persistent host; Kamal deploys the app) and the exact variable/secret names.
+
+Then do the following, pausing to confirm with me at each step that produces external side effects:
+
+1. FIRST, repoint the fork at me — a fresh fork does NOT deploy until you do. The repo is Zimmer's own deployment and hardcodes 'tadasant' in several places; the image build would push to ghcr.io/tadasant/... which my GITHUB_TOKEN cannot write to, and it would 403. Ask me for my GitHub username/org and my host, then edit and commit:
+   - .github/workflows/deploy-staging.yml: the ghcr.io/tadasant/zimmer and ghcr.io/tadasant/zimmer-base image tags -> my GHCR namespace.
+   - config/deploy.yml: 'image: tadasant/zimmer' -> 'image: <me>/zimmer'.
+   - config/deploy.staging.yml: APP_HOST and AGENT_ORCHESTRATOR_STAGING_BASE_URL -> my host. (Terraform's 'domain' only turns on the TLS terminator; it does NOT feed Rails. Leaving these points every generated URL and OAuth callback at someone else's host.)
+   - infra/terraform/backend.staging.hcl: bucket/endpoint -> my Spaces bucket.
+   - .github/workflows/domain-cert-staging.yml: DOMAIN, CF_ZONE_ID, ACME_EMAIL -> mine (only if I'm using a custom domain).
+
+2. Set the GitHub Actions secrets on this repo with 'gh secret set'. Ask me for each value one at a time. At minimum: DIGITALOCEAN_ACCESS_TOKEN, SPACES_ACCESS_KEY_ID, SPACES_SECRET_ACCESS_KEY, KAMAL_SSH_KEY (the private half of the Kamal deploy key), KAMAL_SSH_PUBKEY (the public half), TAILSCALE_AUTH_KEY, TS_CI_AUTHKEY (a pre-minted tag:ci auth key, NOT an OAuth client), TS_API_CLIENT_ID, TS_API_CLIENT_SECRET, GHCR_PULL_TOKEN, STAGING_SECRET_BASE, STAGING_DB_PASSWORD (the Postgres accessory password, separate from SECRET_KEY_BASE), STAGING_API_KEYS, CLOUDFLARE_API_TOKEN. Note CLOUDFLARE_API_TOKEN is effectively required: deploy-staging.yml chains a 'cert' job with no condition and domain-cert-staging.yml exits 1 when the token is empty, so without it the run goes red even when the app deployed fine. If I don't want a custom domain, offer to delete the 'cert' job from the workflow instead.
+
+3. Confirm my Terraform state bucket exists on DigitalOcean Spaces and that infra/terraform/backend.staging.hcl points at it (bucket name, region, endpoint). If mine differs from the committed zimmer-tfstate / nyc3 values, update backend.staging.hcl.
+
+4. Remind me to define tag:ci in my Tailscale ACL policy (admin console) — you can't do that for me — and wait for me to confirm it's done.
+
+5. Edit infra/terraform/staging.tfvars.example and COMMIT it — do not create a local staging.tfvars. *.tfvars is gitignored and the deploy workflow runs its own 'cp staging.tfvars.example staging.tfvars' on the runner, so only the committed .example reaches CI. Set the non-secret host config: region, droplet_size, domain (ask me; empty string means MagicDNS-only http access), and managed_db_cluster_name (empty for the throwaway staging Postgres). Do NOT put any secret in this file — secrets flow through Actions secrets and Kamal's secrets, never a committed file.
+
+6. Deploy by triggering the deploy-staging workflow: 'gh workflow run deploy-staging.yml', then watch it with 'gh run watch'. It builds the images, runs terraform apply against remote state to provision/reconcile the host, then kamal deploy -d staging with a health-gated cutover. If it fails, read the logs, diagnose, and tell me what's wrong before retrying.
+
+7. If a custom domain is configured, confirm the cert was issued — the deploy-staging workflow chains a domain-cert job after the deploy, so it runs automatically. If it didn't, run domain-cert-staging via workflow_dispatch.
+
+8. Verify the deployment. Confirm the workflow's tailnet health check passed and that it reports the worker container running (agent sessions run in the worker; without it, sessions enqueue and never execute). Report the URL I reach it at (the MagicDNS name like http://zimmer-staging, or my custom HTTPS domain), and remind me that a bad deploy can be rolled back with 'kamal rollback <version> -d staging'.
+
+9. Hand the Git login back to me. The instance needs its own GitHub auth before any session can clone a repo, push a branch, or open a PR — and it is an interactive OAuth device flow inside the container, so you cannot do it (you have no shell on the droplet, and there is no GH_TOKEN env var to set). Tell me to run, once:
+
+   bin/kamal app exec -i --reuse -d staging bash
+   gh auth login          # GitHub: the sole source of git auth
+   claude /login          # and/or: codex login
+
+   Explain that the gh and claude tokens persist on the gh_config and claude_home volumes, so those are one-time and not per-deploy — but there is NO ~/.codex volume, so a codex login is wiped by the next deploy unless I add one. Until I do the gh login, every session fails at the clone step even though /up is green. Do not call the setup complete until I confirm 'gh auth status' succeeds inside the container.
+
+10. Tell me what's left to make it mine. The instance will be running Zimmer's own small in-image catalog, not my agent roots / MCP servers / skills. Point me at docs/src/content/docs/air/artifacts.md ("Pointing an instance at your own catalog"): I deliver my catalog to a persistent host dir, bind-mount it into BOTH the web and worker roles, and set AIR_CONFIG to the mounted air.production.json. Warn me that only production.rb guards AIR_CONFIG with a File.exist? fallback — staging.rb reads it straight through, and deploy.staging.yml sets RAILS_ENV=staging — so on this staging-shaped deploy I must deliver the catalog files BEFORE setting AIR_CONFIG, or the app resolves zero roots. Offer to wire it up as a follow-up, but do not attempt it now.
+
+Report back the deploy status, the URL, and a short summary of exactly what you did. Do not close anything out until I've confirmed I can reach the UI.`}
+/>
+
+The prompt tells the agent to ask you before anything with an external side effect, and never to commit a secret.
+
+</TabItem>
+</Tabs>
+
+## Know this before you rely on it
+
+The staging model works, but it makes trade-offs a single-operator box can live with and a wider deployment can't. Read [Known limitations](/limitations/) in full; the ones most likely to matter here:
+
+- **The Tailscale auth key sits in the droplet's `user_data`.** App secrets (`SECRET_KEY_BASE`, the DB password, the GHCR token) now reach the container through Kamal from GitHub Actions and stay out of cloud-init — but the tailnet auth key and the deploy public key don't, and `user_data` is readable from the metadata service by anything on the box, agent processes included. Use an ephemeral, reusable key.
+- **Nothing is encrypted at rest, and `/supervisor` is unauthenticated.** OAuth tokens and secrets are plaintext columns, and the admin panel that renders them has its auth stubbed out. The tailnet perimeter is the only wall — don't expose port 80. See [Auth overview](/auth/overview/).
+- **SSH is open to `0.0.0.0/0`.** The firewall allows `22/tcp` from anywhere and there's no variable to narrow it.
+- **`user_data` is frozen after the first boot.** `ignore_changes = [user_data]` is what stops an app change from replacing the droplet — but it also means the Kamal deploy key and the Caddyfile only reach the box on a rebuild. Rotating the deploy key or changing `var.domain` needs a deliberate `terraform taint` of the droplet.
+
+## Where to go next
+
+- [Your first session](/start/first-session/) — drive the running app.
+- [Configuration reference](/start/configuration/) — the env vars that shape behavior.
+- [Auth architecture](/auth/overview/) — how credentials flow, and the `/supervisor` panel to lock down.

@@ -1,0 +1,184 @@
+---
+/*
+ * Overrides Starlight's PageTitle to add a page-level "Copy as Markdown" control
+ * beside the <h1>. The reader gets the whole page as raw Markdown in one click —
+ * handy for pasting into an LLM or a coding agent.
+ *
+ * The Markdown handed to the button is the page's own source (`entry.body`, the
+ * same text an author writes), prefixed with the title as an H1 so the copied
+ * text is a complete document. The click handling lives in one delegated
+ * listener at the bottom of this file, which also serves the section-scoped
+ * buttons rendered by <AgentPrompt> — anything with `[data-copy-markdown]`.
+ */
+const { entry } = Astro.locals.starlightRoute;
+const title = entry.data.title;
+// `body` is the raw Markdown after frontmatter; undefined only for pages with no
+// body (none here, but keep the app total). Frontmatter (title, description) is
+// not part of it, so lead with the title as an H1.
+const body = entry.body ?? "";
+// On .mdx pages the body carries component syntax that isn't Markdown. Convert
+// it back to plain Markdown so the copied text reads cleanly:
+//   1. drop the leading ESM import block (only the *leading* run of import/blank
+//      lines — a later `export`, e.g. inside a bash code block, is untouched),
+//   2. inline an <AgentPrompt prompt={`…`} /> as a fenced code block, and
+//   3. flatten <Tabs>/<TabItem> — each tab's label becomes an h3 so the copied
+//      text keeps a boundary between tab bodies instead of running them together.
+// Plain .md pages contain none of these, so the transforms are no-ops there.
+const lines = body.split("\n");
+let start = 0;
+while (
+  start < lines.length &&
+  (lines[start].trim() === "" || /^import\s.+\sfrom\s/.test(lines[start].trim()))
+) {
+  start++;
+}
+const source = lines
+  .slice(start)
+  .join("\n")
+  .replace(
+    /<AgentPrompt\b[\s\S]*?prompt=\{`([\s\S]*?)`\}[\s\S]*?\/>/g,
+    (_m, prompt) => "```text\n" + prompt + "\n```",
+  )
+  .replace(
+    /^[ \t]*<TabItem\b[^>]*\blabel=["']([^"']+)["'][^>]*>[ \t]*$/gm,
+    (_m, label) => `### ${label}`,
+  )
+  .replace(/^[ \t]*<\/?(?:Tabs|TabItem)\b[^>]*>[ \t]*$\n?/gm, "");
+const markdown = `# ${title}\n\n${source}`.replace(/\s+$/, "") + "\n";
+---
+
+<div class="page-title">
+  {/* PAGE_TITLE_ID = "_top": the skip-link target and TOC "Overview" anchor. */}
+  <h1 id="_top">{title}</h1>
+  <button
+    type="button"
+    class="copy-md"
+    data-copy-markdown
+    data-copy-label="Copy as Markdown"
+    data-markdown={markdown}
+    aria-label="Copy this page as Markdown"
+  >
+    <svg class="copy-md__icon copy-md__icon--copy" aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+    </svg>
+    <svg class="copy-md__icon copy-md__icon--done" aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 6 9 17l-5-5"></path>
+    </svg>
+    <span class="copy-md__label" aria-live="polite">Copy as Markdown</span>
+  </button>
+</div>
+
+<style>
+  @layer starlight.core {
+    .page-title {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .page-title h1 {
+      margin-top: 1rem;
+      font-size: var(--sl-text-h1);
+      line-height: var(--sl-line-height-headings);
+      font-weight: 600;
+      color: var(--sl-color-white);
+    }
+  }
+
+  .copy-md {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 1.35rem;
+    flex-shrink: 0;
+    padding: 0.4rem 0.7rem;
+    font-family: var(--font-display, system-ui, sans-serif);
+    font-size: 0.78rem;
+    font-weight: 560;
+    line-height: 1;
+    color: var(--sl-color-gray-2);
+    background: color-mix(in srgb, var(--sl-color-gray-6) 55%, var(--sl-color-bg));
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    cursor: pointer;
+    transition:
+      color 0.2s var(--ease-out, ease),
+      border-color 0.2s var(--ease-out, ease),
+      background 0.2s var(--ease-out, ease);
+  }
+  .copy-md:hover {
+    color: var(--sl-color-white);
+    border-color: color-mix(in srgb, var(--sl-color-accent) 55%, var(--sl-color-gray-5));
+    background: color-mix(in srgb, var(--sl-color-accent) 10%, var(--sl-color-bg));
+  }
+  .copy-md__icon {
+    flex-shrink: 0;
+  }
+  .copy-md__icon--done {
+    display: none;
+    color: #5bc2a8;
+  }
+  .copy-md.is-copied {
+    color: var(--sl-color-white);
+    border-color: color-mix(in srgb, #5bc2a8 55%, var(--sl-color-gray-5));
+  }
+  .copy-md.is-copied .copy-md__icon--copy {
+    display: none;
+  }
+  .copy-md.is-copied .copy-md__icon--done {
+    display: inline-block;
+  }
+</style>
+
+<script>
+  // One delegated handler covers every copy control on the page: the page-level
+  // "Copy as Markdown" button above and any section-scoped <AgentPrompt> button.
+  // Both carry the text to copy in `data-markdown`.
+  function flash(btn: Element, text: string) {
+    const label = btn.querySelector<HTMLElement>(".copy-md__label");
+    const original =
+      btn.getAttribute("data-copy-label") ?? (label ? label.textContent : "");
+    if (label) label.textContent = text;
+    btn.classList.add("is-copied");
+    window.setTimeout(() => {
+      if (label) label.textContent = original;
+      btn.classList.remove("is-copied");
+    }, 1600);
+  }
+
+  async function copyText(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback for non-secure contexts (e.g. http://zimmer) and old browsers.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.top = "-9999px";
+      ta.setAttribute("readonly", "");
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch {
+        ok = false;
+      }
+      document.body.removeChild(ta);
+      return ok;
+    }
+  }
+
+  document.addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const btn = target.closest<HTMLElement>("[data-copy-markdown]");
+    if (!btn) return;
+    const text = btn.getAttribute("data-markdown") ?? "";
+    const ok = await copyText(text);
+    flash(btn, ok ? "Copied" : "Copy failed");
+  });
+</script>

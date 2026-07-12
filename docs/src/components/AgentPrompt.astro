@@ -1,0 +1,92 @@
+---
+/*
+ * A section-scoped "hand this to a coding agent" block. Renders a prompt verbatim
+ * with its own copy button, distinct from the page-level "Copy as Markdown"
+ * control in PageTitle.astro. It reuses that file's delegated click handler
+ * (anything with `[data-copy-markdown]`), so this component ships no script.
+ */
+interface Props {
+  /** The exact prompt text to display and copy. */
+  prompt: string;
+  /** Button label; also the title shown in the block's bar. */
+  label?: string;
+  title?: string;
+}
+const {
+  prompt,
+  label = "Copy prompt",
+  title = "Setup prompt for a coding agent",
+} = Astro.props;
+---
+
+<div class="agent-prompt not-content">
+  <div class="agent-prompt__bar">
+    <span class="agent-prompt__title">{title}</span>
+    <button
+      type="button"
+      class="copy-md agent-prompt__copy"
+      data-copy-markdown
+      data-copy-label={label}
+      data-markdown={prompt}
+      aria-label={label}
+    >
+      <svg class="copy-md__icon copy-md__icon--copy" aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+      <svg class="copy-md__icon copy-md__icon--done" aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6 9 17l-5-5"></path>
+      </svg>
+      <span class="copy-md__label" aria-live="polite">{label}</span>
+    </button>
+  </div>
+  <pre class="agent-prompt__body"><code>{prompt}</code></pre>
+</div>
+
+<style>
+  .agent-prompt {
+    margin: 1.5rem 0;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.7rem;
+    background: var(--sl-color-gray-7);
+    overflow: hidden;
+  }
+  .agent-prompt__bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.6rem 0.85rem;
+    border-bottom: 1px solid var(--sl-color-gray-5);
+    background: color-mix(in srgb, var(--sl-color-gray-6) 60%, var(--sl-color-bg));
+  }
+  .agent-prompt__title {
+    font-family: var(--font-display, system-ui, sans-serif);
+    font-size: 0.72rem;
+    font-weight: 620;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--sl-color-gray-3);
+  }
+  .agent-prompt__body {
+    margin: 0;
+    padding: 1rem 1.1rem;
+    max-height: 26rem;
+    overflow: auto;
+    background: transparent;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.82rem;
+    line-height: 1.6;
+    color: var(--sl-color-gray-1);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .agent-prompt__body code {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+</style>

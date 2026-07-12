@@ -48,6 +48,8 @@ export default defineConfig({
       components: {
         // Injects the client-side Mermaid renderer on every page.
         Head: "./src/components/Head.astro",
+        // Adds a page-level "Copy as Markdown" control beside every page title.
+        PageTitle: "./src/components/PageTitle.astro",
       },
       sidebar: [
         {
@@ -108,6 +110,7 @@ export default defineConfig({
         {
           label: "Operating Zimmer",
           items: [
+            { label: "Self-hosting Zimmer", slug: "operate/self-hosting" },
             { label: "Deploying", slug: "operate/deploying" },
             { label: "Provisioning and secrets", slug: "operate/provisioning" },
             { label: "Background jobs", slug: "operate/background-jobs" },

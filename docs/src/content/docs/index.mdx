@@ -10,12 +10,13 @@ hero:
   image:
     file: ../../assets/logo-dark.svg
   actions:
+    - text: Get started
+      link: /start/local/
+      icon: rocket
     - text: What Zimmer is
       link: /intro/what-zimmer-is/
-      icon: right-arrow
-    - text: Read the philosophy
-      link: /intro/philosophy/
       variant: minimal
+      icon: right-arrow
     - text: GitHub
       link: https://github.com/tadasant/zimmer
       icon: external
@@ -27,6 +28,30 @@ import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
 Zimmer is open-source, standards-built, and made for a single circle of trust — you,
 or a couple, or business partners. You stay in control of what runs and what merges;
 Zimmer handles the toil of getting an agent from a prompt to a verified PR.
+
+## Start here
+
+Three ways in, shortest first. Pick the one that matches what you want right now.
+
+<CardGrid>
+  <LinkCard
+    title="Run it locally →"
+    href="/start/local/"
+    description="The fastest look: bundle install, db:setup, bin/dev, and you're at localhost:3000. Ruby, Postgres, and Redis on your machine."
+  />
+  <LinkCard
+    title="Drive your first session →"
+    href="/start/first-session/"
+    description="Point a session at a repo, give it a task, and watch it go from prompt to pull request. What the states mean and where a session can stall."
+  />
+  <LinkCard
+    title="Self-host your own →"
+    href="/operate/self-hosting/"
+    description="Stand up a real instance: one droplet, tailnet-only, Terraform provisions the host and Kamal deploys the app. Do it yourself, or hand a prompt to an agent."
+  />
+</CardGrid>
+
+New to the idea? Read [What Zimmer is](/intro/what-zimmer-is/) first, then come back.
 
 ## What it does
 
@@ -58,7 +83,9 @@ disagreed, the code wins and the contradiction is written down. Where the code w
 ambiguous, you get an "unclear — needs confirmation" note instead of a guess.
 </Aside>
 
-## Where to go next
+## Go deeper
+
+Once you've seen it run, these explain why it's shaped the way it is.
 
 <CardGrid>
   <LinkCard
@@ -70,11 +97,6 @@ ambiguous, you get an "unclear — needs confirmation" note instead of a guess.
     title="Architecture"
     href="/intro/architecture/"
     description="Rails app, GoodJob workers, agent subprocesses, Postgres, Redis, and the diagram of how a prompt becomes a running process."
-  />
-  <LinkCard
-    title="Run it locally"
-    href="/start/local/"
-    description="Prerequisites, setup, and the environment variables that matter."
   />
   <LinkCard
     title="AIR"
