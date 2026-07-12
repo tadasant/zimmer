@@ -205,6 +205,11 @@
   <div class="flex flex-1 min-h-0">
     <!-- Timeline Content -->
     <div class="flex-1 min-w-0 max-w-full mx-auto px-2 sm:px-6 lg:px-8 py-4 sm:py-8">
+    <%# MCP Apps spike: render an interactive MCP App fragment surfaced by
+        Zimmer-as-host. Flag-gated; only present when a preview was fetched. %>
+    <% if local_assigns[:mcp_app_preview].present? || @mcp_app_preview.present? %>
+      <%= render "sessions/mcp_app_panel", preview: (local_assigns[:mcp_app_preview] || @mcp_app_preview) %>
+    <% end %>
     <div class="bg-white shadow rounded-lg" id="timeline-container" data-session-scroll-target="timeline"
          data-controller="infinite-scroll"
          data-infinite-scroll-url-value="<%= timeline_items_session_path(@session) %>"
