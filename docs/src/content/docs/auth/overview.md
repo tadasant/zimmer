@@ -94,7 +94,7 @@ everything.
 
 ## 3. Zimmer → the agent vendor
 
-A pool of accounts (`ClaudeAccount` — misleadingly named; it serves **both** runtimes, discriminated
+A pool of accounts (`ClaudeAccount` — misleadingly named; it serves both runtimes, discriminated
 by a `runtime` column) with automatic OAuth refresh and automatic rotation when one hits its quota.
 
 → [Agent harness credentials](/auth/harness/)
@@ -115,7 +115,7 @@ There is no `encrypts` in any model and no `config.active_record.encryption.*` a
 In `db/schema.rb`:
 
 - `mcp_oauth_credentials.access_token`, `.refresh_token`, `.client_secret` — plain `text` / `string`
-- `mcp_oauth_pending_flows.code_verifier`, `.client_secret` — plain
+- `mcp_oauth_pending_flows.code_verifier`, `.client_secret` — unencrypted
 - `claude_accounts.oauth_config` — plain `jsonb`, holding Anthropic and OpenAI access and refresh
   tokens
 - `x_oauth_credentials` — plain

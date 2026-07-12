@@ -53,8 +53,8 @@ is rejected. Setting `var.domain` (e.g. `zimmer.tadasant.com`) fixes this class 
 a genuine cert on a custom name — while staying reachable only over the tailnet.
 
 The trick is that TLS behind a tailnet is awkward: the firewall opens no public 80/443, so ACME
-HTTP-01/TLS-ALPN-01 can't work — only DNS-01 can. Rather than park a Cloudflare token on the droplet for
-on-box renewal, the work is split so **the box holds no DNS credential**:
+HTTP-01/TLS-ALPN-01 can't work — only DNS-01 can. On-box renewal would mean parking a Cloudflare token
+on the droplet, so the work is split so the box holds no DNS credential:
 
 ```mermaid
 flowchart LR
@@ -79,7 +79,7 @@ flowchart LR
   placeholder is written at boot so Caddy can start before the real cert arrives.
 - **In CI** (`scripts/domain-cert.sh`, run by `domain-cert-staging.yml`): discovers the droplet's tailnet
   IP, upserts a Cloudflare `domain → tailnet IP (100.x)` A record, issues/renews the Let's Encrypt cert
-  via ACME DNS-01 through Cloudflare, pushes **only the cert** onto the box over `tailscale ssh`, and
+  via ACME DNS-01 through Cloudflare, pushes only the cert onto the box over `tailscale ssh`, and
   restarts Caddy (the Caddyfile sets `admin off`, so there's no live-reload endpoint — a restart re-reads
   the bind-mounted files). The Cloudflare token lives only in GitHub Actions.
 
@@ -87,7 +87,7 @@ The A record points at the **tailnet IP**, so tailnet peers resolve and reach it
 gets an unroutable address — same tailnet-only exposure as the MagicDNS name, now with a real cert.
 
 :::note[Turning it on]
-Mint a Cloudflare API token scoped to **Zone:DNS:Edit + Zone:Zone:Read on the parent zone only**, add it
+Mint a Cloudflare API token scoped to `Zone:DNS:Edit + Zone:Zone:Read` on the parent zone only, add it
 as the `CLOUDFLARE_API_TOKEN` Actions secret (staging → `tadasant/zimmer`, production →
 `tadasant/tadasant-internal`), set `domain` in the environment's tfvars, deploy, then run the
 `domain-cert-*` workflow once (`workflow_dispatch`) to issue the first cert. The weekly schedule renews
@@ -96,7 +96,7 @@ it issues only ~every 60 days. `domain=""` renders byte-identically to the plain
 deployments are unaffected.
 :::
 
-:::caution[Certs survive an image upgrade, but not a droplet replacement]
+:::caution[Certs persist across image upgrades; a droplet replacement drops them]
 Certs live in a host directory, so they persist across image auto-upgrades (container recreate). A
 droplet **replacement** (a fresh `provision`) drops them; the next `domain-cert-*` run re-registers the A
 record and re-issues.

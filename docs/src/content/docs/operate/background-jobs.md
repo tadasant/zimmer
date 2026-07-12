@@ -40,7 +40,7 @@ From `config.good_job.cron`:
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
 | — | `ZombieReaperJob`, `DeferredCloneCleanupJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
 
-:::note[GoodJob cron can't do sub-minute intervals — except it can]
+:::note[Sub-minute cron: the config contradicts itself]
 The `*/30 * * * * *` entries are six-field cron (with seconds), which fugit supports. But
 `SlackTriggerPollerJob`'s own comment says *"GoodJob/fugit doesn't support seconds"* and settles for a
 one-minute cron. Both forms are in the same config file. One of those two comments is wrong; the
@@ -58,8 +58,8 @@ Most jobs run on `default`. Two are deliberately isolated:
   "saturate the queue's whole thread pool."
 
 :::caution[A Slack rate-limit episode stalls all Slack polling]
-`total_limit: 1` contains the damage, but the containment *is* the damage: while Slack is throttling
-you, no Slack polling happens at all, and ticks are silently dropped.
+`total_limit: 1` caps the blast radius, but it also means no Slack polling at all while you're
+throttled — and ticks are silently dropped.
 :::
 
 ## Retry and recovery machinery
@@ -74,7 +74,7 @@ you, no Slack polling happens at all, and ticks are silently dropped.
 | `NpxCacheHealService` | A corrupted `_npx` cache — detected by regexing npm's stderr |
 | `GlobalRateLimitTracker` | SIGTERM/529 pressure counter driving adaptive backoff |
 
-:::caution[`GlobalRateLimitTracker` isn't actually global]
+:::caution[`GlobalRateLimitTracker` is only global with Redis]
 Its own header admits the read-modify-write is not atomic, and that with a `memory_store` cache
 each worker tracks independently. It needs Redis to be truly global. Zimmer *does* use Redis for the
 cache in production — but nothing enforces that, and in development it silently degrades.

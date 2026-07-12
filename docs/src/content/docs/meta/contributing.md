@@ -87,7 +87,7 @@ A remark plugin (`src/plugins/remark-mermaid.mjs`) swaps the fence for a placeho
 Code can claim it, and a client script in `src/components/Head.astro` renders it with Mermaid in the
 browser, **re-rendering on light/dark toggle**.
 
-:::note[Why client-side rendering, not build-time SVG]
+:::note[Why the diagrams render in the browser]
 Prerendering with `rehype-mermaid` would need a headless Chromium in CI and would still bake in a single
 colour scheme. Rendering in the browser costs a JS payload but lets a diagram follow the reader's theme.
 Both are defensible; this one was chosen for CI simplicity and correct dark mode.
