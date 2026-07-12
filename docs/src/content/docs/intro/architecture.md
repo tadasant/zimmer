@@ -33,7 +33,7 @@ flowchart TB
     end
 
     subgraph host["Host filesystem"]
-        CLONE["~/.agent-orchestrator/clones/&lt;session&gt;/<br/>git clone · .mcp.json · .claude/skills/"]
+        CLONE["~/.zimmer/clones/&lt;session&gt;/<br/>git clone · .mcp.json · .claude/skills/"]
         CRED["~/.claude/.credentials.json<br/>~/.codex/auth.json"]
     end
 
@@ -76,17 +76,8 @@ tokens, reap zombies, and clean up clones. In development GoodJob runs `:async` 
 with Puma); in production and staging it's `:external`, meaning a separate `bundle exec
 good_job start` process is required.
 
-:::danger[The shipped Terraform does not run a worker]
-`infra/terraform/cloud-init.yaml.tftpl` renders a `docker-compose.yml` with exactly three
-services — `app`, `redis`, and (staging only) `db`. There is no worker service and no
-`good_job start` anywhere in `infra/`, the Dockerfile, or the workflows, while
-`config/environments/production.rb:59` sets `execution_mode = :external`.
-
-On a droplet provisioned by this repo's Terraform, sessions enqueue and never run, and no
-cron ever fires. The staging health check only curls `/up`, so it passes anyway. You must
-add a worker service yourself. See
-[Known limitations](/limitations/#the-shipped-terraform-provisions-no-job-worker).
-:::
+The Kamal deploy runs that as a dedicated `worker` role (`config/deploy.staging.yml`), so cron
+and pollers run on the deployed droplet.
 
 **Agent subprocess.** A real headless `claude` or `codex` process, spawned with
 `pgroup: true` so the whole process group can be killed as a unit. Its stdin and stdout go
@@ -109,7 +100,7 @@ must exist before boot.
 **Redis** is the Rails cache only. There is no Redis-backed queue — GoodJob uses Postgres.
 
 **The filesystem** is load-bearing. Clones live in
-`~/.agent-orchestrator/clones/`. Agent credentials live in `~/.claude/.credentials.json` and
+`~/.zimmer/clones/`. Agent credentials live in `~/.claude/.credentials.json` and
 `~/.codex/auth.json`, and are read by the CLI, written by Zimmer, and *also* rewritten by the
 CLI behind Zimmer's back. See [Agent harness credentials](/auth/harness/).
 
@@ -132,7 +123,7 @@ sequenceDiagram
     Note over S: status = waiting
     S->>J: enqueue AgentSessionJob
     J->>S: start! (waiting → running, guard: git_root present)
-    J->>G: clone repo into ~/.agent-orchestrator/clones/{slug}
+    J->>G: clone repo into ~/.zimmer/clones/{slug}
     G-->>J: working_directory
     J->>A: air prepare {adapter} --target WD --without-defaults<br/>--skill … --mcp-server … --hook … --plugin …
     Note over A: writes .mcp.json, .claude/skills/,<br/>.claude/hooks/, substitutes ${SECRETS}

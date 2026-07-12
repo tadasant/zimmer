@@ -90,11 +90,6 @@ Three endpoints skip it entirely:
 - `GET /api/secrets/keys` — because `Api::SecretsController` inherits `ApplicationController`, not
   `Api::BaseController`. It leaks secret names and descriptions (not values), unauthenticated.
 
-:::caution[`API_KEYS` isn't set by the shipped deploy]
-The cloud-init compose file sets no `API_KEYS`, so on a stock Terraform droplet the REST API 401s on
-everything.
-:::
-
 ## 3. Zimmer → the agent vendor
 
 A pool of accounts (`ClaudeAccount` — misleadingly named; it serves both runtimes, discriminated
