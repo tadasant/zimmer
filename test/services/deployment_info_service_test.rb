@@ -145,17 +145,17 @@ class DeploymentInfoServiceTest < ActiveSupport::TestCase
     assert mcp_config.keys.all? { |k| !k.to_s.start_with?("$") }
   end
 
-  test "mcp_config redacts env values containing environment variables" do
+  test "mcp_config redacts header values containing environment variables" do
     mcp_config = DeploymentInfoService.mcp_config_with_redacted_secrets
 
-    # Find a server with an interpolated env var (the self-session servers carry
-    # AGENT_ORCHESTRATOR_API_KEY = ${AGENT_ORCHESTRATOR_PROD_API_KEY}).
-    ao_server = mcp_config["agent-orchestrator-prod-self-session"]
-    assert_not_nil ao_server, "agent-orchestrator-prod-self-session server should exist"
+    # Zimmer's own MCP entries carry an interpolated credential header
+    # (X-API-Key = ${AGENT_ORCHESTRATOR_PROD_API_KEY}).
+    zimmer_server = mcp_config["zimmer-self-session"]
+    assert_not_nil zimmer_server, "zimmer-self-session server should exist"
 
-    # Check that env values with ${VAR} pattern are redacted
-    api_key_value = ao_server.dig("env", "AGENT_ORCHESTRATOR_API_KEY")
-    assert_not_nil api_key_value, "AGENT_ORCHESTRATOR_API_KEY env should exist"
+    # Check that header values with ${VAR} pattern are redacted
+    api_key_value = zimmer_server.dig("headers", "X-API-Key")
+    assert_not_nil api_key_value, "X-API-Key header should exist"
     assert_equal "[REDACTED - contains env var]", api_key_value
   end
 

@@ -23,12 +23,19 @@ class Api::BaseController < ActionController::API
   private
 
   def authenticate_api_key
-    api_key = request.headers["X-API-Key"]
+    api_key = api_key_from_request
 
     # Use constant-time comparison to prevent timing attacks
     unless api_key.present? && valid_api_keys.any? { |valid_key| ActiveSupport::SecurityUtils.secure_compare(valid_key, api_key) }
       render json: { error: "Unauthorized", message: "Invalid or missing API key" }, status: :unauthorized
     end
+  end
+
+  # Where the key lives on the request. Subclasses may widen this — the native
+  # MCP endpoint also accepts `Authorization: Bearer <key>`, since MCP clients
+  # configure a bearer token rather than a custom header.
+  def api_key_from_request
+    request.headers["X-API-Key"]
   end
 
   def valid_api_keys

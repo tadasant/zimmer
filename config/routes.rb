@@ -36,6 +36,12 @@ Rails.application.routes.draw do
   # Content so favicon probes stay quiet.
   get "/favicon.ico", to: ->(_env) { [ 204, {}, [] ] }
 
+  # Zimmer's native MCP server (streamable HTTP). Scoped variants are selected
+  # with query params: /mcp?tool_groups=self_session[&allowed_agent_roots=a,b].
+  # The SDK's transport dispatches POST / GET / DELETE itself (GET and DELETE are
+  # 405 in stateless mode), so every verb routes to the same action.
+  match "mcp", to: "mcp#handle", via: [ :post, :get, :delete ], as: :mcp
+
   # API routes
   namespace :api do
     get "secrets/keys", to: "secrets#keys"

@@ -275,7 +275,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     # prepare! is already stubbed in setup; stub the attr_reader to return the
     # injected list so UnarchiveSessionService#regenerate_mcp_config persists it.
     AirPrepareService.any_instance.stubs(:injected_mcp_servers)
-      .returns([ "agent-orchestrator-prod-self-session" ])
+      .returns([ "zimmer-self-session" ])
 
     result = UnarchiveSessionService.call(
       session: @session,
@@ -285,7 +285,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert result.success?
 
     @session.reload
-    assert_equal [ "agent-orchestrator-prod-self-session" ],
+    assert_equal [ "zimmer-self-session" ],
       @session.custom_metadata["injected_mcp_servers"],
       "custom_metadata.injected_mcp_servers must reflect what AIR actually injected during unarchive, " \
       "not what was set during the original session run"
@@ -329,7 +329,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
     AirPrepareService.any_instance.stubs(:ensure_baseline_mcp_config!)
     AirPrepareService.any_instance.stubs(:injected_mcp_servers)
-      .returns([ "agent-orchestrator-prod-self-session" ])
+      .returns([ "zimmer-self-session" ])
 
     result = UnarchiveSessionService.call(
       session: @session,
@@ -339,7 +339,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert result.success?
 
     @session.reload
-    assert_equal [ "agent-orchestrator-prod-self-session" ],
+    assert_equal [ "zimmer-self-session" ],
       @session.custom_metadata["injected_mcp_servers"]
   end
 
@@ -363,7 +363,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     AirPrepareService.any_instance.expects(:prepare!).once
     AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
     AirPrepareService.any_instance.stubs(:injected_mcp_servers)
-      .returns([ "agent-orchestrator-prod-self-session" ])
+      .returns([ "zimmer-self-session" ])
 
     result = UnarchiveSessionService.call(
       session: @session,
@@ -844,7 +844,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
   test "regeneration restores the auto-injected subagent Zimmer server for a subagent-roots-only root" do
     # Regression for the production wedge (sessions 9726/9890): a root whose only
-    # subagent-spawning capability is the auto-injected agent-orchestrator server
+    # subagent-spawning capability is the auto-injected Zimmer server
     # (catalog-management declares NO default_mcp_servers/skills/hooks/plugins)
     # lost that server on unarchive because the baseline regeneration path injected
     # only the self-session server. This exercises the REAL post-processor end to end
@@ -872,22 +872,23 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
     assert result.success?
 
-    # The regenerated .mcp.json must carry the subagent-spawning server.
+    # The regenerated .mcp.json must carry the subagent-spawning server: Zimmer's
+    # own native MCP endpoint, scoped to the root's subagent roots.
     config = JSON.parse(@mock_fs.read(File.join(@working_directory, ".mcp.json")))
-    ao_server = config.dig("mcpServers", "agent-orchestrator")
-    assert_not_nil ao_server,
-      "regenerated .mcp.json must contain the auto-injected agent-orchestrator spawning server"
-    allowed = ao_server.dig("env", "ALLOWED_AGENT_ROOTS")
-    assert_includes allowed, "catalog-mgmt-research"
-    assert_includes allowed, "catalog-mgmt-save"
-    # A full-surface AO server (no TOOL_GROUPS restriction) covers the self_session
+    zimmer_server = config.dig("mcpServers", "zimmer")
+    assert_not_nil zimmer_server,
+      "regenerated .mcp.json must contain the auto-injected Zimmer spawning server"
+    assert_equal "http", zimmer_server["type"]
+    assert_includes zimmer_server["url"], "catalog-mgmt-research"
+    assert_includes zimmer_server["url"], "catalog-mgmt-save"
+    # A full-surface Zimmer server (no tool_groups scoping) covers the self_session
     # tool group, so self-session capability is retained via this same server.
-    assert_nil ao_server.dig("env", "TOOL_GROUPS"),
+    refute_includes zimmer_server["url"], "tool_groups",
       "the subagent Zimmer server must expose the full tool surface, covering self_session"
 
     # And custom_metadata must record it so the UI reflects the restored server.
     @session.reload
-    assert_includes @session.custom_metadata["injected_mcp_servers"], "agent-orchestrator",
+    assert_includes @session.custom_metadata["injected_mcp_servers"], "zimmer",
       "custom_metadata.injected_mcp_servers must record the restored subagent Zimmer server"
   ensure
     ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
