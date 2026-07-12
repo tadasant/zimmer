@@ -13,15 +13,37 @@ class StagingCredentialsTest < ActiveSupport::TestCase
   KAMAL_SECRETS = Rails.root.join(".kamal/secrets.staging")
   DEPLOY_CONFIG = Rails.root.join("config/deploy.staging.yml")
   DEPLOY_WORKFLOW = Rails.root.join(".github/workflows/deploy-staging.yml")
+  DOCKERIGNORE = Rails.root.join(".dockerignore")
+  ENC = "config/credentials/staging.yml.enc"
+
+  test "staging.yml.enc exists" do
+    assert Rails.root.join(ENC).exist?,
+      "#{ENC} must exist -- staging has no bind-mounted credentials directory (production does), " \
+      "so the .enc has to ship inside the image."
+  end
 
   test "staging.yml.enc is committed, and its key is not" do
+    skip "not a git checkout" unless Rails.root.join(".git").exist?
+
     tracked = `git -C #{Rails.root} ls-files config/credentials`.split("\n")
 
-    assert_includes tracked, "config/credentials/staging.yml.enc",
-      "config/credentials/staging.yml.enc must be committed -- staging has no bind-mounted " \
-      "credentials directory (production does), so the .enc has to ship inside the image."
+    assert_includes tracked, ENC, "#{ENC} must be committed, not merely present locally."
     assert_not_includes tracked, "config/credentials/staging.key",
       "config/credentials/staging.key must NEVER be committed; it decrypts staging.yml.enc."
+  end
+
+  # The whole chain is inert if the .enc never reaches the image, and that failure is
+  # invisible from the repo: every other test here would still pass. Guard the one
+  # plausible way it breaks -- someone hardening .dockerignore from *.key to *.
+  test ".dockerignore excludes the credentials key but keeps staging.yml.enc" do
+    patterns = DOCKERIGNORE.read.lines.map { |l| l.sub(/#.*/, "").strip }.reject(&:empty?)
+
+    assert_includes patterns, "/config/credentials/*.key",
+      "The credentials key must stay out of the image."
+    excluded = patterns.any? { |p| File.fnmatch?(p.delete_prefix("/"), ENC, File::FNM_PATHNAME) }
+    assert_not excluded,
+      "A .dockerignore pattern excludes #{ENC}, so it will not ship in the image and staging " \
+      "silently loses every mcp_secret. Exclude only the .key."
   end
 
   test "Kamal maps RAILS_MASTER_KEY from the STAGING_RAILS_MASTER_KEY deploy secret" do
@@ -54,9 +76,12 @@ class StagingCredentialsTest < ActiveSupport::TestCase
       ".kamal/secrets.staging interpolates it to empty.")
   end
 
+  # Matches from the guard's `if` to the end of the shell block, NOT to the first `fi`:
+  # a nested conditional would end a lazy `.*?\bfi\b` match early and hide a trailing
+  # `exit 1` from the assertion below -- which is the exact thing being asserted against.
   test "a missing STAGING_RAILS_MASTER_KEY warns but does not fail the deploy" do
     workflow = DEPLOY_WORKFLOW.read
-    guard = workflow[/if \[ -z "\$\{STAGING_RAILS_MASTER_KEY:-\}" \]; then.*?\bfi\b/m]
+    guard = workflow[/if \[ -z "\$\{STAGING_RAILS_MASTER_KEY:-\}" \]; then.*?\n          kamal /m]
 
     assert guard, "deploy-staging.yml must guard an empty STAGING_RAILS_MASTER_KEY."
     assert_match(/::warning::/, guard)

@@ -204,10 +204,10 @@ jobs:
           fi
           # RAILS_MASTER_KEY is deliberately NOT fatal, unlike the key above. It decrypts
           # config/credentials/staging.yml.enc, and ActiveSupport reads it as
-          # `ENV["RAILS_MASTER_KEY"].presence` -- so blank behaves exactly like unset:
-          # the credentials stay inert and the app boots, which is how staging ran before
-          # it had a key at all. Failing here would turn a degraded deploy into a broken
-          # one for anyone (a fork, a self-hoster) who has not set the secret.
+          # `ENV["RAILS_MASTER_KEY"].presence` -- so blank behaves exactly like unset: the
+          # credentials stay inert and the app still boots healthy. Failing here would turn
+          # a degraded deploy into a broken one for anyone (a fork, a self-hoster) who has
+          # not set the secret.
           if [ -z "${STAGING_RAILS_MASTER_KEY:-}" ]; then
             echo "::warning::STAGING_RAILS_MASTER_KEY is unset, so config/credentials/staging.yml.enc stays encrypted."
             echo "::warning::Staging will boot, but SecretsLoader serves nothing: Slack triggers and AlertService"
