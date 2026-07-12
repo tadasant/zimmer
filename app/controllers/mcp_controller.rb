@@ -55,10 +55,15 @@ class McpController < Api::BaseController
     parsed.is_a?(Array) ? [ parsed, true ] : [ [ parsed ], false ]
   end
 
+  # Scoping is read from the query string, never from `params` — Rails merges a
+  # JSON body's top-level keys into params, so a client could otherwise widen its
+  # own tool_groups by putting them in the JSON-RPC envelope.
   def mcp_context
+    query = request.query_parameters
+
     Mcp::Context.new(
-      tool_groups: params[:tool_groups],
-      allowed_agent_roots: params[:allowed_agent_roots],
+      tool_groups: query["tool_groups"],
+      allowed_agent_roots: query["allowed_agent_roots"],
       base_url: request.base_url
     )
   end

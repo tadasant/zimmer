@@ -152,6 +152,26 @@ class McpControllerTest < ActionDispatch::IntegrationTest
 
   # --- allowed_agent_roots scoping ---
 
+  test "a scoped connection cannot widen itself by putting tool_groups in the body" do
+    post "/mcp?tool_groups=self_session",
+         params: { jsonrpc: "2.0", id: 1, method: "tools/list", tool_groups: "sessions" }.to_json,
+         headers: @headers
+
+    tools = JSON.parse(response.body)["result"]["tools"].map { |t| t["name"] }
+    refute_includes tools, "start_session", "body params must not override the URL's scoping"
+  end
+
+  test "a restricted connection cannot widen allowed_agent_roots from the body" do
+    post "/mcp?allowed_agent_roots=zimmer",
+         params: { jsonrpc: "2.0", id: 1, method: "tools/call", allowed_agent_roots: "general-agent",
+                   params: { name: "start_session", arguments: { agent_root: "general-agent", prompt: "x" } } }.to_json,
+         headers: @headers
+
+    result = JSON.parse(response.body)["result"]
+    assert result["isError"], "start_session on a disallowed root must be refused"
+    assert_match(/not permitted/, result["content"].first["text"])
+  end
+
   test "get_configs hides agent roots outside allowed_agent_roots" do
     body = rpc("tools/call", { "name" => "get_configs", "arguments" => {} }, path: "/mcp?allowed_agent_roots=zimmer")
     text = body["result"]["content"].first["text"]
