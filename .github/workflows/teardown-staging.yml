@@ -1,16 +1,14 @@
 name: Teardown staging
 
-# Destroys the staging droplet + firewall nightly so an idle staging box does not
-# bill 24/7. NOTE: a *powered-off* DigitalOcean droplet is STILL billed (its disk,
-# CPU, RAM and IP stay reserved) -- only destroying it stops the charge. A `Deploy
-# staging` run recreates it on demand, so "off by default, spin up when needed" is
-# achieved by destroy + redeploy, not shutdown.
+# MANUAL-ONLY now. Staging is a PERSISTENT droplet that Kamal deploys onto, so it
+# is no longer destroyed nightly -- that recreate-every-day churn is exactly what
+# the Kamal migration removed. Run this only when you deliberately want to tear
+# staging down (e.g. to stop billing for a while); `Deploy staging` stands it back
+# up.
 #
-# Also deletes the leftover tailnet node so the next deploy reclaims the clean
-# `zimmer-staging` MagicDNS name.
+# With remote state, teardown is a clean `terraform destroy` -- no raw DO API reap
+# of account-unique names, because Terraform now tracks exactly what it created.
 on:
-  schedule:
-    - cron: "0 8 * * *" # 08:00 UTC daily (~00:00 PT / 03:00 ET)
   workflow_dispatch: {}
 
 concurrency:
@@ -24,23 +22,29 @@ permissions:
 jobs:
   teardown:
     runs-on: ubuntu-latest
+    environment: staging
     steps:
       - uses: actions/checkout@v4
 
-      - name: Destroy staging droplet + firewall
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Terraform destroy (staging)
+        working-directory: infra/terraform
         env:
-          DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          TF_VAR_deploy_ssh_pubkey: ${{ secrets.KAMAL_SSH_PUBKEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          api() { curl -fsS -H "Authorization: Bearer $DO_TOKEN" "$@"; }
-          n=0
-          for d in $(api "https://api.digitalocean.com/v2/droplets?tag_name=zimmer-staging" | jq -r '.droplets[].id'); do
-            echo "destroying droplet $d"; api -X DELETE "https://api.digitalocean.com/v2/droplets/$d" || true; n=$((n+1))
-          done
-          for fw in $(api "https://api.digitalocean.com/v2/firewalls" | jq -r '.firewalls[] | select(.name=="zimmer-staging") | .id'); do
-            echo "destroying firewall $fw"; api -X DELETE "https://api.digitalocean.com/v2/firewalls/$fw" || true
-          done
-          echo "destroyed $n staging droplet(s); billing for them stops now."
+          terraform init -input=false \
+            -backend-config=backend.staging.hcl
+          cp staging.tfvars.example staging.tfvars
+          terraform destroy -input=false -auto-approve \
+            -var-file=staging.tfvars
 
       - name: Reap stale tailnet node
         env:

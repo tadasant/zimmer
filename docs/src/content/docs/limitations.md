@@ -11,9 +11,9 @@ code rather than the old docs, which were themselves often wrong.
 Every item names a file so you can verify it. Nothing is left out for looking bad. Items whose first
 line starts with 🔴 would bite a new operator immediately.
 
-Every item below links to the issue tracking it, with two exceptions. The Deployment section is
-being rewritten onto Kamal, so it is tracked there rather than issue by issue. And Push
-notifications without the Push API is a platform limit we can't fix, so it is stated in place
+Every item below links to the issue tracking it, with two exceptions. The Deployment section covers
+the in-progress Kamal migration, so it is tracked through that work rather than issue by issue. And
+Push notifications without the Push API is a platform limit we can't fix, so it is stated in place
 rather than filed.
 
 ---
@@ -35,59 +35,69 @@ catalog refresh. The staging health check only curls `/up`, so the deploy report
 
 Production presumably runs a different compose file from a private repo. The IaC here is incomplete.
 
-### Clones are not actually persisted in the shipped infra
+### Production is still on the old compose stack, and shares the Terraform module
 
-🔴 `app/services/clones_directory.rb:8-21` states that clones survive restarts via a Docker named volume
-mounted per `config/deploy.production.yml`.
+🔴 **The most important thing to know right now.** `infra/terraform/main.tf` and
+`cloud-init.yaml.tftpl` are mirrored **byte-identical** into the private production repo, enforced by
+an `iac-sync` guard. Staging has been cut over to Kamal; **production has not**. It still runs the old
+docker-compose stack, driven by its own workflows.
 
-`config/deploy.production.yml` does not exist in this repo. The Terraform compose mounts no volumes on
-the `app` service. Nothing is persisted: clones, `~/.claude` (the shared credentials the whole rotation
-system needs), `~/.config/gh`, `~/.local` (where the entrypoint's background `claude update` writes),
-and `/var/run/docker.sock` (despite `DockerCleanupJob` needing it).
+That means the mirrored module is now *ahead of* production:
 
-Everything lives in the container's writable layer. A routine deploy wipes every clone.
+- `main.tf` declares `backend "s3" {}`, so production's `terraform init` fails until it also supplies a
+  `-backend-config`. Its state is ephemeral today, so it additionally needs a one-time
+  `terraform import` of the live droplet/firewall/project — otherwise a first apply would try to
+  **create** a second one and 409 on the account-unique firewall name.
+- The mirrored `cloud-init.yaml.tftpl` no longer contains the app stack at all. `ignore_changes =
+  [user_data]` protects the running production box, but if it is ever replaced it would boot with
+  Docker + Tailscale + Caddy and **no app**.
 
-### Three required env vars are never set by the deploy
+Production's `iac-sync` PR must therefore **not** be merged on its own. Its cutover has to land
+atomically: backend config + `terraform import` + a Kamal production config + its workflow rewrite,
+together. Until then, production keeps running and upgrading in place exactly as before.
 
-🔴 `RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and none appear in
-`cloud-init.yaml.tftpl`. On a stock droplet the REST API 401s on everything, every MCP OAuth callback
-points at `localhost:3000`, and Rails encrypted credentials can't be read.
+### The first deploy onto the new model needs a one-time reap
 
-### Leftover Kamal references, no Kamal config
+Remote state starts empty, so the very first `terraform apply` does not know about a pre-existing
+`zimmer-staging` droplet/firewall/project — and DO firewall and project names are **account-unique**,
+so it would 409. The old droplet also can't simply be imported: it was booted by the old cloud-init and
+has no Kamal deploy key authorized, so Kamal could never reach it.
 
-`bin/kamal` exists, and `Dockerfile`, `config/application.rb`, `clones_directory.rb`,
-`session_scratch_directory.rb`, and `cli_status_service.rb` all reference Kamal — but no
-`config/deploy*.yml` exists anywhere.
+The cutover is therefore: destroy the old droplet + firewall + project once, then `apply`. This is a
+one-time cost, and it is the last time staging gets recreated.
 
-### Terraform state is ephemeral
+### `user_data` is frozen, so the deploy key and the Caddyfile can't be updated in place
 
-No backend block. The deploy hand-reaps the droplet and firewall through the DigitalOcean API before
-each `apply`, because Terraform can't converge otherwise. `terraform destroy` can never work properly.
-`manage_project` and `domain` default to off precisely because account-unique resources would 409.
+The droplet carries `lifecycle { ignore_changes = [user_data] }` — that is what stops app changes from
+force-replacing it. The cost: the Kamal deploy public key and the Caddyfile are delivered **only**
+through `user_data`, so rotating `KAMAL_SSH_KEY` or changing `var.domain` produces **no plan diff** and
+never reaches the box. Both require an explicit `terraform taint digitalocean_droplet.zimmer` — i.e.
+deliberately re-creating the droplet, which is exactly the churn this model exists to avoid.
 
-Accepted trade-off for one operator; would not survive a second.
+Rotating the deploy key is rare; changing the domain is rarer. But neither is a no-op.
 
-### Secrets are readable from the droplet's metadata service
+### RAILS_MASTER_KEY is unset on staging
 
-The GHCR token, the Tailscale auth key, `SECRET_KEY_BASE`, and the DB password are interpolated into
-cloud-init, i.e. into `user_data` — readable by anything on the box, including every agent process
-Zimmer spawns.
-
-### Staging's Postgres password is `secret_key_base`
-
-`local.db_password` in `main.tf` falls back to it, and for staging it always does.
+`RAILS_MASTER_KEY` is deliberately absent from staging's Kamal config: there is no committed
+`config/credentials/production.yml.enc` to decrypt, `secrets_loader.rb` rescues a missing key, and there
+is no `require_master_key` — so the app boots without it. Anything reading Rails encrypted credentials
+(i.e. `mcp_secrets`) is therefore inert on staging. `API_KEYS` and `APP_HOST` *are* set (in
+`config/deploy.staging.yml`); they used to be missing entirely.
 
 ### SSH is open to `0.0.0.0/0`
 
 The firewall comment says "lock down to your admin CIDRs in tfvars if desired." There is no variable
 to do that with.
 
-### Probable double-suffixed Redis URL
+### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 
-Compose sets `REDIS_URL=redis://redis:6379/0`, and `production.rb` builds the cache store as
-`"#{ENV["REDIS_URL"]}/0"` → `redis://redis:6379/0/0`.
+`production.rb` builds the cache store as `"#{ENV["REDIS_URL"]}/0"`, so a `REDIS_URL` that already ends
+in a database index becomes `redis://…:6379/0/0`. The old compose stack set `redis://redis:6379/0` and
+hit exactly that.
 
-**Unclear / needs confirmation:** whether the Redis client tolerates this or falls back to db 0.
+`config/deploy.yml` now sets `REDIS_URL: redis://zimmer-redis:6379` — **no trailing `/0`** — so the
+app's own suffixing produces a single, correct index. The trap is still there for anyone who "helpfully"
+adds the `/0` back.
 
 ### `claude update` runs in the background at boot
 
