@@ -67,9 +67,10 @@ SecretsLoader.available?
 
 ## Key Management
 
-**Tadas has the `development.key`, `staging.key`, and `production.key` secrets saved in 1Password.**
+Keep the `development.key`, `staging.key`, and `production.key` files in your password manager. They
+are the only way to read the encrypted credentials, and they are not in git.
 
-For local development, these keys should also be stored in `~/github-projects/agents/.env`:
+For local development, store them in this repo's `.env`:
 ```
 RAILS_CREDENTIALS_DEVELOPMENT_KEY=<development.key contents>
 RAILS_CREDENTIALS_STAGING_KEY=<staging.key contents>
@@ -86,8 +87,9 @@ EDITOR="code --wait" bin/rails credentials:edit -e staging
 ```
 
 Copy the generated `staging.key` file content to:
-1. 1Password (for team access)
-2. The staging server at `/home/deploy/staging.key`
+1. Your password manager
+2. The `RAILS_MASTER_KEY` secret the deploy reads (see `docs/src/content/docs/operate/deploying.md`) —
+   the key is delivered to the container as an environment variable, not copied to a path on the box
 3. Your local `.env` file as `RAILS_CREDENTIALS_STAGING_KEY`
 
 ## Security Notes

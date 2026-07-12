@@ -108,7 +108,7 @@ while no marker exists yet."*
 
 There isn't. `filesystem_credentials_owned_by_self?` returns `false` when the marker is absent and
 refuses to sync, and its own comment says so, explicitly contradicting the docstring 100 lines above
-it. The private method is correct; the doc and the docstring are stale.
+it. The private method is correct; the doc and the docstring are stale. Tracked in [#59](https://github.com/tadasant/zimmer/issues/59).
 :::
 
 ## Rotation on quota
@@ -141,7 +141,7 @@ On 2026-06-14 the CLI changed "hit your limit" to "hit your session limit," whic
 happens to still match. A previous wording change did not, and rotation silently stopped firing.
 The session fell through to the transient-rate-limit path, retried six times against an
 already-capped account, exhausted its retries, and failed, with no log line saying rotation should
-have fired. The failure mode is silent.
+have fired. The failure mode is silent. Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 :::
 
 ## Mid-run auth loss

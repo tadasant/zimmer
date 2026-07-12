@@ -140,7 +140,7 @@ When Anthropic changed "hit your limit" to "hit your session limit" on 2026-06-1
 rotation silently stopped firing and the system retried six times against an already-capped
 account before giving up — with no log saying rotation should have happened. That outage is
 written up in the code. See
-[Known limitations](/limitations/#failure-classification-is-regex-against-cli-prose).
+[Known limitations](/limitations/#failure-classification-is-regex-against-cli-prose). Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 :::
 
 ## Metadata races
@@ -156,4 +156,4 @@ FAST PATH, not the correctness guarantee." Lost updates are possible.
 A monitoring job whose lock is older than `STALE_UNLOCKED_JOB_AGE` (2 minutes) is *superseded* by
 a new one. Without this, "follow-up jobs silently skip execution because they see a stale
 'running' job." A two-minute magic number is the thing standing between you and a
-dropped prompt.
+dropped prompt. Tracked in [#71](https://github.com/tadasant/zimmer/issues/71).

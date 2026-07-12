@@ -94,7 +94,7 @@ second marker but are expected.
 
 If AIR ever rewords that warning, Zimmer will silently start accepting degraded catalogs and
 misconfiguring sessions. There is no test that would catch it, because the test suite uses the same
-AIR version.
+AIR version. Tracked in [#66](https://github.com/tadasant/zimmer/issues/66).
 :::
 
 ### The blast radius is the entire test suite
