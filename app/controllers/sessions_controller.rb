@@ -605,7 +605,8 @@ class SessionsController < ApplicationController
     # detail page (see _mcp_app_panel + mcp_app_host_controller.js). The QR
     # fragment encodes this session's own URL, tying the demo to the session.
     if McpAppPreviewService.enabled? && params[:mcp_app].to_s != "off"
-      result = McpAppPreviewService.fetch(tool_args: { "text" => session_url(@session) })
+      args = ENV["ZIMMER_MCP_APPS_POC_ARGS"].present? ? JSON.parse(ENV["ZIMMER_MCP_APPS_POC_ARGS"]) : { "text" => session_url(@session) }
+      result = McpAppPreviewService.fetch(tool_args: args)
       @mcp_app_preview = result.data if result.ok?
       Rails.logger.info("[mcp-apps-poc] preview fetch failed: #{result.error}") unless result.ok?
     end

@@ -76,6 +76,28 @@ See `script/poc/mcp_apps/README.md`. In short: run the ext-apps `qr-server` on
 `:3001`, then `ZIMMER_MCP_APPS_POC=1 bin/dev`, and open any session. The QR
 fragment (encoding the session's own URL) renders above the transcript.
 
+## Interactivity
+
+MCP Apps fragments aren't static — the View can talk back. Both directions work
+with Zimmer as host (`script/poc/mcp_apps/interactive_server.py` exercises them):
+
+**View → Server** (`tools/call`, `resources/read`). A widget button calls a tool
+on the MCP server. Per the spec, the host forwards any non-`ui/`-prefixed message
+to the server, so the browser broker proxies it over Streamable HTTP (the demo
+servers send permissive CORS) and hands the result back. The model/agent is not
+involved — a slider recomputing or a "refresh" button round-trips View → Zimmer →
+MCP server → View.
+
+**View → Agent** (`ui/message`, `ui/update-model-context`). This is the "clicking
+sends a prompt" path. The View hands text back to the conversation; since Zimmer's
+agent is headless Claude Code, the broker stages it as a **follow-up prompt** on
+the session (it drops the text into the follow-up textarea). In production this
+would enqueue a real agent turn via the same path as a typed follow-up.
+
+The broker declares the matching host capabilities (`serverTools`,
+`serverResources`, `updateModelContext`, `openLinks`, `logging`) in its
+`ui/initialize` response so the View enables those affordances.
+
 ## What it deliberately does not do
 
 - **Surface fragments for the agent's own tool calls.** The spike drives the tool

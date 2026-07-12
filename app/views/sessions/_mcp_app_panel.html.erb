@@ -12,6 +12,8 @@
      data-mcp-app-host-tool-result-value="<%= (preview["toolResult"] || {}).to_json %>"
      data-mcp-app-host-tool-value="<%= (preview["tool"] || {}).to_json %>"
      data-mcp-app-host-input-value="<%= (preview["input"] || {}).to_json %>"
+     data-mcp-app-host-server-url-value="<%= preview["serverUrl"] %>"
+     data-mcp-app-host-session-id-value="<%= (defined?(session) && session) ? session.id : "" %>"
      data-mcp-app-host-theme-value="light">
   <div class="px-4 py-3 border-b border-gray-100 bg-indigo-50/60 flex items-center justify-between gap-2">
     <div class="flex items-center gap-2 min-w-0">
@@ -30,7 +32,7 @@
   <div class="p-4 flex justify-center">
     <iframe data-mcp-app-host-target="frame"
             title="MCP App fragment"
-            class="w-[360px] h-[360px] border-0 bg-transparent"
+            class="w-[400px] h-[360px] border-0 bg-transparent"
             referrerpolicy="no-referrer"></iframe>
   </div>
 </div>
