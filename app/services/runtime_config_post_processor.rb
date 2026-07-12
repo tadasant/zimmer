@@ -242,7 +242,7 @@ class RuntimeConfigPostProcessor
     # A blank API key means every MCP call 401s with a confusing auth error rather
     # than a clear configuration error. Warn at session-prep time instead.
     if retargeted_any && target[:api_key].blank?
-      env_var = Rails.env == "staging" ? "AGENT_ORCHESTRATOR_STAGING_API_KEY" : "AGENT_ORCHESTRATOR_LOCAL_API_KEY"
+      env_var = Rails.env == "staging" ? "ZIMMER_STAGING_API_KEY" : "ZIMMER_LOCAL_API_KEY"
       Rails.logger.warn "[#{self.class.name}] Retargeted Zimmer MCP servers in #{Rails.env} env with blank API key — " \
         "MCP calls will fail to authenticate. Set #{env_var} in your .env or credentials."
     end

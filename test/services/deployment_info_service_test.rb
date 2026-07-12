@@ -149,7 +149,7 @@ class DeploymentInfoServiceTest < ActiveSupport::TestCase
     mcp_config = DeploymentInfoService.mcp_config_with_redacted_secrets
 
     # Zimmer's own MCP entries carry an interpolated credential header
-    # (X-API-Key = ${AGENT_ORCHESTRATOR_PROD_API_KEY}).
+    # (X-API-Key = ${ZIMMER_PROD_API_KEY}).
     zimmer_server = mcp_config["zimmer-self-session"]
     assert_not_nil zimmer_server, "zimmer-self-session server should exist"
 
