@@ -128,16 +128,25 @@ jobs:
           echo "::error::zimmer-staging never came online on the tailnet"
           exit 1
 
-      # Pin Kamal to the exact version the repo locks (Gemfile.lock: kamal 2.12.0) so
-      # CI can't drift onto a different 2.x. Installed standalone rather than through
-      # `bundle install`, which would build the app's native gems (pg, nokogiri) on the
-      # runner for no reason -- Kamal only needs itself.
+      # Ruby matching .ruby-version, with a user-writable gem dir. (The runner's stock
+      # system Ruby installs into /var/lib/gems, which needs root -- `gem install`
+      # there fails with Gem::FilePermissionError.)
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ".ruby-version"
+          bundler-cache: false
+
+      # Pin Kamal to the exact version the repo locks (Gemfile.lock) so CI can't drift
+      # onto a different 2.x. Installed standalone rather than via `bundle install`,
+      # which would build the app's native gems (pg, nokogiri) on the runner for no
+      # reason -- the deploy only needs Kamal itself.
       - name: Install Kamal (pinned to Gemfile.lock)
         run: |
           set -euo pipefail
           v=$(awk '/^    kamal \(/{gsub(/[()]/,"");print $2; exit}' Gemfile.lock)
           echo "installing kamal ${v} (from Gemfile.lock)"
           gem install kamal -v "$v" --no-document
+          kamal version
 
       # Deploy onto the persistent host. `accessory boot` is already idempotent in
       # Kamal 2 (it skips a container that exists), so this is NOT `|| true`-guarded:
