@@ -104,11 +104,13 @@ There is no protocol-level "did this server connect" signal that Zimmer consumes
 
 :::caution[Reimplementing another project's private internals]
 That Codex detector is a Ruby port of a Rust function that is not a public API. If Codex changes its
-tool-name sanitization, Zimmer's MCP status display silently goes wrong. Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
+tool-name sanitization, Zimmer's MCP status display silently goes wrong.
 
 A related bug was fixed only recently: sessions whose root had no MCP servers of its own but which
 got auto-injected ones would show "pending" forever in the UI even though the server was connected
 and serving tools.
+
+Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 :::
 
 ## Timeouts and caching

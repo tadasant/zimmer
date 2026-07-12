@@ -58,7 +58,8 @@ met.
 The stop condition is enforced only by the LLM choosing to obey English.
 
 This is the single biggest gap between what Zimmer's docs (and its own goal text) promise and
-what the code does. Know this before you trust an autonomous session's "done." Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
+what the code does. Know this before you trust an autonomous session's "done."
+Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 :::
 
 A blank base prompt short-circuits the whole thing — a guard against spawning an agent whose
@@ -75,7 +76,8 @@ Precedence, in order:
 It can be changed after the fact: `PATCH /api/v1/sessions/:id` accepts `goal`, and a follow-up
 prompt can carry a new one.
 
-The column is validated on length only (`GOAL_MAX_LENGTH`). Any string is a legal goal. Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
+The column is validated on length only (`GOAL_MAX_LENGTH`). Any string is a legal goal.
+Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 
 ## The heartbeat
 

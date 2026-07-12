@@ -18,4 +18,5 @@ Before adding or editing content, verify against the actual code:
 - Validation rules and defaults: the model (e.g. `app/models/log.rb`'s `validates :level, inclusion: ...`)
 - Lifecycle constants: `app/models/concerns/session_state_machine.rb` (e.g. `TRASH_RETENTION_PERIOD`)
 
-See the repo-root `AGENTS.md` for the wider convention. Removing this page in favour of the docs site is tracked in [#34](https://github.com/tadasant/zimmer/issues/34).
+See the repo-root `AGENTS.md` for the wider convention. Removing this page in favor of the docs
+site is tracked in [#34](https://github.com/tadasant/zimmer/issues/34).

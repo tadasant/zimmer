@@ -140,7 +140,8 @@ When Anthropic changed "hit your limit" to "hit your session limit" on 2026-06-1
 rotation silently stopped firing and the system retried six times against an already-capped
 account before giving up — with no log saying rotation should have happened. That outage is
 written up in the code. See
-[Known limitations](/limitations/#failure-classification-is-regex-against-cli-prose). Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
+[Known limitations](/limitations/#failure-classification-is-regex-against-cli-prose).
+Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 :::
 
 ## Metadata races

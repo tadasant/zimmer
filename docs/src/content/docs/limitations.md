@@ -11,8 +11,10 @@ code rather than the old docs, which were themselves often wrong.
 Every item names a file so you can verify it. Nothing is left out for looking bad. Items whose first
 line starts with 🔴 would bite a new operator immediately.
 
-Most items link to the issue tracking them. An item with no issue is one we do not intend to fix — a
-scope decision or an inherent tradeoff — and the text says which.
+Most items link to the issue tracking them. Items with no link fall into three groups: the ones we do
+not intend to fix (a scope decision or an inherent tradeoff — the no-login model is the big one), the
+whole Deployment section (being rewritten onto Kamal, so it is tracked there rather than issue by
+issue), and a handful not yet triaged.
 
 ---
 

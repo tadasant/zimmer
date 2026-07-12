@@ -52,7 +52,8 @@ Permitted params: `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory
 `custom_metadata{}`.
 
 One more: `agent_root`, which is read directly from `params`, *outside* the strong-params permit list.
-An invalid one → `422 {"error": "Invalid agent_root"}`. Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
+An invalid one → `422 {"error": "Invalid agent_root"}`.
+Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
 
 The `AgentSessionJob` is enqueued only if `prompt` is present.
 
