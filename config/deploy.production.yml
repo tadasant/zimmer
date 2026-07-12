@@ -1,0 +1,73 @@
+# Kamal production destination. Merged over config/deploy.yml.
+# Secrets are read from .kamal/secrets.production.
+#
+# Production deploys are orchestrated from the private tadasant-internal repo (which
+# holds the prod Terraform state, tfvars, and secrets); this file is public-safe
+# because every environment-specific value comes in through ENV at deploy time.
+#
+# PRODUCTION_HOST is the droplet's tailnet address (resolved by the deploy workflow
+# from `tailscale status`). PRODUCTION_DB_HOST/PORT are the Managed Postgres private
+# host/port, fed from `terraform output`.
+servers:
+  web:
+    hosts:
+      - <%= ENV["PRODUCTION_HOST"] %>
+    options:
+      init: true
+      volume:
+        # Durable named volumes shared by web + worker, surviving Kamal deploys.
+        - zimmer_data:/home/rails/.zimmer
+        - claude_home:/home/rails/.claude
+        - gh_config:/home/rails/.config/gh
+        - claude_local:/home/rails/.local
+  worker:
+    hosts:
+      - <%= ENV["PRODUCTION_HOST"] %>
+    cmd: bundle exec good_job start
+    proxy: false
+    options:
+      init: true
+      volume:
+        - zimmer_data:/home/rails/.zimmer
+        - claude_home:/home/rails/.claude
+        - gh_config:/home/rails/.config/gh
+        - claude_local:/home/rails/.local
+        - /var/run/docker.sock:/var/run/docker.sock
+
+ssh:
+  user: root
+
+env:
+  clear:
+    RAILS_ENV: production
+    APP_HOST: zimmer.tadasant.com
+    # Point the injected self-session MCP server at THIS instance.
+    AGENT_ORCHESTRATOR_PROD_BASE_URL: https://zimmer.tadasant.com
+    # Managed Postgres (off-droplet), reached over the private VPC. Host/port are
+    # injected from `terraform output`; TLS is mandatory for Managed Postgres.
+    DATABASE_HOST: <%= ENV["PRODUCTION_DB_HOST"] %>
+    DATABASE_PORT: <%= ENV.fetch("PRODUCTION_DB_PORT", "25060") %>
+    DATABASE_USERNAME: doadmin
+    DATABASE_SSLMODE: require
+    REDIS_URL: redis://zimmer-redis:6379
+  secret:
+    - SECRET_KEY_BASE
+    - RAILS_MASTER_KEY
+    - API_KEYS
+    - DATABASE_PASSWORD
+    # The injected prod self-session MCP server calls this instance's own REST API.
+    - AGENT_ORCHESTRATOR_PROD_API_KEY
+    - SENTRY_DSN_BACKEND
+    - OTEL_LOGS_EXPORTER_ENDPOINT
+    - OTEL_LOGS_EXPORTER_BEARER_TOKEN
+
+# Production runs ONLY a Redis accessory on the droplet. Postgres is the off-droplet
+# Managed cluster (a Terraform data source, never managed here), so there is no db
+# accessory -- the database survives the droplet being rebuilt.
+accessories:
+  redis:
+    image: redis:7
+    host: <%= ENV["PRODUCTION_HOST"] %>
+    cmd: redis-server --appendonly yes
+    volumes:
+      - zimmer_redisdata:/data
