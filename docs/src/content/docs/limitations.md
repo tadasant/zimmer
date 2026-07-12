@@ -76,18 +76,20 @@ that name — so it works, and you accumulate dead nodes with no error.
 
 Tracked in [#123](https://github.com/tadasant/zimmer/issues/123).
 
-### The CI-failure alert lists the workflows it watches, by hand
+### The CI-failure alert can't be exercised from a PR
 
-`alert-ci-failure.yml` posts main-branch CI failures to Slack. It is a `workflow_run` listener, and
-that event takes an explicit array of workflow *names* — GitHub defines no wildcard and no
-"omit to match all". So the seven workflows it watches are enumerated in the file, and **a new
-workflow that isn't added to that list fails on `main` in silence**. The list carries a comment
-saying so; there is nothing in CI that enforces it.
+`alert-ci-failure.yml` posts main-branch CI failures to Slack. `workflow_run` only ever triggers
+from the copy of the file on the **default branch**, so the listener cannot be exercised from a PR:
+editing it on a branch changes nothing until it merges, and the first real proof that it fires is
+the first failure on `main` afterwards. `workflow_dispatch` is wired up on it to cover the other
+half — that Slack delivery itself works — without waiting for a genuine breakage.
 
-The same event only ever triggers from the copy of the file on the default branch, which means the
-listener cannot be exercised from a PR — the first real proof that it fires is the first failure on
-`main` after it merges. `workflow_dispatch` is wired up on it to cover the other half (that Slack
-delivery itself works) without waiting for a genuine breakage.
+Its `name:` is also load-bearing. `workflows: ["*"]` matches *every* workflow in the repo, including
+the alert itself, so the job's `if:` excludes it by comparing against the literal string
+`'CI failure alert'`. **Rename the workflow without updating that literal and it starts alerting on
+itself.** (The literal is deliberate: `github.workflow` would be the tidier-looking test, but if it
+ever resolved to the *triggering* workflow's name the test would become `A != A` and the alert would
+silently stop firing forever. A loud failure beats a silent one.)
 
 ### A queued run that never starts is never alerted on
 
