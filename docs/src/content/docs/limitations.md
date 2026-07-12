@@ -76,6 +76,34 @@ that name — so it works, and you accumulate dead nodes with no error.
 
 Tracked in [#123](https://github.com/tadasant/zimmer/issues/123).
 
+### The CI-failure alert can't be exercised from a PR
+
+`alert-ci-failure.yml` posts main-branch CI failures to Slack. `workflow_run` only ever triggers
+from the copy of the file on the **default branch**, so the listener cannot be exercised from a PR:
+editing it on a branch changes nothing until it merges, and the first real proof that it fires is
+the first failure on `main` afterwards. `workflow_dispatch` is wired up on it to cover the other
+half — that Slack delivery itself works — without waiting for a genuine breakage.
+
+Its `name:` is also load-bearing. `workflows: ["*"]` matches *every* workflow in the repo, including
+the alert itself, so the job's `if:` excludes it by comparing against the literal string
+`'CI failure alert'`. **Rename the workflow without updating that literal and it starts alerting on
+itself.** (The literal is deliberate: `github.workflow` would be the tidier-looking test, but if it
+ever resolved to the *triggering* workflow's name the test would become `A != A` and the alert would
+silently stop firing forever. A loud failure beats a silent one.)
+
+### A queued run that never starts is never alerted on
+
+`alert-ci-failure.yml` fires on an allowlist of conclusions (`failure`, `startup_failure`,
+`timed_out`) rather than on "not `success`", because `ci.yml` sets `cancel-in-progress` and a
+*cancelled* run must not page anyone.
+
+That leaves one real hole. If the shared self-hosted runner pool goes **offline**, main-branch runs
+don't fail — they queue, and GitHub cancels them after ~24h with `conclusion: cancelled`, which is
+the same conclusion a deliberate cancel produces. So the alert is silent for exactly the outage it
+is most often imagined to cover. Running the alert job on `ubuntu-latest` protects against a
+*degraded* pool (jobs run, jobs fail, the alert goes out), not an absent one. Noticing that CI has
+gone quiet is still a human job.
+
 ---
 
 ## Security

@@ -45,12 +45,38 @@ could not reach the box.
 | `STAGING_DB_PASSWORD` | the staging Postgres accessory's password — a stable secret, deliberately *not* derived from `SECRET_KEY_BASE` (rotating the latter must stay safe; `POSTGRES_PASSWORD` only takes effect on first initdb) |
 | `STAGING_API_KEYS` | REST API bearer keys |
 | `OTEL_LOGS_EXPORTER_ENDPOINT` / `_BEARER_TOKEN`, `SENTRY_DSN_BACKEND` | optional observability |
+| `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
 A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own comment says so.
 `docs/DEPLOYING_ON_DIGITALOCEAN.md` told you to use `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; that was
 wrong and would fail.
 :::
+
+## Slack CI failure alerts
+
+[`alert-ci-failure.yml`](/operate/deploying/#ci-failure-alerts) needs a Slack bot token and the ID of
+the channel to post into.
+
+The Slack side already exists and does not need rebuilding: the **`github_ci_alerts`** app in the
+Tadasant workspace holds the `chat:write` scope and is already a member of **#alerts** (a bot cannot
+post to a channel it is not in — that is the usual way this breaks, and it surfaces as
+`not_in_channel` in the run log). Its bot token lives in **1Password → Zimmer vault → "GitHub CI
+alerts SLACK_BOT_TOKEN (Tadasant)"**.
+
+What each repo needs is the two secrets. `tadasant` is a personal GitHub account, not an org, so
+there are **no org-level secrets** — `zimmer`, `tadasant-internal` and `strad` each need their own
+copy, under **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Value |
+| --- | --- |
+| `SLACK_BOT_TOKEN` | the `xoxb-…` token from 1Password above |
+| `SLACK_ALERTS_CHANNEL_ID` | the `C0…` ID of #alerts (click the channel name in Slack; it's at the bottom of the dialog) |
+
+Then smoke-test without breaking anything: **Actions → CI failure alert → Run workflow** on `main`.
+It posts a smoke-test message to #alerts instead of a real alert. If the job goes red, the error
+annotation names the exact cause (`not_in_channel`, `invalid_auth`, `missing_scope`, …) and what to
+do about it.
 
 ## Where secrets end up that they shouldn't
 
