@@ -1,7 +1,12 @@
 #cloud-config
-# Bootstraps a Zimmer droplet: Docker, Tailscale (VPN-only access), and the
-# Zimmer stack via docker compose. Rendered by Terraform (main.tf). No secret is
-# stored in the repo -- values are interpolated from Terraform variables at apply.
+# Bootstraps a KAMAL-READY Zimmer host: Docker, Tailscale (VPN-only app access), a
+# deploy SSH key, and -- when a custom domain is set -- a Caddy TLS terminator.
+#
+# The app stack (image, env, Postgres/Redis) is NOT baked in here anymore: Kamal
+# owns it (config/deploy.*.yml) and deploys it from CI onto this persistent droplet.
+# Because main.tf sets `ignore_changes = [user_data]`, a change to this template
+# never force-replaces the box -- the recreate-on-every-change churn is gone. This
+# file renders once, at first boot.
 package_update: true
 packages:
   - ca-certificates
@@ -9,185 +14,83 @@ packages:
   - gnupg
 
 write_files:
-  - path: /opt/zimmer/docker-compose.yml
-    permissions: "0640"
+  # The CI deploy key (Kamal's SSH control channel), authorized for root. Written to
+  # a drop-in and appended below rather than overwriting root's authorized_keys, so
+  # DO's own injected keys (var.ssh_key_fingerprints) survive.
+  - path: /root/.ssh/kamal_deploy.pub
+    permissions: "0600"
+    content: ${deploy_ssh_pubkey}
+%{ if ssh_host_ed25519_key != "" ~}
+  # Pinned SSH host identity: survives a droplet rebuild so an SSH client's
+  # known_hosts stays valid instead of tripping host-key-changed on every
+  # re-provision. Empty on staging (disposable box).
+  - path: /etc/ssh/ssh_host_ed25519_key
+    permissions: "0600"
     content: |
-      # Shared base for the `app` and `worker` services: identical image,
-      # environment, durable volume mounts, dependencies, and restart policy.
-      # Anchored so the two can never drift -- both must decrypt the same Rails
-      # credentials, see the same DB/Redis, and mount the same durable state.
-      # `app` adds the published port; `worker` adds the good_job command.
-      x-app-base: &app-base
-        image: ${image_ref}
-        environment:
-          RAILS_ENV: production
-          SECRET_KEY_BASE: "${secret_key_base}"
-          # Decrypts Rails encrypted credentials (config/credentials/*). Empty on
-          # staging (no committed production.yml.enc); secrets_loader.rb rescues a
-          # missing key and there is no require_master_key, so the app still boots.
-          # Quoted so an empty value renders as an explicit "" (a bare `KEY:` is
-          # YAML null, which compose treats as inherit-from-host, not empty).
-          RAILS_MASTER_KEY: "${rails_master_key}"
-          # REST API auth: comma-separated bearer keys. Empty disables the API.
-          API_KEYS: "${api_keys}"
-          # Canonical external host for URL generation + MCP OAuth callbacks.
-          # Without it McpOauthService falls back to localhost:3000 and every
-          # OAuth callback breaks.
-          APP_HOST: "${app_host}"
-          # The app's config/database.yml reads DATABASE_HOST/PORT/USERNAME/
-          # PASSWORD/SSLMODE (NOT DATABASE_URL). These point either at the compose
-          # `db` service or, in production, at the managed Postgres cluster over
-          # the private VPC network. `sslmode=require` is mandatory for managed
-          # Postgres; the compose Postgres speaks no TLS, hence "prefer".
-          DATABASE_HOST: ${db_host}
-          DATABASE_PORT: "${db_port}"
-          DATABASE_USERNAME: ${db_username}
-          # Quoted so a password containing a YAML-special leading char (a managed
-          # Postgres password is not YAML-aware) can't mis-parse the compose file.
-          DATABASE_PASSWORD: "${db_password}"
-          DATABASE_SSLMODE: ${db_sslmode}
-          REDIS_URL: redis://redis:6379/0
-          # Observability (optional): the app's initializers are hard no-ops when
-          # these are empty, so leaving them blank simply disables obs. Set the
-          # matching TF_VAR_* (from GitHub secrets) to turn shipping on.
-          OTEL_SERVICE_NAME: zimmer
-          OTEL_LOGS_EXPORTER_ENDPOINT: "${otel_logs_endpoint}"
-          OTEL_LOGS_EXPORTER_BEARER_TOKEN: "${otel_logs_token}"
-          SENTRY_DSN_BACKEND: "${sentry_dsn}"
-        volumes:
-          # Durable state that must survive a droplet re-create / deploy. Named
-          # volumes live on the droplet disk under /var/lib/docker/volumes and are
-          # shared by app + worker so both see the same clones and credentials.
-          - zimmer_data:/home/rails/.zimmer                     # git clones + session scratch
-          - claude_home:/home/rails/.claude                     # shared Claude credentials (account rotation + login flow)
-          - gh_config:/home/rails/.config/gh                    # gh auth token
-          - claude_local:/home/rails/.local                     # claude CLI self-update target
-          # DockerCleanupJob prunes stale agent containers; it needs the host socket.
-          - /var/run/docker.sock:/var/run/docker.sock
-        depends_on: ${compose_depends_on}
-        restart: always
-      services:
-%{~ if !use_managed_db }
-        db:
-          image: postgres:16
-          environment:
-            POSTGRES_USER: ${db_username}
-            POSTGRES_PASSWORD: ${db_password}
-            POSTGRES_DB: zimmer_${environment}
-          volumes:
-            - pgdata:/var/lib/postgresql/data
-          restart: always
-%{~ endif }
-        redis:
-          image: redis:7
-          restart: always
-        app:
-          <<: *app-base
-          # Publish on all interfaces so the app is reachable over the Tailscale
-          # tunnel (the CI health check curls http://zimmer-staging/up directly,
-          # without needing Tailscale SSH -- SSH ACLs are brittle). This is NOT a
-          # public exposure: the DigitalOcean cloud firewall (see main.tf) allows
-          # only inbound 22/tcp + 41641/udp, so port 80 is dropped at the network
-          # edge for everyone except tailnet peers, whose traffic arrives via the
-          # WireGuard tunnel on the allowed UDP port.
-          ports:
-            - "80:80"
-        # Background-job worker. production.rb sets good_job.execution_mode =
-        # :external, so jobs only run if a dedicated `good_job start` process is
-        # up. Without it, sessions enqueue and never execute (the Claude login
-        # CLI, pollers, cron, and cleanup all stall). Same image/env/volumes as
-        # app via the anchor. Only the app entrypoint runs db:prepare, so on a
-        # cold droplet the worker may crash-loop briefly against an unmigrated
-        # schema until the app migrates; restart: always makes that self-healing.
-        worker:
-          <<: *app-base
-          command: ["bundle", "exec", "good_job", "start"]
-%{~ if domain != "" }
-        # Custom-domain HTTPS terminator, reachable only over the tailnet (the
-        # firewall opens no public 443; tailnet traffic arrives via the WireGuard
-        # tunnel). Stock Caddy -- no plugins: it does NOT do ACME. It just serves
-        # the cert files that the `domain-cert` workflow issues out-of-band and
-        # pushes to /opt/zimmer/certs, and reverse-proxies to the app. The app
-        # keeps publishing :80, so http://${tailnet_hostname} (MagicDNS) is
-        # unchanged and a Caddy misconfig cannot take the box down.
-        caddy:
-          image: caddy:2
-          ports:
-            - "443:443"
-          volumes:
-            - /opt/zimmer/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-            - /opt/zimmer/certs:/certs:ro
-          depends_on:
-            - app
-          restart: always
-%{~ endif }
-      volumes:
-        zimmer_data: {}
-        claude_home: {}
-        gh_config: {}
-        claude_local: {}
-%{~ if !use_managed_db }
-        pgdata: {}
-%{~ endif }
-%{~ if domain != "" }
+      ${indent(6, ssh_host_ed25519_key)}
+  - path: /etc/ssh/ssh_host_ed25519_key.pub
+    permissions: "0644"
+    content: ${ssh_host_ed25519_key_pub}
+%{ endif ~}
+  # Caddy is the edge: it owns :80 and (with a domain) :443, and reverse-proxies to
+  # kamal-proxy on :8080. kamal-proxy still does the health-gated zero-downtime
+  # container swap behind it -- it just cannot own :80/:443 itself, because it binds
+  # BOTH by default (even with ssl off) and would collide with Caddy.
+  #
+  # Stock Caddy, no plugins: it does NOT do ACME. The `domain-cert` workflow issues
+  # the cert out-of-band (DNS-01 via Cloudflare, token confined to CI) and pushes only
+  # the cert here. Runs with --network host so `localhost:8080` reaches kamal-proxy.
+  # Reachable only over the tailnet -- the DO firewall opens no public :80/:443.
   - path: /opt/zimmer/caddy/Caddyfile
     permissions: "0644"
     content: |
       {
-        # We supply certs ourselves (domain-cert workflow); Caddy must not try to
-        # obtain or manage any of its own, and needs no ACME / admin endpoint.
         auto_https off
         admin off
       }
+      # Plain HTTP over the tailnet (http://${tailnet_hostname}), and what CI
+      # health-checks.
+      :80 {
+      	reverse_proxy localhost:8080
+      }
+%{ if domain != "" ~}
       https://${domain} {
       	tls /certs/cert.pem /certs/key.pem
-      	# Caddy sets X-Forwarded-Proto=https automatically (it terminated TLS) and
-      	# preserves the client Host, so the app computes https://${domain} as its
-      	# base_url/origin -- which now matches the browser. That is what fixes the
-      	# assume_ssl-vs-plain-HTTP class (CSRF 422s, ActionCable origin rejects).
-      	reverse_proxy app:80
+      	reverse_proxy localhost:8080
       }
-%{~ endif }
+%{ endif ~}
 
 runcmd:
-  # Docker
+  # --- Docker -------------------------------------------------------------------
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
   - chmod a+r /etc/apt/keyrings/docker.asc
   - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
   - apt-get update -y
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  # Tailscale -- join tailnet as zimmer-${environment}. ACLs (managed in the
-  # Tailscale admin, NOT here) restrict who can reach this node.
+  # --- Authorize the Kamal deploy key -------------------------------------------
+  - install -d -m 0700 /root/.ssh
+  - touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+  - grep -qxFf /root/.ssh/kamal_deploy.pub /root/.ssh/authorized_keys || cat /root/.ssh/kamal_deploy.pub >> /root/.ssh/authorized_keys
+  # --- Tailscale ----------------------------------------------------------------
+  # Join the tailnet as ${tailnet_hostname}. ACLs (who may reach this node) live in
+  # the Tailscale admin, NOT here. --ssh keeps tailnet SSH for break-glass access
+  # alongside the key-based channel Kamal uses.
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey='${tailscale_auth_key}' --hostname='${tailnet_hostname}' --ssh
-%{~ if domain != "" }
+%{ if ssh_host_ed25519_key != "" ~}
+  - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+%{ endif ~}
+  # --- Caddy (edge: :80, and :443 when a domain is set) --------------------------
+  - mkdir -p /opt/zimmer/certs
+%{ if domain != "" ~}
   # Bootstrap a self-signed cert so Caddy can start on :443 before the domain-cert
-  # workflow has pushed the real one. The workflow overwrites these and restarts
-  # Caddy; until then, :443 serves a self-signed cert (browser warning) while
-  # http://${tailnet_hostname} keeps working normally. The workflow distinguishes
-  # this placeholder from a real cert by its issuer (self == subject).
-  - mkdir -p /opt/zimmer/certs /opt/zimmer/caddy
+  # workflow pushes the real one; that workflow overwrites these and restarts the
+  # container. It distinguishes the placeholder by its issuer (self == subject).
   - test -f /opt/zimmer/certs/cert.pem || (umask 077; openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout /opt/zimmer/certs/key.pem -out /opt/zimmer/certs/cert.pem -subj '/CN=${domain}'; chmod 644 /opt/zimmer/certs/cert.pem)
-%{~ endif }
-  # Pull + run Zimmer
-  - echo '${ghcr_token}' | docker login ghcr.io -u '${ghcr_username}' --password-stdin
-  - docker compose -f /opt/zimmer/docker-compose.yml pull
-  # Create + fix ownership of the durable named volumes BEFORE the stack starts.
-  # The container runs as UID 1000 (rails). Docker only inherits the image dir's
-  # ownership into a fresh named volume when the mountpoint already EXISTS in the
-  # image; the image creates ~/.local and ~/.claude but NOT ~/.zimmer or
-  # ~/.config/gh, so those two volumes would come up root-owned and uid 1000
-  # could not write them -- every session would fail to clone (and gh auth would
-  # fail) while the /up health check still passed. `run` first-mounts every named
-  # volume (as root); chown then hands them to rails. `--entrypoint chown`
-  # bypasses the image entrypoint (which would otherwise background `claude
-  # update` as root into ~/.local). Non-recursive is enough: fresh volumes are
-  # empty, and on redeploys the app already owns the contents. Idempotent.
-  #
-  # Chained with `&&` into a single runcmd item deliberately: cloud-init's runcmd
-  # script runs without `set -e`, so as separate items a failed chown would still
-  # fall through to `up -d` and bring the stack up with root-owned volumes --
-  # exactly the silent, /up-still-green failure this step exists to prevent. `&&`
-  # makes it fail-closed: no chown, no start.
-  - docker compose -f /opt/zimmer/docker-compose.yml run --rm --no-deps -u 0 --entrypoint chown app rails:rails /home/rails/.zimmer /home/rails/.claude /home/rails/.config/gh /home/rails/.local && docker compose -f /opt/zimmer/docker-compose.yml up -d
+%{ endif ~}
+  # `zimmer-caddy` is the name scripts/domain-cert.sh restarts after pushing a cert.
+  # Caddy starts before kamal-proxy exists and simply 502s until the first deploy
+  # boots it; restart: always makes that self-healing.
+  - docker rm -f zimmer-caddy 2>/dev/null || true
+  - docker run -d --name zimmer-caddy --restart always --network host -v /opt/zimmer/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /opt/zimmer/certs:/certs:ro caddy:2

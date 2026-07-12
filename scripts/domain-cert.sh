@@ -136,7 +136,13 @@ if [ "$need_issue" = "true" ]; then
     # restart (not `caddy reload`): the Caddyfile sets `admin off`, so the admin
     # API reload endpoint is unavailable. A restart re-reads the cert files from the
     # bind-mounted /certs; the app keeps serving on :80 through the ~1s blip.
-    docker compose -f /opt/zimmer/docker-compose.yml restart caddy'
+    #
+    # Two shapes exist while the Kamal migration rolls out: a Kamal host runs Caddy
+    # as the standalone `zimmer-caddy` container (no compose file), while a not-yet
+    # -migrated host still runs it as a compose service. Try the Kamal one first and
+    # fall back, so this shared script keeps renewing certs on BOTH.
+    docker restart zimmer-caddy 2>/dev/null \
+      || docker compose -f /opt/zimmer/docker-compose.yml restart caddy'
   log "pushed cert and restarted Caddy"
 fi
 
