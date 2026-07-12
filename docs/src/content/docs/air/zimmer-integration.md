@@ -165,7 +165,7 @@ user removing a default artifact in the UI would watch AIR silently re-add it fr
 defaults. So Zimmer uses AIR's root-defaults machinery at **read** time (to seed a new session) and
 explicitly bypasses it at **prepare** time.
 
-Secrets flow through the environment, not through AIR. `SecretsLoader.all` is merged into the
+Secrets flow through the environment. `SecretsLoader.all` is merged into the
 subprocess env; `@pulsemcp/air-secrets-env` substitutes the `${VAR}` placeholders into `.mcp.json`;
 AIR then fails the prepare if any `${VAR}` survived, which Zimmer catches as a graceful,
 non-paging `SecretResolutionError`.
@@ -197,9 +197,9 @@ runtime.
 `SkillsConfig`, `AgentRootsConfig`, `ServersConfig`, `PluginsConfig`, `HooksConfig`, and
 `ReferencesConfig` are thin read-models over `AirCatalogService.entries_for(:type)`. Each shapes
 raw resolve output into a Ruby value object, and each swallows `CatalogError` into an empty array
-with a warning — so a catalog failure degrades the UI rather than 500-ing it.
+with a warning — so a catalog failure degrades the UI instead of returning a 500.
 
 Never parse the index files directly. That's the rule in `AGENTS.md` and it's a good one: the
-indexes are AIR's input, not Zimmer's data model. The resolved tree is what Zimmer consumes, and it
+indexes are AIR's input; the resolved tree is Zimmer's data model. The resolved tree is what Zimmer consumes, and it
 differs from the raw index (references canonicalized, `default_in_roots` inverted and deleted, paths
 absolutized).

@@ -15,7 +15,7 @@ memoized per request from ENV, so rotation requires a restart. There is no recor
 
 ## Sessions
 
-`:id` resolves **slug first, then numeric id**.
+`:id` resolves slug first, then numeric id.
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ column default (`claude_code`) and the model goes straight to `ModelCatalog.defa
 
 :::note[`session` doesn't always mean the same shape]
 `POST /enqueued_messages/:id/interrupt` returns a six-field subset under the same `session` key.
-Two endpoints, same key, different shape.
+The `session` key returns a different shape from each.
 :::
 
 ## Triggers
@@ -156,7 +156,7 @@ Parse defensively.
 409 (follow-up position collision, interrupt races) · 422 · 429 (health cooldown) · 500 · 503 (Slack
 unconfigured).
 
-:::note[Missing required params return 422, not 400]
+:::note[Missing required params return 422]
 `follow_up` without a prompt, `fork` without `message_index`, `bulk_archive` without `session_ids`,
 `notifications/push` without a message — all **422**. The only 400 in the API is a missing or
 oversized search `q`.

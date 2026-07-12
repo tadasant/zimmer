@@ -101,7 +101,7 @@ root.
 ## Plugin
 
 A bundle that composes existing skills, MCP servers, and hooks under one name. It is a
-*macro*, not a new artifact type — at prepare time AIR expands it into its constituents,
+*macro*: at prepare time AIR expands it into its constituent skills, MCP servers, and hooks,
 which then materialize through exactly the same code path as if you'd selected them directly.
 
 ## Hook

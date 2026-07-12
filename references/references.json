@@ -14,5 +14,10 @@
     "title": "Zimmer Brand Voice",
     "description": "How Zimmer sounds in writing (docs, README, UI copy, PRs): plain, direct, honest, specific. Includes the AI-slop tells to cut. Downstream of the brand reference; apply it to all prose.",
     "file": "BRAND_VOICE.md"
+  },
+  "anti-slop-rubric": {
+    "title": "Anti-slop Rubric",
+    "description": "A gradeable per-page checklist for keeping the docs from reading or looking AI-generated: voice tells (contrast framing, rule of three, hype words, emphasis-bold) and design tells (colored stripes, tinted-pill nav, line noise, colored glows). Use it to grade and fix prose and theme.",
+    "file": "ANTI_SLOP_RUBRIC.md"
   }
 }

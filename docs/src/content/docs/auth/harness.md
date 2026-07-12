@@ -83,7 +83,7 @@ sibling access token. Two consequences the code has to defend against:
    bricks the account. `refresh_token!` writes both in one `update!`.
 2. A future `expiresAt` is not proof a token is live. If someone else refreshed, your
    still-unexpired access token is already dead. The code does *not* enforce this — `token_expired?`
-   still keys purely off `expiresAt`. The defense is the completeness invariant, not expiry logic.
+   still keys purely off `expiresAt`. The defense is the completeness invariant.
 
 A credential set with no refresh token is a dead end. `ClaudeAccount.complete_claude_oauth?`
 refuses to persist or adopt one, because the CLI sometimes rewrites `.credentials.json` *without* the
@@ -118,8 +118,8 @@ When an account hits its rate limit, Zimmer rotates to the next one by priority:
 1. Sync the outgoing account's tokens off disk.
 2. Snapshot its quota state.
 3. `mark_quota_exceeded!`.
-4. `activate_next_account` — which **validates the candidate by calling `refresh_token!` before
-   activating it**, so a broken account is skipped rather than bricking the pool.
+4. `activate_next_account` — which validates the candidate by calling `refresh_token!` before
+   activating it, so a broken account is skipped before it can brick the pool.
 5. Write the new account's config and credentials to disk, stamp the owner marker.
 6. Record an `AccountRotationEvent`.
 
@@ -134,8 +134,8 @@ window's reset time has passed, or utilization drops below 100%.
 ```
 
 That regex, run against the **transcript message text**, is the sole trigger for the entire
-multi-account rotation feature. It is not an HTTP status. It is not a structured error code. It is
-Anthropic's prose.
+multi-account rotation feature. That trigger is Anthropic's prose: a regex over transcript text,
+with no HTTP status or structured error code behind it.
 
 On 2026-06-14 the CLI changed "hit your limit" to "hit your session limit," which the regex
 happens to still match. A previous wording change did not, and rotation silently stopped firing.

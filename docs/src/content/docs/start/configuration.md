@@ -20,7 +20,7 @@ sidebar:
 | `config/goals.json` | Goal / stop-condition catalog | `GoalsConfig` |
 
 :::caution[Never parse the AIR indexes directly]
-The six artifact indexes are AIR's input, not Zimmer's data model. The resolved tree differs from
+The six artifact indexes are AIR's input; the resolved tree is Zimmer's data model. The resolved tree differs from
 the raw index: references are canonicalized, `default_in_roots` is inverted into per-root defaults
 *and then deleted*, and paths are absolutized.
 
@@ -28,8 +28,7 @@ Everything in Zimmer reads them through `AirCatalogService`. Code that reads `ro
 `JSON.parse` is code that will be subtly wrong.
 :::
 
-`config/goals.json` is the exception — it's a plain static file, not an AIR artifact, and
-`GoalsConfig` reads it directly.
+`config/goals.json` is the exception — it's a plain static file that `GoalsConfig` reads directly, outside AIR.
 
 ## Environment variables
 
@@ -102,7 +101,7 @@ Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at 
 column default — `claude_code`.
 
 Set the global default to `codex`, create a session via the API without an `agent_root`, and you get
-Claude Code. The old `docs/REST_API.md` documented the intended chain, not the actual one.
+Claude Code. The old `docs/REST_API.md` documented the intended chain; the behavior above is the actual one.
 :::
 
 ## Hard-coded limits

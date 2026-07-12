@@ -1,178 +1,223 @@
 /* =========================================================================
-   Zimmer documentation — editorial technical-manual theme.
+   Zimmer documentation theme.
 
-   Direction: this site is meant to be read *instead of* the code, so it is set
-   like an honest manual. A literary serif (Newsreader) carries the long prose;
-   a confident grotesk (Schibsted Grotesk) does the structural work in headings
-   and UI; JetBrains Mono carries code and the wordmark. Warm paper in light,
-   deep cool ink in dark, one slate-blue accent used with intent.
+   Professional and restrained: one clean technical sans (IBM Plex Sans) for
+   text and headings, JetBrains Mono for code, a neutral palette, and a single
+   slate-blue accent. Effects are limited to genuinely interactive elements.
    ========================================================================= */
 
 :root {
-  --font-body: "Newsreader Variable", Georgia, "Times New Roman", serif;
-  --font-display: "Schibsted Grotesk Variable", system-ui, -apple-system, sans-serif;
+  --font-sans: "IBM Plex Sans Variable", system-ui, -apple-system, "Segoe UI",
+    sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
 
-  --sl-font: var(--font-body);
+  --sl-font: var(--font-sans);
   --sl-font-mono: var(--font-mono);
 
-  /* Reading measure — tuned to ~72 characters for the serif. */
-  --sl-content-width: 44rem;
-  --sl-line-height: 1.75;
-
-  /* Motion */
-  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --sl-content-width: 46rem;
+  --sl-line-height: 1.7;
 }
 
-/* ---- Dark: deep cool ink ------------------------------------------------ */
+/* ---- Dark ---------------------------------------------------------------- */
 :root {
-  --sl-color-white: #f3f4f8; /* headings / brightest */
-  --sl-color-gray-1: #dbdee6;
-  --sl-color-gray-2: #b7bcc7; /* body text */
-  --sl-color-gray-3: #878d9c; /* captions / muted */
-  --sl-color-gray-4: #5a5f6c;
-  --sl-color-gray-5: #363b46; /* borders */
-  --sl-color-gray-6: #21242c; /* panels */
-  --sl-color-gray-7: #181a21; /* deeper panels */
-  --sl-color-black: #0f1116; /* page background */
+  --sl-color-white: #f2f3f6; /* headings */
+  --sl-color-gray-1: #d8dbe2; /* body text */
+  --sl-color-gray-2: #b4b9c4;
+  --sl-color-gray-3: #868c99; /* muted / captions */
+  --sl-color-gray-4: #5a606d;
+  --sl-color-gray-5: #333844; /* borders */
+  --sl-color-gray-6: #1e212a; /* panels */
+  --sl-color-gray-7: #171921;
+  --sl-color-black: #0f1116; /* background */
 
   --sl-color-accent-low: #1c2340;
   --sl-color-accent: #4a5aa8;
   --sl-color-accent-high: #c7ccf2;
-
-  /* Links read brighter than the UI accent so they carry on the serif body. */
-  --sl-color-text-accent: #9aa6ee;
+  --sl-color-text-accent: #9aa6ee; /* links */
 
   --sl-color-bg: #0f1116;
-  --sl-color-bg-nav: rgba(15, 17, 22, 0.72);
+  --sl-color-bg-nav: #0f1116;
   --sl-color-bg-sidebar: #0c0e12;
   --sl-color-bg-inline-code: #20242e;
-
-  --paper-grain: 0.04;
-  --hero-glow: rgba(74, 90, 168, 0.22);
 }
 
-/* ---- Light: warm paper -------------------------------------------------- */
+/* ---- Light --------------------------------------------------------------- */
 :root[data-theme="light"] {
-  --sl-color-white: #1a1c22; /* headings */
-  --sl-color-gray-1: #2b2d34; /* body text */
-  --sl-color-gray-2: #3d404a;
-  --sl-color-gray-3: #5f636e; /* captions */
-  --sl-color-gray-4: #8b8f9b;
-  --sl-color-gray-5: #dcd8ce; /* borders (warm) */
-  --sl-color-gray-6: #efece4; /* panels (warm) */
-  --sl-color-gray-7: #f6f2ea; /* deeper panels */
-  --sl-color-black: #faf7f1; /* page background (warm paper) */
+  --sl-color-white: #16181d; /* headings */
+  --sl-color-gray-1: #2a2d34; /* body text */
+  --sl-color-gray-2: #3c3f48;
+  --sl-color-gray-3: #5c616c; /* muted / captions */
+  --sl-color-gray-4: #888e9a;
+  --sl-color-gray-5: #e2e4e9; /* borders */
+  --sl-color-gray-6: #f0f1f4; /* panels */
+  --sl-color-gray-7: #f6f7f9;
+  --sl-color-black: #ffffff; /* background */
 
   --sl-color-accent-low: #dcdff4;
   --sl-color-accent: #3a4a92;
   --sl-color-accent-high: #1a2154;
-
   --sl-color-text-accent: #3a4a92;
 
-  --sl-color-bg: #faf7f1;
-  --sl-color-bg-nav: rgba(250, 247, 241, 0.78);
-  --sl-color-bg-sidebar: #f4efe6;
-  --sl-color-bg-inline-code: #efeadf;
-
-  --paper-grain: 0.03;
-  --hero-glow: rgba(58, 74, 146, 0.14);
-}
-
-/* =========================================================================
-   Atmosphere — a barely-there grain + a single accent glow, so pages have
-   depth instead of a flat fill. Kept low enough that text stays crisp.
-   ========================================================================= */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1; /* behind all content, above the page background */
-  pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  opacity: var(--paper-grain);
-  mix-blend-mode: overlay;
+  --sl-color-bg: #ffffff;
+  --sl-color-bg-nav: #ffffff;
+  --sl-color-bg-sidebar: #fbfbfc;
+  --sl-color-bg-inline-code: #eef0f3;
 }
 
 /* =========================================================================
    Typography
    ========================================================================= */
 body {
-  font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-.sl-markdown-content {
-  font-size: 1.075rem;
-  font-weight: 420;
-  letter-spacing: 0.003em;
+:is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 600;
+  letter-spacing: -0.011em;
+  line-height: 1.25;
 }
-
-/* Grotesk carries all structural type: headings, wordmark, nav, labels. */
-:is(h1, h2, h3, h4, h5, h6),
-.site-title,
-.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) {
-  font-family: var(--font-display);
-  font-weight: 640;
-  letter-spacing: -0.014em;
-  line-height: 1.16;
-}
-
 .sl-markdown-content h1,
 .content-panel h1 {
-  font-weight: 680;
-  letter-spacing: -0.022em;
-  font-size: clamp(2.1rem, 1.6rem + 2.2vw, 2.9rem);
-  line-height: 1.08;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-size: 2.05rem;
+  line-height: 1.15;
 }
 .sl-markdown-content h2 {
-  font-size: 1.6rem;
+  font-size: 1.45rem;
   margin-top: 2.6rem;
-  padding-top: 1.4rem;
-  border-top: 1px solid var(--sl-color-gray-5);
 }
 .sl-markdown-content h3 {
-  font-size: 1.24rem;
-  margin-top: 2rem;
+  font-size: 1.18rem;
+  margin-top: 1.9rem;
 }
 .sl-markdown-content h4 {
-  font-size: 1.02rem;
-  text-transform: none;
+  font-size: 1rem;
   color: var(--sl-color-white);
 }
 
-/* The lede: Starlight renders the page description under the title. */
+.sl-markdown-content {
+  font-size: 1rem;
+}
 .sl-markdown-content > p:first-of-type,
 .hero .tagline {
-  font-size: 1.16rem;
-  line-height: 1.6;
   color: var(--sl-color-gray-2);
 }
-
 .sl-markdown-content strong {
-  font-weight: 640;
+  font-weight: 600;
   color: var(--sl-color-white);
-}
-.sl-markdown-content em {
-  font-style: italic;
 }
 
 /* =========================================================================
-   Links — an offset accent underline that fills in on hover.
+   Links — a plain underline, coloured on hover. Interactive only. The heading
+   anchor link (.sl-anchor-link) is excluded; it's styled separately below.
    ========================================================================= */
-.sl-markdown-content a:not(:where(.not-content *)) {
+.sl-markdown-content a:not(:where(.not-content *, .sl-anchor-link)) {
   color: var(--sl-color-text-accent);
   text-decoration: none;
-  background-image: linear-gradient(var(--sl-color-text-accent), var(--sl-color-text-accent));
-  background-size: 100% 1px;
-  background-position: 0 1.15em;
-  background-repeat: no-repeat;
-  transition: background-size 0.2s var(--ease-out), color 0.2s var(--ease-out);
+  text-underline-offset: 0.15em;
 }
-.sl-markdown-content a:not(:where(.not-content *)):hover {
-  background-size: 100% 2px;
+.sl-markdown-content a:not(:where(.not-content *, .sl-anchor-link)):hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+}
+
+/* Heading anchor link (the "copy link" affordance). Starlight's own
+   anchor-links.css handles sizing, spacing, and vertical centering — do NOT
+   override those. Only recolour it (muted, accent on hover) and drop the
+   underline. The click-to-copy checkmark is swapped in by JS (Head.astro), not
+   via ::after, which Starlight uses for the click area. */
+.sl-anchor-link {
+  color: var(--sl-color-gray-4);
+}
+.sl-anchor-link:hover,
+.sl-anchor-link:focus-visible {
+  color: var(--sl-color-text-accent);
+}
+.sl-anchor-link[data-copied] {
+  color: #34b27b; /* success green while the checkmark shows */
+  opacity: 1 !important;
+}
+
+/* Offset anchor targets so a linked heading clears the fixed header, and keep a
+   stable gutter so opening the lightbox doesn't shift the layout. */
+html {
+  scroll-padding-top: 5rem;
+  scrollbar-gutter: stable;
+}
+
+/* =========================================================================
+   Image / diagram lightbox — click any diagram or image to view it full size.
+   A native <dialog> (showModal) gives us the focus trap, Esc, and an inert
+   background for free.
+   ========================================================================= */
+.mermaid-diagram,
+.sl-markdown-content img {
+  cursor: zoom-in;
+}
+dialog.lightbox {
+  width: 100vw;
+  height: 100dvh;
+  max-width: 100vw;
+  max-height: 100dvh;
+  margin: 0;
+  padding: clamp(1rem, 4vw, 3rem);
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  cursor: zoom-out;
+}
+dialog.lightbox[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+dialog.lightbox::backdrop {
+  background: color-mix(in srgb, #05060a 88%, transparent);
+  backdrop-filter: blur(2px);
+}
+.lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.lightbox-stage :is(svg, img) {
+  background: var(--sl-color-bg);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+.lightbox-close {
+  position: fixed;
+  top: clamp(0.5rem, 2vw, 1.25rem);
+  right: clamp(0.5rem, 2vw, 1.25rem);
+  width: 2.25rem;
+  height: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.4rem;
+  background: var(--sl-color-gray-6);
+  color: var(--sl-color-gray-1);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.lightbox-close:hover {
   color: var(--sl-color-white);
+  border-color: var(--sl-color-accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  dialog.lightbox[open] .lightbox-stage {
+    animation: lb-in 0.16s ease-out both;
+  }
+  @keyframes lb-in {
+    from { opacity: 0; transform: scale(0.98); }
+    to { opacity: 1; transform: scale(1); }
+  }
 }
 
 /* =========================================================================
@@ -181,129 +226,97 @@ body {
 .sl-markdown-content code:not(:where(pre *)) {
   font-family: var(--font-mono);
   font-size: 0.86em;
-  font-weight: 480;
-  padding: 0.12em 0.38em;
-  border-radius: 5px;
+  padding: 0.1em 0.36em;
+  border-radius: 4px;
   border: 1px solid var(--sl-color-gray-5);
   background: var(--sl-color-bg-inline-code);
-  /* Break long tokens (paths, Ruby#methods) instead of overflowing the measure
-     on narrow viewports. */
-  overflow-wrap: anywhere;
-}
-.sl-markdown-content :is(h1, h2, h3, h4) code:not(:where(pre *)) {
-  font-size: 0.9em;
-}
-.expressive-code {
-  --ec-brdRad: 0.6rem;
-}
-.expressive-code .frame {
-  box-shadow: 0 1px 0 var(--sl-color-gray-5), 0 12px 28px -18px rgba(0, 0, 0, 0.55);
+  /* Break only genuinely-too-long tokens (paths, Ruby#methods); leave short
+     identifiers like `needs_input` intact even in narrow table columns. */
+  overflow-wrap: break-word;
 }
 
 /* =========================================================================
-   Callouts (Starlight asides) — a left accent bar and a grotesk label, tinted
-   per severity, instead of a heavy filled box.
+   Callouts (Starlight asides) — a quiet uniform border and panel; the icon and
+   label carry severity by colour. No accent stripe, no tinted fill.
    ========================================================================= */
 .starlight-aside {
-  border: 1px solid var(--sl-color-asides-border, var(--sl-color-gray-5));
-  border-left-width: 3px;
-  border-radius: 0.5rem;
-  padding: 1rem 1.15rem;
-  background: color-mix(in srgb, var(--sl-color-asides-text-accent, var(--sl-color-accent)) 7%, var(--sl-color-bg));
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.4rem;
+  padding: 0.9rem 1.1rem;
+  background: var(--sl-color-gray-7);
 }
 .starlight-aside__title {
-  font-family: var(--font-display);
-  font-weight: 640;
-  letter-spacing: 0.01em;
-  text-transform: none;
-  font-size: 0.94rem;
+  font-weight: 600;
+  font-size: 0.92rem;
 }
 .starlight-aside__icon {
   color: var(--sl-color-asides-text-accent);
 }
 .starlight-aside--note {
   --sl-color-asides-text-accent: #8fa1f0;
-  --sl-color-asides-border: color-mix(in srgb, #8fa1f0 40%, transparent);
 }
 .starlight-aside--tip {
   --sl-color-asides-text-accent: #5bc2a8;
-  --sl-color-asides-border: color-mix(in srgb, #5bc2a8 40%, transparent);
 }
 .starlight-aside--caution {
   --sl-color-asides-text-accent: #e0a63b;
-  --sl-color-asides-border: color-mix(in srgb, #e0a63b 42%, transparent);
 }
 .starlight-aside--danger {
   --sl-color-asides-text-accent: #e5706e;
-  --sl-color-asides-border: color-mix(in srgb, #e5706e 42%, transparent);
 }
-/* Light mode: the accents above are tuned for dark ink; on warm paper the bold
-   label + icon need darker tones to clear WCAG AA, and a firmer severity bar. */
+/* Light: the accents above are dark-tuned; darken per severity to clear AA. */
 :root[data-theme="light"] .starlight-aside--note {
   --sl-color-asides-text-accent: #3a4a92;
-  --sl-color-asides-border: color-mix(in srgb, #3a4a92 55%, transparent);
 }
 :root[data-theme="light"] .starlight-aside--tip {
   --sl-color-asides-text-accent: #10745a;
-  --sl-color-asides-border: color-mix(in srgb, #10745a 55%, transparent);
 }
 :root[data-theme="light"] .starlight-aside--caution {
   --sl-color-asides-text-accent: #8a5510;
-  --sl-color-asides-border: color-mix(in srgb, #8a5510 55%, transparent);
 }
 :root[data-theme="light"] .starlight-aside--danger {
   --sl-color-asides-text-accent: #b23330;
-  --sl-color-asides-border: color-mix(in srgb, #b23330 55%, transparent);
 }
+/* Keep in-callout links looking like links: use the aside's own accent, not the
+   heading colour, for both the text and the underline. */
 .starlight-aside a {
-  color: var(--sl-color-white);
+  color: var(--sl-color-asides-text-accent);
+  text-decoration-color: color-mix(in srgb, var(--sl-color-asides-text-accent) 50%, transparent);
+}
+.starlight-aside a:hover {
   text-decoration-color: var(--sl-color-asides-text-accent);
 }
 
 /* =========================================================================
-   Cards (CardGrid) — quiet panel, accent hairline that reveals on hover.
+   Cards (CardGrid) — quiet static panels. No hover motion; the homepage
+   Card grid is not interactive.
    ========================================================================= */
 .card {
-  position: relative;
   border: 1px solid var(--sl-color-gray-5);
-  border-radius: 0.7rem;
-  background: color-mix(in srgb, var(--sl-color-gray-6) 55%, var(--sl-color-bg));
-  overflow: hidden;
-  transition: border-color 0.25s var(--ease-out), transform 0.25s var(--ease-out),
-    box-shadow 0.25s var(--ease-out);
-}
-.card::after {
-  content: "";
-  position: absolute;
-  inset: 0 auto auto 0;
-  height: 2px;
-  width: 100%;
-  background: linear-gradient(90deg, var(--sl-color-accent), transparent 70%);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 0.3s var(--ease-out);
-}
-.card:hover {
-  border-color: color-mix(in srgb, var(--sl-color-accent) 55%, var(--sl-color-gray-5));
-  transform: translateY(-3px);
-  box-shadow: 0 18px 36px -24px rgba(0, 0, 0, 0.6);
-}
-.card:hover::after {
-  transform: scaleX(1);
+  border-radius: 0.5rem;
+  background: var(--sl-color-gray-7);
 }
 .card .title {
-  font-family: var(--font-display);
-  font-weight: 620;
-  letter-spacing: -0.01em;
+  font-weight: 600;
 }
 .card .icon {
-  color: var(--sl-color-accent);
+  color: var(--sl-color-text-accent);
   border-color: var(--sl-color-gray-5);
-  background: color-mix(in srgb, var(--sl-color-accent) 12%, transparent);
+  background: color-mix(in srgb, var(--sl-color-accent) 10%, transparent);
+}
+/* LinkCards are genuinely clickable; give only those a restrained hover. */
+.sl-link-card {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  background: var(--sl-color-gray-7);
+  transition: border-color 0.15s ease;
+}
+.sl-link-card:hover {
+  border-color: color-mix(in srgb, var(--sl-color-accent) 45%, var(--sl-color-gray-5));
 }
 
 /* =========================================================================
-   Tables — grotesk header, hairline rules, subtle row hover.
+   Tables — clear header, hairline rules. No row hover.
    ========================================================================= */
 .sl-markdown-content table {
   display: table;
@@ -312,164 +325,58 @@ body {
   border-collapse: collapse;
 }
 .sl-markdown-content thead th {
-  font-family: var(--font-display);
   font-weight: 600;
-  font-size: 0.82rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--sl-color-gray-3);
-  border-bottom: 2px solid var(--sl-color-gray-5);
+  font-size: 0.86rem;
+  color: var(--sl-color-gray-2);
+  border-bottom: 1px solid var(--sl-color-gray-5);
 }
 .sl-markdown-content :is(td, th) {
-  border-bottom: 1px solid var(--sl-color-gray-5);
-  padding: 0.55rem 0.8rem;
-}
-.sl-markdown-content tbody tr {
-  transition: background 0.15s var(--ease-out);
-}
-.sl-markdown-content tbody tr:hover {
-  background: color-mix(in srgb, var(--sl-color-accent) 6%, transparent);
+  border-bottom: 1px solid var(--sl-color-gray-6);
+  padding: 0.5rem 0.75rem;
 }
 
 /* =========================================================================
-   Blockquote + rule motif
+   Blockquote + rule
    ========================================================================= */
 .sl-markdown-content blockquote {
-  border-left: 3px solid var(--sl-color-accent);
-  padding-left: 1.1rem;
-  font-style: italic;
+  border-left: 3px solid var(--sl-color-gray-4);
+  padding-left: 1rem;
   color: var(--sl-color-gray-2);
+  font-style: normal;
 }
 .sl-markdown-content hr {
   border: none;
-  height: 1.5rem;
-  margin: 2.4rem 0;
-  background: none;
-  text-align: center;
-}
-.sl-markdown-content hr::before {
-  content: "◆ ◆ ◆";
-  color: var(--sl-color-gray-4);
-  font-size: 0.5rem;
-  letter-spacing: 0.6em;
+  border-top: 1px solid var(--sl-color-gray-5);
+  margin: 2.2rem 0;
 }
 
 /* =========================================================================
-   Chrome — wordmark, sidebar, nav, TOC.
+   Chrome — sidebar and TOC. Active states only.
    ========================================================================= */
-.site-title {
-  font-family: var(--font-display);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  font-size: 1.32rem;
-}
 header.header {
-  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--sl-color-gray-5);
 }
-/* Sidebar group labels: small grotesk caps. */
-.sidebar-content summary .group-label > span,
-.sidebar-content > ul > li > details > summary,
-.sidebar-content h2 {
-  font-family: var(--font-display);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  font-size: 0.72rem;
-  font-weight: 620;
-  color: var(--sl-color-gray-3);
+.site-title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
-.sidebar-content a {
-  font-family: var(--font-display);
-  font-size: 0.9rem;
-  font-weight: 460;
-}
-/* Active sidebar item: accent bar + weight. */
+/* Active nav item: weight + accent colour, no filled pill or accent stripe. */
 .sidebar-content a[aria-current="page"] {
-  font-weight: 640;
-  color: var(--sl-color-white);
-  background: color-mix(in srgb, var(--sl-color-accent) 16%, transparent);
-  border-inline-start: 2px solid var(--sl-color-accent);
-}
-/* Right-hand "On this page" */
-starlight-toc nav > h2 {
-  font-family: var(--font-display);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  font-size: 0.7rem;
-  color: var(--sl-color-gray-3);
-}
-starlight-toc a {
-  font-family: var(--font-display);
-  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--sl-color-text-accent);
+  background: transparent;
 }
 starlight-toc a[aria-current="true"] {
   color: var(--sl-color-text-accent);
-  font-weight: 620;
-}
-
-/* =========================================================================
-   Hero — atmosphere behind the mark, a staggered page-load reveal, and
-   refined actions.
-   ========================================================================= */
-.hero {
-  padding-block: clamp(1rem, 4vw, 3rem);
-}
-.hero h1 {
-  font-size: clamp(2.8rem, 2rem + 4vw, 4.6rem);
-  font-weight: 700;
-  letter-spacing: -0.035em;
-  line-height: 0.98;
-}
-.hero .tagline {
-  max-width: 34ch;
-  font-size: clamp(1.1rem, 1rem + 0.5vw, 1.35rem);
-}
-.hero > img,
-.hero > .hero-html {
-  filter: drop-shadow(0 0 3rem var(--hero-glow)) drop-shadow(0 1rem 2rem rgba(0, 0, 0, 0.35));
-}
-/* Primary action */
-.hero .actions a[href].button:where(:not(.minimal)) {
-  font-family: var(--font-display);
   font-weight: 600;
-  letter-spacing: -0.01em;
-  border-radius: 0.55rem;
-  box-shadow: 0 10px 24px -14px var(--sl-color-accent);
-  transition: transform 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
-}
-.hero .actions a[href].button:where(:not(.minimal)):hover {
-  transform: translateY(-2px);
-}
-.hero .actions a[href].button.minimal {
-  font-family: var(--font-display);
-  font-weight: 520;
-}
-
-/* Staggered reveal on first paint. */
-@media (prefers-reduced-motion: no-preference) {
-  .hero > * {
-    animation: rise 0.7s var(--ease-out) both;
-  }
-  .hero > h1 { animation-delay: 0.02s; }
-  .hero > .tagline { animation-delay: 0.1s; }
-  .hero > .actions { animation-delay: 0.18s; }
-  .hero > img,
-  .hero > .hero-html { animation-delay: 0s; animation-duration: 0.9s; }
-
-  @keyframes rise {
-    from { opacity: 0; transform: translateY(14px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
 }
 
 /* =========================================================================
-   Details — selection, scrollbar, focus, and keeping content above the grain.
+   Details
    ========================================================================= */
 ::selection {
-  background: color-mix(in srgb, var(--sl-color-accent) 38%, transparent);
-  color: var(--sl-color-white);
+  background: color-mix(in srgb, var(--sl-color-accent) 30%, transparent);
 }
-
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--sl-color-gray-5) transparent;
@@ -483,7 +390,6 @@ starlight-toc a[aria-current="true"] {
   border-radius: 10px;
   border: 2px solid var(--sl-color-bg);
 }
-
 :where(a, button, summary, input):focus-visible {
   outline: 2px solid var(--sl-color-accent);
   outline-offset: 2px;
@@ -491,16 +397,15 @@ starlight-toc a[aria-current="true"] {
 }
 
 /* =========================================================================
-   Mermaid diagrams — rendered client-side by src/components/Head.astro, in the
-   brand palette. The panel recedes so the branded nodes sit above it.
+   Mermaid diagrams — rendered client-side by src/components/Head.astro in the
+   brand palette; the panel recedes so nodes sit above it.
    ========================================================================= */
 .mermaid-figure {
-  margin: 2rem 0;
-  padding: 1.5rem 1.25rem;
+  margin: 1.75rem 0;
+  padding: 1.25rem 1rem;
   border: 1px solid var(--sl-color-gray-5);
-  border-radius: 0.7rem;
+  border-radius: 0.5rem;
   background: var(--sl-color-gray-7);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--sl-color-white) 4%, transparent);
   overflow-x: auto;
 }
 .mermaid-diagram {
@@ -513,11 +418,9 @@ starlight-toc a[aria-current="true"] {
   height: auto;
 }
 .mermaid-figure figcaption {
-  margin-top: 0.85rem;
+  margin-top: 0.75rem;
   text-align: center;
-  font-family: var(--font-display);
-  font-size: 0.8rem;
-  letter-spacing: 0.02em;
+  font-size: 0.82rem;
   color: var(--sl-color-gray-3);
 }
 .mermaid-error {

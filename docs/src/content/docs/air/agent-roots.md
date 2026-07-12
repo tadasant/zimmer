@@ -33,7 +33,7 @@ From `roots.json`:
 | `default_runtime` / `default_model` | Seeds the runtime and model |
 
 The `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`, and
-`default_subagent_roots` fields you'll see at runtime are **not written in `roots.json`** — AIR
+`default_subagent_roots` fields you'll see at runtime are not written in `roots.json` — AIR
 computes them by [inverting `default_in_roots`](/air/overview/#default_in_roots--the-inversion) from
 each artifact's own entry.
 
@@ -42,7 +42,7 @@ each artifact's own entry.
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
 | `zimmer` | ✅ | `tadasant/zimmer` | Work on Zimmer itself. All 5 skills default here. |
-| `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. **`AgentRootsConfig::DEFAULT_ROOT`.** |
+| `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
 | `agent-orchestrator` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents/agent-orchestrator` |
 | `agents` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents` — the catalog artifacts |
 | `catalog-management` | ❌ | `tadasant/zimmer-catalog` | Lead root; fans out to the four below |

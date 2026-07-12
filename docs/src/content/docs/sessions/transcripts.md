@@ -6,7 +6,7 @@ sidebar:
 ---
 
 The agent writes JSONL to a file. Zimmer polls that file, normalizes it, and streams it to your
-browser. That's the whole loop — but each step has a wrinkle worth knowing.
+browser. That's the whole loop. Each step has a wrinkle.
 
 ## The pipeline
 

@@ -33,7 +33,7 @@ Both are spawned with `pgroup: true` (so the whole process group can be killed a
 stdin and stdout to `/dev/null`, and stderr to `claude_stderr.log` / `codex_stderr.log` inside
 the clone.
 
-### The disallowed tools are not arbitrary
+### Why those tools are disallowed
 
 `Monitor`, `ScheduleWakeup`, `Bash(sleep *)`, and `Skill(schedule)` are all blocked because they
 are *Claude Code's own* ways of waiting, and they don't survive Zimmer. A background sleep loop

@@ -40,7 +40,7 @@ The formal schema is published by AIR at
 — which is what `mcp.json`'s own `$schema` key points at. A snapshot is also served from this site at
 [`/mcp.schema.json`](/mcp.schema.json).
 
-:::note[The local schema copy is a snapshot, not the source of truth]
+:::note[The local schema copy is only a convenience snapshot]
 The old `docs/mcp.schema.json` had a `$id` pointing at a path inside `tadasant/zimmer-catalog` that
 no longer exists in this repo's layout, while `mcp.json` validates against AIR's published schema.
 The local file is a convenience copy for offline validation.
@@ -67,8 +67,8 @@ flowchart LR
 The catalog carries the placeholder. The environment carries the value. The transform joins
 them at prepare time, and AIR then validates that no `${VAR}` survived and fails if any did.
 
-That validation is the good part: a typo'd secret name fails loudly at prepare rather than silently
-handing the agent a server that 401s on every call.
+That validation is the good part: a typo'd secret name fails loudly at prepare, before the agent
+ever gets a server that 401s on every call.
 
 Zimmer's `SecretsLoader` resolves values in this order: `XOauthTokenVendor` (for X/Twitter tokens)
 → Rails encrypted credentials (`mcp_secrets`) → `ENV`.
@@ -93,7 +93,7 @@ the UI renders Authorize buttons.
 
 → [MCP server OAuth](/auth/mcp-oauth/) for the full flow.
 
-## MCP connection status is inferred, not reported
+## MCP connection status is inferred from logs
 
 There is no protocol-level "did this server connect" signal that Zimmer consumes. Instead:
 
