@@ -311,7 +311,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
         branch: "main",
         repository_name: "tadasant/zimmer-catalog",
         subdirectory: "agents/agent-orchestrator",
-        mcp_servers: [ "agent-orchestrator-prod-sessions" ],
+        mcp_servers: [ "zimmer-sessions" ],
         agent_runtime: "codex"
       ),
       working_directory: @test_dir,

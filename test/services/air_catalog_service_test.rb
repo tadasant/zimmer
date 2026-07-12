@@ -497,7 +497,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   test "treats a resolve that exits 0 but drops references as failed, serving last-known-good" do
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
-        healthy_root = { "name" => "ao-router", "default_skills" => %w[ao-router-route-request], "default_mcp_servers" => %w[agent-orchestrator-prod] }
+        healthy_root = { "name" => "ao-router", "default_skills" => %w[ao-router-route-request], "default_mcp_servers" => %w[zimmer] }
         ok = ->(*) { [ JSON.generate("roots" => { "ao-router" => healthy_root }), "", fake_status(0) ] }
         Open3.stub(:capture3, ok) do
           assert_equal healthy_root, AirCatalogService.entries_for(:roots)["ao-router"]
