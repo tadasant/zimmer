@@ -1,0 +1,126 @@
+name: Alert CI failure
+
+# Posts to #alerts in the Tadasant Slack workspace whenever any workflow in this repo
+# fails on `main`. The same listener, with the same two secret names, exists in
+# tadasant/tadasant-internal and tadasant/strad — keep the three symmetric.
+#
+# Why one `workflow_run` listener instead of an alert job bolted onto all seven
+# workflows: one file to reason about, one file to change, and no chance of the alert
+# rotting in six places while it stays correct in the seventh.
+on:
+  workflow_run:
+    # MAINTAINERS: a new workflow file must be added here by name (the `name:` at the
+    # top of it, not its filename), or its main-branch failures will be silent.
+    #
+    # This list cannot be globbed away. GitHub's workflow schema types `workflows:` as
+    # an explicit array of names and neither the schema nor the docs define a wildcard
+    # or an "omit to match all" behaviour, and a `workflow_run` listener only ever
+    # triggers from the copy of this file on the default branch — so an undocumented
+    # match-all would be untestable until after it merged. Enumeration is the only
+    # option that is guaranteed complete on the first run.
+    #
+    # Keep in sync with `ls .github/workflows/`. This workflow is deliberately absent
+    # from its own list: a listener that listened to itself would re-trigger on its own
+    # failures.
+    workflows:
+      - "Build base image" # build-base-image.yml
+      - "CI" # ci.yml
+      - "Deploy staging" # deploy-staging.yml
+      - "Domain cert (staging)" # domain-cert-staging.yml
+      - "GHCR retention" # ghcr-retention.yml
+      - "Release image" # release-image.yml
+      - "Teardown staging" # teardown-staging.yml
+    types: [completed]
+    # Filters on the *triggering* run's head branch. The job's `if:` re-asserts this;
+    # this filter is here so the ~dozens of PR runs a day don't each spawn a skipped
+    # listener run in the Actions tab.
+    branches: [main]
+
+  # Smoke test. Once the two secrets exist, dispatch this workflow by hand to prove
+  # Slack delivery end to end without having to break `main` on purpose.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    # Deliberately NOT `self-hosted`, unlike every other workflow here: when the shared
+    # runner pool is itself what is broken, that is exactly when the alert has to fire.
+    runs-on: ubuntu-latest
+
+    # `conclusion == 'failure'`, never `!= 'success'`. A *cancelled* run must stay
+    # quiet, and cancellations are routine here — `ci.yml` sets `cancel-in-progress`,
+    # so any two pushes to main in quick succession cancel the first one's run.
+    #
+    # Failures on a PR branch are the PR author's business and already show up as a red
+    # check on the PR, so they are excluded twice over: `head_branch == 'main'` and the
+    # `pull_request` / `pull_request_target` event check.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      !startsWith(github.event.workflow_run.event, 'pull_request'))
+
+    steps:
+      - name: Post the failure to Slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL_ID: ${{ secrets.SLACK_ALERTS_CHANNEL_ID }}
+          # Everything below is untrusted input (a commit message can contain anything).
+          # It reaches the script as environment variables and never as `${{ }}`
+          # interpolated into the shell body, which would be a script-injection hole.
+          SMOKE_TEST: ${{ github.event_name == 'workflow_dispatch' }}
+          REPO: ${{ github.repository }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+          COMMIT_AUTHOR: ${{ github.event.workflow_run.head_commit.author.name }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_ALERTS_CHANNEL_ID:-}" ]; then
+            echo "::warning title=Slack alert skipped::SLACK_BOT_TOKEN and/or SLACK_ALERTS_CHANNEL_ID is not set on this repo, so there is nowhere to post. See docs/operate/provisioning.md. Not failing: a missing alert secret must not turn into a second red X on main."
+            exit 0
+          fi
+
+          if [ "${SMOKE_TEST}" = "true" ]; then
+            text=":white_check_mark: *Slack alerting smoke test* — \`${REPO}\`
+          Manually dispatched \`alert-ci-failure.yml\`. If you are reading this in #alerts, the bot token, the channel ID and the bot's membership in this channel are all correct. Real alerts only fire on genuine \`main\` failures."
+          else
+            # First line of the commit message only; the body is noise in a chat message.
+            subject="$(printf '%s' "${COMMIT_MESSAGE:-}" | head -n 1)"
+            short_sha="$(printf '%s' "${COMMIT_SHA:-}" | cut -c1-7)"
+            run_url="https://github.com/${REPO}/actions/runs/${RUN_ID}"
+
+            text=":rotating_light: *CI failure on \`main\`* — \`${REPO}\`
+          *Workflow:* ${WORKFLOW_NAME}
+          *Commit:* \`${short_sha}\` ${subject}
+          *Author:* ${COMMIT_AUTHOR:-unknown}
+          <${run_url}|View the failed run>"
+          fi
+
+          # jq builds the JSON so that quotes, backslashes and newlines in a commit
+          # message cannot break out of the payload.
+          payload="$(jq -n \
+            --arg channel "${SLACK_ALERTS_CHANNEL_ID}" \
+            --arg text "${text}" \
+            '{channel: $channel, text: $text}')"
+
+          response="$(curl -sS -X POST "https://slack.com/api/chat.postMessage" \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "${payload}")"
+
+          # chat.postMessage answers 200 even when it refuses the message (bad token,
+          # bot not in the channel, …), so the HTTP status proves nothing: read `ok`.
+          # This one *does* fail the job — a rejected alert is a silently broken alert,
+          # and the only place that can surface is here.
+          if [ "$(printf '%s' "${response}" | jq -r '.ok')" != "true" ]; then
+            echo "Slack rejected the message: ${response}" >&2
+            echo "::error title=Slack alert failed::chat.postMessage returned ok=false ($(printf '%s' "${response}" | jq -r '.error // "unknown"')). Check the bot token's chat:write scope and that the bot is a member of the channel."
+            exit 1
+          fi
+
+          echo "Posted to Slack channel ${SLACK_ALERTS_CHANNEL_ID}."
