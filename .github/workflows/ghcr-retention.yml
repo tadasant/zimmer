@@ -20,12 +20,13 @@ permissions:
 
 jobs:
   retention:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
+          self-hosted: true
       - name: Prune old image versions
         env:
           # Default GITHUB_TOKEN can delete versions of packages owned by the
