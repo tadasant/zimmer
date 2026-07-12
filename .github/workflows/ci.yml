@@ -111,6 +111,12 @@ jobs:
 
     env:
       RAILS_ENV: test
+      # GitHub-hosted runners export CI=true automatically; this self-hosted runner
+      # does not, and config/environments/test.rb ties `config.eager_load` to
+      # ENV["CI"]. Without it, eager loading is off and lazy autoload trips over
+      # good_job's Zeitwerk layout (GoodJob::Job) at runtime. Set it explicitly, as
+      # the AO parent workflow does, so the suite loads the same way it does on hosted.
+      CI: true
       DATABASE_HOST: localhost
       DATABASE_USERNAME: postgres
       DATABASE_PASSWORD: postgres
