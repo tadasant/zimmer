@@ -19,9 +19,9 @@ API; the `RAILS_MASTER_KEY` staging omission below) — and each says so in plac
 
 ## Deployment
 
-The deploy is Kamal onto a persistent, Tailscale-only droplet: Terraform bootstraps the box (Docker
-+ Tailscale + Caddy + the deploy key), and Kamal owns the app stack — a `web` role and a `worker`
-role running `bundle exec good_job start`, with durable named volumes for clones and credentials. The
+The deploy is Kamal onto a persistent, Tailscale-only droplet: Terraform bootstraps the box (Docker,
+Tailscale, Caddy, the deploy key), and Kamal owns the app stack — a `web` role and a `worker` role
+running `bundle exec good_job start`, with durable named volumes for clones and credentials. The
 items below are the sharp edges that survived that migration.
 
 ### `user_data` is frozen, so the deploy key and the Caddyfile can't be updated in place
