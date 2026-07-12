@@ -43,10 +43,22 @@ ssh:
 
 env:
   clear:
+    # NOT "production". config/environments/staging.rb exists and is fully
+    # production-shaped (eager_load, external GoodJob + cron, redis cache store),
+    # and database.yml has a `staging:` section. Running staging as "production"
+    # -- which the pre-Kamal cloud-init did -- makes SelfSessionInjector inject the
+    # `agent-orchestrator-prod-self-session` MCP server, whose
+    # ${AGENT_ORCHESTRATOR_PROD_API_KEY} lives only in production's encrypted
+    # credentials. Every staging session then died in SecretsInterpolator before the
+    # agent ever started.
+    RAILS_ENV: staging
     # Canonical external host: the custom domain (Caddy terminates TLS on :443 in
     # front of kamal-proxy). Without this, McpOauthService falls back to
     # localhost:3000 and every OAuth callback breaks.
     APP_HOST: staging.zimmer.tadasant.com
+    # Point the injected self-session MCP server at THIS instance, so a staging
+    # session orchestrates staging (never production).
+    AGENT_ORCHESTRATOR_STAGING_BASE_URL: https://staging.zimmer.tadasant.com
     DATABASE_HOST: zimmer-db
     DATABASE_PORT: "5432"
     DATABASE_USERNAME: zimmer
@@ -56,6 +68,10 @@ env:
     - SECRET_KEY_BASE
     - API_KEYS
     - DATABASE_PASSWORD
+    # The API key the injected self-session MCP server uses to call this instance's
+    # own REST API. Staging has no RAILS_MASTER_KEY (so no encrypted mcp_secrets);
+    # SecretsInterpolator falls back to process ENV, which is what this supplies.
+    - AGENT_ORCHESTRATOR_STAGING_API_KEY
     # Observability. The app's initializers are hard no-ops when these are empty,
     # so an unset secret simply disables shipping -- but they must be PRESENT here,
     # or staging silently loses Sentry + OTel the way the pre-Kamal TF vars did not.
@@ -73,9 +89,9 @@ accessories:
     env:
       clear:
         POSTGRES_USER: zimmer
-        # Seeds the primary DB; db:prepare creates zimmer_production_cable too
-        # (POSTGRES_USER is the cluster superuser).
-        POSTGRES_DB: zimmer_production
+        # Matches database.yml's `staging:` section. db:prepare creates
+        # zimmer_staging_cable too (POSTGRES_USER is the cluster superuser).
+        POSTGRES_DB: zimmer_staging
       secret:
         - POSTGRES_PASSWORD
     volumes:
