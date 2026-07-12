@@ -194,6 +194,12 @@ jobs:
           # API_KEYS is a comma-separated list; the injected self-session MCP server
           # needs a SINGLE key to call this instance's own REST API.
           export STAGING_SELF_API_KEY="${STAGING_API_KEYS%%,*}"
+          if [ -z "$STAGING_SELF_API_KEY" ]; then
+            echo "::error::STAGING_API_KEYS is empty, so AGENT_ORCHESTRATOR_STAGING_API_KEY would be blank."
+            echo "::error::SecretsInterpolator treats blank-but-set exactly like unset, so every session"
+            echo "::error::would fail with MissingVariableError -- the bug this wiring exists to prevent."
+            exit 1
+          fi
           kamal accessory boot all -d staging
           kamal deploy -d staging \
             --version="${{ steps.img.outputs.tag }}" \
