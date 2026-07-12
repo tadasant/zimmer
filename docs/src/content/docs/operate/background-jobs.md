@@ -8,10 +8,10 @@ sidebar:
 Zimmer runs on GoodJob. In development it's `:async` (in-process with Puma); in production and staging
 it's `:external`, requiring a separate `bundle exec good_job start`.
 
-:::danger[Everything on this page is dead on a stock Terraform droplet]
-The shipped `cloud-init.yaml.tftpl` defines no worker service. Without one, not a single job on this
-page ever runs — including `AgentSessionJob`, which means no session ever starts. See
-[Known limitations](/limitations/#the-shipped-terraform-provisions-no-job-worker).
+:::note[Jobs run on the `worker` role]
+The Kamal deploy runs `bundle exec good_job start` as a dedicated `worker` role
+(`config/deploy.staging.yml`), so everything on this page runs on the deployed droplet. Locally you
+need `bin/dev` (or a `good_job start` process) for jobs to fire.
 :::
 
 ## The cron schedule

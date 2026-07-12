@@ -11,60 +11,18 @@ code rather than the old docs, which were themselves often wrong.
 Every item names a file so you can verify it. Nothing is left out for looking bad. Items whose first
 line starts with 🔴 would bite a new operator immediately.
 
-Every item below links to the issue tracking it, with two exceptions. The Deployment section covers
-the in-progress Kamal migration, so it is tracked through that work rather than issue by issue. And
-Push notifications without the Push API is a platform limit we can't fix, so it is stated in place
-rather than filed.
+Nearly every item below links to the issue tracking it. The few that don't are deliberate — a
+platform limit or a design choice we don't intend to change (Push notifications without the Push
+API; the `RAILS_MASTER_KEY` staging omission below) — and each says so in place.
 
 ---
 
 ## Deployment
 
-### The shipped Terraform provisions no job worker
-
-🔴 `config/environments/production.rb:59` sets `good_job.execution_mode = :external`, which requires a
-separate `bundle exec good_job start` process.
-
-`infra/terraform/cloud-init.yaml.tftpl` renders a compose file with exactly three services: `app`,
-`redis`, and (staging only) `db`. There is no worker service, and no `good_job start` anywhere in
-`infra/`, the `Dockerfile`, or the workflows.
-
-**Consequence:** on the documented turnkey DigitalOcean path, *no background job ever executes*.
-Sessions enqueue and sit forever. No cron fires — no orphan cleanup, no token refresh, no pollers, no
-catalog refresh. The staging health check only curls `/up`, so the deploy reports success.
-
-Production presumably runs a different compose file from a private repo. The IaC here is incomplete.
-
-### Production is still on the old compose stack, and shares the Terraform module
-
-🔴 **The most important thing to know right now.** `infra/terraform/main.tf` and
-`cloud-init.yaml.tftpl` are mirrored **byte-identical** into the private production repo, enforced by
-an `iac-sync` guard. Staging has been cut over to Kamal; **production has not**. It still runs the old
-docker-compose stack, driven by its own workflows.
-
-That means the mirrored module is now *ahead of* production:
-
-- `main.tf` declares `backend "s3" {}`, so production's `terraform init` fails until it also supplies a
-  `-backend-config`. Its state is ephemeral today, so it additionally needs a one-time
-  `terraform import` of the live droplet/firewall/project — otherwise a first apply would try to
-  **create** a second one and 409 on the account-unique firewall name.
-- The mirrored `cloud-init.yaml.tftpl` no longer contains the app stack at all. `ignore_changes =
-  [user_data]` protects the running production box, but if it is ever replaced it would boot with
-  Docker + Tailscale + Caddy and **no app**.
-
-Production's `iac-sync` PR must therefore **not** be merged on its own. Its cutover has to land
-atomically: backend config + `terraform import` + a Kamal production config + its workflow rewrite,
-together. Until then, production keeps running and upgrading in place exactly as before.
-
-### The first deploy onto the new model needs a one-time reap
-
-Remote state starts empty, so the very first `terraform apply` does not know about a pre-existing
-`zimmer-staging` droplet/firewall/project — and DO firewall and project names are **account-unique**,
-so it would 409. The old droplet also can't simply be imported: it was booted by the old cloud-init and
-has no Kamal deploy key authorized, so Kamal could never reach it.
-
-The cutover is therefore: destroy the old droplet + firewall + project once, then `apply`. This is a
-one-time cost, and it is the last time staging gets recreated.
+The deploy is Kamal onto a persistent, Tailscale-only droplet: Terraform bootstraps the box (Docker
++ Tailscale + Caddy + the deploy key), and Kamal owns the app stack — a `web` role and a `worker`
+role running `bundle exec good_job start`, with durable named volumes for clones and credentials. The
+items below are the sharp edges that survived that migration.
 
 ### `user_data` is frozen, so the deploy key and the Caddyfile can't be updated in place
 
@@ -76,7 +34,9 @@ deliberately re-creating the droplet, which is exactly the churn this model exis
 
 Rotating the deploy key is rare; changing the domain is rarer. But neither is a no-op.
 
-### RAILS_MASTER_KEY is unset on staging
+Tracked in [#121](https://github.com/tadasant/zimmer/issues/121).
+
+### RAILS_MASTER_KEY is unset on staging (deliberate)
 
 `RAILS_MASTER_KEY` is deliberately absent from staging's Kamal config: there is no committed
 `config/credentials/production.yml.enc` to decrypt, `secrets_loader.rb` rescues a missing key, and there
@@ -86,8 +46,10 @@ is no `require_master_key` — so the app boots without it. Anything reading Rai
 
 ### SSH is open to `0.0.0.0/0`
 
-The firewall comment says "lock down to your admin CIDRs in tfvars if desired." There is no variable
-to do that with.
+`infra/terraform/main.tf:257-261` opens `22/tcp` to the whole internet. SSH is genuinely needed — it
+is Kamal's deploy channel — but there is no variable to scope it to a set of admin CIDRs.
+
+Tracked in [#120](https://github.com/tadasant/zimmer/issues/120).
 
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 
@@ -96,19 +58,23 @@ in a database index becomes `redis://…:6379/0/0`. The old compose stack set `r
 hit exactly that.
 
 `config/deploy.yml` now sets `REDIS_URL: redis://zimmer-redis:6379` — **no trailing `/0`** — so the
-app's own suffixing produces a single, correct index. The trap is still there for anyone who "helpfully"
-adds the `/0` back.
+app's own suffixing produces a single, correct index. The trap is still there for anyone who
+"helpfully" adds the `/0` back. ([#20](https://github.com/tadasant/zimmer/issues/20))
 
 ### `claude update` runs in the background at boot
 
-`bin/docker-entrypoint` backgrounds `claude update` and the Playwright browser install. Sessions started
-in the first ~30 seconds after a container boot use the old CLI and Chromium.
+`bin/docker-entrypoint` backgrounds `claude update` and the Playwright browser install. Sessions
+started in the first ~30 seconds after a container boot use the old CLI and Chromium.
+
+Tracked in [#122](https://github.com/tadasant/zimmer/issues/122).
 
 ### The tailnet reaper no-ops without credentials, and says nothing
 
 `scripts/tailnet-reap-node.sh` does nothing when `TS_API_CLIENT_*` are unset, so the MagicDNS name
 drifts to `zimmer-staging-1`, `-2`, … The health check compensates by trying every online peer with
 that name — so it works, and you accumulate dead nodes with no error.
+
+Tracked in [#123](https://github.com/tadasant/zimmer/issues/123).
 
 ---
 

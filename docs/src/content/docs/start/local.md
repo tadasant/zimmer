@@ -39,8 +39,7 @@ In development, GoodJob runs in `:async` mode in-process with Puma
 (`config/environments/development.rb`). Jobs and cron work.
 
 In production and staging, `execution_mode = :external` and a separate `bundle exec good_job start`
-process is required — which the
-[shipped Terraform does not provide](/limitations/#the-shipped-terraform-provisions-no-job-worker).
+process is required — which the Kamal deploy runs as a dedicated `worker` role.
 :::
 
 ## Two databases
@@ -62,7 +61,7 @@ Everything in `.env.example` is commented out except `RAILS_ENV=development`. Th
 | `APP_HOST` | The MCP OAuth redirect host. Unset ⇒ defaults to `localhost:3000`. |
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_secrets`, `mcp_oauth_clients`) |
 | `AIR_CONFIG` | Override which `air.json` the catalog resolves from |
-| `AGENT_CLONES_DIR` | Where session clones go. Default `~/.agent-orchestrator/clones` |
+| `AGENT_CLONES_DIR` | Where session clones go. Default `~/.zimmer/clones` |
 | `GOOD_JOB_MAX_THREADS` | Worker concurrency |
 
 `gh` and the agent CLIs authenticate via OAuth (`gh auth login`, `claude /login`), not env vars.
