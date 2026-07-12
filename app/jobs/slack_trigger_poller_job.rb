@@ -155,9 +155,12 @@ class SlackTriggerPollerJob < ApplicationJob
   # channel configured polls EVERY channel the bot is in -- so without this, an alert
   # quoting "<@bot>" would trigger a session, which would alert, which would trigger.
   #
-  # Messages from OTHER apps still qualify: the poller already treats bots as valid
-  # trigger sources for new_message conditions, and "an alerting app @mentions Zimmer
-  # to open a session" is a use case, not an accident. Only the self-loop is closed.
+  # Messages from OTHER apps still qualify, as long as Slack attributes them to a user
+  # (apps posting with a bot token carry the bot's user ID). The poller already treats
+  # bots as valid trigger sources for new_message conditions, and "an alerting app
+  # @mentions Zimmer to open a session" is a use case, not an accident -- only the
+  # self-loop is closed. Messages with no `user` at all (legacy webhooks) never fire
+  # anything: there is no identity to check an allow-list against.
   def mention_for?(condition, message, bot_id)
     return false unless message.text&.include?("<@#{bot_id}>")
     return false if message.user == bot_id

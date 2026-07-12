@@ -108,7 +108,11 @@ class SlackService
           break if cursor.blank?
         end
 
-        # Filter to only DMs with the specified users
+        # nil means unrestricted: every DM the bot has. An empty array is a real
+        # (empty) filter and matches nothing -- the two are NOT the same, which is
+        # why this branches on nil? rather than blank?.
+        next channels if user_ids.nil?
+
         user_id_set = user_ids.to_set
         channels.select { |ch| user_id_set.include?(ch.user) }
       end

@@ -75,9 +75,15 @@ class TriggerCondition < ApplicationRecord
   # list if it has one (set from the UI/API), else the deployment-wide default.
   # Empty means unrestricted -- ask allow_all_users? rather than reading this as
   # "nobody", and see the DM caveat there.
+  # Memoized: the poller asks this once per message and once per thread reply, and
+  # SecretsLoader deliberately does not memoize (it re-reads credentials on every
+  # call so a deploy's new secrets are picked up mid-process). A condition object
+  # lives for one poll, so caching here is safe and saves that work per message.
   def allowed_user_ids
-    ids = configuration["allowed_user_ids"]
-    ids.present? ? Array(ids) : self.class.default_allowed_user_ids
+    @allowed_user_ids ||= begin
+      ids = configuration["allowed_user_ids"]
+      ids.present? ? Array(ids) : self.class.default_allowed_user_ids
+    end
   end
 
   # True when no allow-list applies, i.e. every workspace member may trigger.
