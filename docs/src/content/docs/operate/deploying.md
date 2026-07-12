@@ -192,10 +192,15 @@ The runner box is shared across the PulseMCP org, so a job cannot assume it has 
 machine to itself. Four things follow, and every Rails job in `ci.yml` already does
 them:
 
-- **`ruby/setup-ruby` gets `self-hosted: true` and `bundler-cache: false`.** The
-  first selects the per-runner Ruby toolcache (Ubuntu 24.04 self-hosted needs it);
-  the second turns off the action's automatic `bundle install`, because we do it
-  ourselves into an isolated path.
+- **`ruby/setup-ruby` runs with `bundler-cache: false` and *without* `self-hosted:
+  true`.** `bundler-cache: false` turns off the action's automatic `bundle install`,
+  because we do it ourselves into an isolated path (below). We deliberately omit
+  `self-hosted: true`: that input tells the action a Ruby is already staged in
+  `$RUNNER_TOOL_CACHE`, which is true on PulseMCP's org runners but *not* on the
+  `tadasant-zimmer-ci-*` repo-level runners — they were registered without a seeded
+  Ruby toolcache. Omitting the flag lets `setup-ruby` self-install Ruby 3.4.6 into
+  each runner's own `$RUNNER_TOOL_CACHE` (isolated per runner, cached after the first
+  run). If those toolcaches are ever seeded, the flag can be re-added.
 - **Gems install into a per-runner path.** `bundle config set --local path
   /home/runner/.bundles/zimmer-runner-${RUNNER_NUM}` (with `RUNNER_NUM` derived from
   `$RUNNER_NAME`) keeps two concurrent jobs on the same box from fighting over one

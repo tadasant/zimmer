@@ -7,6 +7,14 @@ name: CI
 # concurrent jobs on the shared box never collide; gems install into a per-runner
 # path for the same reason. This piggyback is temporary — see docs/operate/deploying.md
 # ("The workflows") and the DigitalOcean migration tracker (tadasant-internal#25).
+#
+# NOTE on ruby/setup-ruby: we do NOT pass `self-hosted: true`. That input tells the
+# action a Ruby is already staged in $RUNNER_TOOL_CACHE — true on pulsemcp's org
+# runners (1-8), but the tadasant repo-level runners (tadasant-zimmer-ci-{1,2}) were
+# registered without a seeded Ruby toolcache, so the action would abort. Omitting it
+# lets setup-ruby self-install Ruby 3.4.6 into each runner's own $RUNNER_TOOL_CACHE;
+# per-runner isolation comes from that per-runner cache dir, not from the flag. If the
+# runner toolcaches are ever seeded (or the DO migration seeds them), re-add the flag.
 on:
   pull_request:
     branches: [main]
@@ -26,7 +34,6 @@ jobs:
         with:
           ruby-version: "3.4.6"
           bundler-cache: false
-          self-hosted: true
       - name: Install gems (per-runner path)
         run: |
           RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
@@ -43,7 +50,6 @@ jobs:
         with:
           ruby-version: "3.4.6"
           bundler-cache: false
-          self-hosted: true
       - name: Install gems (per-runner path)
         run: |
           RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
@@ -60,7 +66,6 @@ jobs:
         with:
           ruby-version: "3.4.6"
           bundler-cache: false
-          self-hosted: true
       - name: Ensure Gemfile.lock is up to date
         run: |
           RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
@@ -119,7 +124,6 @@ jobs:
         with:
           ruby-version: "3.4.6"
           bundler-cache: false
-          self-hosted: true
       - name: Install gems (per-runner path)
         run: |
           RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
@@ -159,6 +163,5 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          self-hosted: true
       - name: Test GHCR retention selection logic
         run: ruby scripts/ghcr_retention_test.rb

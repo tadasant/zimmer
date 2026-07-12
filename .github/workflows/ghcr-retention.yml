@@ -26,7 +26,6 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          self-hosted: true
       - name: Prune old image versions
         env:
           # Default GITHUB_TOKEN can delete versions of packages owned by the
