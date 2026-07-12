@@ -76,6 +76,7 @@ Nominally optional — you can reach Zimmer at its plain tailnet MagicDNS name (
 - A Rails **`SECRET_KEY_BASE`**: `openssl rand -hex 64` (`STAGING_SECRET_BASE`). A secret only you hold.
 - A **database password** for the Postgres accessory: another `openssl rand -hex 32` (`STAGING_DB_PASSWORD`). It is deliberately *not* derived from `SECRET_KEY_BASE` — the Postgres data volume is durable and `POSTGRES_PASSWORD` only takes effect on the first `initdb`, so a separate, stable password keeps rotating `SECRET_KEY_BASE` safe.
 - **`API_KEYS`** (`STAGING_API_KEYS`): comma-separated bearer keys for the REST API. Empty leaves the API off (every request 401s).
+- *(Optional)* A **Rails credentials key** (`STAGING_RAILS_MASTER_KEY`), only if you want encrypted `mcp_secrets` — the values MCP servers reference as `${VAR}`, plus `SLACK_BOT_TOKEN` and `ENG_ALERTS_SLACK_CHANNEL_ID`. Your fork inherits *our* `config/credentials/staging.yml.enc`, and you do not have the key to it, so delete it and make your own: `rm config/credentials/staging.yml.enc && EDITOR=vim bin/rails credentials:edit -e staging`, then `gh secret set STAGING_RAILS_MASTER_KEY < config/credentials/staging.key`. Skip all of it and the deploy still works — you just get a `::warning::` and no `mcp_secrets`.
 
 ## Stand it up
 

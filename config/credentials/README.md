@@ -70,32 +70,44 @@ SecretsLoader.available?
 Keep the `development.key`, `staging.key`, and `production.key` files in your password manager. They
 are the only way to read the encrypted credentials, and they are not in git.
 
-For local development, store them in this repo's `.env`:
-```
-RAILS_CREDENTIALS_DEVELOPMENT_KEY=<development.key contents>
-RAILS_CREDENTIALS_STAGING_KEY=<staging.key contents>
-RAILS_CREDENTIALS_PRODUCTION_KEY=<production.key contents>
-```
+The key is supplied **either** as the matching `config/credentials/<env>.key` file **or** through the
+`RAILS_MASTER_KEY` environment variable — that one variable, for every environment. Rails hardcodes
+the name (`Rails::Application#encrypted` defaults `env_key: "RAILS_MASTER_KEY"`), so it is
+`RAILS_MASTER_KEY` that unlocks `staging.yml.enc` when `RAILS_ENV=staging`, and `production.yml.enc`
+when `RAILS_ENV=production`. There is no per-environment env var; a name like
+`RAILS_CREDENTIALS_STAGING_KEY` is read by nothing.
+
+Blank is the same as absent: ActiveSupport reads it as `ENV["RAILS_MASTER_KEY"].presence`. So an
+unset key does not crash the app — the credentials simply stay encrypted and `SecretsLoader` serves
+nothing.
+
+## How each environment gets its key
+
+| Environment | `.enc` file | Where the key comes from |
+| --- | --- | --- |
+| development / test | in git | your local `config/credentials/<env>.key` (from the password manager) |
+| staging | `staging.yml.enc`, **in git** | the `STAGING_RAILS_MASTER_KEY` GitHub Actions secret → `RAILS_MASTER_KEY` via `.kamal/secrets.staging` |
+| production | **not** in git — bind-mounted onto the droplet at `/opt/zimmer/credentials` | the `PROD_RAILS_MASTER_KEY` secret → `RAILS_MASTER_KEY` via `.kamal/secrets.production` |
+
+Staging's key is optional: a deploy without it boots fine, but Slack and every credential-bearing MCP
+server go quiet. `deploy-staging.yml` warns rather than fails.
 
 ## Creating Staging Credentials
 
-If the `staging.yml.enc` file doesn't exist yet, create it:
+`staging.yml.enc` already exists. To edit it you need `staging.key` (in the password manager as
+*Zimmer staging RAILS_MASTER_KEY*); drop it at `config/credentials/staging.key` and run:
 
 ```bash
-# This creates both staging.yml.enc and staging.key
 EDITOR="code --wait" bin/rails credentials:edit -e staging
 ```
 
-Copy the generated `staging.key` file content to:
-1. Your password manager
-2. The environment of whatever runs the app, as `RAILS_CREDENTIALS_STAGING_KEY` — the key is read
-   from the environment, not from a path on the box. The shipped staging deploy sets no credentials
-   key at all (`deploy-staging.yml` leaves it unset on purpose), so encrypted credentials are inert
-   there until you add one
-3. Your local `.env` file as `RAILS_CREDENTIALS_STAGING_KEY`
+If you are standing up your own fork and have no `staging.yml.enc`, that same command creates both
+the `.enc` and a fresh `.key`. Then put the key in your password manager and set it as the
+`STAGING_RAILS_MASTER_KEY` GitHub Actions secret (`gh secret set STAGING_RAILS_MASTER_KEY < config/credentials/staging.key`).
 
 ## Security Notes
 
 - The `.key` files are excluded from git via `.gitignore`
 - Never share or commit encryption keys
-- In CI/staging/production, set the key via environment variable (e.g., `RAILS_CREDENTIALS_STAGING_KEY` or `RAILS_CREDENTIALS_PRODUCTION_KEY`) or deploy the key file separately
+- In CI/staging/production, set the key via the `RAILS_MASTER_KEY` environment variable (Kamal
+  injects it as a secret), or deploy the key file separately

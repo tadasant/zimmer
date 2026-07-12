@@ -1,0 +1,135 @@
+# frozen_string_literal: true
+
+require "test_helper"
+require "erb"
+
+# The staging encrypted-credentials path is a four-file chain -- the .enc file, the
+# Kamal secrets mapping, the Kamal env.secret list, and the deploy workflow -- and it
+# fails SILENTLY when a link breaks: ActiveSupport reads the key as
+# `ENV["RAILS_MASTER_KEY"].presence`, so a missing one is indistinguishable from an
+# unset one. Staging boots healthy and simply serves no mcp_secrets, which shows up
+# much later as "why is Slack quiet on staging". These tests assert the chain.
+class StagingCredentialsTest < ActiveSupport::TestCase
+  KAMAL_SECRETS = Rails.root.join(".kamal/secrets.staging")
+  DEPLOY_CONFIG = Rails.root.join("config/deploy.staging.yml")
+  DEPLOY_WORKFLOW = Rails.root.join(".github/workflows/deploy-staging.yml")
+  DOCKERIGNORE = Rails.root.join(".dockerignore")
+  ENC = "config/credentials/staging.yml.enc"
+
+  test "staging.yml.enc exists" do
+    assert Rails.root.join(ENC).exist?,
+      "#{ENC} must exist -- staging has no bind-mounted credentials directory (production does), " \
+      "so the .enc has to ship inside the image."
+  end
+
+  test "staging.yml.enc is committed, and its key is not" do
+    skip "not a git checkout" unless Rails.root.join(".git").exist?
+
+    tracked = `git -C #{Rails.root} ls-files config/credentials`.split("\n")
+
+    assert_includes tracked, ENC, "#{ENC} must be committed, not merely present locally."
+    assert_not_includes tracked, "config/credentials/staging.key",
+      "config/credentials/staging.key must NEVER be committed; it decrypts staging.yml.enc."
+  end
+
+  # The whole chain is inert if the .enc never reaches the image, and that failure is
+  # invisible from the repo: every other test here would still pass. Guard the one
+  # plausible way it breaks -- someone hardening .dockerignore from *.key to *.
+  test ".dockerignore excludes the credentials key but keeps staging.yml.enc" do
+    patterns = DOCKERIGNORE.read.lines.map { |l| l.sub(/#.*/, "").strip }.reject(&:empty?)
+
+    assert_includes patterns, "/config/credentials/*.key",
+      "The credentials key must stay out of the image."
+    excluded = patterns.any? { |p| File.fnmatch?(p.delete_prefix("/"), ENC, File::FNM_PATHNAME) }
+    assert_not excluded,
+      "A .dockerignore pattern excludes #{ENC}, so it will not ship in the image and staging " \
+      "silently loses every mcp_secret. Exclude only the .key."
+  end
+
+  test "Kamal maps RAILS_MASTER_KEY from the STAGING_RAILS_MASTER_KEY deploy secret" do
+    assert_match(/^RAILS_MASTER_KEY=\$STAGING_RAILS_MASTER_KEY$/, KAMAL_SECRETS.read,
+      "#{KAMAL_SECRETS} must map RAILS_MASTER_KEY, or the container never gets a key and " \
+      "staging.yml.enc stays encrypted.")
+  end
+
+  test "RAILS_MASTER_KEY is exposed to the container as a Kamal secret" do
+    assert_includes staging_env_secrets, "RAILS_MASTER_KEY",
+      "#{DEPLOY_CONFIG} must list RAILS_MASTER_KEY under env.secret. Mapping it in " \
+      ".kamal/secrets.staging alone does nothing -- Kamal only injects what env.secret names."
+  end
+
+  test "every secret the staging deploy injects has a mapping in .kamal/secrets.staging" do
+    mapped = KAMAL_SECRETS.read.scan(/^([A-Z0-9_]+)=/).flatten
+
+    (staging_env_secrets - mapped).tap do |missing|
+      assert_empty missing,
+        "#{DEPLOY_CONFIG} lists #{missing.join(', ')} under env.secret with no mapping in " \
+        "#{KAMAL_SECRETS}; Kamal fails the deploy when it cannot resolve a named secret."
+    end
+  end
+
+  # The AGENT_ORCHESTRATOR_* -> ZIMMER_* rename is a cross-repo lockstep: Zimmer's own
+  # readers still use the old names, so BOTH must carry the same value until the reader
+  # flip lands. Half a rename resolves the key to empty, and an empty X-API-Key is a
+  # 401 -- every session's MCP server silently fails to connect.
+  test "both the old and new self-session name are set, to the same value" do
+    kamal = KAMAL_SECRETS.read
+
+    assert_match(/^AGENT_ORCHESTRATOR_STAGING_API_KEY=\$STAGING_SELF_API_KEY$/, kamal)
+    assert_match(/^ZIMMER_STAGING_API_KEY=\$STAGING_SELF_API_KEY$/, kamal,
+      "ZIMMER_STAGING_API_KEY must carry the same derived value as the AGENT_ORCHESTRATOR_ name.")
+
+    %w[AGENT_ORCHESTRATOR_STAGING_API_KEY ZIMMER_STAGING_API_KEY].each do |name|
+      assert_includes staging_env_secrets, name
+    end
+  end
+
+  # Zimmer prod shipped for a while with PulseMCP's base URL in its ported credentials,
+  # pointing Zimmer's own sessions at someone else's orchestrator. Staging must target
+  # itself, under both names.
+  test "the self-session base URL is Zimmer staging, never PulseMCP" do
+    clear = YAML.safe_load(ERB.new(DEPLOY_CONFIG.read).result, aliases: true).dig("env", "clear")
+
+    %w[AGENT_ORCHESTRATOR_STAGING_BASE_URL ZIMMER_STAGING_BASE_URL].each do |name|
+      assert_equal "https://staging.zimmer.tadasant.com", clear[name],
+        "#{name} must point at Zimmer's own staging host."
+    end
+
+    # Values only -- the prose above these keys names ao.pulsemcp.com as the thing NOT
+    # to do, and that explanation should not be what trips the guard.
+    assert_no_match(/pulsemcp/i, clear.values.join(" "),
+      "No PulseMCP host may appear in a staging env value.")
+  end
+
+  test "the deploy workflow passes STAGING_RAILS_MASTER_KEY into the Kamal step" do
+    workflow = DEPLOY_WORKFLOW.read
+
+    assert_match(/STAGING_RAILS_MASTER_KEY:\s*\$\{\{\s*secrets\.STAGING_RAILS_MASTER_KEY\s*\}\}/, workflow,
+      "deploy-staging.yml must put STAGING_RAILS_MASTER_KEY in the Kamal step's env, or " \
+      ".kamal/secrets.staging interpolates it to empty.")
+  end
+
+  # Matches from the guard's `if` to the end of the shell block, NOT to the first `fi`:
+  # a nested conditional would end a lazy `.*?\bfi\b` match early and hide a trailing
+  # `exit 1` from the assertion below -- which is the exact thing being asserted against.
+  test "a missing STAGING_RAILS_MASTER_KEY warns but does not fail the deploy" do
+    workflow = DEPLOY_WORKFLOW.read
+    guard = workflow[/if \[ -z "\$\{STAGING_RAILS_MASTER_KEY:-\}" \]; then.*?\n          kamal /m]
+
+    assert guard, "deploy-staging.yml must guard an empty STAGING_RAILS_MASTER_KEY."
+    assert_match(/::warning::/, guard)
+    assert_no_match(/exit 1/, guard,
+      "A missing staging key must NOT fail the deploy: blank behaves exactly like unset, so the " \
+      "app boots fine (just without mcp_secrets). Exiting here would break staging for every " \
+      "fork and self-hoster that has not set the secret.")
+  end
+
+  private
+
+  # deploy.staging.yml is ERB (hosts come from ENV at deploy time). Rendering with the
+  # vars unset yields nils, which is fine -- we only read the env.secret list.
+  def staging_env_secrets
+    config = YAML.safe_load(ERB.new(DEPLOY_CONFIG.read).result, aliases: true)
+    config.dig("env", "secret") || []
+  end
+end

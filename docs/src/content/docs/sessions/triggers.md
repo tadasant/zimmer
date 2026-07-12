@@ -36,16 +36,33 @@ flowchart LR
 Polls a channel for `new_message` or `bot_mention`. Optionally scoped to a thread (`thread_ts`)
 and an allowlist of user IDs.
 
-:::caution[Two hardcoded Slack user IDs, by name, in source]
-`app/models/trigger.rb:13`:
+#### Who may trigger a `bot_mention`
 
-```ruby
-ALLOWED_BOT_MENTION_USER_IDS = %w[U08AENQUFBR U08AX7WMX1S] # Mike, Tadas
-```
+Three layers, most specific first:
 
-The default allowlist for who may trigger an agent via bot-mention is the author and one
-colleague, compiled into the source. Single-workspace, single-team assumption.
-Tracked in [#52](https://github.com/tadasant/zimmer/issues/52).
+1. **The condition's own `allowed_user_ids`** (set from the triggers UI or the API), if present.
+2. **`SLACK_BOT_MENTION_ALLOWED_USER_IDS`** — a comma-separated list of Slack user IDs, read from
+   encrypted credentials (`mcp_secrets`) first and process ENV second. This is how a deployment
+   narrows the default.
+3. **Otherwise: everyone.** An unconfigured Zimmer lets any member of the workspace @mention or DM
+   the bot.
+
+Zimmer's own messages never trigger anything, whatever the allowlist says — it posts to Slack with
+the same token (`AlertService`), and a `bot_mention` condition with no channel configured polls
+*every* channel the bot is in, so without that rule an alert could trigger a session that alerts.
+Messages from *other* apps do still qualify: bots are valid trigger sources.
+
+:::caution[The open default means any workspace member can spawn an agent session]
+With `SLACK_BOT_MENTION_ALLOWED_USER_IDS` unset, anyone who can DM the bot — or @mention it in a
+channel it has been invited to — can start a session. That is bounded by the bot only ever seeing
+channels it is invited to, but it is a real grant. Set the allowlist on any deployment where the
+workspace is larger than the circle of trust.
+:::
+
+:::caution[`thread_ts` doesn't work for bot mentions]
+`TriggerCondition` explicitly rejects it: *"thread_ts is not supported for bot_mention
+conditions."* You can watch a thread for new messages, but not for bot mentions.
+Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
 :::
 
 :::caution[`thread_ts` doesn't work for bot mentions]
