@@ -42,6 +42,7 @@ Core code never says "Claude." It asks `RuntimeRegistry.for(runtime)`.
 through `RuntimeAuthProvider.for` instead. `prompt_contribution_class` is `nil` for Codex even though
 `CodexRuntimePromptContribution` exists; it resolves through `RuntimePromptContribution.for`.
 `config_preparer_class` is `nil` everywhere and nothing reads it.
+Tracked in [#97](https://github.com/tadasant/zimmer/issues/97).
 :::
 
 ## The three registries that bypass the bundle
@@ -137,6 +138,7 @@ extract_subagent_spawns(raw_event)
 
 `mints_own_session_id?` is a correctness landmine. If you return `true` for a runtime whose
 session id Zimmer generates, forked sessions collide on the unique `session_id` index.
+Tracked in [#96](https://github.com/tadasant/zimmer/issues/96).
 
 ### The rest
 

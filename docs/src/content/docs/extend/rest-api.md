@@ -105,6 +105,7 @@ The three `POST`s share a `CLEANUP_COOLDOWN = 30.seconds`, keyed in `Rails.cache
 locks out every other client for 30 seconds. Exceeded → `429 {"error": "Rate limited", "retry_after": 30}`.
 
 It also silently no-ops if `Rails.cache` is a null store.
+Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
 :::
 
 ## Elicitations

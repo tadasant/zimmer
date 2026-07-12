@@ -45,6 +45,7 @@ The `*/30 * * * * *` entries are six-field cron (with seconds), which fugit supp
 `SlackTriggerPollerJob`'s own comment says *"GoodJob/fugit doesn't support seconds"* and settles for a
 one-minute cron. Both forms are in the same config file. One of those two comments is wrong; the
 six-field entries suggest it's the Slack one.
+Tracked in [#106](https://github.com/tadasant/zimmer/issues/106).
 :::
 
 ## Queues
@@ -87,6 +88,7 @@ cache in production — but nothing enforces that, and in development it silentl
 
 When it trips, live UI updates stop for 60 seconds. The session keeps running; you can't
 see it. There's no banner telling you the breaker is open.
+Tracked in [#86](https://github.com/tadasant/zimmer/issues/86).
 
 ## Alerts
 

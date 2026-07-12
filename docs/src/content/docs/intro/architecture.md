@@ -68,6 +68,7 @@ flowchart TB
 no cron. It *does* run one background thread, `PeriodicCatalogRefresher`, which re-runs
 `air update` every 300 seconds, because the catalog cache lives on a per-container
 filesystem and the web container would otherwise serve a catalog frozen at boot.
+Tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
 
 **Worker (GoodJob).** Everything that matters happens here: `AgentSessionJob` spawns agents
 and monitors them, and roughly two dozen cron jobs poll GitHub, poll Slack, refresh OAuth
@@ -90,15 +91,20 @@ add a worker service yourself. See
 **Agent subprocess.** A real headless `claude` or `codex` process, spawned with
 `pgroup: true` so the whole process group can be killed as a unit. Its stdin and stdout go
 to `/dev/null`; stderr goes to a log file inside the clone. The transcript file on disk is
-the only channel Zimmer reads output from: both CLIs are launched with a JSON streaming
-flag, but the stream itself is discarded.
+the only channel Zimmer reads output from. Codex is always launched with `--json`, and Claude
+with `--output-format stream-json` on the image / large-prompt path — and in every case the
+stream is discarded.
+Tracked in [#109](https://github.com/tadasant/zimmer/issues/109).
 
 ## Data
 
-**PostgreSQL** holds everything: sessions, logs, transcripts (the entire JSONL file is stored
-as a string on `sessions.transcript`), triggers, notifications, OAuth credentials, and the
-catalog snapshot. It also backs Action Cable via `solid_cable`, on a second database
-(`zimmer_<env>_cable`) that must exist before boot.
+**PostgreSQL** holds everything: sessions, logs, transcripts, triggers, notifications, OAuth
+credentials, and the catalog snapshot. The entire JSONL transcript is stored as one text column
+on `sessions.transcript`, rewritten on every poll.
+Tracked in [#110](https://github.com/tadasant/zimmer/issues/110).
+
+It also backs Action Cable via `solid_cable`, on a second database (`zimmer_<env>_cable`) that
+must exist before boot.
 
 **Redis** is the Rails cache only. There is no Redis-backed queue — GoodJob uses Postgres.
 

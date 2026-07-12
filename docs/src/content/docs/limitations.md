@@ -11,10 +11,10 @@ code rather than the old docs, which were themselves often wrong.
 Every item names a file so you can verify it. Nothing is left out for looking bad. Items whose first
 line starts with 🔴 would bite a new operator immediately.
 
-Most items link to the issue tracking them. Items with no link fall into three groups: the ones we do
-not intend to fix (a scope decision or an inherent tradeoff — the no-login model is the big one), the
-whole Deployment section (being rewritten onto Kamal, so it is tracked there rather than issue by
-issue), and a handful not yet triaged.
+Every item below links to the issue tracking it, with two exceptions. The Deployment section is
+being rewritten onto Kamal, so it is tracked there rather than issue by issue. And Push
+notifications without the Push API is a platform limit we can't fix, so it is stated in place
+rather than filed.
 
 ---
 
@@ -402,6 +402,8 @@ Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 `mcp_oauth_credential_injector.rb:137` — *"If we don't know if OAuth is required, assume it might be"* for
 remote servers.
 
+Tracked in [#103](https://github.com/tadasant/zimmer/issues/103).
+
 ### The fallback `client_id` is the literal string `"agent-orchestrator"`
 
 Used when a server advertises no DCR endpoint.
@@ -454,6 +456,8 @@ Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
 `~/.air/cache` is per-container, and the `*/15` refresh cron runs only in the worker — so the web
 container's catalog would drift stale for a full deploy cycle. `PeriodicCatalogRefresher` runs a bespoke
 background thread *inside Puma* every 300s to compensate.
+
+Tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
 
 ### The AIR CLI version is pinned in two places
 
@@ -525,6 +529,8 @@ Tracked in [#74](https://github.com/tadasant/zimmer/issues/74).
 ### The session page auto-refreshes with a `<meta>` tag
 
 `session.rb:573` — a 5-second meta-refresh window, in a Hotwire app.
+
+Tracked in [#102](https://github.com/tadasant/zimmer/issues/102).
 
 ### Elicitations expire in 10 minutes
 
@@ -602,13 +608,16 @@ Tracked in [#82](https://github.com/tadasant/zimmer/issues/82).
 `health_api_rate_limit:<action>` — not scoped to an API key. One client's cleanup locks out
 everyone for 30s. It no-ops with no error under a null cache store.
 
+Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
+
 ### The in-app API docs page is still stale
 
 `app/views/api_docs/show.html.erb` omits triggers, notifications, health, clis, and transcript_archive —
 even though `app/controllers/api/AGENTS.md` requires both doc surfaces to be updated with every endpoint
 change.
 
-Tracked in [#34](https://github.com/tadasant/zimmer/issues/34).
+Tracked in [#34](https://github.com/tadasant/zimmer/issues/34) (removing the page) and
+[#95](https://github.com/tadasant/zimmer/issues/95) (nothing tests that the two surfaces agree).
 
 ### `agent_root` is read outside strong params
 
@@ -649,6 +658,8 @@ Tracked in [#85](https://github.com/tadasant/zimmer/issues/85).
 
 `DEFAULT_REDIRECT_URI = "http://localhost:8080/callback"` — you must pre-register that on your X app.
 
+Tracked in [#104](https://github.com/tadasant/zimmer/issues/104).
+
 ---
 
 ## UI
@@ -668,14 +679,15 @@ All four are open issues:
 
 Also:
 
-- Closing the tab can lose your notes. Session and dashboard notes are saved on disconnect via
-  `sendBeacon` — "best-effort… nothing to do if it fails."
+- Notes autosave as you type (a 1.5s debounce) and flush again on disconnect via a keepalive
+  `fetch`. The disconnect flush is best-effort, so an abrupt close can drop the last sub-debounce
+  keystrokes — not the note.
 - The Turbo circuit breaker stops UI updates for 60 seconds when it trips (`THRESHOLD = 5`,
   `RESET_TIME = 60`), with no banner telling you.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 - Push notifications don't work on anything without the Push API (iOS Safari outside standalone PWA).
 - The OAuth login poller gives up after N consecutive failed polls — a transient blip abandons the
-  flow.
+  flow. ([#101](https://github.com/tadasant/zimmer/issues/101))
 - Alerts inside a 1-hour dedup window are swallowed, even genuinely new ones.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 
@@ -750,9 +762,9 @@ Things the code doesn't answer, flagged here rather than guessed at:
 - What is `tadasant/zimmer-catalog`, and are the five roots pointing at it still live? It's a separate
   repo this documentation can't see. ([#67](https://github.com/tadasant/zimmer/issues/67))
 - Is `config_preparer_class` (a `RuntimeRegistry::Bundle` slot) meant to do something? It's `nil` for
-  every runtime and nothing reads it.
+  every runtime and nothing reads it. ([#97](https://github.com/tadasant/zimmer/issues/97))
 - Which of the two contradictory GoodJob-cron comments is right about sub-minute cron support? The
   config contains both six-field (`*/30 * * * * *`) entries *and* a comment saying seconds aren't
-  supported.
+  supported. ([#106](https://github.com/tadasant/zimmer/issues/106))
 - Does the macOS Keychain path in `CodexMcpCredentialWriter` work? It has never been runtime-verified
   — every worker is Linux. ([#63](https://github.com/tadasant/zimmer/issues/63))

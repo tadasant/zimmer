@@ -188,6 +188,7 @@ sequenceDiagram
 `pasted_code`, the worker process reads it. That's why `poll_state` must use
 `RuntimeLoginAttempt.uncached` — ActiveRecord's per-request query cache would otherwise hide the
 write. It's documented at length in the code, and it's a landmine.
+Tracked in [#111](https://github.com/tadasant/zimmer/issues/111).
 
 :::caution[The login flow is screen-scraping a TUI]
 The command string (`claude auth login --claudeai`), the authorize-URL host regex, and the literal
