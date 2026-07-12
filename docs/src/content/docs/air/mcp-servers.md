@@ -100,6 +100,15 @@ the UI renders Authorize buttons.
 
 → [MCP server OAuth](/auth/mcp-oauth/) for the full flow.
 
+:::tip[Prefer a remote server to a stdio one that wants an API token]
+A remote server Zimmer authorizes over OAuth holds a short-lived token it rotates for you. A stdio
+server with `env: { "FOO_API_KEY": "${FOO_API_KEY}" }` holds a long-lived one that sits in the
+agent's environment for the life of the session, where it can end up in a log or a transcript.
+[**Strad**](https://strad.tadasant.com) is the remote-MCP platform built to pair with Zimmer.
+
+→ [Prefer remote MCP servers to long-lived API tokens](/auth/overview/#prefer-remote-mcp-servers-to-long-lived-api-tokens)
+:::
+
 ## MCP connection status is inferred from logs
 
 There is no protocol-level "did this server connect" signal that Zimmer consumes. Instead:

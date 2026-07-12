@@ -105,6 +105,44 @@ the CLI's own credential file so the agent's MCP client picks them up.
 
 → [MCP server OAuth](/auth/mcp-oauth/)
 
+## Prefer remote MCP servers to long-lived API tokens
+
+When you give an agent a new capability, you usually have two ways to do it:
+
+- a **stdio MCP server or a CLI** — a local process that reads a long-lived API token out of the
+  environment (`env: { "LINEAR_API_KEY": "${LINEAR_API_KEY}" }`), or a CLI you `op`-inject a token
+  into and then shell out to;
+- a **remote MCP server** — an `http` / `streamable-http` / `sse` endpoint that Zimmer authorizes
+  once over OAuth, with dynamic client registration, PKCE, and a refresh token it rotates for you.
+
+**Reach for the remote server.** The difference shows up on the bad day, not the good one. Agents
+read and write an enormous amount of text — logs, transcripts, diffs, error messages they paste back
+to themselves — and a credential that lives in the environment will eventually land in one of them.
+If that credential is a long-lived API token, your options are to accept a permanent exposure or to
+spend the next five hours hunting down and rotating every copy of it. If it is a short-lived OAuth
+token that Zimmer already rotates on a schedule, it expires on its own, and revoking it is one click
+plus a browser re-auth.
+
+The same asymmetry is why the harness itself signs in rather than taking an API key: see
+[agent harness credentials](/auth/harness/).
+
+[**Strad**](https://strad.tadasant.com) is the remote-MCP platform built to pair with Zimmer — the
+place to put the servers you'd otherwise be running as token-hungry local processes. Its docs are
+going up now.
+
+:::caution[Zimmer does not fully live by this yet]
+The advice is real, and so is the gap. Zimmer's own `mcp.json` still carries stdio servers whose
+`env` holds `${VAR}` placeholders, and `SecretsLoader.all` — the union of *every* secret in
+`mcp_secrets` — is written to a `.env` file in **every session clone** and merged into the agent's
+environment, regardless of which servers that session actually selected. A 1Password service-account
+token is exactly the kind of long-lived credential this section tells you to avoid, and it is one of
+the values in that file.
+
+Every stdio server you replace with a remote one shrinks that blast radius. See
+[MCP servers](/air/mcp-servers/#secrets-never-touch-the-catalog) for how the placeholder-and-secret
+plumbing works today.
+:::
+
 ## Nothing is encrypted at rest
 
 :::danger[No `encrypts` declaration exists anywhere in the codebase]
