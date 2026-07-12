@@ -15,6 +15,7 @@ sandboxed iframe, brokering the MCP-Apps `postMessage` protocol from the browser
 | File | Role |
 | --- | --- |
 | `fetch_app_fragment.mjs` | Dependency-free Node MCP client (Streamable HTTP). Zimmer's host **data plane**: `initialize` → `tools/list` → `tools/call` → `resources/read`, prints `{ serverInfo, tool, input, toolResult, ui:{ html, csp } }` as JSON. |
+| `interactive_server.py` | Self-contained (uv, no build) MCP App server for the **interactivity** demo: `open_panel` declares the view; `get_server_time` / `roll_dice` are app-callable tools the View calls back through the host. |
 | `app/services/mcp_app_preview_service.rb` | Rails wrapper that shells out to the bridge. Gated by `ENV["ZIMMER_MCP_APPS_POC"]`. |
 | `app/javascript/controllers/mcp_app_host_controller.js` | The host **control plane** in the browser: renders the fragment in a sandboxed iframe and answers its `ui/initialize` handshake, then pushes `ui/notifications/tool-input` + `ui/notifications/tool-result`. |
 | `app/views/sessions/_mcp_app_panel.html.erb` | The panel on the session detail page. |
@@ -38,6 +39,24 @@ sandboxed iframe, brokering the MCP-Apps `postMessage` protocol from the browser
 3. Open any session (`/sessions/:id`). The panel renders above the transcript,
    showing the QR fragment (which encodes that session's own URL). Append
    `?mcp_app=off` to skip the fetch for a page.
+
+### Interactivity demo
+
+```bash
+# 1. run the interactive server (app-callable tools + a view that calls them)
+PORT=3002 uv run script/poc/mcp_apps/interactive_server.py
+
+# 2. point Zimmer at it
+ZIMMER_MCP_APPS_POC=1 \
+  ZIMMER_MCP_APPS_POC_URL=http://127.0.0.1:3002/mcp \
+  ZIMMER_MCP_APPS_POC_TOOL=open_panel \
+  ZIMMER_MCP_APPS_POC_ARGS='{"note":"hi"}' \
+  bin/dev
+```
+
+Open a session: **Refresh time** / **Roll dice** round-trip `tools/call` through
+Zimmer to the server (View → Server); **Send roll to agent** fires `ui/message`,
+which the broker drops into the session's follow-up prompt box (View → Agent).
 
 Test the bridge alone:
 

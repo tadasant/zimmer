@@ -54,6 +54,9 @@ class McpAppPreviewService
     end
 
     data = JSON.parse(stdout)
+    # The browser host broker needs the server URL to proxy the View's own
+    # tools/call / resources/read requests back to the MCP server.
+    data["serverUrl"] = server_url
     Result.new(ok: true, data: data)
   rescue JSON::ParserError => e
     Result.new(ok: false, error: "bad bridge output: #{e.message}")
