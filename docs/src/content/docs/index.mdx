@@ -45,11 +45,12 @@ Zimmer handles the toil of getting an agent from a prompt to a verified PR.
     per-seat bill, no exotic infra to keep alive, nothing you haven't operated before.
   </Card>
   <Card title="You sign in — you don't paste keys" icon="approve-check">
-    Claude and Codex authenticate against your own account over OAuth, `gh` uses the device
-    flow, and MCP servers [register themselves and refresh their own tokens](/auth/mcp-oauth/).
-    Static secrets live in Rails encrypted credentials, never in the repo. They are *not*
-    encrypted at rest in the database — that, and the rest of the security model, is on
-    [Known limitations](/limitations/).
+    The goal is to juggle as few long-lived secrets as possible. Claude and Codex
+    authenticate against your own account over OAuth, `gh` uses the device flow, and MCP
+    servers [register themselves and refresh their own tokens](/auth/mcp-oauth/) — dynamic
+    client registration, PKCE, automatic refresh. Short-lived credentials the runtime
+    manages beat a long-lived API key pasted into a config file, and a key that was never
+    pasted anywhere is a key that can't leak into a transcript.
   </Card>
   <Card title="It follows you off the laptop" icon="rocket">
     Install Zimmer as a PWA and it web-pushes your phone when a session finishes, fails, or
