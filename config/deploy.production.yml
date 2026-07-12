@@ -20,6 +20,13 @@ servers:
         - claude_home:/home/rails/.claude
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
+        # The PRODUCTION catalog + its encrypted credentials, delivered to the host by
+        # artifacts-sync-prod and bind-mounted read-only into BOTH roles. Persistent
+        # host paths, so they survive Kamal deploys (unlike the old docker-cp-into-the
+        # -container mechanism, which every deploy wiped). AIR_CONFIG (below) points
+        # the app at the mounted catalog.
+        - /opt/zimmer/catalog:/rails/catalog:ro
+        - /opt/zimmer/credentials:/rails/config/credentials:ro
   worker:
     hosts:
       - <%= ENV["PRODUCTION_HOST"] %>
@@ -33,6 +40,10 @@ servers:
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
         - /var/run/docker.sock:/var/run/docker.sock
+        # Same catalog + credentials as web, so agent sessions (which run in the
+        # worker) resolve the real production roots/MCP servers and their mcp_secrets.
+        - /opt/zimmer/catalog:/rails/catalog:ro
+        - /opt/zimmer/credentials:/rails/config/credentials:ro
 
 ssh:
   user: root
@@ -41,6 +52,10 @@ env:
   clear:
     RAILS_ENV: production
     APP_HOST: zimmer.tadasant.com
+    # Read the catalog from the mounted production catalog (delivered by
+    # artifacts-sync-prod). production.rb falls back to the in-image catalog when this
+    # file is not present yet (fresh box, before the first sync).
+    AIR_CONFIG: /rails/catalog/air.production.json
     # Point the injected self-session MCP server at THIS instance.
     AGENT_ORCHESTRATOR_PROD_BASE_URL: https://zimmer.tadasant.com
     # Managed Postgres (off-droplet), reached over the private VPC. Host/port are
