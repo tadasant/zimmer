@@ -50,6 +50,12 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
     refute injector.self_session_capable_present?(
       [ { name: "zimmer-self-session", url: "http://localhost:3000/mcp?tool_groups=self_session" } ]
     )
+
+    # A zimmer-named entry with no URL is not one of our HTTP endpoints. Treating it
+    # as capable would silently strip the session's self-archiving and wake-up tools.
+    refute injector.self_session_capable_present?(
+      [ { name: "zimmer-legacy", url: nil } ]
+    )
   end
 
   test "inject! yields the native self-session entry when nothing covers the surface" do

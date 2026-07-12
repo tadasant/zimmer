@@ -61,9 +61,12 @@ against `/api/v1/sessions` works against `/mcp`.
 MCP clients that only know how to send a bearer token can send the same key as
 `Authorization: Bearer <key>` instead. There is one credential either way.
 
-:::caution[The same caveat as the REST API]
-A key is an opaque string with no scope, no identity, and no audit trail. Anyone holding one can do
-anything the enabled tool groups allow. Scope the connection (below) rather than trusting the key.
+:::caution[Scoping is an affordance, not a trust boundary]
+A key is an opaque string with no scope, no identity, and no audit trail — the same caveat as
+[the REST API](/extend/rest-api/). The scoping below (`tool_groups`, `allowed_agent_roots`) lives in
+the URL, so a caller that holds a key can always widen it by asking for a different URL — or skip MCP
+and call `/api/v1` directly. It exists to give an agent the *right* surface, not to contain a
+determined one. Anyone you hand a key to can do anything a key can do.
 :::
 
 ## Scoped variants: `tool_groups`
@@ -86,7 +89,9 @@ group is dropped with a warning rather than failing the connection.
 carries `get_session`, `get_configs`, `send_push_notification`, `wake_me_up_later`,
 `wake_me_up_when_session_changes_state`, and a **restricted `action_session`** — the same tool name,
 but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`, and `archive`.
-A session can manage itself; it cannot restart or fork its neighbors.
+A session can manage itself; it cannot restart, fork, or re-configure anything. (The *action* is
+narrowed, not the *target*: every tool takes a `session_id`, and a session is trusted to pass its own.
+See the caution above.)
 
 ## Restricting what a connection may spawn: `allowed_agent_roots`
 
@@ -98,7 +103,8 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
 
 - `start_session` requires an `agent_root`, it must be in the list, and its `mcp_servers` must
   **exactly** match that root's `default_mcp_servers` — no additions, no removals.
-- `action_trigger` may only create or update triggers on an allowed root.
+- `action_trigger` may only create, update, delete, or toggle triggers on an allowed root, and
+  `search_triggers` only shows those.
 - `action_session`'s `change_mcp_servers` is refused outright.
 - `wake_me_up_when_session_changes_state` refuses to watch a session outside the allowed roots. (A
   session waking *itself* is never restricted.)

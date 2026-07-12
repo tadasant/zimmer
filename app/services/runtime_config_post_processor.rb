@@ -145,6 +145,13 @@ class RuntimeConfigPostProcessor
     raise NotImplementedError, "#{self.class} must implement #build_http_entry"
   end
 
+  # Remove any host-env forwarding rule for the given header, so a literal value
+  # written by retargeting survives the rest of the pipeline. Only Codex has such
+  # a table; Claude resolves header refs in place, so this is a no-op there.
+  def drop_forwarded_credential_header!(_entry, _header)
+    nil
+  end
+
   # Resolve ${VAR} interpolations and apply the npx --prefix rewrite to every
   # server entry, in the runtime's native field layout.
   def resolve_and_rewrite!(_servers)
@@ -222,6 +229,11 @@ class RuntimeConfigPostProcessor
       next if entry["url"].blank?
 
       entry["url"] = rebase_url(entry["url"], target[:base_url])
+      # A catalog entry's API key arrives as a ${VAR} header ref, which a runtime
+      # may carry as a host-env *forwarding* rule resolved later in the pipeline
+      # (Codex's env_http_headers). Drop that rule: it names the catalog's var —
+      # the production key — and would overwrite the key we are about to write.
+      drop_forwarded_credential_header!(entry, SelfSessionInjector::API_KEY_HEADER)
       headers = entry[http_headers_key] ||= {}
       headers[SelfSessionInjector::API_KEY_HEADER] = target[:api_key]
       retargeted_any = true

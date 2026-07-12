@@ -150,6 +150,43 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_equal "CI Failure Handler", triggers(:enabled_slack_trigger).reload.name
   end
 
+  test "delete is blocked when the trigger's agent root is outside the allow list" do
+    trigger = triggers(:new_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      restricted_tool("pulsemcp").call("action" => "delete", "id" => trigger.id)
+    end
+
+    assert_match(/not permitted/, error.message)
+    assert Trigger.exists?(trigger.id), "a restricted connection must not delete another root's trigger"
+  end
+
+  test "toggle is blocked when the trigger's agent root is outside the allow list" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      restricted_tool("pulsemcp").call("action" => "toggle", "id" => trigger.id)
+    end
+
+    assert_match(/not permitted/, error.message)
+    assert_equal "enabled", trigger.reload.status, "a restricted connection must not disable another root's trigger"
+  end
+
+  test "changing a condition's type replaces the condition instead of appending one" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "trigger_type" => "schedule",
+      "configuration" => { "schedule_type" => "one_time", "scheduled_at" => "2030-01-01T09:00:00", "timezone" => "UTC" }
+    )
+
+    trigger.reload
+    assert_equal [ "schedule" ], trigger.trigger_conditions.map(&:condition_type),
+      "the old slack condition must be gone — conditions are OR'd, so it would keep firing"
+  end
+
   test "deletes a trigger" do
     trigger = triggers(:new_slack_trigger)
 

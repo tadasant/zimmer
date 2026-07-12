@@ -149,6 +149,8 @@ module Mcp
 
       def destroy(args)
         trigger = find_trigger(args["id"], "delete")
+        enforce_allowed_root!(trigger.agent_root_name)
+
         id = trigger.id
         trigger.destroy!
 
@@ -157,6 +159,8 @@ module Mcp
 
       def toggle(args)
         trigger = find_trigger(args["id"], "toggle")
+        enforce_allowed_root!(trigger.agent_root_name)
+
         trigger.toggle!
 
         <<~TEXT.strip
@@ -191,7 +195,19 @@ module Mcp
           configuration: args["configuration"] || target&.configuration || {}
         }
         attributes[:id] = target.id if target
-        [ attributes ]
+
+        # Changing a trigger's condition *type* replaces the condition rather than
+        # adding one. Conditions are OR'd, so an appended condition would leave the
+        # trigger still firing on the type the caller believes it just replaced.
+        return [ attributes ] if target || existing.empty?
+
+        if existing.size > 1
+          raise ToolError, "Trigger #{trigger.id} has #{existing.size} conditions " \
+                           "(#{existing.map(&:condition_type).join(', ')}) and none is a #{condition_type} condition. " \
+                           "Delete and recreate the trigger rather than changing its condition type here."
+        end
+
+        [ attributes, { id: existing.first.id, _destroy: true } ]
       end
 
       def find_trigger(id, action)

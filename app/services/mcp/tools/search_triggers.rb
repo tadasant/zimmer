@@ -129,6 +129,9 @@ module Mcp
             .distinct
         end
         scope = scope.where(status: args["status"]) if args["status"].present?
+        # A restricted connection only sees the triggers it could act on — the same
+        # roots action_trigger will let it create, update, delete, or toggle.
+        scope = scope.where(agent_root_name: context.allowed_agent_roots) if context.restricted?
 
         total_count = scope.count
         total_pages = (total_count.to_f / per_page).ceil
@@ -156,6 +159,10 @@ module Mcp
       def find_trigger(id)
         trigger = Trigger.includes(:trigger_conditions).find_by(id: id.to_i)
         raise ToolError, "Trigger not found: #{id}" unless trigger
+        # A trigger on a root this connection may not use is not its business, and
+        # saying "not found" avoids confirming it exists.
+        raise ToolError, "Trigger not found: #{id}" if context.restricted? && !context.allowed_agent_roots.include?(trigger.agent_root_name)
+
         trigger
       end
 

@@ -104,4 +104,17 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
       context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "zimmer")
     )
   end
+
+  test "a restricted connection may omit mcp_servers and take the root's defaults" do
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "zimmer")
+    )
+
+    root = AgentRootsConfig.find("zimmer")
+    output = tool.call("agent_root" => "zimmer", "prompt" => "do the thing", "title" => "defaults")
+
+    assert_includes output, "## Session Started Successfully"
+    session = Session.order(:created_at).last
+    assert_equal (root.default_mcp_servers || []).sort, session.mcp_servers.sort
+  end
 end

@@ -64,6 +64,11 @@ class SelfSessionInjector
       name = server[:name].to_s
       next false if name == SELF_SESSION_SERVER_NAME
       next false unless zimmer_server_name?(name)
+      # No URL means it is not one of our HTTP entries after all (a hand-written
+      # stdio entry, say). Skipping injection on that basis would silently strip a
+      # session's self-archiving and wake-up tools, so treat it as not covering the
+      # surface.
+      next false if server[:url].blank?
 
       groups = tool_groups_in(server[:url])
       groups.empty? || groups.include?("self_session")

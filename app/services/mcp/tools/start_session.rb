@@ -98,7 +98,10 @@ module Mcp
 
       def call(args)
         agent_root_name = args["agent_root"].presence
-        enforce_root_constraints!(agent_root_name, string_array(args["mcp_servers"]))
+        # An omitted mcp_servers means "take the root's defaults" (that is what
+        # apply_agent_root_defaults! does), so it is only a deviation to check when
+        # the caller actually named a list.
+        enforce_root_constraints!(agent_root_name, args.key?("mcp_servers") ? string_array(args["mcp_servers"]) : nil)
 
         session = Session.new(session_attributes(args))
         apply_agent_root_defaults!(session, agent_root_name, explicit_runtime: args["agent_runtime"].present?) if agent_root_name
@@ -119,6 +122,10 @@ module Mcp
 
       # A restricted connection must name an allowed root AND take that root's
       # MCP servers exactly — no additions, no removals.
+      #
+      # @param requested_servers [Array<String>, nil] nil when the caller omitted
+      #   mcp_servers entirely, which resolves to the root's defaults and so can
+      #   never deviate from them.
       def enforce_root_constraints!(agent_root_name, requested_servers)
         return unless context.restricted?
 
@@ -129,6 +136,8 @@ module Mcp
           raise ToolError, "Agent root \"#{agent_root_name}\" is in the allowed list but was not found in the configuration. " \
                            "Available agent roots: #{AgentRootsConfig.names.join(', ')}"
         end
+
+        return if requested_servers.nil?
 
         defaults = root.default_mcp_servers || []
         return if defaults.sort == requested_servers.sort

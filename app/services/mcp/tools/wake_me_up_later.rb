@@ -120,7 +120,7 @@ module Mcp
       })
 
       def call(args)
-        wake_at = require_arg(args, :wake_at).to_s
+        wake_at = normalize_seconds(require_arg(args, :wake_at).to_s)
         prompt = require_arg(args, :prompt).to_s
         timezone = args["timezone"].presence || "UTC"
 
@@ -165,6 +165,17 @@ module Mcp
       # instant, using the same ActiveSupport::TimeZone#parse the scheduler itself
       # uses (TriggerCondition#schedule_due?) so validation and firing agree on
       # what the string means — including across DST boundaries.
+      # Minute-precision is accepted, but the value is stored on the trigger
+      # condition and re-parsed with Time.iso8601 when it fires, which requires
+      # seconds. TriggerCondition normalizes the bare "…T09:00" form itself but not
+      # "…T09:00Z", so canonicalize here and store a value that always fires.
+      def normalize_seconds(wake_at)
+        match = /\A(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(Z?)\z/.match(wake_at)
+        return wake_at unless match
+
+        "#{match[1]}:00#{match[2]}"
+      end
+
       def parse_wake_at(wake_at, timezone)
         if wake_at.match?(EXPLICIT_OFFSET_REGEX)
           invalid_wake_at!(wake_at, timezone,

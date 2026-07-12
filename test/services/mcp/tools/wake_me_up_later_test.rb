@@ -154,4 +154,14 @@ class Mcp::Tools::WakeMeUpLaterTest < ActiveSupport::TestCase
       assert_match "**Current server time:** 2030-04-15T10:45:00Z (UTC)", Mcp::Tools::WakeMeUpLater.to_h[:description]
     end
   end
+
+  test "minute-precision wake_at is stored with seconds so the trigger can fire" do
+    session = sessions(:needs_input)
+
+    tool.call("session_id" => session.id, "wake_at" => "2030-04-15T09:30Z", "prompt" => "wake up")
+
+    condition = Trigger.order(:created_at).last.trigger_conditions.sole
+    assert_equal "2030-04-15T09:30:00Z", condition.configuration["scheduled_at"]
+    assert_nothing_raised { Time.iso8601(condition.configuration["scheduled_at"]) }
+  end
 end

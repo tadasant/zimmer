@@ -58,6 +58,19 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     { "url" => url, http_headers_key => headers.dup }
   end
 
+  # AIR converts a whole-value ${VAR} header ref into an env_http_headers
+  # forwarding rule, which inline_forwarded_env_http_headers! later resolves into
+  # http_headers. For a retargeted Zimmer entry that rule still names the
+  # catalog's (production) key, so it must go or it would clobber the retargeted
+  # value.
+  def drop_forwarded_credential_header!(entry, header)
+    forwarded = entry["env_http_headers"]
+    return unless forwarded.is_a?(Hash)
+
+    forwarded.delete(header)
+    entry.delete("env_http_headers") if forwarded.empty?
+  end
+
   def resolve_and_rewrite!(servers)
     servers.each_value do |entry|
       next unless entry.is_a?(Hash)

@@ -94,4 +94,16 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
       assert_includes output, "*Could not fetch Slack channels: Slack is not configured*"
     end
   end
+
+  test "a restricted connection only sees triggers on its allowed roots" do
+    restricted = Mcp::Tools::SearchTriggers.new(
+      context: Mcp::Context.new(tool_groups: "triggers", allowed_agent_roots: "pulsemcp")
+    )
+
+    output = restricted.call({})
+    assert_includes output, "No triggers found.", "zimmer-root triggers must not leak to a pulsemcp-only connection"
+
+    error = assert_raises(Mcp::ToolError) { restricted.call("id" => triggers(:enabled_slack_trigger).id) }
+    assert_match(/not found/i, error.message)
+  end
 end

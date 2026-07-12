@@ -130,6 +130,32 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "Non-secret header forwarding must remain in env_http_headers")
   end
 
+  # Regression: AIR turns a whole-value ${VAR} header ref into an env_http_headers
+  # forwarding rule naming the catalog's (production) var. Retargeting writes the
+  # *local* key into http_headers, and inline_forwarded_env_http_headers! would then
+  # overwrite it with the production key — handing a dev session prod credentials.
+  test "post_process! does not let AIR's header forwarding clobber a retargeted Zimmer key" do
+    stub_secrets("AGENT_ORCHESTRATOR_PROD_API_KEY" => "prod-key-do-not-use")
+
+    write_config(
+      "zimmer-sessions" => {
+        "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
+        "http_headers" => {},
+        "env_http_headers" => { "X-API-Key" => "AGENT_ORCHESTRATOR_PROD_API_KEY" }
+      }
+    )
+
+    build_processor.post_process!
+
+    entry = read_config.dig("mcp_servers", "zimmer-sessions")
+    assert_equal "local-key", entry.dig("http_headers", "X-API-Key"),
+      "the retargeted local key must survive AIR's header forwarding"
+    assert_nil entry["env_http_headers"],
+      "the forwarding rule naming the prod key must be dropped when the entry is retargeted"
+    assert_includes entry["url"], "http://localhost", "the entry must point at this instance"
+    assert_includes entry["url"], "tool_groups=sessions", "scoping must survive retargeting"
+  end
+
   test "post_process! injects npx --prefix /tmp into Codex stdio servers" do
     write_config(
       "acme-server" => {
