@@ -71,4 +71,13 @@ jobs:
       - name: Issue/renew + push cert
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: bash scripts/domain-cert.sh
+          KAMAL_SSH_KEY: ${{ secrets.KAMAL_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          # Push the cert over the Kamal deploy key rather than tailscale ssh, which a
+          # self-hosted runner's tailnet identity may not satisfy.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KAMAL_SSH_KEY" > ~/.ssh/cert_deploy_key
+          chmod 600 ~/.ssh/cert_deploy_key
+          export CERT_SSH_KEY="$HOME/.ssh/cert_deploy_key"
+          bash scripts/domain-cert.sh
