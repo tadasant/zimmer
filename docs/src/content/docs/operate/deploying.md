@@ -177,7 +177,7 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · GHCR-retention logic · docs site build |
-| `alert-ci-failure.yml` | any other workflow here completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
+| `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | builds and pushes `zimmer:{version, latest, sha-…}` |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image |
 | `deploy-staging.yml` | manual only | see below |
@@ -187,11 +187,15 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 
 ### CI failure alerts
 
-When any workflow above fails on `main`, `alert-ci-failure.yml` posts the repo, the
-workflow, the commit subject, the author and a link to the run into **#alerts** in the
-Tadasant Slack workspace. `tadasant-internal` and `strad` carry the identical listener
-under the identical secret names; the three are meant to stay symmetric, so change them
-together.
+When **any** workflow in this repo fails on `main`, `alert-ci-failure.yml` posts the
+repo, the workflow, the commit subject, the author and a link to the run into **#alerts**
+in the Tadasant Slack workspace. `tadasant-internal` and `strad` carry the identical
+listener under the identical secret names; the three are meant to stay symmetric, so
+change them together.
+
+It listens with `workflows: ["*"]`, which matches every workflow in the repo — so a
+workflow added later is covered the day it lands, with nobody having to remember to wire
+it up.
 
 It needs two repo secrets — `SLACK_BOT_TOKEN` and `SLACK_ALERTS_CHANNEL_ID`
 ([Provisioning and secrets](/operate/provisioning/#slack-ci-failure-alerts)). Without
@@ -208,9 +212,10 @@ Three details worth knowing before you touch it:
   if the self-hosted pool is offline, main-branch runs **queue**, and GitHub cancels
   them after ~24h as `cancelled`, which is indistinguishable from a deliberate cancel
   ([Limitations](/limitations/#a-queued-run-that-never-starts-is-never-alerted-on)).
-- The workflows it watches are listed by name in the file, because `workflow_run` has no
-  wildcard. **Add every new workflow to that list** or its failures on `main` will be
-  silent ([Limitations](/limitations/#the-ci-failure-alert-lists-the-workflows-it-watches-by-hand)).
+- `["*"]` matches the alert **itself**, and `workflow_run` chains several levels deep, so
+  the job excludes itself by comparing against the literal name `'CI failure alert'`.
+  **Rename the workflow and you must update that literal**, or it starts alerting on its
+  own runs ([Limitations](/limitations/#the-ci-failure-alert-cant-be-exercised-from-a-pr)).
 - `workflow_run` only ever triggers from the copy of the file on the **default branch**,
   so editing it on a PR branch changes nothing until it merges. To prove Slack delivery
   works, run the workflow's `workflow_dispatch` trigger by hand — it posts a smoke-test
