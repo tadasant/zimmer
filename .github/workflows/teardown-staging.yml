@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   teardown:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment: staging
     steps:
       - uses: actions/checkout@v4

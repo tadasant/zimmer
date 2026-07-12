@@ -168,15 +168,49 @@ container boot silently run the old CLI and the old Chromium.
 
 ## The workflows
 
+Every workflow runs on **`runs-on: self-hosted`** — PulseMCP's shared Hetzner
+runner pool, which zimmer piggybacks on through repo-level runner registration so
+its CI stays off the GitHub-hosted Actions minute quota. This piggyback is
+temporary; the plan is a tadasant-dedicated runner on DigitalOcean, tracked in
+[tadasant-internal#25](https://github.com/tadasant/tadasant-internal/issues/25).
+See [Running on the shared self-hosted runner](#running-on-the-shared-self-hosted-runner)
+for what that requires of a Rails job.
+
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · tests (Postgres + Redis services) · GHCR-retention logic · docs site build |
+| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · GHCR-retention logic · docs site build |
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | builds and pushes `zimmer:{version, latest, sha-…}` |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image |
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
 | `ghcr-retention.yml` | weekly cron | prunes GHCR to ≤50 versions |
 | `domain-cert-staging.yml` | weekly cron + manual | issues/renews the Let's Encrypt cert for `var.domain` via ACME DNS-01 and pushes it to the droplet (see [Custom-domain HTTPS](#custom-domain-https-over-the-tailnet)) |
+
+### Running on the shared self-hosted runner
+
+The runner box is shared across the PulseMCP org, so a job cannot assume it has the
+machine to itself. Four things follow, and every Rails job in `ci.yml` already does
+them:
+
+- **`ruby/setup-ruby` gets `self-hosted: true` and `bundler-cache: false`.** The
+  first selects the per-runner Ruby toolcache (Ubuntu 24.04 self-hosted needs it);
+  the second turns off the action's automatic `bundle install`, because we do it
+  ourselves into an isolated path.
+- **Gems install into a per-runner path.** `bundle config set --local path
+  /home/runner/.bundles/zimmer-runner-${RUNNER_NUM}` (with `RUNNER_NUM` derived from
+  `$RUNNER_NAME`) keeps two concurrent jobs on the same box from fighting over one
+  `vendor/bundle`.
+- **Service containers publish dynamic ports.** Postgres and Redis declare
+  `- 5432/tcp` / `- 6379/tcp` (not `5432:5432`), and a step resolves the assigned
+  host port via `${{ job.services.postgres.ports[5432] }}` into `DATABASE_PORT` /
+  `REDIS_URL`. Fixed host ports would collide when two jobs land on the same runner.
+- **The heavy suite is the `test-unit` job key and pins `PARALLEL_WORKERS`.** The
+  runner's file-based semaphore recognizes the job **key** `test-unit` and caps how
+  many heavy test jobs run at once; a bare `test` key would go ungated. Pinning
+  `PARALLEL_WORKERS` stops a single job from fanning out to `:number_of_processors`
+  (32 on this box) and starving co-tenants. There is intentionally no `test-system`
+  job — zimmer runs no Chrome-driven system tests in CI, so there is nothing for the
+  companion system-test semaphore to gate.
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 

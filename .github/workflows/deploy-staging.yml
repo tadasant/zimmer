@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment: staging
     steps:
       - uses: actions/checkout@v4
@@ -160,6 +160,7 @@ jobs:
         with:
           ruby-version: ".ruby-version"
           bundler-cache: false
+          self-hosted: true
 
       # Pin Kamal to the exact version the repo locks (Gemfile.lock) so CI can't drift
       # onto a different 2.x. Installed standalone rather than via `bundle install`,
