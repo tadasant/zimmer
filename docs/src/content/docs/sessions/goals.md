@@ -92,6 +92,7 @@ messages, because resuming those would spawn a second process against the same c
 `HeartbeatSweepJob`'s comment: *"That 4-line sequence is duplicated across several callers — a
 future refactor could extract a shared `Session#deliver_follow_up!`."* The
 follow-up-delivery logic exists in at least three places.
+Tracked in [#105](https://github.com/tadasant/zimmer/issues/105).
 :::
 
 ## `needs_input` vs `archived`

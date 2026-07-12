@@ -93,6 +93,7 @@ unreachable for Codex, despite the hook receiving a `runtime` context that impli
 Once spawned, the job loops: check the process is alive, poll the transcript file, broadcast new
 messages, repeat. There is a 0.15 second sleep between each broadcast — it must exceed
 SolidCable's 100 ms polling interval, and it's a real throughput cost on a bursty transcript.
+Tracked in [#108](https://github.com/tadasant/zimmer/issues/108).
 
 Two independent output channels:
 
