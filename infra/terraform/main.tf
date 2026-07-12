@@ -202,15 +202,22 @@ resource "digitalocean_droplet" "zimmer" {
     # The bootstrap template renders once. Ignore user_data drift so a change to it
     # (or to anything Kamal now owns) never force-replaces this persistent host --
     # this is the setting that kills the recreate-on-every-change churn.
+    #
+    # The trade-off: because the Kamal deploy key and the Caddyfile are delivered
+    # ONLY through user_data, rotating KAMAL_SSH_KEY or changing `domain` produces no
+    # plan diff and will not reach the box. Both require an explicit
+    # `terraform taint digitalocean_droplet.zimmer`. See docs limitations.
     ignore_changes = [user_data]
 
-    # When the droplet genuinely must be replaced (size/region/image), stand up the
-    # new one before destroying the old so the reserved IP + tailnet name hand over
-    # cleanly.
-    create_before_destroy = true
+    # NOTE: deliberately NOT create_before_destroy. The tailnet hostname is fixed
+    # (zimmer-${var.environment}), so standing a replacement up alongside the old box
+    # would briefly put TWO online peers on the tailnet with the same MagicDNS name --
+    # and the deploy workflow resolves its target by that name. It could then deploy
+    # onto the droplet Terraform is about to destroy. A replacement is rare by design
+    # here, so a short gap is the safer trade.
 
-    # Fail fast at plan time instead of booting a droplet that can't authenticate to
-    # the managed DB and only surfacing as a health-check timeout ~10 minutes later.
+    # Fail fast at plan time rather than booting a droplet Kamal cannot reach and
+    # only discovering it as an SSH failure minutes later.
     precondition {
       condition     = var.deploy_ssh_pubkey != ""
       error_message = "deploy_ssh_pubkey must be set (the public half of KAMAL_SSH_KEY) so Kamal can reach the droplet."

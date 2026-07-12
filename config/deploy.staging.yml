@@ -56,6 +56,12 @@ env:
     - SECRET_KEY_BASE
     - API_KEYS
     - DATABASE_PASSWORD
+    # Observability. The app's initializers are hard no-ops when these are empty,
+    # so an unset secret simply disables shipping -- but they must be PRESENT here,
+    # or staging silently loses Sentry + OTel the way the pre-Kamal TF vars did not.
+    - SENTRY_DSN_BACKEND
+    - OTEL_LOGS_EXPORTER_ENDPOINT
+    - OTEL_LOGS_EXPORTER_BEARER_TOKEN
 
 # Staging's data stores run as Kamal accessories on the same droplet (throwaway;
 # they hold nothing durable). Production instead points DATABASE_HOST at the

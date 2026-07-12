@@ -128,11 +128,16 @@ jobs:
           echo "::error::zimmer-staging never came online on the tailnet"
           exit 1
 
-      - name: Install Kamal
-        run: gem install kamal -v '~> 2.0' --no-document
+      # Use the repo-pinned Kamal (Gemfile.lock: kamal 2.12.0) via bin/kamal, so CI
+      # runs the same version the repo declares rather than whatever 2.x floats today.
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
 
-      # Deploy onto the persistent host. Accessories (throwaway Postgres + Redis) are
-      # booted idempotently first; `|| true` swallows "already running" on redeploys.
+      # Deploy onto the persistent host. `accessory boot` is already idempotent in
+      # Kamal 2 (it skips a container that exists), so this is NOT `|| true`-guarded:
+      # a genuine failure here (registry login, image pull, bad DB password) must fail
+      # the deploy loudly instead of surfacing later as an opaque health-check timeout.
       # The image was built above, so --skip-push just pulls the existing tag.
       - name: Kamal deploy (staging)
         env:
@@ -141,16 +146,22 @@ jobs:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           STAGING_SECRET_BASE: ${{ secrets.STAGING_SECRET_BASE }}
           STAGING_API_KEYS: ${{ secrets.STAGING_API_KEYS }}
+          STAGING_DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
+          SENTRY_DSN_BACKEND: ${{ secrets.SENTRY_DSN_BACKEND }}
+          OTEL_LOGS_EXPORTER_ENDPOINT: ${{ secrets.OTEL_LOGS_EXPORTER_ENDPOINT }}
+          OTEL_LOGS_EXPORTER_BEARER_TOKEN: ${{ secrets.OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
         run: |
           set -euo pipefail
-          kamal accessory boot all -d staging || true
-          kamal deploy -d staging \
+          bin/kamal accessory boot all -d staging
+          bin/kamal deploy -d staging \
             --version="${{ steps.img.outputs.tag }}" \
             --skip-push
 
       # kamal-proxy already health-gated the cutover host-side. Re-verify from the
-      # tailnet, and assert the WORKER is up too -- the worker is where agent sessions
-      # actually execute, and it is the role the old prod credential sync forgot.
+      # tailnet, and assert the WORKER is genuinely healthy too -- the worker is where
+      # agent sessions actually execute, and mere presence in `docker ps` is not
+      # enough: a worker crash-looping on a bad DB password still shows up there
+      # (Restarting), so we assert Running AND a stable RestartCount.
       - name: Verify web + worker over the tailnet
         env:
           STAGING_HOST: ${{ steps.host.outputs.staging_host }}
@@ -161,11 +172,25 @@ jobs:
               echo "✅ web healthy at http://${STAGING_HOST}/up"
               echo "--- containers on the droplet ---"
               ssh root@"${STAGING_HOST}" 'docker ps --format "{{.Names}}\t{{.Status}}"'
-              if ! ssh root@"${STAGING_HOST}" 'docker ps --format "{{.Names}}" | grep -q "^zimmer-worker"'; then
-                echo "::error::web is up but the worker container is not running"
+
+              w=$(ssh root@"${STAGING_HOST}" \
+                'docker ps --filter "name=zimmer-worker" --format "{{.Names}}" | head -1')
+              if [ -z "$w" ]; then
+                echo "::error::web is up but no worker container exists"
                 exit 1
               fi
-              echo "✅ worker container running"
+              # Settle, then require Running=true and no further restarts.
+              r1=$(ssh root@"${STAGING_HOST}" "docker inspect -f '{{.RestartCount}}' $w")
+              sleep 20
+              state=$(ssh root@"${STAGING_HOST}" "docker inspect -f '{{.State.Running}}' $w")
+              r2=$(ssh root@"${STAGING_HOST}" "docker inspect -f '{{.RestartCount}}' $w")
+              echo "worker=$w running=$state restarts=$r1->$r2"
+              if [ "$state" != "true" ] || [ "$r1" != "$r2" ]; then
+                echo "::error::worker $w is not stably running (running=$state, restarts $r1->$r2)"
+                ssh root@"${STAGING_HOST}" "docker logs --tail 40 $w" || true
+                exit 1
+              fi
+              echo "✅ worker stably running"
               exit 0
             fi
             echo "waiting for app ($i/20)…"
@@ -173,3 +198,13 @@ jobs:
           done
           echo "::error::Health check did not pass in time"
           exit 1
+
+  # Re-point the `staging.zimmer.tadasant.com` A record at the (possibly new) tailnet
+  # IP and push a real cert. Without this, a freshly-provisioned droplet serves only
+  # cloud-init's self-signed bootstrap cert and the A record still points at the old
+  # box -- and APP_HOST is that domain, so every generated URL and OAuth callback
+  # breaks. Idempotent: the script no-ops issuance when the cert is valid >30 days.
+  cert:
+    needs: deploy
+    uses: ./.github/workflows/domain-cert-staging.yml
+    secrets: inherit

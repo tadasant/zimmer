@@ -56,7 +56,10 @@ env:
     OTEL_SERVICE_NAME: zimmer
     # Accessories share the Kamal docker network; reach them by container name
     # (<service>-<accessory>).
-    REDIS_URL: redis://zimmer-redis:6379/0
+    #
+    # NO trailing /0: production.rb builds the cache store as "#{ENV['REDIS_URL']}/0",
+    # so a URL that already ends in /0 becomes redis://…:6379/0/0.
+    REDIS_URL: redis://zimmer-redis:6379
 
 aliases:
   console: app exec --interactive --reuse "bin/rails console"
