@@ -122,6 +122,15 @@ jobs:
           # most useful triage fields as blank markdown ("*Commit:*  -- __").
           COMMIT_SUBJECT="${COMMIT_SUBJECT:-(commit message unavailable)}"
           COMMIT_AUTHOR="${COMMIT_AUTHOR:-(author unknown)}"
+          # `startup_failure` is exactly the case that makes this reachable: GitHub could
+          # not read the workflow file, so it may have no name to report -- and that is
+          # the one alert class with no other signal to go on.
+          WORKFLOW_NAME="${WORKFLOW_NAME:-(unnamed workflow)}"
+
+          # Slack's `text` caps at 40k characters and rejects the whole message with
+          # `msg_too_long` past it, so an absurd single-line commit subject would take
+          # the alert down with it. #alerts wants a subject line, not an essay.
+          COMMIT_SUBJECT="${COMMIT_SUBJECT:0:300}"
 
           # Built before the secrets are checked, and logged: it contains nothing secret
           # (GitHub masks the channel id anyway), so a broken alert can be debugged from
@@ -172,7 +181,10 @@ jobs:
           # HTML error page, and piping that into jq yields a parse error and an empty
           # diagnosis. Check it parses before trusting it, and print it raw when it
           # does not -- an operator staring at #alerts silence needs the actual body.
-          if ! ok="$(printf '%s' "$response" | jq -r '.ok' 2>/dev/null)"; then
+          # The empty-body case needs its own test: `jq -r .ok` on empty stdin exits 0
+          # with no output, so it would otherwise slip past this guard and be reported
+          # below as the nonsense "Slack rejected the message (error: )".
+          if [ -z "$response" ] || ! ok="$(printf '%s' "$response" | jq -r '.ok' 2>/dev/null)"; then
             echo "::error title=Slack alert failed::Slack returned a response that is not JSON (Slack outage? proxy?). Raw body: ${response}"
             exit 1
           fi
