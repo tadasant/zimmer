@@ -74,15 +74,17 @@ body {
 
 /* Body heading sizes come from Starlight's own --sl-text-h* variables rather
    than from `h2 { font-size }` overrides. Starlight puts each heading inside a
-   .sl-heading-wrapper and sizes BOTH from --sl-text-h<n>, and the anchor icon's
-   size and its negative margin-inline-start are `em`-based off the wrapper while
-   the heading's matching padding-inline-end is `em`-based off the heading.
-   Resizing only the heading desynchronised the pair: the icon stayed sized to
-   Starlight's larger default and its negative margin overshot the heading's
-   padding, landing the icon on the text. Driving the variable keeps them in step.
+   .sl-heading-wrapper and sizes BOTH from --sl-text-h<n>. The anchor icon's size
+   and its negative margin-inline-start are `em`-based off the wrapper, while the
+   heading's compensating padding-inline-end is `em`-based off the heading — so
+   sizing only the heading desynchronises the pair, and the icon's negative margin
+   overshoots the heading's padding and lands on the text. Driving the variable
+   keeps wrapper and heading in step.
 
-   Scoped to .sl-markdown-content rather than :root because --sl-text-h5 also
-   sizes the "On this page" sidebar heading, which should keep Starlight's size. */
+   Scoped to .sl-markdown-content rather than :root because --sl-text-h4 also
+   sizes the header brand (SiteTitle), which keeps Starlight's size. Cards sit
+   inside the markdown content and read --sl-text-h4 too, so they pin their own
+   title size below. */
 .sl-markdown-content {
   --sl-text-h1: 2.05rem;
   --sl-text-h2: 1.45rem;
@@ -107,11 +109,20 @@ body {
 }
 
 /* Section spacing goes on the wrapper: Starlight renders the heading itself as
-   `display: inline`, so a margin on the heading element is inert. */
-.sl-markdown-content .sl-heading-wrapper.level-h2 {
+   `display: inline`, so a margin on the heading element is inert.
+
+   The `:not(...) + ` guard is Starlight's own, and it earns its keep: a heading
+   only gets top space when it follows actual content. A page's first heading
+   sits flush under the description, and an h3 directly beneath its h2 stays
+   tight to the section it belongs to. */
+.sl-markdown-content
+  :not(h1, h2, h3, h4, h5, h6, .sl-heading-wrapper)
+  + .sl-heading-wrapper.level-h2 {
   margin-top: 2.6rem;
 }
-.sl-markdown-content .sl-heading-wrapper.level-h3 {
+.sl-markdown-content
+  :not(h1, h2, h3, h4, h5, h6, .sl-heading-wrapper)
+  + .sl-heading-wrapper.level-h3 {
   margin-top: 1.9rem;
 }
 
@@ -320,8 +331,12 @@ dialog.lightbox::backdrop {
   border-radius: 0.5rem;
   background: var(--sl-color-gray-7);
 }
+/* Card titles are pinned rather than inherited: Starlight sizes them from
+   --sl-text-h4, which the markdown content scales down to body size for h4
+   headings. A card title needs to outrank both body copy and a LinkCard title. */
 .card .title {
   font-weight: 600;
+  font-size: 1.25rem;
 }
 .card .icon {
   color: var(--sl-color-text-accent);
