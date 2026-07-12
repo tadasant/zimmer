@@ -58,9 +58,9 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     assert_equal "agent-orchestrator", agent_root.name
     assert_equal "Zimmer", agent_root.display_name
     assert agent_root.description.present?
-    assert_equal "https://github.com/tadasant/zimmer.git", agent_root.url
+    assert_equal "https://github.com/tadasant/zimmer-catalog.git", agent_root.url
     assert_equal "main", agent_root.default_branch
-    assert_nil agent_root.subdirectory
+    assert_equal "agents/agent-orchestrator", agent_root.subdirectory
   end
 
   test "agent root converts to hash" do
@@ -70,9 +70,9 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     assert_equal "agent-orchestrator", hash[:name]
     assert_equal "Zimmer", hash[:display_name]
     assert hash[:description].present?
-    assert_equal "https://github.com/tadasant/zimmer.git", hash[:url]
+    assert_equal "https://github.com/tadasant/zimmer-catalog.git", hash[:url]
     assert_equal "main", hash[:default_branch]
-    assert_nil hash[:subdirectory]
+    assert_equal "agents/agent-orchestrator", hash[:subdirectory]
     assert_equal false, hash[:custom]
     assert_equal false, hash[:default]
   end
