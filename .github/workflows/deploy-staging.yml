@@ -1,12 +1,12 @@
 name: Deploy staging
 
-# Manually-invoked ONLY. Stands up / updates the staging instance at
-# staging.zimmer.tadasant.com from the chosen ref. Never auto-deploys.
+# Manually-invoked ONLY. Builds the app image from the chosen ref, Terraform-applies
+# the PERSISTENT staging droplet (Tailscale-only), and deploys the app onto it with
+# Kamal (health-gated zero-downtime swap + one-command rollback). Never auto-deploys.
 #
-# Self-contained: builds the base + app image from the checked-out ref and pushes
-# them to GHCR, then Terraform-applies the DigitalOcean droplet (Tailscale-only)
-# and health-checks the app over the tailnet. All secrets come from GitHub Actions
-# secrets — none are in git.
+# This replaces the old reap-and-recreate flow: Terraform now reconciles a long-lived
+# droplet through remote state (no raw DO API reap of account-unique names), and app
+# changes ride Kamal instead of re-rendering cloud-init and force-replacing the box.
 on:
   workflow_dispatch:
     inputs:
@@ -14,9 +14,17 @@ on:
         description: "Branch/tag/SHA to build & deploy"
         required: false
         default: ""
+      recreate_droplet:
+        description: >-
+          Force-rebuild the droplet (terraform -replace). Needed ONLY when the
+          bootstrap itself must change -- rotating the Kamal deploy key, changing the
+          domain/Caddyfile -- because `ignore_changes = [user_data]` deliberately
+          hides those from the plan. Normal app deploys must leave this off.
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
-  # Shared with `Teardown staging` so a nightly teardown can't race a deploy.
   group: staging-lifecycle
   cancel-in-progress: false
 
@@ -72,116 +80,178 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.10.5"
 
-      # The deploy runs with ephemeral tfstate (no remote backend configured), so a
-      # re-run can't reconcile the previous run's resources. DO firewall names are
-      # account-unique, so a leftover `zimmer-staging` firewall makes the next
-      # `terraform apply` fail with 409 duplicate name. Delete any prior
-      # zimmer-staging droplet + firewall first so each run starts clean. Idempotent.
-      - name: Reap prior staging resources (ephemeral tfstate)
-        env:
-          DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-        run: |
-          set -euo pipefail
-          api() { curl -fsS -H "Authorization: Bearer $DO_TOKEN" "$@"; }
-          for d in $(api "https://api.digitalocean.com/v2/droplets?tag_name=zimmer-staging" | jq -r '.droplets[].id'); do
-            echo "reaping droplet $d"; api -X DELETE "https://api.digitalocean.com/v2/droplets/$d" || true
-          done
-          for fw in $(api "https://api.digitalocean.com/v2/firewalls" | jq -r '.firewalls[] | select(.name=="zimmer-staging") | .id'); do
-            echo "reaping firewall $fw"; api -X DELETE "https://api.digitalocean.com/v2/firewalls/$fw" || true
-          done
-          sleep 5
-
-      # Delete the reaped droplet's leftover tailnet node so the new droplet
-      # reclaims the clean `zimmer-staging` MagicDNS name (otherwise it registers as
-      # zimmer-staging-1, -2, ...). No-op until the TS_API_CLIENT_* secrets are set.
-      - name: Reap stale tailnet node (stable MagicDNS name)
+      # Only when rebuilding the droplet: free the `zimmer-staging` MagicDNS name, so
+      # the replacement reclaims it instead of registering as zimmer-staging-1. On a
+      # normal deploy the droplet persists and its node must NOT be reaped.
+      - name: Reap stale tailnet node (only when recreating)
+        if: ${{ inputs.recreate_droplet }}
         env:
           TS_API_CLIENT_ID: ${{ secrets.TS_API_CLIENT_ID }}
           TS_API_CLIENT_SECRET: ${{ secrets.TS_API_CLIENT_SECRET }}
         run: bash scripts/tailnet-reap-node.sh zimmer-staging
 
+      # Provision (or reconcile) the persistent staging droplet + reserved IP through
+      # remote state. Idempotent: a re-run updates in place, it does NOT recreate --
+      # unless recreate_droplet forces -replace (see the input's description).
       - name: Terraform apply (staging)
         working-directory: infra/terraform
         env:
           TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           TF_VAR_tailscale_auth_key: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          TF_VAR_ghcr_username: ${{ github.actor }}
-          TF_VAR_ghcr_token: ${{ secrets.GHCR_PULL_TOKEN }}
-          TF_VAR_secret_key_base: ${{ secrets.STAGING_SECRET_BASE }}
-          # REST API bearer keys. RAILS_MASTER_KEY is intentionally left unset:
-          # the TF var defaults to "" and staging has no committed
-          # config/credentials/production.yml.enc to decrypt.
-          TF_VAR_api_keys: ${{ secrets.STAGING_API_KEYS }}
-          # Optional observability — leave the secrets unset to keep obs off.
-          TF_VAR_otel_logs_endpoint: ${{ secrets.OTEL_LOGS_EXPORTER_ENDPOINT }}
-          TF_VAR_otel_logs_token: ${{ secrets.OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
-          TF_VAR_sentry_dsn: ${{ secrets.SENTRY_DSN_BACKEND }}
+          TF_VAR_deploy_ssh_pubkey: ${{ secrets.KAMAL_SSH_PUBKEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          IMG="ghcr.io/tadasant/zimmer:${{ steps.img.outputs.tag }}"
-          terraform init -input=false
+          terraform init -input=false -backend-config=backend.staging.hcl
           cp staging.tfvars.example staging.tfvars
-          terraform apply -input=false -auto-approve \
-            -var-file=staging.tfvars \
-            -var="image_ref=${IMG}"
-          terraform output -raw droplet_ipv4 > /tmp/droplet_ip
-          echo "Droplet IP: $(cat /tmp/droplet_ip)"
+          replace=""
+          if [ "${{ inputs.recreate_droplet }}" = "true" ]; then
+            echo "::warning::recreate_droplet=true — replacing the droplet (bootstrap change)."
+            replace="-replace=digitalocean_droplet.zimmer"
+          fi
+          terraform apply -input=false -auto-approve -var-file=staging.tfvars $replace
 
-      # Join the tailnet LAST — right before the health check — so the runner's
-      # ephemeral tailnet session is alive only for the (short) health check and
-      # can't log out during the image build + terraform apply (which is what
-      # broke earlier runs: `tailscale status` reported "Logged out" by the time
-      # the health check ran).
+      # Join the tailnet so we can resolve the droplet's tailnet IP, SSH to it with
+      # Kamal, and health-check the app.
       - name: Tailscale
         uses: tailscale/github-action@v3
         with:
-          # Use a pre-minted, tag:ci-tagged auth key (the OAuth client is not
-          # permitted to mint tag:ci keys — "requested tags [tag:ci] are invalid
-          # or not permitted"). The key is already tagged, so no `tags:` input.
           authkey: ${{ secrets.TS_CI_AUTHKEY }}
 
-      - name: Health check (over tailnet)
+      # GitHub runners get no MagicDNS, so resolve zimmer-staging's tailnet IP from
+      # `tailscale status`, and load the Kamal deploy key.
+      - name: Prepare Kamal SSH + resolve host
+        id: host
+        env:
+          KAMAL_SSH_KEY: ${{ secrets.KAMAL_SSH_KEY }}
         run: |
-          # The app publishes port 80 (tailnet-only; the DO firewall drops public
-          # :80), so we reach it over the tailnet. GitHub runners do NOT get
-          # MagicDNS in /etc/resolv.conf, so `curl http://zimmer-staging` can't
-          # resolve the name — resolve the droplet's tailnet IP from
-          # `tailscale status --json` and curl that instead.
-          if ! tailscale status >/dev/null 2>&1; then
-            echo "::error::Tailscale is not up on the runner (\`tailscale status\` reports logged out)."
-            echo "This is a runner/tailnet-auth issue, not the app. Check the TS_OAUTH_CLIENT_ID/SECRET"
-            echo "GitHub secrets and that the OAuth client has the auth_keys scope + tag:ci in the ACL"
-            echo "tagOwners, and that the minted ephemeral key TTL exceeds the deploy duration."
-            tailscale status 2>&1 || true
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KAMAL_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'EOF'
+          Host *
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile /dev/null
+            IdentityFile ~/.ssh/id_ed25519
+          EOF
+          for i in $(seq 1 40); do
+            ip=$(tailscale status --json 2>/dev/null \
+              | jq -r '.Peer[]? | select(.HostName=="zimmer-staging" and .Online==true) | .TailscaleIPs[0]' \
+              | head -1)
+            if [ -n "${ip:-}" ] && [ "$ip" != "null" ]; then
+              echo "staging_host=$ip" >> "$GITHUB_OUTPUT"
+              echo "resolved zimmer-staging -> $ip"
+              exit 0
+            fi
+            echo "waiting for zimmer-staging on the tailnet ($i/40)…"
+            sleep 15
+          done
+          echo "::error::zimmer-staging never came online on the tailnet"
+          exit 1
+
+      # Ruby matching .ruby-version, with a user-writable gem dir. (The runner's stock
+      # system Ruby installs into /var/lib/gems, which needs root -- `gem install`
+      # there fails with Gem::FilePermissionError.)
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ".ruby-version"
+          bundler-cache: false
+
+      # Pin Kamal to the exact version the repo locks (Gemfile.lock) so CI can't drift
+      # onto a different 2.x. Installed standalone rather than via `bundle install`,
+      # which would build the app's native gems (pg, nokogiri) on the runner for no
+      # reason -- the deploy only needs Kamal itself.
+      - name: Install Kamal (pinned to Gemfile.lock)
+        run: |
+          set -euo pipefail
+          v=$(awk '/^    kamal \(/{gsub(/[()]/,"");print $2; exit}' Gemfile.lock)
+          echo "installing kamal ${v} (from Gemfile.lock)"
+          gem install kamal -v "$v" --no-document
+          kamal version
+
+      # Deploy onto the persistent host. `accessory boot` is already idempotent in
+      # Kamal 2 (it skips a container that exists), so this is NOT `|| true`-guarded:
+      # a genuine failure here (registry login, image pull, bad DB password) must fail
+      # the deploy loudly instead of surfacing later as an opaque health-check timeout.
+      # The image was built above, so --skip-push just pulls the existing tag.
+      - name: Kamal deploy (staging)
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+          KAMAL_REGISTRY_USERNAME: ${{ github.actor }}
+          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
+          STAGING_SECRET_BASE: ${{ secrets.STAGING_SECRET_BASE }}
+          STAGING_API_KEYS: ${{ secrets.STAGING_API_KEYS }}
+          STAGING_DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
+          SENTRY_DSN_BACKEND: ${{ secrets.SENTRY_DSN_BACKEND }}
+          OTEL_LOGS_EXPORTER_ENDPOINT: ${{ secrets.OTEL_LOGS_EXPORTER_ENDPOINT }}
+          OTEL_LOGS_EXPORTER_BEARER_TOKEN: ${{ secrets.OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
+        run: |
+          set -euo pipefail
+          # API_KEYS is a comma-separated list; the injected self-session MCP server
+          # needs a SINGLE key to call this instance's own REST API.
+          export STAGING_SELF_API_KEY="${STAGING_API_KEYS%%,*}"
+          if [ -z "$STAGING_SELF_API_KEY" ]; then
+            echo "::error::STAGING_API_KEYS is empty, so AGENT_ORCHESTRATOR_STAGING_API_KEY would be blank."
+            echo "::error::SecretsInterpolator treats blank-but-set exactly like unset, so every session"
+            echo "::error::would fail with MissingVariableError -- the bug this wiring exists to prevent."
             exit 1
           fi
-          for i in $(seq 1 40); do
-            # There can be more than one online peer named "zimmer-staging" —
-            # ephemeral tailnet nodes from prior deploys linger briefly after their
-            # droplet is destroyed. Try EVERY online candidate and succeed if any
-            # serves /up, so a stale IP can't mask the live droplet.
-            ips=$(tailscale status --json 2>/dev/null \
-              | jq -r '.Peer[]? | select(.HostName=="zimmer-staging" and .Online==true) | .TailscaleIPs[0]')
-            for ip in $ips; do
-              if curl -fsS --max-time 5 "http://$ip/up" >/dev/null 2>&1; then
-                echo "✅ Staging healthy at http://$ip/up (zimmer-staging)"; exit 0
+          kamal accessory boot all -d staging
+          kamal deploy -d staging \
+            --version="${{ steps.img.outputs.tag }}" \
+            --skip-push
+
+      # kamal-proxy already health-gated the cutover host-side. Re-verify from the
+      # tailnet, and assert the WORKER is genuinely healthy too -- the worker is where
+      # agent sessions actually execute, and mere presence in `docker ps` is not
+      # enough: a worker crash-looping on a bad DB password still shows up there
+      # (Restarting), so we assert Running AND a stable RestartCount.
+      - name: Verify web + worker over the tailnet
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 5 "http://${STAGING_HOST}/up" >/dev/null 2>&1; then
+              echo "✅ web healthy at http://${STAGING_HOST}/up"
+              echo "--- containers on the droplet ---"
+              ssh root@"${STAGING_HOST}" 'docker ps --format "{{.Names}}\t{{.Status}}"'
+
+              w=$(ssh root@"${STAGING_HOST}" \
+                'docker ps --filter "name=zimmer-worker" --format "{{.Names}}" | head -1')
+              if [ -z "$w" ]; then
+                echo "::error::web is up but no worker container exists"
+                exit 1
               fi
-            done
-            echo "waiting for app to come up ($i/40, candidates='$(echo $ips | tr '\n' ' ')')…"
+              # Settle, then require Running=true and no further restarts.
+              r1=$(ssh root@"${STAGING_HOST}" "docker inspect -f '{{.RestartCount}}' $w")
+              sleep 20
+              state=$(ssh root@"${STAGING_HOST}" "docker inspect -f '{{.State.Running}}' $w")
+              r2=$(ssh root@"${STAGING_HOST}" "docker inspect -f '{{.RestartCount}}' $w")
+              echo "worker=$w running=$state restarts=$r1->$r2"
+              if [ "$state" != "true" ] || [ "$r1" != "$r2" ]; then
+                echo "::error::worker $w is not stably running (running=$state, restarts $r1->$r2)"
+                ssh root@"${STAGING_HOST}" "docker logs --tail 40 $w" || true
+                exit 1
+              fi
+              echo "✅ worker stably running"
+              exit 0
+            fi
+            echo "waiting for app ($i/20)…"
             sleep 15
           done
           echo "::error::Health check did not pass in time"
-          echo "--- tailscale status ---"; tailscale status 2>&1 || true
           exit 1
 
-  # Each staging deploy reaps + recreates the droplet, so it comes up with a new
-  # tailnet IP and only the self-signed Caddy bootstrap cert -- staging.zimmer.tadasant.com
-  # is stale until the A record is re-pointed and a real cert pushed. Chain
-  # domain-cert-staging so the deploy self-heals the domain instead of leaving it
-  # broken until the cert workflow is run by hand. Only meaningful when `domain` is
-  # set in staging.tfvars (staging currently sets it), keeping the HTTPS front door live.
+  # Re-point the `staging.zimmer.tadasant.com` A record at the (possibly new) tailnet
+  # IP and push a real cert. Without this, a freshly-provisioned droplet serves only
+  # cloud-init's self-signed bootstrap cert and the A record still points at the old
+  # box -- and APP_HOST is that domain, so every generated URL and OAuth callback
+  # breaks. Idempotent: the script no-ops issuance when the cert is valid >30 days.
   cert:
     needs: deploy
     uses: ./.github/workflows/domain-cert-staging.yml
