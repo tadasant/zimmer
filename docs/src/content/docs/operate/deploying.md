@@ -192,15 +192,21 @@ The runner box is shared across the PulseMCP org, so a job cannot assume it has 
 machine to itself. Four things follow, and every Rails job in `ci.yml` already does
 them:
 
-- **`ruby/setup-ruby` runs with `bundler-cache: false` and *without* `self-hosted:
-  true`.** `bundler-cache: false` turns off the action's automatic `bundle install`,
-  because we do it ourselves into an isolated path (below). We deliberately omit
-  `self-hosted: true`: that input tells the action a Ruby is already staged in
-  `$RUNNER_TOOL_CACHE`, which is true on PulseMCP's org runners but *not* on the
-  `tadasant-zimmer-ci-*` repo-level runners — they were registered without a seeded
-  Ruby toolcache. Omitting the flag lets `setup-ruby` self-install Ruby 3.4.6 into
-  each runner's own `$RUNNER_TOOL_CACHE` (isolated per runner, cached after the first
-  run). If those toolcaches are ever seeded, the flag can be re-added.
+- **`ruby/setup-ruby` gets `self-hosted: true` and `bundler-cache: false`.**
+  `self-hosted: true` (the PulseMCP-org standard) selects the Ruby already staged in
+  each runner's own `$RUNNER_TOOL_CACHE` instead of downloading one — the action's
+  download path extracts into a hardcoded `/opt/hostedtoolcache` the runner user can't
+  write, so on this box the flag is mandatory, not optional. `bundler-cache: false`
+  turns off the action's automatic `bundle install`, because we do it ourselves into
+  an isolated path (below).
+
+  :::caution[Runner toolcache seeding]
+  The `tadasant-zimmer-ci-*` runners were registered with a Node toolcache but **no
+  Ruby one**, so their Ruby 3.4.6 toolcache had to be seeded out of band (`ruby-build
+  3.4.6` into `/opt/hostedtoolcache-runner-N/Ruby/3.4.6/x64`). That manual seed is not
+  yet captured in IaC and will be lost if the runners are rebuilt — codifying it is
+  part of the DigitalOcean migration ([zimmer#118](https://github.com/tadasant/zimmer/issues/118)).
+  :::
 - **Gems install into a per-runner path.** `bundle config set --local path
   /home/runner/.bundles/zimmer-runner-${RUNNER_NUM}` (with `RUNNER_NUM` derived from
   `$RUNNER_NAME`) keeps two concurrent jobs on the same box from fighting over one
