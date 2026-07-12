@@ -37,7 +37,7 @@ The `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`,
 computes them by [inverting `default_in_roots`](/air/overview/#default_in_roots--the-inversion) from
 each artifact's own entry.
 
-## The nine roots that ship
+## The ten roots that ship
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
@@ -50,15 +50,27 @@ each artifact's own entry.
 | `catalog-mgmt-configs` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-proctor` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-save` | ❌ | ↳ subagent phase | same |
+| `tadasant-internal` | ✅ | `tadasant/tadasant-internal` | Scoped to `zimmer` — the production deployment layer |
 
-:::caution[Several roots point at a repo that isn't this one]
-Five roots (`agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*`
-phases) have `"url": "https://github.com/tadasant/zimmer-catalog.git"` — a separate repository
-that is not part of this project and whose contents this documentation cannot verify.
+:::danger[Seven roots point at a repository that does not exist]
+`agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*` phases all
+have `"url": "https://github.com/tadasant/zimmer-catalog.git"`. **That repository does not
+exist** (`gh repo view` 404s). Selecting any of them can only ever fail at
+`GitCloneService.create_clone`.
 
-This is a leftover from the monorepo split. `roots.json` also gives `agent-orchestrator` the
-`display_name` "Zimmer" (the *same* display name as the `zimmer` root), so the two are
-indistinguishable in a picker. That looks like a bug.
+They are a leftover from the monorepo split. Fixing them is not a matter of repointing the URL:
+`AgentRootsConfig#find_for_session` resolves a root *backwards* from `(url, subdirectory)`, so
+giving them all the same real URL with no subdirectory would make eight roots
+indistinguishable — and `Trigger#heal_stale_agent_root!` and `Session#resolved_agent_root` would
+then silently resolve every one of them to `zimmer`. They need to be **removed** (with their
+tests and the two plugins whose `default_in_roots` names `agent-orchestrator`), or given genuinely
+distinct locations. That is its own change.
+
+`roots.json` also gives `agent-orchestrator` the `display_name` "Zimmer" — the *same* display name
+as the `zimmer` root — so the two are already indistinguishable in a picker.
+
+**The roots that actually work today:** `zimmer`, `general-agent` (the default), and
+`tadasant-internal`.
 Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 :::
 

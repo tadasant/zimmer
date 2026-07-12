@@ -1,25 +1,39 @@
 # Zimmer infrastructure on DigitalOcean.
 #
-# One droplet running the Zimmer stack (app + Postgres + Redis via docker
-# compose), joined to a Tailscale tailnet so the UI is reachable ONLY over the
-# VPN — there is no public ingress to the app port. The same module is used for
-# staging and production; the difference is entirely in *.tfvars.
+# ONE PERSISTENT droplet per environment, joined to a Tailscale tailnet so the app
+# is reachable ONLY over the VPN. The droplet is a bootstrap-only host: Terraform
+# provisions it (Docker + Tailscale + a deploy key) and then leaves it alone --
+# Kamal (config/deploy.*.yml) owns the app stack and swaps containers on it with
+# zero downtime. The same module serves staging and production; the difference is
+# entirely in *.tfvars.
 #
-# Nothing secret lives in this file. Secrets (DO token, Tailscale auth key, GHCR
-# pull token) are passed as TF variables, which in CI come from GitHub Actions
+# WHY THE DROPLET NO LONGER CHURNS
+# --------------------------------
+# The app image, env, and data stores used to be baked into user_data, so every
+# app change re-rendered cloud-init and force-REPLACED the droplet. They now live
+# in Kamal, and `lifecycle { ignore_changes = [user_data] }` (below) means a
+# bootstrap-template edit never replaces the box either. Combined with a remote
+# state backend, `terraform apply` reconciles a long-lived droplet instead of the
+# old reap-and-recreate-every-run dance.
+#
+# Nothing secret lives in this file. Secrets (DO token, Tailscale auth key, the
+# deploy SSH key) are passed as TF variables, which in CI come from GitHub Actions
 # secrets and locally from your shell (TF_VAR_*).
 
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.10.0" # S3-native state locking (use_lockfile) for DO Spaces
   required_providers {
     digitalocean = {
       source  = "digitalocean/digitalocean"
       version = "~> 2.43"
     }
   }
-  # Configure a remote backend (e.g. DO Spaces via the S3 backend) per
-  # environment so state is shared with CI. Left unconfigured here so the
-  # template is portable; see infra/terraform/README.md.
+  # Remote state on DigitalOcean Spaces (S3-compatible). Configured per environment
+  # via `-backend-config` at `terraform init` (bucket/key/endpoints/region + the
+  # Spaces access keys) so this block stays identical across the staging and the
+  # mirrored production copy. A persistent backend is what lets apply reconcile the
+  # existing droplet instead of 409-colliding on account-unique names.
+  backend "s3" {}
 }
 
 provider "digitalocean" {
@@ -55,38 +69,20 @@ variable "droplet_size" {
   description = "Droplet size slug."
 }
 
-variable "image_ref" {
-  type        = string
-  default     = "ghcr.io/tadasant/zimmer:latest"
-  description = "Full GHCR image ref to run."
-}
-
-variable "domain" {
-  type        = string
-  default     = ""
-  description = <<-EOT
-    Optional FQDN for custom-domain HTTPS over the tailnet (e.g.
-    zimmer.tadasant.com). When set, the droplet runs a Caddy TLS terminator on
-    :443 for this name, reachable only over the tailnet like everything else.
-
-    Caddy does NOT obtain its own certificate and the droplet holds NO DNS
-    credential: the `domain-cert` workflow issues the cert out-of-band (ACME
-    DNS-01, Cloudflare token confined to CI), registers the `domain -> tailnet
-    IP` A record, and pushes only the cert onto the box. So this variable just
-    turns the terminator on; the DNS record and cert are managed by that
-    workflow, not by Terraform. Empty = plain HTTP over the tailnet only.
-  EOT
-}
-
 variable "manage_project" {
   type        = bool
   default     = false
   description = <<-EOT
     Whether to create a dedicated DigitalOcean Project for this environment.
-    Off by default: a DO Project name is account-unique, so under the CI deploy's
-    ephemeral tfstate a re-run collides with the prior run's project (409 "name is
-    already in use"). The droplet works fine in the account's default project.
-    Enable only with a persistent tfstate backend that can reconcile the project.
+
+    Still OFF by default, even with persistent state. Remote state fixes the case
+    where Terraform created the project itself -- but a project that ALREADY exists
+    and is not in state still 409s ("name is already in use"), because DO project
+    names are account-unique. Both environments have one from the pre-Kamal era, so
+    turning this on requires a one-time `terraform import` of the existing project
+    first. A DO Project is purely organizational (a folder in the console), so that
+    is not worth the extra failure mode in the provisioning path; the droplet works
+    fine in the account's default project.
   EOT
 }
 
@@ -102,65 +98,48 @@ variable "tailscale_auth_key" {
   description = "Tailscale (ephemeral, pre-authorized) auth key for the droplet to join the tailnet."
 }
 
-variable "ghcr_username" {
+variable "deploy_ssh_pubkey" {
   type        = string
-  description = "GHCR username used to pull the (initially private) image."
+  description = <<-EOT
+    Public half of the Kamal deploy keypair (KAMAL_SSH_KEY). cloud-init authorizes
+    it for root so Kamal can SSH in over the tailnet to run docker / kamal-proxy.
+    The private half is a GH Actions secret used only by the deploy workflow.
+  EOT
 }
 
-variable "ghcr_token" {
-  type        = string
-  sensitive   = true
-  description = "GHCR read:packages token to pull the image on the droplet."
-}
-
-variable "secret_key_base" {
-  type        = string
-  sensitive   = true
-  description = "Rails SECRET_KEY_BASE for the app."
-}
-
-variable "rails_master_key" {
+variable "ssh_host_ed25519_key" {
   type        = string
   sensitive   = true
   default     = ""
   description = <<-EOT
-    RAILS_MASTER_KEY that decrypts config/credentials/*. Empty is safe: there is
-    no require_master_key and secrets_loader.rb rescues a missing key, so the app
-    boots without it (staging has no committed production.yml.enc). Production
-    supplies the real key so encrypted credentials can be read.
+    Optional pinned SSH host private key (ed25519). When set, cloud-init installs it
+    so the droplet keeps a STABLE host identity across rebuilds -- which is what
+    keeps the ssh-tadasant-zimmer-prod MCP's known-hosts valid instead of tripping a
+    host-key-changed error on every re-provision. Empty (staging) = a fresh host key
+    each boot, which is fine for a disposable box.
   EOT
 }
 
-variable "api_keys" {
+variable "ssh_host_ed25519_key_pub" {
   type        = string
-  sensitive   = true
+  default     = ""
+  description = "Public half of ssh_host_ed25519_key. Required when that is set."
+}
+
+variable "domain" {
+  type        = string
   default     = ""
   description = <<-EOT
-    Comma-separated bearer keys for the REST API (API_KEYS). Empty disables the
-    API (every request 401s). Staging sets it from the STAGING_API_KEYS secret.
+    Optional FQDN for custom-domain HTTPS over the tailnet (staging.zimmer.tadasant.com
+    / zimmer.tadasant.com). When set, cloud-init runs a Caddy TLS terminator on :443
+    that reverse-proxies to kamal-proxy on :80.
+
+    Caddy does NOT obtain its own certificate and the droplet holds NO DNS credential:
+    the `domain-cert` workflow issues the cert out-of-band (ACME DNS-01, Cloudflare
+    token confined to CI), registers the `domain -> tailnet IP` A record, and pushes
+    only the cert onto the box. This variable just turns the terminator on. Empty =
+    plain HTTP over the tailnet only.
   EOT
-}
-
-# ---- Observability (all optional; empty = the app's obs initializers no-op) --
-
-variable "otel_logs_endpoint" {
-  type        = string
-  default     = ""
-  description = "OTLP/HTTP logs endpoint (e.g. https://obs.example.com/otel/v1/logs). Empty disables OTEL log shipping."
-}
-
-variable "otel_logs_token" {
-  type        = string
-  default     = ""
-  sensitive   = true
-  description = "Bearer token for the OTLP logs endpoint. Both endpoint and token must be set to enable shipping."
-}
-
-variable "sentry_dsn" {
-  type        = string
-  default     = ""
-  sensitive   = true
-  description = "Sentry/GlitchTip DSN for backend error tracking. Empty disables Sentry."
 }
 
 # ---- Managed database variables ----------------------------------------------
@@ -170,40 +149,20 @@ variable "managed_db_cluster_name" {
   default     = ""
   description = <<-EOT
     Name of an EXISTING DigitalOcean Managed Postgres cluster to use. Empty (the
-    default, used by staging) means the compose stack runs its own throwaway
-    Postgres container on the droplet's local disk. Set this in production so the
-    database survives the droplet being reaped and re-created.
+    default, used by staging) means the Kamal stack runs its own throwaway Postgres
+    accessory on the droplet. Set this in production so the database survives the
+    droplet being rebuilt; its connection details are exposed as outputs for the
+    production Kamal deploy to wire into DATABASE_HOST.
   EOT
 }
 
-variable "managed_db_username" {
-  type        = string
-  default     = "doadmin"
-  description = "Database user on the managed cluster. Ignored unless managed_db_cluster_name is set."
-}
-
-variable "managed_db_password" {
-  type        = string
-  default     = ""
-  sensitive   = true
-  description = "Password for managed_db_username (TF_VAR_managed_db_password; a GH Actions secret in CI)."
-}
-
 # ---- Managed database (read-only reference) ----------------------------------
-
-# Deliberately a DATA SOURCE, never a managed resource.
 #
-# The droplet is cattle: `provision` reaps and re-creates it on every run, which
-# destroys anything on its local disk. So the database must live OFF the droplet.
-# But putting the cluster under Terraform management would hand this automation a
-# destroy path to the one irreplaceable resource in the system -- and with the
-# ephemeral tfstate these workflows use, Terraform would try to *create* it on
-# every run and 409.
-#
-# A data source has no destroy path. Terraform can read the cluster's connection
-# details and can never delete, replace, or resize it. Create/resize the cluster
-# out of band (DigitalOcean console or API); its spec is documented in
-# infra/terraform/data-stores/README.md.
+# Still a DATA SOURCE in this phase. Promoting it to a managed resource (with
+# prevent_destroy + a one-time `terraform import`) is a production-only change that
+# lands with the prod cutover; staging never uses a managed cluster, so nothing
+# here depends on it. A data source has no destroy path, so Terraform can never
+# delete, replace, or resize the one irreplaceable resource in the system.
 data "digitalocean_database_cluster" "pg" {
   count = var.managed_db_cluster_name == "" ? 0 : 1
   name  = var.managed_db_cluster_name
@@ -212,37 +171,14 @@ data "digitalocean_database_cluster" "pg" {
 # ---- Locals -----------------------------------------------------------------
 
 locals {
-  # The tailnet MagicDNS name you actually browse to. Production is simply
-  # `zimmer` (http://zimmer); every other environment is suffixed
-  # (http://zimmer-staging). Independent of the DigitalOcean droplet name and of
-  # the tailnet ACL tag, both of which stay `zimmer-<environment>`.
+  # The tailnet MagicDNS name you browse to. Production is simply `zimmer`
+  # (http://zimmer); every other environment is suffixed (http://zimmer-staging).
   tailnet_hostname = var.environment == "production" ? "zimmer" : "zimmer-${var.environment}"
 
-  # Canonical external host the app uses for URL generation and MCP OAuth
-  # callbacks (APP_HOST). Prefer the custom domain when set (custom-domain HTTPS
-  # from #30 -- staging.zimmer.tadasant.com / zimmer.tadasant.com); otherwise
-  # fall back to the tailnet MagicDNS name. Without it McpOauthService defaults
-  # to localhost:3000 and every OAuth callback breaks.
-  app_host = var.domain != "" ? var.domain : local.tailnet_hostname
-
-  # When a managed cluster is named, the app talks to it and the compose stack
-  # ships no `db` service and no `pgdata` volume. Otherwise (staging, local) the
-  # stack runs its own throwaway Postgres container.
+  # When a managed cluster is named (production), the droplet is pinned into its VPC
+  # so the private DB host is routable, and the connection details flow to Kamal via
+  # outputs. Otherwise (staging) the Kamal stack runs its own Postgres accessory.
   use_managed_db = var.managed_db_cluster_name != ""
-
-  # Reach the cluster over DigitalOcean's private network so credentials never
-  # traverse the public internet. The droplet is pinned into the cluster's VPC (see
-  # `vpc_uuid` below), which is what makes `private_host` routable.
-  db_host     = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].private_host : "db"
-  db_port     = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].port : 5432
-  db_username = local.use_managed_db ? var.managed_db_username : "zimmer"
-  db_password = local.use_managed_db ? var.managed_db_password : var.secret_key_base
-
-  # Managed Postgres mandates TLS. The compose Postgres does not speak it, so
-  # staging/local fall back via "prefer".
-  db_sslmode = local.use_managed_db ? "require" : "prefer"
-
-  compose_depends_on = local.use_managed_db ? "[redis]" : "[db, redis]"
 }
 
 # ---- Resources --------------------------------------------------------------
@@ -264,48 +200,56 @@ resource "digitalocean_droplet" "zimmer" {
   ssh_keys = var.ssh_key_fingerprints
   tags     = ["zimmer", "zimmer-${var.environment}"]
 
-  # The app reaches the managed cluster over its PRIVATE host, which is only routable
-  # from inside the cluster's VPC. Pin the droplet into that same VPC rather than
-  # relying on both landing in the region's default VPC by coincidence. Null (the
-  # staging path) lets DigitalOcean pick the region default.
+  # Pin the droplet into the managed cluster's VPC (production) so its private_host
+  # is routable; null (staging) lets DigitalOcean pick the region default.
   vpc_uuid = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].private_network_uuid : null
 
   lifecycle {
-    # Fail fast at plan time instead of booting a droplet that cannot authenticate and
-    # only surfacing as a health-check timeout ~10 minutes later.
+    # The bootstrap template renders once. Ignore user_data drift so a change to it
+    # (or to anything Kamal now owns) never force-replaces this persistent host --
+    # this is the setting that kills the recreate-on-every-change churn.
+    #
+    # The trade-off: because the Kamal deploy key and the Caddyfile are delivered
+    # ONLY through user_data, rotating KAMAL_SSH_KEY or changing `domain` produces no
+    # plan diff and will not reach the box. Both require an explicit
+    # `terraform taint digitalocean_droplet.zimmer`. See docs limitations.
+    ignore_changes = [user_data]
+
+    # NOTE: deliberately NOT create_before_destroy. The tailnet hostname is fixed
+    # (zimmer-${var.environment}), so standing a replacement up alongside the old box
+    # would briefly put TWO online peers on the tailnet with the same MagicDNS name --
+    # and the deploy workflow resolves its target by that name. It could then deploy
+    # onto the droplet Terraform is about to destroy. A replacement is rare by design
+    # here, so a short gap is the safer trade.
+
+    # Fail fast at plan time rather than booting a droplet Kamal cannot reach and
+    # only discovering it as an SSH failure minutes later.
     precondition {
-      condition     = !local.use_managed_db || var.managed_db_password != ""
-      error_message = "managed_db_password must be set when managed_db_cluster_name is set (TF_VAR_managed_db_password, from the PROD_DB_PASSWORD secret)."
+      condition     = var.deploy_ssh_pubkey != ""
+      error_message = "deploy_ssh_pubkey must be set (the public half of KAMAL_SSH_KEY) so Kamal can reach the droplet."
     }
   }
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    environment        = var.environment
-    tailnet_hostname   = local.tailnet_hostname
-    use_managed_db     = local.use_managed_db
-    db_host            = local.db_host
-    db_port            = local.db_port
-    db_username        = local.db_username
-    db_password        = local.db_password
-    db_sslmode         = local.db_sslmode
-    compose_depends_on = local.compose_depends_on
-    domain             = var.domain
-    app_host           = local.app_host
-    image_ref          = var.image_ref
-    tailscale_auth_key = var.tailscale_auth_key
-    ghcr_username      = var.ghcr_username
-    ghcr_token         = var.ghcr_token
-    secret_key_base    = var.secret_key_base
-    rails_master_key   = var.rails_master_key
-    api_keys           = var.api_keys
-    otel_logs_endpoint = var.otel_logs_endpoint
-    otel_logs_token    = var.otel_logs_token
-    sentry_dsn         = var.sentry_dsn
+    environment              = var.environment
+    tailnet_hostname         = local.tailnet_hostname
+    tailscale_auth_key       = var.tailscale_auth_key
+    deploy_ssh_pubkey        = var.deploy_ssh_pubkey
+    ssh_host_ed25519_key     = var.ssh_host_ed25519_key
+    ssh_host_ed25519_key_pub = var.ssh_host_ed25519_key_pub
+    domain                   = var.domain
   })
 }
 
-# Firewall: NO public app ingress. Only SSH (lock down to your admin CIDRs in
-# tfvars if desired) and Tailscale's UDP. All app traffic rides the tailnet.
+# Stable public IP that survives a droplet rebuild (create_before_destroy hands it
+# over), so DNS / any public-IP-keyed access does not churn on re-provision.
+resource "digitalocean_reserved_ip" "zimmer" {
+  region     = var.region
+  droplet_id = digitalocean_droplet.zimmer.id
+}
+
+# Firewall: NO public app ingress. Only SSH (Kamal's control channel + break-glass)
+# and Tailscale's UDP. All app traffic rides the tailnet.
 resource "digitalocean_firewall" "zimmer" {
   name        = "zimmer-${var.environment}"
   droplet_ids = [digitalocean_droplet.zimmer.id]
@@ -339,18 +283,20 @@ resource "digitalocean_firewall" "zimmer" {
   }
 }
 
-# No DNS record here. `var.domain`'s A record must point at the droplet's
-# TAILNET IP (100.x) so tailnet peers reach it and nobody else can -- not the
-# public IP this used to publish, which the firewall blocks anyway. The tailnet
-# IP is assigned at `tailscale up` (boot), so Terraform cannot know it at plan
-# time; the `domain-cert` workflow discovers it and upserts the Cloudflare record
-# from CI, alongside issuing the cert. Keeping DNS out of Terraform also keeps the
-# Cloudflare credential out of the provisioning path entirely.
+# No DNS record here. A custom domain's A record points at the droplet's TAILNET IP
+# (100.x), assigned at `tailscale up` (boot) and therefore unknown at plan time; the
+# `domain-cert` workflow discovers it and upserts the Cloudflare record from CI,
+# alongside issuing the cert. Keeping DNS out of Terraform also keeps the Cloudflare
+# credential out of the provisioning path.
 
 # ---- Outputs ----------------------------------------------------------------
 
 output "droplet_ipv4" {
   value = digitalocean_droplet.zimmer.ipv4_address
+}
+
+output "reserved_ipv4" {
+  value = digitalocean_reserved_ip.zimmer.ip_address
 }
 
 output "droplet_name" {
@@ -359,4 +305,14 @@ output "droplet_name" {
 
 output "tailscale_hostname" {
   value = local.tailnet_hostname
+}
+
+# Managed DB connection details for the production Kamal deploy to wire into
+# DATABASE_HOST/PORT. Null on staging (which runs its own Postgres accessory).
+output "managed_db_host" {
+  value = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].private_host : null
+}
+
+output "managed_db_port" {
+  value = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].port : null
 }
