@@ -153,9 +153,12 @@ executor.info      # Get execution information
 
 **Session Status Updates:**
 - `running`: Execution started
-- `needs_input`: The agent finished its turn and is idle (the usual terminal state of a successful run)
+- `archived`: Successful completion — `SessionExecutor#call` sets this directly
 - `failed`: Execution or setup failed
-- `archived`: The session was archived, by a person or by the agent itself
+
+Note that this is the execution layer's own state handling, not `AgentSessionJob`'s: a live session
+that finishes a turn lands in `needs_input`, not `archived`. Nothing in `app/` references
+`Execution::` today.
 
 **Logging:**
 Each phase (setup, execute, cleanup) creates a log entry in `session.logs` with full details.

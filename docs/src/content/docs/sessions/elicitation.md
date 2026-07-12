@@ -59,7 +59,7 @@ break the round-trip — the MCP server would poll forever into a corpse. So the
 
 `pending` → `accept` | `decline` | `expired`.
 
-There is also a `cancel` status in the model, but no code path ever writes it. It's reserved. Tracked in [#75](https://github.com/tadasant/zimmer/issues/75).
+There is also a `cancel` status in the model, but no code path ever writes it. It's reserved.
 
 ## Expiry
 
@@ -71,7 +71,8 @@ Expiry happens two ways: lazily, on each poll (`expire_if_needed!`), and via
 
 :::caution[Ten minutes is short]
 Step away from your desk for a coffee and the agent's approval request dies. There's no
-configuration for the default; an MCP server has to opt into a longer window itself. Tracked in [#75](https://github.com/tadasant/zimmer/issues/75).
+configuration for the default; an MCP server has to opt into a longer window itself.
+Tracked in [#75](https://github.com/tadasant/zimmer/issues/75).
 :::
 
 ## Stranded blocks
@@ -117,7 +118,8 @@ agent hangs until its MCP call times out.
 `PATCH /elicitations/:id/respond` (web) takes the database primary key.
 `PATCH /api/v1/elicitations/:id/respond` (API) takes the `request_id`.
 
-Same verb, same-looking path, different identifier. Tracked in [#82](https://github.com/tadasant/zimmer/issues/82).
+Same verb, same-looking path, different identifier.
+Tracked in [#82](https://github.com/tadasant/zimmer/issues/82).
 
 Also: the API uses `action_type`, not `action`, because `action` collides with a Rails reserved
 param. Clients have to know that.

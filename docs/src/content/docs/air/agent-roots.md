@@ -58,7 +58,8 @@ that is not part of this project and whose contents this documentation cannot ve
 
 This is a leftover from the monorepo split. `roots.json` also gives `agent-orchestrator` the
 `display_name` "Zimmer" (the *same* display name as the `zimmer` root), so the two are
-indistinguishable in a picker. That looks like a bug. Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
+indistinguishable in a picker. That looks like a bug.
+Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 :::
 
 ## Subagent roots

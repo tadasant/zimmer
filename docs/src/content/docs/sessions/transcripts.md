@@ -44,7 +44,8 @@ kept in sync with upstream — a silent-drift hazard with no test guarding it. Z
 diverges intentionally: no secret redaction, per-line normalization with no cross-line
 timestamp carry-forward, and several fields hardcoded to null.
 
-The "no secret redaction" part matters if you ever expose a transcript outside your tailnet. Tracked in [#51](https://github.com/tadasant/zimmer/issues/51).
+The "no secret redaction" part matters if you ever expose a transcript outside your tailnet.
+Tracked in [#51](https://github.com/tadasant/zimmer/issues/51).
 :::
 
 ## The regression guard
@@ -111,5 +112,6 @@ assumes `content` is a string. Tracked in [#83](https://github.com/tadasant/zimm
 `# TODO: Add authorization check here - transcript contains sensitive conversation data`.
 
 Since [the web UI has no authentication at all](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows),
-anyone who can reach the host can read every transcript. Tracked in [#44](https://github.com/tadasant/zimmer/issues/44).
+anyone who can reach the host can read every transcript.
+Tracked in [#44](https://github.com/tadasant/zimmer/issues/44).
 :::

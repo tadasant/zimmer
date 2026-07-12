@@ -88,8 +88,10 @@ EDITOR="code --wait" bin/rails credentials:edit -e staging
 
 Copy the generated `staging.key` file content to:
 1. Your password manager
-2. The `RAILS_MASTER_KEY` secret the deploy reads (see `docs/src/content/docs/operate/deploying.md`) —
-   the key is delivered to the container as an environment variable, not copied to a path on the box
+2. The environment of whatever runs the app, as `RAILS_CREDENTIALS_STAGING_KEY` — the key is read
+   from the environment, not from a path on the box. The shipped staging deploy sets no credentials
+   key at all (`deploy-staging.yml` leaves it unset on purpose), so encrypted credentials are inert
+   there until you add one
 3. Your local `.env` file as `RAILS_CREDENTIALS_STAGING_KEY`
 
 ## Security Notes
