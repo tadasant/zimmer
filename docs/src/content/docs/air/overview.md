@@ -7,8 +7,7 @@ sidebar:
 
 **AIR** is a separate open-source project that Zimmer depends on:
 [**github.com/pulsemcp/air**](https://github.com/pulsemcp/air). This page is the mental model.
-For API surface, flags, and schemas, go read AIR's own docs — this is deliberately light on
-specifics and heavy on *how to think about it*.
+For API surface, flags, and schemas, go read AIR's own docs — this page stays conceptual.
 
 :::note[AIR is not part of Zimmer]
 Zimmer shells out to AIR's CLI (`@pulsemcp/air-cli`, pinned at `0.13.0` in
@@ -31,7 +30,7 @@ AIR's answer: declare artifacts once in version-controlled JSON, compose them ac
 catalogs, and assemble the slice one session needs — translating it into whatever the
 target agent natively understands.
 
-## What AIR is *not*
+## Where AIR stops
 
 This boundary is the whole reason Zimmer exists. From AIR's own docs: it is not an
 orchestration platform. It does not persist sessions, coordinate subagents, queue jobs, manage
@@ -105,13 +104,13 @@ cross-file surgery in a giant `roots.json` that everyone edits and everyone conf
 
 During resolution AIR inverts these declarations into per-root membership, computing
 `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`, `default_references`,
-and `default_subagent_roots` on each root — and then deletes `default_in_roots` from the output
-entirely. It's an authoring field, not a runtime one.
+and `default_subagent_roots` on each root — and then strips `default_in_roots` from the output
+entirely. It's an authoring field, gone by the time you see the resolved tree.
 
 A root whose `default_in_roots` names *another root* is how **subagent roots** are declared. That's
 how Zimmer's four `catalog-mgmt-*` phases attach themselves to the `catalog-management` lead root.
 
-## Plugins are macros, not a new format
+## Plugins are macros over existing artifacts
 
 A plugin's manifest references *existing* artifacts by ID:
 
@@ -176,15 +175,15 @@ Zimmer works around this by string-matching AIR's stderr. See
 AIR is a thin core plus four extension points. Zimmer loads two:
 
 **`@pulsemcp/air-adapter-claude`** — an **agent adapter**. Conceptually, an adapter is *the only
-agent-specific code in the system*: it knows nothing about catalogs or composition, and everything
-about one agent's on-disk conventions. The Claude adapter writes `.mcp.json`, copies skills into
+agent-specific code in the system*: it understands one agent's on-disk conventions and nothing
+about catalogs or composition. The Claude adapter writes `.mcp.json`, copies skills into
 `.claude/skills/<id>/`, bundles each skill's references into `.claude/skills/<id>/references/`,
 copies hooks into `.claude/hooks/<id>/`, and registers them in `.claude/settings.json`.
 
 Sibling adapters (`-codex`, `-cursor`, `-pi`) implement the same interface against different
 conventions. That's what makes "switch agents without rewriting your configs" real.
 
-**`@pulsemcp/air-secrets-env`** — a **transform**, not an adapter. About fifty lines: after the
+**`@pulsemcp/air-secrets-env`** — a **transform** (a distinct extension point from adapters). About fifty lines: after the
 adapter writes `.mcp.json`, it walks every string value and substitutes `${VAR}` and
 `${VAR:-default}` from `process.env`. Then `air prepare` validates that no `${VAR}` survived
 and fails if any did.

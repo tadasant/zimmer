@@ -64,7 +64,7 @@ import Default from "@astrojs/starlight/components/Head.astro";
           },
       securityLevel: "strict",
       fontFamily:
-        '"Schibsted Grotesk Variable", system-ui, sans-serif',
+        '"IBM Plex Sans Variable", system-ui, sans-serif',
       flowchart: { curve: "basis", useMaxWidth: true },
       sequence: { useMaxWidth: true },
     });
@@ -97,10 +97,149 @@ import Default from "@astrojs/starlight/components/Head.astro";
   // that happened to be active at first paint.
   new MutationObserver((records) => {
     if (records.some((r) => r.attributeName === "data-theme")) {
+      // A lightboxed clone would keep the old palette, so dismiss it.
+      closeLightbox();
       document
         .querySelectorAll<HTMLElement>(".mermaid-diagram")
         .forEach((node) => delete node.dataset.rendered);
       renderAll();
     }
   }).observe(document.documentElement, { attributes: true });
+
+  // Clicking a heading's anchor link copies its deep link to the clipboard and
+  // updates the URL hash. On success the link icon is swapped for a checkmark
+  // for ~1.4s (no overlapping text; Starlight's icon centering is reused).
+  // NOTE: width/height/viewBox must match Starlight's own anchor <svg> exactly.
+  // `.sl-anchor-icon > svg` is sized and vertically centered by a computed
+  // transform in Starlight's anchor-links.css; a differently-sized svg would
+  // sit off-center. Do not "tidy" these attributes away.
+  const CHECK_SVG =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+  const copyTimers = new WeakMap<HTMLAnchorElement, number>();
+  const originalIcons = new WeakMap<HTMLAnchorElement, string>();
+
+  document.addEventListener("click", (event) => {
+    const e = event as MouseEvent;
+    // Let modified / non-left clicks behave normally (open in new tab, etc.).
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+
+    const link = (event.target as HTMLElement)?.closest?.(
+      "a.sl-anchor-link",
+    ) as HTMLAnchorElement | null;
+    if (!link) return;
+    event.preventDefault();
+
+    const hash = new URL(link.href).hash;
+    const url = location.origin + location.pathname + location.search + hash;
+    history.pushState(null, "", hash);
+
+    const iconHost = link.querySelector<HTMLElement>(".sl-anchor-icon");
+    // Only confirm (swap to checkmark) when the write actually succeeded. A
+    // repeat click re-arms the timer rather than being swallowed, and the real
+    // icon is captured only once so the checkmark can never become "original".
+    const confirm = () => {
+      if (!iconHost) return;
+      const pending = copyTimers.get(link);
+      if (pending !== undefined) window.clearTimeout(pending);
+      else originalIcons.set(link, iconHost.innerHTML);
+
+      iconHost.innerHTML = CHECK_SVG;
+      link.setAttribute("data-copied", "");
+      copyTimers.set(
+        link,
+        window.setTimeout(() => {
+          iconHost.innerHTML = originalIcons.get(link) ?? iconHost.innerHTML;
+          link.removeAttribute("data-copied");
+          copyTimers.delete(link);
+          originalIcons.delete(link);
+        }, 1400),
+      );
+    };
+    navigator.clipboard?.writeText?.(url).then(confirm, () => {});
+  });
+
+  // ---- Image / diagram lightbox --------------------------------------------
+  // Click any diagram or content image to view it full-screen. A native
+  // <dialog> opened with showModal() gives us the focus trap, Esc handling,
+  // focus restore, and an inert background for free.
+  //
+  // NOTE: this module script runs once. If view transitions (ClientRouter) are
+  // ever enabled, Astro swaps <body> and this node would be detached — build the
+  // dialog lazily per open, or re-append on astro:page-load, if that day comes.
+  const lightbox = document.createElement("dialog");
+  lightbox.className = "lightbox";
+  lightbox.setAttribute("aria-label", "Enlarged view");
+  lightbox.innerHTML =
+    '<button class="lightbox-close" aria-label="Close">✕</button><div class="lightbox-stage"></div>';
+  const stage = lightbox.querySelector<HTMLElement>(".lightbox-stage")!;
+  document.body.appendChild(lightbox);
+
+  function openLightbox(node: SVGElement | HTMLImageElement) {
+    stage.replaceChildren(node);
+    lightbox.showModal();
+    document.body.style.overflow = "hidden";
+  }
+  function closeLightbox() {
+    if (lightbox.open) lightbox.close();
+  }
+  // Fires for Esc (native) and for our explicit close() calls.
+  lightbox.addEventListener("close", () => {
+    stage.replaceChildren();
+    document.body.style.overflow = "";
+  });
+
+  lightbox.addEventListener("click", (event) => {
+    // Backdrop (the dialog's own padding area) or the close button dismisses;
+    // clicking the diagram itself does not.
+    if (
+      event.target === lightbox ||
+      (event.target as HTMLElement).closest(".lightbox-close")
+    ) {
+      closeLightbox();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    const el = event.target as HTMLElement;
+    if (el.closest(".lightbox")) return;
+    // Don't hijack a click that's really a text selection, or a real link.
+    if (window.getSelection()?.toString()) return;
+    if (el.closest("a")) return;
+
+    const diagram = el.closest(".mermaid-diagram");
+    if (diagram) {
+      const svg = diagram.querySelector("svg");
+      if (svg) {
+        const clone = svg.cloneNode(true) as SVGElement;
+        clone.removeAttribute("style"); // drop Mermaid's max-width cap
+
+        // An SVG with a viewBox but no explicit size collapses, so size it to
+        // "contain" the viewport (as large as fits, preserving aspect ratio).
+        const vb = svg.viewBox?.baseVal;
+        const rect = svg.getBoundingClientRect();
+        const vbW = vb && vb.width ? vb.width : rect.width || 800;
+        const vbH = vb && vb.height ? vb.height : rect.height || 600;
+        const avW = window.innerWidth * 0.9;
+        const avH = window.innerHeight * 0.86;
+        // Cap the blow-up so a three-node diagram doesn't fill the screen.
+        const scale = Math.min(avW / vbW, avH / vbH, 3);
+        clone.style.width = Math.round(vbW * scale) + "px";
+        clone.style.height = Math.round(vbH * scale) + "px";
+        clone.style.maxWidth = "none";
+        clone.style.maxHeight = "none";
+
+        openLightbox(clone);
+      }
+      return;
+    }
+
+    const img = el.closest(".sl-markdown-content img") as HTMLImageElement | null;
+    if (img) {
+      const clone = new Image();
+      clone.src = img.currentSrc || img.src;
+      clone.alt = img.alt;
+      openLightbox(clone);
+    }
+  });
 </script>

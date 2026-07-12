@@ -99,7 +99,7 @@ adds the `/0` back.
 `bin/docker-entrypoint` backgrounds `claude update` and the Playwright browser install. Sessions started
 in the first ~30 seconds after a container boot use the old CLI and Chromium.
 
-### The tailnet reaper silently no-ops without credentials
+### The tailnet reaper no-ops without credentials, and says nothing
 
 `scripts/tailnet-reap-node.sh` does nothing when `TS_API_CLIENT_*` are unset, so the MagicDNS name
 drifts to `zimmer-staging-1`, `-2`, … The health check compensates by trying every online peer with
@@ -431,7 +431,7 @@ correctness guarantee."*
 The `archive` event's comment says artifacts are "preserved for 14 days." The
 `TRASH_RETENTION_PERIOD` constant that governs it is `4.days`.
 
-### State-machine side effects fail silently
+### State-machine side effects fail without surfacing
 
 Nearly every callback is wrapped in a bare `rescue` that logs and swallows, so cleanup can be skipped
 while the state advances anyway.
@@ -499,11 +499,11 @@ model.
 `{error, message: String}`, `{error, messages: Array}`, and `{error, message: Array}` (singular key,
 array value, from the `RecordInvalid` rescue). Parse defensively.
 
-### The only rate limit is global, not per-key
+### The only rate limit is global
 
 `Api::V1::HealthController`'s `CLEANUP_COOLDOWN = 30.seconds` is keyed in `Rails.cache` as
 `health_api_rate_limit:<action>` — not scoped to an API key. One client's cleanup locks out
-everyone for 30s. It silently no-ops with a null cache store.
+everyone for 30s. It no-ops with no error under a null cache store.
 
 ### The in-app API docs page is still stale
 

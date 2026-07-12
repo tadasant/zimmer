@@ -115,10 +115,9 @@ the MCP server crashing mid-round-trip — the marker is left set with nothing t
 the session sits in `needs_input` showing a phantom "blocked on elicitation" forever.
 
 `CleanupExpiredElicitationsJob` sweeps for this every 5 minutes and calls
-`clear_stale_elicitation_block!`, which strips the marker but deliberately leaves the session
-in `needs_input` rather than flipping it to `running` — a minutes-old stranded block has no
-live round-trip to resume into, and flipping it would create a phantom running session with no
-monitoring job.
+`clear_stale_elicitation_block!`, which strips the marker and leaves the session
+in `needs_input`; flipping it to `running` would create a phantom running session with no
+monitoring job. A minutes-old stranded block has no live round-trip to resume into.
 :::
 
 ### `fail` — `waiting | running | needs_input → failed`

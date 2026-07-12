@@ -45,7 +45,7 @@ could not reach the box.
 | `STAGING_API_KEYS` | REST API bearer keys |
 | `OTEL_LOGS_EXPORTER_ENDPOINT` / `_BEARER_TOKEN`, `SENTRY_DSN_BACKEND` | optional observability |
 
-:::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key, not an OAuth client]
+:::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
 A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own comment says so.
 `docs/DEPLOYING_ON_DIGITALOCEAN.md` told you to use `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; that was
 wrong and would fail.
