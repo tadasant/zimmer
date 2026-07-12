@@ -57,34 +57,31 @@
       "twist-mcp@latest"
     ]
   },
-  "agent-orchestrator-staging-self-session": {
-    "title": "AO Self-Session (staging)",
-    "description": "Self-session MCP server letting a session call back into its own orchestrator instance.",
-    "type": "stdio",
-    "command": "npx",
-    "args": [
-      "-y",
-      "agent-orchestrator-mcp-server@latest"
-    ],
-    "env": {
-      "TOOL_GROUPS": "self_session",
-      "AGENT_ORCHESTRATOR_BASE_URL": "https://staging.zimmer.example.com",
-      "AGENT_ORCHESTRATOR_API_KEY": "${AGENT_ORCHESTRATOR_STAGING_API_KEY}"
+  "zimmer": {
+    "title": "Zimmer",
+    "description": "Zimmer's native MCP server — the full tool surface (sessions, notifications, triggers, health) of the Zimmer instance running the session.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp",
+    "headers": {
+      "X-API-Key": "${AGENT_ORCHESTRATOR_PROD_API_KEY}"
     }
   },
-  "agent-orchestrator-prod-self-session": {
-    "title": "AO Self-Session (prod)",
-    "description": "Self-session MCP server letting a session call back into its own orchestrator instance.",
-    "type": "stdio",
-    "command": "npx",
-    "args": [
-      "-y",
-      "agent-orchestrator-mcp-server@latest"
-    ],
-    "env": {
-      "TOOL_GROUPS": "self_session",
-      "AGENT_ORCHESTRATOR_BASE_URL": "https://zimmer.example.com",
-      "AGENT_ORCHESTRATOR_API_KEY": "${AGENT_ORCHESTRATOR_PROD_API_KEY}"
+  "zimmer-sessions": {
+    "title": "Zimmer Sessions",
+    "description": "Zimmer's native MCP server, scoped to session orchestration (search/get/start/act on other sessions).",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=sessions",
+    "headers": {
+      "X-API-Key": "${AGENT_ORCHESTRATOR_PROD_API_KEY}"
+    }
+  },
+  "zimmer-self-session": {
+    "title": "Zimmer Self-Session",
+    "description": "Zimmer's native MCP server, scoped to self-management (own notes/title/heartbeat/archive, push notifications, wake-ups). Auto-injected into every session — list it explicitly only to pin it.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=self_session",
+    "headers": {
+      "X-API-Key": "${AGENT_ORCHESTRATOR_PROD_API_KEY}"
     }
   },
   "figma": {
@@ -121,16 +118,6 @@
     "args": [
       "-y",
       "slack-workspace-mcp@latest"
-    ]
-  },
-  "agent-orchestrator-prod-sessions": {
-    "title": "Agent Orchestrator Prod Sessions",
-    "description": "AO sessions MCP server (spawn/list downstream sessions).",
-    "type": "stdio",
-    "command": "npx",
-    "args": [
-      "-y",
-      "agent-orchestrator-prod-sessions-mcp@latest"
     ]
   },
   "tally": {

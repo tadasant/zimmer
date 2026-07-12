@@ -1,70 +1,79 @@
 # frozen_string_literal: true
 
 require "test_helper"
-require "mocha/minitest"
 
 class SelfSessionInjectorTest < ActiveSupport::TestCase
-  test "catalog_key resolves per environment with staging fallback for dev/test" do
-    assert_equal "agent-orchestrator-prod-self-session",
-      SelfSessionInjector.new(env: "production").catalog_key
-    assert_equal "agent-orchestrator-staging-self-session",
-      SelfSessionInjector.new(env: "staging").catalog_key
-    assert_equal "agent-orchestrator-staging-self-session",
-      SelfSessionInjector.new(env: "development").catalog_key
-    assert_equal "agent-orchestrator-staging-self-session",
-      SelfSessionInjector.new(env: "test").catalog_key
+  test "endpoint_url points at this instance's native MCP endpoint, with scoping" do
+    ENV["AGENT_ORCHESTRATOR_LOCAL_BASE_URL"] = "http://localhost:4000"
+    injector = SelfSessionInjector.new(env: "development")
+
+    assert_equal "http://localhost:4000/mcp", injector.endpoint_url
+    assert_equal "http://localhost:4000/mcp?tool_groups=self_session",
+      injector.endpoint_url(tool_groups: "self_session")
+    assert_equal "http://localhost:4000/mcp?allowed_agent_roots=zimmer%2Cdocs",
+      injector.endpoint_url(allowed_agent_roots: "zimmer,docs")
+  ensure
+    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_BASE_URL")
+  end
+
+  test "headers carry the instance's API key" do
+    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
+    assert_equal({ "X-API-Key" => "local-key" }, SelfSessionInjector.new(env: "development").headers)
+  ensure
+    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
   end
 
   test "self_session_capable_present? matrix" do
     injector = SelfSessionInjector.new(env: "test")
-    self_key = injector.catalog_key
 
-    # TOOL_GROUPS blank (full surface) -> self-session capable
+    # Full-surface Zimmer server (no tool_groups) -> covers self_session
     assert injector.self_session_capable_present?(
-      [ { name: "agent-orchestrator", tool_groups: nil } ]
+      [ { name: "zimmer", url: "http://localhost:3000/mcp?allowed_agent_roots=docs" } ]
     )
 
-    # ALLOWED_AGENT_ROOTS does not hide tools; TOOL_GROUPS blank -> still capable
+    # Scoped to a group set that includes self_session -> covers it
     assert injector.self_session_capable_present?(
-      [ { name: "agent-orchestrator", tool_groups: "" } ]
+      [ { name: "zimmer-full", url: "http://localhost:3000/mcp?tool_groups=sessions,self_session" } ]
     )
 
-    # TOOL_GROUPS set -> NOT capable (self_session tools filtered out)
+    # Scoped to other groups -> does NOT cover self_session
     refute injector.self_session_capable_present?(
-      [ { name: "agent-orchestrator-prod-sessions", tool_groups: "sessions" } ]
+      [ { name: "zimmer-sessions", url: "http://localhost:3000/mcp?tool_groups=sessions" } ]
     )
 
-    # Non-Zimmer server -> ignored
+    # A third-party server that happens to be served at /mcp -> ignored
     refute injector.self_session_capable_present?(
-      [ { name: "playwright-custom", tool_groups: nil } ]
+      [ { name: "figma", url: "https://mcp.figma.com/mcp" } ]
     )
 
-    # The self-session server itself -> ignored (excluded by name != self_key)
+    # The self-session server itself -> ignored, so re-running injection is idempotent
     refute injector.self_session_capable_present?(
-      [ { name: self_key, tool_groups: nil } ]
+      [ { name: "zimmer-self-session", url: "http://localhost:3000/mcp?tool_groups=self_session" } ]
     )
   end
 
-  test "inject! yields catalog key and server when no capable Zimmer server present" do
-    injector = SelfSessionInjector.new(env: "staging")
-    fake_server = Object.new
+  test "inject! yields the native self-session entry when nothing covers the surface" do
+    ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
+    injector = SelfSessionInjector.new(env: "development")
     yielded = nil
 
-    ServersConfig.stub(:find, ->(key) { key == "agent-orchestrator-staging-self-session" ? fake_server : nil }) do
-      result = injector.inject!(existing_ao_servers: [ { name: "playwright-custom", tool_groups: nil } ]) do |key, server|
-        yielded = [ key, server ]
-      end
-      assert_equal "agent-orchestrator-staging-self-session", result
+    result = injector.inject!(existing_servers: [ { name: "playwright-custom", url: nil } ]) do |name, url, headers|
+      yielded = [ name, url, headers ]
     end
 
-    assert_equal [ "agent-orchestrator-staging-self-session", fake_server ], yielded
+    assert_equal "zimmer-self-session", result
+    assert_equal "zimmer-self-session", yielded[0]
+    assert_equal "http://localhost:3000/mcp?tool_groups=self_session", yielded[1]
+    assert_equal({ "X-API-Key" => "local-key" }, yielded[2])
+  ensure
+    ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
   end
 
-  test "inject! skips and does not yield when a capable Zimmer server is present" do
+  test "inject! skips and does not yield when a full-surface Zimmer server is present" do
     injector = SelfSessionInjector.new(env: "staging")
     yielded = false
 
-    result = injector.inject!(existing_ao_servers: [ { name: "agent-orchestrator", tool_groups: nil } ]) do |_key, _server|
+    result = injector.inject!(existing_servers: [ { name: "zimmer", url: "https://staging.zimmer.example.com/mcp" } ]) do
       yielded = true
     end
 
@@ -72,38 +81,26 @@ class SelfSessionInjectorTest < ActiveSupport::TestCase
     refute yielded
   end
 
-  test "inject! returns nil and warns when catalog entry is missing" do
-    injector = SelfSessionInjector.new(env: "staging")
-    yielded = false
-
-    ServersConfig.stub(:find, ->(_key) { nil }) do
-      result = injector.inject!(existing_ao_servers: []) do |_key, _server|
-        yielded = true
-      end
-      assert_nil result
-    end
-
-    refute yielded
-  end
-
-  test "ao_self_target resolves per environment" do
+  test "self_target resolves per environment" do
+    prod_base_url = ENV.delete("AGENT_ORCHESTRATOR_PROD_BASE_URL")
     ENV["AGENT_ORCHESTRATOR_LOCAL_API_KEY"] = "local-key"
-    target = SelfSessionInjector.new(env: "development").ao_self_target
+    target = SelfSessionInjector.new(env: "development").self_target
     assert_equal "http://localhost:3000", target[:base_url]
     assert_equal "local-key", target[:api_key]
 
     ENV["AGENT_ORCHESTRATOR_PROD_API_KEY"] = "prod-key"
-    prod = SelfSessionInjector.new(env: "production").ao_self_target
+    prod = SelfSessionInjector.new(env: "production").self_target
     assert_equal "https://zimmer.example.com", prod[:base_url]
     assert_equal "prod-key", prod[:api_key]
   ensure
     ENV.delete("AGENT_ORCHESTRATOR_LOCAL_API_KEY")
     ENV.delete("AGENT_ORCHESTRATOR_PROD_API_KEY")
+    ENV["AGENT_ORCHESTRATOR_PROD_BASE_URL"] = prod_base_url if prod_base_url
   end
 
-  test "ao_self_target honors AGENT_ORCHESTRATOR_LOCAL_BASE_URL override" do
+  test "self_target honors AGENT_ORCHESTRATOR_LOCAL_BASE_URL override" do
     ENV["AGENT_ORCHESTRATOR_LOCAL_BASE_URL"] = "http://localhost:9999"
-    target = SelfSessionInjector.new(env: "development").ao_self_target
+    target = SelfSessionInjector.new(env: "development").self_target
     assert_equal "http://localhost:9999", target[:base_url]
   ensure
     ENV.delete("AGENT_ORCHESTRATOR_LOCAL_BASE_URL")

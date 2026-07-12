@@ -48,12 +48,14 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     TomlRB.dump(config)
   end
 
-  def build_server_entry(catalog_server)
-    if catalog_server.stdio?
-      { "command" => catalog_server.command, "args" => catalog_server.args.dup, "env" => catalog_server.env.dup }
-    else
-      { "url" => catalog_server.url, "http_headers" => catalog_server.headers.dup }
-    end
+  def http_headers_key
+    "http_headers"
+  end
+
+  # Codex infers the transport from the presence of `url` (vs `command`), so no
+  # type discriminator is written.
+  def build_http_entry(url:, headers:)
+    { "url" => url, http_headers_key => headers.dup }
   end
 
   def resolve_and_rewrite!(servers)

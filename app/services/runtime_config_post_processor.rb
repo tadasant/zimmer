@@ -7,13 +7,17 @@
 # `.codex/config.toml` for Codex). Zimmer then applies a fixed set of conceptually
 # runtime-agnostic tweaks to it:
 #
-#   1. Inject an agent-orchestrator MCP server when the root declares
-#      default_subagent_roots (so parent roots can spawn subagent sessions).
-#   2. Inject a self-session Zimmer MCP server unless an existing Zimmer server already
-#      covers the self_session tool group.
-#   3. Retarget agent-orchestrator-* server entries at the current Zimmer instance
-#      so a local-dev or staging session orchestrates itself, not production.
+#   1. Inject Zimmer's own MCP server when the root declares default_subagent_roots
+#      (so parent roots can spawn subagent sessions).
+#   2. Inject the self-session Zimmer MCP server unless an existing Zimmer server
+#      already covers the self_session tool group.
+#   3. Retarget Zimmer MCP server entries at the current Zimmer instance so a
+#      local-dev or staging session orchestrates itself, not production.
 #   4. Resolve ${VAR} interpolations from SecretsLoader and rewrite npx commands.
+#
+# The injected servers are streamable-HTTP entries pointing at this instance's
+# native /mcp endpoint (see McpController) — Zimmer speaks MCP itself, so nothing
+# is spawned via npx to reach it.
 #
 # Steps 1-3 operate purely on the normalized server hash (`command`/`args`/`env`
 # for stdio, `url`/header-table for http) that both formats share, so they live
@@ -57,9 +61,9 @@ class RuntimeConfigPostProcessor
     config = read_or_synthesize_config
     servers = servers_map(config)
 
-    inject_subagent_ao_server!(servers)
-    inject_self_session_ao_server!(servers)
-    retarget_ao_servers_to_current_env!(servers)
+    inject_subagent_server!(servers)
+    inject_self_session_server!(servers)
+    retarget_zimmer_servers_to_current_env!(servers)
     resolve_and_rewrite!(servers)
 
     persist_config!(config)
@@ -82,12 +86,12 @@ class RuntimeConfigPostProcessor
     config = read_or_synthesize_config
     servers = servers_map(config)
 
-    inject_subagent_ao_server!(servers)
-    inject_self_session_ao_server!(servers)
+    inject_subagent_server!(servers)
+    inject_self_session_server!(servers)
 
     return if injected_mcp_servers.empty?
 
-    retarget_ao_servers_to_current_env!(servers)
+    retarget_zimmer_servers_to_current_env!(servers)
     resolve_and_rewrite!(servers)
 
     persist_config!(config)
@@ -128,11 +132,17 @@ class RuntimeConfigPostProcessor
     raise NotImplementedError, "#{self.class} must implement #servers_map"
   end
 
-  # Build the native server entry for a catalog server (stdio or http).
-  # @param catalog_server [ServersConfig::Server]
+  # The key an HTTP server entry stores its literal header table under
+  # ("headers" for Claude's JSON, "http_headers" for Codex's TOML).
+  # @return [String]
+  def http_headers_key
+    raise NotImplementedError, "#{self.class} must implement #http_headers_key"
+  end
+
+  # An HTTP MCP server entry in the runtime's native shape.
   # @return [Hash]
-  def build_server_entry(_catalog_server)
-    raise NotImplementedError, "#{self.class} must implement #build_server_entry"
+  def build_http_entry(url:, headers:)
+    raise NotImplementedError, "#{self.class} must implement #build_http_entry"
   end
 
   # Resolve ${VAR} interpolations and apply the npx --prefix rewrite to every
@@ -157,80 +167,85 @@ class RuntimeConfigPostProcessor
 
   # --- Shared, format-agnostic logic. ---
 
-  # When the root declares default_subagent_roots, inject an agent-orchestrator MCP server
-  # with ALLOWED_AGENT_ROOTS set to the declared subagent roots. This lets parent roots
-  # spawn subagent sessions without explicitly listing a Zimmer MCP server in default_mcp_servers.
-  def inject_subagent_ao_server!(servers)
+  # When the root declares default_subagent_roots, inject Zimmer's MCP server
+  # scoped to those roots (allowed_agent_roots), so parent roots can spawn
+  # subagent sessions without explicitly listing a Zimmer MCP server in
+  # default_mcp_servers. The entry is full-surface (no tool_groups), which is why
+  # it also satisfies the self-session dedup below.
+  def inject_subagent_server!(servers)
     root = find_root
     return unless root&.default_subagent_roots&.any?
 
-    allowed_roots = root.default_subagent_roots.join(",")
-    target = self_session_injector.ao_self_target
+    name = SelfSessionInjector::SUBAGENT_SERVER_NAME
+    servers[name] = build_http_entry(
+      url: self_session_injector.endpoint_url(allowed_agent_roots: root.default_subagent_roots.join(",")),
+      headers: self_session_injector.headers
+    )
 
-    servers["agent-orchestrator"] = {
-      "command" => "npx",
-      "args" => [ "-y", "agent-orchestrator-mcp-server@latest" ],
-      "env" => {
-        "AGENT_ORCHESTRATOR_BASE_URL" => target[:base_url],
-        "AGENT_ORCHESTRATOR_API_KEY" => target[:api_key],
-        "ALLOWED_AGENT_ROOTS" => allowed_roots
-      }
-    }
-
-    injected_mcp_servers << "agent-orchestrator"
+    injected_mcp_servers << name
   end
 
-  def inject_self_session_ao_server!(servers)
+  def inject_self_session_server!(servers)
     existing = servers.filter_map do |name, entry|
       next unless entry.is_a?(Hash)
-      { name: name, tool_groups: entry.dig("env", "TOOL_GROUPS") }
+      { name: name, url: entry["url"] }
     end
 
-    injected_key = self_session_injector.inject!(existing_ao_servers: existing) do |catalog_key, catalog_server|
-      servers[catalog_key] = build_server_entry(catalog_server)
+    injected_name = self_session_injector.inject!(existing_servers: existing) do |name, url, headers|
+      servers[name] = build_http_entry(url: url, headers: headers)
     end
 
-    injected_mcp_servers << injected_key if injected_key
+    injected_mcp_servers << injected_name if injected_name
   end
 
-  # Retarget every agent-orchestrator-* MCP server entry at the current Zimmer
-  # instance's BASE_URL and API_KEY.
+  # Retarget every Zimmer MCP server entry at the current Zimmer instance.
   #
-  # Why: roots.json default_mcp_servers references the prod-suffixed catalog
-  # entries (e.g. `agent-orchestrator-prod`), and the catalog entries default
-  # to https://zimmer.example.com. A local-dev or staging session inheriting that
-  # default would orchestrate production Zimmer instead of its own instance. We
-  # rewrite at config-write time so the same root works against any Zimmer
-  # environment without per-env duplication in the catalog.
+  # Why: a root's default_mcp_servers may reference a catalog entry whose URL
+  # points at production Zimmer. A local-dev or staging session inheriting that
+  # entry would orchestrate production instead of its own instance. Rewriting at
+  # config-write time lets the same root work against any Zimmer environment
+  # without per-env duplication in the catalog. Query-string scoping
+  # (tool_groups / allowed_agent_roots) is preserved — only the origin and the
+  # API key change.
   #
-  # The TOOL_GROUPS / API_KEY env keys live in the literal `env` table in both
-  # formats (they are not same-named ${VAR} refs, so AIR never converts them to
-  # Codex host-env forwarding), so this single implementation serves both.
-  #
-  # No-op in production — the catalog's prod defaults are already correct.
-  def retarget_ao_servers_to_current_env!(servers)
+  # No-op in production, where the catalog's URLs already point at the instance
+  # serving the session.
+  def retarget_zimmer_servers_to_current_env!(servers)
     return if Rails.env.production?
 
-    target = self_session_injector.ao_self_target
+    target = self_session_injector.self_target
     retargeted_any = false
-    servers.each do |name, entry|
-      next unless name.to_s.start_with?("agent-orchestrator")
-      next unless entry.is_a?(Hash)
 
-      env = entry["env"] ||= {}
-      env["AGENT_ORCHESTRATOR_BASE_URL"] = target[:base_url]
-      env["AGENT_ORCHESTRATOR_API_KEY"] = target[:api_key]
+    servers.each do |name, entry|
+      next unless entry.is_a?(Hash)
+      next unless self_session_injector.zimmer_server_name?(name)
+      next if entry["url"].blank?
+
+      entry["url"] = rebase_url(entry["url"], target[:base_url])
+      headers = entry[http_headers_key] ||= {}
+      headers[SelfSessionInjector::API_KEY_HEADER] = target[:api_key]
       retargeted_any = true
     end
 
-    # Blank API_KEY means the spawned MCP server will fail to authenticate with a
-    # confusing 401 rather than a clear configuration error. Warn so the dev
-    # notices at session-prep time instead of at first tool call.
+    # A blank API key means every MCP call 401s with a confusing auth error rather
+    # than a clear configuration error. Warn at session-prep time instead.
     if retargeted_any && target[:api_key].blank?
       env_var = Rails.env == "staging" ? "AGENT_ORCHESTRATOR_STAGING_API_KEY" : "AGENT_ORCHESTRATOR_LOCAL_API_KEY"
-      Rails.logger.warn "[#{self.class.name}] Retargeted agent-orchestrator-* servers in #{Rails.env} env with blank API_KEY — " \
-        "spawned MCP servers will fail to authenticate. Set #{env_var} in your .env or credentials."
+      Rails.logger.warn "[#{self.class.name}] Retargeted Zimmer MCP servers in #{Rails.env} env with blank API key — " \
+        "MCP calls will fail to authenticate. Set #{env_var} in your .env or credentials."
     end
+  end
+
+  # Swap a URL's origin for the current instance's, keeping path and query.
+  def rebase_url(url, base_url)
+    uri = URI.parse(url.to_s)
+    base = URI.parse(base_url.to_s)
+    uri.scheme = base.scheme
+    uri.host = base.host
+    uri.port = base.port
+    uri.to_s
+  rescue URI::InvalidURIError
+    url
   end
 
   # Look up the AgentRoot object for this session.

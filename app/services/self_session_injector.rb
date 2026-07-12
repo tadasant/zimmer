@@ -1,24 +1,33 @@
 # frozen_string_literal: true
 
-# Decides whether a session needs a dedicated self-session agent-orchestrator
-# MCP server injected, and resolves the per-environment Zimmer instance target
-# (BASE_URL / API_KEY) that Zimmer servers should point at.
+# Decides whether a session needs Zimmer's own MCP server injected into its
+# runtime config, and resolves the Zimmer instance (BASE_URL / API_KEY) those
+# entries should point at.
 #
-# This is runtime-agnostic: it reasons about *which* catalog entry to inject and
-# *whether* injection is needed (the dedup rule), but it does not know how to
-# write the entry in any particular config format. The per-runtime config
-# post-processor passes in a description of the Zimmer servers already present and a
-# sink block that writes the chosen entry in its native format (`.mcp.json` for
-# Claude, `.codex/config.toml` for Codex).
+# Zimmer serves MCP natively (McpController → Mcp::Server), so an injected entry
+# is a streamable-HTTP server pointing back at this instance's /mcp endpoint,
+# scoped with query params:
+#
+#   self-session : /mcp?tool_groups=self_session
+#   subagent     : /mcp?allowed_agent_roots=<roots>   (full surface, restricted roots)
+#
+# This is runtime-agnostic: it decides *what* entry to write and *whether* it is
+# needed (the dedup rule), but not how to serialize it. The per-runtime config
+# post-processor passes in the servers already present and writes the chosen
+# entry in its native format (`.mcp.json` for Claude, `.codex/config.toml` for
+# Codex).
 class SelfSessionInjector
-  # The catalog key for the self-session Zimmer server, per environment. Dev/test
-  # have no dedicated entry, so they fall back to the staging-flavored one and
-  # rely on the post-processor's env retargeting to point it at the local
-  # instance.
-  SELF_SESSION_CATALOG_KEYS = {
-    "production" => "agent-orchestrator-prod-self-session",
-    "staging" => "agent-orchestrator-staging-self-session"
-  }.freeze
+  # Entry name for the auto-injected self-session server. Every session gets one
+  # (unless something else already covers the surface) — that is what makes
+  # self-archiving, own-notes/title edits and the wake-up tools universally
+  # available.
+  SELF_SESSION_SERVER_NAME = "zimmer-self-session"
+
+  # Entry name for the server injected into roots that declare
+  # default_subagent_roots, so they can spawn their subagent sessions.
+  SUBAGENT_SERVER_NAME = "zimmer"
+
+  API_KEY_HEADER = "X-API-Key"
 
   # @param env [String] the Rails environment name (injectable for testing)
   # @param secrets_interpolator [SecretsInterpolator] resolves env-var lookups
@@ -27,83 +36,73 @@ class SelfSessionInjector
     @secrets_interpolator = secrets_interpolator
   end
 
-  def catalog_key
-    SELF_SESSION_CATALOG_KEYS.fetch(@env, SELF_SESSION_CATALOG_KEYS["staging"])
+  # Inject the self-session server unless a server already present covers the
+  # self_session tool group.
+  #
+  # @param existing_servers [Array<Hash>] one entry per MCP server already present,
+  #   each shaped `{ name: String, url: String|nil }`. The caller extracts these from
+  #   its native config so the dedup rule stays format-agnostic.
+  # @yield [String, String, Hash] entry name, endpoint URL, headers; the block writes
+  #   the entry in the runtime's native format.
+  # @return [String, nil] the injected entry name, or nil if injection was skipped.
+  def inject!(existing_servers:)
+    return nil if self_session_capable_present?(existing_servers)
+
+    yield(SELF_SESSION_SERVER_NAME, endpoint_url(tool_groups: "self_session"), headers)
+    SELF_SESSION_SERVER_NAME
   end
 
-  # Inject the self-session Zimmer server unless an existing Zimmer server already
-  # exposes the self_session tool group.
+  # A Zimmer MCP entry with no tool_groups exposes the full surface — which
+  # includes every self_session tool — so a dedicated self-session entry would be
+  # redundant. This is what keeps a root with default_subagent_roots (whose
+  # injected `zimmer` server is full-surface) from carrying two Zimmer servers.
   #
-  # @param existing_ao_servers [Array<Hash>] one entry per MCP server already
-  #   present, each shaped `{ name: String, tool_groups: String|nil }`. The
-  #   caller extracts these from its native config so the dedup rule stays
-  #   format-agnostic.
-  # @yield [String, ServersConfig::Server] the catalog key + resolved catalog
-  #   server; the block writes the entry in the runtime's native format.
-  # @return [String, nil] the injected catalog key, or nil if injection was
-  #   skipped (dedup hit or catalog entry missing).
-  def inject!(existing_ao_servers:)
-    return nil if self_session_capable_present?(existing_ao_servers)
+  # An entry that scopes itself to a group set covers self-session only if
+  # self_session is among those groups.
+  def self_session_capable_present?(existing_servers)
+    existing_servers.any? do |server|
+      name = server[:name].to_s
+      next false if name == SELF_SESSION_SERVER_NAME
+      next false unless zimmer_server_name?(name)
 
-    key = catalog_key
-    catalog_server = ServersConfig.find(key)
-    unless catalog_server
-      Rails.logger.warn "[SelfSessionInjector] Self-session catalog entry '#{key}' not found, skipping injection"
-      return nil
-    end
-
-    yield(key, catalog_server)
-    key
-  end
-
-  # An Zimmer server with TOOL_GROUPS blank exposes the full tool surface — including
-  # the self_session group — which makes the dedicated self-session server
-  # redundant.
-  #
-  # The self_session group is action_session (filtered to update_notes,
-  # update_title, archive), get_session, get_configs, send_push_notification,
-  # wake_me_up_later, and wake_me_up_when_session_changes_state. (start_session
-  # and quick_search_sessions belong to the broader `sessions` group, not
-  # self_session — but a blank-tool_groups server exposes both groups anyway.)
-  #
-  # ALLOWED_AGENT_ROOTS does NOT hide tools at registration time; it only adds
-  # call-time guards on a few actions: creating sessions (start_session),
-  # creating or modifying triggers (action_trigger create/update), and changing
-  # a session's MCP servers (action_session change_mcp_servers). None of those
-  # touch the self_session surface — its action_session is filtered to
-  # update_notes/update_title/archive, so change_mcp_servers is never exposed.
-  # The one self_session tool with a call-time guard is
-  # wake_me_up_when_session_changes_state, and it guards only the *watched*
-  # session (it refuses to schedule a wake on a session outside the allowed
-  # roots); a session waking *itself* via wake_me_up_later is never guarded. So
-  # the self-management use of the self_session tools keeps working even when
-  # the full-surface server carries ALLOWED_AGENT_ROOTS. Subagent roots that go
-  # through this path are orchestrated by a parent and don't currently watch
-  # sessions outside their allowed roots — cross-session wakes are exercised by
-  # ao-router, which lists agent-orchestrator-prod in default_mcp_servers
-  # directly and doesn't go through this dedup. If a future subagent root needs
-  # to watch a session outside its allowed roots, the cleaner fix is to relax
-  # that guard, not to inject a duplicate self-session server.
-  #
-  # Avoiding the duplicate also prevents two concurrent
-  # `npx … agent-orchestrator-mcp-server@latest` invocations from racing on
-  # npm's shared `_npx/<hash>` cache directory, which has caused tar-extraction
-  # corruption + ERR_MODULE_NOT_FOUND on session start.
-  def self_session_capable_present?(existing_ao_servers)
-    self_key = catalog_key
-    existing_ao_servers.any? do |server|
-      server[:name].to_s.include?("agent-orchestrator") &&
-        server[:name] != self_key &&
-        server[:tool_groups].blank?
+      groups = tool_groups_in(server[:url])
+      groups.empty? || groups.include?("self_session")
     end
   end
 
-  # BASE_URL and API_KEY for the Zimmer instance this Rails process IS. Used both to
-  # retarget catalog-resolved Zimmer servers and to populate auto-injected Zimmer
-  # servers so a local-dev or staging session orchestrates itself, not
-  # production.
-  def ao_self_target
-    case @env
+  # Zimmer's own MCP entries are identified by name — `zimmer` (injected
+  # full-surface) and `zimmer-*` (injected or catalog-resolved scoped variants).
+  # Matching on the name rather than the URL keeps a third-party server that
+  # happens to be served at /mcp from being mistaken for one of ours.
+  def zimmer_server_name?(name)
+    name.to_s == SUBAGENT_SERVER_NAME || name.to_s.start_with?("#{SUBAGENT_SERVER_NAME}-")
+  end
+
+  # The MCP endpoint of the Zimmer instance this Rails process IS, optionally
+  # scoped. Used both to build injected entries and to retarget catalog-resolved
+  # Zimmer servers, so a local-dev or staging session orchestrates itself rather
+  # than production.
+  def endpoint_url(tool_groups: nil, allowed_agent_roots: nil)
+    query = {}
+    query["tool_groups"] = tool_groups if tool_groups.present?
+    query["allowed_agent_roots"] = allowed_agent_roots if allowed_agent_roots.present?
+
+    url = "#{self_target[:base_url].to_s.chomp('/')}/mcp"
+    query.any? ? "#{url}?#{query.to_query}" : url
+  end
+
+  def headers
+    { API_KEY_HEADER => self_target[:api_key] }
+  end
+
+  # BASE_URL and API_KEY for the Zimmer instance this Rails process IS.
+  #
+  # The env var names still carry the AGENT_ORCHESTRATOR_ prefix because they are
+  # provisioned as deploy secrets (config/deploy.*.yml, .kamal/secrets.*) and are
+  # also what the external AIR catalog interpolates; renaming them is an
+  # ops-coordinated change, not a code change.
+  def self_target
+    @self_target ||= case @env
     when "production"
       {
         base_url: get_env_value("AGENT_ORCHESTRATOR_PROD_BASE_URL") || "https://zimmer.example.com",
@@ -123,6 +122,18 @@ class SelfSessionInjector
   end
 
   private
+
+  # The tool_groups an entry's endpoint URL scopes itself to. An empty list means
+  # the full surface (that is also what a URL-less entry reports, which only
+  # happens for a malformed Zimmer entry).
+  def tool_groups_in(url)
+    return [] if url.blank?
+
+    query = URI.parse(url.to_s).query
+    Rack::Utils.parse_query(query)["tool_groups"].to_s.split(",").map(&:strip).reject(&:empty?)
+  rescue URI::InvalidURIError
+    []
+  end
 
   def get_env_value(var_name)
     @secrets_interpolator.get_env_value(var_name)
