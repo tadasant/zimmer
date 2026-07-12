@@ -1,49 +1,61 @@
 ---
 title: Deploying
-description: The production topology, the Docker images, the GitHub Actions workflows — and the two things the shipped Terraform doesn't do.
+description: The topology, the Docker images, and the GitHub Actions workflows behind a Kamal deploy onto a persistent, Tailscale-only droplet.
 sidebar:
   order: 1
 ---
 
-Zimmer deploys to a single DigitalOcean droplet running Docker Compose, reachable only over
-Tailscale. There is no Kubernetes, no load balancer, and no HA. TLS is optional and off by default —
-setting `var.domain` adds a tailnet-only HTTPS front door (see [below](#custom-domain-https-over-the-tailnet)).
+Zimmer deploys with [Kamal](https://kamal-deploy.org/) onto a single DigitalOcean droplet, reachable
+only over Tailscale. Terraform bootstraps the box (Docker, Tailscale, Caddy, the deploy key); Kamal
+owns the app stack — a `web` role and a `worker` role, with durable named volumes. There is no
+Kubernetes, no load balancer, and no HA. TLS is optional and off by default — setting `var.domain`
+adds a tailnet-only HTTPS front door (see [below](#custom-domain-https-over-the-tailnet)).
+
+These docs cover the **staging** deployment, which is the one this repo operates. A production
+deployment is self-hosted and lives in your own private infrastructure — the `config/deploy.yml` /
+`config/deploy.production.yml` and `.kamal/secrets.production` here are public-safe templates, but the
+production environment (its DNS, its database, its secrets, and the workflow that drives it) is out of
+scope for these docs.
 
 ## The topology
 
 ```mermaid
 flowchart TB
     subgraph do["DigitalOcean"]
-        subgraph droplet["Droplet: zimmer-&lt;env&gt; (ubuntu-24-04, s-2vcpu-4gb, nyc3)"]
-            subgraph compose["docker compose (/opt/zimmer/docker-compose.yml)"]
-                APP["app<br/>ghcr.io/tadasant/zimmer:latest<br/>bin/thrust bin/rails server<br/>:80"]
-                RDS["redis:7<br/>(no volume — cache only)"]
-                DBS["db: postgres:16<br/>STAGING ONLY"]
+        subgraph droplet["Droplet: zimmer-staging (ubuntu-24-04, s-2vcpu-4gb, nyc3)"]
+            subgraph kamal["Kamal (config/deploy.yml + deploy.staging.yml)"]
+                WEB["web<br/>ghcr.io/tadasant/zimmer<br/>bin/thrust bin/rails server<br/>:80 via kamal-proxy"]
+                WRK["worker<br/>bundle exec good_job start<br/>(no published port)"]
+                RDS["redis:7 accessory<br/>(cache only)"]
+                DBS["postgres:16 accessory<br/>(staging DB)"]
+                VOL[("named volumes<br/>zimmer_data · claude_home<br/>gh_config · claude_local")]
             end
-            TS["tailscaled<br/>MagicDNS: zimmer / zimmer-staging"]
+            TS["tailscaled<br/>MagicDNS: zimmer-staging"]
         end
-        FW["Firewall<br/>inbound: 22/tcp, 41641/udp ONLY<br/>PORT 80 IS CLOSED AT THE EDGE"]
-        MPG[("Managed Postgres<br/>zimmer-production-pg<br/>PRODUCTION ONLY<br/>via private_host, sslmode=require")]
+        FW["Firewall<br/>inbound: 22/tcp, 41641/udp ONLY<br/>NO public app ingress"]
     end
 
     GH["GHCR<br/>ghcr.io/tadasant/zimmer<br/>ghcr.io/tadasant/zimmer-base"]
     U["You (on the tailnet)"]
 
-    GH -->|"docker compose pull"| APP
-    APP --> RDS
-    APP -.->|staging| DBS
-    APP -->|production| MPG
-    U -->|"http://zimmer (tailnet only)"| APP
+    GH -->|"kamal deploy"| WEB
+    GH -->|"kamal deploy"| WRK
+    WEB --> RDS
+    WEB --> DBS
+    WRK --> DBS
+    WEB -.- VOL
+    WRK -.- VOL
+    U -->|"http://zimmer-staging (tailnet only)"| WEB
     FW -.-> droplet
 ```
 
-By default there is no TLS. The app container serves plain HTTP on :80, and `production.rb` sets
-`assume_ssl` and `force_ssl`, which works *only* because `assume_ssl` makes Rails pretend the request
-arrived over TLS. The actual encryption is WireGuard, via Tailscale. A future *public* ingress would
-break this subtly and badly.
+By default there is no TLS. The web container serves plain HTTP on :80 behind kamal-proxy, and
+`production.rb` sets `assume_ssl` and `force_ssl`, which works *only* because `assume_ssl` makes Rails
+pretend the request arrived over TLS. The actual encryption is WireGuard, via Tailscale. A future
+*public* ingress would break this subtly and badly.
 
 Setting `var.domain` adds a real HTTPS front door (see below), still tailnet-only, which makes
-`assume_ssl` true in reality. Supervision is dockerd + `restart: always`.
+`assume_ssl` true in reality.
 
 ## Custom-domain HTTPS over the tailnet
 
@@ -102,42 +114,22 @@ droplet **replacement** (a fresh `provision`) drops them; the next `domain-cert-
 record and re-issues.
 :::
 
-## The two gaps that will bite you
+## Background jobs and durable state
 
-:::danger[1. No job worker]
-`config/environments/production.rb` sets `good_job.execution_mode = :external` — meaning a separate
-`bundle exec good_job start` process is required.
+`config/environments/production.rb` sets `good_job.execution_mode = :external`, which requires a
+separate `bundle exec good_job start` process. Kamal runs exactly that as a dedicated **`worker`**
+role (`config/deploy.staging.yml`), alongside the `web` role — so cron, pollers, orphan cleanup,
+token refresh, and catalog refresh all run. The deploy workflow asserts the worker container is up
+before it reports success.
 
-`infra/terraform/cloud-init.yaml.tftpl` renders three services: `app`, `redis`, and (staging only)
-`db`. There is no worker service and no `good_job start` anywhere in `infra/`, the Dockerfile, or the
-workflows.
+Both roles mount the same durable named volumes, so state survives a deploy and a container recreate:
 
-On a droplet provisioned by this repo's Terraform, no background job ever executes. Sessions
-enqueue and sit there forever. No cron fires — no orphan cleanup, no heartbeat sweep, no GitHub or
-Slack pollers, no token refresh, no catalog refresh.
-
-The staging health check only curls `/up`, so it passes anyway.
-
-Production presumably runs a different compose file from the author's private `tadasant-internal` repo.
-The IaC in this repo is incomplete on this axis.
-:::
-
-:::danger[2. No durable volumes]
-The `app` service mounts nothing. Not:
-
-- `/home/rails/.agent-orchestrator` — the clones. `app/services/clones_directory.rb` claims durability
-  comes from a named volume mounted per `config/deploy.production.yml`. That file does not exist in
-  this repo.
-- `~/.claude` — the shared credentials file the entire
+- `zimmer_data` → `/home/rails/.zimmer` — the clones (`~/.zimmer/clones`) and scratch.
+- `claude_home` → `~/.claude` — the shared credentials file the entire
   [account-rotation system](/auth/harness/) hinges on.
-- `~/.config/gh` — the GitHub CLI's auth.
-- `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
-- `/var/run/docker.sock` — despite the Docker CLI being baked into the base image and
-  `DockerCleanupJob` depending on it.
-
-Everything above lives in the container's writable layer and dies with the container. A routine deploy
-wipes every clone.
-:::
+- `gh_config` → `~/.config/gh` — the GitHub CLI's auth.
+- `claude_local` → `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
+- The `worker` role additionally mounts `/var/run/docker.sock`, which `DockerCleanupJob` needs.
 
 ## The Docker images
 
@@ -256,8 +248,10 @@ forced the workflow to hand-reap the droplet and firewall through the DigitalOce
 `apply`, staging was torn down and rebuilt constantly.
 
 Now: the app stack lives in Kamal (`config/deploy.*.yml`), `user_data` is only a bootstrap, and the
-droplet carries `lifecycle { ignore_changes = [user_data], create_before_destroy = true }`. A config
-or app change can no longer replace the box.
+droplet carries `lifecycle { ignore_changes = [user_data] }` (deliberately *not*
+`create_before_destroy` — the tailnet hostname is fixed). A config or app change can no longer replace
+the box. The cost of freezing `user_data` is that the deploy key and Caddyfile can't be updated in
+place — see [Known limitations](/limitations/#user_data-is-frozen-so-the-deploy-key-and-the-caddyfile-cant-be-updated-in-place).
 
 ## Terraform, briefly
 
@@ -270,17 +264,19 @@ terraform init -input=false -backend-config=backend.staging.hcl
 terraform apply -input=false -auto-approve -var-file=staging.tfvars
 ```
 
-Creates: the droplet, the firewall, a reserved IP (a stable public address across rebuilds), and a DO
-project. `manage_project` now defaults to **`true`** — a project name is account-unique, which used to
-409 under ephemeral state; with a remote backend Terraform reconciles it instead.
+Creates: the droplet, the firewall, and a reserved IP (a stable public address across rebuilds).
+`manage_project` stays **`false`** by default — a project name is account-unique and a pre-existing
+one 409s, so a DO Project (just a console folder) isn't worth the failure mode; flip it on with a
+one-time `terraform import` if you want one.
 
 Terraform no longer knows anything about the app: no image ref, no secrets, no database wiring. Those
 are Kamal's. It also does **not** create a DNS record — when `var.domain` is set, the `domain-cert`
 workflow owns the A record (pointing at the tailnet IP), which keeps the Cloudflare credential out of
 Terraform.
 
-Production references a pre-existing Managed Postgres cluster as a read-only data source. It never
-creates it. The cluster, and both its databases (`zimmer_production` and `zimmer_production_cable`),
-must exist first.
+Staging runs a Postgres accessory container on the droplet, wired by Kamal — nothing external to
+provision. A self-hosted production deployment would instead point at its own database (Terraform can
+reference one as a read-only data source rather than creating it), but that lives in your own private
+infrastructure, not here.
 
 → [Provisioning and secrets](/operate/provisioning/)

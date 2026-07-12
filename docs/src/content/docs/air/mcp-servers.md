@@ -109,11 +109,14 @@ tool-name sanitization, Zimmer's MCP status display silently goes wrong.
 A related bug was fixed only recently: sessions whose root had no MCP servers of its own but which
 got auto-injected ones would show "pending" forever in the UI even though the server was connected
 and serving tools.
+
+Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 :::
 
 ## Timeouts and caching
 
 - `MCP_TIMEOUT = 180000` (3 minutes) — a flat startup timeout for **every** MCP server.
+  Tracked in [#113](https://github.com/tadasant/zimmer/issues/113).
 - `NPM_CONFIG_CACHE` is set to a clone-local `.npm-cache`, so `npx`-based servers don't fight over a
   shared cache.
 - `NpxCacheHealService` exists to detect and delete a corrupted `_npx` cache — by matching npm's

@@ -94,7 +94,7 @@ second marker but are expected.
 
 If AIR ever rewords that warning, Zimmer will silently start accepting degraded catalogs and
 misconfiguring sessions. There is no test that would catch it, because the test suite uses the same
-AIR version.
+AIR version. Tracked in [#66](https://github.com/tadasant/zimmer/issues/66).
 :::
 
 ### The blast radius is the entire test suite
@@ -198,6 +198,7 @@ runtime.
 `ReferencesConfig` are thin read-models over `AirCatalogService.entries_for(:type)`. Each shapes
 raw resolve output into a Ruby value object, and each swallows `CatalogError` into an empty array
 with a warning — so a catalog failure degrades the UI instead of returning a 500.
+Tracked in [#112](https://github.com/tadasant/zimmer/issues/112).
 
 Never parse the index files directly. That's the rule in `AGENTS.md` and it's a good one: the
 indexes are AIR's input; the resolved tree is Zimmer's data model. The resolved tree is what Zimmer consumes, and it

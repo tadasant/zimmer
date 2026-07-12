@@ -59,6 +59,7 @@ The stop condition is enforced only by the LLM choosing to obey English.
 
 This is the single biggest gap between what Zimmer's docs (and its own goal text) promise and
 what the code does. Know this before you trust an autonomous session's "done."
+Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 :::
 
 A blank base prompt short-circuits the whole thing — a guard against spawning an agent whose
@@ -76,6 +77,7 @@ It can be changed after the fact: `PATCH /api/v1/sessions/:id` accepts `goal`, a
 prompt can carry a new one.
 
 The column is validated on length only (`GOAL_MAX_LENGTH`). Any string is a legal goal.
+Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 
 ## The heartbeat
 
@@ -90,6 +92,7 @@ messages, because resuming those would spawn a second process against the same c
 `HeartbeatSweepJob`'s comment: *"That 4-line sequence is duplicated across several callers — a
 future refactor could extract a shared `Session#deliver_follow_up!`."* The
 follow-up-delivery logic exists in at least three places.
+Tracked in [#105](https://github.com/tadasant/zimmer/issues/105).
 :::
 
 ## `needs_input` vs `archived`

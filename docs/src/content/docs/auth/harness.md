@@ -109,6 +109,7 @@ while no marker exists yet."*
 There isn't. `filesystem_credentials_owned_by_self?` returns `false` when the marker is absent and
 refuses to sync, and its own comment says so, explicitly contradicting the docstring 100 lines above
 it. The private method is correct; the doc and the docstring are stale.
+Tracked in [#59](https://github.com/tadasant/zimmer/issues/59).
 :::
 
 ## Rotation on quota
@@ -142,6 +143,7 @@ happens to still match. A previous wording change did not, and rotation silently
 The session fell through to the transient-rate-limit path, retried six times against an
 already-capped account, exhausted its retries, and failed, with no log line saying rotation should
 have fired. The failure mode is silent.
+Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 :::
 
 ## Mid-run auth loss
@@ -186,6 +188,7 @@ sequenceDiagram
 `pasted_code`, the worker process reads it. That's why `poll_state` must use
 `RuntimeLoginAttempt.uncached` — ActiveRecord's per-request query cache would otherwise hide the
 write. It's documented at length in the code, and it's a landmine.
+Tracked in [#111](https://github.com/tadasant/zimmer/issues/111).
 
 :::caution[The login flow is screen-scraping a TUI]
 The command string (`claude auth login --claudeai`), the authorize-URL host regex, and the literal

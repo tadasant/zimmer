@@ -1,12 +1,12 @@
 # Execution Layer
 
-The Execution layer provides an abstraction for running AI agents (currently Claude Code) against git repositories. It supports multiple execution providers with a unified interface.
+The Execution layer provides an abstraction for running AI agents (Claude Code or Codex, per `RuntimeRegistry`) against git repositories. It supports multiple execution providers with a unified interface.
 
 ## Overview
 
 The execution layer implements a Strategy Pattern with pluggable providers that handle the actual execution environment setup and agent invocation. Currently supports:
 
-- **Local Filesystem Provider**: Clones repos and runs Claude Code CLI locally using git clones
+- **Local Filesystem Provider**: Clones repos and runs the agent CLI locally using git clones
 - **Remote Sandbox Provider**: Placeholder for future cloud-based sandboxed execution
 
 ## Architecture
@@ -153,8 +153,12 @@ executor.info      # Get execution information
 
 **Session Status Updates:**
 - `running`: Execution started
-- `archived`: Successful completion
+- `archived`: Successful completion — `SessionExecutor#call` sets this directly
 - `failed`: Execution or setup failed
+
+Note that this is the execution layer's own state handling, not `AgentSessionJob`'s: a live session
+that finishes a turn lands in `needs_input`, not `archived`. Nothing in `app/` references
+`Execution::` today.
 
 **Logging:**
 Each phase (setup, execute, cleanup) creates a log entry in `session.logs` with full details.
@@ -308,7 +312,7 @@ t.index :execution_provider
 
 ### MCP Servers
 
-Configure available MCP servers in `config/mcp.json`. See `https://docs.zimmer.tadasant.com/air/mcp-servers/` for the schema and `ServersConfig` service for details.
+Configure available MCP servers in the top-level `mcp.json` (read through `AirCatalogService`, never parsed directly). See `https://docs.zimmer.tadasant.com/air/mcp-servers/` for the schema and `ServersConfig` service for details.
 
 ## Testing
 
@@ -370,7 +374,7 @@ bin/rails test test/lib/execution/
 **Error: "Required environment variable not set"**
 - Check `ANTHROPIC_API_KEY` is set
 - Verify MCP server environment variables (e.g., `GITHUB_PERSONAL_ACCESS_TOKEN`)
-- See `config/mcp.json` for required vars per server
+- See the top-level `mcp.json` for required vars per server
 
 **Error: "Clone already exists"**
 - Previous cleanup may have failed

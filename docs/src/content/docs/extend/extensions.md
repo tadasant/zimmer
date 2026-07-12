@@ -90,6 +90,7 @@ AppSetting.first_or_create!.set_extension_enabled("mcp_tool_search", true)
 
 **Install** — here's the wrinkle: the core Docker image ships with no extensions at all.
 `.dockerignore` excludes `/app/extensions/*/`. Even `mcp_tool_search` is absent from a built image.
+Tracked in [#91](https://github.com/tadasant/zimmer/issues/91).
 
 ```bash
 scripts/install-extension.sh <id> --container <name>   # docker cp + restart

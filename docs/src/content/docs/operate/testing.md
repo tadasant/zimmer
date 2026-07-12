@@ -26,7 +26,7 @@ The `test` job's own step name says it: *"Run tests (unit + integration; system 
 The browser suite never runs on a pull request. Combined with the fact that four of the ten open
 issues are UI regressions (#12 undo toast, #13 drag order, #14 full page reloads, #15 no per-card
 refresh), this is the obvious hole in the safety net. Those bugs are exactly the class a system test
-would have caught.
+would have caught. Tracked in [#87](https://github.com/tadasant/zimmer/issues/87).
 :::
 
 ## Tests that skip themselves
@@ -41,7 +41,7 @@ Several tests `skip` when a credential or file is absent — which in CI means t
 | `air_catalog_ref_rewriter_test.rb:190,198` | "air.production.json not present" / "no `github://` catalogs to pin" |
 
 That last pair means the catalog-pinning feature has zero CI coverage — the code path exists,
-the tests exist, and neither runs.
+the tests exist, and neither runs. Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
 
 ## Known-flaky tests
 

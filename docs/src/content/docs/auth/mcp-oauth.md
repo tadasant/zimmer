@@ -151,6 +151,7 @@ redirect_uri.include?("localhost") || redirect_uri.include?("127.0.0.1")
 ```
 
 So `https://localhost.evil.com` matches.
+Tracked in [#47](https://github.com/tadasant/zimmer/issues/47).
 :::
 
 :::caution[No timeout on the token exchange]
@@ -162,6 +163,7 @@ sibling `fetch_json` / `post_json` which both set 30 seconds. A hung auth server
 Scope acquisition just joins whatever the server advertises in `scopes_supported`. If a server
 doesn't advertise `offline_access`, no refresh token is issued, and the credential silently becomes
 single-use — `requires_reauth?` once it lapses, with no way to refresh.
+Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 :::
 
 :::note[The fallback client_id is a literal string]

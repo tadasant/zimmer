@@ -120,7 +120,7 @@ export default class extends Controller {
     }
   }
 
-  // Best-effort save on disconnect using sendBeacon
+  // Best-effort flush on disconnect. The debounced autosave above is the primary save.
   flushSave(value) {
     const url = `/sessions/${this.sessionIdValue}/update_notes`
     const csrfToken = document.querySelector("[name='csrf-token']")?.content

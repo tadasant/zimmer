@@ -36,18 +36,15 @@ Everything in Zimmer reads them through `AirCatalogService`. Code that reads `ro
 
 | Var | Purpose | Set by the shipped deploy? |
 | --- | --- | --- |
-| `SECRET_KEY_BASE` | Rails secret | ✅ (Terraform) |
-| `DATABASE_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_SSLMODE` | Postgres | ✅ |
-| `REDIS_URL` | Cache | ✅ |
-| `RAILS_MASTER_KEY` | Rails credentials | ❌ not set |
-| `API_KEYS` | REST API auth | ❌ not set — the API 401s on everything |
-| `APP_HOST` | MCP OAuth redirect URI | ❌ not set — every OAuth flow points at `localhost:3000` |
+| `SECRET_KEY_BASE` | Rails secret | ✅ (Kamal) |
+| `DATABASE_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_SSLMODE` | Postgres | ✅ (Kamal) |
+| `REDIS_URL` | Cache | ✅ (Kamal) |
+| `API_KEYS` | REST API auth | ✅ (Kamal) |
+| `APP_HOST` | MCP OAuth redirect URI | ✅ (Kamal) |
+| `RAILS_MASTER_KEY` | Rails credentials | ✅ in a self-hosted production config; [unset on staging by design](/limitations/#rails_master_key-is-unset-on-staging-deliberate) |
 
-:::danger[Three required vars the Terraform doesn't set]
-`RAILS_MASTER_KEY`, `API_KEYS`, and `APP_HOST` are all consumed by the app and none of them appear
-in `infra/terraform/cloud-init.yaml.tftpl`. On a stock droplet: the REST API is unusable, MCP OAuth
-is broken, and anything reading Rails encrypted credentials (`mcp_secrets`, `mcp_oauth_clients`) can't.
-:::
+The env, secrets, and data-store wiring all live in `config/deploy.*.yml` and `.kamal/secrets.*`,
+not in Terraform — Terraform only provisions the host.
 
 ### Agent + tooling
 
@@ -64,7 +61,7 @@ is broken, and anything reading Rails encrypted credentials (`mcp_secrets`, `mcp
 
 | Var | Default |
 | --- | --- |
-| `AGENT_CLONES_DIR` | `~/.agent-orchestrator/clones` |
+| `AGENT_CLONES_DIR` | `~/.zimmer/clones` |
 | `AGENT_SCRATCH_DIR` | per-session durable scratch |
 | `REPO_BASE_PATH` | `tmp/repos` (bare repos) |
 | `EXECUTION_REPOS_DIR` | — |

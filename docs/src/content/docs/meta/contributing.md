@@ -111,10 +111,10 @@ useful than a confident guess, and it's an issue waiting to be filed.
 
 ## Deploying
 
-The site is not yet provisioned. Committing the build config is one step; creating the Cloudflare
-Pages project is another, and it needs a human with Cloudflare access.
+The site is live at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com), built from `docs/`
+by Cloudflare Pages. Every push to `main` redeploys it, and every PR gets a preview URL.
 
-**To deploy it the first time:**
+**Re-creating the Pages project from scratch** (you need a human with Cloudflare access):
 
 1. Cloudflare Dashboard → **Workers & Pages** → **Create** → **Pages** → **Connect to Git** → pick
    `tadasant/zimmer`.
@@ -127,9 +127,8 @@ Pages project is another, and it needs a human with Cloudflare access.
 3. Deploy. Cloudflare gives you a `*.pages.dev` URL immediately.
 4. **Custom domain:** Pages → Custom domains → add `docs.zimmer.tadasant.com`. Cloudflare already hosts the
    `tadasant.com` zone, so it will create the CNAME for you.
-5. Update `site` in `docs/astro.config.mjs` if you pick a different hostname.
-
-Every subsequent push to `main` redeploys automatically, and every PR gets a preview URL.
+5. If you pick a different hostname, set `SITE_URL` to it — `docs/astro.config.mjs` reads that env
+   var and falls back to `https://docs.zimmer.tadasant.com`.
 
 :::caution[This site is public; Zimmer is not]
 The Zimmer app is tailnet-only by design. This documentation site is a static, public artifact — it

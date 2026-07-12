@@ -80,13 +80,10 @@ If something takes materially longer than this, the problem is probably the syst
 | Catalog refresh (worker) | every 15 minutes |
 | Catalog refresh (web) | every 5 minutes |
 
-:::danger[If a session sits in `waiting` forever, check that a worker is running]
-This is the most likely cause. In production, `execution_mode = :external` means GoodJob needs
-a separate `bundle exec good_job start` process — and the shipped Terraform doesn't create one.
-
-Locally, GoodJob runs in-process with Puma, so `bin/dev` is enough.
-
-See [Known limitations](/limitations/#the-shipped-terraform-provisions-no-job-worker).
+:::note[If a session sits in `waiting` forever, check that a worker is running]
+In production and staging, `execution_mode = :external` means GoodJob needs a separate
+`bundle exec good_job start` process. The Kamal deploy runs one as a dedicated `worker` role;
+locally, GoodJob runs in-process with Puma, so `bin/dev` is enough.
 :::
 
 ## If it fails with `oauth_required`
