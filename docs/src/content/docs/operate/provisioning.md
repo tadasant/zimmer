@@ -45,12 +45,42 @@ could not reach the box.
 | `STAGING_DB_PASSWORD` | the staging Postgres accessory's password — a stable secret, deliberately *not* derived from `SECRET_KEY_BASE` (rotating the latter must stay safe; `POSTGRES_PASSWORD` only takes effect on first initdb) |
 | `STAGING_API_KEYS` | REST API bearer keys |
 | `OTEL_LOGS_EXPORTER_ENDPOINT` / `_BEARER_TOKEN`, `SENTRY_DSN_BACKEND` | optional observability |
+| `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
 A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own comment says so.
 `docs/DEPLOYING_ON_DIGITALOCEAN.md` told you to use `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; that was
 wrong and would fail.
 :::
+
+## Slack CI failure alerts
+
+[`alert-ci-failure.yml`](/operate/deploying/#ci-failure-alerts) needs a Slack bot token and the ID of
+the channel to post into. `tadasant` is a personal GitHub account, not an org, so there are **no
+org-level secrets**: the same two secrets have to be added to `zimmer`, `tadasant-internal` and
+`strad` separately. One Slack app can serve all three.
+
+**In Slack** (once, in the Tadasant workspace):
+
+1. [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**. Name it
+   something like `CI Alerts` and pick the Tadasant workspace. (Reuse an existing app if you have one
+   — just make sure it has the scope in step 2.)
+2. **OAuth & Permissions** → **Scopes** → **Bot Token Scopes** → **Add an OAuth Scope** →
+   **`chat:write`**. That is the only scope needed.
+3. Same page, top: **Install to Workspace** → **Allow**.
+4. Copy the **Bot User OAuth Token** (`xoxb-…`). This is `SLACK_BOT_TOKEN`.
+5. In Slack, open **#alerts** and run `/invite @CI Alerts`. **A bot cannot post to a channel it is
+   not a member of** — skipping this is the single most common way this ends up broken, and it
+   surfaces as `not_in_channel` in the workflow log.
+6. Get the channel ID: click the **#alerts** channel name → the ID (`C0…`) is at the bottom of the
+   dialog. This is `SLACK_ALERTS_CHANNEL_ID`.
+
+**In GitHub**, for each of the three repos: **Settings → Secrets and variables → Actions → New
+repository secret**, twice — `SLACK_BOT_TOKEN` and `SLACK_ALERTS_CHANNEL_ID`.
+
+Then smoke-test it without breaking anything: **Actions → Alert CI failure → Run workflow** on
+`main`. It posts a smoke-test message to #alerts instead of an alert. If the job goes red, the log
+says exactly which of the six steps above was missed.
 
 ## Where secrets end up that they shouldn't
 

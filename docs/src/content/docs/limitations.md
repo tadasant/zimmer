@@ -76,6 +76,19 @@ that name — so it works, and you accumulate dead nodes with no error.
 
 Tracked in [#123](https://github.com/tadasant/zimmer/issues/123).
 
+### The CI-failure alert lists the workflows it watches, by hand
+
+`alert-ci-failure.yml` posts main-branch CI failures to Slack. It is a `workflow_run` listener, and
+that event takes an explicit array of workflow *names* — GitHub defines no wildcard and no
+"omit to match all". So the seven workflows it watches are enumerated in the file, and **a new
+workflow that isn't added to that list fails on `main` in silence**. The list carries a comment
+saying so; there is nothing in CI that enforces it.
+
+The same event only ever triggers from the copy of the file on the default branch, which means the
+listener cannot be exercised from a PR — the first real proof that it fires is the first failure on
+`main` after it merges. `workflow_dispatch` is wired up on it to cover the other half (that Slack
+delivery itself works) without waiting for a genuine breakage.
+
 ---
 
 ## Security
