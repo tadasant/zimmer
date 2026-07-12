@@ -42,6 +42,9 @@ Everything in Zimmer reads them through `AirCatalogService`. Code that reads `ro
 | `API_KEYS` | REST API auth | ✅ (Kamal) |
 | `APP_HOST` | MCP OAuth redirect URI | ✅ (Kamal) |
 | `RAILS_MASTER_KEY` | Rails credentials | ✅ in a self-hosted production config; on staging it is [optional, and degrades silently when absent](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent) |
+| `SLACK_BOT_TOKEN` | Slack triggers, the channel picker, and `AlertService` | via `mcp_secrets` (encrypted credentials); ENV is the fallback |
+| `ENG_ALERTS_SLACK_CHANNEL_ID` | the channel `AlertService` posts to | via `mcp_secrets`; ENV is the fallback |
+| `SLACK_BOT_MENTION_ALLOWED_USER_IDS` | comma-separated Slack user IDs allowed to fire `bot_mention` triggers. **Blank or unset means everyone** — see [the caveat](/limitations/#anyone-in-the-workspace-can-trigger-an-agent-via-bot-mention-by-default) | via `mcp_secrets`; ENV is the fallback |
 
 The env, secrets, and data-store wiring all live in `config/deploy.*.yml` and `.kamal/secrets.*`,
 not in Terraform — Terraform only provisions the host.

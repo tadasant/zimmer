@@ -84,10 +84,14 @@ class SlackService
       channels.select { |ch| ch.is_member }
     end
 
-    # List DM channels for specific user IDs
-    # @param user_ids [Array<String>] user IDs to find DM channels for
+    # List DM channels, optionally restricted to specific users.
+    #
+    # @param user_ids [Array<String>, nil] user IDs to find DM channels for. nil
+    #   lists EVERY DM the bot has -- which is how an unrestricted bot_mention
+    #   condition reaches its users, since "everyone" cannot be enumerated as a
+    #   list of IDs. An empty array is taken at face value and matches nothing.
     # @return [Array<Hash>] list of DM channel objects with user field
-    def list_dm_channels(user_ids:)
+    def list_dm_channels(user_ids: nil)
       with_error_handling do
         channels = []
         cursor = nil

@@ -177,17 +177,18 @@ as the app user, on the app host, with the app's git and `gh` credentials, spawn
 
 Tracked in [#49](https://github.com/tadasant/zimmer/issues/49).
 
-### Two hardcoded Slack user IDs, by name, in source
+### Anyone in the workspace can trigger an agent via bot-mention, by default
 
-`app/models/trigger.rb:13`:
+The hardcoded allowlist is gone ([#52](https://github.com/tadasant/zimmer/issues/52) — it held two
+Slack user IDs from a *different* workspace, so a fresh install ignored everyone, including its
+owner). The default is now open: with `SLACK_BOT_MENTION_ALLOWED_USER_IDS` unset, any workspace
+member who @mentions the bot in a channel it's in, or DMs it, can spawn an agent session.
 
-```ruby
-ALLOWED_BOT_MENTION_USER_IDS = %w[U08AENQUFBR U08AX7WMX1S] # Mike, Tadas
-```
-
-The default allowlist for who may trigger an agent via Slack bot-mention.
-
-Tracked in [#52](https://github.com/tadasant/zimmer/issues/52).
+That is deliberate — an unconfigured Zimmer should answer its owner — and it is bounded by the bot
+only seeing channels it has been invited to. But it is a real grant, and it composes badly with the
+next item (untrusted Slack text reaching the prompt). Set the allowlist
+(`SLACK_BOT_MENTION_ALLOWED_USER_IDS`, comma-separated user IDs, in `mcp_secrets` or ENV) on any
+workspace bigger than your circle of trust; a per-condition `allowed_user_ids` overrides it.
 
 ### Triggers make the agent a trusted courier for untrusted input
 

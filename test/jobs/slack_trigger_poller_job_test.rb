@@ -996,4 +996,109 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal 1, config[:total_limit]
     assert_equal "slack_trigger_poller", SlackTriggerPollerJob.new.good_job_concurrency_key
   end
+
+  # --- bot_mention allow-list: unset means EVERYONE (not nobody) ---
+
+  test "with no allow-list configured, a mention from any user fires the condition" do
+    condition = stub_bot_mention_condition(allowed_user_ids: nil)
+
+    SlackService.stubs(:get_messages_since).returns([
+      OpenStruct.new(ts: "1704067400.000000", text: "Hey <@U_BOT_123> help",
+        bot_id: nil, thread_ts: nil, user: "U_RANDOM_STRANGER")
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  test "with an allow-list configured, a mention from an unlisted user is ignored" do
+    condition = stub_bot_mention_condition(allowed_user_ids: %w[U222])
+
+    SlackService.stubs(:get_messages_since).returns([
+      OpenStruct.new(ts: "1704067400.000000", text: "Hey <@U_BOT_123> help",
+        bot_id: nil, thread_ts: nil, user: "U_RANDOM_STRANGER")
+    ])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  # The self-trigger loop: Zimmer posts to Slack with this same token (AlertService),
+  # and an unrestricted bot_mention condition with no channel configured polls EVERY
+  # channel the bot is in. Its own message must never fire it, allow-list or not.
+  test "the bot's own message never fires the condition, even when everyone is allowed" do
+    condition = stub_bot_mention_condition(allowed_user_ids: nil)
+
+    SlackService.stubs(:get_messages_since).returns([
+      OpenStruct.new(ts: "1704067400.000000", text: "Alert from <@U_BOT_123> (self)",
+        bot_id: "B_BOT", thread_ts: nil, user: "U_BOT_123")
+    ])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  # --- DM enumeration: "everyone" cannot be expressed as a list of user IDs ---
+
+  test "an unrestricted condition enumerates ALL DM channels" do
+    condition = stub_bot_mention_condition(allowed_user_ids: nil)
+
+    # nil (not []) is what tells SlackService to list every IM. Passing an empty
+    # allow-list here would match no DMs at all -- "everyone" silently becoming "nobody".
+    SlackService.expects(:list_dm_channels).with(user_ids: nil).returns([])
+    SlackService.stubs(:get_messages_since).returns([])
+
+    SlackTriggerPollerJob.new.send(:process_condition, condition)
+  end
+
+  test "a restricted condition enumerates only the allowed users' DM channels" do
+    condition = stub_bot_mention_condition(allowed_user_ids: %w[U222])
+
+    SlackService.expects(:list_dm_channels).with(user_ids: %w[U222]).returns([])
+    SlackService.stubs(:get_messages_since).returns([])
+
+    SlackTriggerPollerJob.new.send(:process_condition, condition)
+  end
+
+  test "a DM with the bot itself is never polled" do
+    condition = stub_bot_mention_condition(allowed_user_ids: nil)
+
+    SlackService.stubs(:list_dm_channels).returns([
+      OpenStruct.new(id: "D_SELF", user: "U_BOT_123")
+    ])
+    # The self-DM is rejected before any history fetch, so nothing is polled and no
+    # session is created.
+    SlackService.stubs(:get_messages_since).returns([])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    assert_empty condition.reload.dm_timestamps
+  end
+
+  private
+
+  # A bot_mention condition on a single channel, with Slack and session-creation
+  # collaborators stubbed. allowed_user_ids: nil leaves it unrestricted (the new
+  # default); an array pins an explicit per-condition allow-list.
+  def stub_bot_mention_condition(allowed_user_ids:)
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:bot_user_id).returns("U_BOT_123")
+    SlackService.stubs(:list_dm_channels).returns([])
+    SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
+    SlackService.stubs(:get_user_name).returns("Test User")
+    SlackService.stubs(:get_channel_history).returns([])
+    AgentRootsConfig.stubs(:find!).returns(
+      OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.configuration = condition.configuration.merge("allowed_user_ids" => allowed_user_ids)
+    condition.save!
+    condition
+  end
 end

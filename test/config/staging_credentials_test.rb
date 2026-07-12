@@ -68,6 +68,39 @@ class StagingCredentialsTest < ActiveSupport::TestCase
     end
   end
 
+  # The AGENT_ORCHESTRATOR_* -> ZIMMER_* rename is a cross-repo lockstep: Zimmer's own
+  # readers still use the old names, so BOTH must carry the same value until the reader
+  # flip lands. Half a rename resolves the key to empty, and an empty X-API-Key is a
+  # 401 -- every session's MCP server silently fails to connect.
+  test "both the old and new self-session name are set, to the same value" do
+    kamal = KAMAL_SECRETS.read
+
+    assert_match(/^AGENT_ORCHESTRATOR_STAGING_API_KEY=\$STAGING_SELF_API_KEY$/, kamal)
+    assert_match(/^ZIMMER_STAGING_API_KEY=\$STAGING_SELF_API_KEY$/, kamal,
+      "ZIMMER_STAGING_API_KEY must carry the same derived value as the AGENT_ORCHESTRATOR_ name.")
+
+    %w[AGENT_ORCHESTRATOR_STAGING_API_KEY ZIMMER_STAGING_API_KEY].each do |name|
+      assert_includes staging_env_secrets, name
+    end
+  end
+
+  # Zimmer prod shipped for a while with PulseMCP's base URL in its ported credentials,
+  # pointing Zimmer's own sessions at someone else's orchestrator. Staging must target
+  # itself, under both names.
+  test "the self-session base URL is Zimmer staging, never PulseMCP" do
+    clear = YAML.safe_load(ERB.new(DEPLOY_CONFIG.read).result, aliases: true).dig("env", "clear")
+
+    %w[AGENT_ORCHESTRATOR_STAGING_BASE_URL ZIMMER_STAGING_BASE_URL].each do |name|
+      assert_equal "https://staging.zimmer.tadasant.com", clear[name],
+        "#{name} must point at Zimmer's own staging host."
+    end
+
+    # Values only -- the prose above these keys names ao.pulsemcp.com as the thing NOT
+    # to do, and that explanation should not be what trips the guard.
+    assert_no_match(/pulsemcp/i, clear.values.join(" "),
+      "No PulseMCP host may appear in a staging env value.")
+  end
+
   test "the deploy workflow passes STAGING_RAILS_MASTER_KEY into the Kamal step" do
     workflow = DEPLOY_WORKFLOW.read
 

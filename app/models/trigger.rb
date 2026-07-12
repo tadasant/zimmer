@@ -8,10 +8,6 @@
 class Trigger < ApplicationRecord
   STATUSES = %w[enabled disabled].freeze
 
-  # Authorized Slack user IDs that can trigger bot_mention events.
-  # Only messages from these users (mentions or DMs) will create sessions.
-  ALLOWED_BOT_MENTION_USER_IDS = %w[U08AENQUFBR U08AX7WMX1S].freeze # Mike, Tadas
-
   belongs_to :last_session, class_name: "Session", optional: true
   has_many :trigger_conditions, dependent: :destroy
   accepts_nested_attributes_for :trigger_conditions, allow_destroy: true, reject_if: :all_blank

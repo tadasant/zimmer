@@ -57,8 +57,13 @@ env:
     # localhost:3000 and every OAuth callback breaks.
     APP_HOST: staging.zimmer.tadasant.com
     # Point the injected self-session MCP server at THIS instance, so a staging
-    # session orchestrates staging (never production).
+    # session orchestrates staging (never production, and never PulseMCP's
+    # orchestrator -- prod shipped for a while with ao.pulsemcp.com pinned in its
+    # ported credentials, which pointed Zimmer's own sessions at someone else's box).
+    # Both names carry the same value through the AGENT_ORCHESTRATOR_* -> ZIMMER_*
+    # rename; see .kamal/secrets.staging.
     AGENT_ORCHESTRATOR_STAGING_BASE_URL: https://staging.zimmer.tadasant.com
+    ZIMMER_STAGING_BASE_URL: https://staging.zimmer.tadasant.com
     DATABASE_HOST: zimmer-db
     DATABASE_PORT: "5432"
     DATABASE_USERNAME: zimmer
@@ -75,8 +80,11 @@ env:
     - DATABASE_PASSWORD
     # The API key the injected self-session MCP server uses to call this instance's
     # own REST API. It lives in process ENV rather than mcp_secrets (SecretsInterpolator
-    # falls back to ENV), because the deploy workflow derives it from API_KEYS.
+    # falls back to ENV), because the deploy workflow derives it from API_KEYS -- which
+    # is the same list /mcp authenticates against, so it cannot drift out of sync.
+    # Both names, one value, for the in-flight ZIMMER_* rename.
     - AGENT_ORCHESTRATOR_STAGING_API_KEY
+    - ZIMMER_STAGING_API_KEY
     # Observability. The app's initializers are hard no-ops when these are empty,
     # so an unset secret simply disables shipping -- but they must be PRESENT here,
     # or staging silently loses Sentry + OTel the way the pre-Kamal TF vars did not.

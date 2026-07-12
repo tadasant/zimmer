@@ -14,7 +14,9 @@
 # - If no channel is configured, monitors ALL channels the bot is a member of for @mentions
 # - Always monitors DM channels with allowed users for any messages
 # - Also monitors thread replies for @mentions (so replying to a thread with @bot works)
-# - Only processes messages from allowed users (configured on TriggerCondition or Trigger::ALLOWED_BOT_MENTION_USER_IDS)
+# - Only processes messages from allowed users: the condition's own allowed_user_ids if
+#   set, else the SLACK_BOT_MENTION_ALLOWED_USER_IDS allow-list, else EVERYONE (see
+#   TriggerCondition#allow_all_users?). The bot's own messages never trigger anything.
 class SlackTriggerPollerJob < ApplicationJob
   # Runs on the dedicated `pollers` queue (like every other *PollerJob), NOT on
   # `default`. A single poll is a long, external-API-bound unit of work: it makes
@@ -129,34 +131,47 @@ class SlackTriggerPollerJob < ApplicationJob
   #    OR poll all member channels if no specific channel is configured
   # 2. Poll DM channels with allowed users for any messages
   def process_bot_mention_condition(condition)
-    allowed_ids = condition.allowed_user_ids
     bot_id = SlackService.bot_user_id
 
     # Part 1: Poll channel(s) for @mentions
     if condition.channel_id.present?
       # Single configured channel
-      process_channel_mentions(condition, bot_id: bot_id, allowed_ids: allowed_ids)
+      process_channel_mentions(condition, bot_id: bot_id)
     else
       # No channel configured — poll all channels the bot is a member of
-      process_all_channel_mentions(condition, bot_id: bot_id, allowed_ids: allowed_ids)
+      process_all_channel_mentions(condition, bot_id: bot_id)
     end
 
     # Part 2: Poll DM channels with allowed users
-    process_dm_messages(condition, allowed_ids: allowed_ids)
+    process_dm_messages(condition, bot_id: bot_id)
 
     condition.update!(last_polled_at: Time.current)
   end
 
+  # Whether a message is an @mention of the bot that this condition may fire on.
+  #
+  # The bot's OWN messages never qualify, whatever the allow-list says. Zimmer posts
+  # to Slack with this same token (AlertService), and a bot_mention condition with no
+  # channel configured polls EVERY channel the bot is in -- so without this, an alert
+  # quoting "<@bot>" would trigger a session, which would alert, which would trigger.
+  #
+  # Messages from OTHER apps still qualify: the poller already treats bots as valid
+  # trigger sources for new_message conditions, and "an alerting app @mentions Zimmer
+  # to open a session" is a use case, not an accident. Only the self-loop is closed.
+  def mention_for?(condition, message, bot_id)
+    return false unless message.text&.include?("<@#{bot_id}>")
+    return false if message.user == bot_id
+
+    condition.user_allowed?(message.user)
+  end
+
   # Poll a single configured channel for @bot mentions from allowed users
-  def process_channel_mentions(condition, bot_id:, allowed_ids:)
+  def process_channel_mentions(condition, bot_id:)
     all_messages = fetch_new_messages(condition.channel_id, condition.last_message_ts)
-    allowed_id_set = allowed_ids.to_set
 
     if all_messages.any?
       # Filter to messages that mention the bot AND are from allowed users
-      mentions = all_messages.select do |msg|
-        msg.text&.include?("<@#{bot_id}>") && allowed_id_set.include?(msg.user)
-      end
+      mentions = all_messages.select { |msg| mention_for?(condition, msg, bot_id) }
 
       mentions.each do |message|
         process_message(condition, message, channel_id: condition.channel_id)
@@ -169,18 +184,14 @@ class SlackTriggerPollerJob < ApplicationJob
 
     # Check thread replies for @mentions (even when no new top-level messages,
     # since replies to old threads won't appear in conversations.history)
-    check_thread_replies_for_mentions(
-      condition, condition.channel_id, all_messages,
-      bot_id: bot_id, allowed_id_set: allowed_id_set
-    )
+    check_thread_replies_for_mentions(condition, condition.channel_id, all_messages, bot_id: bot_id)
   end
 
   # Poll all channels the bot is a member of for @bot mentions from allowed users.
   # Uses per-channel timestamps stored in condition.channel_timestamps.
   # Batches all timestamp updates into a single DB write at the end.
-  def process_all_channel_mentions(condition, bot_id:, allowed_ids:)
+  def process_all_channel_mentions(condition, bot_id:)
     member_channels = SlackService.list_member_channels
-    allowed_id_set = allowed_ids.to_set
     updated_timestamps = {}
 
     member_channels.each do |channel|
@@ -190,9 +201,7 @@ class SlackTriggerPollerJob < ApplicationJob
 
       if all_messages.any?
         # Filter to messages that mention the bot AND are from allowed users
-        mentions = all_messages.select do |msg|
-          msg.text&.include?("<@#{bot_id}>") && allowed_id_set.include?(msg.user)
-        end
+        mentions = all_messages.select { |msg| mention_for?(condition, msg, bot_id) }
 
         mentions.each do |message|
           process_message(condition, message, channel_id: channel.id, prior_ts: last_ts)
@@ -204,10 +213,7 @@ class SlackTriggerPollerJob < ApplicationJob
 
       # Check thread replies for @mentions (even when no new top-level messages,
       # since replies to old threads won't appear in conversations.history)
-      check_thread_replies_for_mentions(
-        condition, channel.id, all_messages,
-        bot_id: bot_id, allowed_id_set: allowed_id_set
-      )
+      check_thread_replies_for_mentions(condition, channel.id, all_messages, bot_id: bot_id)
     rescue => e
       Rails.logger.error "[SlackTriggerPollerJob] Error polling channel #{channel.id} for mentions: #{e.message}"
     end
@@ -234,8 +240,7 @@ class SlackTriggerPollerJob < ApplicationJob
   # @param channel_id [String] the channel being polled
   # @param recent_messages [Array] messages already fetched from conversations.history
   # @param bot_id [String] the bot's user ID
-  # @param allowed_id_set [Set] set of allowed user IDs
-  def check_thread_replies_for_mentions(condition, channel_id, recent_messages, bot_id:, allowed_id_set:)
+  def check_thread_replies_for_mentions(condition, channel_id, recent_messages, bot_id:)
     # Skip thread checking on first poll for a channel (no baseline established yet).
     # For single-channel: check last_message_ts; for all-channels: check channel_timestamps.
     channel_baseline_ts = condition.last_message_ts.presence || condition.channel_timestamps[channel_id]
@@ -302,9 +307,7 @@ class SlackTriggerPollerJob < ApplicationJob
       next if replies.empty?
 
       # Filter to @mentions from allowed users
-      mention_replies = replies.select do |reply|
-        reply.text&.include?("<@#{bot_id}>") && allowed_id_set.include?(reply.user)
-      end
+      mention_replies = replies.select { |reply| mention_for?(condition, reply, bot_id) }
 
       # For threads we haven't seen before (no thread-level timestamp), use the
       # channel baseline to determine which replies are new. This avoids the
@@ -345,9 +348,18 @@ class SlackTriggerPollerJob < ApplicationJob
     []
   end
 
-  # Poll DM channels with allowed users for any messages
-  def process_dm_messages(condition, allowed_ids:)
-    dm_channels = SlackService.list_dm_channels(user_ids: allowed_ids)
+  # Poll DM channels with allowed users for any messages.
+  #
+  # This path ENUMERATES the allow-list rather than filtering with it, which is why it
+  # must branch on allow_all_users? instead of just passing allowed_user_ids down: an
+  # unrestricted condition has an empty list, and handing that to list_dm_channels
+  # would match no DMs at all -- "everyone" would silently become "nobody".
+  def process_dm_messages(condition, bot_id:)
+    user_ids = condition.allow_all_users? ? nil : condition.allowed_user_ids
+    dm_channels = SlackService.list_dm_channels(user_ids: user_ids)
+
+    # Never poll a DM with ourselves (the unrestricted path lists every IM there is).
+    dm_channels = dm_channels.reject { |dm_channel| dm_channel.user == bot_id }
 
     dm_channels.each do |dm_channel|
       user_id = dm_channel.user
