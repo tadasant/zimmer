@@ -76,6 +76,13 @@ RUN mkdir -p /tmp/agent-orchestrator-images /tmp/agent-orchestrator-files && \
 RUN mkdir -p /home/rails/.zimmer /home/rails/.claude /home/rails/.config/gh /home/rails/.local && \
     chown rails:rails /home/rails/.zimmer /home/rails/.claude /home/rails/.config/gh /home/rails/.local
 
+# Kamal refuses to deploy an image that does not carry a `service` label matching
+# its configured service name -- it normally stamps this on during its own build,
+# but Zimmer's images are built by CI (docker/build-push-action), so we set it here.
+# Applies to every image we publish, which is what production's Kamal cutover needs
+# too.
+LABEL service="zimmer"
+
 # Switch to non-root user for security
 USER 1000:1000
 
