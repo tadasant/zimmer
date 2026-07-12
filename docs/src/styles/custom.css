@@ -72,6 +72,24 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Body heading sizes come from Starlight's own --sl-text-h* variables rather
+   than from `h2 { font-size }` overrides. Starlight puts each heading inside a
+   .sl-heading-wrapper and sizes BOTH from --sl-text-h<n>, and the anchor icon's
+   size and its negative margin-inline-start are `em`-based off the wrapper while
+   the heading's matching padding-inline-end is `em`-based off the heading.
+   Resizing only the heading desynchronised the pair: the icon stayed sized to
+   Starlight's larger default and its negative margin overshot the heading's
+   padding, landing the icon on the text. Driving the variable keeps them in step.
+
+   Scoped to .sl-markdown-content rather than :root because --sl-text-h5 also
+   sizes the "On this page" sidebar heading, which should keep Starlight's size. */
+.sl-markdown-content {
+  --sl-text-h1: 2.05rem;
+  --sl-text-h2: 1.45rem;
+  --sl-text-h3: 1.18rem;
+  --sl-text-h4: 1rem;
+}
+
 :is(h1, h2, h3, h4, h5, h6) {
   font-weight: 600;
   letter-spacing: -0.011em;
@@ -84,17 +102,23 @@ body {
   font-size: 2.05rem;
   line-height: 1.15;
 }
-.sl-markdown-content h2 {
-  font-size: 1.45rem;
+.sl-markdown-content h4 {
+  color: var(--sl-color-white);
+}
+
+/* Section spacing goes on the wrapper: Starlight renders the heading itself as
+   `display: inline`, so a margin on the heading element is inert. */
+.sl-markdown-content .sl-heading-wrapper.level-h2 {
   margin-top: 2.6rem;
 }
-.sl-markdown-content h3 {
-  font-size: 1.18rem;
+.sl-markdown-content .sl-heading-wrapper.level-h3 {
   margin-top: 1.9rem;
 }
-.sl-markdown-content h4 {
-  font-size: 1rem;
-  color: var(--sl-color-white);
+
+/* A little more air between the heading text and the anchor icon than
+   Starlight's 0.25em default. */
+.sl-markdown-content .sl-heading-wrapper {
+  --sl-anchor-icon-gap: 0.4em;
 }
 
 .sl-markdown-content {
