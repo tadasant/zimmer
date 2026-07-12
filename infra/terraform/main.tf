@@ -71,12 +71,18 @@ variable "droplet_size" {
 
 variable "manage_project" {
   type        = bool
-  default     = true
+  default     = false
   description = <<-EOT
-    Whether to create a dedicated DigitalOcean Project for this environment. On by
-    default now that state is persistent: a DO Project name is account-unique, and
-    with a remote backend Terraform reconciles the existing project instead of
-    409-colliding the way it did under the old ephemeral tfstate.
+    Whether to create a dedicated DigitalOcean Project for this environment.
+
+    Still OFF by default, even with persistent state. Remote state fixes the case
+    where Terraform created the project itself -- but a project that ALREADY exists
+    and is not in state still 409s ("name is already in use"), because DO project
+    names are account-unique. Both environments have one from the pre-Kamal era, so
+    turning this on requires a one-time `terraform import` of the existing project
+    first. A DO Project is purely organizational (a folder in the console), so that
+    is not worth the extra failure mode in the provisioning path; the droplet works
+    fine in the account's default project.
   EOT
 }
 
