@@ -59,8 +59,12 @@ builder:
 
 env:
   clear:
-    # Staging runs the production Rails env, matching the pre-Kamal cloud-init.
-    RAILS_ENV: production
+    # RAILS_ENV is set PER DESTINATION (config/deploy.<dest>.yml), not here.
+    # Staging must run RAILS_ENV=staging: SelfSessionInjector keys the injected
+    # self-session MCP server off Rails.env, so a staging box running as
+    # "production" injects the PRODUCTION server and dies on a missing
+    # AGENT_ORCHESTRATOR_PROD_API_KEY -- which is exactly what the pre-Kamal
+    # cloud-init did, breaking every staging session.
     OTEL_SERVICE_NAME: zimmer
     # Accessories share the Kamal docker network; reach them by container name
     # (<service>-<accessory>).
