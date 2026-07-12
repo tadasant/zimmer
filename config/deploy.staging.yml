@@ -89,8 +89,11 @@ accessories:
     env:
       clear:
         POSTGRES_USER: zimmer
-        # Matches database.yml's `staging:` section. db:prepare creates
-        # zimmer_staging_cable too (POSTGRES_USER is the cluster superuser).
+        # Only takes effect at FIRST initdb of the zimmer_pgdata volume. On an
+        # already-initialized volume this is inert: the databases Rails actually
+        # uses (zimmer_staging + zimmer_staging_cable, per database.yml) are created
+        # by `db:prepare` in the app entrypoint, which can do so only because
+        # POSTGRES_USER is the cluster superuser.
         POSTGRES_DB: zimmer_staging
       secret:
         - POSTGRES_PASSWORD
