@@ -91,7 +91,7 @@ repository.
 
 ### SSH hardening only reaches a droplet that is rebuilt
 
-SSH is now [tailnet-only](/operate/provisioning/#ssh-is-tailnet-only): the firewall opens no public
+SSH is now [tailnet-only](/operate/ssh-access/#ssh-is-tailnet-only): the firewall opens no public
 TCP port, real OpenSSH listens on a tailnet-only `:2222`, and sshd takes password auth off. But two of
 those three land through **cloud-init**, and the droplet carries `ignore_changes = [user_data]` — so
 they only reach a box that is *rebuilt*.
@@ -133,7 +133,7 @@ ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -p 2222 root
 
 🔴 DigitalOcean force-expires root's password on any droplet created without a DO-registered SSH key —
 which is the deliberate posture here — and `pam_unix` then rejects
-[every real-OpenSSH session on `:2222`](/operate/provisioning/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session)
+[every real-OpenSSH session on `:2222`](/operate/ssh-access/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session)
 *after* publickey auth succeeds. cloud-init clears it at first boot, and
 `scripts/clear-root-password-expiry.sh` repairs a box that already exists — including one whose
 password DigitalOcean's **Reset root password** flow has just re-expired.
@@ -167,7 +167,7 @@ Before setting `recreate_droplet: true`, confirm (a) `TAILSCALE_AUTH_KEY` is val
 and (b) you can actually log into the DigitalOcean web console for the droplet.
 
 That console door has a catch. cloud-init deletes root's password (`usermod -p '*'`) — it must, or
-[pam_unix rejects every OpenSSH session](/operate/provisioning/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session) —
+[pam_unix rejects every OpenSSH session](/operate/ssh-access/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session) —
 so there is no password to type at a console login prompt. Getting one means DigitalOcean's **Reset
 root password**, which mails a new one *and* force-expires it again (`lastchg=0`). So the reset that
 buys you a console also re-breaks `:2222` until the next staging deploy converges it, or until
