@@ -191,14 +191,21 @@ endpoint = "https://nyc3.digitaloceanspaces.com"   # or your S3-compatible endpo
 
 ### `<service>/deploy.production.yml`
 
-The Kamal **production destination**. It layers onto the public repo's `config/deploy.yml`
-base: same image, production hosts and env. Kept private because it names real hosts.
+The Kamal **production destination**. Kamal merges a destination file with the base
+`config/deploy.yml` when you pass `-d <dest>` — but it looks for both **side by side** in
+one checkout (`config/deploy.yml` + `config/deploy.production.yml`); it will not merge a file
+from a second repo, and passing `-c` twice keeps only the last file rather than merging. So at
+deploy time this file has to sit next to the public base as `config/deploy.production.yml`
+(the deploy job below checks out the public repo and drops this file in). Kept private because
+it names real hosts.
 
 ```yaml
-# Destination overrides for `kamal deploy -d production`. Read together with the
-# public repo's config/deploy.yml base.
+# Merged with the public repo's config/deploy.yml via `kamal deploy -d production`
+# (both files must be present in the deploy checkout — see the deploy job below).
 service: <service>
-image: ghcr.io/<owner>/<service>
+# Repository path only — Kamal prepends registry.server below, so this resolves to
+# ghcr.io/<owner>/<service>. Including the registry here would double it.
+image: <owner>/<service>
 
 servers:
   web:
@@ -230,11 +237,13 @@ How Kamal resolves the `secret:` names above. Pull them from your secrets manage
 environment — **never commit the values themselves**.
 
 ```bash
-# Resolved at deploy time. Values come from GitHub Actions secrets or a secrets manager
-# (e.g. `op read ...` with the 1Password CLI); this file holds only the wiring.
-KAMAL_REGISTRY_PASSWORD=$GHCR_PULL_TOKEN
-SECRET_KEY_BASE=$PROD_SECRET_KEY_BASE
-DATABASE_PASSWORD=$PROD_DB_PASSWORD
+# Resolved at deploy time. Each name here must already be set in the environment Kamal
+# runs in — the deploy job below exports them from GitHub Actions secrets (or pull them
+# from a secrets manager, e.g. `op read ...` with the 1Password CLI). This file is just
+# the wiring: `NAME=$NAME` passes an env var straight through to Kamal's secret store.
+KAMAL_REGISTRY_PASSWORD=$KAMAL_REGISTRY_PASSWORD
+SECRET_KEY_BASE=$SECRET_KEY_BASE
+DATABASE_PASSWORD=$DATABASE_PASSWORD
 ```
 
 ### `.github/workflows/deploy-<service>.yml`
@@ -274,15 +283,20 @@ jobs:
           terraform apply -auto-approve -var-file=production.tfvars
 
       - name: Kamal deploy (app)
+        # Kamal's `-d production` merges config/deploy.yml with config/deploy.production.yml
+        # from the SAME checkout, so check out the public app repo and drop this service's
+        # destination file into it as config/deploy.production.yml before deploying. The env
+        # names below are exactly the ones .kamal/secrets.production passes through to Kamal.
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
-          PROD_SECRET_KEY_BASE: ${{ secrets.PROD_SECRET_KEY_BASE }}
-          PROD_DB_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          SECRET_KEY_BASE: ${{ secrets.PROD_SECRET_KEY_BASE }}
+          DATABASE_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
         run: |
+          git clone https://github.com/<owner>/<service>.git app && cd app
+          cp ../<service>/deploy.production.yml   config/deploy.production.yml
+          cp ../<service>/.kamal/secrets.production .kamal/secrets.production
           gem install kamal
-          kamal deploy -d production \
-            --config-file config/deploy.yml \
-            --config-file <service>/deploy.production.yml
+          kamal deploy -d production
 ```
 
 ## Checklist for a new service
