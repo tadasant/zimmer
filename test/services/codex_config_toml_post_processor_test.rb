@@ -37,6 +37,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     ZIMMER_STAGING_API_KEY
     ZIMMER_PROD_BASE_URL
     ZIMMER_PROD_API_KEY
+    ZIMMER_OPERATOR_SSH_KEY
   ].freeze
 
   setup do

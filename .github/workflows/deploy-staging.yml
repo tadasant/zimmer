@@ -264,7 +264,7 @@ jobs:
           # the app boots and only the ssh-* MCP servers fail, inside a session, with a
           # health-check error nobody is watching for.
           if [ -n "${STAGING_OPERATOR_SSH_KEY:-}" ]; then
-            echo "✅ Session SSH identity ON (operator key set; decoded to ~/.ssh/id_ed25519 on boot)"
+            echo "✅ Session SSH identity ON (operator key set; decoded to ~/.ssh/zimmer_operator_ed25519 on boot)"
           else
             echo "::warning::Sessions will have NO SSH identity: STAGING_OPERATOR_SSH_KEY is unset,"
             echo "::warning::so every ssh-* MCP server fails its startup health check."

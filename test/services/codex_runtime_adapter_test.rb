@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   setup do
@@ -10,6 +11,10 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     @mock_file_system = MockFileSystemAdapter.new
     @adapter.process_manager = @mock_process_manager
     @adapter.file_system = @mock_file_system
+    # The provisioner writes through raw File/FileUtils, not the injected file system,
+    # so a developer with ZIMMER_OPERATOR_SSH_KEY exported would otherwise have the
+    # suite write a key into their real ~/.ssh. Tests that need a path re-stub this.
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
   end
 
   teardown do
@@ -409,12 +414,12 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   test "spawn exports SSH_PRIVATE_KEY_PATH so the ssh-* MCP servers find the operator key" do
-    OperatorSshKeyProvisioner.stubs(:ensure!).returns("/home/rails/.ssh/id_ed25519")
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns("/home/rails/.ssh/zimmer_operator_ed25519")
 
     @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
 
     env = @mock_process_manager.spawned_processes.last[:env]
-    assert_equal "/home/rails/.ssh/id_ed25519", env["SSH_PRIVATE_KEY_PATH"]
+    assert_equal "/home/rails/.ssh/zimmer_operator_ed25519", env["SSH_PRIVATE_KEY_PATH"]
   end
 
   test "spawn leaves SSH_PRIVATE_KEY_PATH unset when no operator key is configured" do
