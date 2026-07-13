@@ -26,6 +26,7 @@ concurrency:
 
 jobs:
   lint:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +44,7 @@ jobs:
         run: bin/rubocop -f github --parallel
 
   security:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +62,7 @@ jobs:
         run: bin/brakeman --no-pager -q
 
   verify_lockfile:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +86,7 @@ jobs:
   # gate. PARALLEL_WORKERS is pinned so a shard cannot fan out to :number_of_processors
   # (32 on the box) and starve co-tenants.
   test-unit:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
 
     services:
@@ -148,6 +152,7 @@ jobs:
   # sidebar fails here rather than at deploy time. No Ruby needed — this is the
   # one Node-only job.
   docs_site:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -166,6 +171,7 @@ jobs:
   # Standalone unit tests for the GHCR retention selector. Pure Ruby, no Rails
   # boot required, so it runs fast and independently of the app suite.
   retention_logic:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
