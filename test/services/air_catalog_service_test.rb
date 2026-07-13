@@ -390,22 +390,22 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   test "persists a last-known-good snapshot after a successful resolve" do
     assert_nil CatalogSnapshot.latest
 
-    with_air_resolve("roots" => { "ao-router" => { "name" => "ao-router" } }) do
+    with_air_resolve("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }) do
       AirCatalogService.entries_for(:roots)
     end
 
     snapshot = CatalogSnapshot.latest
     assert snapshot, "a snapshot should be persisted after a successful resolve"
-    assert_equal({ "name" => "ao-router" }, snapshot.entries["roots"]["ao-router"])
+    assert_equal({ "name" => "zimmer-router" }, snapshot.entries["roots"]["zimmer-router"])
     refute AirCatalogService.degraded?
   end
 
   test "serves the in-memory last-known-good catalog when a later resolve fails" do
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
-        ok = ->(*) { [ JSON.generate("roots" => { "ao-router" => { "name" => "ao-router" } }), "", fake_status(0) ] }
+        ok = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), "", fake_status(0) ] }
         Open3.stub(:capture3, ok) do
-          assert_equal [ "ao-router" ], AirCatalogService.entries_for(:roots).keys
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys
         end
         refute AirCatalogService.degraded?
 
@@ -413,8 +413,8 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
         Open3.stub(:capture3, boom) do
           AirCatalogService.reload! # forces a fresh resolve, which now fails
 
-          assert_equal [ "ao-router" ], AirCatalogService.entries_for(:roots).keys,
-            "ao-router must remain resolvable from the in-memory last-known-good catalog"
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys,
+            "zimmer-router must remain resolvable from the in-memory last-known-good catalog"
           assert AirCatalogService.degraded?
         end
       end
@@ -422,14 +422,14 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   end
 
   test "serves the persisted last-known-good snapshot when resolve fails on a cold cache" do
-    CatalogSnapshot.store!(roots: { "ao-router" => { "name" => "ao-router" } }, skills: {})
+    CatalogSnapshot.store!(roots: { "zimmer-router" => { "name" => "zimmer-router" } }, skills: {})
     AirCatalogService.reset! # cold process: nothing cached in memory
 
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
         Open3.stub(:capture3, ->(*) { [ "", "cross-scope shortname collision", fake_status(1) ] }) do
-          assert_equal [ "ao-router" ], AirCatalogService.entries_for(:roots).keys,
-            "a freshly restarted process must recover ao-router from the persisted snapshot"
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys,
+            "a freshly restarted process must recover zimmer-router from the persisted snapshot"
           assert AirCatalogService.degraded?
         end
       end
@@ -461,17 +461,17 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
           assert AirCatalogService.degraded?
         end
 
-        fresh = ->(*) { [ JSON.generate("roots" => { "ao-router" => { "name" => "ao-router" } }), "", fake_status(0) ] }
+        fresh = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), "", fake_status(0) ] }
         Open3.stub(:capture3, fresh) do
           AirCatalogService.reload!
 
-          assert_equal [ "ao-router" ], AirCatalogService.entries_for(:roots).keys
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys
           refute AirCatalogService.degraded?
         end
       end
     end
 
-    assert_equal({ "name" => "ao-router" }, CatalogSnapshot.latest.entries["roots"]["ao-router"])
+    assert_equal({ "name" => "zimmer-router" }, CatalogSnapshot.latest.entries["roots"]["zimmer-router"])
   end
 
   # --- structurally-incomplete resolve (exit 0 but references dropped) -------
@@ -479,11 +479,11 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   # AIR drops unresolvable references when a catalog source is stale/partial,
   # emitting "references unknown ... Dropping the reference" warnings while still
   # exiting 0. The dropped references strip affected roots' defaults (e.g.
-  # ao-router's default_skills / _mcp_servers / _hooks), so the service must
+  # zimmer-router's default_skills / _mcp_servers / _hooks), so the service must
   # treat such a resolve as failed.
   DROPPED_REF_STDERR = <<~STDERR
-    warning: @local/ao-router.skills references unknown skill "ao-router-route-request". Available qualified IDs: @pulsemcp/ai-artifacts/foo, … (18 total). Dropping the reference.
-    warning: @local/ao-router.skills references unknown skill "ao-router-select-agent-root". Available qualified IDs: @pulsemcp/ai-artifacts/foo, … (18 total). Dropping the reference.
+    warning: @local/zimmer-router.skills references unknown skill "zimmer-router-route-request". Available qualified IDs: @pulsemcp/ai-artifacts/foo, … (18 total). Dropping the reference.
+    warning: @local/zimmer-router.skills references unknown skill "zimmer-router-select-agent-root". Available qualified IDs: @pulsemcp/ai-artifacts/foo, … (18 total). Dropping the reference.
   STDERR
 
   # AIR also drops references that resolve to an artifact intentionally removed by
@@ -497,30 +497,30 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   test "treats a resolve that exits 0 but drops references as failed, serving last-known-good" do
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
-        healthy_root = { "name" => "ao-router", "default_skills" => %w[ao-router-route-request], "default_mcp_servers" => %w[zimmer] }
-        ok = ->(*) { [ JSON.generate("roots" => { "ao-router" => healthy_root }), "", fake_status(0) ] }
+        healthy_root = { "name" => "zimmer-router", "default_skills" => %w[zimmer-router-route-request], "default_mcp_servers" => %w[zimmer] }
+        ok = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => healthy_root }), "", fake_status(0) ] }
         Open3.stub(:capture3, ok) do
-          assert_equal healthy_root, AirCatalogService.entries_for(:roots)["ao-router"]
+          assert_equal healthy_root, AirCatalogService.entries_for(:roots)["zimmer-router"]
         end
         refute AirCatalogService.degraded?
 
         # A later resolve exits 0 but drops the references that populate the
         # root's defaults. The roots key is still present but stripped of defaults.
-        stripped = ->(*) { [ JSON.generate("roots" => { "ao-router" => { "name" => "ao-router" } }), DROPPED_REF_STDERR, fake_status(0) ] }
+        stripped = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), DROPPED_REF_STDERR, fake_status(0) ] }
         Open3.stub(:capture3, stripped) do
           AirCatalogService.reload!
 
-          root = AirCatalogService.entries_for(:roots)["ao-router"]
-          assert_equal %w[ao-router-route-request], root["default_skills"],
-            "ao-router defaults must survive from the last-known-good catalog, not the stripped resolve"
+          root = AirCatalogService.entries_for(:roots)["zimmer-router"]
+          assert_equal %w[zimmer-router-route-request], root["default_skills"],
+            "zimmer-router defaults must survive from the last-known-good catalog, not the stripped resolve"
           assert AirCatalogService.degraded?
         end
       end
     end
 
     # The poisoned tree must NOT overwrite the good snapshot.
-    assert_equal %w[ao-router-route-request],
-      CatalogSnapshot.latest.entries["roots"]["ao-router"]["default_skills"],
+    assert_equal %w[zimmer-router-route-request],
+      CatalogSnapshot.latest.entries["roots"]["zimmer-router"]["default_skills"],
       "the persisted snapshot must retain the healthy defaults, not the stripped resolve"
   end
 
@@ -529,7 +529,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
 
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
-        stripped = ->(*) { [ JSON.generate("roots" => { "ao-router" => { "name" => "ao-router" } }), DROPPED_REF_STDERR, fake_status(0) ] }
+        stripped = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), DROPPED_REF_STDERR, fake_status(0) ] }
         Open3.stub(:capture3, stripped) do
           error = assert_raises(AirCatalogService::CatalogError) do
             AirCatalogService.entries_for(:roots)
@@ -545,9 +545,9 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
       AirCatalogService.stub(:air_binary, @fake_binary) do
         # Non-marker stderr (e.g. an informational note) must not be mistaken for
         # an incomplete resolve.
-        noisy = ->(*) { [ JSON.generate("roots" => { "ao-router" => { "name" => "ao-router" } }), "note: using cached provider data\n", fake_status(0) ] }
+        noisy = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), "note: using cached provider data\n", fake_status(0) ] }
         Open3.stub(:capture3, noisy) do
-          assert_equal [ "ao-router" ], AirCatalogService.entries_for(:roots).keys
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys
           refute AirCatalogService.degraded?
         end
       end
@@ -559,9 +559,9 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
       AirCatalogService.stub(:air_binary, @fake_binary) do
         # The exclude-driven drop shares the "Dropping the reference." marker but
         # is an author-intended configuration, so it must not degrade the catalog.
-        excluded = ->(*) { [ JSON.generate("roots" => { "ao-router" => { "name" => "ao-router" } }), EXCLUDE_DROP_STDERR, fake_status(0) ] }
+        excluded = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), EXCLUDE_DROP_STDERR, fake_status(0) ] }
         Open3.stub(:capture3, excluded) do
-          assert_equal [ "ao-router" ], AirCatalogService.entries_for(:roots).keys
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys
           refute AirCatalogService.degraded?
         end
       end
@@ -571,7 +571,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   test "an unknown-reference drop trips even when mixed with an intentional exclude drop" do
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
-        mixed = ->(*) { [ JSON.generate("roots" => { "ao-router" => { "name" => "ao-router" } }), EXCLUDE_DROP_STDERR + DROPPED_REF_STDERR, fake_status(0) ] }
+        mixed = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), EXCLUDE_DROP_STDERR + DROPPED_REF_STDERR, fake_status(0) ] }
         Open3.stub(:capture3, mixed) do
           error = assert_raises(AirCatalogService::CatalogError) do
             AirCatalogService.entries_for(:roots)

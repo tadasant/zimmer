@@ -11,14 +11,14 @@ class CatalogSnapshotTest < ActiveSupport::TestCase
   end
 
   test "store! persists the entry tree and a resolved_at timestamp" do
-    record = CatalogSnapshot.store!(roots: { "ao-router" => { "name" => "ao-router" } })
+    record = CatalogSnapshot.store!(roots: { "zimmer-router" => { "name" => "zimmer-router" } })
 
     assert record.persisted?
     assert record.resolved_at
     # Read back from the DB so jsonb's string keys are reflected (the in-memory
     # record still holds the symbol keys it was created with).
     stored = CatalogSnapshot.find(record.id)
-    assert_equal({ "name" => "ao-router" }, stored.entries["roots"]["ao-router"])
+    assert_equal({ "name" => "zimmer-router" }, stored.entries["roots"]["zimmer-router"])
   end
 
   test "store! retains only the most recent snapshot" do
