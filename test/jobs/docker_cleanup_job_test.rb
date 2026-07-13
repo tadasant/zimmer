@@ -32,7 +32,7 @@ class DockerCleanupJobTest < ActiveJob::TestCase
       ao-dev-abc12345\t#{old_time}
       ao-dev-def67890\t#{recent_time}
       pulsemcp-dev-aaa11111\t#{old_time}
-      agent-orchestrator-web-production-xyz\t#{old_time}
+      zimmer-web-production-xyz\t#{old_time}
     OUTPUT
 
     success = OpenStruct.new(success?: true)
@@ -42,7 +42,7 @@ class DockerCleanupJobTest < ActiveJob::TestCase
       assert_includes stale, "ao-dev-abc12345", "Old ao-dev should be stale"
       assert_includes stale, "pulsemcp-dev-aaa11111", "Old pulsemcp-dev should be stale"
       assert_not_includes stale, "ao-dev-def67890", "Recent ao-dev should not be stale"
-      assert_not_includes stale, "agent-orchestrator-web-production-xyz", "Non-dev containers should be excluded"
+      assert_not_includes stale, "zimmer-web-production-xyz", "Non-dev containers should be excluded"
     end
   end
 
@@ -75,6 +75,6 @@ class DockerCleanupJobTest < ActiveJob::TestCase
     prefixes = DockerCleanupJob::DEV_SERVER_PREFIXES
     assert prefixes.any? { |p| "ao-dev-abc12345".start_with?(p) }
     assert prefixes.any? { |p| "pulsemcp-dev-abc12345".start_with?(p) }
-    assert_not prefixes.any? { |p| "agent-orchestrator-web".start_with?(p) }
+    assert_not prefixes.any? { |p| "zimmer-web".start_with?(p) }
   end
 end

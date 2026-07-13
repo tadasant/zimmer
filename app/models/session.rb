@@ -504,7 +504,7 @@ class Session < ApplicationRecord
 
   # Get full agent root path including subdirectory
   # Examples:
-  # git_root: "agents", subdirectory: "agent-orchestrator" -> "agents/agent-orchestrator"
+  # git_root: "agents", subdirectory: "zimmer" -> "agents/zimmer"
   # git_root: "agents", subdirectory: nil -> "agents"
   def agent_root_path
     return nil if agent_root_name.blank?
@@ -530,7 +530,7 @@ class Session < ApplicationRecord
   end
 
   # The canonical key of the session's agent root from roots.json
-  # (e.g., "agent-orchestrator", "agents", "zimmer-router").
+  # (e.g., "zimmer", "agents", "zimmer-router").
   #
   # Prefers the explicit key stored in metadata at creation time, then falls back
   # to resolving by git_root URL + subdirectory against the current catalog.
@@ -805,7 +805,7 @@ class Session < ApplicationRecord
 
   # Combined list of explicitly configured, plugin-bundled, and auto-injected
   # MCP servers. This is the effective server set that the runtime should see.
-  # Auto-injected servers (e.g. agent-orchestrator for subagent roots) are
+  # Auto-injected servers (e.g. zimmer for subagent roots) are
   # stored in custom_metadata by AgentSessionJob after AIR prepare.
   def all_mcp_servers
     injected = custom_metadata&.dig("injected_mcp_servers") || []
@@ -829,7 +829,7 @@ class Session < ApplicationRecord
   end
 
   # Returns ONLY the MCP server names Zimmer auto-injected during session startup —
-  # the self-session server, and the subagent-spawning agent-orchestrator server
+  # the self-session server, and the subagent-spawning zimmer server
   # for roots that declare default_subagent_roots. It deliberately excludes every
   # user-selected and plugin-bundled server.
   #
@@ -895,7 +895,7 @@ class Session < ApplicationRecord
   # fit in signed int4 (max 2,147,483,647), so the namespace is chosen to
   # stay below that ceiling — session.id is also a 4-byte int and will
   # never realistically exceed it.
-  SESSION_ADVISORY_LOCK_NAMESPACE = 0x415F_5253 # "A_RS" (Agent orchestrator Race-Safe Session lock)
+  SESSION_ADVISORY_LOCK_NAMESPACE = 0x415F_5253 # "A_RS" ASCII — Race-Safe Session advisory lock namespace (value fixed for cross-process lock compatibility)
 
   # Acquire a transaction-scoped Postgres advisory lock keyed on session_id and
   # yield. All callers entering this block for the same session_id are

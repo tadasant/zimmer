@@ -446,7 +446,7 @@ class TranscriptPollerService
   # This detects MCP server connection failures early (before the transcript shows them).
   # `all_mcp_servers` is the union of user-configured and auto-injected servers, so
   # sessions with only injected servers (e.g. a Zimmer root that lists no MCP servers
-  # of its own but has the agent-orchestrator MCP auto-injected for subagents) still
+  # of its own but has the zimmer MCP auto-injected for subagents) still
   # get their connection state tracked.
   def poll_mcp_logs(transcript_content = nil)
     return unless @session.all_mcp_servers.any?

@@ -4,7 +4,7 @@ require "test_helper"
 
 class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
   setup do
-    @clones_base = File.join(Dir.tmpdir, "test-ao-clones-#{SecureRandom.hex(4)}")
+    @clones_base = File.join(Dir.tmpdir, "test-zimmer-clones-#{SecureRandom.hex(4)}")
     FileUtils.mkdir_p(@clones_base)
 
     # Create an old orphan directory (no matching session)

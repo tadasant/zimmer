@@ -84,7 +84,7 @@ class WebpushConfigTest < ActiveSupport::TestCase
           WebpushConfig.stub(:subject, nil) do
             result = WebpushConfig.vapid_keys
 
-            assert_equal "mailto:admin@agent-orchestrator.local", result[:subject]
+            assert_equal "mailto:admin@zimmer.local", result[:subject]
           end
         end
       end

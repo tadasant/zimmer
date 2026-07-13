@@ -13,7 +13,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
 
     # Belongs to "agent-orchestrator" via the explicit metadata key (how new sessions
     # record their root).
-    @ao_session = Session.create!(
+    @zimmer_session = Session.create!(
       git_root: "https://github.com/tadasant/zimmer-catalog.git",
       subdirectory: "agents/agent-orchestrator",
       prompt: "Zimmer session",
@@ -23,7 +23,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
 
     # Belongs to "agent-orchestrator" via git_root + subdirectory only (an older session
     # created before agent_root_key was persisted in metadata).
-    @ao_legacy_session = Session.create!(
+    @zimmer_legacy_session = Session.create!(
       git_root: "https://github.com/tadasant/zimmer-catalog.git",
       subdirectory: "agents/agent-orchestrator",
       prompt: "Zimmer legacy session",
@@ -47,8 +47,8 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     # Both the metadata-keyed and the legacy URL+subdirectory session match; the
     # "agents" session does not.
     assert_select "#sessions_grid turbo-frame", count: 2
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@ao_session)}"
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@ao_legacy_session)}"
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_legacy_session)}"
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@agents_session)}", count: 0
   end
 
@@ -87,7 +87,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   end
 
   test "searching defaults to including trashed sessions" do
-    @ao_legacy_session.update!(status: :archived)
+    @zimmer_legacy_session.update!(status: :archived)
 
     # No show_archived param: trash is included by default because a search is active.
     get root_url(agent_root: "agent-orchestrator")
@@ -98,7 +98,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     get root_url(agent_root: "agent-orchestrator", show_archived: "false")
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 1
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@ao_session)}"
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
   end
 
   test "a text query also activates the flat list and default trash inclusion" do
@@ -121,13 +121,13 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   end
 
   test "agent root filter and text query combine" do
-    @ao_session.update!(title: "Special Zimmer")
+    @zimmer_session.update!(title: "Special Zimmer")
 
     get root_url(agent_root: "agent-orchestrator", q: "Special")
     assert_response :success
 
     assert_select "#sessions_grid turbo-frame", count: 1
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@ao_session)}"
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
   end
 
   test "an explicit metadata key wins over a mismatched git_root + subdirectory" do

@@ -22,7 +22,7 @@ class ClaudePrintRunnerTest < ActiveSupport::TestCase
     end
   end
 
-  class FakePrintExtension < Ao::Extension
+  class FakePrintExtension < Zimmer::Extension
     def id = "fake_print"
     def provides_print_runner? = true
 
@@ -33,14 +33,14 @@ class ClaudePrintRunnerTest < ActiveSupport::TestCase
 
   setup do
     AppSetting.delete_all
-    Ao::ExtensionRegistry.reset!
-    Ao::ExtensionRegistry.register(FakePrintExtension.new)
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register(FakePrintExtension.new)
   end
 
   teardown do
     # Restore the real built-in registry so we don't leak the fake into other tests.
-    Ao::ExtensionRegistry.reset!
-    Ao::ExtensionRegistry.register_builtins!
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
   end
 
   def enable_fake(on)

@@ -12,7 +12,7 @@
 # would behave differently depending on whether the pty_transport extension is on.
 #
 # The methods rely on the including class exposing `@file_system`, `@logger`,
-# and `@ao_session_id`, which every Claude adapter already provides.
+# and `@zimmer_session_id`, which every Claude adapter already provides.
 module ClaudeSpawnEnv
   include CliSpawnEnv
 
@@ -73,7 +73,7 @@ module ClaudeSpawnEnv
     # flipping ENABLE_TOOL_SEARCH to "true"). Merged over the baseline above so an
     # extension can override a Zimmer default; with no extension enabled this is a
     # no-op and the child sees the baseline env unchanged.
-    env_vars.merge!(Ao::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
+    env_vars.merge!(Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
 
     # Export the durable per-session scratch dir (AO_SESSION_SCRATCH_DIR) so
     # agents persist cross-step state on the durable volume instead of ephemeral /tmp.
@@ -109,9 +109,9 @@ module ClaudeSpawnEnv
   # Other elicitation env vars (ELICITATION_ENABLED, ELICITATION_REQUEST_URL,
   # ELICITATION_POLL_URL) are configured per-server in config/mcp.json.
   def configure_elicitation_env(env_vars)
-    if @ao_session_id.present?
-      env_vars["ELICITATION_SESSION_ID"] = @ao_session_id.to_s
-      @logger.info "Set ELICITATION_SESSION_ID=#{@ao_session_id} for elicitation callbacks"
+    if @zimmer_session_id.present?
+      env_vars["ELICITATION_SESSION_ID"] = @zimmer_session_id.to_s
+      @logger.info "Set ELICITATION_SESSION_ID=#{@zimmer_session_id} for elicitation callbacks"
     end
   end
 

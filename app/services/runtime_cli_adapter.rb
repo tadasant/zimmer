@@ -51,7 +51,7 @@
 #
 # == Mutable accessors (DI surface used by ProcessLifecycleManager) ==
 #
-#   process_manager=, file_system=, ao_session_id=
+#   process_manager=, file_system=, zimmer_session_id=
 #   ProcessLifecycleManager sets these so the adapter shares its process manager
 #   and file system (important for test doubles) and knows the Zimmer session id for
 #   MCP elicitation callbacks.

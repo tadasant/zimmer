@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-module Ao
-  # Registry of Zimmer Extensions (see Ao::Extension) and the single place the core
+module Zimmer
+  # Registry of Zimmer Extensions (see Zimmer::Extension) and the single place the core
   # resolves extension-contributed behavior. Core seams ask the registry generic
   # questions ("does any enabled extension override the CLI adapter for this
   # runtime?") and never name a concrete extension — so an extension can be
@@ -40,10 +40,10 @@ module Ao
 
     # Register a single extension instance (last write wins per id).
     def register(extension)
-      if extension.api_version != Ao::Extension::API_VERSION
+      if extension.api_version != Zimmer::Extension::API_VERSION
         Rails.logger.warn(
-          "[Ao::ExtensionRegistry] #{extension.class} declares api_version " \
-          "#{extension.api_version}, registry is #{Ao::Extension::API_VERSION}; registering anyway"
+          "[Zimmer::ExtensionRegistry] #{extension.class} declares api_version " \
+          "#{extension.api_version}, registry is #{Zimmer::Extension::API_VERSION}; registering anyway"
         )
       end
       @mutex.synchronize { @extensions[extension.id.to_s] = extension }

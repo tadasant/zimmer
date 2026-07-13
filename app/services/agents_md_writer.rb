@@ -18,7 +18,7 @@
 # by the AIR Codex adapter. This writer only delivers the system-prompt slice.
 class AgentsMdWriter
   # Marks the start of Zimmer-managed content appended to a pre-existing AGENTS.md.
-  AO_SECTION_MARKER = "<!-- BEGIN Zimmer context (managed by Zimmer) -->"
+  ZIMMER_SECTION_MARKER = "<!-- BEGIN Zimmer context (managed by Zimmer) -->"
 
   attr_reader :session, :working_directory, :file_system
 
@@ -52,17 +52,17 @@ class AgentsMdWriter
   end
 
   # Write the orchestrator context to the target file. The Zimmer content is always
-  # wrapped in AO_SECTION_MARKER so it can be detected on re-runs: appended below
+  # wrapped in ZIMMER_SECTION_MARKER so it can be detected on re-runs: appended below
   # a delimiter when the file already exists, written on its own otherwise. The
   # marker is the dedupe key, so it must be present even on a fresh write to keep
   # repeated prepares idempotent.
   def write!
-    section = "#{AO_SECTION_MARKER}\n\n#{content}\n"
+    section = "#{ZIMMER_SECTION_MARKER}\n\n#{content}\n"
     path = target_path
 
     if file_system.exists?(path)
       existing = file_system.read(path).to_s
-      return path if existing.include?(AO_SECTION_MARKER) # idempotent: don't double-append
+      return path if existing.include?(ZIMMER_SECTION_MARKER) # idempotent: don't double-append
 
       file_system.write(path, "#{existing.rstrip}\n\n#{section}")
     else

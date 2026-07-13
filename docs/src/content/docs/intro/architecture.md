@@ -170,7 +170,7 @@ Core code never says "Claude." It asks the registry. See
 
 ## Extensions
 
-A thin seam on top of that: `Ao::Extension` lets optional behavior override the CLI adapter,
+A thin seam on top of that: `Zimmer::Extension` lets optional behavior override the CLI adapter,
 supply a print-inference backend, or contribute spawn environment variables — without core
 naming it. Exactly one ships (`mcp_tool_search`), and the Docker image excludes
 `app/extensions/*/` entirely. See [Extensions](/extend/extensions/).

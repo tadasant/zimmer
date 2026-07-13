@@ -60,7 +60,7 @@ module SessionSearchable
   # silently returning all sessions.
   #
   # @param sessions [ActiveRecord::Relation] The scope to filter
-  # @param root_name [String] The agent root's catalog name (e.g. "agent-orchestrator")
+  # @param root_name [String] The agent root's catalog name (e.g. "zimmer")
   # @return [ActiveRecord::Relation] Filtered sessions
   def filter_sessions_by_agent_root(sessions, root_name)
     root = AgentRootsConfig.find(root_name)

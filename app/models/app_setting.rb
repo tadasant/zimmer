@@ -72,7 +72,7 @@ class AppSetting < ApplicationRecord
 
     # Whether the Zimmer Extension with the given id is enabled, per the persisted
     # settings row. Falls back to `default` whenever the row or column can't be
-    # read, so Ao::ExtensionRegistry stays safe in the hot path and DB-less boots.
+    # read, so Zimmer::ExtensionRegistry stays safe in the hot path and DB-less boots.
     # This is the single global enablement lookup for every extension — adding an
     # extension needs no new column, only a key in the extension_states JSONB map.
     def extension_enabled?(id, default: false)

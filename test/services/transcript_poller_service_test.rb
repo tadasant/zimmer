@@ -1382,7 +1382,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
   test "capture_runtime_session_id! persists a changed runtime id from the transcript (Codex)" do
     @session.update!(agent_runtime: "codex")
-    @session.update_column(:session_id, "ao-supplied-uuid")
+    @session.update_column(:session_id, "zimmer-supplied-uuid")
     service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
     service.instance_variable_get(:@normalizer)
       .stubs(:extract_session_id).returns(nil, "codex-real-uuid")
