@@ -117,7 +117,7 @@
     "command": "npx",
     "args": [
       "-y",
-      "slack-workspace-mcp@latest"
+      "slack-workspace-mcp-server@latest"
     ]
   },
   "tally": {
