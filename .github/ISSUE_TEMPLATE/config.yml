@@ -1,0 +1,11 @@
+# Zimmer accepts detailed bug reports and feature requests as issues.
+# Casual questions and "how do I..." belong in the docs or Discussions, not the
+# issue tracker — keep issues high-signal so they can be triaged fast.
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Documentation
+    url: https://docs.zimmer.tadasant.com/
+    about: Most "how do I…" questions are answered here — architecture, setup, the REST API, and a candid Known limitations page. Please read the docs before opening an issue.
+  - name: 💬 Questions & discussion
+    url: https://github.com/tadasant/zimmer/discussions
+    about: Open-ended questions, ideas, and "is this the right approach?" belong in Discussions, not the issue tracker.
