@@ -151,9 +151,13 @@ Tracked in [#151](https://github.com/tadasant/zimmer/issues/151).
 ### Admin keys are add-only
 
 `admin_ssh_pubkeys` appends to `/root/.ssh/authorized_keys` and never prunes. **Removing** a key from
-the list does not revoke it from a running droplet — that needs a rebuild or a manual edit. Adding is
-also rebuild-only (it rides `user_data`), so the variable is really "who gets authorized on the next
-rebuild", not a live access-control list.
+the list does not revoke it from a running droplet — that needs a rebuild or a manual edit. Adding
+does not reach a running droplet either (the list rides `user_data`, which cloud-init reads once at
+creation), so the variable is really "who gets authorized on the next rebuild", not a live
+access-control list. A key can be [appended live over Tailscale
+SSH](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet) — which is how production
+converges, since it cannot be casually rebuilt — but that is a separate action, not something the
+variable does.
 
 ### A rebuilt droplet has exactly one fallback door, and it is the DigitalOcean console
 
