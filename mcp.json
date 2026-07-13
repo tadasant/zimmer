@@ -118,7 +118,10 @@
     "args": [
       "-y",
       "slack-workspace-mcp-server@latest"
-    ]
+    ],
+    "env": {
+      "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"
+    }
   },
   "tally": {
     "title": "Tally",
