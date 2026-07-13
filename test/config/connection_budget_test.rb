@@ -1,0 +1,214 @@
+# frozen_string_literal: true
+
+require "test_helper"
+require "erb"
+require "yaml"
+
+# An ActiveRecord pool is a promise the database has to be able to keep, and the pool is
+# lazy -- so an app that promises more connections than its cluster has slots looks
+# perfectly healthy until real traffic calls the promise in, at which point Postgres
+# answers FATAL "remaining connection slots are reserved for roles with the SUPERUSER
+# attribute" and Rails turns that into a 500.
+#
+# Nothing in a Rails boot checks that promise against the server. These assertions are
+# that check: they pin the derivation, and they pin it to the number Terraform enforces
+# against the cluster's plan, so the two halves of the budget cannot drift apart.
+class ConnectionBudgetTest < ActiveSupport::TestCase
+  MAIN_TF = Rails.root.join("infra/terraform/main.tf")
+  DATABASE_YML = Rails.root.join("config/database.yml")
+
+  # Every knob ConnectionBudget reads. The block below clears ALL of them and then sets
+  # only what a test asked for, so a test asserts against the derivation and not against
+  # whatever the developer (or the agent session, which exports GOOD_JOB_MAX_THREADS)
+  # happens to have exported. Without this the suite is green on CI -- which sets none of
+  # them -- and red on the machines where it is actually run.
+  KNOBS = %w[
+    RAILS_ENV RAILS_MAX_THREADS DB_POOL CABLE_DB_POOL
+    GOOD_JOB_AGENTS_THREADS GOOD_JOB_POLLERS_THREADS
+    GOOD_JOB_TRIGGERS_THREADS GOOD_JOB_DEFAULT_THREADS
+  ].freeze
+
+  # ConnectionBudget reads the process's shape from ENV and $PROGRAM_NAME, because that
+  # is all database.yml can know about itself. To assert the shape of a process this one
+  # is not, borrow it and give it back.
+  def as_process(rails_env:, program_name: $PROGRAM_NAME, **env)
+    # Anything a test sets is also given back, not just the canonical knobs -- otherwise
+    # a test that sets a retired variable leaks it into every test that follows it.
+    touched = KNOBS | env.keys.map(&:to_s)
+    previous_env = ENV.to_h.slice(*touched)
+    previous_program_name = $PROGRAM_NAME
+    touched.each { |key| ENV.delete(key) }
+    ENV["RAILS_ENV"] = rails_env
+    env.each { |key, value| ENV[key.to_s] = value&.to_s }
+    $PROGRAM_NAME = program_name
+    yield
+  ensure
+    touched.each { |key| ENV.delete(key) }
+    previous_env.each { |key, value| ENV[key] = value }
+    $PROGRAM_NAME = previous_program_name
+  end
+
+  def as_web(rails_env: "production", **env, &block)
+    as_process(rails_env: rails_env, program_name: "/rails/bin/rails", **env, &block)
+  end
+
+  def as_worker(rails_env: "production", **env, &block)
+    as_process(rails_env: rails_env, program_name: "/usr/local/bundle/ruby/3.4.0/bin/good_job", **env, &block)
+  end
+
+  # --- The invariant that the pools exist to satisfy ---------------------------
+
+  test "the worker's primary pool covers every GoodJob thread that can hold a connection" do
+    as_worker do
+      # An executing GoodJob job holds its connection for the whole job -- the advisory
+      # lock it takes is session-scoped, so GoodJob leases the connection stickily. With
+      # agent jobs that run for hours, a pool short of the scheduler count is not a queue,
+      # it is a stall. GoodJob's own SharedExecutor threads query too.
+      threads = ConnectionBudget.good_job_scheduler_threads + ConnectionBudget::GOOD_JOB_UTILITY_THREADS
+      assert_operator ConnectionBudget.primary_pool, :>=, threads
+    end
+  end
+
+  test "the web pool covers Puma's request threads and NOT the worker's job threads" do
+    as_web("RAILS_MAX_THREADS" => 3) do
+      assert_operator ConnectionBudget.primary_pool, :>=, 3
+      # The whole defect: handing the web process a pool sized for GoodJob's schedulers.
+      assert_operator ConnectionBudget.primary_pool, :<, ConnectionBudget.good_job_scheduler_threads
+    end
+  end
+
+  test "development runs GoodJob in-process, so its pool covers Puma AND the schedulers" do
+    as_web(rails_env: "development") do
+      assert_equal :async, ConnectionBudget.execution_mode
+      assert_operator ConnectionBudget.primary_pool, :>=,
+                      ConnectionBudget.good_job_scheduler_threads + Integer(ENV.fetch("RAILS_MAX_THREADS", 3))
+    end
+  end
+
+  test "the cable pool is sized for in-flight broadcasts, not for job threads" do
+    # solid_cable takes no advisory lock, so a cable connection is leased per INSERT and
+    # returned -- a broadcast from an hours-long agent job holds one for the write only.
+    as_worker do
+      assert_operator ConnectionBudget.cable_pool, :<, ConnectionBudget.primary_pool
+    end
+  end
+
+  # --- Threads and the pool that serves them move together ---------------------
+
+  test "raising a queue's thread count raises the worker's pool with it" do
+    baseline = as_worker { ConnectionBudget.primary_pool }
+    raised = as_worker("GOOD_JOB_AGENTS_THREADS" => 20) { ConnectionBudget.primary_pool }
+
+    assert_equal baseline + 4, raised
+  end
+
+  test "the queue string GoodJob is configured with is the one the budget counted" do
+    as_worker("GOOD_JOB_AGENTS_THREADS" => 20) do
+      assert_includes ConnectionBudget.good_job_queues, "agents:20"
+      assert_equal 20 + 3 + 2 + 4, ConnectionBudget.good_job_scheduler_threads
+    end
+  end
+
+  test "max_threads cannot authorize more threads than the queues declare" do
+    # Deliberately not an ENV knob: an override could authorize threads the pool it does
+    # not move cannot serve, which is precisely the drift this module exists to prevent.
+    as_worker("GOOD_JOB_MAX_THREADS" => 50) do
+      assert_equal ConnectionBudget.good_job_scheduler_threads, ConnectionBudget.good_job_max_threads
+    end
+  end
+
+  test "a blank env var is treated as absent rather than crashing database.yml" do
+    # database.yml is the one file that must never raise -- a process that cannot render
+    # it cannot boot. Kamal renders an unset `env: clear:` value to "", and Integer("")
+    # raises.
+    as_worker("GOOD_JOB_AGENTS_THREADS" => "", "RAILS_MAX_THREADS" => "") do
+      assert_equal 16, ConnectionBudget.good_job_queue_threads.fetch(:agents)
+      assert_nothing_raised { ConnectionBudget.primary_pool }
+    end
+  end
+
+  test "a thread count is read in base 10, and a nonsense one fails loudly" do
+    # Integer("010") is 8. A zero-padded count silently shrinking the pool is the exact
+    # class of surprise this module exists to end.
+    as_worker("GOOD_JOB_AGENTS_THREADS" => "010") do
+      assert_equal 10, ConnectionBudget.good_job_queue_threads.fetch(:agents)
+    end
+
+    [ "0", "-4", "abc" ].each do |nonsense|
+      as_worker("GOOD_JOB_AGENTS_THREADS" => nonsense) do
+        assert_raises(ArgumentError) { ConnectionBudget.good_job_queue_threads }
+      end
+    end
+  end
+
+  test "DB_POOL moves the budget, not just the pool" do
+    # DB_POOL is the knob an operator reaches for while connections are the thing going
+    # wrong. A budget blind to it would keep reporting a comfortable number while the
+    # worker quietly promised far more -- an override that hides from the check is worse
+    # than no override.
+    raised = as_worker("DB_POOL" => 60) do
+      assert_equal 60, ConnectionBudget.primary_pool
+      ConnectionBudget.required_backends
+    end
+
+    assert_operator raised, :>, as_worker { ConnectionBudget.required_backends }
+  end
+
+  # --- The server-side budget --------------------------------------------------
+
+  test "the budget counts both roles, the notifier's connection, and a Kamal cutover" do
+    as_worker do
+      expected = (ConnectionBudget.web_connections + ConnectionBudget.worker_connections) *
+                 ConnectionBudget::DEPLOY_CUTOVER_MULTIPLIER + ConnectionBudget::OPERATOR_RESERVE
+
+      assert_equal expected, ConnectionBudget.required_backends
+      # Kamal health-gates its cutover by running the old and new containers together, so
+      # every connection exists twice for that window. Budgeting for steady state alone is
+      # what makes a deploy the most dangerous moment in the system.
+      assert_operator ConnectionBudget::DEPLOY_CUTOVER_MULTIPLIER, :>=, 2
+      # GoodJob's Notifier checks a LISTEN connection out and then REMOVES it from the
+      # pool, so it is a real backend that no pool size accounts for.
+      assert_operator ConnectionBudget.worker_connections, :>,
+                      ConnectionBudget.primary_pool + ConnectionBudget.cable_pool
+    end
+  end
+
+  test "the budget is a property of the deployment, not of the process reading it" do
+    # Terraform enforces one number. If it moved with RAILS_ENV, it would enforce the
+    # wrong one.
+    budgets = %w[development test staging production].map do |env|
+      as_web(rails_env: env) { ConnectionBudget.required_backends }
+    end
+
+    assert_equal 1, budgets.uniq.size, "required_backends differs by environment: #{budgets.inspect}"
+  end
+
+  # --- The two halves cannot drift apart ---------------------------------------
+
+  test "Terraform enforces exactly the budget this app derives" do
+    default = MAIN_TF.read[/variable "app_required_backends".*?default\s*=\s*(\d+)/m, 1]
+    derived = as_web { ConnectionBudget.required_backends }
+
+    assert default, "infra/terraform/main.tf no longer declares an app_required_backends default"
+    assert_equal derived, Integer(default),
+                 "infra/terraform/main.tf's app_required_backends default (#{default}) no longer matches " \
+                 "ConnectionBudget.required_backends (#{derived}). Terraform is " \
+                 "the only thing that checks the app's connection promise against the cluster's plan; if the " \
+                 "two disagree it is guarding the wrong number."
+  end
+
+  test "database.yml derives every pool rather than hard-coding one" do
+    production = as_web { render_database_yml.fetch("production") }
+    worker_primary = as_worker { render_database_yml.dig("production", "primary", "pool") }
+
+    # Four pools, four different right answers. A flat number is correct for at most one.
+    assert_operator worker_primary, :>, production.dig("primary", "pool")
+    assert_operator production.dig("primary", "pool"), :>, production.dig("cable", "pool")
+  end
+
+  private
+
+  def render_database_yml
+    YAML.safe_load(ERB.new(DATABASE_YML.read).result, aliases: true)
+  end
+end

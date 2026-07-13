@@ -68,7 +68,7 @@ Everything in `.env.example` is commented out except `RAILS_ENV=development`. Th
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_secrets`, `mcp_oauth_clients`) |
 | `AIR_CONFIG` | Override which `air.json` the catalog resolves from |
 | `AGENT_CLONES_DIR` | Where session clones go. Default `~/.zimmer/clones` |
-| `GOOD_JOB_MAX_THREADS` | Worker concurrency |
+| `GOOD_JOB_AGENTS_THREADS` | Worker concurrency: how many agent sessions run at once. It also moves the database pool that has to serve them — see [the connection budget](/operate/deploying/#the-database-connection-budget) |
 
 `gh` and the agent CLIs authenticate via OAuth (`gh auth login`, `claude /login`), not env vars.
 
