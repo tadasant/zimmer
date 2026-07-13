@@ -48,7 +48,7 @@ A named bundle of domain context: which repo, which branch, which subdirectory, 
 which model, which goal, and which artifacts are on by default. You pick a root when creating
 a session and it seeds everything else.
 
-Zimmer's own catalog ships eleven roots. `general-agent` is the catch-all default
+Zimmer's own catalog ships ten roots. `general-agent` is the catch-all default
 (`AgentRootsConfig::DEFAULT_ROOT`); `zimmer` is the root for working on Zimmer itself;
 `zimmer-router` is the not-user-invocable baseline that every quick-router / chat-bubble
 submission is dispatched against. Four `catalog-mgmt-*` roots are *subagent* roots — not
