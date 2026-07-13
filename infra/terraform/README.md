@@ -1,49 +1,100 @@
 # Zimmer infrastructure (Terraform / DigitalOcean)
 
-One droplet running the Zimmer stack (app + Redis via docker compose; staging also
-runs a throwaway Postgres container, production uses Managed Postgres),
-joined to a Tailscale tailnet so the app is reachable **only over the VPN**. The
-same module serves staging and production — the only difference is the `.tfvars`
-and the secret values.
+Terraform provisions one droplet as a **Kamal-ready host** — Docker, a Tailscale
+join (the app is reachable **only over the VPN**), the TLS/proxy prep, and the
+authorized SSH keys — plus the firewall (no public app ingress) and an optional DNS
+record. It does **not** run the app: [Kamal](https://kamal-deploy.org/) owns the
+app stack (a `web` role and a `worker` role, with Redis — and, on staging, a
+throwaway Postgres — as accessories). Production points Kamal at a DigitalOcean
+Managed Postgres cluster instead, so the database survives a droplet rebuild.
+
+The same module serves staging and production — the only difference is the
+`.tfvars`, the backend config, and the secret values.
 
 ## Files
 
-- `main.tf` — provider, variables, droplet, firewall (no public app ingress),
-  optional DNS record, outputs.
-- `cloud-init.yaml.tftpl` — droplet bootstrap: Docker, Tailscale join, GHCR login,
-  `docker compose up`.
+- `main.tf` — provider, `terraform`/`backend "s3"` block, variables, droplet,
+  firewall, optional DNS record, outputs (incl. the managed-DB connection details
+  the production Kamal deploy consumes).
+- `cloud-init.yaml.tftpl` — droplet bootstrap for a **Kamal-ready** host: installs
+  Docker, joins Tailscale, prepares the kamal-proxy TLS cert, and authorizes the
+  Kamal deploy key + admin/tooling keys for root. It deliberately does **not** pull
+  the image or start the app — Kamal does that over its SSH control channel after
+  Terraform finishes.
+- `backend.staging.hcl` — partial S3-backend config (bucket/key/endpoint) for
+  staging's remote state on DigitalOcean Spaces; passed at `terraform init` with
+  `-backend-config`. Production uses a mirrored copy.
 - `staging.tfvars.example` — non-secret staging config to copy to `staging.tfvars`.
   (Production values live in your private ops repo.)
+- `data-stores/README.md` — the one-time `doctl` runbook for the production
+  Managed Postgres cluster (see "Managed database" below).
 
 ## Secrets — never commit these
 
-Pass as `TF_VAR_*` environment variables (GitHub Actions secrets in CI):
+### Terraform variables (`TF_VAR_*`)
+
+Passed as environment variables — GitHub Actions secrets in CI, your shell locally.
+Only these are Terraform's:
 
 | Variable | Purpose |
 |----------|---------|
 | `TF_VAR_do_token` | DigitalOcean API token |
 | `TF_VAR_tailscale_auth_key` | Ephemeral, pre-authorized Tailscale auth key |
-| `TF_VAR_ghcr_token` | GHCR `read:packages` token to pull the (private) image |
-| `TF_VAR_secret_key_base` | Rails `SECRET_KEY_BASE` (also the DB password for the *staging* compose Postgres) |
-| `TF_VAR_managed_db_password` | Password for `managed_db_username` on the managed cluster. Required when `managed_db_cluster_name` is set (production); unused otherwise |
+| `TF_VAR_deploy_ssh_pubkey` | Public half of the Kamal deploy keypair, authorized for root by cloud-init |
+| `TF_VAR_ssh_host_ed25519_key` | Optional pinned SSH host **private** key (stable host identity across rebuilds); its public half is `TF_VAR_ssh_host_ed25519_key_pub` |
+
+`TF_VAR_admin_ssh_pubkeys` (break-glass operator keys) is also passed this way but
+is a public key, not a secret.
+
+### Backend (Spaces) credentials — passed at `init`, not as `TF_VAR_*`
+
+The S3 backend authenticates to DigitalOcean Spaces with `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` env vars at `terraform init` time.
+
+### NOT Terraform's — the app and database secrets are Kamal's
+
+`SECRET_KEY_BASE`, the GHCR pull token, the database password, and
+`RAILS_MASTER_KEY` are **Kamal** secrets (`.kamal/secrets.{staging,production}`,
+wired from GitHub Actions secrets by `deploy-staging.yml`), delivered to the app
+container at deploy time. They are not Terraform variables and do not appear in
+`main.tf`.
 
 ## Usage
 
 ```bash
 cd infra/terraform
 cp staging.tfvars.example staging.tfvars   # edit non-secret values
-export TF_VAR_do_token=...  TF_VAR_tailscale_auth_key=...  \
-       TF_VAR_ghcr_token=...  TF_VAR_secret_key_base=$(openssl rand -hex 64)
-terraform init
+
+export TF_VAR_do_token=...  TF_VAR_tailscale_auth_key=...  TF_VAR_deploy_ssh_pubkey=...
+export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...     # Spaces keys, for the backend
+
+terraform init -backend-config=backend.staging.hcl
 terraform apply -var-file=staging.tfvars
 ```
 
-Configure a **remote backend** (e.g. DO Spaces via the S3 backend) so CI and you
-share state. This is intentionally left out of `main.tf` so the template is
-portable; add a `backend "s3" { ... }` block per environment.
+Remote state lives on DigitalOcean Spaces (S3-compatible). The `backend "s3" {}`
+block is already in `main.tf`; it is intentionally *empty* there and filled in
+per-environment via `-backend-config` (`backend.staging.hcl`, and a mirrored
+production copy) so the same code reconciles the long-lived staging and production
+droplets instead of colliding on account-unique names.
+
+## Managed database (production)
+
+Production sets `managed_db_cluster_name` to an **existing** DigitalOcean Managed
+Postgres cluster, which `main.tf` reads as a **data source** (never a managed
+resource — Terraform has no destroy path to the one irreplaceable thing in the
+system). The cluster and its `zimmer_production` / `zimmer_production_cable`
+databases are created once by hand per `data-stores/README.md`; its connection
+details are surfaced as outputs for the production Kamal deploy to wire into
+`DATABASE_HOST`. Staging leaves `managed_db_cluster_name` empty and runs a
+throwaway Postgres accessory on the droplet.
 
 ## Applied by CI, not by hand
 
 The **Deploy staging** workflow (`.github/workflows/deploy-staging.yml`) runs
-`terraform apply` and then joins the tailnet to redeploy the app image. Staging is
-never auto-deployed — it is `workflow_dispatch` only.
+`terraform init -backend-config=backend.staging.hcl` + `terraform apply`, then
+joins the tailnet and runs a Kamal deploy to ship the app image. Staging is never
+auto-deployed — it is `workflow_dispatch` only. Pass `recreate_droplet: true` to
+force a droplet rebuild (needed only for the cloud-init-delivered changes that
+`ignore_changes = [user_data]` otherwise pins — see
+[Known limitations](../../docs/src/content/docs/limitations.md)).
