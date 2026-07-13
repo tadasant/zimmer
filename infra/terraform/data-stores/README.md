@@ -58,7 +58,7 @@ to a `resource` while state is ephemeral.
   cluster's VPC, so `main.tf` pins the droplet's `vpc_uuid` to the cluster's
   `private_network_uuid` rather than trusting both to land in the region default.
 - The `doadmin` password is stored as the `PROD_DB_PASSWORD` GitHub Actions secret on
-  `tadasant-internal`.
+  your private production repo.
 
 ## Recreating the cluster from scratch
 

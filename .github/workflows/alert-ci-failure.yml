@@ -8,8 +8,8 @@ name: CI failure alert
 # it up. An enumerated list would leave a new workflow silently uncovered, which is
 # precisely the failure this alert exists to prevent.
 #
-# tadasant/tadasant-internal and tadasant/strad carry the identical listener under the
-# identical secret names. Keep the three in sync; change them together.
+# Your other repos may carry the identical listener under the identical secret names.
+# If so, keep them in sync; change them together.
 #
 # Two things to know while working on this file:
 #

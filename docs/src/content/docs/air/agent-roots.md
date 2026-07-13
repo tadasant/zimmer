@@ -1,6 +1,6 @@
 ---
 title: Agent roots
-description: What a root is, the eleven that ship, subagent roots, and how a root's defaults seed a session.
+description: What a root is, the ten that ship, subagent roots, and how a root's defaults seed a session.
 sidebar:
   order: 3
 ---
@@ -37,7 +37,7 @@ The `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`,
 computes them by [inverting `default_in_roots`](/air/overview/#default_in_roots--the-inversion) from
 each artifact's own entry.
 
-## The eleven roots that ship
+## The ten roots that ship
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
@@ -51,7 +51,6 @@ each artifact's own entry.
 | `catalog-mgmt-configs` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-proctor` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-save` | ❌ | ↳ subagent phase | same |
-| `tadasant-internal` | ✅ | `tadasant/tadasant-internal` | Scoped to `zimmer` — the production deployment layer |
 
 :::danger[Seven roots point at a repository that does not exist]
 `agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*` phases all
@@ -71,7 +70,7 @@ distinct locations. That is its own change.
 as the `zimmer` root — so the two are already indistinguishable in a picker.
 
 **The roots that actually work today:** `zimmer`, `zimmer-router` (the quick-router target),
-`general-agent` (the default), and `tadasant-internal`.
+and `general-agent` (the default).
 Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 :::
 

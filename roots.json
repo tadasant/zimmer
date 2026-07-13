@@ -104,14 +104,5 @@
     "url": "https://github.com/tadasant/zimmer.git",
     "default_branch": "main",
     "user_invocable": true
-  },
-  "tadasant-internal": {
-    "name": "tadasant-internal",
-    "display_name": "Zimmer Production Ops",
-    "description": "Private ops repo: Zimmer's production deployment layer (production tfvars, prod workflows, the mirrored Terraform module).",
-    "url": "https://github.com/tadasant/tadasant-internal.git",
-    "default_branch": "main",
-    "user_invocable": true,
-    "subdirectory": "zimmer"
   }
 }

@@ -9,7 +9,7 @@ name: Domain cert (staging)
 # still valid for >30 days), on demand, and via workflow_call so deploy-staging can
 # chain it after a fresh droplet comes up.
 #
-# Prod has its own copy of this in tadasant/tadasant-internal, pointed at the prod
+# Prod has its own copy of this in a private companion repo, pointed at the prod
 # host + zone; the shared logic is scripts/domain-cert.sh so the two cannot drift.
 on:
   schedule:
