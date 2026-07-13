@@ -94,16 +94,31 @@ tailnet interface, SSH is two different servers:
 A DigitalOcean cloud firewall filters the **public** interface only; it does not filter `tailscale0`.
 So tailnet peers reach both ports and the internet reaches neither, with no firewall rule for either.
 
-:::caution[Two gotchas that will waste your afternoon]
-- Ubuntu 24.04 **socket-activates** sshd. A `Port 2222` line in `sshd_config` is inert and will never
-  bind — the listener has to be a `ListenStream=` in an `ssh.socket` drop-in.
-- The host sets `bindv6only=1`, so the drop-in lists **both** `ListenStream=0.0.0.0:2222` and
-  `ListenStream=[::]:2222`. A bare `ListenStream=2222` binds IPv6 only, and every IPv4 client gets
-  `Connection refused`.
+Only the firewall enforces that, though — `:2222` binds `0.0.0.0`, so it is the *absence of any TCP
+inbound rule* that keeps the internet out, not the bind. Detach `digitalocean_firewall.zimmer` from the
+droplet and `:2222` is world-reachable immediately, with no rule in Terraform to grep for. (It is
+key-only sshd, so the exposure is bounded — but the firewall is the control.)
+
+:::caution[Three gotchas that will waste your afternoon]
+Ubuntu 24.04 **socket-activates** sshd, so the listen set belongs to `ssh.socket`, not `sshd_config`:
+
+- **Do not use `Port 2222`.** It is not ignored — `openssh-server` ships an `sshd-socket-generator`
+  that turns a `Port`/`ListenAddress` line into a generated `ssh.socket` drop-in which **resets**
+  `ListenStream=`. So `Port 2222` would *move* sshd off `:22` instead of adding `:2222`. A drop-in
+  appends; that is why we use one.
+- **The drop-in filename must sort late** (`zz-tailnet-altport.conf`). systemd applies drop-ins in
+  filename order, and that generated `addresses.conf` starts with a bare `ListenStream=` reset — a
+  `10-` prefix would be silently wiped the moment anyone adds a `Port` line.
+- **List both address families.** The shipped `ssh.socket` sets `BindIPv6Only=ipv6-only` (the unit —
+  *not* the `net.ipv6.bindv6only` sysctl, which is `0`), so a bare `ListenStream=2222` binds IPv6 only
+  and every IPv4 client gets `Connection refused`.
 :::
 
 sshd itself is key-only (`10-hardening.conf`: `PasswordAuthentication no`, `PermitRootLogin
-prohibit-password`). The filename matters — see
+prohibit-password`). Two things about that file are load-bearing: its name sorts before
+`50-cloud-init.conf` (sshd takes the **first** match), and **`ssh.service` must be restarted** for it
+to take effect — `Accept=no` means one long-lived `sshd -D` parses the config once at start, not per
+connection. See
 [`sshd -T` is the only honest way to read sshd's config](/limitations/#sshd--t-is-the-only-honest-way-to-read-sshds-config).
 
 This posture replaced a genuinely dangerous one: `22/tcp` open to `0.0.0.0/0` against an sshd that

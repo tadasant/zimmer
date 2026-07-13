@@ -20,7 +20,8 @@ write_files:
   # DO's own injected keys (var.ssh_key_fingerprints) survive.
   - path: /root/.ssh/kamal_deploy.pub
     permissions: "0600"
-    content: ${deploy_ssh_pubkey}
+    content: |
+      ${indent(6, deploy_ssh_pubkey)}
   # Admin/tooling keys authorized for root on top of the Kamal key (var.admin_ssh_pubkeys):
   # the shared operator key the ssh-* MCP servers connect with. Both environments get
   # them from THIS one path, so staging and production cannot drift on who can get in.
@@ -37,12 +38,25 @@ write_files:
   #   :2222 Real OpenSSH, for plain publickey clients that cannot speak Tailscale SSH
   #         (ssh-agent-mcp-server and any other ssh2 publickey client).
   #
-  # Ubuntu 24.04 SOCKET-ACTIVATES sshd, so a `Port 2222` line in sshd_config is INERT --
-  # it would never bind. The listener has to be added to ssh.socket, which is what this
-  # drop-in does. Both address families are spelled out because the host sets
-  # bindv6only=1: a bare `ListenStream=2222` binds IPv6 ONLY, and every IPv4 client gets
-  # "connection refused".
-  - path: /etc/systemd/system/ssh.socket.d/10-tailnet-altport.conf
+  # Ubuntu 24.04 SOCKET-ACTIVATES sshd, so the listen set belongs to ssh.socket, not to
+  # sshd_config. Three details, each of which will bite whoever "simplifies" this:
+  #
+  # 1. Do NOT use `Port 2222` in sshd_config. It is not inert -- openssh-server ships
+  #    /usr/lib/systemd/system-generators/sshd-socket-generator, which on every
+  #    `daemon-reload` turns a Port/ListenAddress line into a generated ssh.socket
+  #    drop-in that RESETS `ListenStream=` and rewrites it. So `Port 2222` would MOVE
+  #    sshd off :22 rather than add :2222. A drop-in APPENDS, which is what we want.
+  #
+  # 2. The filename must sort AFTER that generated `addresses.conf` (hence `zz-`).
+  #    systemd applies drop-ins in filename order across all drop-in dirs, and the
+  #    generated one begins with a bare `ListenStream=` reset -- so a `10-` prefix here
+  #    would be silently WIPED the moment anyone adds a Port/ListenAddress line.
+  #
+  # 3. Both address families are required. The shipped ssh.socket sets
+  #    `BindIPv6Only=ipv6-only` (it is the UNIT, not the `net.ipv6.bindv6only` sysctl,
+  #    which is 0), so a bare `ListenStream=2222` binds IPv6 ONLY and every IPv4 client
+  #    gets "connection refused".
+  - path: /etc/systemd/system/ssh.socket.d/zz-tailnet-altport.conf
     permissions: "0644"
     content: |
       [Socket]
@@ -51,8 +65,12 @@ write_files:
   # Key-only SSH. This file MUST sort before 50-cloud-init.conf: sshd takes the FIRST
   # value it sees for a keyword, and cloud-init writes `PasswordAuthentication yes` into
   # its own 50- drop-in. That is why the image's 60-cloudimg-settings.conf `no` never won
-  # and root password auth was genuinely live on the internet -- and why `sshd -T` (the
-  # EFFECTIVE config), never the config files, is the only honest way to check this.
+  # and root password auth was genuinely live on the internet.
+  #
+  # Writing this file is NOT enough on its own -- ssh.service must be restarted (see
+  # runcmd), because the running daemon parsed its config at start. And `sshd -T` is a
+  # fresh parse, so it will happily report `no` while the live daemon still takes
+  # passwords: verify with an actual connection attempt, not just `sshd -T`.
   - path: /etc/ssh/sshd_config.d/10-hardening.conf
     permissions: "0644"
     content: |
@@ -118,11 +136,6 @@ runcmd:
       [ -n "$admin_key" ] || continue
       grep -qxF "$admin_key" /root/.ssh/authorized_keys || printf '%s\n' "$admin_key" >> /root/.ssh/authorized_keys
     done < /root/.ssh/admin_keys.pub
-  # --- Tailnet-only SSH: bind OpenSSH's :2222 listener ---------------------------
-  # sshd_config.d/10-hardening.conf needs no restart (socket activation spawns a fresh
-  # sshd per connection, which re-reads the config), but the new ListenStream does.
-  - systemctl daemon-reload
-  - systemctl restart ssh.socket
   # --- Tailscale ----------------------------------------------------------------
   # Join the tailnet as ${tailnet_hostname}. ACLs (who may reach this node) live in
   # the Tailscale admin, NOT here.
@@ -137,6 +150,21 @@ runcmd:
 %{ if ssh_host_ed25519_key != "" ~}
   - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 %{ endif ~}
+  # --- Tailnet-only SSH: bind OpenSSH's extra :2222 listener ---------------------
+  # Deliberately AFTER `tailscale up`. The firewall now allows zero public TCP, so the
+  # tailnet is the ONLY way in and Tailscale SSH is the break-glass path -- establish
+  # it before touching sshd's listener, not after. If this restart fails, :2222 is
+  # simply absent and `tailscale ssh root@${tailnet_hostname}` still works.
+  #
+  # BOTH units, deliberately. Socket activation here is `Accept=no`: ssh.socket hands
+  # its FDs to ONE long-lived `sshd -D` (ssh.service) that parses sshd_config ONCE, at
+  # start -- it does NOT fork a fresh sshd per connection. So restarting only the socket
+  # would bind :2222 while leaving a daemon running with the OLD config, i.e. password
+  # auth still live. That is not hypothetical: it is exactly how the hand-applied
+  # hardening on production sat inert (`sshd -T` reported `no` -- but `sshd -T` is a
+  # fresh PARSE, not the running daemon) until ssh.service was restarted.
+  - systemctl daemon-reload
+  - systemctl restart ssh.socket ssh.service
   # --- Caddy (edge: :80, and :443 when a domain is set) --------------------------
   - mkdir -p /opt/zimmer/certs
 %{ if domain != "" ~}

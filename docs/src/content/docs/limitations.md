@@ -74,19 +74,47 @@ droplet keeps whatever sshd posture it booted with — which, on an Ubuntu cloud
 Deploy with `recreate_droplet: true` to force the rebuild, or apply the two files by hand and let the
 next rebuild converge.
 
-### `sshd -T` is the only honest way to read sshd's config
+### Neither the sshd config files nor `sshd -T` tell you what sshd is actually doing
 
-`/etc/ssh/sshd_config.d/60-cloudimg-settings.conf` says `PasswordAuthentication no`. It is a lie about
-the running config. sshd takes the **first** value it sees for a keyword, and cloud-init writes
-`PasswordAuthentication yes` into `50-cloud-init.conf`, which sorts first. Root password auth was
-genuinely accepted on both droplets while the config file said it was off.
+Two independent traps, and they stack. Both bit this repo for real.
 
-This is why the hardening drop-in is named `10-hardening.conf` — it has to sort *before* `50` to win.
-Never verify this by reading the files:
+**The config files lie.** `/etc/ssh/sshd_config.d/60-cloudimg-settings.conf` says
+`PasswordAuthentication no`. sshd takes the **first** value it sees for a keyword, and cloud-init
+writes `PasswordAuthentication yes` into `50-cloud-init.conf`, which sorts first — so `60`'s `no`
+never won, and root password auth was genuinely accepted on both droplets while the file said
+otherwise. That is why the hardening drop-in is `10-hardening.conf`: it has to sort *before* `50`.
+
+**`sshd -T` also lies** — it is a fresh *parse* of the config on disk, not a readout of the running
+daemon. Ubuntu's `ssh.socket` is `Accept=no`, so it hands its sockets to **one long-lived `sshd -D`**
+that parsed its config once, at start. Write a hardening drop-in without restarting `ssh.service` and
+`sshd -T` will cheerfully report `passwordauthentication no` while the live daemon keeps taking
+passwords. This is exactly what happened when the fix was first applied to production by hand.
+
+The only honest check is what the daemon *advertises on the wire*:
 
 ```bash
-sshd -T | grep -E '^(permitrootlogin|passwordauthentication)'
+ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -p 2222 root@<host>
+# key-only  ->  Permission denied (publickey).
+# still bad ->  Permission denied (publickey,password).
 ```
+
+### Admin keys are add-only
+
+`admin_ssh_pubkeys` appends to `/root/.ssh/authorized_keys` and never prunes. **Removing** a key from
+the list does not revoke it from a running droplet — that needs a rebuild or a manual edit. Adding is
+also rebuild-only (it rides `user_data`), so the variable is really "who gets authorized on the next
+rebuild", not a live access-control list.
+
+### A rebuilt droplet has exactly one fallback door, and it is the DigitalOcean console
+
+The firewall now permits **zero public TCP**. On a `recreate_droplet` rebuild, if `tailscale up` fails
+— an expired or exhausted auth key is the likely way, and the key is frozen into `user_data` at first
+boot — then there is no tailnet, so no Tailscale SSH; `:2222` is unreachable from outside the tailnet;
+there is no public `:22`; and Kamal cannot reach the box either. `runcmd` has no `set -e`, so the boot
+completes "successfully" regardless.
+
+Before setting `recreate_droplet: true`, confirm (a) `TAILSCALE_AUTH_KEY` is valid and not exhausted,
+and (b) you can actually log into the DigitalOcean web console for the droplet.
 
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 
