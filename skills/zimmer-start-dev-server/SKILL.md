@@ -16,11 +16,21 @@ user-invocable: true
 Zimmer is a Rails 8 app (Ruby 3.4.6) on PostgreSQL + Redis, with Hotwire and a
 Tailwind watcher. `bin/dev` runs it under foreman via `Procfile.dev`.
 
-## Prerequisites Zimmer does NOT set up for you
+## Want the whole stack in Docker instead?
 
-There is **no `docker-compose.yml` in this repo**. Nothing in `bin/setup` or
-`bin/dev` will install or start Postgres or Redis — you must have both running
-yourself. This is the single most common reason the dev server "doesn't work".
+If you'd rather not provision Postgres and Redis yourself, there is a fully
+containerized dev environment at `.agent-containers/` (app + Postgres + Redis via
+`docker compose`, orchestrated by `.agent-containers/ac.sh`). It's the better
+choice for running many isolated sessions in parallel. See
+`.agent-containers/README.md`. The rest of this skill covers the host-process
+`bin/dev` flow.
+
+## Prerequisites the host-process flow does NOT set up for you
+
+`bin/dev` runs on your host. Nothing in `bin/setup` or `bin/dev` will install or
+start Postgres or Redis — you must have both running yourself. This is the single
+most common reason the dev server "doesn't work". (The containerized environment
+above provisions both for you.)
 
 - **PostgreSQL 14+** on `localhost:5432`. `config/database.yml` reads discrete
   env vars, **not** `DATABASE_URL`: `DATABASE_HOST` (default `localhost`),
