@@ -19,26 +19,32 @@ full suite. Always run Rails/bundler commands from the repo root.
 ## What CI gates on
 
 `.github/workflows/ci.yml` runs on every PR to `main` and every push to `main`.
-Five jobs — a PR is red if **any** fails:
+A PR is red if **any** job fails:
 
 | Job | Command | Notes |
 | --- | --- | --- |
 | `lint` | `bin/rubocop -f github --parallel` | `rubocop-rails-omakase` |
 | `security` | `bin/brakeman --no-pager -q` | |
 | `verify_lockfile` | `bundle lock && git diff --exit-code Gemfile.lock` | Fails if `Gemfile.lock` is stale |
-| `test` | `bin/rails db:test:prepare && bin/rails test` | Postgres 16 + Redis 7 services |
+| `test-unit` | `bin/rails db:test:prepare && bin/rails test` | Unit + integration. Postgres 16 + Redis 7 services |
+| `test-system` | `bin/rails test:system` | Capybara + headless Chrome. `PARALLEL_WORKERS=1` |
 | `retention_logic` | `ruby scripts/ghcr_retention_test.rb` | Pure Ruby, no Rails boot |
+| `docs_site` | `npm run build` in `docs/` | Astro Starlight build |
+| `all-checks-pass` | Aggregate gate | `needs:` every job above; the single required check for branch protection |
 
 Two things fall out of that table:
 
-- **System tests are NOT run by CI.** `bin/rails test` excludes `test/system/`.
-  If your change touches the UI, run them yourself — CI will not catch a
-  regression there.
-- **The Playwright e2e scripts in `test/e2e/` are NOT run by CI either**, and no
-  workflow invokes them.
+- **System tests ARE run by CI**, in the `test-system` job — `bin/rails test`
+  does not descend into `test/system/`, so it gets its own job. If your change
+  touches views, Stimulus controllers, or Turbo streams, run them yourself
+  before pushing: a regression there *will* turn the PR red.
+- **The Playwright e2e scripts in `test/e2e/` are NOT run by CI**, and no
+  workflow invokes them (the runner has no Playwright browser). Tracked in
+  [#162](https://github.com/tadasant/zimmer/issues/162).
 
-So "CI is green" means: Rubocop, Brakeman, the lockfile, the non-system Minitest
-suite, and the retention selector. Nothing more.
+So "CI is green" means: Rubocop, Brakeman, the lockfile, the Minitest suite
+(unit + integration), the system suite, the retention selector, and the docs
+build. Everything except `test/e2e/`.
 
 ## Prerequisites
 
@@ -56,7 +62,7 @@ therefore breaks the suite *globally*, not in one test — see
 `skills/zimmer-change-ai-artifact` if you touched `air.json` or the artifact
 indexes.
 
-## Tier 1 — Minitest (the tier CI gates on)
+## Tier 1 — Minitest (unit + integration; the `test-unit` job)
 
 ```bash
 bin/rails test                                     # everything except system tests
@@ -76,10 +82,11 @@ Suites live under `test/`: `models`, `services`, `controllers` (incl. `api/v1`,
 `supervisor`), `integration`, `jobs`, `lib`, `contracts`, `extensions`, `helpers`,
 `mailers`, `initializers`, `config`.
 
-## Tier 2 — System tests (Capybara + headless Chrome)
+## Tier 2 — System tests (Capybara + headless Chrome; the `test-system` job)
 
-Not run by CI. Run them when you touch views, Stimulus controllers, or Turbo
-streams.
+Gated by CI. Run them yourself when you touch views, Stimulus controllers, or
+Turbo streams — CI runs them serially (`PARALLEL_WORKERS=1`), so it is cheaper
+to catch a break locally than to wait for the job.
 
 ```bash
 bin/rails test:system                              # all of test/system/
