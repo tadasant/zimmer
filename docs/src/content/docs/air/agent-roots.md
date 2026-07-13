@@ -1,6 +1,6 @@
 ---
 title: Agent roots
-description: What a root is, the eleven that ship, subagent roots, and how a root's defaults seed a session.
+description: What a root is, the ten that ship, subagent roots, and how a root's defaults seed a session.
 sidebar:
   order: 3
 ---
@@ -37,7 +37,7 @@ The `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`,
 computes them by [inverting `default_in_roots`](/air/overview/#default_in_roots--the-inversion) from
 each artifact's own entry.
 
-## The eleven roots that ship
+## The ten roots that ship
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
