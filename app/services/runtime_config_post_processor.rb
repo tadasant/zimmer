@@ -179,11 +179,27 @@ class RuntimeConfigPostProcessor
   # subagent sessions without explicitly listing a Zimmer MCP server in
   # default_mcp_servers. The entry is full-surface (no tool_groups), which is why
   # it also satisfies the self-session dedup below.
+  #
+  # Defensive against a name collision, mirroring SelfSessionInjector's dedup: if
+  # the catalog already supplies a `zimmer` entry, leave it alone. In the native
+  # MCP world every Zimmer variant is the SAME URL differentiated only by query
+  # param, so blindly writing servers["zimmer"] would overwrite a catalog-provided
+  # full-surface entry with our root-restricted one — silently narrowing
+  # start_session's allowed_agent_roots with no error. The catalog entry is at
+  # least as capable (it is the unrestricted, full-surface server), so skipping
+  # keeps start_session's full root surface. Retargeting still points it at the
+  # current instance.
   def inject_subagent_server!(servers)
     root = find_root
     return unless root&.default_subagent_roots&.any?
 
     name = SelfSessionInjector::SUBAGENT_SERVER_NAME
+    if servers.key?(name)
+      Rails.logger.info "[#{self.class.name}] Skipping subagent Zimmer server injection: " \
+        "a catalog-provided '#{name}' entry is already present."
+      return
+    end
+
     servers[name] = build_http_entry(
       url: self_session_injector.endpoint_url(allowed_agent_roots: root.default_subagent_roots.join(",")),
       headers: self_session_injector.headers

@@ -178,6 +178,60 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
+  test "post_process! does NOT overwrite a catalog-provided unrestricted zimmer entry for a subagent-roots root" do
+    # A root with default_subagent_roots whose catalog ALSO ships an unrestricted,
+    # full-surface `zimmer` entry. In the native MCP world every Zimmer variant is
+    # the same URL differentiated only by query param, so blindly writing
+    # servers["zimmer"] would clobber the catalog entry with our root-restricted
+    # one — silently narrowing start_session's allowed_agent_roots. The catalog
+    # entry must survive untouched (retargeting aside), so start_session keeps its
+    # full root surface.
+    @session.update!(metadata: { "agent_root_key" => "catalog-management" })
+
+    write_config(
+      SUBAGENT_SERVER => {
+        "type" => "http",
+        "url" => "https://zimmer.example.com/mcp",
+        "headers" => { "X-API-Key" => "prod-key" }
+      }
+    )
+
+    processor = build_processor
+    processor.post_process!
+
+    zimmer = read_config.dig("mcpServers", SUBAGENT_SERVER)
+    assert_not_nil zimmer, "The catalog-provided zimmer entry must survive"
+    assert_nil query_params(zimmer["url"])["allowed_agent_roots"],
+      "The catalog's unrestricted entry must NOT be narrowed to the root's subagent list — " \
+      "start_session must still accept roots outside that list"
+    assert_empty processor.injected_mcp_servers,
+      "Nothing is injected when a catalog zimmer entry already covers the surface"
+  end
+
+  test "post_process! still injects the subagent server when NO catalog zimmer entry is present" do
+    # The dedup guard must not suppress the injection in the normal case: a
+    # subagent-roots root whose catalog does not ship a `zimmer` entry still needs
+    # the root-restricted server injected so it can spawn its declared subagents.
+    @session.update!(metadata: { "agent_root_key" => "catalog-management" })
+
+    write_config(
+      "playwright-custom" => {
+        "command" => "npx",
+        "args" => [ "-y", "@anthropic/playwright-mcp-server" ],
+        "env" => {}
+      }
+    )
+
+    processor = build_processor
+    processor.post_process!
+
+    zimmer = read_config.dig("mcpServers", SUBAGENT_SERVER)
+    assert_not_nil zimmer, "The subagent server must still be injected without a catalog zimmer entry"
+    assert_equal SUBAGENT_ROOTS.sort,
+      query_params(zimmer["url"])["allowed_agent_roots"].split(",").sort
+    assert_equal [ SUBAGENT_SERVER ], processor.injected_mcp_servers
+  end
+
   # ---------------------------------------------------------------------------
   # Injection: the self-session server
   # ---------------------------------------------------------------------------
