@@ -85,11 +85,4 @@ class SessionDashboard < Administrate::BaseDashboard
   #     open: ->(resources) { resources.where(open: true) }
   #   }.freeze
   COLLECTION_FILTERS = {}.freeze
-
-  # Overwrite this method to customize how sessions are displayed
-  # across all pages of the admin dashboard.
-  #
-  # def display_resource(session)
-  #   "Session ##{session.id}"
-  # end
 end

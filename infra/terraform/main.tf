@@ -113,8 +113,8 @@ variable "admin_ssh_pubkeys" {
   description = <<-EOT
     Admin SSH public keys authorized for root, on top of the Kamal deploy key. This
     is the ONE mechanism both environments use to authorize an operator/tooling key
-    (e.g. the shared Agent Orchestrator key that the ssh-* MCP servers connect with),
-    so staging and production cannot drift apart on who can get in.
+    (e.g. a shared key that an SSH-based MCP server connects with), so staging and
+    production cannot drift apart on who can get in.
 
     Set it per environment in *.tfvars -- NOT as a default here, so a fork does not
     silently authorize someone else's key on its own box.

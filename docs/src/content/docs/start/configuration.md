@@ -83,7 +83,7 @@ not in Terraform — Terraform only provisions the host.
 ### MCP server secrets
 
 Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at prepare time:
-`FLY_IO_API_TOKEN`, `OP_SERVICE_ACCOUNT_TOKEN`, `PULSEMCP_SUBREGISTRY_API_KEY`, …
+`FLY_IO_API_TOKEN`, `OP_SERVICE_ACCOUNT_TOKEN`, `GITHUB_API_TOKEN`, …
 
 `SecretsLoader` resolves in this order: `XOauthTokenVendor` → Rails credentials (`mcp_secrets`) →
 `ENV`.

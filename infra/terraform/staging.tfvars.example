@@ -18,15 +18,15 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 # cloud-init appends them to /root/.ssh/authorized_keys, and they are reachable ONLY over
 # the tailnet on :2222 (real OpenSSH; tailnet :22 is Tailscale SSH, which ignores publickey).
 #
-# This is the shared Agent Orchestrator key the ssh-tadasant-zimmer-* MCP servers connect
-# with. It was authorized on production but NOT on staging, which is why the staging MCP
-# server could never authenticate -- this line is that fix. Production sets the same key
-# through the same variable in its own tfvars.
+# Put the public key(s) your operators and tooling (e.g. an SSH-based MCP server)
+# use to reach the box here. Authorize the same key on every environment through
+# this one variable so staging and production cannot drift on who can get in.
 #
-# FORKING / SELF-HOSTING: replace this with YOUR key. A public key is not a secret, but
-# leaving someone else's here authorizes them for root on your droplet.
+# FORKING / SELF-HOSTING: replace the placeholder below with YOUR key. A public key
+# is not a secret, but leaving someone else's here authorizes them for root on your
+# droplet, so this MUST be set per environment (never as a module default).
 admin_ssh_pubkeys = [
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmRanTTxADIQWHp9PZqOAFQX2SVXibTqVXb0D3AtuiU agent-orchestrator-prod-hetzner",
+  "ssh-ed25519 AAAA...replace-with-your-own-public-key you@example.com",
 ]
 
 # Custom-domain HTTPS over the tailnet: turns on the Caddy TLS terminator on :443,

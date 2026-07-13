@@ -50,7 +50,7 @@ proxy:
     https_port: 8443
 
 # The image entrypoint runs `bin/rails db:prepare` and then boots Thruster+Puma,
-# which can exceed Kamal's 30s default on a cold start (matches AO's observation).
+# which can exceed Kamal's 30s default on a cold start.
 deploy_timeout: 120
 
 builder:

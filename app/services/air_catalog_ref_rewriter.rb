@@ -19,7 +19,7 @@
 # Any ref already present on a matched URI is dropped — the pin expresses the
 # operator's intent and wins over whatever ref the file may have hard-coded.
 class AirCatalogRefRewriter
-  PULSEMCP_PREFIX = "github://tadasant/zimmer-catalog"
+  CATALOG_PREFIX = "github://tadasant/zimmer-catalog"
 
   class << self
     # @param json_string [String] an air.json document
