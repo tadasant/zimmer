@@ -77,12 +77,11 @@ jobs:
           git diff --exit-code Gemfile.lock
 
   # Unit + integration suite (system tests are excluded — `bin/rails test` does not
-  # descend into test/system). The job KEY is `test-unit`, which the shared runner's
-  # heavy-test semaphore recognizes and gates; a bare `test` would go ungated. There
-  # is deliberately no `test-system` job: zimmer, like its AO parent, does not run
-  # Chrome-driven system tests in CI, so there is nothing for the system semaphore to
-  # gate. PARALLEL_WORKERS is pinned so a shard cannot fan out to :number_of_processors
-  # (32 on the box) and starve co-tenants.
+  # descend into test/system; the Chrome-driven suite runs in the separate `test-system`
+  # job below). The job KEY is `test-unit`, which the shared runner's heavy-test
+  # semaphore recognizes and gates; a bare `test` would go ungated. PARALLEL_WORKERS is
+  # pinned so a shard cannot fan out to :number_of_processors (32 on the box) and starve
+  # co-tenants.
   test-unit:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
@@ -145,6 +144,90 @@ jobs:
       - name: Run tests (unit + integration; system tests excluded)
         run: bin/rails test
 
+  # Chrome-driven system tests (test/system/*.rb), the browser suite `bin/rails test`
+  # never descends into. Ported from the AO parent's `test-system` job. Kept a SEPARATE
+  # job (not folded into test-unit) for two reasons: the shared runner has a companion
+  # system-test semaphore keyed on the `test-system` job name that serializes Chrome-heavy
+  # jobs across co-tenant repos, and `PARALLEL_WORKERS` is pinned to 1 here — the persistent
+  # per-worker `--user-data-dir` in test/application_system_test_case.rb does not tolerate
+  # concurrent Chrome instances (higher worker counts fail with "Chrome instance exited").
+  #
+  # Chrome/Chromium itself is assumed pre-provisioned on the runner (the same box AO ran
+  # its system suite on); the CI branch of application_system_test_case.rb points Selenium
+  # at /usr/bin/chromium-browser with --no-sandbox. Runner provisioning lives in the
+  # out-of-scope ci-runner IaC — if this job cannot find a browser, that is where the fix
+  # belongs, not here.
+  #
+  # The JS Playwright scripts under test/e2e/*.js are NOT run here: AO never ran them in CI
+  # either, they are self-described standalone runners, they need a Playwright browser
+  # install the runner is not provisioned for, and account_rotation_test.js needs the real
+  # Claude Code binary + a mock Anthropic server. Deferred — tracked in issue #162.
+  test-system:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: self-hosted
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zimmer_test
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379/tcp
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      RAILS_ENV: test
+      # See the test-unit job: this self-hosted runner does not export CI=true, and
+      # config/environments/test.rb ties eager loading (and the system suite's Chrome
+      # binary/sandbox flags) to ENV["CI"]. Set it explicitly.
+      CI: true
+      DATABASE_HOST: localhost
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: postgres
+      # The persistent per-worker Chrome profile does not survive concurrent workers;
+      # pin to 1 so the suite runs effectively serial. See the job comment above.
+      PARALLEL_WORKERS: 1
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve dynamic service ports
+        run: |
+          echo "DATABASE_PORT=${{ job.services.postgres.ports[5432] }}" >> "$GITHUB_ENV"
+          echo "REDIS_URL=redis://localhost:${{ job.services.redis.ports[6379] }}" >> "$GITHUB_ENV"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.6"
+          bundler-cache: false
+          self-hosted: true
+      - name: Install gems (per-runner path)
+        run: |
+          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
+          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
+          bundle install --jobs 4 --retry 3
+      - name: Prepare test database
+        run: bin/rails db:test:prepare
+      # System tests render real pages, so Tailwind's stylesheet must be compiled into
+      # app/assets/builds (git-ignored) before the suite drives a browser against it.
+      - name: Build Tailwind CSS
+        run: bin/rails tailwindcss:build
+      - name: Run system tests
+        run: bin/rails test:system
+
   # Builds the Astro Starlight documentation site in docs/. Keeps the site from
   # silently rotting: a broken link, bad frontmatter, or a page missing from the
   # sidebar fails here rather than at deploy time. No Ruby needed — this is the
@@ -179,3 +262,40 @@ jobs:
           self-hosted: true
       - name: Test GHCR retention selection logic
         run: ruby scripts/ghcr_retention_test.rb
+
+  # Single aggregate gate for branch protection. Set THIS job's name — `all-checks-pass`
+  # — as the one required status check under Settings → Branches → main, instead of
+  # enumerating every job above. It `needs:` every required job and re-derives a pass/fail
+  # from their results.
+  #
+  # Three properties make it a correct gate:
+  #   1. `if: ${{ always() }}` — it runs even when a dependency fails (a plain `needs:`
+  #      job is skipped when any dependency fails, which would leave the required check
+  #      perpetually "skipped" and block the branch). It has NO fork-guard `if:`, so it
+  #      never skips itself — a skipped required check blocks branch protection.
+  #   2. It fails on any dependency that reported `failure` or `cancelled`.
+  #   3. `skipped` dependencies do NOT fail it and are NOT counted as passes: the several
+  #      jobs above carry fork-guard `if:` conditions and report `skipped` on fork PRs.
+  #      A fork PR therefore sees every job skip and this gate go green — the same
+  #      fork tradeoff the individual jobs already make; trusted branches run everything.
+  all-checks-pass:
+    if: ${{ always() }}
+    runs-on: self-hosted
+    needs:
+      - lint
+      - security
+      - verify_lockfile
+      - test-unit
+      - test-system
+      - docs_site
+      - retention_logic
+    steps:
+      - name: Verify no required check failed or was cancelled
+        run: |
+          if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
+            echo "::error::One or more required CI checks failed or were cancelled."
+            echo "Results: ${{ join(needs.*.result, ', ') }}"
+            exit 1
+          fi
+          echo "All required CI checks passed (skipped fork-guarded jobs are allowed)."
+          echo "Results: ${{ join(needs.*.result, ', ') }}"
