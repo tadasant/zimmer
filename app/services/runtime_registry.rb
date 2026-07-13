@@ -134,7 +134,7 @@ module RuntimeRegistry
   # Extension override the runtime bundle's default adapter.
   #
   # This is the single seam that governs which adapter drives a session. The core
-  # asks Ao::ExtensionRegistry whether any enabled extension wants to substitute
+  # asks Zimmer::ExtensionRegistry whether any enabled extension wants to substitute
   # an adapter for this runtime (the PTY transport does, for claude_code); if
   # none does, the runtime bundle's own cli_adapter_class is used unchanged —
   # preserving existing behavior byte-for-byte and keeping the core free of any
@@ -146,7 +146,7 @@ module RuntimeRegistry
   # @return [Class] the CLI adapter class to instantiate
   def cli_adapter_class_for(runtime)
     bundle = self.for(runtime)
-    Ao::ExtensionRegistry.cli_adapter_override_for(bundle.runtime) || bundle.cli_adapter_class
+    Zimmer::ExtensionRegistry.cli_adapter_override_for(bundle.runtime) || bundle.cli_adapter_class
   end
 
   # Resolve a runtime identifier to its canonical registered key.

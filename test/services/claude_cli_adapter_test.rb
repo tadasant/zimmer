@@ -1969,7 +1969,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   # contributing extension so it tests the adapter's seam, not the deletable
   # mcp_tool_search — whose own ENABLE_TOOL_SEARCH=true contribution is covered in
   # test/extensions/mcp_tool_search/.
-  class FakeEnvContribExtension < Ao::Extension
+  class FakeEnvContribExtension < Zimmer::Extension
     def id = "fake_env_contrib"
     def spawn_env_contribution(context = {}) = (context[:runtime].to_s == "claude_code") ? { "ENABLE_TOOL_SEARCH" => "true" } : {}
   end
@@ -1997,7 +1997,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
 
   test "spawn_process merges an enabled extension's spawn-env contribution over the baseline" do
     AppSetting.delete_all
-    Ao::ExtensionRegistry.register(FakeEnvContribExtension.new)
+    Zimmer::ExtensionRegistry.register(FakeEnvContribExtension.new)
     AppSetting.editable.tap { |s| s.set_extension_enabled("fake_env_contrib", true); s.save! }
 
     command = [ "claude", "test" ]
@@ -2009,8 +2009,8 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal "true", env_vars["ENABLE_TOOL_SEARCH"]
   ensure
     AppSetting.delete_all
-    Ao::ExtensionRegistry.reset!
-    Ao::ExtensionRegistry.register_builtins!
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
   end
 
   # ===== CLAUDE_CODE_DISABLE_AUTO_MEMORY TESTS =====

@@ -44,7 +44,7 @@ class AgentsMdWriterTest < ActiveSupport::TestCase
     assert_equal TARGET, path
     content = @fs.read(TARGET)
 
-    assert content.start_with?(AgentsMdWriter::AO_SECTION_MARKER),
+    assert content.start_with?(AgentsMdWriter::ZIMMER_SECTION_MARKER),
       "fresh write should lead with the Zimmer section marker so re-runs can detect it"
     assert_includes content, "# Zimmer Context"
     assert_includes content, "## Operating Principles"
@@ -64,7 +64,7 @@ class AgentsMdWriterTest < ActiveSupport::TestCase
     assert_includes content, "# Repo AGENTS"
     assert_includes content, "Project specific stuff."
     assert_includes content, "# Zimmer Context"
-    assert content.index("# Repo AGENTS") < content.index(AgentsMdWriter::AO_SECTION_MARKER),
+    assert content.index("# Repo AGENTS") < content.index(AgentsMdWriter::ZIMMER_SECTION_MARKER),
       "the repo's existing content should remain above the Zimmer-managed section"
   end
 
@@ -76,7 +76,7 @@ class AgentsMdWriterTest < ActiveSupport::TestCase
     second = @fs.read(TARGET)
 
     assert_equal first, second, "a second prepare must not change the file"
-    assert_equal 1, second.scan(AgentsMdWriter::AO_SECTION_MARKER).length,
+    assert_equal 1, second.scan(AgentsMdWriter::ZIMMER_SECTION_MARKER).length,
       "the Zimmer marker should appear exactly once"
     assert_equal 1, second.scan("# Zimmer Context").length,
       "the orchestrator context should be written exactly once"

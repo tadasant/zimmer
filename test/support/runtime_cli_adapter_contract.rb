@@ -24,7 +24,7 @@ module RuntimeCliAdapterContractAssertions
 
     adapter = klass.new
     %i[execute resume binary_name command_summary disallowed_tools runtime_env_vars retry_strategy
-       process_manager process_manager= file_system file_system= ao_session_id ao_session_id=].each do |method_name|
+       process_manager process_manager= file_system file_system= zimmer_session_id zimmer_session_id=].each do |method_name|
       assert_respond_to adapter, method_name
     end
 

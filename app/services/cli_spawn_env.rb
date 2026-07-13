@@ -214,14 +214,14 @@ module CliSpawnEnv
   # Best-effort: a failure to create the scratch dir must never break the spawn,
   # so on error we log and leave AO_SESSION_SCRATCH_DIR unset.
   #
-  # Relies on the including adapter exposing `@ao_session_id`.
+  # Relies on the including adapter exposing `@zimmer_session_id`.
   #
   # @param env_vars [Hash] Environment variables to pass to the child process
   # @return [Hash] env_vars with AO_SESSION_SCRATCH_DIR set when available
   def apply_session_scratch_dir(env_vars)
-    return env_vars if @ao_session_id.blank?
+    return env_vars if @zimmer_session_id.blank?
 
-    path = SessionScratchDirectory.ensure_for(@ao_session_id)
+    path = SessionScratchDirectory.ensure_for(@zimmer_session_id)
     env_vars["AO_SESSION_SCRATCH_DIR"] = path
     @logger.info "Set AO_SESSION_SCRATCH_DIR=#{path} (durable per-session scratch)"
     env_vars

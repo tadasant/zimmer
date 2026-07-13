@@ -8,7 +8,7 @@
 # contributing the env var, which the spawn-env seam merges over the baseline.
 # Removing this extension leaves the baseline standing — tool search stays off —
 # so the feature is fully self-contained in app/extensions/mcp_tool_search/.
-class McpToolSearchExtension < Ao::Extension
+class McpToolSearchExtension < Zimmer::Extension
   def id
     "mcp_tool_search"
   end

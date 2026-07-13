@@ -17,7 +17,7 @@
 # that drives the interactive Claude TUI inside a pseudo-terminal and scrapes the
 # transcript. Any backend satisfies the same contract —
 # `#run(prompt:, timeout:) -> ClaudePrintRunner::Result`. Because the choice is
-# resolved through Ao::ExtensionRegistry, this module names no concrete
+# resolved through Zimmer::ExtensionRegistry, this module names no concrete
 # extension: with the PTY extension removed, every call falls back to native.
 #
 # Scope note: this seam governs print-mode inference only. Interactive
@@ -68,7 +68,7 @@ module ClaudePrintRunner
   def pty_enabled?(override = nil)
     return override unless override.nil?
 
-    Ao::ExtensionRegistry.print_runner_backend?
+    Zimmer::ExtensionRegistry.print_runner_backend?
   end
 
   # Resolve an extension-provided backend for the given override, or nil to fall
@@ -76,7 +76,7 @@ module ClaudePrintRunner
   def extension_backend(claude_binary:, model:, process_manager:, logger:, override:)
     return nil if override == false
 
-    Ao::ExtensionRegistry.print_runner_backend(
+    Zimmer::ExtensionRegistry.print_runner_backend(
       force: override == true,
       claude_binary: claude_binary, model: model,
       process_manager: process_manager, logger: logger

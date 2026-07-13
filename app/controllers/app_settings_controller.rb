@@ -29,7 +29,7 @@ class AppSettingsController < ApplicationController
     # junk keys in the extension_states map.
     if (extensions = app_params[:extensions]).respond_to?(:each_pair)
       extensions.each_pair do |id, value|
-        next unless Ao::ExtensionRegistry.find(id)
+        next unless Zimmer::ExtensionRegistry.find(id)
 
         setting.set_extension_enabled(id, ActiveModel::Type::Boolean.new.cast(value))
       end

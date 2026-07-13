@@ -37,8 +37,8 @@ the clone.
 
 `Monitor`, `ScheduleWakeup`, `Bash(sleep *)`, and `Skill(schedule)` are all blocked because they
 are *Claude Code's own* ways of waiting, and they don't survive Zimmer. A background sleep loop
-dies when the container is recreated on deploy; a `ScheduleWakeup` doesn't create an AO trigger
-that AO can track. Agents are pointed at Zimmer's own MCP wake tools instead.
+dies when the container is recreated on deploy; a `ScheduleWakeup` doesn't create a Zimmer trigger
+that Zimmer can track. Agents are pointed at Zimmer's own MCP wake tools instead.
 `AskUserQuestion` is blocked because an interactive prompt would stall an autonomous session
 forever.
 
@@ -83,7 +83,7 @@ Codex adds `RUST_LOG=warn,rmcp=info` and `CODEX_HOME`.
 `ELICITATION_SESSION_ID` is injected only by `ClaudeSpawnEnv`. Codex sessions never get it,
 so [elicitations silently no-op for Codex](/limitations/#elicitations-silently-do-nothing-on-codex).
 
-Likewise, `Ao::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` —
+Likewise, `Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` —
 `CodexRuntimeAdapter#spawn_process` never consults it, so extension env contributions are
 unreachable for Codex, despite the hook receiving a `runtime` context that implies otherwise.
 :::

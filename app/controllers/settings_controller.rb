@@ -24,6 +24,6 @@ class SettingsController < ApplicationController
     # The "Experimental" section is data-driven from the extension registry, so a
     # dropped extension disappears from the UI with no view edit. Each entry knows
     # its own id/title/description and current enablement.
-    @extensions = Ao::ExtensionRegistry.experimental
+    @extensions = Zimmer::ExtensionRegistry.experimental
   end
 end

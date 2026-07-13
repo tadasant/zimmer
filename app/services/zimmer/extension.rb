@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-module Ao
-  # Base class for an **Zimmer Extension** — a self-contained, individually-deletable
+module Zimmer
+  # Base class for a **Zimmer Extension** — a self-contained, individually-deletable
   # bundle of optional behavior that plugs into Zimmer's core seams without the core
   # ever naming it.
   #
   # This is deliberately distinct from an AIR "session plugin" (PluginsConfig):
   # a session plugin injects skills / MCP servers / hooks INTO an agent session's
-  # workspace. An Zimmer Extension, by contrast, alters how Zimmer itself drives a
+  # workspace. A Zimmer Extension, by contrast, alters how Zimmer itself drives a
   # runtime — which CLI adapter it spawns, which print-inference backend it uses,
   # what env it hands the child process. The word "plugin" is reserved for the
   # AIR concept; this layer is "extensions".
@@ -19,7 +19,7 @@ module Ao
   # not want to publish. An extension is the seam that lets such a feature live
   # entirely under app/extensions/<id>/ and be removed wholesale for the OSS
   # build — delete the directory and everything still works, falling back to the
-  # native path. The core resolves extensions through Ao::ExtensionRegistry and
+  # native path. The core resolves extensions through Zimmer::ExtensionRegistry and
   # never references a concrete extension class, so a missing extension is not an
   # error: its hooks simply do not contribute.
   #
@@ -29,7 +29,7 @@ module Ao
   # override any of the hook methods to contribute behavior; the defaults are all
   # inert (nil / no-op), so an extension only pays for the seams it uses.
   #
-  #   class PtyTransportExtension < Ao::Extension
+  #   class PtyTransportExtension < Zimmer::Extension
   #     def id = "pty_transport"
   #     def title = "PTY headless inference"
   #     def cli_adapter_override(runtime) = runtime == "claude_code" ? PtyClaudeCliAdapter : nil

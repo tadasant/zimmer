@@ -86,7 +86,7 @@ Pages are under `docs/src/content/docs/`:
 | `Elicitation`, elicitation controllers | `sessions/elicitation.md` |
 | `config/routes.rb`, `app/controllers/api/**` | `extend/rest-api.md` |
 | `RuntimeRegistry`, a new/changed runtime | `extend/agent-harness.md` |
-| `app/extensions/**`, `Ao::ExtensionRegistry` | `extend/extensions.md` |
+| `app/extensions/**`, `Zimmer::ExtensionRegistry` | `extend/extensions.md` |
 | `app/services/transcript_hooks/**` | `extend/transcript-hooks.md` |
 | `air.json`, `roots.json`, `mcp.json`, `skills/`, `plugins/`, `hooks/`, `AirCatalogService`, `AirPrepareService` | `air/*.md` |
 | OAuth, `ClaudeAccount`, `McpOauthCredential`, `RuntimeAuthProvider` | `auth/*.md` |

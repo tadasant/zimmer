@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # check=error=true
 
-# Base image for Agent Orchestrator with pre-installed heavy dependencies AND gems.
+# Base image for Zimmer with pre-installed heavy dependencies AND gems.
 # This image is built separately and cached to speed up production deployments.
 #
 # Rebuild this image when:

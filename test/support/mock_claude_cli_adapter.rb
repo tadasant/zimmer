@@ -13,7 +13,7 @@ class MockClaudeCliAdapter
 
   attr_accessor :execute_hook, :resume_hook
   attr_reader :executed_commands, :resumed_sessions
-  attr_accessor :process_manager, :file_system, :ao_session_id
+  attr_accessor :process_manager, :file_system, :zimmer_session_id
 
   def initialize
     @executed_commands = []

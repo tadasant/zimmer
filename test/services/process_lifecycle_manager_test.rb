@@ -46,15 +46,15 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
   # Regression: MCP elicitation 404s after restart/resume.
   #
-  # The constructor — not #spawn — must set ao_session_id on the CLI adapter. The
+  # The constructor — not #spawn — must set zimmer_session_id on the CLI adapter. The
   # resume_monitoring path never calls #spawn, yet a monitored process can exit and
   # route through handle_exit into a respawn (retry service, spawn_continuation, or
   # failed-resume recovery) that reuses this adapter. If the id were set only in
   # #spawn, those respawned MCP servers would inject no ELICITATION_SESSION_ID and
   # their elicitation POSTs would 404 with an empty session-id.
-  test "constructor sets ao_session_id on the cli adapter so resume-path respawns inject elicitation env" do
+  test "constructor sets zimmer_session_id on the cli adapter so resume-path respawns inject elicitation env" do
     create_manager
-    assert_equal @session.id, @mock_cli_adapter.ao_session_id
+    assert_equal @session.id, @mock_cli_adapter.zimmer_session_id
   end
 
   test "state transitions from idle to running after successful spawn" do

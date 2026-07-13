@@ -229,7 +229,7 @@ class AirPrepareService
 
   # Prepare a session: run AIR CLI then hand off to the runtime's config
   # post-processor. After completion, #injected_mcp_servers contains names of
-  # servers that were auto-injected (e.g. agent-orchestrator for subagent roots).
+  # servers that were auto-injected (e.g. zimmer for subagent roots).
   def prepare!
     run_air_prepare!
     post_processor.post_process!
@@ -244,7 +244,7 @@ class AirPrepareService
   end
 
   # Names of servers the post-processor auto-injected during prepare! /
-  # ensure_baseline_mcp_config! (e.g. agent-orchestrator for subagent roots).
+  # ensure_baseline_mcp_config! (e.g. zimmer for subagent roots).
   def injected_mcp_servers
     post_processor.injected_mcp_servers
   end

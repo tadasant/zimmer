@@ -123,13 +123,13 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
     # An auto-injected server whose name contains characters Codex sanitizes to
     # "_" (e.g. a dot). all_mcp_servers includes injected servers verbatim, while
     # the rollout tool name carries the sanitized form.
-    @session.update!(custom_metadata: { "injected_mcp_servers" => [ "agent.orchestrator" ] })
+    @session.update!(custom_metadata: { "injected_mcp_servers" => [ "example.server" ] })
     content = rollout(
-      function_call(name: "mcp__agent_orchestrator__start_session", timestamp: "2026-05-29T21:39:13.000Z")
+      function_call(name: "mcp__example_server__start_session", timestamp: "2026-05-29T21:39:13.000Z")
     )
 
     statuses = detector.poll(transcript_content: content)[:server_statuses]
-    assert_equal "connected", statuses["agent.orchestrator"][:status]
+    assert_equal "connected", statuses["example.server"][:status]
   end
 
   # === connected detection via mcp_tool_call_end (raw server name) ===
@@ -195,13 +195,13 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
     # Defense in depth: codex normally names the server verbatim in
     # invocation.server, but if it ever emits a form that differs only by
     # sanitization, match_trackable_server falls back to a sanitize-equal match
-    # (raw "agent.orchestrator" vs emitted "agent_orchestrator").
-    @session.update!(custom_metadata: { "injected_mcp_servers" => [ "agent.orchestrator" ] })
+    # (raw "example.server" vs emitted "example_server").
+    @session.update!(custom_metadata: { "injected_mcp_servers" => [ "example.server" ] })
     content = rollout(
-      mcp_tool_call_end(server: "agent_orchestrator", tool: "start_session", timestamp: "2026-05-29T21:39:13.000Z")
+      mcp_tool_call_end(server: "example_server", tool: "start_session", timestamp: "2026-05-29T21:39:13.000Z")
     )
 
-    assert_equal "connected", detector.poll(transcript_content: content)[:server_statuses]["agent.orchestrator"][:status]
+    assert_equal "connected", detector.poll(transcript_content: content)[:server_statuses]["example.server"][:status]
   end
 
   test "poll collapses both shapes onto one server regardless of call_id correlation" do

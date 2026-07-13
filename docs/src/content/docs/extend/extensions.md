@@ -1,6 +1,6 @@
 ---
 title: Extensions
-description: The Ao::Extension seam — what an extension can override, the one that ships, and how to write and install one.
+description: The Zimmer::Extension seam — what an extension can override, the one that ships, and how to write and install one.
 sidebar:
   order: 3
 ---
@@ -16,7 +16,7 @@ Zimmer's own behavior. Different layer entirely.
 
 ## The contract
 
-`Ao::Extension` (`app/services/ao/extension.rb`), `API_VERSION = 1`.
+`Zimmer::Extension` (`app/services/zimmer/extension.rb`), `API_VERSION = 1`.
 
 **Identity:**
 
@@ -45,7 +45,7 @@ Exactly three places in core consult the registry:
 
 ```mermaid
 flowchart LR
-    E["Ao::ExtensionRegistry"]
+    E["Zimmer::ExtensionRegistry"]
     E -->|"cli_adapter_override_for(runtime)"| R["RuntimeRegistry.cli_adapter_class_for<br/>(first enabled wins, registration order)"]
     E -->|"print_runner_backend(...)"| P["ClaudePrintRunner.build<br/>(fallback: NativeClaudePrintRunner)"]
     E -->|"spawn_env_contributions(runtime:)"| S["ClaudeSpawnEnv#build_claude_spawn_env<br/>(merged, later wins)"]
@@ -107,7 +107,7 @@ mechanism, and it's a good one.
 
 ```ruby
 # app/extensions/my_thing/my_thing_extension.rb
-class MyThingExtension < Ao::Extension
+class MyThingExtension < Zimmer::Extension
   def id = "my_thing"
   def title = "My Thing"
   def description = "Does the thing."
@@ -120,7 +120,7 @@ class MyThingExtension < Ao::Extension
 end
 ```
 
-Then add `"MyThingExtension"` to `Ao::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES`.
+Then add `"MyThingExtension"` to `Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES`.
 
 :::note[The autoloader collapses the directory]
 `config/application.rb` does
@@ -129,9 +129,9 @@ Then add `"MyThingExtension"` to `Ao::ExtensionRegistry::BUILTIN_EXTENSION_CLASS
 So `app/extensions/my_thing/my_widget.rb` must define `MyWidget`, not `MyThing::MyWidget`.
 :::
 
-Register it in `config/initializers/ao_extensions.rb`? No — that file only calls `reset!` and
+Register it in `config/initializers/zimmer_extensions.rb`? No — that file only calls `reset!` and
 `register_builtins!` inside a `to_prepare` block (so it survives dev reloads). Adding the class name
 to `BUILTIN_EXTENSION_CLASSES` is the whole registration.
 
 Tests go in `test/extensions/<id>/`. The generic registry test lives at
-`test/services/ao/extension_registry_test.rb`.
+`test/services/zimmer/extension_registry_test.rb`.

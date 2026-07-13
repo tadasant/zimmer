@@ -192,6 +192,6 @@ Other known gaps:
   create transcript directory…"* for every runtime.
 - `ELICITATION_SESSION_ID` is Claude-only — elicitations
   [silently no-op on Codex](/sessions/elicitation/#known-problems).
-- `Ao::ExtensionRegistry.spawn_env_contributions` is Claude-only — extension env contributions are
+- `Zimmer::ExtensionRegistry.spawn_env_contributions` is Claude-only — extension env contributions are
   unreachable from Codex, despite the hook receiving a `runtime` context.
 - `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.

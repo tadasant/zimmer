@@ -34,7 +34,7 @@ module WebpushConfig
       {
         public_key: public_key,
         private_key: private_key,
-        subject: subject || "mailto:admin@agent-orchestrator.local"
+        subject: subject || "mailto:admin@zimmer.local"
       }
     end
   end

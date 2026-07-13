@@ -4,7 +4,7 @@ require "rails/test_help"
 
 # Safeguard: Fail fast if tests are not running against the test database.
 # This prevents accidental pollution of development/production databases when
-# tests are run via agent orchestrator or other spawned processes that may
+# tests are run via Zimmer or other spawned processes that may
 # inherit environment variables from the parent process. See issue #500.
 unless Rails.env.test?
   abort <<~ERROR
@@ -54,7 +54,7 @@ unless is_test_database
     - DATABASE_URL environment variable
     - config/database.yml test configuration
 
-    If running via agent orchestrator, database environment variables from the
+    If running via Zimmer, database environment variables from the
     parent process may be overriding the test database configuration.
     \e[0m
   ERROR

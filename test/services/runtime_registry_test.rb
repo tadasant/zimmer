@@ -90,7 +90,7 @@ class RuntimeRegistryTest < ActiveSupport::TestCase
   # extension in test/extensions/pty_transport/pty_transport_extension_test.rb.
   FakeSwapAdapter = Class.new
 
-  class FakeSwapExtension < Ao::Extension
+  class FakeSwapExtension < Zimmer::Extension
     def id = "fake_swap"
     def cli_adapter_override(runtime) = (runtime.to_s == "claude_code") ? FakeSwapAdapter : nil
   end
@@ -99,12 +99,12 @@ class RuntimeRegistryTest < ActiveSupport::TestCase
   # builtins so the rest of the suite sees the real registry.
   setup do
     AppSetting.delete_all
-    Ao::ExtensionRegistry.register(FakeSwapExtension.new)
+    Zimmer::ExtensionRegistry.register(FakeSwapExtension.new)
   end
 
   teardown do
-    Ao::ExtensionRegistry.reset!
-    Ao::ExtensionRegistry.register_builtins!
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
   end
 
   def enable_swap(on)

@@ -168,7 +168,7 @@ class UnarchiveSessionService
     end
 
     # Regenerate MCP config (includes auto-injected self-session server, plus the
-    # subagent-spawning agent-orchestrator server for roots with default_subagent_roots)
+    # subagent-spawning zimmer server for roots with default_subagent_roots)
     regenerate_mcp_config(working_directory)
 
     Result.new(success?: true)
@@ -204,7 +204,7 @@ class UnarchiveSessionService
     end
 
     # Regenerate MCP config (includes auto-injected self-session server, plus the
-    # subagent-spawning agent-orchestrator server for roots with default_subagent_roots)
+    # subagent-spawning zimmer server for roots with default_subagent_roots)
     regenerate_mcp_config(new_working_directory)
 
     Result.new(success?: true)
@@ -329,7 +329,7 @@ class UnarchiveSessionService
       working_directory: working_directory,
       file_system: file_system
     )
-    # Both branches auto-inject the subagent-spawning agent-orchestrator server
+    # Both branches auto-inject the subagent-spawning zimmer server
     # for a root with resolved default_subagent_roots: the prepare! path does it
     # in RuntimeConfigPostProcessor#post_process!, and the baseline path in
     # #ensure_baseline!. So a subagent-roots-only root (blank mcp_servers +

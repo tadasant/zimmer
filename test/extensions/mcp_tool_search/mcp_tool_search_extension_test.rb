@@ -24,12 +24,12 @@ class McpToolSearchExtensionTest < ActiveSupport::TestCase
 
   test "registry surfaces the contribution only when enabled" do
     enable(false)
-    assert_equal({}, Ao::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
+    assert_equal({}, Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
 
     enable(true)
     assert_equal(
       { "ENABLE_TOOL_SEARCH" => "true" },
-      Ao::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code")
+      Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code")
     )
   end
 end

@@ -29,7 +29,7 @@ self.addEventListener('push', (event) => {
     body: data.body || '',
     icon: data.icon || APP_ICON,
     badge: APP_ICON,
-    tag: data.tag || 'agent-orchestrator-notification',
+    tag: data.tag || 'zimmer-notification',
     data: {
       url: notificationUrl
     },

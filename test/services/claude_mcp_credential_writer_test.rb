@@ -141,14 +141,14 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     }))
 
     # Zimmer's incoming token expires sooner than the runtime one.
-    ao_credential = resolved_credential(
+    zimmer_credential = resolved_credential(
       credential_key: "notion|abc123",
-      access_token: "ao-stale-token",
+      access_token: "zimmer-stale-token",
       expires_at: 1.hour.from_now
     )
 
     with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ ao_credential ])
+      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
@@ -167,18 +167,18 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       }
     }))
 
-    ao_credential = resolved_credential(
+    zimmer_credential = resolved_credential(
       credential_key: "notion|abc123",
-      access_token: "ao-newer-token",
+      access_token: "zimmer-newer-token",
       expires_at: 3.hours.from_now
     )
 
     with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ ao_credential ])
+      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
-    assert_equal "ao-newer-token", entry["accessToken"], "Zimmer's newer token must win"
+    assert_equal "zimmer-newer-token", entry["accessToken"], "Zimmer's newer token must win"
   end
 
   test "write! overwrites an existing entry that has already expired" do
@@ -193,18 +193,18 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       }
     }))
 
-    ao_credential = resolved_credential(
+    zimmer_credential = resolved_credential(
       credential_key: "notion|abc123",
-      access_token: "ao-token",
+      access_token: "zimmer-token",
       expires_at: 1.hour.from_now
     )
 
     with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ ao_credential ])
+      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
-    assert_equal "ao-token", entry["accessToken"], "Zimmer's token must replace the expired runtime token"
+    assert_equal "zimmer-token", entry["accessToken"], "Zimmer's token must replace the expired runtime token"
   end
 
   test "write! overwrites an existing entry that has no recorded expiry" do
@@ -217,18 +217,18 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       }
     }))
 
-    ao_credential = resolved_credential(
+    zimmer_credential = resolved_credential(
       credential_key: "notion|abc123",
-      access_token: "ao-token",
+      access_token: "zimmer-token",
       expires_at: 1.hour.from_now
     )
 
     with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ ao_credential ])
+      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
-    assert_equal "ao-token", entry["accessToken"], "Zimmer's entry must win when existing has no expiry"
+    assert_equal "zimmer-token", entry["accessToken"], "Zimmer's entry must win when existing has no expiry"
   end
 
   test "write! keeps a still-valid runtime entry when Zimmer's incoming token has no expiry" do
@@ -245,14 +245,14 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
 
     # Zimmer's incoming token has no recorded expiry — it is not demonstrably fresher
     # than the still-valid runtime entry, so the runtime entry is preserved.
-    ao_credential = resolved_credential(
+    zimmer_credential = resolved_credential(
       credential_key: "notion|abc123",
-      access_token: "ao-no-expiry-token",
+      access_token: "zimmer-no-expiry-token",
       expires_at: nil
     )
 
     with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ ao_credential ])
+      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
     end
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")

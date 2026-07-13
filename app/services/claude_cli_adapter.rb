@@ -75,7 +75,7 @@ class ClaudeCliAdapter
   # - Platform variation (some systems may have lower limits)
   LARGE_PROMPT_THRESHOLD = 100.kilobytes
 
-  attr_accessor :process_manager, :file_system, :ao_session_id
+  attr_accessor :process_manager, :file_system, :zimmer_session_id
 
   def initialize(logger: Rails.logger)
     @logger = logger

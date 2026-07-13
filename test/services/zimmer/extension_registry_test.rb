@@ -7,12 +7,12 @@ require "test_helper"
 # and — critically — that a built-in whose class no longer resolves is skipped
 # rather than raising (the OSS-removal path). Uses fake extensions so it doesn't
 # depend on any concrete (deletable) extension.
-class Ao::ExtensionRegistryTest < ActiveSupport::TestCase
+class Zimmer::ExtensionRegistryTest < ActiveSupport::TestCase
   # Fake adapters/backends the fakes hand back — only identity matters.
   FakeAdapterA = Class.new
   FakeAdapterB = Class.new
 
-  class FakeExtA < Ao::Extension
+  class FakeExtA < Zimmer::Extension
     def id = "fake_a"
     def cli_adapter_override(runtime) = runtime.to_s == "claude_code" ? FakeAdapterA : nil
     def provides_print_runner? = true
@@ -20,7 +20,7 @@ class Ao::ExtensionRegistryTest < ActiveSupport::TestCase
     def spawn_env_contribution(context = {}) = { "SHARED" => "a", "ONLY_A" => "1" }
   end
 
-  class FakeExtB < Ao::Extension
+  class FakeExtB < Zimmer::Extension
     def id = "fake_b"
     def cli_adapter_override(runtime) = runtime.to_s == "claude_code" ? FakeAdapterB : nil
     def spawn_env_contribution(context = {}) = { "SHARED" => "b", "ONLY_B" => "1" }
@@ -28,12 +28,12 @@ class Ao::ExtensionRegistryTest < ActiveSupport::TestCase
 
   setup do
     AppSetting.delete_all
-    Ao::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.reset!
   end
 
   teardown do
-    Ao::ExtensionRegistry.reset!
-    Ao::ExtensionRegistry.register_builtins!
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
   end
 
   def enable(id, on)
@@ -43,7 +43,7 @@ class Ao::ExtensionRegistryTest < ActiveSupport::TestCase
   # Temporarily swap BUILTIN_EXTENSION_CLASSES (a frozen constant) for the block,
   # restoring it after. Used to simulate a deleted extension directory.
   def with_builtin_classes(list)
-    mod = Ao::ExtensionRegistry
+    mod = Zimmer::ExtensionRegistry
     original = mod::BUILTIN_EXTENSION_CLASSES
     mod.send(:remove_const, :BUILTIN_EXTENSION_CLASSES)
     mod.const_set(:BUILTIN_EXTENSION_CLASSES, list.freeze)
@@ -55,15 +55,15 @@ class Ao::ExtensionRegistryTest < ActiveSupport::TestCase
 
   test "register/find/all round-trips an extension" do
     ext = FakeExtA.new
-    Ao::ExtensionRegistry.register(ext)
-    assert_same ext, Ao::ExtensionRegistry.find("fake_a")
-    assert_includes Ao::ExtensionRegistry.all.map(&:id), "fake_a"
+    Zimmer::ExtensionRegistry.register(ext)
+    assert_same ext, Zimmer::ExtensionRegistry.find("fake_a")
+    assert_includes Zimmer::ExtensionRegistry.all.map(&:id), "fake_a"
   end
 
   test "reset! empties the registry" do
-    Ao::ExtensionRegistry.register(FakeExtA.new)
-    Ao::ExtensionRegistry.reset!
-    assert_empty Ao::ExtensionRegistry.all
+    Zimmer::ExtensionRegistry.register(FakeExtA.new)
+    Zimmer::ExtensionRegistry.reset!
+    assert_empty Zimmer::ExtensionRegistry.all
   end
 
   test "register_builtins! skips a class name that does not resolve" do
@@ -71,71 +71,71 @@ class Ao::ExtensionRegistryTest < ActiveSupport::TestCase
     # resolves must be silently skipped, not raise. This IS the removability
     # mechanism the OSS build depends on.
     with_builtin_classes(%w[McpToolSearchExtension DefinitelyNotARealExtensionConstant]) do
-      assert_nothing_raised { Ao::ExtensionRegistry.register_builtins! }
+      assert_nothing_raised { Zimmer::ExtensionRegistry.register_builtins! }
     end
-    ids = Ao::ExtensionRegistry.all.map(&:id)
+    ids = Zimmer::ExtensionRegistry.all.map(&:id)
     assert_includes ids, "mcp_tool_search"
     refute_includes ids, "definitely_not_a_real_extension_constant"
   end
 
   test "enabled filters to extensions whose persisted state is on" do
-    Ao::ExtensionRegistry.register(FakeExtA.new)
-    Ao::ExtensionRegistry.register(FakeExtB.new)
+    Zimmer::ExtensionRegistry.register(FakeExtA.new)
+    Zimmer::ExtensionRegistry.register(FakeExtB.new)
     enable("fake_a", true)
     enable("fake_b", false)
 
-    assert_equal [ "fake_a" ], Ao::ExtensionRegistry.enabled.map(&:id)
+    assert_equal [ "fake_a" ], Zimmer::ExtensionRegistry.enabled.map(&:id)
   end
 
   test "cli_adapter_override_for returns the first enabled extension's adapter" do
-    Ao::ExtensionRegistry.register(FakeExtA.new)
-    Ao::ExtensionRegistry.register(FakeExtB.new)
+    Zimmer::ExtensionRegistry.register(FakeExtA.new)
+    Zimmer::ExtensionRegistry.register(FakeExtB.new)
 
     enable("fake_a", false)
     enable("fake_b", false)
-    assert_nil Ao::ExtensionRegistry.cli_adapter_override_for("claude_code")
+    assert_nil Zimmer::ExtensionRegistry.cli_adapter_override_for("claude_code")
 
     enable("fake_b", true)
-    assert_equal FakeAdapterB, Ao::ExtensionRegistry.cli_adapter_override_for("claude_code")
+    assert_equal FakeAdapterB, Zimmer::ExtensionRegistry.cli_adapter_override_for("claude_code")
 
     # Registration order is first-wins: A registered before B, so with both on A wins.
     enable("fake_a", true)
-    assert_equal FakeAdapterA, Ao::ExtensionRegistry.cli_adapter_override_for("claude_code")
+    assert_equal FakeAdapterA, Zimmer::ExtensionRegistry.cli_adapter_override_for("claude_code")
   end
 
   test "cli_adapter_override_for ignores extensions that defer for the runtime" do
-    Ao::ExtensionRegistry.register(FakeExtA.new)
+    Zimmer::ExtensionRegistry.register(FakeExtA.new)
     enable("fake_a", true)
-    assert_nil Ao::ExtensionRegistry.cli_adapter_override_for("codex")
+    assert_nil Zimmer::ExtensionRegistry.cli_adapter_override_for("codex")
   end
 
   test "print_runner_backend? and print_runner_backend consult enablement" do
-    Ao::ExtensionRegistry.register(FakeExtA.new)
+    Zimmer::ExtensionRegistry.register(FakeExtA.new)
 
     enable("fake_a", false)
-    refute Ao::ExtensionRegistry.print_runner_backend?
-    assert_nil Ao::ExtensionRegistry.print_runner_backend(claude_binary: "c", model: nil)
+    refute Zimmer::ExtensionRegistry.print_runner_backend?
+    assert_nil Zimmer::ExtensionRegistry.print_runner_backend(claude_binary: "c", model: nil)
 
     enable("fake_a", true)
-    assert Ao::ExtensionRegistry.print_runner_backend?
-    assert_equal :backend_a, Ao::ExtensionRegistry.print_runner_backend(claude_binary: "c", model: nil)
+    assert Zimmer::ExtensionRegistry.print_runner_backend?
+    assert_equal :backend_a, Zimmer::ExtensionRegistry.print_runner_backend(claude_binary: "c", model: nil)
   end
 
   test "print_runner_backend force: true ignores enablement" do
-    Ao::ExtensionRegistry.register(FakeExtA.new)
+    Zimmer::ExtensionRegistry.register(FakeExtA.new)
     enable("fake_a", false)
 
     assert_equal :backend_a,
-      Ao::ExtensionRegistry.print_runner_backend(force: true, claude_binary: "c", model: nil)
+      Zimmer::ExtensionRegistry.print_runner_backend(force: true, claude_binary: "c", model: nil)
   end
 
   test "spawn_env_contributions merges enabled extensions, later wins on collision" do
-    Ao::ExtensionRegistry.register(FakeExtA.new)
-    Ao::ExtensionRegistry.register(FakeExtB.new)
+    Zimmer::ExtensionRegistry.register(FakeExtA.new)
+    Zimmer::ExtensionRegistry.register(FakeExtB.new)
     enable("fake_a", true)
     enable("fake_b", true)
 
-    merged = Ao::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code")
+    merged = Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code")
     assert_equal "1", merged["ONLY_A"]
     assert_equal "1", merged["ONLY_B"]
     # B is registered after A, so B wins the shared key.
@@ -143,8 +143,8 @@ class Ao::ExtensionRegistryTest < ActiveSupport::TestCase
   end
 
   test "spawn_env_contributions excludes disabled extensions" do
-    Ao::ExtensionRegistry.register(FakeExtA.new)
+    Zimmer::ExtensionRegistry.register(FakeExtA.new)
     enable("fake_a", false)
-    assert_equal({}, Ao::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
+    assert_equal({}, Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
   end
 end
