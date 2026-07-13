@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/src/assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/src/assets/logo-light.svg">
+    <img src="docs/src/assets/logo-light.svg" alt="Zimmer" width="180">
+  </picture>
+</p>
+
 # Zimmer
 
 **Zimmer is a self-hostable orchestrator for AI coding agents.** You give it a task
@@ -11,6 +19,13 @@ about why it couldn't. You stay in control of what runs and what merges.
   Claude Code and Codex both ship today, and you pick the model per session (Claude or
   OpenAI). MCP servers are a JSON entry, not a code change. Nothing in the design assumes
   whose agent wins — which is the point, because nobody knows yet.
+- **The architecture is bounded on purpose.** There is largely one way to do each thing:
+  a session is an isolated clone, a session's context comes from the catalog, the lifecycle
+  is one state machine. That top level is meant to stay stable, so by default you don't need
+  to know how any of it is implemented — and when something does go wrong, you drill down
+  into a part you can name instead of into sprawl. The failure mode we're deliberately
+  avoiding is the usual one for a hand-rolled agent rig: a self-learning agent let loose on
+  a machine, layers of glue nobody understands, regular breakages, and no road back.
 - **A boring stack on one cheap box.** Rails 8, PostgreSQL, Redis, GoodJob, Hotwire. It's
   a Docker image that Kamal ships to any Linux host you can SSH into; a single small
   droplet runs the whole thing. No per-seat bill, no exotic infra to keep alive.
