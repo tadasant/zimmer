@@ -1,5 +1,5 @@
 name: 💡 Feature request
-description: Propose a capability or change. Concrete, motivated proposals get triaged; wishlists get closed.
+description: Propose a capability or change. Concrete, motivated proposals are the ones that move.
 labels: ["enhancement"]
 body:
   - type: markdown
