@@ -175,7 +175,7 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · GHCR-retention logic · docs site build. Jobs are guarded to run only on `push` and on same-repo PRs, so a fork PR never executes on the self-hosted runners. |
+| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | builds and pushes `zimmer:{version, latest, sha-…}` |
@@ -250,13 +250,14 @@ them:
   `- 5432/tcp` / `- 6379/tcp` (not `5432:5432`), and a step resolves the assigned
   host port via `${{ job.services.postgres.ports[5432] }}` into `DATABASE_PORT` /
   `REDIS_URL`. Fixed host ports would collide when two jobs land on the same runner.
-- **The heavy suite is the `test-unit` job key and pins `PARALLEL_WORKERS`.** The
-  runner's file-based semaphore recognizes the job **key** `test-unit` and caps how
-  many heavy test jobs run at once; a bare `test` key would go ungated. Pinning
-  `PARALLEL_WORKERS` stops a single job from fanning out to `:number_of_processors`
-  (32 on this box) and starving co-tenants. There is intentionally no `test-system`
-  job — zimmer runs no Chrome-driven system tests in CI, so there is nothing for the
-  companion system-test semaphore to gate.
+- **The heavy suites are the `test-unit` and `test-system` job keys and pin
+  `PARALLEL_WORKERS`.** The runner's file-based semaphore recognizes the job **keys**
+  `test-unit` and `test-system` and caps how many heavy test jobs run at once; a bare
+  `test` key would go ungated. Pinning `PARALLEL_WORKERS` stops a single job from
+  fanning out to `:number_of_processors` (32 on this box) and starving co-tenants —
+  `test-system` pins it to 1 because its persistent per-worker Chrome profile does not
+  tolerate concurrent browser instances. `test-system` runs the Chrome-driven system
+  suite (`bin/rails test:system`); the companion system-test semaphore gates it.
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 

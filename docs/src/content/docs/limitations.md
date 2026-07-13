@@ -870,12 +870,16 @@ Also:
 
 ## Testing
 
-### System tests do not run in CI
+### Playwright e2e scripts do not run in CI
 
-🔴 The `test` job runs "unit + integration; system tests excluded." Four of the ten open issues are UI
-regressions — exactly the class a system test would catch.
+🟡 CI runs the Chrome-driven Ruby system suite (`test/system/*.rb`) in the `test-system` job, but the
+JavaScript Playwright scripts under `test/e2e/*.js` are still not wired in — the runner is not
+provisioned with a Playwright browser, and `account_rotation_test.js` needs the real Claude Code
+binary against a mock Anthropic server. The system suite covers the overlapping UI.
 
-Tracked in [#87](https://github.com/tadasant/zimmer/issues/87).
+Tracked in [#162](https://github.com/tadasant/zimmer/issues/162). (The broader "system tests do not
+run in CI" gap, [#87](https://github.com/tadasant/zimmer/issues/87), is closed by the `test-system`
+job.)
 
 ### Four open flaky-test issues
 

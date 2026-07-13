@@ -95,8 +95,9 @@ A wave of `RecordInvalid` across unrelated session tests almost always means a b
 Check `air resolve` before you debug your change.
 :::
 
-## System tests do not run in CI
+## The browser suite runs in CI
 
-`.github/workflows/ci.yml` runs "unit + integration; system tests excluded." The browser suite
-never runs on a PR. Combined with the four open UI bugs (issues #12–#15), that's the obvious hole —
-see [Testing philosophy](/operate/testing/).
+`.github/workflows/ci.yml` runs the Chrome-driven system suite (`test/system/*.rb`) in a dedicated
+`test-system` job, alongside the unit + integration `test-unit` job. The JavaScript Playwright
+scripts under `test/e2e/*.js` are the one browser layer still not wired in (issue #162) — see
+[Testing philosophy](/operate/testing/).
