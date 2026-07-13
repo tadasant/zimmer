@@ -98,6 +98,24 @@ ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -p 2222 root
 # still bad ->  Permission denied (publickey,password).
 ```
 
+### Production's forced root-password expiry has no converge path
+
+🔴 DigitalOcean force-expires root's password on any droplet created without a DO-registered SSH key —
+which is the deliberate posture here — and `pam_unix` then rejects
+[every real-OpenSSH session on `:2222`](/operate/provisioning/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session)
+*after* publickey auth succeeds. cloud-init now clears it at first boot, and
+`scripts/clear-root-password-expiry.sh` repairs a box that already exists.
+
+The staging deploy runs that script on every deploy. **Production's deploy workflow is not in this
+repo** (it lives in the private mirror), so nothing converges production. Production's OpenSSH works
+today only by accident: its root password happened to be changed at some point, which reset `lastchg`.
+Rebuild it and it comes up broken, exactly like staging did.
+
+Run the script by hand from a tailnet host — `scripts/clear-root-password-expiry.sh zimmer` — or add
+the step to the mirror's workflow.
+
+Tracked in [#151](https://github.com/tadasant/zimmer/issues/151).
+
 ### Admin keys are add-only
 
 `admin_ssh_pubkeys` appends to `/root/.ssh/authorized_keys` and never prunes. **Removing** a key from

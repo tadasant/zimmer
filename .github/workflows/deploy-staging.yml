@@ -153,6 +153,17 @@ jobs:
           echo "::error::zimmer-staging never came online on the tailnet"
           exit 1
 
+      # DigitalOcean force-expires root's password on any droplet created without a
+      # DO-registered SSH key (ssh_key_fingerprints is deliberately empty -- it is ForceNew).
+      # cloud-init now clears that at first boot, but it only runs at CREATION, so a droplet
+      # that predates the fix stays broken: publickey on :2222 succeeds and pam_unix then
+      # refuses the session. Converge it on every deploy over Tailscale SSH (:22 -- the path
+      # the expiry does not block). Idempotent, so it no-ops on an already-healthy box.
+      - name: Clear forced root-password expiry (converge)
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+        run: bash scripts/clear-root-password-expiry.sh "$STAGING_HOST"
+
       # Ruby matching .ruby-version, with a user-writable gem dir. (The runner's stock
       # system Ruby installs into /var/lib/gems, which needs root -- `gem install`
       # there fails with Gem::FilePermissionError.)

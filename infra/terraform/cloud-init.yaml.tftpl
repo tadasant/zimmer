@@ -163,6 +163,28 @@ runcmd:
   # auth still live. That is not hypothetical: it is exactly how the hand-applied
   # hardening on production sat inert (`sshd -T` reported `no` -- but `sshd -T` is a
   # fresh PARSE, not the running daemon) until ssh.service was restarted.
+  #
+  # First, neutralize the root password DigitalOcean forces on us. DO sets a random root
+  # password and FORCE-EXPIRES it (`chage -d 0 root`) on every droplet created with no
+  # DO-registered SSH key -- which is deliberate here: ssh_key_fingerprints is ForceNew, so
+  # operator keys ride admin_ssh_pubkeys instead and the list stays empty. Tailscale SSH does
+  # its own authn and never runs pam_unix's account stack, so Kamal and CI never notice. Real
+  # OpenSSH does run it, and pam_unix rejects a session with `sp_lstchg == 0` AFTER publickey
+  # auth has already succeeded:
+  #
+  #   You are required to change your password immediately (administrator enforced).
+  #   Password change required but no TTY available.
+  #
+  # That is EVERY session on :2222 -- publickey passes, the account stack refuses -- which
+  # makes the publickey path this whole file exists to provide unusable. Root is key-only
+  # (10-hardening.conf above), so the password has no legitimate use: `usermod -p '*'` sets an
+  # invalid hash (not an EMPTY one, which `passwd -d` would leave behind), and clearing the
+  # forced-change flag is what unblocks pam_unix. It also invalidates the password DO emailed
+  # out. `-M -1` disables aging entirely, so this cannot re-expire later.
+  #
+  # `$(date ...)` is safe in this template: Terraform interpolates only `${` and `%{`.
+  - usermod -p '*' root
+  - chage -d $(date +%Y-%m-%d) -M -1 root
   - systemctl daemon-reload
   - systemctl restart ssh.socket ssh.service
   # --- Caddy (edge: :80, and :443 when a domain is set) --------------------------
