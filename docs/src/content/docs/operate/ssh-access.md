@@ -1,6 +1,6 @@
 ---
 title: SSH and tailnet access
-description: Two SSH servers on one box, a firewall with no public TCP port, and every trap between you and a shell — plus how to authorize an operator key without rebuilding production.
+description: Two SSH servers on one box, a firewall with no public TCP port, and every trap between you and a shell — plus who is authorized on which host, and why an agent session is deliberately denied root on the box it runs on.
 sidebar:
   order: 3
 ---
@@ -15,6 +15,10 @@ The port and the key are both load-bearing, and getting either wrong produces a 
 like something else. This page explains the access path, then documents each trap in it. Most of them
 stay invisible until they bite: sshd reports a config it isn't running, a port binds only IPv6,
 publickey auth succeeds and the session dies anyway.
+
+The one thing to read even if you read nothing else is [who is authorized
+where](#who-is-authorized-where): a Zimmer agent session can SSH into staging, but it is deliberately
+denied root on **production — the host it is itself running on**.
 
 ## SSH is tailnet-only
 
@@ -159,43 +163,147 @@ after **every** deploy (and it also runs weekly), so a rebuilt box is followed b
 [domain-cert] updated A record staging.zimmer.tadasant.com -> 100.64.2.61
 ```
 
+## Who is authorized where
+
+Every key that can reach a Zimmer box is `root`. There is no unprivileged SSH user, so the only
+access control that exists is *which host authorizes which key* — and the lists are deliberately **not
+the same**:
+
+| Key | zimmer-production | zimmer-staging | obs | CI runner |
+| --- | --- | --- | --- | --- |
+| `zimmer-production-operator` — the key a Zimmer **agent session** holds | **no — deliberately excluded** | yes | yes | yes |
+| `agent-orchestrator-prod-hetzner` — the orchestrator, which runs on a **separate** host | yes | yes | — | — |
+| `root@local` — a human's laptop, break-glass only | yes | yes | — | — |
+| the Kamal deploy key (`var.deploy_ssh_pubkey`) | yes | yes | — | — |
+
+A `—` means "not part of this deployment's access model", not "denied". There is exactly one `no` in
+the table, and it is the decision the rest of this section is about: `zimmer-production-operator` off
+production. `root@local` is `yes` on both boxes on purpose — a human's break-glass key belongs wherever
+a human might have to break in, and staging counts. Do not mistake *that* for reconciling the lists;
+the control is the operator-key cell, not the human one.
+
+### Root on production is for humans and for an off-box orchestrator. Not for a session running on it.
+
+A Zimmer agent session **runs on zimmer-production**, inside the worker container. If it also held a
+key that is `root` on zimmer-production, an agent could stop the containers, fill the disk, or `rm`
+the catalog out from under the very service executing it — and take the orchestrator down mid-task,
+with itself inside the blast radius. The failure would be self-inflicted and unrecoverable from
+within: there is nothing left running to fix it.
+
+So the line is drawn by **where the SSH client runs**, not by who it is:
+
+- **Off-box is allowed.** The orchestrator that reaches into production from a *different* host
+  (`agent-orchestrator-prod-hetzner`) can hold root there. If it breaks production, it is still alive
+  to repair it.
+- **A human is allowed.** `root@local` is break-glass, and a human is the recovery path of last resort.
+- **On-box is denied.** `zimmer-production-operator` — the identity every session in the worker
+  container presents — is left out of production's authorized keys. It keeps staging, obs, and the CI
+  runner, which is what those sessions actually need to operate the fleet.
+
+:::danger[The asymmetry is the design. Do not "fix" it.]
+It looks like an oversight: the same key is on staging, obs, and the CI runner, and *missing* on
+production. It is not an oversight. Adding `zimmer-production-operator` to production's authorized
+keys hands every agent session root on its own host. If you find yourself reconciling the lists so
+they match, stop — the mismatch is the control.
+:::
+
+### The capability is removed at two layers
+
+Key revocation alone is one `authorized_keys` line away from being undone by a converge run, so the
+capability is taken away twice, independently:
+
+1. **Authorization** — production's `/root/.ssh/authorized_keys` does not contain the operator key,
+   and neither does the list production converges *from*
+   ([`admin_authorized_keys.pub`](#each-environments-key-list-lives-somewhere-different), in the
+   private companion repo). A converge cannot re-add what is not declared — and for production that
+   file is the *only* place a key can be declared, because production does not use
+   `admin_ssh_pubkeys` at all (see below). There is one door, and the key is not on the list for it.
+2. **Availability** — the AIR catalog production runs on does not even *offer* the SSH MCP server
+   that points at production. A session cannot attach a server it cannot see, so it never gets as far
+   as presenting a key.
+
+Layer 2 is an `exclude` in the `air.json` of the catalog production runs on, which lives in the
+[private companion repo](/operate/companion-repo/):
+
+```json
+"exclude": {
+  "mcp": ["@local/ssh-tadasant-zimmer-prod"]
+}
+```
+
+Three things about that snippet are easy to get wrong:
+
+- **`exclude` is a per-type object**, keyed by artifact type. The flat-array form
+  (`"exclude": ["@local/x"]`) is rejected by the schema outright — it is not a deprecated spelling, it
+  does not resolve.
+- **The scope is `@local`, not the catalog's `name`.** A catalog whose indexes are local paths
+  contributes its artifacts under `@local`, [whatever the catalog calls
+  itself](/air/overview/#the-identity-model-is-the-load-bearing-idea). Reaching for the catalog's
+  `name` as the scope matches nothing, and AIR says so in a warning rather than an error.
+- **`exclude` is the *only* composition control AIR has** — no override, no field-level patching. You
+  drop the artifact or you keep it.
+
+The entry is still *in* that catalog's `mcp.json` — `exclude` drops it at resolve time rather than
+deleting it — so the server remains available to a human running it by hand from a laptop, where the
+client is off-box and none of the reasoning above applies. Excluding an artifact is [an expected drop,
+not a degraded resolve](/air/zimmer-integration/), so it does not trip `AirCatalogService`'s
+dangling-reference check.
+
+Zimmer's own [in-image catalog](/air/zimmer-integration/#the-catalog-is-self-contained-and-offline) —
+the `mcp.json` in this repository, which `config/environments/production.rb` falls back to when the
+mounted catalog is not on the box yet — needs no such exclude: it declares **no `ssh-*` MCP server at
+all**. So both catalogs a production box can boot on leave a session with no SSH server to attach,
+aimed at production or anywhere else.
+
+### Each environment's key list lives somewhere different
+
+This is the part that is easy to get wrong, because **nothing in this repository authorizes anything
+on production**:
+
+| Environment | Declared in | Converged by |
+| --- | --- | --- |
+| staging | `infra/terraform/staging.tfvars.example` → `admin_ssh_pubkeys` (**this** repo) | cloud-init, at droplet creation |
+| production | `zimmer/admin_authorized_keys.pub` (the [private companion repo](/operate/companion-repo/)) | its `authorize-admin-keys-prod` workflow, live over Tailscale SSH — and re-asserted by the prod deploy, so it self-heals across a rebuild |
+
+The two environments do not merely hold different lists — they use **different mechanisms**, and this
+is the detail that makes the exclusion hold:
+
+- **Production's admin keys are not a Terraform variable at all.** Its private `production.tfvars`
+  leaves `admin_ssh_pubkeys` unset (it defaults to `[]`) and says so explicitly, because keys managed
+  as *file content* can be converged onto a live box, while keys managed through cloud-init reach a
+  box only when it is created. So production has exactly **one** declaration site,
+  `admin_authorized_keys.pub` — nothing else can put a key on that box, which is what turns "the key
+  is not in the file" into a real guarantee rather than a race with the next `terraform apply`.
+- **Staging's admin keys are the Terraform variable**, because staging is rebuilt freely and
+  cloud-init is the natural path.
+
+The only Terraform variables file in this repo is `staging.tfvars.example`, and the only workflows
+that consume it are `deploy-staging` and `teardown-staging`. Production's Terraform state, tfvars, and
+key list are all private. **Nothing in this repository authorizes a key on production.** So the
+operator key sitting in `staging.tfvars.example` authorizes it on **staging and nothing else** — which
+is intended: a session reaching *staging* is the point, it is disposable, and a session that destroys
+it costs a rebuild.
+
 ## Operator keys
 
-Operator and tooling keys are authorized for `root` through one variable, `admin_ssh_pubkeys`. Both
-environments read the same list, so staging and production cannot drift on who can get in.
-
-Edit it in **`infra/terraform/staging.tfvars.example`**, not in `staging.tfvars`. That is not a typo:
+Edit the staging list in **`infra/terraform/staging.tfvars.example`**, not in `staging.tfvars`. That is not a typo:
 `deploy-staging.yml` runs `cp staging.tfvars.example staging.tfvars` verbatim before every apply, and
 `*.tfvars` is gitignored. The example file *is* the tfvars.
 
 ```hcl
-# infra/terraform/staging.tfvars.example
+# infra/terraform/staging.tfvars.example — what is actually committed
 admin_ssh_pubkeys = [
-  "ssh-ed25519 AAAA... zimmer-production-operator",      # the identity agent sessions hold
-  "ssh-ed25519 AAAA... agent-orchestrator-prod-hetzner", # the orchestrator that drives the fleet
-  "ssh-ed25519 AAAA... root@local",                      # the maintainer's laptop key
+  "ssh-ed25519 AAAA...FEp3 zimmer-production-operator",      # Zimmer's agent sessions
+  "ssh-ed25519 AAAA...EmRa agent-orchestrator-prod-hetzner", # the orchestrator, off-box
+  "ssh-ed25519 AAAA...y3Zn root@local",                      # the maintainer's laptop, break-glass
 ]
 ```
 
-If you are forking Zimmer, those are **the author's** keys: replace them with your own, or the first
-deploy authorizes a stranger for root on your droplet. A public key is not a secret, which is why they
-are committed — but the list is per-environment configuration, not a default to inherit.
-
-### The maintainer's laptop key
-
-`root@local` is a human's key, and it is in the list on purpose. The other two entries belong to
-machines: `agent-orchestrator-prod-hetzner` to the host that runs Zimmer's sessions,
-`zimmer-production-operator` to the sessions themselves. When Zimmer is down — or when a deploy is what
-broke — neither of those is a hand you can put on the box.
-
-It is not the *only* door: Tailscale SSH on `:22` needs no key at all, and it is the one to reach for
-first. This key is the independent one — a real OpenSSH shell on `:2222`, held by a person rather than
-by a machine, that does not depend on the tailnet's SSH policy resolving your identity the way you
-expect it to.
-
-Both environments authorize it, and nothing *enforces* that: production's `admin_ssh_pubkeys` lives in
-the [private companion repo](/operate/companion-repo/), so the two lists are kept in step by hand. That
-is the discipline this key exists inside. Do not prune it as a stray personal key.
+:::danger[Forking: those are real keys, not placeholders]
+The committed example is not a template with a dummy value in it — it holds the upstream author's three
+real public keys, and `deploy-staging.yml` copies the file verbatim. Deploy it unchanged and you have
+authorized **him** for `root` on **your** droplet. Replace all three with your own, or set `[]`.
+:::
 
 Do **not** reach for `ssh_key_fingerprints` (DigitalOcean-registered keys) instead. It is `ForceNew` on
 `digitalocean_droplet`, so adding a key there makes the deploy's auto-approved `terraform apply`
@@ -216,8 +324,8 @@ one you want depends on whether the box is disposable:
 the droplet). Staging is disposable by design and this is the intended path. Read [the one fallback
 door a rebuilt droplet has](/limitations/#a-rebuilt-droplet-has-exactly-one-fallback-door-and-it-is-the-digitalocean-console)
 first: a rebuild whose `tailscale up` fails leaves you with only the DigitalOcean console. And budget
-the rebuilds — each one destroys the box's TLS cert and burns one of [Let's Encrypt's five issuances
-per week](/limitations/#rebuilding-staging-costs-a-lets-encrypt-issuance-and-there-are-only-five-a-week).
+the rebuilds — each destroys the box's TLS cert, and [Let's Encrypt allows only five issuances a
+week](/limitations/#rebuilding-staging-costs-a-lets-encrypt-issuance-and-there-are-only-five-a-week).
 
 **Production — append the key live, over Tailscale SSH.** Production cannot be casually recreated, so
 a rebuild is not an option. Tailscale SSH on `:22` is, because it works regardless of what `:2222` is
@@ -231,18 +339,26 @@ tailscale ssh root@zimmer \
 
 That is the same idempotent append cloud-init does at boot. The author automates it as an
 `authorize-admin-keys-prod` workflow in the [private companion repo](/operate/companion-repo/), which
-is the natural home for it — production's deploy pipeline lives there, not here. Either way, put the
-key in `production.tfvars` as well, or the next rebuild drops it.
+is the natural home for it — production's deploy pipeline lives there, not here. It converges from
+`zimmer/admin_authorized_keys.pub`, and the prod deploy re-asserts the same file, so that file — not
+a tfvars entry — is what a key must be in to survive: a hand-appended key that nobody wrote down is
+dropped by the next rebuild, since production's cloud-init list is empty by design.
+
+That cuts exactly the other way for a key you want **gone**, which is why the operator key has to stay
+out of `admin_authorized_keys.pub` and not merely out of the live `authorized_keys`: a converge reads
+the declared list and re-adds everything on it. Revoking a key on the box while leaving it in the file
+buys you one deploy of safety.
 
 Removal has no such path. The cloud-init loop only ever **appends**, so taking a key out of
 `admin_ssh_pubkeys` revokes nothing on a running droplet: that needs a rebuild, or an edit of
 `authorized_keys` on the box. See [Admin keys are add-only](/limitations/#admin-keys-are-add-only).
 
-:::note[One of these keys belongs to Zimmer's own sessions]
-`zimmer-production-operator` is not an operator's key — it is the identity **agent sessions** hold.
-`OperatorSshKeyProvisioner` writes its private half into the session container, which is what lets an
-`ssh-*` MCP server attached to a session reach these hosts at all. See [the SSH identity an agent
-session holds](/operate/provisioning/#the-ssh-identity-an-agent-session-holds).
+:::note[The key an agent session holds is an *agent's*, not an operator's]
+Since [the session SSH identity landed](/operate/provisioning/#the-ssh-identity-an-agent-session-holds),
+every session container carries the `zimmer-production-operator` private key at
+`~/.ssh/zimmer_operator_ed25519`, and `ssh-*` MCP servers authenticate with it. Which hosts that key
+opens is [the table above](#who-is-authorized-where) — staging, obs, and the CI runner, never the
+production box the session is running on.
 :::
 
 ## Why sshd is configured the way it is

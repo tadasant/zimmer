@@ -19,8 +19,11 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 # the tailnet on :2222 (real OpenSSH; tailnet :22 is Tailscale SSH, which ignores publickey).
 #
 # Put the public key(s) your operators and tooling (e.g. an SSH-based MCP server)
-# use to reach the box here. Authorize the same key on every environment through
-# this one variable so staging and production cannot drift on who can get in.
+# use to reach the box here. This list is STAGING'S ONLY: production's key list lives in
+# the private companion repo (zimmer/admin_authorized_keys.pub) and is converged by its
+# own workflow. Nothing in THIS repo authorizes a key on production.
+#
+# That split is deliberate, and the two lists are NOT meant to match -- see below.
 #
 # FORKING / SELF-HOSTING: replace the keys below with YOUR OWN. A public key is not a
 # secret, but leaving someone else's here authorizes them for root on your droplet, so
@@ -33,22 +36,28 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 #
 # It takes effect on the NEXT droplet creation only -- cloud-init runs once, and the
 # droplet's lifecycle block ignores user_data changes -- so a live box also needs the key
-# appended to /root/.ssh/authorized_keys by hand. See docs/operate/provisioning.md.
+# appended to /root/.ssh/authorized_keys by hand. See docs/operate/ssh-access.md.
 # It is deliberately a SEPARATE keypair from the Kamal deploy key and from the
 # orchestrator's key, so it can be revoked on its own by deleting this one line.
 #
-# Note what that means: a session running ON this host holds a key that is root on this
-# host. That blast radius is accepted (it is the point -- these sessions operate the
-# fleet), and the separate identity is what keeps it revocable.
+# THE OPERATOR KEY IS AUTHORIZED HERE (STAGING) AND DELIBERATELY *NOT* ON PRODUCTION.
+# The sessions that hold it RUN ON production, and this key is root. A session with root on
+# its own host can stop the containers or wipe the catalog out from under the service that
+# is executing it -- self-inflicted, and unrecoverable from inside. Root on production is
+# reserved for humans (break-glass) and for the orchestrator that reaches in from a
+# SEPARATE host, which survives to repair what it breaks. Staging is disposable, so the
+# same key here costs a rebuild at worst -- and reaching staging is the point.
 #
-# `root@local` is THE MAINTAINER'S LAPTOP KEY -- a human's key, in this list on purpose. The
-# other two entries belong to machines: one to the host that runs Zimmer's sessions, one to
-# the sessions themselves. When Zimmer is down, or a deploy is what broke, neither of them is
-# a hand you can put on the box. Tailscale SSH on :22 is the door to reach for first (it needs
-# no key at all); this key is the independent one, a real OpenSSH shell on :2222 held by a
-# person. Production authorizes it too -- its tfvars lives in the private companion repo, so
-# nothing enforces that the lists match and keeping them in step is manual. Do not "clean this
-# up" as a stray personal key.
+# If you are "fixing" a drift between this list and production's: don't. The ONE mismatch
+# that is a control is that the operator key above is here and NOT on production -- never
+# reconcile *that*. See docs/operate/ssh-access.md#who-is-authorized-where.
+#
+# `root@local` is the maintainer's LAPTOP KEY -- a human's key, break-glass only. It is the
+# opposite case from the operator key: a person off-box, not a session on-box, so it is root
+# on production too (that is the recovery path of last resort). Authorizing it on staging as
+# well is not reconciling the control above -- it just gives the same human the same
+# independent OpenSSH-on-:2222 door into staging, for when the tailnet identity path (:22)
+# is the thing that is broken. A public key is not a secret; forks replace all three.
 admin_ssh_pubkeys = [
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEp3tk5RCh76zPddFcoyY01MazsyHnacqo0KrAczCY6 zimmer-production-operator",
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmRanTTxADIQWHp9PZqOAFQX2SVXibTqVXb0D3AtuiU agent-orchestrator-prod-hetzner",
