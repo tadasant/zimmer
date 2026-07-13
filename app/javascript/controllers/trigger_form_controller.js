@@ -9,6 +9,8 @@ export default class extends Controller {
   static targets = [
     "conditionsContainer", "conditionCard", "conditionTypeSelect",
     "slackConfig", "scheduleConfig", "aoEventConfig",
+    "channelSelect", "channelStatus", "channelId", "channelName",
+    "channelManual", "channelManualInput",
     "unitSelect", "dayOfWeekContainer", "timeContainer", "timezoneContainer",
     "scheduleModeRadio", "recurringFields", "oneTimeFields", "scheduledAtInput",
     "destroyField", "conditionNumber",
@@ -17,6 +19,7 @@ export default class extends Controller {
   ]
   static values = {
     slackConfigured: Boolean,
+    channelsUrl: { type: String, default: "/triggers/channels" },
     conditions: Array,
     conditionIndex: { type: Number, default: 0 }
   }
@@ -37,6 +40,9 @@ export default class extends Controller {
       if (checkedRadio) {
         this.updateScheduleModeInCard(card, checkedRadio.value)
       }
+
+      // Lazily load the channel dropdown for any card whose Slack config is already visible
+      this.maybeLoadChannels(card)
     })
   }
 
@@ -61,6 +67,156 @@ export default class extends Controller {
     if (slackConfig) slackConfig.classList.toggle("hidden", type !== "slack")
     if (scheduleConfig) scheduleConfig.classList.toggle("hidden", type !== "schedule")
     if (aoEventConfig) aoEventConfig.classList.toggle("hidden", type !== "ao_event")
+
+    // Lazily load the channel list the first time this card's Slack config is shown
+    if (type === "slack") this.loadChannelsForCard(card)
+  }
+
+  // ── Slack channel dropdown ──────────────────────────────────────────────
+  // The channel list is fetched lazily (only when a Slack condition is shown)
+  // and shared across every condition card via a single cached promise.
+
+  // Load channels for a card only if its Slack config is currently visible.
+  maybeLoadChannels(card) {
+    const slackConfig = card.querySelector("[data-trigger-form-target='slackConfig']")
+    if (slackConfig && !slackConfig.classList.contains("hidden")) {
+      this.loadChannelsForCard(card)
+    }
+  }
+
+  // Populate a card's channel dropdown, fetching the list on first use.
+  loadChannelsForCard(card) {
+    const select = card.querySelector("[data-trigger-form-target='channelSelect']")
+    if (!select || card.dataset.channelsLoaded === "true") return
+    card.dataset.channelsLoaded = "true"
+
+    if (!this.slackConfiguredValue) {
+      this.setChannelStatus(card, "Slack is not configured (SLACK_BOT_TOKEN is missing). Enter a channel ID manually.", true)
+      this.revealManual(card)
+      return
+    }
+
+    this.setChannelStatus(card, "Loading channels…")
+    this.fetchChannels()
+      .then((channels) => {
+        this.populateChannelSelect(card, channels)
+        if (channels.length === 0) {
+          this.setChannelStatus(card, "No channels found. The bot may not have been added to any channels yet — you can enter a channel ID manually.", true)
+          this.revealManual(card)
+        } else {
+          this.setChannelStatus(card, `${channels.length} channel${channels.length === 1 ? "" : "s"} available.`)
+        }
+      })
+      .catch((error) => {
+        this.setChannelStatus(card, `Couldn't load channels: ${error.message}. Enter a channel ID manually.`, true)
+        this.revealManual(card)
+      })
+  }
+
+  // Fetch (and cache) the channel list. Shared across all cards.
+  fetchChannels() {
+    if (!this.channelsPromise) {
+      this.channelsPromise = fetch(this.channelsUrlValue, { headers: { Accept: "application/json" } })
+        .then(async (response) => {
+          const data = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
+          return data.channels || []
+        })
+    }
+    return this.channelsPromise
+  }
+
+  // Render the fetched channels as <option>s, preserving the current selection.
+  populateChannelSelect(card, channels) {
+    const select = card.querySelector("[data-trigger-form-target='channelSelect']")
+    const channelIdField = card.querySelector("[data-trigger-form-target='channelId']")
+    const channelNameField = card.querySelector("[data-trigger-form-target='channelName']")
+    if (!select) return
+
+    const currentId = channelIdField ? channelIdField.value : ""
+    const sorted = channels.slice().sort((a, b) => a.name.localeCompare(b.name))
+
+    let html = '<option value="">— Select a channel —</option>'
+    let found = false
+    sorted.forEach((ch) => {
+      const selected = ch.id === currentId ? " selected" : ""
+      if (ch.id === currentId) found = true
+      const prefix = ch.is_private ? "🔒 " : "#"
+      html += `<option value="${this.escapeAttr(ch.id)}" data-channel-name="${this.escapeAttr(ch.name)}"${selected}>${prefix}${this.escapeHtml(ch.name)}</option>`
+    })
+
+    // Keep a saved channel that is no longer in the accessible list so the
+    // existing trigger is not silently reset to blank.
+    if (currentId && !found) {
+      const savedName = channelNameField ? channelNameField.value : ""
+      const label = savedName ? `#${this.escapeHtml(savedName)}` : this.escapeHtml(currentId)
+      html += `<option value="${this.escapeAttr(currentId)}" data-channel-name="${this.escapeAttr(savedName)}" selected>${label} (not in accessible list)</option>`
+    }
+
+    select.innerHTML = html
+  }
+
+  // Sync the hidden channel_id / channel_name fields from the dropdown selection.
+  handleChannelSelect(event) {
+    const card = event.target.closest("[data-trigger-form-target='conditionCard']")
+    if (!card) return
+
+    const option = event.target.selectedOptions[0]
+    const channelIdField = card.querySelector("[data-trigger-form-target='channelId']")
+    const channelNameField = card.querySelector("[data-trigger-form-target='channelName']")
+    const manualInput = card.querySelector("[data-trigger-form-target='channelManualInput']")
+
+    const id = option ? option.value : ""
+    const label = option ? (option.dataset.channelName || "") : ""
+    if (channelIdField) channelIdField.value = id
+    if (channelNameField) channelNameField.value = label
+    if (manualInput) manualInput.value = id
+  }
+
+  // Toggle the manual channel-ID fallback input.
+  toggleChannelManual(event) {
+    const card = event.target.closest("[data-trigger-form-target='conditionCard']")
+    if (!card) return
+    const manual = card.querySelector("[data-trigger-form-target='channelManual']")
+    if (!manual) return
+
+    const nowHidden = manual.classList.toggle("hidden")
+    if (!nowHidden) {
+      const input = manual.querySelector("[data-trigger-form-target='channelManualInput']")
+      if (input) input.focus()
+    }
+  }
+
+  // Sync the hidden channel_id field from the manual input.
+  handleChannelManualInput(event) {
+    const card = event.target.closest("[data-trigger-form-target='conditionCard']")
+    if (!card) return
+    const channelIdField = card.querySelector("[data-trigger-form-target='channelId']")
+    if (channelIdField) channelIdField.value = event.target.value.trim()
+  }
+
+  revealManual(card) {
+    const manual = card.querySelector("[data-trigger-form-target='channelManual']")
+    if (manual) manual.classList.remove("hidden")
+  }
+
+  setChannelStatus(card, message, isError = false) {
+    const status = card.querySelector("[data-trigger-form-target='channelStatus']")
+    if (!status) return
+    status.textContent = message
+    status.classList.toggle("text-red-500", isError)
+    status.classList.toggle("text-gray-500", !isError)
+  }
+
+  escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+  }
+
+  escapeAttr(value) {
+    return this.escapeHtml(value).replace(/"/g, "&quot;")
   }
 
   // Handle schedule mode change (recurring vs one-time) within a condition card
@@ -194,13 +350,22 @@ export default class extends Controller {
         </div>
 
         <div data-trigger-form-target="slackConfig" class="hidden space-y-3">
-          <div>
+          <div data-trigger-form-target="slackChannelField">
             <label class="block text-sm font-medium text-gray-700 mb-1">Slack Channel <span class="text-red-500">*</span></label>
-            <div class="flex gap-2">
-              <input type="text" name="${name}[configuration][channel_name]" placeholder="Channel name (e.g., eng-ci)" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
-              <input type="text" name="${name}[configuration][channel_id]" placeholder="Channel ID (e.g., C0A6BF8T45R)" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+            <input type="hidden" name="${name}[configuration][channel_id]" data-trigger-form-target="channelId">
+            <input type="hidden" name="${name}[configuration][channel_name]" data-trigger-form-target="channelName">
+            <select data-trigger-form-target="channelSelect"
+                    data-action="change->trigger-form#handleChannelSelect"
+                    class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+              <option value="">— Select a channel —</option>
+            </select>
+            <p data-trigger-form-target="channelStatus" class="mt-1 text-xs text-gray-500"></p>
+            <div data-trigger-form-target="channelManual" class="hidden mt-2">
+              <input type="text" data-trigger-form-target="channelManualInput" data-action="input->trigger-form#handleChannelManualInput" placeholder="Channel ID (e.g., C0A6BF8T45R)" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+              <p class="mt-1 text-xs text-gray-500">Enter the channel ID directly. Find it in the channel's details in Slack, or in the channel URL.</p>
             </div>
-            <p class="mt-1 text-xs text-gray-500">Enter the channel name and ID. Use the Slack API or channel settings to find the ID. For bot_mention, channel is optional (DMs are always monitored).</p>
+            <button type="button" data-action="click->trigger-form#toggleChannelManual" class="mt-1 text-xs text-indigo-600 hover:text-indigo-500">Enter channel ID manually</button>
+            <p class="mt-1 text-xs text-gray-500">For "Bot mention", leave the channel blank to monitor all channels the bot is in (plus DMs).</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Event Type</label>

@@ -26,6 +26,36 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "New Trigger"
   end
 
+  test "new form renders the lazy-loaded channel dropdown instead of free-text name and ID inputs" do
+    get new_trigger_path
+    assert_response :success
+
+    # The Slack channel is now picked from a dropdown, backed by hidden fields.
+    assert_select "select[data-trigger-form-target='channelSelect']", 1
+    assert_select "input[type=hidden][name=?][data-trigger-form-target='channelId']",
+                  "trigger[trigger_conditions_attributes][0][configuration][channel_id]"
+    assert_select "input[type=hidden][name=?][data-trigger-form-target='channelName']",
+                  "trigger[trigger_conditions_attributes][0][configuration][channel_name]"
+
+    # The old free-text channel-name input is gone.
+    assert_select "input[type=text][placeholder=?]", "Channel name (e.g., eng-ci)", false
+  end
+
+  test "edit form pre-selects the saved channel in the dropdown" do
+    trigger = triggers(:enabled_slack_trigger)
+    condition = trigger.trigger_conditions.slack.first
+
+    get edit_trigger_path(trigger)
+    assert_response :success
+
+    # The saved channel is rendered as a pre-selected option so it survives even
+    # before (or without) the async channel list loading.
+    assert_select "select[data-trigger-form-target='channelSelect'] option[selected][value=?]",
+                  condition.channel_id
+    assert_select "input[type=hidden][data-trigger-form-target='channelId'][value=?]",
+                  condition.channel_id
+  end
+
   test "should get new with schedule type" do
     get new_trigger_path(type: "schedule")
     assert_response :success

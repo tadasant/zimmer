@@ -32,21 +32,49 @@
 
   <!-- Slack Configuration -->
   <div data-trigger-form-target="slackConfig" class="<%= 'hidden' unless condition.condition_type == 'slack' %> space-y-3">
-    <div>
+    <div data-trigger-form-target="slackChannelField">
       <label class="block text-sm font-medium text-gray-700 mb-1">Slack Channel <span class="text-red-500">*</span></label>
-      <div class="flex gap-2">
+
+      <!-- Authoritative values submitted to the server. The channel ID is the source
+           of truth at runtime; the name is a display cache the poller self-heals. -->
+      <input type="hidden"
+             name="<%= cf.object_name %>[configuration][channel_id]"
+             value="<%= condition.channel_id %>"
+             data-trigger-form-target="channelId">
+      <input type="hidden"
+             name="<%= cf.object_name %>[configuration][channel_name]"
+             value="<%= condition.channel_name %>"
+             data-trigger-form-target="channelName">
+
+      <!-- Lazy-loaded dropdown of accessible channels (populated by trigger_form_controller.js) -->
+      <select data-trigger-form-target="channelSelect"
+              data-action="change->trigger-form#handleChannelSelect"
+              class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+        <option value="">— Select a channel —</option>
+        <% if condition.channel_id.present? %>
+          <option value="<%= condition.channel_id %>" selected data-channel-name="<%= condition.channel_name %>">
+            <%= condition.channel_name.present? ? "##{condition.channel_name}" : condition.channel_id %>
+          </option>
+        <% end %>
+      </select>
+      <p data-trigger-form-target="channelStatus" class="mt-1 text-xs text-gray-500"></p>
+
+      <!-- Manual channel-ID fallback, shown on toggle or when the list can't be loaded -->
+      <div data-trigger-form-target="channelManual" class="hidden mt-2">
         <input type="text"
-               name="<%= cf.object_name %>[configuration][channel_name]"
-               value="<%= condition.channel_name %>"
-               placeholder="Channel name (e.g., eng-ci)"
-               class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
-        <input type="text"
-               name="<%= cf.object_name %>[configuration][channel_id]"
+               data-trigger-form-target="channelManualInput"
+               data-action="input->trigger-form#handleChannelManualInput"
                value="<%= condition.channel_id %>"
                placeholder="Channel ID (e.g., C0A6BF8T45R)"
                class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+        <p class="mt-1 text-xs text-gray-500">Enter the channel ID directly. Find it in the channel's details in Slack, or in the channel URL.</p>
       </div>
-      <p class="mt-1 text-xs text-gray-500">Enter the channel name and ID. Use the Slack API or channel settings to find the ID. For bot_mention, leave blank to monitor all channels the bot is in (plus DMs).</p>
+
+      <button type="button"
+              data-action="click->trigger-form#toggleChannelManual"
+              class="mt-1 text-xs text-indigo-600 hover:text-indigo-500">Enter channel ID manually</button>
+
+      <p class="mt-1 text-xs text-gray-500">For "Bot mention", leave the channel blank to monitor all channels the bot is in (plus DMs).</p>
     </div>
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">Event Type</label>

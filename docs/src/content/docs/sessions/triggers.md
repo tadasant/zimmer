@@ -36,6 +36,17 @@ flowchart LR
 Polls a channel for `new_message` or `bot_mention`. Optionally scoped to a thread (`thread_ts`)
 and an allowlist of user IDs.
 
+#### Picking the channel
+
+In the triggers form the Slack channel is chosen from a dropdown that lazily loads the channels the
+bot can see — `GET /triggers/channels`, backed by Slack's `conversations.list` — the first time a
+Slack condition is shown, rather than on every page load. Selecting a channel stores its
+`channel_id` (the value the poller keys on) under the hood and saves the human-readable
+`channel_name` alongside it as a display cache. If the list can't be loaded — Slack unconfigured, an
+API error, or a workspace the bot isn't in — the form falls back to a manual channel-ID input so a
+trigger can still be created, and a saved channel that is no longer in the accessible list is kept
+selected rather than silently blanked.
+
 #### Who may trigger a `bot_mention`
 
 Three layers, most specific first:
