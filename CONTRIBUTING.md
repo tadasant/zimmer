@@ -5,13 +5,16 @@ an internal orchestrator, so expect some rough edges.
 
 ## How to contribute: issues, not pull requests
 
-Zimmer is maintained as a single circle of trust, so **it does not accept pull
-requests** — every change lands through the maintainer, and PRs opened against this
-repo are closed unmerged with a friendly pointer back to this policy. It's not
-personal; it keeps the project coherent.
+Zimmer *is* a software factory — a system for shipping reviewed, CI-green code by
+running agent sessions against a repo. Feature work on Zimmer is done through that
+factory, so **it doesn't accept pull requests**: a patch that arrives out of band
+hasn't been through the pipeline that makes changes here trustworthy, and merging it
+would mean redoing that work by hand. PRs opened against this repo are closed unmerged
+with a friendly pointer back to this policy. It's not personal — it's just easier and
+safer to feed the factory than to bypass it.
 
-The most useful thing you can send is a **detailed issue**, and those are triaged
-quickly:
+The most useful thing you can send is a **detailed issue** — the work order the factory
+runs from. Those are triaged quickly:
 
 - 🐞 **[Report a bug](https://github.com/tadasant/zimmer/issues/new?template=bug_report.yml)** — exact reproduction steps, real output, impact, and version.
 - 💡 **[Request a feature](https://github.com/tadasant/zimmer/issues/new?template=feature_request.yml)** — the problem, a concrete proposal, and any precedent in the repo.
