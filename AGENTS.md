@@ -87,9 +87,13 @@ The app reads all six through `AirCatalogService` (which shells out to
 
 Two rules worth internalizing before you touch them:
 
-- **Only Zimmer-specific skills belong in `skills/`.** Generic workflow skills
-  (`pr`, `wait-for-ci`, …) come from the orchestrator's default skill set;
-  duplicating one here collides on shortname and AIR hard-fails the whole resolve.
+- **The catalog is the only source of skills — vendor what you need.** Zimmer's
+  catalog is self-contained and single-scope (everything resolves under `@local/`),
+  so a standalone install inherits nothing from an outside orchestrator. Generic
+  workflow skills (`pr`, `wait-for-ci`, `recover-from-compaction-thrashing`) are
+  vendored into `skills/` under the `workflow` category, alongside the
+  Zimmer-specific ones under `zimmer`. With one scope there is no cross-scope
+  shortname collision to fear — but do not register the same id twice.
 - **No dangling references.** A skill/MCP/hook/plugin/root reference to something
   that does not exist makes AIR drop it, which `AirCatalogService` treats as a
   failed resolve — degrading the app to a stale snapshot and failing the test
