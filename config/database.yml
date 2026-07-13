@@ -10,13 +10,14 @@
 default: &default
   adapter: postgresql
   encoding: unicode
-  # The connection pool must cover the worker's GoodJob scheduler threads
-  # (agents:16 + pollers:3 + triggers:2 + default:4 = 25) plus GoodJob's
-  # persistent notifier connection and transient cron/main-thread usage.
-  # Fallback default is 28 (25 threads + ~3 overhead). Ample headroom exists on
-  # the server (Postgres max_connections=100, typical usage ~22). Set
-  # RAILS_MAX_THREADS to override (it also sizes Puma's web thread pool).
-  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 28 } %>
+  # Derived, never a literal. Zimmer runs two roles (`web`, `worker`) against two
+  # databases (`primary`, `cable`), and those four pools have four different right
+  # answers -- a single flat number is correct for at most one of them and overcommits
+  # the rest against a database with a hard connection ceiling. ConnectionBudget
+  # (config/connection_budget.rb) derives each from Puma's threads and GoodJob's
+  # scheduler threads, and states the server-side budget the whole deployment needs.
+  # Read it before changing anything here.
+  pool: <%= ConnectionBudget.primary_pool %>
   host: <%= ENV.fetch("DATABASE_HOST", "localhost") %>
   port: <%= ENV.fetch("DATABASE_PORT", "5432") %>
   username: <%= ENV.fetch("DATABASE_USERNAME", ENV['USER']) %>
@@ -34,6 +35,9 @@ development:
   cable:
     <<: *default
     database: zimmer_development_cable
+    # Deliberately not the primary pool's size: solid_cable takes no advisory lock, so a
+    # cable connection is leased per INSERT rather than held for a job. See ConnectionBudget.
+    pool: <%= ConnectionBudget.cable_pool %>
     migrations_paths: db/cable_migrate
 
 # Warning: The database defined as "test" will be erased and
@@ -46,6 +50,9 @@ test:
   cable:
     <<: *default
     database: zimmer_test_cable
+    # Deliberately not the primary pool's size: solid_cable takes no advisory lock, so a
+    # cable connection is leased per INSERT rather than held for a job. See ConnectionBudget.
+    pool: <%= ConnectionBudget.cable_pool %>
     migrations_paths: db/cable_migrate
 
 staging:
@@ -55,6 +62,9 @@ staging:
   cable:
     <<: *default
     database: zimmer_staging_cable
+    # Deliberately not the primary pool's size: solid_cable takes no advisory lock, so a
+    # cable connection is leased per INSERT rather than held for a job. See ConnectionBudget.
+    pool: <%= ConnectionBudget.cable_pool %>
     migrations_paths: db/cable_migrate
 
 production:
@@ -64,4 +74,7 @@ production:
   cable:
     <<: *default
     database: zimmer_production_cable
+    # Deliberately not the primary pool's size: solid_cable takes no advisory lock, so a
+    # cable connection is leased per INSERT rather than held for a job. See ConnectionBudget.
+    pool: <%= ConnectionBudget.cable_pool %>
     migrations_paths: db/cable_migrate

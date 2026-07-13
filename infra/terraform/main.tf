@@ -184,21 +184,78 @@ variable "managed_db_cluster_name" {
   EOT
 }
 
+variable "app_required_backends" {
+  type        = number
+  default     = 87
+  description = <<-EOT
+    Client backends the database must be able to serve for a deploy of this app to be
+    safe. It is NOT a free parameter: it is what `ConnectionBudget.required_backends`
+    (config/connection_budget.rb) derives from Puma's threads, GoodJob's scheduler
+    threads, the cable pools, and a x2 allowance for the window in which Kamal runs the
+    old and new containers side by side. test/config/connection_budget_test.rb asserts
+    this default still equals that derivation, so the two cannot drift.
+
+    Raise the app's thread counts and this number goes up; the postcondition below then
+    refuses to plan against a cluster whose PLAN cannot serve it, which is the failure
+    the app itself cannot detect (an ActiveRecord pool is a promise, and it is lazy --
+    an overcommitted app looks healthy until traffic calls the promise in).
+  EOT
+}
+
 # ---- Managed database (read-only reference) ----------------------------------
 #
-# Still a DATA SOURCE in this phase. Promoting it to a managed resource (with
-# prevent_destroy + a one-time `terraform import`) is a production-only change that
-# lands with the prod cutover; staging never uses a managed cluster, so nothing
-# here depends on it. A data source has no destroy path, so Terraform can never
-# delete, replace, or resize the one irreplaceable resource in the system.
+# A DATA SOURCE, on purpose: it has no destroy path, so Terraform can never delete,
+# replace, or resize the one irreplaceable resource in the system. Staging never uses a
+# managed cluster (it runs a throwaway Postgres accessory on the droplet), so nothing
+# here applies to it.
+#
+# The trade-off is that Terraform cannot RESIZE the cluster either -- so it does the
+# next best thing and refuses to proceed against one that is too small. The plan slug
+# fixes the connection ceiling (DigitalOcean allots 25 connections per GiB of RAM and
+# reserves 3), and a cluster whose ceiling is under the app's budget cannot serve the
+# app: the pools are promises Postgres will decline, as FATAL "remaining connection
+# slots are reserved for roles with the SUPERUSER attribute" -- an HTTP 500, not a
+# queue. Resizing is an in-place operator action (`doctl databases resize`); this
+# postcondition is what makes skipping it impossible to miss.
 data "digitalocean_database_cluster" "pg" {
   count = var.managed_db_cluster_name == "" ? 0 : 1
   name  = var.managed_db_cluster_name
+
+  lifecycle {
+    postcondition {
+      condition = lookup(local.do_pg_usable_backends, self.size, 0) >= var.app_required_backends
+      error_message = join("", [
+        "Managed Postgres cluster '${var.managed_db_cluster_name}' is on plan '${self.size}', which serves ",
+        "${lookup(local.do_pg_usable_backends, self.size, 0)} client backends. Zimmer commits to ",
+        "${var.app_required_backends} (see config/connection_budget.rb). Resize the cluster to a plan that ",
+        "covers the budget -- `doctl databases resize <cluster-id> --size db-s-2vcpu-4gb --num-nodes 1` -- or ",
+        "lower the app's thread counts (GOOD_JOB_AGENTS_THREADS is the big one) and app_required_backends with ",
+        "it. If the plan slug is simply missing from local.do_pg_usable_backends, add it there.",
+      ])
+    }
+  }
 }
 
 # ---- Locals -----------------------------------------------------------------
 
 locals {
+  # Client backends each DigitalOcean Managed Postgres plan can serve: DO allots 25
+  # connections per GiB of RAM and reserves 3 for its own superuser maintenance, so the
+  # app only ever sees (25 * GiB) - 3. The ceiling is a property of the PLAN -- it is
+  # not in DO's tunable Postgres config surface, and it is not something a connection
+  # pool can conjure (a DO PgBouncer pool's backends are allotted OUT of this same
+  # number). Growing it means changing the plan.
+  # https://docs.digitalocean.com/products/databases/postgresql/details/limits/
+  do_pg_usable_backends = {
+    "db-s-1vcpu-1gb"   = 22
+    "db-s-1vcpu-2gb"   = 47
+    "db-s-2vcpu-4gb"   = 97
+    "db-s-4vcpu-8gb"   = 197
+    "db-s-6vcpu-16gb"  = 397
+    "db-s-8vcpu-32gb"  = 797
+    "db-s-16vcpu-64gb" = 997 # DO caps the limit at 997 on the largest plans
+  }
+
   # The tailnet MagicDNS name you browse to. Production is simply `zimmer`
   # (http://zimmer); every other environment is suffixed (http://zimmer-staging).
   tailnet_hostname = var.environment == "production" ? "zimmer" : "zimmer-${var.environment}"
@@ -359,4 +416,16 @@ output "managed_db_host" {
 
 output "managed_db_port" {
   value = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].port : null
+}
+
+# The connection headroom the app is running on, so it is visible in `terraform output`
+# rather than something you rediscover from a 500. Null on staging (no managed cluster;
+# its Postgres accessory runs at the postgres:16 default of max_connections=100, which
+# leaves the same 97 usable backends as the db-s-2vcpu-4gb plan).
+output "managed_db_usable_backends" {
+  value = local.use_managed_db ? lookup(local.do_pg_usable_backends, data.digitalocean_database_cluster.pg[0].size, 0) : null
+}
+
+output "app_required_backends" {
+  value = var.app_required_backends
 }

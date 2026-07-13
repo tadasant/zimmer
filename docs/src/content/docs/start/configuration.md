@@ -72,8 +72,14 @@ not in Terraform — Terraform only provisions the host.
 
 ### Concurrency and logging
 
-`WEB_CONCURRENCY`, `RAILS_MAX_THREADS`, `GOOD_JOB_MAX_THREADS`, `REDIS_POOL_SIZE`,
-`RAILS_LOG_LEVEL`, `PIDFILE`, `PROCESS_*`.
+`WEB_CONCURRENCY`, `RAILS_MAX_THREADS`, `REDIS_POOL_SIZE`, `RAILS_LOG_LEVEL`, `PIDFILE`, `PROCESS_*`.
+
+Worker concurrency is per queue: `GOOD_JOB_AGENTS_THREADS`, `GOOD_JOB_POLLERS_THREADS`,
+`GOOD_JOB_TRIGGERS_THREADS`, `GOOD_JOB_DEFAULT_THREADS`. Each of those threads can hold a database
+connection for the whole life of a job, so they size the ActiveRecord pool too — raising one raises
+the number of connections the database must be able to serve. `DB_POOL` and `CABLE_DB_POOL` override
+the derived pools directly, but read [the connection
+budget](/operate/deploying/#the-database-connection-budget) before you do.
 
 ### Observability
 

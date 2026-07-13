@@ -66,7 +66,7 @@ Rails.application.configure do
 
   # GoodJob configuration for production
   # Use :external mode - requires separate worker process
-  config.good_job.execution_mode = :external
+  config.good_job.execution_mode = ConnectionBudget.execution_mode
 
   # Queue configuration with thread allocation (configurable via ENV):
   # - agents: Long-running AgentSessionJob instances
@@ -76,15 +76,15 @@ Rails.application.configure do
   #     scheduled wakes are never starved behind the `default` queue's periodic/
   #     bulk backlog (heartbeat sweeps, Slack polling, cleanup, etc.).
   # - default: Everything else - cleanup, title generation, etc.
-  # Total scheduler threads must stay within the DB connection pool
-  # (config/database.yml `pool`), which is the real ceiling — not max_threads
-  # (a per-scheduler fallback used only for queues without an explicit count).
-  agents_threads = ENV.fetch("GOOD_JOB_AGENTS_THREADS", 16).to_i
-  pollers_threads = ENV.fetch("GOOD_JOB_POLLERS_THREADS", 3).to_i
-  triggers_threads = ENV.fetch("GOOD_JOB_TRIGGERS_THREADS", 2).to_i
-  default_threads = ENV.fetch("GOOD_JOB_DEFAULT_THREADS", 4).to_i
-  config.good_job.queues = "agents:#{agents_threads};pollers:#{pollers_threads};triggers:#{triggers_threads};default:#{default_threads}"
-  config.good_job.max_threads = ENV.fetch("GOOD_JOB_MAX_THREADS", 24).to_i
+  #
+  # Every scheduler thread here can be executing a job, and an executing GoodJob job
+  # holds a database connection for its whole duration (its advisory lock is
+  # session-scoped). So these counts ARE the worker's connection demand, and they come
+  # from ConnectionBudget -- the same derivation that sizes the pool in database.yml
+  # and the server-side budget Terraform enforces. Raise a queue's ENV knob and the
+  # pool that has to serve it moves with it.
+  config.good_job.queues = ConnectionBudget.good_job_queues
+  config.good_job.max_threads = ConnectionBudget.good_job_max_threads
   config.good_job.enable_cron = true
   config.good_job.enable_dashboard = true
   config.good_job.cron = {

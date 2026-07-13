@@ -8,6 +8,11 @@ require "good_job/engine"
 # you've limited to :test, :development, or :production.
 Bundler.require(*Rails.groups)
 
+# Sizes every ActiveRecord pool (config/database.yml) and every GoodJob scheduler
+# (config/environments/*.rb) from one derivation, so a thread count and the pool that
+# has to serve it cannot drift apart. Not autoloaded: database.yml reads it.
+require_relative "connection_budget"
+
 module Zimmer
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
