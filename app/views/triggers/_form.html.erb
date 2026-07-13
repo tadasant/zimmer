@@ -1,6 +1,7 @@
 <%= form_with model: trigger, class: "space-y-6 p-6", data: {
   controller: "trigger-form mcp-server-select goal skills-select hooks-select plugins-select",
   trigger_form_slack_configured_value: @slack_configured,
+  trigger_form_channels_url_value: channels_triggers_path,
   trigger_form_conditions_value: trigger.trigger_conditions.map { |c| { id: c.id, condition_type: c.condition_type, configuration: c.configuration } }.to_json,
   mcp_server_select_servers_value: @servers_for_select.to_json,
   mcp_server_select_agent_root_defaults_value: @agent_root_mcp_servers.to_json,
