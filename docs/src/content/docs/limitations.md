@@ -194,6 +194,28 @@ root password**, which mails a new one *and* force-expires it again (`lastchg=0`
 buys you a console also re-breaks `:2222` until the next staging deploy converges it, or until
 `scripts/clear-root-password-expiry.sh` is run against the box.
 
+### Rebuilding staging costs a Let's Encrypt issuance, and there are only five a week
+
+The custom-domain cert lives in exactly one place: on the droplet, pushed there by
+[`domain-cert-staging`](/operate/deploying/#custom-domain-https-over-the-tailnet). A
+`recreate_droplet` rebuild destroys the box, and with it the cert — so the chained cert job has to
+issue a **fresh** one every single time. Let's Encrypt allows five certificates per exact set of
+identifiers per 168 hours. The sixth rebuild in a week gets:
+
+```text
+acme: error: 429 :: urn:ietf:params:acme:error:rateLimited :: too many certificates (5) already
+issued for this exact set of identifiers in the last 168h0m0s
+```
+
+Nothing about the droplet is wrong when this happens: cloud-init ran, Kamal deployed, the app answers
+on the tailnet, and the `domain -> tailnet IP` A record is updated (the script upserts DNS *before* it
+touches ACME). What is missing is TLS — `https://staging.zimmer.tadasant.com` fails to handshake until
+the window rolls forward and `domain-cert-staging` is re-run. Reach the box by tailnet IP or MagicDNS
+in the meantime.
+
+So rebuilds are cheap, but not free: the fifth one in a week is the last that gets a cert. If you
+expect several in a day — chasing a cloud-init change, say — count them.
+
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 
 `production.rb` builds the cache store as `"#{ENV["REDIS_URL"]}/0"`, so a `REDIS_URL` that already ends
