@@ -89,6 +89,12 @@ class RuntimeConfigPostProcessor
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
 
+    # Nothing injected means no Zimmer entry needs retarget/secret resolution: this
+    # path runs only for a session with blank mcp_servers/skills/hooks/plugins, so
+    # no catalog `zimmer` entry (which arrives via default_mcp_servers → the
+    # post_process! branch) can be present for inject_subagent_server! to skip over.
+    # A catalog entry that DID reach here would be left un-retargeted by this early
+    # return — but by construction one cannot.
     return if injected_mcp_servers.empty?
 
     retarget_zimmer_servers_to_current_env!(servers)
@@ -179,11 +185,33 @@ class RuntimeConfigPostProcessor
   # subagent sessions without explicitly listing a Zimmer MCP server in
   # default_mcp_servers. The entry is full-surface (no tool_groups), which is why
   # it also satisfies the self-session dedup below.
+  #
+  # Defensive against a name collision, mirroring SelfSessionInjector's dedup: if
+  # the catalog already supplies a `zimmer` entry, leave it alone. In the native
+  # MCP world every Zimmer variant is the SAME URL differentiated only by query
+  # param, so blindly writing servers["zimmer"] would overwrite a catalog-provided
+  # full-surface entry with our root-restricted one — silently narrowing
+  # start_session's allowed_agent_roots with no error. Skipping keeps
+  # start_session's full root surface, and retargeting still points the surviving
+  # entry at the current instance.
+  #
+  # This trusts the catalog's naming convention: the bare `zimmer` key is reserved
+  # for the unrestricted, full-surface server, while scoped variants are named
+  # `zimmer-*` (see mcp.json). So an entry under this exact key is at least as
+  # capable as the one we would inject. A plain key check is therefore enough —
+  # unlike the self-session dedup, which must inspect tool_groups because it
+  # matches every `zimmer*` name, not one reserved key.
   def inject_subagent_server!(servers)
     root = find_root
     return unless root&.default_subagent_roots&.any?
 
     name = SelfSessionInjector::SUBAGENT_SERVER_NAME
+    if servers.key?(name)
+      Rails.logger.info "[#{self.class.name}] Skipping subagent Zimmer server injection: " \
+        "a catalog-provided '#{name}' entry is already present."
+      return
+    end
+
     servers[name] = build_http_entry(
       url: self_session_injector.endpoint_url(allowed_agent_roots: root.default_subagent_roots.join(",")),
       headers: self_session_injector.headers
