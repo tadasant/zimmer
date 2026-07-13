@@ -51,7 +51,6 @@ each artifact's own entry.
 | `catalog-mgmt-configs` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-proctor` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-save` | ❌ | ↳ subagent phase | same |
-| `tadasant-internal` | ✅ | `tadasant/tadasant-internal` | Scoped to `zimmer` — the production deployment layer |
 
 :::danger[Seven roots point at a repository that does not exist]
 `agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*` phases all
@@ -71,7 +70,7 @@ distinct locations. That is its own change.
 as the `zimmer` root — so the two are already indistinguishable in a picker.
 
 **The roots that actually work today:** `zimmer`, `zimmer-router` (the quick-router target),
-`general-agent` (the default), and `tadasant-internal`.
+and `general-agent` (the default).
 Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 :::
 

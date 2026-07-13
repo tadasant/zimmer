@@ -67,7 +67,7 @@ post to a channel it is not in — that is the usual way this breaks, and it sur
 alerts SLACK_BOT_TOKEN (Tadasant)"**.
 
 What each repo needs is the two secrets. `tadasant` is a personal GitHub account, not an org, so
-there are **no org-level secrets** — `zimmer`, `tadasant-internal` and `strad` each need their own
+there are **no org-level secrets** — every repo that runs this alerting workflow needs its own
 copy, under **Settings → Secrets and variables → Actions → New repository secret**:
 
 | Secret | Value |

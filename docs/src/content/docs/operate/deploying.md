@@ -100,8 +100,8 @@ gets an unroutable address — same tailnet-only exposure as the MagicDNS name, 
 
 :::note[Turning it on]
 Mint a Cloudflare API token scoped to `Zone:DNS:Edit + Zone:Zone:Read` on the parent zone only, add it
-as the `CLOUDFLARE_API_TOKEN` Actions secret (staging → `tadasant/zimmer`, production →
-`tadasant/tadasant-internal`), set `domain` in the environment's tfvars, deploy, then run the
+as the `CLOUDFLARE_API_TOKEN` Actions secret (on staging → `tadasant/zimmer`; on production →
+your private production repo), set `domain` in the environment's tfvars, deploy, then run the
 `domain-cert-*` workflow once (`workflow_dispatch`) to issue the first cert. The weekly schedule renews
 thereafter — a no-op unless the cert is missing, self-signed, wrong-name, or within 30 days of expiry, so
 it issues only ~every 60 days. `domain=""` renders byte-identically to the plain-HTTP setup, so existing
@@ -189,9 +189,9 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 
 When **any** workflow in this repo fails on `main`, `alert-ci-failure.yml` posts the
 repo, the workflow, the commit subject, the author and a link to the run into **#alerts**
-in the Tadasant Slack workspace. `tadasant-internal` and `strad` carry the identical
-listener under the identical secret names; the three are meant to stay symmetric, so
-change them together.
+in the Tadasant Slack workspace. Any of your other repos can carry the identical
+listener under the identical secret names; if so, keep them symmetric and change them
+together.
 
 It listens with `workflows: ["*"]`, which matches every workflow in the repo — so a
 workflow added later is covered the day it lands, with nobody having to remember to wire
