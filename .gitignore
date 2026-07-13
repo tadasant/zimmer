@@ -55,8 +55,12 @@
 /config/credentials/production.key
 /config/credentials/test.key
 
-.claude/*
-!.claude/skills/
+# Zimmer injects .claude/ into each session clone at prepare time (skills, hooks,
+# .mcp.json, ${SECRET} substitutions). It is runtime state, never source — do not
+# commit it. Generic skills like `pr` / `wait-for-ci` ship from the orchestrator's
+# default skill set; Zimmer-specific skills live in the top-level AIR catalog
+# (skills/, references/, …), not here.
+.claude/
 node_modules/
 
 # Runtime stderr capture from the Claude Code harness
