@@ -14,20 +14,39 @@ sidebar:
 | `lint` | `bin/rubocop -f github --parallel` |
 | `security` | `bin/brakeman --no-pager -q` |
 | `verify_lockfile` | `bundle lock` then `git diff --exit-code Gemfile.lock` |
-| `test` | `bin/rails test` — Postgres 16 + Redis 7 service containers |
+| `test-unit` | `bin/rails test` — unit + integration; Postgres 16 + Redis 7 service containers |
+| `test-system` | `bin/rails test:system` — the Chrome-driven browser suite; `PARALLEL_WORKERS=1` |
 | `retention_logic` | `ruby scripts/ghcr_retention_test.rb` (pure Ruby, no Rails boot) |
 | `docs_site` | Builds this documentation site |
+| `all-checks-pass` | Aggregate gate — `needs:` every job above and fails if any failed or was cancelled |
+
+## The single branch-protection gate
+
+`all-checks-pass` is the one status check to require under **Settings → Branches → main**, instead
+of enumerating every job. It runs with `if: ${{ always() }}` (so a failed dependency can't leave it
+perpetually "skipped" and block the branch), fails if any dependency reported `failure` or
+`cancelled`, and treats a `skipped` dependency — the fork-guarded jobs skip on fork PRs — as neither
+a pass nor a failure.
+
+## The browser suite runs
+
+`test-system` runs `test/system/*.rb` through Capybara + Selenium against headless Chromium. It is a
+separate job from `test-unit` because `bin/rails test` does not descend into `test/system`, because
+the shared runner has a companion system-test semaphore keyed on the `test-system` job name, and
+because it pins `PARALLEL_WORKERS=1` — the persistent per-worker `--user-data-dir` in
+`test/application_system_test_case.rb` does not tolerate concurrent Chrome instances. Chrome is
+assumed pre-provisioned on the runner; the CI branch of that file points Selenium at
+`/usr/bin/chromium-browser` with `--no-sandbox`. This closes
+[#87](https://github.com/tadasant/zimmer/issues/87).
 
 ## What CI does not run
 
-:::danger[System tests are excluded from CI]
-The `test` job's own step name says it: *"Run tests (unit + integration; system tests excluded)."*
-
-The browser suite never runs on a pull request. Combined with the fact that four of the ten open
-issues are UI regressions (#12 undo toast, #13 drag order, #14 full page reloads, #15 no per-card
-refresh), this is the obvious hole in the safety net. Those bugs are exactly the class a system test
-would have caught. Tracked in [#87](https://github.com/tadasant/zimmer/issues/87).
-:::
+The Playwright scripts under `test/e2e/*.js` (`account_rotation`, `chat_bubble`, `joystick_menu`,
+`skills_catalog`) are **not** run in CI — the AO parent never ran them either. They are standalone
+runners that need a Playwright browser the runner is not provisioned for, and
+`account_rotation_test.js` drives the real Claude Code binary against a mock Anthropic server. The
+`test-system` job covers the overlapping UI through the Ruby browser suite. Tracked in
+[#162](https://github.com/tadasant/zimmer/issues/162).
 
 ## Tests that skip themselves
 
@@ -39,6 +58,7 @@ Several tests `skip` when a credential or file is absent — which in CI means t
 | `secrets_loader_test.rb:158` | "Credentials key not available (CI environment)" |
 | `references_config_test.rb:79` | "references directory not found" |
 | `air_catalog_ref_rewriter_test.rb:190,198` | "air.production.json not present" / "no `github://` catalogs to pin" |
+| `sessions_test.rb` "changing agent root updates MCP server selection…" | Needs **two** agent roots with `default_mcp_servers`. Only `playwright-custom` declares `default_in_roots` (→ `zimmer`), so exactly one root qualifies and the test always skips — the root→MCP-defaults switch has no system coverage. |
 
 That last pair means the catalog-pinning feature has zero CI coverage — the code path exists,
 the tests exist, and neither runs. Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).

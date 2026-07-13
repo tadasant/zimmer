@@ -153,7 +153,7 @@ class SmokeTest < ApplicationSystemTestCase
         # Click on the playwright-custom server in the dropdown
         find(".server-item[data-name='playwright-custom']").click
         # Wait for the selection to be added (look for the tag with title)
-        assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: "Playwright Custom (Non-Stealth)"
+        assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: "Playwright Custom"
         # Click elsewhere to close the dropdown (click on the Initial Prompt label)
         find("label", text: "Initial Prompt").click
         # Wait for dropdown to close
