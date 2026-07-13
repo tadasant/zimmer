@@ -15,11 +15,15 @@ namespace :db do
 
     puts "Zimmer connection budget (#{Rails.env})"
     puts "-" * 60
-    puts format("  web process          %3d  (puma %d + overhead %d, cable %d)",
-                ConnectionBudget.web_connections, Integer(ENV.fetch("RAILS_MAX_THREADS", 3)),
-                ConnectionBudget::PROCESS_OVERHEAD, ConnectionBudget.cable_pool)
-    puts format("  worker process       %3d  (goodjob %d + utility %d + overhead %d, cable %d, notifier %d)",
-                ConnectionBudget.worker_connections, ConnectionBudget.good_job_scheduler_threads,
+    # Every number below comes from ConnectionBudget, including the env parsing. This task
+    # gets run during an incident; a task that raises on a stray empty env var is worse
+    # than no task at all.
+    puts format("  web process          %3d  (primary %d, cable %d)",
+                ConnectionBudget.web_connections, ConnectionBudget.deployed_web_primary_pool,
+                ConnectionBudget.cable_pool)
+    puts format("  worker process       %3d  (primary %d = goodjob %d + utility %d + overhead %d, cable %d, notifier %d)",
+                ConnectionBudget.worker_connections, ConnectionBudget.deployed_worker_primary_pool,
+                ConnectionBudget.good_job_scheduler_threads,
                 ConnectionBudget::GOOD_JOB_UTILITY_THREADS, ConnectionBudget::PROCESS_OVERHEAD,
                 ConnectionBudget.cable_pool, ConnectionBudget::GOOD_JOB_NOTIFIER_CONNECTIONS)
     puts format("  committed (steady)   %3d", ConnectionBudget.committed_connections)

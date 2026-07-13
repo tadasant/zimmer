@@ -195,10 +195,18 @@ variable "app_required_backends" {
     old and new containers side by side. test/config/connection_budget_test.rb asserts
     this default still equals that derivation, so the two cannot drift.
 
-    Raise the app's thread counts and this number goes up; the postcondition below then
-    refuses to plan against a cluster whose PLAN cannot serve it, which is the failure
-    the app itself cannot detect (an ActiveRecord pool is a promise, and it is lazy --
-    an overcommitted app looks healthy until traffic calls the promise in).
+    Change the app's DEFAULTS (config/connection_budget.rb) and this number moves with
+    them, because the test forces it to. The postcondition below then refuses to plan
+    against a cluster whose PLAN cannot serve it -- the failure the app itself cannot
+    detect, since an ActiveRecord pool is a promise, and a lazy one: an overcommitted app
+    looks healthy until traffic calls the promise in.
+
+    KNOW THE GAP: Terraform sees the repo, not the container. Raising a thread count
+    through the ENVIRONMENT instead (GOOD_JOB_AGENTS_THREADS, DB_POOL, ... in
+    config/deploy.*.yml) moves the app's real promise while this default -- and therefore
+    this check -- keeps validating the old one. Nothing here sets those today. The runtime
+    check that DOES see them is `bin/rails db:connection_budget`, which reads the actual
+    process env and the actual server.
   EOT
 }
 
