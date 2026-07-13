@@ -1,9 +1,9 @@
 # Operator SSH Key Initializer
 #
 # Materializes the operator SSH private key (ZIMMER_OPERATOR_SSH_KEY) at
-# ~/.ssh/id_ed25519 when the container boots, so an SSH identity exists before the
-# first session spawns — and so `docker exec … ssh …` works for a human debugging
-# the box the same way it works for an agent.
+# ~/.ssh/zimmer_operator_ed25519 when the container boots, so an SSH identity exists
+# before the first session spawns — and so `docker exec … ssh -i …` works for a human
+# debugging the box the same way it works for an agent.
 #
 # CliSpawnEnv#apply_operator_ssh_key re-runs the same (idempotent) provisioning at
 # every spawn, which is what actually guarantees the key for a session. This boot
