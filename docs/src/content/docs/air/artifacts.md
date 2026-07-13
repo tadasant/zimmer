@@ -36,8 +36,9 @@ A markdown document that many skills can share. Broken out from skills deliberat
 (your git workflow, your engineering conventions) shouldn't be copy-pasted into every skill that
 needs it.
 
-Zimmer's catalog ships exactly one: `engineering-practices` →
-`references/ENGINEERING_PRACTICES.md`.
+Zimmer's catalog ships four: `engineering-practices`, `brand`, `brand-voice`, and
+`anti-slop-rubric`, mapping to `references/ENGINEERING_PRACTICES.md`, `BRAND.md`,
+`BRAND_VOICE.md`, and `ANTI_SLOP_RUBRIC.md`. The `sync-docs` skill declares the last three.
 
 At prepare time, each skill's declared references are bundled into
 `.claude/skills/<skill-id>/references/`.
