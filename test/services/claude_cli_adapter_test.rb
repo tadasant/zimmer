@@ -1992,6 +1992,19 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_nil env_vars["SSH_PRIVATE_KEY_PATH"]
   end
 
+  test "spawn_process unsets ZIMMER_OPERATOR_SSH_KEY so the agent never sees the key material" do
+    original = ENV["ZIMMER_OPERATOR_SSH_KEY"]
+    ENV["ZIMMER_OPERATOR_SSH_KEY"] = "c2VjcmV0LWtleS1tYXRlcmlhbA=="
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert env_vars.key?("ZIMMER_OPERATOR_SSH_KEY"), "expected the var to be explicitly unset in the child"
+    assert_nil env_vars["ZIMMER_OPERATOR_SSH_KEY"]
+  ensure
+    original.nil? ? ENV.delete("ZIMMER_OPERATOR_SSH_KEY") : ENV["ZIMMER_OPERATOR_SSH_KEY"] = original
+  end
+
   test "spawn_process respects an explicit SSH_PRIVATE_KEY_PATH from the session .env" do
     File.write(File.join(@test_dir, ".env"), "SSH_PRIVATE_KEY_PATH=/custom/key\n")
     OperatorSshKeyProvisioner.expects(:ensure!).never

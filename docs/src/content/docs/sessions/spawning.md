@@ -75,6 +75,8 @@ Shared scrubbing (`CliSpawnEnv`):
   the session authenticates with, when one is configured. The key file is written by
   `OperatorSshKeyProvisioner`; this exports its path, because an `ssh-*` MCP server looks for
   `SSH_AUTH_SOCK` and `SSH_PRIVATE_KEY_PATH` and nowhere else. A value in the clone's `.env` wins.
+  (Claude's stdio MCP servers inherit the variable from the CLI; Codex's do not, so the Codex
+  post-processor forwards it explicitly through `env_vars`.)
 
 Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH=false` (baseline; the `mcp_tool_search`
 extension flips it), `CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,

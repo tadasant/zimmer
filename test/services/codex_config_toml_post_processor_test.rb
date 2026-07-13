@@ -89,6 +89,42 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "Non-secret host-env var must remain in env_vars for Codex to forward at launch"
   end
 
+  # Codex does not hand a stdio MCP server its own environment the way Claude Code does:
+  # it builds the child env from a fixed whitelist (HOME, PATH, LANG, …) plus exactly the
+  # vars the entry names in `env_vars`. SSH_PRIVATE_KEY_PATH is in neither, so without
+  # this forwarding an ssh-* server under a Codex session would still see no key — the
+  # bug OperatorSshKeyProvisioner exists to fix, fixed only for Claude.
+  test "post_process! forwards SSH_PRIVATE_KEY_PATH to stdio servers when an operator key is provisioned" do
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns("/home/rails/.ssh/zimmer_operator_ed25519")
+    stub_secrets({})
+
+    write_config(
+      "ssh-staging" => { "command" => "npx", "args" => [ "-y", "ssh-agent-mcp-server" ], "env" => { "SSH_HOST" => "staging.example.com" } },
+      "acme-server" => { "command" => "npx", "args" => [ "-y", "@acme/mcp" ], "env_vars" => [ "ACME_HOST_REGION" ] },
+      "hosted" => { "url" => "https://mcp.example.com/mcp" }
+    )
+
+    build_processor.post_process!
+
+    config = read_config
+    assert_equal [ "SSH_PRIVATE_KEY_PATH" ], config.dig("mcp_servers", "ssh-staging", "env_vars")
+    assert_equal [ "ACME_HOST_REGION", "SSH_PRIVATE_KEY_PATH" ], config.dig("mcp_servers", "acme-server", "env_vars"),
+      "forwarding must be added alongside the entry's own host-env vars, not replace them"
+    assert_nil config.dig("mcp_servers", "hosted", "env_vars"),
+      "an HTTP server has no child environment to forward into"
+  end
+
+  test "post_process! forwards nothing when no operator SSH key is provisioned" do
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
+    stub_secrets({})
+
+    write_config("acme-server" => { "command" => "npx", "args" => [ "-y", "@acme/mcp" ] })
+
+    build_processor.post_process!
+
+    assert_nil read_config.dig("mcp_servers", "acme-server", "env_vars")
+  end
+
   test "post_process! drops env_vars entirely when every forwarded var is a Zimmer secret" do
     stub_secrets("ACME_API_KEY" => "sk-acme-123", "ACME_DB_URL" => "postgres://x")
 
