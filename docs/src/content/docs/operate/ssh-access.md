@@ -173,11 +173,14 @@ the same**:
 | --- | --- | --- | --- | --- |
 | `zimmer-production-operator` — the key a Zimmer **agent session** holds | **no — deliberately excluded** | yes | yes | yes |
 | `agent-orchestrator-prod-hetzner` — the orchestrator, which runs on a **separate** host | yes | yes | — | — |
-| `root@local` — a human's laptop, break-glass only | yes | no | — | — |
+| `root@local` — a human's laptop, break-glass only | yes | yes | — | — |
 | the Kamal deploy key (`var.deploy_ssh_pubkey`) | yes | yes | — | — |
 
-A `—` means "not part of this deployment's access model", not "denied". The one cell that is a
-*decision* is the first one: every other `no` is just a key nobody needed there.
+A `—` means "not part of this deployment's access model", not "denied". There is exactly one `no` in
+the table, and it is the decision the rest of this section is about: `zimmer-production-operator` off
+production. `root@local` is `yes` on both boxes on purpose — a human's break-glass key belongs wherever
+a human might have to break in, and staging counts. Do not mistake *that* for reconciling the lists;
+the control is the operator-key cell, not the human one.
 
 ### Root on production is for humans and for an off-box orchestrator. Not for a session running on it.
 
@@ -292,13 +295,14 @@ Edit the staging list in **`infra/terraform/staging.tfvars.example`**, not in `s
 admin_ssh_pubkeys = [
   "ssh-ed25519 AAAA...FEp3 zimmer-production-operator",      # Zimmer's agent sessions
   "ssh-ed25519 AAAA...EmRa agent-orchestrator-prod-hetzner", # the orchestrator, off-box
+  "ssh-ed25519 AAAA...y3Zn root@local",                      # the maintainer's laptop, break-glass
 ]
 ```
 
 :::danger[Forking: those are real keys, not placeholders]
-The committed example is not a template with a dummy value in it — it holds the upstream author's two
+The committed example is not a template with a dummy value in it — it holds the upstream author's three
 real public keys, and `deploy-staging.yml` copies the file verbatim. Deploy it unchanged and you have
-authorized **him** for `root` on **your** droplet. Replace both with your own, or set `[]`.
+authorized **him** for `root` on **your** droplet. Replace all three with your own, or set `[]`.
 :::
 
 Do **not** reach for `ssh_key_fingerprints` (DigitalOcean-registered keys) instead. It is `ForceNew` on
@@ -319,7 +323,9 @@ one you want depends on whether the box is disposable:
 **Staging — rebuild it.** Run `deploy-staging` with `recreate_droplet=true` (a `terraform -replace` of
 the droplet). Staging is disposable by design and this is the intended path. Read [the one fallback
 door a rebuilt droplet has](/limitations/#a-rebuilt-droplet-has-exactly-one-fallback-door-and-it-is-the-digitalocean-console)
-first: a rebuild whose `tailscale up` fails leaves you with only the DigitalOcean console.
+first: a rebuild whose `tailscale up` fails leaves you with only the DigitalOcean console. And budget
+the rebuilds — each destroys the box's TLS cert, and [Let's Encrypt allows only five issuances a
+week](/limitations/#rebuilding-staging-costs-a-lets-encrypt-issuance-and-there-are-only-five-a-week).
 
 **Production — append the key live, over Tailscale SSH.** Production cannot be casually recreated, so
 a rebuild is not an option. Tailscale SSH on `:22` is, because it works regardless of what `:2222` is

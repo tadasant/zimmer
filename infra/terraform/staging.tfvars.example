@@ -48,11 +48,20 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 # SEPARATE host, which survives to repair what it breaks. Staging is disposable, so the
 # same key here costs a rebuild at worst -- and reaching staging is the point.
 #
-# If you are "fixing" a drift between this list and production's: don't. The mismatch is
-# the control. See docs/operate/ssh-access.md#who-is-authorized-where.
+# If you are "fixing" a drift between this list and production's: don't. The ONE mismatch
+# that is a control is that the operator key above is here and NOT on production -- never
+# reconcile *that*. See docs/operate/ssh-access.md#who-is-authorized-where.
+#
+# `root@local` is the maintainer's LAPTOP KEY -- a human's key, break-glass only. It is the
+# opposite case from the operator key: a person off-box, not a session on-box, so it is root
+# on production too (that is the recovery path of last resort). Authorizing it on staging as
+# well is not reconciling the control above -- it just gives the same human the same
+# independent OpenSSH-on-:2222 door into staging, for when the tailnet identity path (:22)
+# is the thing that is broken. A public key is not a secret; forks replace all three.
 admin_ssh_pubkeys = [
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEp3tk5RCh76zPddFcoyY01MazsyHnacqo0KrAczCY6 zimmer-production-operator",
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmRanTTxADIQWHp9PZqOAFQX2SVXibTqVXb0D3AtuiU agent-orchestrator-prod-hetzner",
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINtfKYBq3IWBflQJ8lXNhfgJAmS6RynvC2A1m0eFy3Zn root@local",
 ]
 
 # Custom-domain HTTPS over the tailnet: turns on the Caddy TLS terminator on :443,
