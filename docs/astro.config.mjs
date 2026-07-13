@@ -65,6 +65,7 @@ export default defineConfig({
           label: "Getting started",
           items: [
             { label: "Run it locally", slug: "start/local" },
+            { label: "Run it in containers", slug: "start/containers" },
             { label: "Your first session", slug: "start/first-session" },
             { label: "Configuration reference", slug: "start/configuration" },
           ],
