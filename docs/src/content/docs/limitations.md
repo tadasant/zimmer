@@ -504,20 +504,42 @@ Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 
 ### The baseline `zimmer-router` root can't spawn downstream sessions out of the box
 
-`zimmer-router` (the `Session::ROUTER_AGENT_ROOT` behind every quick-router / chat-bubble submission)
-ships with **no** session-orchestration MCP server on by default. The obvious wiring —
-`default_in_roots: ["zimmer-router"]` on the `zimmer-sessions` catalog entry — is unsafe in
-production: `zimmer-sessions`' catalog URL is the placeholder `https://zimmer.example.com/...`, and
-`RuntimeConfigPostProcessor#retarget_zimmer_servers_to_current_env!` is a **no-op in production**
-(`return if Rails.env.production?`). Staging/dev rewrite that placeholder to the instance's real
-`ZIMMER_*_BASE_URL`; production does not, so a prod router session would try to connect to a dead host
-and — because an unrecoverable MCP connection is fatal (`AgentSessionJob` → `session.fail!`) — fail on
-startup. The auto-injected `zimmer-self-session` server is unaffected: `SelfSessionInjector` builds its
-URL from `ZIMMER_*_BASE_URL` directly rather than from the catalog. So the router starts cleanly in
-every environment, but to let it *dispatch* downstream sessions an operator must wire a
-session-scoped Zimmer MCP server whose URL resolves correctly in their environment (e.g. a custom
-`AIR_CONFIG` catalog with real URLs, or lifting the prod retarget no-op). See
+🔴 `zimmer-router` — the root behind every quick-router / chat-bubble submission — ships with **no**
+default artifacts: no routing skill, and no session-orchestration MCP server. It resolves and starts,
+but it cannot *route*. A quick-router submission therefore lands as an ordinary agent session cloning
+`tadasant/zimmer` at its root, which is rarely what the prompt asked for. Treat the quick router as
+"start a session from a prompt", not "dispatch to the right root", until this is finished.
+
+The obvious wiring — `default_in_roots: ["zimmer-router"]` on the `zimmer-sessions` catalog entry —
+is deliberately **not** done, because it is unsafe for a stock deployment. `zimmer-sessions`' URL in
+the **in-image** catalog is the placeholder `https://zimmer.example.com/...` (only its `X-API-Key`
+header is a `${VAR}`, so `SecretsInterpolator` never rewrites the host), and
+`RuntimeConfigPostProcessor#retarget_zimmer_servers_to_current_env!` early-returns in production
+(`return if Rails.env.production?`). Dev and staging rewrite that placeholder to the instance's real
+`ZIMMER_*_BASE_URL`; a **production** instance running the in-image catalog does not, so its router
+sessions would dial a dead host and — after `MAX_MCP_CONNECTION_RETRIES` — be failed outright
+(`AgentSessionJob` → `session.fail!`).
+
+That prod no-op is only sound under the assumption written into its own comment: that production
+"already point[s] at the instance serving the session" — true for an instance running its **own**
+catalog via `AIR_CONFIG` (see [Pointing an instance at your own catalog](/air/artifacts/#pointing-an-instance-at-your-own-catalog)),
+false for one running the in-image fallback. Both configurations exist, so the safe default is to ship
+no session server at all.
+
+The auto-injected `zimmer-self-session` server is unaffected either way: `SelfSessionInjector` builds
+its URL from `ZIMMER_*_BASE_URL` directly rather than from the catalog. To give the router real
+dispatch, an operator must wire a session-scoped Zimmer MCP server whose URL resolves in *their*
+environment — a custom `AIR_CONFIG` catalog with real URLs, or lifting the prod retarget no-op. See
 `app/services/runtime_config_post_processor.rb` and `app/services/self_session_injector.rb`.
+
+### `zimmer`, `general-agent`, and `zimmer-router` are indistinguishable to the reverse lookup
+
+All three have `"url": "https://github.com/tadasant/zimmer.git"` and no `subdirectory`.
+`AgentRootsConfig#find_for_session` prefers `metadata["agent_root_key"]`, but its fallback matches on
+`(url, subdirectory)` and returns the first hit — `zimmer`. Sessions created through
+`create_from_agent_root!` (which includes every quick-router session) always carry the key, so this is
+latent rather than live; but a key-less session, or `Trigger#heal_stale_agent_root!`, will resolve any
+of the three to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer/issues/67).
 
 ---
 

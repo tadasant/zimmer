@@ -4261,10 +4261,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(session)
   end
 
-  # Integration: exercise the real shipped catalog (no AgentRootsConfig.find!
-  # stub) so that a Session::ROUTER_AGENT_ROOT missing from roots.json fails here
-  # the same way the quick router failed on staging ("Router agent root not
-  # configured"). The stubbed tests above can't catch a missing catalog entry.
+  # Exercises the real shipped catalog (no AgentRootsConfig.find! stub): a router
+  # root missing from roots.json raises AgentRootNotFoundError here, which the
+  # stubbed tests above cannot catch.
   test "quick_prompt resolves the router root from the real catalog and dispatches" do
     AgentSessionJob.stubs(:enqueue_new_session)
 
@@ -4274,7 +4273,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     session = Session.last
     assert_equal Session::ROUTER_AGENT_ROOT, session.metadata["agent_root_key"]
-    assert_equal "https://github.com/tadasant/zimmer.git", session.git_root
+    assert_equal AgentRootsConfig.find!(Session::ROUTER_AGENT_ROOT).url, session.git_root
     assert_redirected_to session_path(session)
   end
 

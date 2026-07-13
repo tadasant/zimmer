@@ -12,7 +12,7 @@
   "zimmer-router": {
     "name": "zimmer-router",
     "display_name": "Zimmer Router",
-    "description": "Baseline router root: receives freeform quick-router / chat-bubble input and dispatches it to the right downstream session. It is the target of Session::ROUTER_AGENT_ROOT and is not user-invocable (it is invoked by the dashboard's quick router, not picked from the new-session form).",
+    "description": "Baseline root for the dashboard's quick router: freeform input submitted there starts its session here. Not user-invocable — the quick router dispatches it, rather than it being picked from the new-session form.",
     "url": "https://github.com/tadasant/zimmer.git",
     "default_branch": "main",
     "user_invocable": false
