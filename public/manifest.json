@@ -1,6 +1,6 @@
 {
-  "name": "Agent Orchestrator",
-  "short_name": "AO",
+  "name": "Zimmer",
+  "short_name": "Zimmer",
   "description": "Orchestrate and manage AI agents with Claude Code integration",
   "start_url": "/",
   "display": "standalone",

@@ -213,7 +213,7 @@ class AirCatalogService
     # last-known-good snapshot. On any CatalogError (collision hard-fail, network
     # failure, broken install, missing air.json), fall back to the last-known-good
     # tree — in-memory first, then the persisted snapshot — so a broken upstream
-    # catalog cannot take session creation (and the ao-router lookup behind every
+    # catalog cannot take session creation (and the zimmer-router lookup behind every
     # routable message) down to an empty catalog. Only re-raises when there is no
     # fallback at all (first-ever boot with a broken catalog).
     def load!
@@ -335,7 +335,7 @@ class AirCatalogService
       # "references unknown ... Dropping the reference" warnings on stderr while
       # still exiting 0. The dropped references are exactly what strips affected
       # roots' default_skills / default_mcp_servers / default_hooks — including
-      # the ao-router defaults behind every chat_bubble / quick_prompt session.
+      # the zimmer-router defaults behind every chat_bubble / quick_prompt session.
       # Persisting such a tree would misconfigure every session created against it
       # (empty MCP / Skills / Hooks) AND overwrite the last-known-good snapshot
       # with the degraded data. A healthy resolve emits no unknown-reference

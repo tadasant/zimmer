@@ -91,7 +91,7 @@ Use your runtime's in-process subagent — in Claude Code this is the `Task` / `
 
 - Subagents inherit the working directory and tools but **not your conversation context**. Your prompt is the only thing they see — make it self-contained.
 - Distillation is lossy by design. If you later realize you needed something the subagent did not surface, ask a follow-up subagent rather than re-doing the verbose call yourself.
-- This skill is a **complement**, not a replacement, for spawning a separate AO action session. Inline subagents handle work *within* the current task; AO sub-sessions handle work that warrants its own session lifecycle (a different domain, a different stop condition, a result the user needs to see directly). The router CLAUDE.md (`agent-roots/ao-router/CLAUDE.md`) covers when investigation sub-sessions are the right tool — read it when you are unsure.
+- This skill is a **complement**, not a replacement, for spawning a separate Zimmer action session. Inline subagents handle work *within* the current task; Zimmer sub-sessions handle work that warrants its own session lifecycle (a different domain, a different goal, a result the user needs to see directly). The router CLAUDE.md (`agent-roots/zimmer-router/CLAUDE.md`) covers when investigation sub-sessions are the right tool — read it when you are unsure.
 - If you are already deep into a thrashing session, do not retry the same heavy approach a fourth time. Either delegate via subagent (per the three-strike rule) or stop, summarize where you are, and surface the situation to the user so they can decide whether to fork a fresh session.
 
 ## Output
