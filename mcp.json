@@ -44,7 +44,7 @@
     "command": "npx",
     "args": [
       "-y",
-      "remote-fs-mcp@latest"
+      "remote-filesystem-mcp-server@latest"
     ]
   },
   "twist-wolfbot": {
@@ -107,7 +107,7 @@
     "command": "npx",
     "args": [
       "-y",
-      "svg-tracer-mcp@latest"
+      "@pulsemcp/svg-tracer-mcp-server@latest"
     ]
   },
   "slack-workspace": {
