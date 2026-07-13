@@ -225,6 +225,20 @@ not work for Zimmer, for two independent reasons:
 
 Session-mode pooling maps clients 1:1 onto backends, so it buys nothing at all. The lever is the plan.
 
+### A saturated `cable` pool would degrade silently
+
+`BroadcastService` rescues every broadcast failure and deliberately does not re-raise — a failed Turbo
+Stream must not kill the agent job that emitted it (`app/services/broadcast_service.rb:265`), and a
+circuit breaker opens after five failures. That is the right call for the job, but it means the
+`cable` pool is the one pool whose exhaustion produces no error: the symptom is UI updates that stop
+arriving while the session itself runs fine.
+
+The pool is sized at 3 because `solid_cable` leases per `INSERT` and returns the connection, and only
+~2% of broadcasts also run an autotrim transaction (`SolidCable::TrimJob`, a SKIP-LOCKED delete of ≤100
+rows) — so saturating it would take thousands of broadcasts per second, and sixteen agent sessions
+produce single or double digits. If that estimate is ever wrong, the failure will be quiet. Raise
+`CABLE_DB_POOL` and `app_required_backends` together.
+
 ### Staging cannot exercise the managed-database path
 
 Staging runs a `postgres:16` Kamal accessory on the droplet; only production has a managed cluster. So

@@ -17,18 +17,33 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
   MAIN_TF = Rails.root.join("infra/terraform/main.tf")
   DATABASE_YML = Rails.root.join("config/database.yml")
 
+  # Every knob ConnectionBudget reads. The block below clears ALL of them and then sets
+  # only what a test asked for, so a test asserts against the derivation and not against
+  # whatever the developer (or the agent session, which exports GOOD_JOB_MAX_THREADS)
+  # happens to have exported. Without this the suite is green on CI -- which sets none of
+  # them -- and red on the machines where it is actually run.
+  KNOBS = %w[
+    RAILS_ENV RAILS_MAX_THREADS DB_POOL CABLE_DB_POOL
+    GOOD_JOB_AGENTS_THREADS GOOD_JOB_POLLERS_THREADS
+    GOOD_JOB_TRIGGERS_THREADS GOOD_JOB_DEFAULT_THREADS
+  ].freeze
+
   # ConnectionBudget reads the process's shape from ENV and $PROGRAM_NAME, because that
   # is all database.yml can know about itself. To assert the shape of a process this one
   # is not, borrow it and give it back.
   def as_process(rails_env:, program_name: $PROGRAM_NAME, **env)
-    previous_env = ENV.to_h.slice("RAILS_ENV", *env.keys)
+    # Anything a test sets is also given back, not just the canonical knobs -- otherwise
+    # a test that sets a retired variable leaks it into every test that follows it.
+    touched = KNOBS | env.keys.map(&:to_s)
+    previous_env = ENV.to_h.slice(*touched)
     previous_program_name = $PROGRAM_NAME
+    touched.each { |key| ENV.delete(key) }
     ENV["RAILS_ENV"] = rails_env
-    env.each { |key, value| ENV[key] = value&.to_s }
+    env.each { |key, value| ENV[key.to_s] = value&.to_s }
     $PROGRAM_NAME = program_name
     yield
   ensure
-    env.each_key { |key| ENV.delete(key) }
+    touched.each { |key| ENV.delete(key) }
     previous_env.each { |key, value| ENV[key] = value }
     $PROGRAM_NAME = previous_program_name
   end
@@ -95,26 +110,40 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
   end
 
   test "max_threads cannot authorize more threads than the queues declare" do
-    as_worker do
+    # Deliberately not an ENV knob: an override could authorize threads the pool it does
+    # not move cannot serve, which is precisely the drift this module exists to prevent.
+    as_worker("GOOD_JOB_MAX_THREADS" => 50) do
       assert_equal ConnectionBudget.good_job_scheduler_threads, ConnectionBudget.good_job_max_threads
+    end
+  end
+
+  test "a blank env var is treated as absent rather than crashing database.yml" do
+    # database.yml is the one file that must never raise -- a process that cannot render
+    # it cannot boot. Kamal renders an unset `env: clear:` value to "", and Integer("")
+    # raises.
+    as_worker("GOOD_JOB_AGENTS_THREADS" => "", "RAILS_MAX_THREADS" => "") do
+      assert_equal 16, ConnectionBudget.good_job_queue_threads.fetch(:agents)
+      assert_nothing_raised { ConnectionBudget.primary_pool }
     end
   end
 
   # --- The server-side budget --------------------------------------------------
 
   test "the budget counts both roles, the notifier's connection, and a Kamal cutover" do
-    expected = (ConnectionBudget.web_connections + ConnectionBudget.worker_connections) *
-               ConnectionBudget::DEPLOY_CUTOVER_MULTIPLIER + ConnectionBudget::OPERATOR_RESERVE
+    as_worker do
+      expected = (ConnectionBudget.web_connections + ConnectionBudget.worker_connections) *
+                 ConnectionBudget::DEPLOY_CUTOVER_MULTIPLIER + ConnectionBudget::OPERATOR_RESERVE
 
-    assert_equal expected, ConnectionBudget.required_backends
-    # Kamal health-gates its cutover by running the old and new containers together, so
-    # every connection exists twice for that window. Budgeting for steady state alone is
-    # what makes a deploy the most dangerous moment in the system.
-    assert_operator ConnectionBudget::DEPLOY_CUTOVER_MULTIPLIER, :>=, 2
-    # GoodJob's Notifier checks a LISTEN connection out and then REMOVES it from the pool,
-    # so it is a real backend that no pool size accounts for.
-    assert_operator ConnectionBudget.worker_connections, :>,
-                    ConnectionBudget.primary_pool + ConnectionBudget.cable_pool
+      assert_equal expected, ConnectionBudget.required_backends
+      # Kamal health-gates its cutover by running the old and new containers together, so
+      # every connection exists twice for that window. Budgeting for steady state alone is
+      # what makes a deploy the most dangerous moment in the system.
+      assert_operator ConnectionBudget::DEPLOY_CUTOVER_MULTIPLIER, :>=, 2
+      # GoodJob's Notifier checks a LISTEN connection out and then REMOVES it from the
+      # pool, so it is a real backend that no pool size accounts for.
+      assert_operator ConnectionBudget.worker_connections, :>,
+                      ConnectionBudget.primary_pool + ConnectionBudget.cable_pool
+    end
   end
 
   test "the budget is a property of the deployment, not of the process reading it" do
@@ -131,11 +160,12 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
 
   test "Terraform enforces exactly the budget this app derives" do
     default = MAIN_TF.read[/variable "app_required_backends".*?default\s*=\s*(\d+)/m, 1]
+    derived = as_web { ConnectionBudget.required_backends }
 
     assert default, "infra/terraform/main.tf no longer declares an app_required_backends default"
-    assert_equal ConnectionBudget.required_backends, Integer(default),
+    assert_equal derived, Integer(default),
                  "infra/terraform/main.tf's app_required_backends default (#{default}) no longer matches " \
-                 "ConnectionBudget.required_backends (#{ConnectionBudget.required_backends}). Terraform is " \
+                 "ConnectionBudget.required_backends (#{derived}). Terraform is " \
                  "the only thing that checks the app's connection promise against the cluster's plan; if the " \
                  "two disagree it is guarding the wrong number."
   end

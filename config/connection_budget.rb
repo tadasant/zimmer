@@ -39,11 +39,16 @@ module ConnectionBudget
   # rather than referenced because this file is loaded before the gem is.
   GOOD_JOB_UTILITY_THREADS = 2
 
-  # GoodJob's Notifier holds one LISTEN connection, which it checks out and then
-  # *removes* from the pool (good_job/lib/good_job/notifier.rb). It is a real backend
-  # on the server that no pool size accounts for, so the server-side budget has to add
-  # it back by hand.
-  GOOD_JOB_NOTIFIER_CONNECTIONS = 1
+  # GoodJob's Notifier checks a LISTEN connection out and then *removes* it from the pool
+  # (good_job/lib/good_job/notifier.rb), so it is a real backend on the server that NO
+  # pool size accounts for and the budget has to add back by hand.
+  #
+  # Three of them, not one. Measured on the staging worker -- three concurrent backends
+  # with `application_name = 'GoodJob::Notifier'`, all from the worker container's IP,
+  # stable, idle on their keepalive `SELECT 1`. The web process runs none, which is
+  # `:external` mode doing what it says. Guessing 1 here would have quietly under-budgeted
+  # the server by 2 per worker, which is the same kind of error this file exists to end.
+  GOOD_JOB_NOTIFIER_CONNECTIONS = 3
 
   # Kamal's cutover deliberately runs the old and new containers together until the
   # new one passes its health check -- measured at ~17s on 2026-07-13 -- so every
@@ -69,6 +74,15 @@ module ConnectionBudget
     "production" => :external
   }.freeze
 
+  # database.yml is the one file that must never raise: a process that cannot render it
+  # cannot boot at all. `Integer("")` does raise, and an env var set to empty is a
+  # routine accident -- Kamal's `env: clear:` renders `<%= ENV["X"] %>` to "" whenever X
+  # is unset on the deploy runner. Treat blank as absent.
+  def int_env(key, default)
+    value = ENV[key]
+    value.nil? || value.strip.empty? ? default : Integer(value.strip)
+  end
+
   def rails_env
     ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "development"
   end
@@ -90,17 +104,17 @@ module ConnectionBudget
   def puma_threads
     return 0 if good_job_worker?
 
-    Integer(ENV.fetch("RAILS_MAX_THREADS", 3))
+    int_env("RAILS_MAX_THREADS", 3)
   end
 
   # The GoodJob scheduler threads, one per queue. Each one can be executing a job, and
   # each executing job holds a primary connection for its whole duration.
   def good_job_queue_threads
     {
-      agents: Integer(ENV.fetch("GOOD_JOB_AGENTS_THREADS", 16)),
-      pollers: Integer(ENV.fetch("GOOD_JOB_POLLERS_THREADS", 3)),
-      triggers: Integer(ENV.fetch("GOOD_JOB_TRIGGERS_THREADS", 2)),
-      default: Integer(ENV.fetch("GOOD_JOB_DEFAULT_THREADS", 4))
+      agents: int_env("GOOD_JOB_AGENTS_THREADS", 16),
+      pollers: int_env("GOOD_JOB_POLLERS_THREADS", 3),
+      triggers: int_env("GOOD_JOB_TRIGGERS_THREADS", 2),
+      default: int_env("GOOD_JOB_DEFAULT_THREADS", 4)
     }
   end
 
@@ -113,11 +127,13 @@ module ConnectionBudget
     good_job_queue_threads.values.sum
   end
 
-  # A per-scheduler fallback GoodJob only uses for queues with no explicit count. Every
-  # Zimmer queue has one, so this is belt-and-braces -- but it is pinned to the real
-  # total so it can never authorize more threads than the pool can serve.
+  # GoodJob's per-scheduler fallback, used only for queues with no explicit count. Every
+  # Zimmer queue has one, so this is belt-and-braces -- and it is deliberately NOT an ENV
+  # knob. A GOOD_JOB_MAX_THREADS override could authorize more threads than the pool it
+  # does not move, which is the exact class of drift this file exists to prevent. Size
+  # the queues (GOOD_JOB_AGENTS_THREADS and friends) and the pool follows.
   def good_job_max_threads
-    Integer(ENV.fetch("GOOD_JOB_MAX_THREADS") { good_job_scheduler_threads })
+    good_job_scheduler_threads
   end
 
   # GoodJob threads *in this process*: all of them in the worker, all of them in
@@ -146,15 +162,25 @@ module ConnectionBudget
   end
 
   def primary_pool
-    Integer(ENV.fetch("DB_POOL") { puma_threads + good_job_threads + pool_overhead })
+    int_env("DB_POOL", puma_threads + good_job_threads + pool_overhead)
   end
 
   # solid_cable leases per query and gives the connection straight back, so this covers
   # concurrent in-flight broadcasts (plus the web process's polling listener), not the
-  # thread count. A burst of 25 simultaneous broadcasts queues on a 3-wide pool for the
-  # milliseconds each INSERT takes, nowhere near the 5s checkout timeout.
+  # thread count.
+  #
+  # The work behind one broadcast: an INSERT, plus -- on ~2% of them -- solid_cable's
+  # autotrim, a SKIP-LOCKED delete of at most 100 rows in a transaction
+  # (SolidCable::TrimJob, trim_chance / trim_batch_size). Call it a couple of
+  # milliseconds. For a 3-wide pool to hit ActiveRecord's 5s checkout timeout, the worker
+  # would have to sustain thousands of broadcasts a second; sixteen agent sessions
+  # streaming transcript updates produce single or double digits.
+  #
+  # Worth knowing if that estimate is ever wrong: BroadcastService rescues and does not
+  # re-raise (broadcast failures must not kill a job), so a saturated cable pool would
+  # surface as dropped UI updates and an open circuit breaker, not as an exception.
   def cable_pool
-    Integer(ENV.fetch("CABLE_DB_POOL", 3))
+    int_env("CABLE_DB_POOL", 3)
   end
 
   # --- Server-side budget -----------------------------------------------------
@@ -166,9 +192,12 @@ module ConnectionBudget
   # server actually serve them? It has to reason about both roles at once, so it works
   # from the config rather than from this process's shape.
 
-  # Connections a single `web` process (Puma, no job threads) costs the server.
+  # Connections a single `web` process (Puma, no job threads) costs the server. One web
+  # process is all there is: config/puma.rb never calls `workers`, so Puma runs in single
+  # mode and WEB_CONCURRENCY is inert. Turning on cluster mode multiplies this term, and
+  # the budget below would have to multiply with it.
   def web_connections
-    Integer(ENV.fetch("RAILS_MAX_THREADS", 3)) + PROCESS_OVERHEAD + cable_pool
+    int_env("RAILS_MAX_THREADS", 3) + PROCESS_OVERHEAD + cable_pool
   end
 
   # Connections a single `worker` process (`good_job start`) costs the server: its
