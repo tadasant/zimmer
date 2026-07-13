@@ -40,7 +40,8 @@ Everything in Zimmer reads them through `AirCatalogService`. Code that reads `ro
 | `DATABASE_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_SSLMODE` | Postgres | ✅ (Kamal) |
 | `REDIS_URL` | Cache | ✅ (Kamal) |
 | `API_KEYS` | REST API auth | ✅ (Kamal) |
-| `APP_HOST` | MCP OAuth redirect URI | ✅ (Kamal) |
+| `APP_HOST` | MCP OAuth redirect URI, and the mailer link host | ✅ (Kamal) |
+| `ZIMMER_PROD_BASE_URL` / `ZIMMER_STAGING_BASE_URL` | Externally-reachable base URL of this instance (e.g. `https://zimmer.your-domain.com`). `AppUrl` resolves it to build every absolute link Zimmer emits — session URLs in the orchestrator system prompt, "View trigger in Zimmer" alert links, MCP tool output. **Set this**: when unset it falls back to a non-functional `zimmer.example.com` placeholder and generated links break. The shipped deploy sets it in `config/deploy.{production,staging}.yml`; a self-hosted instance must set it to its own host | ✅ (Kamal) |
 | `RAILS_MASTER_KEY` | Rails credentials | ✅ in a self-hosted production config; on staging it is [optional, and degrades silently when absent](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent) |
 | `SLACK_BOT_TOKEN` | Slack triggers, the channel picker, and `AlertService` | via `mcp_secrets` (encrypted credentials); ENV is the fallback |
 | `ENG_ALERTS_SLACK_CHANNEL_ID` | the channel `AlertService` posts to | via `mcp_secrets`; ENV is the fallback |

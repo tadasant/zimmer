@@ -107,23 +107,10 @@ class SelfSessionInjector
   # what the AIR catalog interpolates. The prod/staging names are dual-set alongside
   # the legacy AGENT_ORCHESTRATOR_* names (same values) until those are retired.
   def self_target
-    @self_target ||= case @env
-    when "production"
-      {
-        base_url: get_env_value("ZIMMER_PROD_BASE_URL") || "https://zimmer.example.com",
-        api_key: get_env_value("ZIMMER_PROD_API_KEY").to_s
-      }
-    when "staging"
-      {
-        base_url: get_env_value("ZIMMER_STAGING_BASE_URL") || "https://staging.zimmer.example.com",
-        api_key: get_env_value("ZIMMER_STAGING_API_KEY").to_s
-      }
-    else
-      {
-        base_url: get_env_value("ZIMMER_LOCAL_BASE_URL") || default_local_base_url,
-        api_key: get_env_value("ZIMMER_LOCAL_API_KEY").to_s
-      }
-    end
+    @self_target ||= {
+      base_url: AppUrl.base_url(env: @env, secrets_interpolator: @secrets_interpolator),
+      api_key: get_env_value(api_key_var).to_s
+    }
   end
 
   private
@@ -144,8 +131,13 @@ class SelfSessionInjector
     @secrets_interpolator.get_env_value(var_name)
   end
 
-  def default_local_base_url
-    port = ENV["PORT"].presence || "3000"
-    "http://localhost:#{port}"
+  # The API-key secret name for the Zimmer instance this Rails process IS,
+  # paired with the base URL that AppUrl resolves for the same environment.
+  def api_key_var
+    case @env
+    when "production" then "ZIMMER_PROD_API_KEY"
+    when "staging" then "ZIMMER_STAGING_API_KEY"
+    else "ZIMMER_LOCAL_API_KEY"
+    end
   end
 end

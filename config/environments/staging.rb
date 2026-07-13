@@ -250,8 +250,11 @@ Rails.application.configure do
   # Set this to true and configure the email server for immediate delivery to raise delivery errors.
   # config.action_mailer.raise_delivery_errors = false
 
-  # Set host to be used by links generated in mailer templates.
-  config.action_mailer.default_url_options = { host: "staging.zimmer.example.com" }
+  # Set host to be used by links generated in mailer templates. Reads the
+  # deploy-provisioned APP_HOST (set in config/deploy.staging.yml) so mailer
+  # links resolve to the real deployment host; the placeholder fallback only
+  # applies when a self-hosted deploy has not set APP_HOST.
+  config.action_mailer.default_url_options = { host: ENV.fetch("APP_HOST") { "staging.zimmer.example.com" } }
 
   # Specify outgoing SMTP server. Remember to add smtp/* credentials via rails credentials:edit.
   # config.action_mailer.smtp_settings = {

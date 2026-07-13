@@ -15,6 +15,12 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     # The value mirrors the natural production path (HOME=/home/rails).
     @original_scratch_dir = ENV["AGENT_SCRATCH_DIR"]
     ENV["AGENT_SCRATCH_DIR"] = "/home/rails/.zimmer/session-scratch"
+
+    # The session URL now resolves through AppUrl, which reads ZIMMER_LOCAL_BASE_URL
+    # in the test env. Clear it so the localhost-based assertions and the byte-golden
+    # snapshot are deterministic even if a runner has it exported; individual tests
+    # that need a custom host set and restore it themselves.
+    @original_local_base_url = ENV.delete("ZIMMER_LOCAL_BASE_URL")
   end
 
   teardown do
@@ -23,6 +29,8 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     else
       ENV["AGENT_SCRATCH_DIR"] = @original_scratch_dir
     end
+
+    ENV["ZIMMER_LOCAL_BASE_URL"] = @original_local_base_url if @original_local_base_url
   end
 
   test "builds prompt with orchestrator context section" do
@@ -42,6 +50,24 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "Session URL: http://localhost:3000/sessions/#{@session.id}"
     assert_includes prompt, "Repository: test-repo"
     assert_includes prompt, "Branch: main"
+  end
+
+  test "session URL is resolved from the base-URL secret, not a hardcoded host" do
+    original = ENV["ZIMMER_LOCAL_BASE_URL"]
+    ENV["ZIMMER_LOCAL_BASE_URL"] = "https://my-zimmer.internal"
+
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    # The concrete session URLs (as opposed to the illustrative example in the
+    # "Always Link" principle) must follow the configured host.
+    assert_includes prompt, "Session URL: https://my-zimmer.internal/sessions/#{@session.id}"
+    assert_includes prompt, "The user can see your session progress at https://my-zimmer.internal/sessions/#{@session.id}"
+  ensure
+    if original.nil?
+      ENV.delete("ZIMMER_LOCAL_BASE_URL")
+    else
+      ENV["ZIMMER_LOCAL_BASE_URL"] = original
+    end
   end
 
   test "includes working directory when clone_path provided" do
