@@ -21,15 +21,31 @@ class SkillsConfigTest < ActiveSupport::TestCase
     assert_includes skill_names, "sync-docs"
   end
 
-  test "catalog holds only Zimmer-specific skills" do
-    # Generic workflow skills (pr, wait-for-ci, analyze-agent-transcript) come from
-    # the orchestrator's own default skill set. Registering them here too would
-    # collide on shortname, and AIR hard-fails the whole resolve on a collision.
+  test "catalog vendors the generic workflow skills alongside the Zimmer-specific ones" do
+    # The catalog is the only source of skills: it is self-contained and single-scope
+    # (everything resolves under @local/), so a standalone install inherits nothing
+    # from an outside orchestrator. Generic workflow skills are vendored here under
+    # category "workflow", distinct from the Zimmer-specific ones under "zimmer".
     skill_names = SkillsConfig.names
 
-    assert_not_includes skill_names, "pr"
-    assert_not_includes skill_names, "wait-for-ci"
+    assert_includes skill_names, "pr"
+    assert_includes skill_names, "wait-for-ci"
+    assert_includes skill_names, "recover-from-compaction-thrashing"
+
+    %w[pr wait-for-ci recover-from-compaction-thrashing].each do |name|
+      assert_equal "workflow", SkillsConfig.find(name).category,
+        "#{name} should be grouped under the workflow category"
+    end
+
+    # Not every generic skill is vendored — only the ones Zimmer actually ships.
     assert_not_includes skill_names, "analyze-agent-transcript"
+  end
+
+  test "the pr skill bundles the git-workflow reference its links resolve against" do
+    # skills/pr/SKILL.md deep-links references/GIT_WORKFLOW.md; AIR bundles the
+    # reference into .claude/skills/pr/references/ at prepare time. Without this
+    # wiring those links are dead.
+    assert_includes SkillsConfig.find("pr").references, "git-workflow"
   end
 
   # Test finding skills

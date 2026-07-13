@@ -50,8 +50,10 @@ shortname collision when there's only one scope.
 The catalog's own description states the intent: *"resolves fully offline (no private GitHub
 catalogs, no network), so the app's config services always resolve non-empty data."*
 
-**What's in it:** 5 skills (all default-on for the `zimmer` root), 14 MCP servers (only
-`playwright-custom` default-on), 9 roots, 4 plugins, 1 hook, 1 reference.
+**What's in it:** 9 skills, all default-on for the `zimmer` root — 6 Zimmer-specific ones
+(`category: zimmer`) plus 3 vendored generic workflow skills (`category: workflow`: `pr`,
+`wait-for-ci`, `recover-from-compaction-thrashing`) — 14 MCP servers (only `playwright-custom`
+default-on), 10 roots, 4 plugins, 1 hook, 5 references.
 
 ### `air.json` vs `air.production.json`
 
