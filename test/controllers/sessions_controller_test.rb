@@ -4245,7 +4245,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
-      subdirectory: "agent-roots/ao-router",
+      subdirectory: "agent-roots/zimmer-router",
       default_mcp_servers: []
     )
     AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(mock_agent_root)
@@ -4282,7 +4282,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "quick_prompt handles missing router agent root gracefully" do
     AgentRootsConfig.stubs(:find!).raises(
-      AgentRootsConfig::AgentRootNotFoundError.new("Agent root 'ao-router' not found")
+      AgentRootsConfig::AgentRootNotFoundError.new("Agent root 'zimmer-router' not found")
     )
 
     post quick_prompt_sessions_url, params: { prompt: "Test prompt" }
@@ -4305,7 +4305,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
-      subdirectory: "agent-roots/ao-router",
+      subdirectory: "agent-roots/zimmer-router",
       default_mcp_servers: []
     )
     AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(mock_agent_root)
@@ -4334,7 +4334,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
-      subdirectory: "agent-roots/ao-router",
+      subdirectory: "agent-roots/zimmer-router",
       default_mcp_servers: []
     )
     AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(mock_agent_root)
@@ -4372,7 +4372,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "chat_bubble handles missing router agent root gracefully" do
     AgentRootsConfig.stubs(:find!).raises(
-      AgentRootsConfig::AgentRootNotFoundError.new("Agent root 'ao-router' not found")
+      AgentRootsConfig::AgentRootNotFoundError.new("Agent root 'zimmer-router' not found")
     )
 
     post chat_bubble_sessions_url,
@@ -4390,7 +4390,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
-      subdirectory: "agent-roots/ao-router",
+      subdirectory: "agent-roots/zimmer-router",
       default_mcp_servers: []
     )
     AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(mock_agent_root)
@@ -4409,7 +4409,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
-      subdirectory: "agent-roots/ao-router",
+      subdirectory: "agent-roots/zimmer-router",
       default_mcp_servers: []
     )
     AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(mock_agent_root)
@@ -4443,7 +4443,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
-      subdirectory: "agent-roots/ao-router",
+      subdirectory: "agent-roots/zimmer-router",
       default_mcp_servers: []
     )
     AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(mock_agent_root)
@@ -4476,7 +4476,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
-      subdirectory: "agent-roots/ao-router",
+      subdirectory: "agent-roots/zimmer-router",
       default_mcp_servers: []
     )
     AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(mock_agent_root)
@@ -4528,7 +4528,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
-      subdirectory: "agent-roots/ao-router",
+      subdirectory: "agent-roots/zimmer-router",
       default_mcp_servers: []
     )
     AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(mock_agent_root)

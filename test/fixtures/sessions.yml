@@ -173,7 +173,7 @@ router_child_running:
   execution_provider: "local_filesystem"
   parent_session: router_parent
   custom_metadata:
-    spawned_by: "ao-router"
+    spawned_by: "zimmer-router"
 
 router_child_archived:
   agent_runtime: claude_code
@@ -187,7 +187,7 @@ router_child_archived:
   execution_provider: "local_filesystem"
   parent_session: router_parent
   custom_metadata:
-    spawned_by: "ao-router"
+    spawned_by: "zimmer-router"
 
 elicitation_session:
   agent_runtime: claude_code
