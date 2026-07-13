@@ -1,0 +1,88 @@
+name: 🐞 Bug report
+description: Report a reproducible defect in Zimmer. The more precise the report, the faster it gets fixed.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a real bug report. Zimmer ships changes through its own
+        software factory rather than through pull requests, so a well-scoped issue is how a fix actually
+        gets built — the quality of this report is what gets it made.
+
+        **Writing this with an AI agent?** Good — agents are welcome here. Hold it to the same bar you would
+        yourself: exact reproduction steps, real output pasted verbatim (not paraphrased), and no invented
+        file paths, log lines, or behavior. If a field is unknown, say "unknown" rather than guessing.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences — what is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction steps
+      description: >-
+        The smallest exact sequence that reproduces the bug, starting from a known state. Number the steps.
+        Include the exact commands, requests, or UI actions. If it needs a specific session/agent-root/MCP
+        configuration, give it.
+      placeholder: |
+        1. Start a session with agent_root `zimmer` and model `claude`
+        2. POST /mcp with tool_groups=sessions and body: { ... }
+        3. Observe the response
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened. Paste exact error messages, stack traces, and log output verbatim in a code block — do not paraphrase.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who/what is affected and how badly? Is there a workaround? Does it block a session from completing, corrupt data, or just look wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / version
+      description: >-
+        Zimmer version (contents of the `VERSION` file or the commit SHA you are on), runtime (Claude Code
+        or Codex), Ruby version, how you are running it (local `bin/dev`, self-hosted droplet, etc.), and OS.
+      placeholder: |
+        Zimmer: 0.1.1 (commit abc1234)
+        Runtime: claude_code
+        Ruby: 3.4.6
+        Deploy: self-hosted via Kamal on Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: precedent
+    attributes:
+      label: Precedent
+      description: >-
+        Did you check whether this has come up before? Link any related existing issue, PR, commit, docs page,
+        or Known-limitations entry — or state that you searched and found none. This prevents duplicates and
+        gives triage the fastest possible context.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and the docs (including the Known limitations page) and this is not already covered.
+          required: true
+        - label: The reproduction steps above are exact and I have pasted real output, not a paraphrase.
+          required: true

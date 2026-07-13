@@ -66,15 +66,33 @@ Prerequisites and the environment variables that matter are in
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and the agent instructions in
-[AGENTS.md](AGENTS.md) (`CLAUDE.md` is a symlink to it). Docs live in [`docs/`](docs) and are
-updated in the same PR as the behavior they describe.
+**Zimmer doesn't accept pull requests — and that's the software-factory design, not a snub.**
+Zimmer *is* a factory for shipping code: feature work here is done by running agent sessions
+through Zimmer itself, on a process built to produce reviewed, CI-green changes. A patch that
+arrives out of band skips that process — no reliable pipeline stands behind it — so merging it
+would mean redoing the trustworthy path by hand. It's easier and safer to feed the factory
+than to bypass it. So PRs opened against this repo are closed unmerged with a pointer back here.
+
+**The way to get a change made is to file an issue** — think of it as the work order the
+factory runs from. A precise bug report or a concrete feature request is the highest-leverage
+thing you can send:
+
+- 🐞 [Report a bug](https://github.com/tadasant/zimmer/issues/new?template=bug_report.yml) — exact reproduction steps, real output, impact.
+- 💡 [Request a feature](https://github.com/tadasant/zimmer/issues/new?template=feature_request.yml) — the problem, a concrete proposal, and any precedent.
+- 💬 [Ask a question](https://github.com/tadasant/zimmer/discussions) in Discussions.
+
+**Forking is welcome.** It's MIT-licensed — fork it, run it, build on it.
+
+If you're working locally (on a fork, or just poking around), the same checks CI runs are:
 
 ```bash
 bundle exec rubocop         # lint
 bin/brakeman -q             # security scan
 bin/rails test              # unit + integration
 ```
+
+Architecture and agent instructions live in [AGENTS.md](AGENTS.md) (`CLAUDE.md` is a symlink
+to it); docs live in [`docs/`](docs).
 
 ## License
 
