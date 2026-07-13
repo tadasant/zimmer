@@ -250,13 +250,14 @@ them:
   `- 5432/tcp` / `- 6379/tcp` (not `5432:5432`), and a step resolves the assigned
   host port via `${{ job.services.postgres.ports[5432] }}` into `DATABASE_PORT` /
   `REDIS_URL`. Fixed host ports would collide when two jobs land on the same runner.
-- **The heavy suite is the `test-unit` job key and pins `PARALLEL_WORKERS`.** The
-  runner's file-based semaphore recognizes the job **key** `test-unit` and caps how
-  many heavy test jobs run at once; a bare `test` key would go ungated. Pinning
-  `PARALLEL_WORKERS` stops a single job from fanning out to `:number_of_processors`
-  (32 on this box) and starving co-tenants. There is intentionally no `test-system`
-  job — zimmer runs no Chrome-driven system tests in CI, so there is nothing for the
-  companion system-test semaphore to gate.
+- **The heavy suites are the `test-unit` and `test-system` job keys and pin
+  `PARALLEL_WORKERS`.** The runner's file-based semaphore recognizes the job **keys**
+  `test-unit` and `test-system` and caps how many heavy test jobs run at once; a bare
+  `test` key would go ungated. Pinning `PARALLEL_WORKERS` stops a single job from
+  fanning out to `:number_of_processors` (32 on this box) and starving co-tenants —
+  `test-system` pins it to 1 because its persistent per-worker Chrome profile does not
+  tolerate concurrent browser instances. `test-system` runs the Chrome-driven system
+  suite (`bin/rails test:system`); the companion system-test semaphore gates it.
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 
