@@ -186,7 +186,7 @@ variable "managed_db_cluster_name" {
 
 variable "app_required_backends" {
   type        = number
-  default     = 87
+  default     = 91
   description = <<-EOT
     Client backends the database must be able to serve for a deploy of this app to be
     safe. It is NOT a free parameter: it is what `ConnectionBudget.required_backends`
