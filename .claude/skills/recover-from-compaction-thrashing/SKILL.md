@@ -81,11 +81,11 @@ Use your runtime's in-process subagent — in Claude Code this is the `Task` / `
 
 ### Example: delegate a Playwright navigation
 
-> Open the staging admin dashboard at `https://admin-staging.pulsemcp.com/proctor/runs`, log in if prompted, find the most recent failed Proctor run, and capture the error message displayed in the UI. Report just the error text and the run ID. Do not narrate the navigation.
+> Open the staging admin dashboard at `https://admin.example.com/runs`, log in if prompted, find the most recent failed run, and capture the error message displayed in the UI. Report just the error text and the run ID. Do not narrate the navigation.
 
 ### Example: delegate a PR body draft
 
-> Compose a PR body for the changes on the current branch. Inputs to combine: (1) `git diff main...HEAD`, (2) the linked issue at `https://github.com/pulsemcp/pulsemcp/issues/N`, (3) the relevant CLAUDE.md sections at `agents/agent-roots/<root>/CLAUDE.md`. Follow the format in `agents/references/GIT_WORKFLOW.md` (Summary + Verification with checked boxes). Return the finished markdown only.
+> Compose a PR body for the changes on the current branch. Inputs to combine: (1) `git diff main...HEAD`, (2) the linked issue at `https://github.com/example/app/issues/N`, (3) the relevant CLAUDE.md sections at `agents/agent-roots/<root>/CLAUDE.md`. Follow the format in `agents/references/GIT_WORKFLOW.md` (Summary + Verification with checked boxes). Return the finished markdown only.
 
 ## Operating notes
 
