@@ -7,7 +7,12 @@ class ClaudeModelConfigurationAudit
   Finding = Data.define(:location, :value, :message)
 
   class << self
-    def findings(env: ENV, settings_path: DEFAULT_SETTINGS_PATH)
+    # +reader+ is the filesystem seam used to read the settings file. It must
+    # respond to #file?(path) and #read(path); it defaults to ::File. Injecting
+    # it lets tests exercise the unreadable-settings path with a scoped double
+    # instead of globally stubbing File.file?/File.read — a process-wide
+    # monkeypatch that races background threads under the parallel suite.
+    def findings(env: ENV, settings_path: DEFAULT_SETTINGS_PATH, reader: File)
       [].tap do |results|
         anthropic_model = env["ANTHROPIC_MODEL"]
         if concrete_model?(anthropic_model)
@@ -18,7 +23,7 @@ class ClaudeModelConfigurationAudit
           )
         end
 
-        settings_entries(settings_path).each do |key, value|
+        settings_entries(settings_path, reader).each do |key, value|
           if concrete_model?(value)
             results << Finding.new(
               location: "#{settings_path}:#{key}",
@@ -55,10 +60,10 @@ class ClaudeModelConfigurationAudit
 
     private
 
-    def settings_entries(path)
-      return [] unless File.file?(path)
+    def settings_entries(path, reader = File)
+      return [] unless reader.file?(path)
 
-      data = JSON.parse(File.read(path))
+      data = JSON.parse(reader.read(path))
       return [] unless data.is_a?(Hash)
 
       entries = []

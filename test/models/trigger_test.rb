@@ -2618,8 +2618,34 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = triggers(:enabled_slack_trigger)
     trigger.update!(reuse_session: true, last_session_id: session.id)
 
-    Rails.logger.expects(:warn).at_least_once.with { |msg| msg.to_s.include?("digitalocean-tadasant") }
+    # Capture log output instead of setting a strict mocha expectation on the
+    # global Rails.logger. Under the parallel suite BroadcastService's circuit
+    # breaker can emit its own warn through the same shared logger from a
+    # background thread; a strict `expects(:warn)` rejects that concurrent call
+    # as an unexpected invocation and fails this test (issue #114). A substring
+    # assertion over captured output proves our warn fired while tolerating any
+    # unrelated warns that race it.
+    log = capture_log_output do
+      trigger.create_session!(prompt: "Follow-up")
+    end
 
-    trigger.create_session!(prompt: "Follow-up")
+    assert_match(/digitalocean-tadasant/, log,
+      "narrowing a reused session's MCP server list must warn about the removed server")
+  end
+
+  # Swap Rails.logger for a StringIO-backed logger for the duration of the block
+  # and return everything written to it. Unlike a mocha expectation on the shared
+  # logger, this is indifferent to concurrent writers, so a background-thread warn
+  # cannot invalidate the assertion.
+  def capture_log_output
+    original_logger = Rails.logger
+    buffer = StringIO.new
+    Rails.logger = ActiveSupport::Logger.new(buffer)
+
+    yield
+
+    buffer.string
+  ensure
+    Rails.logger = original_logger
   end
 end

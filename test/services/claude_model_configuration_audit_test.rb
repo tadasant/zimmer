@@ -65,11 +65,21 @@ class ClaudeModelConfigurationAuditTest < ActiveSupport::TestCase
   end
 
   test "treats unreadable settings as a non-fatal empty audit result" do
-    File.stub(:file?, true) do
-      File.stub(:read, ->(_path) { raise Errno::EACCES, "settings.json" }) do
-        assert_empty ClaudeModelConfigurationAudit.findings(env: {}, settings_path: missing_settings_path)
-      end
-    end
+    # Inject a scoped reader that reports the file exists but raises EACCES on
+    # read, rather than globally stubbing File.file?/File.read. A process-wide
+    # File stub races the suite's background threads (otel exporter, catalog
+    # refresher, etc.), which call File.read with argument shapes the stub's
+    # arity can't accept — the source of this test's historical flakiness.
+    unreadable_reader = Class.new do
+      def file?(_path) = true
+      def read(_path) = raise(Errno::EACCES, "settings.json")
+    end.new
+
+    assert_empty ClaudeModelConfigurationAudit.findings(
+      env: {},
+      settings_path: missing_settings_path,
+      reader: unreadable_reader
+    )
   end
 
   private
