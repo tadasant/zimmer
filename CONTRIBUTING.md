@@ -3,16 +3,30 @@
 Thanks for your interest in Zimmer! This is an early-stage project extracted from
 an internal orchestrator, so expect some rough edges.
 
+## How to contribute: issues, not pull requests
+
+Zimmer *is* a software factory — a system for shipping reviewed, CI-green code by
+running agent sessions against a repo. Feature work on Zimmer is done through that
+factory, so **it doesn't accept pull requests**: a patch that arrives out of band
+hasn't been through the pipeline that makes changes here trustworthy, and merging it
+would mean redoing that work by hand. PRs opened against this repo are closed unmerged
+with a friendly pointer back to this policy. It's not personal — it's just easier and
+safer to feed the factory than to bypass it.
+
+The most useful thing you can send is a **detailed issue** — the work order the factory
+runs from. Those are triaged quickly:
+
+- 🐞 **[Report a bug](https://github.com/tadasant/zimmer/issues/new?template=bug_report.yml)** — exact reproduction steps, real output, impact, and version.
+- 💡 **[Request a feature](https://github.com/tadasant/zimmer/issues/new?template=feature_request.yml)** — the problem, a concrete proposal, and any precedent in the repo.
+- 💬 **[Ask a question](https://github.com/tadasant/zimmer/discussions)** in Discussions.
+
+**Forking is welcome** — it's MIT-licensed, so fork it, run it, and build on it. The
+rest of this guide helps you get it running and find your way around the code.
+
 ## Development setup
 
-See the [README](README.md#quick-start-development). In short: Ruby 3.4.6,
+See the [README](README.md#try-it-locally). In short: Ruby 3.4.6,
 PostgreSQL, Redis, then `bundle install && bin/rails db:setup && bin/dev`.
-
-## Branch & PR workflow
-
-- Work on a feature branch off the latest `main`.
-- `main` is protected: changes land via pull request with green CI.
-- Keep PRs scoped; write a clear description of what changed and why.
 
 ## Tests, lint, and security
 
@@ -76,11 +90,13 @@ deleting the directory leaves a working app. See
 ## Documentation
 
 The docs site lives in [`docs/`](docs) (Astro Starlight → Cloudflare Pages) and is
-published at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com/). **Update the relevant page in the same PR as
-the behavior change** — the mapping from code area to page is in
+published at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com/). The maintainer's
+rule is to **update the relevant page in the same change as the behavior it describes** — the
+mapping from code area to page is in
 [AGENTS.md](AGENTS.md#documentation-lives-in-docs--update-it-in-the-same-pr). New
 limitations, hacks, and known-broken edges belong on the
 [Known limitations](https://docs.zimmer.tadasant.com/limitations/) page; it is a feature, not a confession.
+If you spot a doc that's drifted from the code, that's a great thing to open an issue about.
 
 `cd docs && npm run build` is what the `docs_site` CI job runs.
 
