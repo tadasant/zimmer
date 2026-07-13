@@ -92,14 +92,7 @@ class OrchestratorSystemPromptBuilder
   end
 
   def base_url
-    case Rails.env
-    when "production"
-      "https://zimmer.example.com"
-    when "staging"
-      "https://staging.zimmer.example.com"
-    else
-      "http://localhost:3000"
-    end
+    AppUrl.base_url
   end
 
   def mcp_servers_section

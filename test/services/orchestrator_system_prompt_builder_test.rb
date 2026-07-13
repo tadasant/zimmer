@@ -44,6 +44,24 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "Branch: main"
   end
 
+  test "session URL is resolved from the base-URL secret, not a hardcoded host" do
+    original = ENV["ZIMMER_LOCAL_BASE_URL"]
+    ENV["ZIMMER_LOCAL_BASE_URL"] = "https://my-zimmer.internal"
+
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    # The concrete session URLs (as opposed to the illustrative example in the
+    # "Always Link" principle) must follow the configured host.
+    assert_includes prompt, "Session URL: https://my-zimmer.internal/sessions/#{@session.id}"
+    assert_includes prompt, "The user can see your session progress at https://my-zimmer.internal/sessions/#{@session.id}"
+  ensure
+    if original.nil?
+      ENV.delete("ZIMMER_LOCAL_BASE_URL")
+    else
+      ENV["ZIMMER_LOCAL_BASE_URL"] = original
+    end
+  end
+
   test "includes working directory when clone_path provided" do
     prompt = OrchestratorSystemPromptBuilder.build(
       session: @session,
