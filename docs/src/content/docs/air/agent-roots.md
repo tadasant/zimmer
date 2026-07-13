@@ -42,7 +42,7 @@ each artifact's own entry.
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
 | `zimmer` | ✅ | `tadasant/zimmer` | Work on Zimmer itself. All 5 skills default here. |
-| `zimmer-router` | ❌ | `tadasant/zimmer` | The baseline router. `Session::ROUTER_AGENT_ROOT`; every quick-router / chat-bubble submission is created against it. Ships with no default artifacts beyond the auto-injected self-session server (see note below). |
+| `zimmer-router` | ❌ | `tadasant/zimmer` | The baseline router. `Session::ROUTER_AGENT_ROOT`; every quick-router / chat-bubble submission is created against it. Ships with no default artifacts — it cannot yet dispatch downstream sessions ([why](/limitations/#the-baseline-zimmer-router-root-cant-spawn-downstream-sessions-out-of-the-box)). |
 | `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
 | `agent-orchestrator` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents/agent-orchestrator` |
 | `agents` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents` — the catalog artifacts |
