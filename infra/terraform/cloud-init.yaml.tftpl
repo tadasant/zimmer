@@ -1,6 +1,7 @@
 #cloud-config
-# Bootstraps a KAMAL-READY Zimmer host: Docker, Tailscale (VPN-only app access), a
-# deploy SSH key, and -- when a custom domain is set -- a Caddy TLS terminator.
+# Bootstraps a KAMAL-READY Zimmer host: Docker, Tailscale (VPN-only app access AND
+# VPN-only SSH), a deploy SSH key, key-only sshd on a tailnet-reachable :2222, and --
+# when a custom domain is set -- a Caddy TLS terminator.
 #
 # The app stack (image, env, Postgres/Redis) is NOT baked in here anymore: Kamal
 # owns it (config/deploy.*.yml) and deploys it from CI onto this persistent droplet.
@@ -20,6 +21,44 @@ write_files:
   - path: /root/.ssh/kamal_deploy.pub
     permissions: "0600"
     content: ${deploy_ssh_pubkey}
+  # Admin/tooling keys authorized for root on top of the Kamal key (var.admin_ssh_pubkeys):
+  # the shared operator key the ssh-* MCP servers connect with. Both environments get
+  # them from THIS one path, so staging and production cannot drift on who can get in.
+  # Empty list = file is empty and the append loop below no-ops.
+  - path: /root/.ssh/admin_keys.pub
+    permissions: "0600"
+    content: |
+      ${indent(6, join("\n", admin_ssh_pubkeys))}
+  # SSH IS TAILNET-ONLY: the DO cloud firewall opens no public TCP port at all, and SSH
+  # takes two shapes on the tailnet interface.
+  #
+  #   :22   Tailscale SSH (`tailscale up --ssh` below). Authenticates by TAILNET IDENTITY
+  #         and ignores publickey entirely. Kamal deploys over this.
+  #   :2222 Real OpenSSH, for plain publickey clients that cannot speak Tailscale SSH
+  #         (ssh-agent-mcp-server and any other ssh2 publickey client).
+  #
+  # Ubuntu 24.04 SOCKET-ACTIVATES sshd, so a `Port 2222` line in sshd_config is INERT --
+  # it would never bind. The listener has to be added to ssh.socket, which is what this
+  # drop-in does. Both address families are spelled out because the host sets
+  # bindv6only=1: a bare `ListenStream=2222` binds IPv6 ONLY, and every IPv4 client gets
+  # "connection refused".
+  - path: /etc/systemd/system/ssh.socket.d/10-tailnet-altport.conf
+    permissions: "0644"
+    content: |
+      [Socket]
+      ListenStream=0.0.0.0:2222
+      ListenStream=[::]:2222
+  # Key-only SSH. This file MUST sort before 50-cloud-init.conf: sshd takes the FIRST
+  # value it sees for a keyword, and cloud-init writes `PasswordAuthentication yes` into
+  # its own 50- drop-in. That is why the image's 60-cloudimg-settings.conf `no` never won
+  # and root password auth was genuinely live on the internet -- and why `sshd -T` (the
+  # EFFECTIVE config), never the config files, is the only honest way to check this.
+  - path: /etc/ssh/sshd_config.d/10-hardening.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin prohibit-password
+      KbdInteractiveAuthentication no
 %{ if ssh_host_ed25519_key != "" ~}
   # Pinned SSH host identity: survives a droplet rebuild so an SSH client's
   # known_hosts stays valid instead of tripping host-key-changed on every
@@ -68,14 +107,31 @@ runcmd:
   - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
   - apt-get update -y
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  # --- Authorize the Kamal deploy key -------------------------------------------
+  # --- Authorize the Kamal deploy key + the admin keys ---------------------------
   - install -d -m 0700 /root/.ssh
   - touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
   - grep -qxFf /root/.ssh/kamal_deploy.pub /root/.ssh/authorized_keys || cat /root/.ssh/kamal_deploy.pub >> /root/.ssh/authorized_keys
+  # Line-by-line (not `grep -f`), because an EMPTY admin_keys.pub as a pattern file
+  # matches every line and would make the append a silent no-op forever.
+  - |
+    while read -r admin_key; do
+      [ -n "$admin_key" ] || continue
+      grep -qxF "$admin_key" /root/.ssh/authorized_keys || printf '%s\n' "$admin_key" >> /root/.ssh/authorized_keys
+    done < /root/.ssh/admin_keys.pub
+  # --- Tailnet-only SSH: bind OpenSSH's :2222 listener ---------------------------
+  # sshd_config.d/10-hardening.conf needs no restart (socket activation spawns a fresh
+  # sshd per connection, which re-reads the config), but the new ListenStream does.
+  - systemctl daemon-reload
+  - systemctl restart ssh.socket
   # --- Tailscale ----------------------------------------------------------------
   # Join the tailnet as ${tailnet_hostname}. ACLs (who may reach this node) live in
-  # the Tailscale admin, NOT here. --ssh keeps tailnet SSH for break-glass access
-  # alongside the key-based channel Kamal uses.
+  # the Tailscale admin, NOT here.
+  #
+  # --ssh is LOAD-BEARING, not a convenience: it hands tailnet :22 to Tailscale SSH,
+  # which is the channel Kamal deploys over (the droplet's sshd auth log shows zero
+  # publickey authentications from a 100.x peer). Dropping it would cut the deploy
+  # path. Publickey clients get real OpenSSH on :2222 instead -- see the ssh.socket
+  # drop-in above.
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey='${tailscale_auth_key}' --hostname='${tailnet_hostname}' --ssh
 %{ if ssh_host_ed25519_key != "" ~}

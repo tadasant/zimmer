@@ -58,12 +58,35 @@ posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Sla
 watch. Staging alerts are only distinguishable from production's by the posting bot (*Zimmer
 (Staging)*), so point staging at a different channel if that noise is unwelcome.
 
-### SSH is open to `0.0.0.0/0`
+### SSH hardening only reaches a droplet that is rebuilt
 
-`infra/terraform/main.tf:257-261` opens `22/tcp` to the whole internet. SSH is genuinely needed — it
-is Kamal's deploy channel — but there is no variable to scope it to a set of admin CIDRs.
+SSH is now [tailnet-only](/operate/provisioning/#ssh-is-tailnet-only): the firewall opens no public
+TCP port, real OpenSSH listens on a tailnet-only `:2222`, and sshd takes password auth off. But two of
+those three land through **cloud-init**, and the droplet carries `ignore_changes = [user_data]` — so
+they only reach a box that is *rebuilt*.
 
-Tracked in [#120](https://github.com/tadasant/zimmer/issues/120).
+The firewall change is the exception and the one that matters most: it is a plain resource, so a
+normal `terraform apply` closes public `:22` on the existing droplet immediately. What waits for a
+rebuild is the `:2222` listener and the `PasswordAuthentication no` drop-in. Until then a long-lived
+droplet keeps whatever sshd posture it booted with — which, on an Ubuntu cloud image, is
+**`PermitRootLogin yes` + `PasswordAuthentication yes`** (see below).
+
+Deploy with `recreate_droplet: true` to force the rebuild, or apply the two files by hand and let the
+next rebuild converge.
+
+### `sshd -T` is the only honest way to read sshd's config
+
+`/etc/ssh/sshd_config.d/60-cloudimg-settings.conf` says `PasswordAuthentication no`. It is a lie about
+the running config. sshd takes the **first** value it sees for a keyword, and cloud-init writes
+`PasswordAuthentication yes` into `50-cloud-init.conf`, which sorts first. Root password auth was
+genuinely accepted on both droplets while the config file said it was off.
+
+This is why the hardening drop-in is named `10-hardening.conf` — it has to sort *before* `50` to win.
+Never verify this by reading the files:
+
+```bash
+sshd -T | grep -E '^(permitrootlogin|passwordauthentication)'
+```
 
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 
