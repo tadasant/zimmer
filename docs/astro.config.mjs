@@ -115,6 +115,7 @@ export default defineConfig({
             { label: "Deploying", slug: "operate/deploying" },
             { label: "Provisioning and secrets", slug: "operate/provisioning" },
             { label: "Background jobs", slug: "operate/background-jobs" },
+            { label: "Observability", slug: "operate/observability" },
             { label: "Testing philosophy", slug: "operate/testing" },
           ],
         },
