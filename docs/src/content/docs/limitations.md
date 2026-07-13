@@ -648,18 +648,6 @@ Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
 
 ## Hardcoded values that shouldn't be
 
-### `OrchestratorSystemPromptBuilder` hardcodes `zimmer.example.com`
-
-🔴 `orchestrator_system_prompt_builder.rb:94-102` — a `case Rails.env` with literal
-`https://zimmer.example.com` (production) and `https://staging.zimmer.example.com`, with no ENV
-override.
-
-Every session URL Zimmer hands to its own agents in production points at a placeholder domain.
-(`SelfSessionInjector` has the same placeholders as *defaults*, but at least accepts
-`ZIMMER_PROD_BASE_URL`.)
-
-Tracked in [#84](https://github.com/tadasant/zimmer/issues/84).
-
 ### `QuotaCheckService` pins a concrete model version
 
 `PROBE_MODEL = "claude-haiku-4-5-20251001"` — in a codebase that ships `ClaudeModelConfigurationAudit`,

@@ -671,7 +671,7 @@ class Trigger < ApplicationRecord
     else
       raise AgentRootsConfig::AgentRootNotFoundError,
         "Agent root '#{old_name}' not found in catalog and no successor could be identified. " \
-        "Update trigger '#{name}' (ID: #{id}) manually at https://zimmer.example.com/triggers/#{id}"
+        "Update trigger '#{name}' (ID: #{id}) manually at #{AppUrl.base_url}/triggers/#{id}"
     end
   end
 
@@ -702,7 +702,7 @@ class Trigger < ApplicationRecord
                "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
                "The stale reference(s) have been removed from the trigger. " \
                "The session will proceed with the remaining skills.\n\n" \
-               "<https://zimmer.example.com/triggers/#{id}|View trigger in Zimmer>",
+               "<#{AppUrl.base_url}/triggers/#{id}|View trigger in Zimmer>",
       source: "Trigger#create_session!",
       dedup_key: "trigger_stale_skills_#{id}"
     )
@@ -734,7 +734,7 @@ class Trigger < ApplicationRecord
                "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
                "The stale reference(s) have been removed from the trigger. " \
                "The session will proceed with the remaining hooks.\n\n" \
-               "<https://zimmer.example.com/triggers/#{id}|View trigger in Zimmer>",
+               "<#{AppUrl.base_url}/triggers/#{id}|View trigger in Zimmer>",
       source: "Trigger#create_session!",
       dedup_key: "trigger_stale_hooks_#{id}"
     )
@@ -766,7 +766,7 @@ class Trigger < ApplicationRecord
                "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
                "The stale reference(s) have been removed from the trigger. " \
                "The session will proceed with the remaining plugins.\n\n" \
-               "<https://zimmer.example.com/triggers/#{id}|View trigger in Zimmer>",
+               "<#{AppUrl.base_url}/triggers/#{id}|View trigger in Zimmer>",
       source: "Trigger#create_session!",
       dedup_key: "trigger_stale_plugins_#{id}"
     )
@@ -804,7 +804,7 @@ class Trigger < ApplicationRecord
                "• Remaining: #{valid_servers.empty? ? '(none)' : valid_servers.join(', ')}\n\n" \
                "The stale reference(s) have been removed from the trigger. " \
                "The session will proceed with the remaining servers.\n\n" \
-               "<https://zimmer.example.com/triggers/#{id}|View trigger in Zimmer>",
+               "<#{AppUrl.base_url}/triggers/#{id}|View trigger in Zimmer>",
       source: "Trigger#create_session!",
       dedup_key: "trigger_stale_mcp_#{id}"
     )
