@@ -187,12 +187,16 @@ export default class extends Controller {
     }
   }
 
-  // Sync the hidden channel_id field from the manual input.
+  // Sync the hidden channel_id field from the manual input. Clear the name cache
+  // so it can't disagree with a hand-entered ID — the poller resolves the name
+  // from the ID when channel_name is blank.
   handleChannelManualInput(event) {
     const card = event.target.closest("[data-trigger-form-target='conditionCard']")
     if (!card) return
     const channelIdField = card.querySelector("[data-trigger-form-target='channelId']")
+    const channelNameField = card.querySelector("[data-trigger-form-target='channelName']")
     if (channelIdField) channelIdField.value = event.target.value.trim()
+    if (channelNameField) channelNameField.value = ""
   }
 
   revealManual(card) {

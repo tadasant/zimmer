@@ -37,7 +37,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type=hidden][name=?][data-trigger-form-target='channelName']",
                   "trigger[trigger_conditions_attributes][0][configuration][channel_name]"
 
-    # The old free-text channel-name input is gone.
+    # No free-text channel-name input is rendered — the name is derived from the pick.
     assert_select "input[type=text][placeholder=?]", "Channel name (e.g., eng-ci)", false
   end
 
