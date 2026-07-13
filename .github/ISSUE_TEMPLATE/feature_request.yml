@@ -5,8 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Zimmer **does not accept pull requests**, but a sharp feature request can still shape the roadmap.
-        The bar: a specific problem, a specific proposal, and evidence you've looked at how Zimmer works today.
+        Zimmer builds features through its own software factory rather than through pull requests, so a
+        sharp feature request is how one actually gets built. The bar: a specific problem, a specific
+        proposal, and evidence you've looked at how Zimmer works today.
 
         **Writing this with an AI agent?** Welcome — but ground every claim in the actual repo. Cite real
         files, real behavior, and real precedent. Do not invent APIs, config keys, or history.
@@ -55,5 +56,5 @@ body:
       options:
         - label: I searched existing issues and the docs and this is not already proposed or covered.
           required: true
-        - label: I understand Zimmer does not accept pull requests, and I am proposing the idea rather than submitting an implementation.
+        - label: I understand Zimmer builds changes through its software factory rather than pull requests, and I'm proposing the idea rather than submitting an implementation.
           required: true
