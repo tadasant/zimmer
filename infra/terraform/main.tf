@@ -107,6 +107,29 @@ variable "deploy_ssh_pubkey" {
   EOT
 }
 
+variable "admin_ssh_pubkeys" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Admin SSH public keys authorized for root, on top of the Kamal deploy key. This
+    is the ONE mechanism both environments use to authorize an operator/tooling key
+    (e.g. the shared Agent Orchestrator key that the ssh-* MCP servers connect with),
+    so staging and production cannot drift apart on who can get in.
+
+    Set it per environment in *.tfvars -- NOT as a default here, so a fork does not
+    silently authorize someone else's key on its own box.
+
+    Deliberately NOT var.ssh_key_fingerprints (DigitalOcean-registered keys): that
+    argument is ForceNew on digitalocean_droplet, so adding a key there would make
+    the deploy workflow's `terraform apply -auto-approve` DESTROY and recreate the
+    droplet -- skipping the tailnet-node reap that only runs behind recreate_droplet,
+    which lands the replacement on the tailnet as zimmer-<env>-1 and breaks the
+    hostname the deploy resolves. cloud-init has no such trap: user_data is under
+    `ignore_changes`, so a key added here reaches the box on the next rebuild and
+    never force-replaces one.
+  EOT
+}
+
 variable "ssh_host_ed25519_key" {
   type        = string
   sensitive   = true
@@ -235,6 +258,7 @@ resource "digitalocean_droplet" "zimmer" {
     tailnet_hostname         = local.tailnet_hostname
     tailscale_auth_key       = var.tailscale_auth_key
     deploy_ssh_pubkey        = var.deploy_ssh_pubkey
+    admin_ssh_pubkeys        = var.admin_ssh_pubkeys
     ssh_host_ed25519_key     = var.ssh_host_ed25519_key
     ssh_host_ed25519_key_pub = var.ssh_host_ed25519_key_pub
     domain                   = var.domain
@@ -248,19 +272,34 @@ resource "digitalocean_reserved_ip" "zimmer" {
   droplet_id = digitalocean_droplet.zimmer.id
 }
 
-# Firewall: NO public app ingress. Only SSH (Kamal's control channel + break-glass)
-# and Tailscale's UDP. All app traffic rides the tailnet.
+# Firewall: ZERO public TCP ingress. The only inbound rule is Tailscale's UDP, so
+# every way into this box -- app, SSH, break-glass -- rides the tailnet.
+#
+# SSH IS TAILNET-ONLY. There is no `22` rule here, on purpose, and there must not be:
+#
+#   tailnet :22    Tailscale SSH (cloud-init's `tailscale up --ssh`). Authenticates by
+#                  tailnet identity, ignores publickey entirely. This is the channel
+#                  Kamal actually deploys over.
+#   tailnet :2222  Real OpenSSH, for plain publickey clients that cannot speak
+#                  Tailscale SSH (the ssh-agent-mcp-server MCP). Bound by the
+#                  ssh.socket drop-in cloud-init installs.
+#
+# A DigitalOcean cloud firewall filters the PUBLIC interface only -- it does not
+# filter tailscale0 -- so tailnet peers reach both ports while the internet reaches
+# neither, with no rule required for either.
+#
+# DO NOT re-add a `22` inbound rule to "get access back". It used to be open to
+# 0.0.0.0/0 against an sshd that (first-match on 50-cloud-init.conf) accepted ROOT
+# PASSWORD auth, and both droplets were being brute-force flooded: production logged
+# 1023 pre-auth failures in 2000 lines of journal, and staging's pre-auth queue was
+# saturated to the point that `Exceeded MaxStartups` reset every connection -- SSH was
+# effectively DOWN. Break-glass without a rule: `tailscale ssh root@zimmer-<env>`, or
+# the DigitalOcean web console.
 resource "digitalocean_firewall" "zimmer" {
   name        = "zimmer-${var.environment}"
   droplet_ids = [digitalocean_droplet.zimmer.id]
 
-  inbound_rule {
-    protocol         = "tcp"
-    port_range       = "22"
-    source_addresses = ["0.0.0.0/0", "::/0"]
-  }
-
-  # Tailscale coordination / direct connections.
+  # Tailscale coordination / direct connections. The ONLY public ingress.
   inbound_rule {
     protocol         = "udp"
     port_range       = "41641"
