@@ -2,8 +2,9 @@
 
 Terraform provisions one droplet as a **Kamal-ready host** — Docker, a Tailscale
 join (the app is reachable **only over the VPN**), the TLS/proxy prep, and the
-authorized SSH keys — plus the firewall (no public app ingress) and an optional DNS
-record. It does **not** run the app: [Kamal](https://kamal-deploy.org/) owns the
+authorized SSH keys — plus a reserved IP and the firewall (no public app ingress).
+It creates **no** DNS record: a separate `domain-cert` CI workflow upserts the
+Cloudflare record. It does **not** run the app either: [Kamal](https://kamal-deploy.org/) owns the
 app stack (a `web` role and a `worker` role, with Redis — and, on staging, a
 throwaway Postgres — as accessories). Production points Kamal at a DigitalOcean
 Managed Postgres cluster instead, so the database survives a droplet rebuild.
@@ -14,13 +15,16 @@ The same module serves staging and production — the only difference is the
 ## Files
 
 - `main.tf` — provider, `terraform`/`backend "s3"` block, variables, droplet,
-  firewall, optional DNS record, outputs (incl. the managed-DB connection details
-  the production Kamal deploy consumes).
+  reserved IP, firewall (no public app ingress), outputs (incl. the managed-DB
+  connection details the production Kamal deploy consumes). No DNS resource — the
+  `domain-cert` CI workflow owns the Cloudflare record.
 - `cloud-init.yaml.tftpl` — droplet bootstrap for a **Kamal-ready** host: installs
-  Docker, joins Tailscale, prepares the kamal-proxy TLS cert, and authorizes the
-  Kamal deploy key + admin/tooling keys for root. It deliberately does **not** pull
-  the image or start the app — Kamal does that over its SSH control channel after
-  Terraform finishes.
+  Docker, joins Tailscale, runs **Caddy** as the TLS-terminating edge proxy
+  (fronting kamal-proxy on `:8080`) and — only when a domain is set — bootstraps a
+  self-signed cert for it, and authorizes the Kamal deploy key + admin/tooling keys
+  for root. It deliberately does **not** pull the image or start the app (nor
+  kamal-proxy) — Kamal does that over its SSH control channel after Terraform
+  finishes.
 - `backend.staging.hcl` — partial S3-backend config (bucket/key/endpoint) for
   staging's remote state on DigitalOcean Spaces; passed at `terraform init` with
   `-backend-config`. Production uses a mirrored copy.
@@ -43,8 +47,8 @@ Only these are Terraform's:
 | `TF_VAR_deploy_ssh_pubkey` | Public half of the Kamal deploy keypair, authorized for root by cloud-init |
 | `TF_VAR_ssh_host_ed25519_key` | Optional pinned SSH host **private** key (stable host identity across rebuilds); its public half is `TF_VAR_ssh_host_ed25519_key_pub` |
 
-`TF_VAR_admin_ssh_pubkeys` (break-glass operator keys) is also passed this way but
-is a public key, not a secret.
+`admin_ssh_pubkeys` (break-glass operator keys) is a public key, not a secret; in
+CI it's supplied through the committed `staging.tfvars`, not a `TF_VAR_` secret.
 
 ### Backend (Spaces) credentials — passed at `init`, not as `TF_VAR_*`
 
