@@ -75,12 +75,27 @@ module ConnectionBudget
   }.freeze
 
   # database.yml is the one file that must never raise: a process that cannot render it
-  # cannot boot at all. `Integer("")` does raise, and an env var set to empty is a
-  # routine accident -- Kamal's `env: clear:` renders `<%= ENV["X"] %>` to "" whenever X
-  # is unset on the deploy runner. Treat blank as absent.
+  # cannot boot at all. An env var set to EMPTY is a routine accident -- Kamal's
+  # `env: clear:` renders `<%= ENV["X"] %>` to "" whenever X is unset on the deploy
+  # runner -- and `Integer("")` raises, so blank means absent.
+  #
+  # A value that is present but not a positive integer is a different thing: a config
+  # error, not an accident. That fails loudly, naming the variable, rather than booting
+  # on a number nobody chose. Base 10 is explicit because `Integer("010")` is otherwise
+  # 8, and a zero-padded thread count silently shrinking the pool is exactly the class of
+  # surprise this file exists to end.
   def int_env(key, default)
-    value = ENV[key]
-    value.nil? || value.strip.empty? ? default : Integer(value.strip)
+    raw = ENV[key]
+    return default if raw.nil? || raw.strip.empty?
+
+    value = begin
+      Integer(raw.strip, 10)
+    rescue ArgumentError
+      raise ArgumentError, "#{key}=#{raw.inspect} is not an integer"
+    end
+    raise ArgumentError, "#{key}=#{raw.inspect} must be a positive integer" unless value.positive?
+
+    value
   end
 
   def rails_env
@@ -192,20 +207,35 @@ module ConnectionBudget
   # server actually serve them? It has to reason about both roles at once, so it works
   # from the config rather than from this process's shape.
 
-  # Connections a single `web` process (Puma, no job threads) costs the server. One web
-  # process is all there is: config/puma.rb never calls `workers`, so Puma runs in single
-  # mode and WEB_CONCURRENCY is inert. Turning on cluster mode multiplies this term, and
-  # the budget below would have to multiply with it.
-  def web_connections
-    int_env("RAILS_MAX_THREADS", 3) + PROCESS_OVERHEAD + cable_pool
+  # The primary pool each DEPLOYED role opens. These honour DB_POOL for the same reason
+  # `primary_pool` does: DB_POOL is the knob an operator reaches for while connections are
+  # the thing going wrong, and a budget that could not see it would keep reporting a
+  # comfortable 91 while the worker quietly promised 60. The override that hides from the
+  # check is worse than no override.
+  #
+  # Deliberately the `:external` shape (web runs Puma only, worker runs the schedulers),
+  # not this process's shape: the budget describes the deployment, and development's
+  # `:async` single-process mode is not a deployment.
+  def deployed_web_primary_pool
+    int_env("DB_POOL", int_env("RAILS_MAX_THREADS", 3) + PROCESS_OVERHEAD)
   end
 
-  # Connections a single `worker` process (`good_job start`) costs the server: its
-  # primary pool, its cable pool, and the Notifier's LISTEN connection, which lives
-  # outside every pool.
+  def deployed_worker_primary_pool
+    int_env("DB_POOL", good_job_scheduler_threads + GOOD_JOB_UTILITY_THREADS + PROCESS_OVERHEAD)
+  end
+
+  # Connections a single `web` process costs the server. One web process is all there is:
+  # config/puma.rb never calls `workers`, so Puma runs in single mode and WEB_CONCURRENCY
+  # is inert. Turning on cluster mode multiplies this term, and the budget with it.
+  def web_connections
+    deployed_web_primary_pool + cable_pool
+  end
+
+  # Connections a single `worker` process (`good_job start`) costs the server: its primary
+  # pool, its cable pool, and the Notifier's LISTEN connections, which live outside every
+  # pool.
   def worker_connections
-    good_job_scheduler_threads + GOOD_JOB_UTILITY_THREADS + PROCESS_OVERHEAD +
-      cable_pool + GOOD_JOB_NOTIFIER_CONNECTIONS
+    deployed_worker_primary_pool + cable_pool + GOOD_JOB_NOTIFIER_CONNECTIONS
   end
 
   # What one web + one worker commit to at steady state.

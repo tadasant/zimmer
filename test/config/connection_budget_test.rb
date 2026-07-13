@@ -127,6 +127,33 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
     end
   end
 
+  test "a thread count is read in base 10, and a nonsense one fails loudly" do
+    # Integer("010") is 8. A zero-padded count silently shrinking the pool is the exact
+    # class of surprise this module exists to end.
+    as_worker("GOOD_JOB_AGENTS_THREADS" => "010") do
+      assert_equal 10, ConnectionBudget.good_job_queue_threads.fetch(:agents)
+    end
+
+    [ "0", "-4", "abc" ].each do |nonsense|
+      as_worker("GOOD_JOB_AGENTS_THREADS" => nonsense) do
+        assert_raises(ArgumentError) { ConnectionBudget.good_job_queue_threads }
+      end
+    end
+  end
+
+  test "DB_POOL moves the budget, not just the pool" do
+    # DB_POOL is the knob an operator reaches for while connections are the thing going
+    # wrong. A budget blind to it would keep reporting a comfortable number while the
+    # worker quietly promised far more -- an override that hides from the check is worse
+    # than no override.
+    raised = as_worker("DB_POOL" => 60) do
+      assert_equal 60, ConnectionBudget.primary_pool
+      ConnectionBudget.required_backends
+    end
+
+    assert_operator raised, :>, as_worker { ConnectionBudget.required_backends }
+  end
+
   # --- The server-side budget --------------------------------------------------
 
   test "the budget counts both roles, the notifier's connection, and a Kamal cutover" do

@@ -225,6 +225,18 @@ not work for Zimmer, for two independent reasons:
 
 Session-mode pooling maps clients 1:1 onto backends, so it buys nothing at all. The lever is the plan.
 
+### Terraform's connection check sees the repo, not the container
+
+`app_required_backends` in `infra/terraform/main.tf` is a literal, kept equal to
+`ConnectionBudget.required_backends` by a test — so changing the app's **defaults** moves the guard
+with them. Changing them through the **environment** does not: raise `GOOD_JOB_AGENTS_THREADS` or
+`DB_POOL` in `config/deploy.production.yml` and the app's real promise grows while Terraform keeps
+validating the old number and passes.
+
+Nothing sets those variables today, so the shipped numbers are correct. The check that *does* see the
+running configuration is `bin/rails db:connection_budget` — it reads the actual process env and the
+actual server, and exits non-zero when they don't fit. Run it in the container, not on your laptop.
+
 ### A saturated `cable` pool would degrade silently
 
 `BroadcastService` rescues every broadcast failure and deliberately does not re-raise — a failed Turbo
