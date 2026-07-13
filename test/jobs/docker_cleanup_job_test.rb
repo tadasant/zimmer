@@ -32,6 +32,9 @@ class DockerCleanupJobTest < ActiveJob::TestCase
       ao-dev-abc12345\t#{old_time}
       ao-dev-def67890\t#{recent_time}
       pulsemcp-dev-aaa11111\t#{old_time}
+      zimmer-dev-feature-x\t#{old_time}
+      zimmer-dev-fresh\t#{recent_time}
+      zimmer-dev-local\t#{old_time}
       zimmer-web-production-xyz\t#{old_time}
     OUTPUT
 
@@ -41,7 +44,10 @@ class DockerCleanupJobTest < ActiveJob::TestCase
 
       assert_includes stale, "ao-dev-abc12345", "Old ao-dev should be stale"
       assert_includes stale, "pulsemcp-dev-aaa11111", "Old pulsemcp-dev should be stale"
+      assert_includes stale, "zimmer-dev-feature-x", "Old zimmer-dev (ac.sh) should be stale"
+      assert_includes stale, "zimmer-dev-local", "Old zimmer-dev-local (manual) should be stale"
       assert_not_includes stale, "ao-dev-def67890", "Recent ao-dev should not be stale"
+      assert_not_includes stale, "zimmer-dev-fresh", "Recent zimmer-dev should not be stale"
       assert_not_includes stale, "zimmer-web-production-xyz", "Non-dev containers should be excluded"
     end
   end
@@ -73,6 +79,7 @@ class DockerCleanupJobTest < ActiveJob::TestCase
 
   test "DEV_SERVER_PREFIXES covers known dev-server naming conventions" do
     prefixes = DockerCleanupJob::DEV_SERVER_PREFIXES
+    assert prefixes.any? { |p| "zimmer-dev-abc12345".start_with?(p) }
     assert prefixes.any? { |p| "ao-dev-abc12345".start_with?(p) }
     assert prefixes.any? { |p| "pulsemcp-dev-abc12345".start_with?(p) }
     assert_not prefixes.any? { |p| "zimmer-web".start_with?(p) }

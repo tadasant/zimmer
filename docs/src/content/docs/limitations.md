@@ -924,6 +924,26 @@ Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
 
 ---
 
+## Development environment
+
+### The containerized dev env's "manual" path is a single shared stack, not isolated
+
+`.agent-containers/` provides a containerized dev stack (`docker-compose.dev.yml`). The compose file
+hardcodes `name: zimmer-dev-local`, so running it directly (`docker compose -f
+.agent-containers/docker-compose.dev.yml up`) always uses the **same** Compose project regardless of
+which clone you run it from. Two clones started that way collide — they share containers, the
+`postgres_data` volume, and the port, and tearing one down (including
+`DockerComposeCleanupService` cleaning up a clone) takes the other with it.
+
+Per-session isolation comes only from `.agent-containers/ac.sh`, which passes `-p zimmer-dev-<name>`
+to give each session its own project, clone, and dynamic port. That's the path agents and anyone
+running several instances in parallel should use; the manual/devcontainer path is for a single
+instance. This is a consequence of `DockerComposeCleanupService` deriving the project name purely
+from the compose file path (no per-clone input), and isn't worth reworking that inherited service
+for — use `ac.sh` when you need isolation.
+
+---
+
 ## Product gaps
 
 ### Auto-categorization has no feedback loop

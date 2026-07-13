@@ -6,8 +6,9 @@ require "open3"
 #
 # Three responsibilities:
 #
-#   1. **Stale dev-server cleanup** — Dev-server Compose stacks (ao-dev-*, pulsemcp-dev-*)
-#      are started by agent sessions but aren't tracked in the DB by project name. If the
+#   1. **Stale dev-server cleanup** — Dev-server Compose stacks (zimmer-dev-*, and the
+#      inherited ao-dev-*/pulsemcp-dev-* from Zimmer's ancestor) are started by agent
+#      sessions but aren't tracked in the DB by project name. If the
 #      session's clone-based cleanup fails (disk full, timeout, clone already deleted), the
 #      containers become permanent orphans. This job discovers them by naming convention and
 #      stops any stack running longer than MAX_DEV_SERVER_AGE.
@@ -29,8 +30,11 @@ class DockerCleanupJob < ApplicationJob
   # and restarting a dev-server is cheap if we accidentally stop an active one.
   MAX_DEV_SERVER_AGE = 6.hours
 
-  # Docker Compose project name prefixes used by dev-server skills
-  DEV_SERVER_PREFIXES = %w[ao-dev- pulsemcp-dev-].freeze
+  # Docker Compose project name prefixes used by dev-server skills.
+  # `zimmer-dev-` is Zimmer's own (.agent-containers/ac.sh names stacks this way);
+  # `ao-dev-`/`pulsemcp-dev-` are inherited from Zimmer's ancestor and kept so a
+  # mixed-history box doesn't leak either lineage's stacks.
+  DEV_SERVER_PREFIXES = %w[zimmer-dev- ao-dev- pulsemcp-dev-].freeze
 
   # Keep images used in the last 24 hours (covers rollback window)
   IMAGE_AGE_FILTER = "24h"
