@@ -15,9 +15,9 @@ edge worth stating up front:
 :::caution[A misconfigured deployment is indistinguishable from a healthy quiet one]
 `config/initializers/otel_logs_exporter.rb` and `config/initializers/sentry.rb` are **hard
 no-ops** when their env vars are missing. Nothing raises, nothing warns, the app boots
-perfectly — and no data ever arrives. Zimmer's staging environment ran this way for its
-entire existence before anyone noticed. Do not infer "no errors" from "no data"; ask the app
-with `bin/rails obs:status`.
+perfectly — and no data ever arrives. A deployment can sit in that state indefinitely without
+anything anywhere saying so. Do not infer "no errors" from "no data"; ask the app with
+`bin/rails obs:status`.
 :::
 
 ## What gets shipped
@@ -74,9 +74,10 @@ project and its own DSN.
 ## Configuring it
 
 The three variables reach the container as Kamal secrets (`env.secret` in
-`config/deploy.<dest>.yml`, mapped in `.kamal/secrets.<dest>`). They are needed at boot,
-before encrypted credentials are readable, so they are deploy-time environment — not
-`config/credentials/<env>.yml.enc`.
+`config/deploy.<dest>.yml`, mapped in `.kamal/secrets.<dest>`). They are deploy-time
+environment rather than `mcp_secrets` in `config/credentials/<env>.yml.enc`, because the
+initializers read `ENV` — and because staging's encrypted credentials are themselves
+optional, so a telemetry config that depended on them would inherit that fragility.
 
 Staging's deploy-side names are `STAGING_`-prefixed, like every other staging secret:
 

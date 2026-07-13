@@ -103,23 +103,29 @@ namespace :obs do
     #    the network, is broken.
     puts "[2/3] Live logger path (Rails.logger.error -> broadcast appender -> export thread)"
     Rails.logger.error("[obs:smoke] live logger path #{marker}")
-    if exporter
+    if exporter&.describe&.fetch(:running)
+      # Wait for the export thread to drain the queue rather than racing
+      # `at_exit { shutdown }`, which closes the queue and silently drops whatever is
+      # still in it. pending==0 means the record was POPPED, not that the POST has
+      # returned, so allow a brief settle for the in-flight request. Bounded on both
+      # sides: a wedged exporter delays the task, it does not hang it.
       deadline = Time.now + 10
       sleep 0.1 while exporter.pending.positive? && Time.now < deadline
-      # pending==0 means the export thread POPPED the record, not that the POST has
-      # returned. Give the in-flight request a moment rather than racing at_exit,
-      # which closes the queue and drops whatever is left.
       sleep 1
       puts "      handed to the export thread (pending=#{exporter.pending})"
+    elsif exporter
+      puts "      export thread is NOT running -- the record was queued but nothing will ship it."
     else
       puts "      exporter disabled; the line was logged to stdout only."
     end
 
-    # 3. GlitchTip.
+    # 3. GlitchTip. Sentry.close flushes the SDK's background worker; it also
+    #    permanently disables the client, which is correct for a one-shot rake
+    #    process and is why this task must not be invoked in-process.
     if Sentry.initialized?
       puts "[3/3] GlitchTip event"
       Sentry.capture_message("[obs:smoke] #{marker}", level: :error)
-      Sentry.close # flushes the background worker's queue before we exit
+      Sentry.close
       puts "      captured + flushed"
     else
       puts "[3/3] GlitchTip event -- SKIPPED: Sentry not initialized (SENTRY_DSN_BACKEND unset)."
@@ -130,6 +136,6 @@ namespace :obs do
     puts "  curl -s http://127.0.0.1:9428/select/logsql/query --data-urlencode \\"
     puts "    'query={service.name=\"zimmer\"} deployment.environment:=#{Rails.env} \"#{marker}\"'"
     puts "Expect 2 records (the probe + the live logger line) if both steps above passed."
-    puts "In GlitchTip: search the zimmer project's issues for #{marker}."
+    puts "In GlitchTip: search the zimmer-#{Rails.env} project's issues for #{marker}."
   end
 end

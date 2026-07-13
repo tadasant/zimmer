@@ -220,20 +220,26 @@ jobs:
           # Observability preflight. Also non-fatal -- both initializers are hard
           # no-ops on an empty value, so staging boots fine without them. But an
           # unset obs secret is otherwise INVISIBLE: the app logs nothing, Kamal
-          # reports success, and the only symptom is an empty Grafana. Staging ran
-          # that way for its entire existence. Print the state on every deploy so
-          # "staging ships no telemetry" is a line you can read, not a thing you
-          # have to go discover.
+          # reports success, and the only symptom is an empty Grafana. Print the state
+          # on every deploy so "staging ships no telemetry" is a line you can read,
+          # not a thing you have to go discover.
+          #
+          # Report only whether each secret is SET, never its value. These arrive from
+          # `secrets.*`, and GitHub masks a secret's value anywhere in the log -- so
+          # echoing the endpoint would print `***` and tell you nothing, while any
+          # attempt to print a "safe substring" of the DSN would be one malformed value
+          # away from leaking the whole thing. Set/unset is the entire question here
+          # anyway; `bin/rails obs:status` on the box reports the endpoint.
           echo "--- observability preflight ---"
           if [ -n "${STAGING_OTEL_LOGS_EXPORTER_ENDPOINT:-}" ] && [ -n "${STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN:-}" ]; then
-            echo "✅ OTLP logs -> ${STAGING_OTEL_LOGS_EXPORTER_ENDPOINT} (deployment.environment=staging)"
+            echo "✅ OTLP logs ON (endpoint + bearer token set; deployment.environment=staging)"
           else
             echo "::warning::OTLP logs are OFF: set BOTH STAGING_OTEL_LOGS_EXPORTER_ENDPOINT and"
             echo "::warning::STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN. Either one missing is a silent no-op,"
             echo "::warning::and staging logs will never reach VictoriaLogs."
           fi
           if [ -n "${STAGING_SENTRY_DSN_BACKEND:-}" ]; then
-            echo "✅ GlitchTip errors -> project at ${STAGING_SENTRY_DSN_BACKEND##*@}"
+            echo "✅ GlitchTip errors ON (DSN set -- it must be a STAGING-only project)"
           else
             echo "::warning::GlitchTip errors are OFF: STAGING_SENTRY_DSN_BACKEND is unset."
           fi
