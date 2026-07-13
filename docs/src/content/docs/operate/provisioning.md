@@ -21,6 +21,7 @@ Terraform only provisions the **host**. The app image, its env, and the data sto
 | `admin_ssh_pubkeys` | Operator/tooling public keys cloud-init authorizes for `root`, on top of the Kamal deploy key. Per environment, and the environments are **[deliberately not the same](/operate/ssh-access/#who-is-authorized-where)** — do not reconcile them. `[]` by default: set it in `*.tfvars`, never as a module default, so a fork does not silently authorize someone else's key. It rides cloud-init, so a key added here [reaches only a rebuilt box](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet). |
 | `ssh_key_fingerprints` | DigitalOcean-registered keys. **Leave it empty.** It is `ForceNew` on `digitalocean_droplet`, so adding a key makes the deploy workflow's auto-approved `terraform apply` *destroy and recreate the droplet* — skipping the tailnet-node reap that only runs behind `recreate_droplet`, which lands the replacement as `zimmer-<env>-1` and breaks the hostname the deploy resolves. Use `admin_ssh_pubkeys`: it rides cloud-init, which is under `ignore_changes`, so it can never force-replace the box. |
 | `managed_db_cluster_name` | `""` for staging (Kamal runs a throwaway Postgres accessory); set for production |
+| `app_required_backends` | Client backends the database must be able to serve. Not a free parameter — it is what `ConnectionBudget.required_backends` derives (see [the connection budget](/operate/deploying/#the-database-connection-budget)), and a test fails if the two drift. A `lifecycle.postcondition` on the managed cluster fails the plan when its plan slug cannot serve it. |
 
 **Secrets** (as `TF_VAR_*`):
 
@@ -30,6 +31,38 @@ host identity so it survives a rebuild — see [Hostname stability](#hostname-st
 
 A `lifecycle.precondition` on the droplet fails the plan if `deploy_ssh_pubkey` is empty, since Kamal
 could not reach the box.
+
+## The managed Postgres cluster
+
+Production points `DATABASE_HOST` at a DigitalOcean Managed Postgres cluster, named by
+`managed_db_cluster_name`. Terraform holds it as a **data source**, deliberately: a data source has no
+destroy path, so Terraform can never delete, replace, or resize the one irreplaceable resource in the
+system. Staging has no managed cluster at all — it runs a throwaway `postgres:16` Kamal accessory on
+the droplet.
+
+The consequence worth knowing before you size anything: **the connection ceiling is a property of the
+plan, and Terraform cannot change it.** DigitalOcean allots 25 connections per GiB of RAM and reserves
+3 for its own superuser, so the app only ever sees `(25 × GiB) − 3`:
+
+| Plan | Usable backends |
+| --- | --- |
+| `db-s-1vcpu-1gb` | 22 |
+| `db-s-1vcpu-2gb` | 47 |
+| `db-s-2vcpu-4gb` | 97 |
+| `db-s-4vcpu-8gb` | 197 |
+
+`max_connections` is not in DigitalOcean's tunable Postgres config surface, and a DigitalOcean
+connection pool cannot conjure headroom either — a pool's backends are allotted *out of* this same
+number. Growing the ceiling means changing the plan:
+
+```bash
+doctl databases resize <cluster-id> --size db-s-2vcpu-4gb --num-nodes 1
+```
+
+That is an in-place operator action. What Terraform does instead is refuse to proceed without it: a
+`lifecycle.postcondition` on the data source fails the plan when the cluster's slug cannot serve
+`app_required_backends`. The error names the current plan, the number of backends it serves, and the
+resize command.
 
 ## GitHub Actions secrets
 

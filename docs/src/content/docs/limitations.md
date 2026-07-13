@@ -194,6 +194,47 @@ root password**, which mails a new one *and* force-expires it again (`lastchg=0`
 buys you a console also re-breaks `:2222` until the next staging deploy converges it, or until
 `scripts/clear-root-password-expiry.sh` is run against the box.
 
+### 🔴 The database's connection ceiling is a plan property, and Terraform will not raise it for you
+
+Zimmer's connection promise is derived and checked ([the connection
+budget](/operate/deploying/#the-database-connection-budget)), but the *other* half — the number of
+slots the cluster actually has — is fixed by the DigitalOcean plan slug, and Terraform holds the
+production cluster as a data source on purpose, so it has no resize path. All Terraform can do is
+refuse to plan against a cluster that is too small, which is what its `lifecycle.postcondition` does.
+
+The order of operations is therefore: **resize the cluster first, deploy second.** A cluster that
+cannot serve the budget fails `terraform apply` with the `doctl databases resize` command in the error
+message. Promoting the cluster to a managed resource (with `prevent_destroy` and a one-time
+`terraform import`) would let Terraform do the resize itself, at the cost of giving it a destroy path
+over the one irreplaceable resource in the system. That trade has not been made.
+
+### PgBouncer is not an option here, whatever the connection math says
+
+The reflex for connection exhaustion is a transaction-mode pooler, and DigitalOcean ships one. It does
+not work for Zimmer, for two independent reasons:
+
+- **GoodJob forbids it.** Its README is explicit: *"GoodJob is not compatible with PgBouncer in
+  transaction mode"* — it uses connection-based advisory locks and `LISTEN`/`NOTIFY`, both of which
+  need a full session. The escape hatch (`lock_strategy = :skiplocked` plus
+  `enable_listen_notify = false` plus `advisory_lock_heartbeat = false`) is marked experimental and
+  trades away the dead-worker detection that reclaims a Zimmer agent session whose worker died.
+- **It would not create headroom anyway.** A DigitalOcean pool's backend connections are allotted *out
+  of* the cluster's `max_connections`, not on top of it. Pooling the `web` role — the one role whose
+  connections are short-lived enough to multiplex — would save a handful of slots on a process that
+  only wants eight.
+
+Session-mode pooling maps clients 1:1 onto backends, so it buys nothing at all. The lever is the plan.
+
+### Staging cannot exercise the managed-database path
+
+Staging runs a `postgres:16` Kamal accessory on the droplet; only production has a managed cluster. So
+staging *can* verify the app-side half of the connection budget — the pools each process opens, which
+is where the 2026-07-13 defect lived — and it can verify the pools fit the server. It cannot exercise
+the Terraform postcondition, the DigitalOcean plan ceiling, or a resize, because it has none of them.
+The accessory's `max_connections=100` (the `postgres:16` default) happens to leave 97 usable backends,
+the same as the `db-s-2vcpu-4gb` plan, which makes the comparison a fair one — but it is a
+coincidence, not a guarantee, and nothing pins it.
+
 ### Rebuilding staging costs a Let's Encrypt issuance, and there are only five a week
 
 The custom-domain cert lives in exactly one place: on the droplet, pushed there by
