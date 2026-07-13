@@ -1,6 +1,6 @@
 ---
 title: Philosophy
-description: The opinions baked into Zimmer — isolated clones, closed-loop autonomy, MCP as a blast radius, catalog-resolved context, and PR-as-review-gate.
+description: The opinions baked into Zimmer — isolated clones, closed-loop autonomy, MCP as a blast radius, catalog-resolved context, one way to do each thing, no memory, and PR-as-review-gate.
 sidebar:
   order: 2
 ---
@@ -104,8 +104,11 @@ you can look up, and that answer should be different for different tasks.
 
 The corollary is that credentials follow the tools. MCP servers that need OAuth get
 their own credential records, their own refresh loop, and their own injection step at spawn
-time. A session doesn't have your GitHub token because you have a GitHub token; it has it
+time. A session doesn't have your Notion token because you have a Notion token; it has it
 because it has an MCP server that needs one. See [MCP server OAuth](/auth/mcp-oauth/).
+
+GitHub is the exception, and not a flattering one: there is no GitHub MCP server: every session
+shares one host-level `gh` login instead. See [§7](#7-there-is-one-way-to-do-each-thing).
 
 ## 5. Agent roots are the answer to "what does this agent need to know?"
 
@@ -155,7 +158,64 @@ fails to resolve takes down all session creation at once. Zimmer takes
 that seriously enough to keep a last-known-good snapshot in the database and degrade to it.
 See [How Zimmer consumes AIR](/air/zimmer-integration/).
 
-## 7. The pull request is the review gate
+## 7. There is one way to do each thing
+
+Boundedness is mostly an argument about context. There is largely one way to do each thing:
+every kind of context an agent needs has one artifact type that carries it, and no second way in.
+
+- An **external integration** is an [MCP server](/air/mcp-servers/). Zimmer ships no bespoke
+  integration code for an agent to call — no Slack client, no Notion client. Adding a capability
+  to a session is an entry in `mcp.json`.
+- A **procedure** is a [skill](/air/artifacts/). "How you deploy staging here" lives in a
+  `SKILL.md` that the catalog injects, so nobody has to remember to paste it into a prompt.
+- A **workspace's standing context** is an [agent root](/air/agent-roots/), and a session
+  resolves to at most one. You cannot stack two.
+- **Prose that more than one skill needs** is a [reference](/air/artifacts/), written once. That
+  one is enforced structurally: references are not independently selectable, and the only way one
+  reaches an agent is a skill that declares it. There is no second copy to drift. The brand voice
+  these docs are written in lives in exactly one file, and the skills that need it declare it
+  rather than carrying their own paraphrase.
+
+That top layer — four artifact types — is meant to stay stable, so by default you don't need to
+know how any of it is implemented, and when something does go wrong you drill down into a part
+you can name instead of into sprawl. When an agent does something you didn't expect, the input
+that caused it is one of four files you can go read.
+
+:::caution[The shell is the hole in this]
+One way in is a real boundary for context. It is not one for reach. Every session also inherits
+`gh`, `git`, an SSH key, and an unrestricted shell from the image, so an agent can touch GitHub,
+any host that key opens, and any URL without a single `mcp.json` entry. Credentials leak the same
+way: MCP OAuth is genuinely per-server and per-session, but `gh` is one host-level login every
+session shares, and *every* value in `mcp_secrets` is written to a `.env` file in *every* clone,
+regardless of which servers that session actually selected. That is a known gap, not a design.
+See [the auth overview](/auth/overview/) and [Known limitations](/limitations/).
+:::
+
+## 8. Nothing accretes: there is no memory
+
+The absence is the load-bearing part. Zimmer spawns Claude with
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. There is no memory store and no skill that rewrites itself.
+Nothing is injected into a fresh session because some earlier session learned it: what an agent
+knows at spawn comes from the catalog and the prompt, and from nowhere else.
+
+A *session* remembers. It has a clone, a transcript, and a scratch directory, and you can pick it
+back up two days later. The *fleet* does not accrete on its own. For something one session
+learned to become something every later session knows, it has to land in the catalog or the
+codebase — which means a pull request a human merged.
+
+The failure mode this avoids is the usual one for a hand-rolled agent rig: a self-learning agent
+let loose on a machine, layers of glue nobody understands, regular breakages, and no road back. A
+rig that quietly rewrites its own context has no road back because there is no version of it to
+go back *to*. Every standing input to a Zimmer agent — its skills, its root, its references, its
+MCP list — is a file in a git repository, and the only way it changes is a diff you approved.
+
+:::note[Sessions can still talk to each other — explicitly]
+A session holding the `zimmer-sessions` MCP server can read another session's notes and
+transcript, and a session can write its own notes. That is not memory leaking; it's a tool grant,
+scoped per session like every other one, and it shows up in the session's MCP list.
+:::
+
+## 9. The pull request is the review gate
 
 Zimmer agents do not merge their own work. Ever. The goal descriptions say so explicitly,
 and the operating principles injected into every session's system prompt say so again.
@@ -173,7 +233,7 @@ your homepage, and it stays there until you deal with it. `needs_input` is a to-
 agents are told not to archive themselves out of it when a human still needs to read
 something.
 
-## 8. Be honest about what's broken
+## 10. Be honest about what's broken
 
 The last opinion is about these docs.
 
