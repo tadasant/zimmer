@@ -5,6 +5,12 @@ sidebar:
   order: 1
 ---
 
+:::tip[Prefer containers?]
+This page runs Zimmer as host processes and expects you to supply Postgres and
+Redis. To run the whole stack in Docker instead — no host Ruby, Postgres, or Redis
+— see [Run it in containers](/start/containers/).
+:::
+
 ## Prerequisites
 
 - **Ruby 3.4.6** (see `.ruby-version`)

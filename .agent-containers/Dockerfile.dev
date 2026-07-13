@@ -1,0 +1,81 @@
+# syntax=docker/dockerfile:1
+
+# Development image for a containerized Zimmer instance.
+#
+# This is NOT the production Dockerfile (that one lives at the repo root and is
+# built for Kamal). This image is a batteries-included dev box: it carries the
+# system libraries the app and its gems need, plus the CLI tooling an agent
+# session expects (git, gh, ripgrep, tmux, jq, Docker CLI, Claude Code).
+#
+# The repo is bind-mounted at /app at runtime (see docker-compose.dev.yml), so we
+# deliberately do NOT COPY the app in — gems are installed by setup.sh against the
+# mounted Gemfile so bundle state lives in the repo's own vendor/ or the shared
+# bundle path, and code edits on the host are reflected instantly in the container.
+
+# Pinned to Zimmer's .ruby-version (3.4.6). Keep in lockstep with that file.
+FROM ruby:3.4.6-slim
+
+# System dependencies:
+#   - build-essential, libpq-dev, libyaml-dev, pkg-config: native gem builds (pg, etc.)
+#   - libvips: Active Storage image processing
+#   - git, curl, openssh-client: source control + fetching installers
+#   - tmux, jq, ripgrep: agent session ergonomics (ac.sh runs Claude Code in tmux)
+#   - nodejs, npm: the AIR CLI (npx @pulsemcp/air) and npx-based MCP servers
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y \
+        build-essential \
+        libpq-dev \
+        libyaml-dev \
+        pkg-config \
+        libvips \
+        git \
+        curl \
+        ca-certificates \
+        gnupg \
+        openssh-client \
+        tmux \
+        jq \
+        ripgrep \
+        nodejs \
+        npm && \
+    rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI (gh) — agents open PRs with it, and it brokers git credentials below.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends -y gh && \
+    rm -rf /var/lib/apt/lists/*
+
+# Docker CLI + compose plugin. The host's /var/run/docker.sock is mounted in, so a
+# session can spawn sibling containers (e.g. drive its own nested dev stacks).
+RUN install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc && \
+    chmod a+r /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+        > /etc/apt/sources.list.d/docker.list && \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends -y docker-ce-cli docker-compose-plugin && \
+    rm -rf /var/lib/apt/lists/*
+
+# Claude Code CLI (native installer). Adds ~/.local/bin to PATH for the `claude`
+# binary. ac.sh launches it inside tmux for interactive agent sessions.
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Use gh as the git credential helper for GitHub, so a mounted `gh` auth token
+# transparently authenticates git pushes/pulls over HTTPS.
+RUN git config --global credential."https://github.com".helper "!gh auth git-credential" && \
+    git config --global credential."https://gist.github.com".helper "!gh auth git-credential" && \
+    git config --global --add safe.directory /app
+
+WORKDIR /app
+
+# The compose file overrides this with `sleep infinity` (the container is a
+# long-lived workspace; the Rails server is started inside it by run.sh). This
+# default keeps `docker run` on the image alone from exiting immediately.
+CMD ["sleep", "infinity"]
