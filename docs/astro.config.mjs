@@ -114,6 +114,7 @@ export default defineConfig({
             { label: "Self-hosting Zimmer", slug: "operate/self-hosting" },
             { label: "Deploying", slug: "operate/deploying" },
             { label: "Provisioning and secrets", slug: "operate/provisioning" },
+            { label: "SSH and tailnet access", slug: "operate/ssh-access" },
             { label: "The private companion repo", slug: "operate/companion-repo" },
             { label: "Background jobs", slug: "operate/background-jobs" },
             { label: "Observability", slug: "operate/observability" },
