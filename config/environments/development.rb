@@ -62,7 +62,7 @@ Rails.application.configure do
 
   # GoodJob configuration for development
   # Use :async mode for development - runs jobs in separate threads within the Rails process
-  config.good_job.execution_mode = :async
+  config.good_job.execution_mode = ConnectionBudget.execution_mode
 
   # Queue configuration matching production for dev/prod parity (configurable via ENV):
   # - agents: Long-running AgentSessionJob instances
@@ -71,12 +71,11 @@ Rails.application.configure do
   #     ScheduleTriggerJob) — isolated so wakes aren't starved by the `default`
   #     queue's periodic/bulk backlog.
   # - default: Everything else
-  agents_threads = ENV.fetch("GOOD_JOB_AGENTS_THREADS", 16).to_i
-  pollers_threads = ENV.fetch("GOOD_JOB_POLLERS_THREADS", 3).to_i
-  triggers_threads = ENV.fetch("GOOD_JOB_TRIGGERS_THREADS", 2).to_i
-  default_threads = ENV.fetch("GOOD_JOB_DEFAULT_THREADS", 4).to_i
-  config.good_job.queues = "agents:#{agents_threads};pollers:#{pollers_threads};triggers:#{triggers_threads};default:#{default_threads}"
-  config.good_job.max_threads = ENV.fetch("GOOD_JOB_MAX_THREADS", 24).to_i
+  #
+  # From ConnectionBudget, which also sizes the pool in database.yml. In :async these
+  # threads run inside the web process, so that pool covers Puma AND GoodJob.
+  config.good_job.queues = ConnectionBudget.good_job_queues
+  config.good_job.max_threads = ConnectionBudget.good_job_max_threads
   config.good_job.poll_interval = 5
   config.good_job.enable_cron = true
   config.good_job.cron = {

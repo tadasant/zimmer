@@ -131,6 +131,46 @@ Both roles mount the same durable named volumes, so state survives a deploy and 
 - `claude_local` → `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
 - The `worker` role additionally mounts `/var/run/docker.sock`, which `DockerCleanupJob` needs.
 
+## The database connection budget
+
+Managed Postgres hands out a hard, small number of connection slots, and an ActiveRecord pool is a
+*promise* to use up to that many. The promise is lazy — an overcommitted app looks perfectly healthy
+until real traffic calls it in, and then Postgres refuses with `FATAL: remaining connection slots are
+reserved for roles with the SUPERUSER attribute`, which Rails serves as a 500. Nothing in a Rails boot
+compares the promise against the server, so Zimmer does it in two places instead.
+
+**`config/connection_budget.rb`** is the single source of truth. Two roles times two databases is four
+ActiveRecord pools, and they have four different right answers — a flat number is correct for at most
+one of them:
+
+| Pool | Sized for | Why |
+| --- | --- | --- |
+| `web` → `primary` | Puma's threads (`RAILS_MAX_THREADS`, 3) | A request holds a connection for the request. |
+| `worker` → `primary` | **every** GoodJob scheduler thread | An executing job holds its connection for the *whole job*: GoodJob's advisory lock is session-scoped, so it leases the connection stickily. Zimmer's agent jobs run for hours. |
+| both → `cable` | concurrent in-flight broadcasts | `solid_cable` takes no advisory lock, so Rails leases per `INSERT` and hands the connection straight back. A broadcast from an hours-long agent job holds one for the write, not for the job. |
+
+The same file derives GoodJob's queue string (`config/environments/*.rb` read it), so raising
+`GOOD_JOB_AGENTS_THREADS` moves the pool that has to serve those threads along with it. They cannot
+drift apart.
+
+**A deploy is the peak, not the steady state.** kamal-proxy health-gates the cutover by running the
+old and new containers *together* until the new one answers `/up` — so for that window every
+connection exists twice. The budget multiplies by two for exactly this reason; a configuration that
+only fits at steady state turns each deploy into a coin flip.
+
+`ConnectionBudget.required_backends` is the resulting number. `infra/terraform/main.tf` refuses to
+plan against a managed cluster whose **plan** cannot serve it (DigitalOcean allots 25 connections per
+GiB of RAM, minus 3 reserved, and the ceiling is not otherwise tunable), and
+`test/config/connection_budget_test.rb` asserts the Terraform default still equals the Ruby
+derivation. To see the whole picture against a live server:
+
+```bash
+bin/rails db:connection_budget
+```
+
+It prints both halves — what the app commits to, what the server can serve — and exits non-zero when
+the first exceeds the second.
+
 ## The Docker images
 
 **`Dockerfile.base` → `ghcr.io/tadasant/zimmer-base`** — the heavy one, rebuilt monthly (cron
