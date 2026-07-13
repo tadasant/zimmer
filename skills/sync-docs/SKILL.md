@@ -122,7 +122,7 @@ illustrative.
 **Only review and update documentation inside this repository.** Do not touch:
 
 - Other repositories or checkouts on the machine (notably the private
-  `tadasant-internal` repo that owns the production deploy).
+  companion repo that owns the production deploy).
 - Vendored or third-party docs under `vendor/`, `node_modules/`, build output.
 
 If you notice docs in another repo have likely gone stale because of this change,

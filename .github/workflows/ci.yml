@@ -1,19 +1,17 @@
 name: CI
 
-# Standalone CI for the Zimmer Rails app. Runs on PulseMCP's shared self-hosted
-# GitHub Actions runner pool (label `self-hosted`), which zimmer piggybacks on via
-# repo-level runner registration to stay off the GitHub-hosted Actions minute quota.
-# Postgres + Redis come up as service containers on *dynamic* host ports so
-# concurrent jobs on the shared box never collide; gems install into a per-runner
-# path for the same reason. This piggyback is temporary — see docs/operate/deploying.md
-# ("The workflows") and the DigitalOcean migration tracker (tadasant-internal#25).
+# Standalone CI for the Zimmer Rails app. Runs on a shared self-hosted GitHub Actions
+# runner pool (label `self-hosted`) that this repo registers against to stay off the
+# GitHub-hosted Actions minute quota. Postgres + Redis come up as service containers on
+# *dynamic* host ports so concurrent jobs on the shared box never collide; gems install
+# into a per-runner path for the same reason. If you fork Zimmer, point these at your own
+# runners (or switch the jobs back to `ubuntu-latest`).
 #
-# ruby/setup-ruby runs with `self-hosted: true` (the pulsemcp-org standard): it selects
-# the Ruby already staged in each runner's own $RUNNER_TOOL_CACHE rather than trying to
-# download+extract into the hardcoded /opt/hostedtoolcache, which the runner user can't
-# write. The tadasant-zimmer-ci-{1,2} runners were registered with a Node toolcache but
-# no Ruby one, so their Ruby 3.4.6 toolcache was seeded out of band; that manual seed is
-# not yet in IaC — see issue #118 (DigitalOcean migration) to codify it.
+# ruby/setup-ruby runs with `self-hosted: true`: it selects the Ruby already staged in
+# each runner's own $RUNNER_TOOL_CACHE rather than trying to download+extract into the
+# hardcoded /opt/hostedtoolcache, which the runner user can't write. The CI runners were
+# registered with a Node toolcache but no Ruby one, so their Ruby 3.4.6 toolcache was
+# seeded out of band; that manual seed is not yet in IaC — see issue #118 to codify it.
 on:
   pull_request:
     branches: [main]

@@ -1,7 +1,7 @@
 # Kamal production destination. Merged over config/deploy.yml.
 # Secrets are read from .kamal/secrets.production.
 #
-# Production deploys are orchestrated from the private tadasant-internal repo (which
+# Production deploys are orchestrated from a private companion repo (which
 # holds the prod Terraform state, tfvars, and secrets); this file is public-safe
 # because every environment-specific value comes in through ENV at deploy time.
 #

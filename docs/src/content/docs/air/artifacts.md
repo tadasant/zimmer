@@ -147,7 +147,7 @@ catalog onto the box and point the app at it with the **`AIR_CONFIG`** env var:
 
 ### How Tadas's production does it (a worked example)
 
-Production's real catalog lives in the private `tadasant/tadasant-internal` repo (`air.json` +
+Production's real catalog lives in a private companion repo (`air.json` +
 `artifacts/`). It is delivered like this — the same pattern any self-hoster can copy:
 
 1. **Mount two persistent host directories** into both the `web` and `worker` roles
@@ -164,7 +164,7 @@ Production's real catalog lives in the private `tadasant/tadasant-internal` repo
    Kamal deploy** — a new container re-attaches the same mounts. Mounting on **both** roles is what makes
    agent sessions (which run in the `worker`) see the same catalog and `mcp_secrets` as the web UI.
 2. **Deliver the catalog + credentials** to those host paths with a workflow
-   (`.github/workflows/artifacts-sync-prod.yml` in `tadasant-internal`): it SSHes to the box and writes
+   (an `artifacts-sync-prod.yml` in that private companion repo): it SSHes to the box and writes
    your `air.json → /opt/zimmer/catalog/air.production.json`, `artifacts/ → /opt/zimmer/catalog/artifacts`,
    and `production.yml.enc → /opt/zimmer/credentials/`, then restarts the app so the catalog cache
    refreshes. Re-run it whenever your catalog changes; it does **not** need to re-run after a normal
