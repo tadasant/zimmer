@@ -67,9 +67,8 @@ Prerequisites and the environment variables that matter are in
 ## Contributing
 
 **Zimmer does not accept pull requests** — it's maintained as a single circle of trust, so
-every change lands through the maintainer. PRs opened against this repo are closed
-automatically with a pointer back here. Please don't take it personally; it keeps the
-project coherent.
+every change lands through the maintainer. PRs opened against this repo are closed unmerged
+with a pointer back here. Please don't take it personally; it keeps the project coherent.
 
 **Detailed issues are very welcome, though, and get triaged quickly.** A precise bug report
 or a concrete feature request is the highest-leverage thing you can send:

@@ -1,5 +1,5 @@
 name: 🐞 Bug report
-description: Report a reproducible defect in Zimmer. Vague reports get closed; precise ones get fixed fast.
+description: Report a reproducible defect in Zimmer. The more precise the report, the faster it gets fixed.
 labels: ["bug"]
 body:
   - type: markdown

@@ -7,7 +7,7 @@ an internal orchestrator, so expect some rough edges.
 
 Zimmer is maintained as a single circle of trust, so **it does not accept pull
 requests** — every change lands through the maintainer, and PRs opened against this
-repo are closed automatically with a friendly pointer back to this policy. It's not
+repo are closed unmerged with a friendly pointer back to this policy. It's not
 personal; it keeps the project coherent.
 
 The most useful thing you can send is a **detailed issue**, and those are triaged
@@ -87,11 +87,13 @@ deleting the directory leaves a working app. See
 ## Documentation
 
 The docs site lives in [`docs/`](docs) (Astro Starlight → Cloudflare Pages) and is
-published at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com/). **Update the relevant page in the same PR as
-the behavior change** — the mapping from code area to page is in
+published at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com/). The maintainer's
+rule is to **update the relevant page in the same change as the behavior it describes** — the
+mapping from code area to page is in
 [AGENTS.md](AGENTS.md#documentation-lives-in-docs--update-it-in-the-same-pr). New
 limitations, hacks, and known-broken edges belong on the
 [Known limitations](https://docs.zimmer.tadasant.com/limitations/) page; it is a feature, not a confession.
+If you spot a doc that's drifted from the code, that's a great thing to open an issue about.
 
 `cd docs && npm run build` is what the `docs_site` CI job runs.
 
