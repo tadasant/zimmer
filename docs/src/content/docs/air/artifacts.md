@@ -23,10 +23,21 @@ declares.
 | `zimmer-deploy-staging` | Drive the staging deploy workflow. |
 | `zimmer-change-ai-artifact` | The guide to changing the catalog itself. |
 
-:::caution[Only Zimmer-specific skills belong in `skills/`]
-Generic workflow skills (`pr`, `wait-for-ci`, `code-review`, …) come from the orchestrator's
-default skill set, injected separately. Duplicating one in Zimmer's catalog collides on shortname
-and AIR hard-fails the entire resolve — which, thanks to the boot-time pre-warm,
+The generic workflow skills are vendored here too, under `category: workflow`:
+
+| Skill | What it does |
+| --- | --- |
+| `pr` | Commit, push, open the PR, self-review, subagent-review, wait for CI. Bundles the `git-workflow` reference. |
+| `wait-for-ci` | Block until CI passes or fails on the current PR. |
+| `recover-from-compaction-thrashing` | Delegate verbose tool calls to subagents so compaction doesn't erase your work. |
+
+:::note[The catalog is the only source of skills]
+A standalone Zimmer install inherits nothing from an outside orchestrator, so anything a session
+needs — generic or Zimmer-specific — is vendored into `skills/` and registered in `skills.json`.
+Everything resolves under a single `@local/` scope, so there is
+[no cross-scope shortname collision](/air/zimmer-integration/#the-catalog-is-self-contained-and-offline)
+to design around. Do still avoid registering the same id twice: a genuinely broken catalog
+hard-fails the resolve and, thanks to the boot-time pre-warm,
 [reddens the whole test suite](/air/zimmer-integration/#the-blast-radius-is-the-entire-test-suite).
 :::
 
