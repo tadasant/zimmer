@@ -9,7 +9,7 @@
 #
 # Credentials format (in config/credentials/{environment}.yml.enc):
 #   mcp_oauth_clients:
-#     bigquery-pulsemcp:
+#     bigquery-example:
 #       client_id: "your-client-id.apps.googleusercontent.com"
 #       client_secret: "GOCSPX-your-client-secret"
 #       authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth"
@@ -19,7 +19,7 @@
 # Required fields: client_id, client_secret, authorization_endpoint, token_endpoint
 # Optional fields: scopes
 #
-# The key under mcp_oauth_clients must exactly match the server name (e.g., "bigquery-pulsemcp").
+# The key under mcp_oauth_clients must exactly match the server name (e.g., "bigquery-example").
 # Google OAuth automatically adds access_type=offline and prompt=consent for refresh tokens
 # (detected via authorization_endpoint containing google.com).
 class PreregisteredOauthConfig
@@ -64,7 +64,7 @@ class PreregisteredOauthConfig
     #
     # Matches server names to OAuth client keys using exact match only.
     #
-    # @param server_name [String] The MCP server name (e.g., "bigquery-pulsemcp")
+    # @param server_name [String] The MCP server name (e.g., "bigquery-example")
     # @return [OAuthClient, nil] The OAuth client config or nil if not found
     def find_for_server(server_name)
       return nil unless server_name.present?

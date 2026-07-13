@@ -57,9 +57,9 @@ env:
     # localhost:3000 and every OAuth callback breaks.
     APP_HOST: staging.zimmer.tadasant.com
     # Point the injected self-session MCP server at THIS instance, so a staging
-    # session orchestrates staging (never production, and never PulseMCP's
-    # orchestrator -- prod shipped for a while with ao.pulsemcp.com pinned in its
-    # ported credentials, which pointed Zimmer's own sessions at someone else's box).
+    # session orchestrates staging -- never production, and never some other
+    # instance whose host might get carried in through ported credentials, which
+    # would point Zimmer's own sessions at someone else's box.
     # Both names carry the same value through the AGENT_ORCHESTRATOR_* -> ZIMMER_*
     # rename; see .kamal/secrets.staging.
     AGENT_ORCHESTRATOR_STAGING_BASE_URL: https://staging.zimmer.tadasant.com

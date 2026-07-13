@@ -66,11 +66,4 @@ class EnqueuedMessageDashboard < Administrate::BaseDashboard
   #     open: ->(resources) { resources.where(open: true) }
   #   }.freeze
   COLLECTION_FILTERS = {}.freeze
-
-  # Overwrite this method to customize how enqueued messages are displayed
-  # across all pages of the admin dashboard.
-  #
-  # def display_resource(enqueued_message)
-  #   "EnqueuedMessage ##{enqueued_message.id}"
-  # end
 end

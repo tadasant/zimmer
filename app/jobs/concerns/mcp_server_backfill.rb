@@ -3,8 +3,8 @@
 # to regenerate .mcp.json.
 #
 # The "landed empty at create" defect: a root whose MCP servers come from
-# `default_in_roots` (e.g. pulsemcp-inbox-manager → gmail-pulsemcp-readwrite-external,
-# 1password-provisioning, pulse-tenants-rw) resolves those into its
+# `default_in_roots` (e.g. an inbox-manager root → gmail-readwrite,
+# 1password-provisioning, tenants-rw) resolves those into its
 # default_mcp_servers via `air resolve`, which Zimmer freezes into the session at
 # create time. When the catalog resolve was structurally incomplete in that
 # moment, AIR drops the unresolvable references and the column lands empty (see
