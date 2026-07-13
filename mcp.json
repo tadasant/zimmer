@@ -44,7 +44,7 @@
     "command": "npx",
     "args": [
       "-y",
-      "remote-fs-mcp@latest"
+      "remote-filesystem-mcp-server@latest"
     ]
   },
   "twist-wolfbot": {
@@ -107,7 +107,7 @@
     "command": "npx",
     "args": [
       "-y",
-      "svg-tracer-mcp@latest"
+      "@pulsemcp/svg-tracer-mcp-server@latest"
     ]
   },
   "slack-workspace": {
@@ -118,7 +118,10 @@
     "args": [
       "-y",
       "slack-workspace-mcp-server@latest"
-    ]
+    ],
+    "env": {
+      "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"
+    }
   },
   "tally": {
     "title": "Tally",
