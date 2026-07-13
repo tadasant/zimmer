@@ -38,7 +38,9 @@ in this page reflects a real deployment.
 │   └── workflows/
 │       ├── deploy-zimmer.yml         # per-service deploy pipelines (Terraform + Kamal)
 │       ├── deploy-obs.yml
-│       └── deploy-ci-runner.yml
+│       ├── deploy-ci-runner.yml
+│       └── authorize-admin-keys-prod.yml  # converge admin_authorized_keys.pub onto the
+│                                          #   LIVE prod box over Tailscale SSH, no rebuild
 │
 ├── artifacts/                        # the ONE production AIR catalog
 │   ├── air.json                      # top-level catalog: points at the indexes below
@@ -59,7 +61,9 @@ in this page reflects a real deployment.
 │   │   ├── main.tf                   # host provisioning (usually a thin module wrapper)
 │   │   ├── variables.tf
 │   │   ├── backend.hcl               # remote state config (bucket, key, region)
-│   │   └── production.tfvars         # real host values — PRIVATE
+│   │   └── production.tfvars         # real host values — PRIVATE. Leaves admin_ssh_pubkeys
+│   │                                 #   EMPTY: prod's admin keys are file content, below
+│   ├── admin_authorized_keys.pub     # who is root on production — the ONE declaration site
 │   ├── deploy.production.yml         # Kamal production destination (overrides the public base)
 │   └── .kamal/
 │       └── secrets.production        # maps Kamal secrets to env / a secrets manager

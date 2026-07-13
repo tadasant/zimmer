@@ -139,10 +139,12 @@ variable "ssh_host_ed25519_key" {
   default     = ""
   description = <<-EOT
     Optional pinned SSH host private key (ed25519). When set, cloud-init installs it
-    so the droplet keeps a STABLE host identity across rebuilds -- which is what
-    keeps the ssh-tadasant-zimmer-prod MCP's known-hosts valid instead of tripping a
-    host-key-changed error on every re-provision. Empty (staging) = a fresh host key
-    each boot, which is fine for a disposable box.
+    so the droplet keeps a STABLE host identity across rebuilds -- which is what keeps
+    known_hosts valid for the clients that reach production over :2222 (a human, and
+    the off-box orchestrator's SSH MCP server) instead of tripping a host-key-changed
+    error on every re-provision. NOT for a Zimmer agent session: those run ON this box
+    and are deliberately not authorized on it (docs/operate/ssh-access.md).
+    Empty (staging) = a fresh host key each boot, which is fine for a disposable box.
   EOT
 }
 
