@@ -6,7 +6,7 @@
 # `air resolve --no-scope` hard-fail. Persisting in the DB (rather than only
 # in process memory) means the fallback survives container restarts and is
 # shared across the web and worker processes, so a broken upstream catalog can
-# never take session creation — most importantly the ao-router lookup behind
+# never take session creation — most importantly the zimmer-router lookup behind
 # every routable message — down to zero.
 class CreateCatalogSnapshots < ActiveRecord::Migration[8.0]
   def change

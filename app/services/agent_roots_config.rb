@@ -175,7 +175,7 @@ class AgentRootsConfig
       # AirCatalogService serves a last-known-good catalog (in-memory or persisted
       # snapshot) whenever a resolve fails, so reaching here means even that
       # fallback was exhausted — no catalog has ever resolved successfully. That is
-      # genuinely broken (every session start, including ao-router, will fail) and
+      # genuinely broken (every session start, including zimmer-router, will fail) and
       # warrants an alert, not a warning.
       Rails.logger.error "[AgentRootsConfig] catalog unavailable with no last-known-good fallback: #{e.message}"
       []

@@ -225,7 +225,7 @@ class Session < ApplicationRecord
   ].freeze
 
   # The agent root used for routing freeform user requests from the dashboard
-  ROUTER_AGENT_ROOT = "ao-router"
+  ROUTER_AGENT_ROOT = "zimmer-router"
 
   # Execution providers
   EXECUTION_PROVIDERS = %w[local_filesystem remote_sandbox].freeze
@@ -530,7 +530,7 @@ class Session < ApplicationRecord
   end
 
   # The canonical key of the session's agent root from roots.json
-  # (e.g., "agent-orchestrator", "agents", "ao-router").
+  # (e.g., "agent-orchestrator", "agents", "zimmer-router").
   #
   # Prefers the explicit key stored in metadata at creation time, then falls back
   # to resolving by git_root URL + subdirectory against the current catalog.

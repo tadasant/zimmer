@@ -345,7 +345,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
   test "backfills empty mcp_servers from agent root default_in_roots on unarchive" do
     # Regression: a root whose MCP servers come from `default_in_roots`
-    # (e.g. ao-router → agent-orchestrator-prod + 1password-rw) can freeze an
+    # (e.g. zimmer-router → agent-orchestrator-prod + 1password-rw) can freeze an
     # EMPTY mcp_servers column at create time when the catalog resolve was
     # structurally incomplete. On unarchive, AIR runs with --without-defaults
     # (which does NOT re-resolve default_in_roots), so an empty column degrades
