@@ -42,14 +42,30 @@
 # ZIMMER_OPERATOR_SSH_KEY and then runs `bin/rails console`. An agent that wants the
 # plain CLI uses `ssh -i "$SSH_PRIVATE_KEY_PATH"`.
 #
-# BLAST RADIUS
+# BLAST RADIUS, AND THE ONE HOST DELIBERATELY LEFT OUT OF IT
 #
-# This key is root on every Zimmer droplet that authorizes it (admin_ssh_pubkeys ->
-# cloud-init -> /root/.ssh/authorized_keys, reachable only over the tailnet on
-# :2222). A session running on production therefore holds a key that is root on its
-# own host. That is a deliberate, accepted trade: the key is a distinct identity
-# (comment `zimmer-production-operator`), so it can be revoked on its own by
-# dropping one line from admin_ssh_pubkeys, without touching the Kamal deploy key.
+# This key is root on every Zimmer droplet that authorizes it (a key list ->
+# /root/.ssh/authorized_keys, reachable only over the tailnet on :2222). Which hosts
+# authorize it is the ONLY bound on what a session can reach — this class does not,
+# and cannot, scope it: it writes one key that every session in the container shares.
+#
+# PRODUCTION DOES NOT AUTHORIZE IT, and that is the point. A session runs ON
+# production, so a key that is root there is root on the session's own host: an agent
+# could stop the containers or wipe the catalog out from under the service executing
+# it, with itself inside the blast radius and nothing left running to recover from.
+# Root on production is reserved for humans (break-glass) and for an orchestrator that
+# reaches in from a SEPARATE host — off-box, so it survives what it breaks. Staging,
+# the obs box, and the CI runner do authorize the key; that is the fleet these sessions
+# operate, and staging is disposable.
+#
+# Nothing here grants that access, and nothing here assumes it: provisioning the key
+# is purely local (write a file into the container, export its path). Authorization
+# lives on each host's authorized_keys, and production's list is declared in the
+# private companion repo, not in this one.
+#
+# The distinct identity (comment `zimmer-production-operator`) is what makes any of it
+# revocable: one line out of a key list, with no effect on the Kamal deploy key.
+# See docs/operate/ssh-access.md#who-is-authorized-where.
 class OperatorSshKeyProvisioner
   # Name of the env var carrying the key material.
   ENV_VAR = "ZIMMER_OPERATOR_SSH_KEY"
