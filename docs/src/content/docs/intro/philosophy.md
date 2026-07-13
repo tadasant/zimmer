@@ -1,6 +1,6 @@
 ---
 title: Philosophy
-description: The opinions baked into Zimmer — isolated clones, closed-loop autonomy, MCP as a blast radius, catalog-resolved context, and PR-as-review-gate.
+description: The opinions baked into Zimmer — an architecture bounded on purpose, isolated clones, closed-loop autonomy, MCP as a blast radius, catalog-resolved context, and PR-as-review-gate.
 sidebar:
   order: 2
 ---
@@ -8,6 +8,20 @@ sidebar:
 Zimmer is opinionated. Most of those opinions are load-bearing — you can see them in the
 schema, in the state machine, in what the code refuses to do. This page is the argument
 behind the architecture. If you read one page on this site, read this one.
+
+## 0. The architecture is bounded on purpose
+
+There is largely one way to do each thing: a session is [an isolated
+clone](#1-a-session-is-its-own-isolated-clone), a session's context [comes from the
+catalog](#6-context-is-resolved-from-a-catalog), the lifecycle is [one state
+machine](#2-the-lifecycle-is-an-explicit-state-machine). That top level is meant to stay
+stable, so by default you don't need to know how any of it is implemented — and when something
+does go wrong, you drill down into a part you can name instead of into sprawl. The failure mode
+this avoids is the usual one for a hand-rolled agent rig: a self-learning agent let loose on a
+machine, layers of glue nobody understands, regular breakages, and no road back.
+
+The eight opinions below are where that boundary is enforced. They read as constraints rather
+than features because that is what they are.
 
 ## 1. A session is its own isolated clone
 
