@@ -148,6 +148,21 @@ the step to the mirror's workflow.
 
 Tracked in [#151](https://github.com/tadasant/zimmer/issues/151).
 
+### An agent session's SSH key is root on the host it runs on
+
+The [operator SSH key](/operate/provisioning/#the-ssh-identity-an-agent-session-holds) that agent
+sessions authenticate with is authorized for `root` through `admin_ssh_pubkeys`, on every Zimmer host.
+A session running on production holds a key that is root on **its own host** — it can SSH back into the
+box it is executing on, and into staging, with full privileges.
+
+That is the deal Zimmer takes deliberately: these sessions exist to operate the fleet, and a
+narrower identity (a non-root user, per-host keys) would not let them do the job. What keeps it
+bounded is that it is a *separate* identity from the Kamal deploy key, so it can be revoked on its own,
+and that the hosts answer publickey SSH only on the tailnet (`:2222`) — never on the public internet.
+
+There is no per-session scoping. Any session on the box can use the key; Zimmer does not gate which
+sessions may SSH where.
+
 ### Admin keys are add-only
 
 `admin_ssh_pubkeys` appends to `/root/.ssh/authorized_keys` and never prunes. **Removing** a key from

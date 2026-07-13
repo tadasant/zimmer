@@ -308,6 +308,11 @@ jobs:
    GitHub Actions secrets.
 5. Copy `deploy-zimmer.yml` to `deploy-<service>.yml` and swap the directory names.
 6. If the service runs agent sessions, add a root for it to `artifacts/roots.json`.
+7. If those sessions SSH anywhere, set `PROD_OPERATOR_SSH_KEY` (base64 of the operator private key)
+   as a GitHub Actions secret in this repo and export it in the deploy job, and authorize the public
+   half in `admin_ssh_pubkeys` — see [the SSH identity an agent session
+   holds](/operate/provisioning/#the-ssh-identity-an-agent-session-holds). Without it, sessions have
+   no SSH key and every `ssh-*` MCP server fails its startup health check.
 
 Keep the shape identical across services. The consistency is what lets one deploy workflow —
 and one mental model — cover everything you run.

@@ -408,6 +408,24 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_equal "debug", env["RUST_LOG"]
   end
 
+  test "spawn exports SSH_PRIVATE_KEY_PATH so the ssh-* MCP servers find the operator key" do
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns("/home/rails/.ssh/id_ed25519")
+
+    @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
+
+    env = @mock_process_manager.spawned_processes.last[:env]
+    assert_equal "/home/rails/.ssh/id_ed25519", env["SSH_PRIVATE_KEY_PATH"]
+  end
+
+  test "spawn leaves SSH_PRIVATE_KEY_PATH unset when no operator key is configured" do
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
+
+    @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
+
+    env = @mock_process_manager.spawned_processes.last[:env]
+    assert_nil env["SSH_PRIVATE_KEY_PATH"]
+  end
+
   test "spawn exports CODEX_HOME so rollouts persist to the durable location" do
     original = ENV["CODEX_HOME"]
     ENV["CODEX_HOME"] = "/srv/codex-state"
