@@ -22,7 +22,7 @@ Rails.application.configure do
     else
       rewritten = AirCatalogRefRewriter.rewrite(
         File.read(base_path),
-        pins: { AirCatalogRefRewriter::PULSEMCP_PREFIX => catalog_ref }
+        pins: { AirCatalogRefRewriter::CATALOG_PREFIX => catalog_ref }
       )
       out_path = Rails.root.join("tmp", "air.staging.json")
       FileUtils.mkdir_p(out_path.dirname)

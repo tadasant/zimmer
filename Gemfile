@@ -23,8 +23,8 @@ gem "redis"
 
 # Error tracking via the self-hosted GlitchTip instance
 # (https://glitchtip.obs.example.com). GlitchTip is Sentry-API compatible, so
-# the official sentry-ruby/sentry-rails SDKs work as-is. Pinned to match the
-# pulsemcp web-app for consistency. Configured in config/initializers/sentry.rb
+# the official sentry-ruby/sentry-rails SDKs work as-is. Pinned for consistency
+# across our apps. Configured in config/initializers/sentry.rb
 # and a hard no-op unless SENTRY_DSN_BACKEND is set (so dev stays quiet).
 gem "sentry-ruby", "6.6.2"
 gem "sentry-rails", "6.6.2"

@@ -86,11 +86,4 @@ class SubagentTranscriptDashboard < Administrate::BaseDashboard
   #     open: ->(resources) { resources.where(open: true) }
   #   }.freeze
   COLLECTION_FILTERS = {}.freeze
-
-  # Overwrite this method to customize how subagent transcripts are displayed
-  # across all pages of the admin dashboard.
-  #
-  # def display_resource(subagent_transcript)
-  #   "SubagentTranscript ##{subagent_transcript.id}"
-  # end
 end
