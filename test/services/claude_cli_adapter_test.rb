@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 require "minitest/mock"
 require "timeout"
 
@@ -11,6 +12,10 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     # Inject mock dependencies for testing
     @mock_process_manager = MockProcessManager.new
     @adapter.process_manager = @mock_process_manager
+    # The provisioner writes through raw File/FileUtils, not the injected file system,
+    # so a developer with ZIMMER_OPERATOR_SSH_KEY exported would otherwise have the
+    # suite write a key into their real ~/.ssh. Tests that need a path re-stub this.
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
   end
 
   teardown do
@@ -1975,12 +1980,12 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   end
 
   test "spawn_process exports SSH_PRIVATE_KEY_PATH so the ssh-* MCP servers find the operator key" do
-    OperatorSshKeyProvisioner.stubs(:ensure!).returns("/home/rails/.ssh/id_ed25519")
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns("/home/rails/.ssh/zimmer_operator_ed25519")
 
     @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
 
     env_vars = @mock_process_manager.spawned_processes.first[:env]
-    assert_equal "/home/rails/.ssh/id_ed25519", env_vars["SSH_PRIVATE_KEY_PATH"]
+    assert_equal "/home/rails/.ssh/zimmer_operator_ed25519", env_vars["SSH_PRIVATE_KEY_PATH"]
   end
 
   test "spawn_process leaves SSH_PRIVATE_KEY_PATH unset when no operator key is configured" do
