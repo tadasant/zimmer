@@ -9,7 +9,7 @@ require "mocha/minitest"
 # deployment is indistinguishable from a healthy one from inside the app.
 #
 # Both states are covered:
-#   - disabled (what CI/dev/test see, and what staging saw for its whole life)
+#   - disabled (what CI/dev/test see: no env vars, so no exporter)
 #   - enabled  (an exporter instance installed by hand; the network is stubbed,
 #              so no test ever talks to the real collector)
 class ObsTasksTest < ActiveSupport::TestCase

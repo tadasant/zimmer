@@ -63,8 +63,7 @@ watch. Staging alerts are only distinguishable from production's by the posting 
 `config/initializers/otel_logs_exporter.rb` needs **both** `OTEL_LOGS_EXPORTER_ENDPOINT` and
 `OTEL_LOGS_EXPORTER_BEARER_TOKEN`; `config/initializers/sentry.rb` needs `SENTRY_DSN_BACKEND`. Any of
 them missing and the initializer does nothing at all — no raise, no warning, a perfectly healthy boot,
-and no data. Staging shipped exactly zero telemetry for its entire existence this way, and nothing
-anywhere said so.
+and no data. A deployment can sit in that state indefinitely, and nothing anywhere says so.
 
 The no-op is the right default (it keeps dev, test, and CI off the network), so the mitigation is
 visibility rather than a hard failure: `deploy-staging.yml` prints an observability preflight on every

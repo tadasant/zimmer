@@ -40,10 +40,14 @@ health-gated zero-downtime cutover, it does **not** rebuild the droplet.
 - **`recreate_droplet` is for bootstrap changes only.** Terraform sets
   `ignore_changes = [user_data]`, so changing cloud-init, the Caddyfile, or the
   Kamal deploy key needs `-replace`. Normal app deploys must leave it off.
-- **Staging has a domain**: `staging.zimmer.tadasant.com` (Caddy terminates TLS on
-  :443 in front of kamal-proxy; the A record and cert are managed by
-  `domain-cert-staging.yml`, not Terraform). It is also reachable over the
-  Tailscale tailnet as MagicDNS host `zimmer-staging`.
+- **Staging has a domain, but it is still not public.**
+  `staging.zimmer.tadasant.com` gets a real cert (Caddy terminates TLS on :443 in
+  front of kamal-proxy; the A record and cert are managed by
+  `domain-cert-staging.yml`, not Terraform) — but that A record points at the
+  droplet's **tailnet IP**, and the DigitalOcean firewall opens only `22/tcp` and
+  `41641/udp`. So the domain resolves for everyone and answers for nobody off the
+  tailnet. You need the tailnet either way; the domain just gives you HTTPS and a
+  stable `APP_HOST` for OAuth callbacks.
 
 ## Dispatching a deploy
 
@@ -78,9 +82,11 @@ box. A deploy is a container swap, not a rebuild.
 
 ## Verifying the deployed box
 
+Both of these require you to be **on the tailnet** — the domain's A record points at
+a tailnet IP:
+
 ```bash
 curl -sf https://staging.zimmer.tadasant.com/up && echo "STAGING UP"
-# or, on the tailnet:
 curl -sf http://zimmer-staging/up && echo "STAGING UP"
 ```
 

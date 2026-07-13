@@ -284,6 +284,24 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
     assert_match(/HTTP 401/, result.to_s)
   end
 
+  # The bearer token and the path ARE the contract with the obs ingest gateway: a
+  # missing header is a 401 and a wrong path is a 404, and both present as silence.
+  # Stubbing Net::HTTP#request wholesale would let a regression that dropped the
+  # Authorization header pass every other test here, so capture the request itself.
+  test "deliver sends the bearer token and posts to the endpoint's path" do
+    captured = nil
+    response = Net::HTTPOK.new("1.1", "200", "")
+    response.stubs(:body).returns("")
+    Net::HTTP.any_instance.stubs(:request).with { |req| captured = req }.returns(response)
+
+    build_exporter.deliver([ { severity: "ERROR", body: "x", attributes: {} } ])
+
+    assert_equal "Bearer test-token", captured["Authorization"]
+    assert_equal "application/json", captured["Content-Type"]
+    assert_equal "/otel/v1/logs", captured.path
+    assert_equal "POST", captured.method
+  end
+
   test "deliver captures a transport failure instead of raising" do
     Net::HTTP.any_instance.stubs(:request).raises(Errno::ECONNREFUSED, "connection refused")
 

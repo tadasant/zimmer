@@ -24,7 +24,7 @@ treating "no data" as "no problem". Work the signals in order.
 | Signal | Where | Reaches it |
 | --- | --- | --- |
 | Did the deploy work? | `Deploy staging` workflow run | `gh run view` — always available to an agent |
-| Is the app up? | `/up` on the droplet | tailnet or `https://staging.zimmer.tadasant.com/up` |
+| Is the app up? | `/up` on the droplet | tailnet only — `staging.zimmer.tadasant.com` resolves to a **tailnet IP** |
 | What is it doing? | container stdout | `docker logs` on the droplet (needs SSH) |
 | WARN/ERROR/FATAL history | VictoriaLogs (obs stack) | LogsQL, `deployment.environment:=staging` |
 | Exceptions, grouped | GlitchTip (obs stack) | the `zimmer-staging` project |
@@ -42,8 +42,17 @@ That is deliberate — it keeps dev/test/CI off the network — but it means a
 the app directly before you conclude anything from missing data:
 
 ```bash
-# on the droplet
-docker exec zimmer-web bin/rails obs:status
+# from anywhere with the Kamal deploy key + tailnet access
+kamal app exec -d staging --reuse "bin/rails obs:status"
+```
+
+Kamal names containers `<service>-<role>-<destination>-<version>` (e.g.
+`zimmer-web-staging-a1b2c3d`), so there is no container literally called
+`zimmer-web` to `docker exec` into. On the droplet, resolve the name first:
+
+```bash
+web=$(docker ps --filter "name=zimmer-web" --format "{{.Names}}" | head -1)
+docker exec "$web" bin/rails obs:status
 ```
 
 It prints, without leaking any secret, whether OTLP logs and GlitchTip are ON,
@@ -59,7 +68,7 @@ anywhere.
 ## Prove the pipeline end to end
 
 ```bash
-docker exec zimmer-web bin/rails obs:smoke
+kamal app exec -d staging --reuse "bin/rails obs:smoke"
 ```
 
 This emits a uniquely-tagged record through every live path and — crucially —
@@ -124,8 +133,11 @@ password still appears in `docker ps`):
 
 ```bash
 docker ps --format '{{.Names}}\t{{.Status}}'
-docker inspect -f '{{.State.Running}} restarts={{.RestartCount}}' zimmer-worker
-docker logs --tail 50 zimmer-worker
+# Kamal container names carry the role, destination, and version, so filter by
+# substring rather than guessing the full name.
+w=$(docker ps --filter "name=zimmer-worker" --format "{{.Names}}" | head -1)
+docker inspect -f '{{.State.Running}} restarts={{.RestartCount}}' "$w"
+docker logs --tail 50 "$w"
 ```
 
 **Every session dies before the agent starts.** Almost always a secrets problem:
