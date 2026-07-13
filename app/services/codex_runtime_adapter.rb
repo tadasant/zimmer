@@ -263,6 +263,8 @@ class CodexRuntimeAdapter
     # Export the durable per-session scratch dir (AO_SESSION_SCRATCH_DIR) so
     # agents persist cross-step state on the durable volume instead of ephemeral /tmp.
     env_vars = apply_session_scratch_dir(env_vars)
+    # Point the ssh-* MCP servers (and the plain ssh/git CLIs) at the operator SSH key.
+    env_vars = apply_operator_ssh_key(env_vars)
 
     pid = @process_manager.spawn(
       env_vars,

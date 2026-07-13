@@ -229,4 +229,34 @@ module CliSpawnEnv
     @logger.warn "Failed to set up session scratch dir: #{e.message}"
     env_vars
   end
+
+  # Point SSH clients at the operator SSH key (SSH_PRIVATE_KEY_PATH).
+  #
+  # The key file itself is materialized by OperatorSshKeyProvisioner (from the
+  # ZIMMER_OPERATOR_SSH_KEY secret) — this only exports its path, because the SSH
+  # MCP servers do not go looking for one: ssh-agent-mcp-server authenticates from
+  # SSH_AUTH_SOCK if an agent is running and from SSH_PRIVATE_KEY_PATH otherwise,
+  # and nothing else. There is no ssh-agent in the container, so without this the
+  # key on disk would sit there unused and every ssh-* MCP server would still fail
+  # its startup health check with "All configured authentication methods failed".
+  #
+  # A stdio MCP server is a child of the agent CLI and inherits its environment, so
+  # exporting the path here reaches every ssh-* server the session attaches, without
+  # each catalog entry having to name the path.
+  #
+  # The session's own .env always wins, and a deployment with no key configured
+  # leaves SSH_PRIVATE_KEY_PATH unset rather than pointing at a file that isn't there.
+  #
+  # @param env_vars [Hash] Environment variables to pass to the child process
+  # @return [Hash] env_vars with SSH_PRIVATE_KEY_PATH set when a key was provisioned
+  def apply_operator_ssh_key(env_vars)
+    return env_vars if env_vars["SSH_PRIVATE_KEY_PATH"].present?
+
+    path = OperatorSshKeyProvisioner.ensure!(logger: @logger)
+    return env_vars if path.blank?
+
+    env_vars["SSH_PRIVATE_KEY_PATH"] = path
+    @logger.info "Set SSH_PRIVATE_KEY_PATH=#{path} (operator SSH key)"
+    env_vars
+  end
 end

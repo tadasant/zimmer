@@ -22,11 +22,23 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 # use to reach the box here. Authorize the same key on every environment through
 # this one variable so staging and production cannot drift on who can get in.
 #
-# FORKING / SELF-HOSTING: replace the placeholder below with YOUR key. A public key
-# is not a secret, but leaving someone else's here authorizes them for root on your
-# droplet, so this MUST be set per environment (never as a module default).
+# FORKING / SELF-HOSTING: replace the keys below with YOUR OWN. A public key is not a
+# secret, but leaving someone else's here authorizes them for root on your droplet, so
+# this MUST be set per environment (never as a module default).
+#
+# `zimmer-production-operator` is the identity ZIMMER'S OWN AGENT SESSIONS hold: the
+# private half rides Kamal's env.secret as ZIMMER_OPERATOR_SSH_KEY, and
+# OperatorSshKeyProvisioner writes it to ~/.ssh/id_ed25519 in the container. Authorizing
+# it here is what makes an ssh-* MCP server in a session able to reach this box at all.
+# It is deliberately a SEPARATE keypair from the Kamal deploy key and from the
+# orchestrator's key, so it can be revoked on its own by deleting this one line.
+#
+# Note what that means: a session running ON this host holds a key that is root on this
+# host. That blast radius is accepted (it is the point -- these sessions operate the
+# fleet), and the separate identity is what keeps it revocable.
 admin_ssh_pubkeys = [
-  "ssh-ed25519 AAAA...replace-with-your-own-public-key you@example.com",
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEp3tk5RCh76zPddFcoyY01MazsyHnacqo0KrAczCY6 zimmer-production-operator",
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmRanTTxADIQWHp9PZqOAFQX2SVXibTqVXb0D3AtuiU agent-orchestrator-prod-hetzner",
 ]
 
 # Custom-domain HTTPS over the tailnet: turns on the Caddy TLS terminator on :443,

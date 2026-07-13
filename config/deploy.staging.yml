@@ -78,6 +78,10 @@ env:
     - RAILS_MASTER_KEY
     - API_KEYS
     - DATABASE_PASSWORD
+    # Base64 of the operator SSH private key. OperatorSshKeyProvisioner decodes it
+    # into ~/.ssh/id_ed25519 so agent sessions (and their ssh-* MCP servers) have an
+    # SSH identity; without it they have none. See .kamal/secrets.staging.
+    - ZIMMER_OPERATOR_SSH_KEY
     # The API key the injected self-session MCP server uses to call this instance's
     # own REST API. It lives in process ENV rather than mcp_secrets (SecretsInterpolator
     # falls back to ENV), because the deploy workflow derives it from API_KEYS -- which

@@ -1974,6 +1974,34 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     def spawn_env_contribution(context = {}) = (context[:runtime].to_s == "claude_code") ? { "ENABLE_TOOL_SEARCH" => "true" } : {}
   end
 
+  test "spawn_process exports SSH_PRIVATE_KEY_PATH so the ssh-* MCP servers find the operator key" do
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns("/home/rails/.ssh/id_ed25519")
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_equal "/home/rails/.ssh/id_ed25519", env_vars["SSH_PRIVATE_KEY_PATH"]
+  end
+
+  test "spawn_process leaves SSH_PRIVATE_KEY_PATH unset when no operator key is configured" do
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_nil env_vars["SSH_PRIVATE_KEY_PATH"]
+  end
+
+  test "spawn_process respects an explicit SSH_PRIVATE_KEY_PATH from the session .env" do
+    File.write(File.join(@test_dir, ".env"), "SSH_PRIVATE_KEY_PATH=/custom/key\n")
+    OperatorSshKeyProvisioner.expects(:ensure!).never
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_equal "/custom/key", env_vars["SSH_PRIVATE_KEY_PATH"]
+  end
+
   test "spawn_process sets ENABLE_TOOL_SEARCH to false by default" do
     command = [ "claude", "test" ]
     @adapter.send(:spawn_process, command, working_dir: @test_dir)

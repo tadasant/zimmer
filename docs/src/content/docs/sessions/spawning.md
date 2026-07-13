@@ -71,6 +71,10 @@ Shared scrubbing (`CliSpawnEnv`):
   everything prefixed `BUNDLE*`. Without this the agent would inherit Zimmer's own database
   credentials and Ruby toolchain.
 - Sets `AO_SESSION_SCRATCH_DIR` — a durable per-session scratch directory.
+- Sets `SSH_PRIVATE_KEY_PATH` — the [operator SSH key](/operate/provisioning/#the-ssh-identity-an-agent-session-holds)
+  the session authenticates with, when one is configured. The key file is written by
+  `OperatorSshKeyProvisioner`; this exports its path, because an `ssh-*` MCP server looks for
+  `SSH_AUTH_SOCK` and `SSH_PRIVATE_KEY_PATH` and nowhere else. A value in the clone's `.env` wins.
 
 Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH=false` (baseline; the `mcp_tool_search`
 extension flips it), `CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
