@@ -210,7 +210,9 @@ one you want depends on whether the box is disposable:
 **Staging — rebuild it.** Run `deploy-staging` with `recreate_droplet=true` (a `terraform -replace` of
 the droplet). Staging is disposable by design and this is the intended path. Read [the one fallback
 door a rebuilt droplet has](/limitations/#a-rebuilt-droplet-has-exactly-one-fallback-door-and-it-is-the-digitalocean-console)
-first: a rebuild whose `tailscale up` fails leaves you with only the DigitalOcean console.
+first: a rebuild whose `tailscale up` fails leaves you with only the DigitalOcean console. And budget
+the rebuilds — each one destroys the box's TLS cert and burns one of [Let's Encrypt's five issuances
+per week](/limitations/#rebuilding-staging-costs-a-lets-encrypt-issuance-and-there-are-only-five-a-week).
 
 **Production — append the key live, over Tailscale SSH.** Production cannot be casually recreated, so
 a rebuild is not an option. Tailscale SSH on `:22` is, because it works regardless of what `:2222` is
