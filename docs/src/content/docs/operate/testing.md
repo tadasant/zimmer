@@ -43,18 +43,38 @@ Several tests `skip` when a credential or file is absent — which in CI means t
 That last pair means the catalog-pinning feature has zero CI coverage — the code path exists,
 the tests exist, and neither runs. Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
 
-## Known-flaky tests
+## Flaky tests and the one root cause behind them
 
-Four open issues, all CI flakes:
+A run of CI flakes ([#2](https://github.com/tadasant/zimmer/issues/2),
+[#3](https://github.com/tadasant/zimmer/issues/3), [#5](https://github.com/tadasant/zimmer/issues/5),
+[#10](https://github.com/tadasant/zimmer/issues/10), [#114](https://github.com/tadasant/zimmer/issues/114),
+[#138](https://github.com/tadasant/zimmer/issues/138),
+[#148](https://github.com/tadasant/zimmer/issues/148)) turned out to be almost the same bug wearing
+different hats: **a global stub, mock, or expectation on a process-wide singleton, in a parallel suite
+with live background threads.** The suite runs `parallelize(workers: N)` with the default `:processes`,
+so there is no cross-*test* bleed — but each worker process still runs GoodJob schedulers, the OTel log
+exporter, and the catalog refresher on their own threads. When a test replaces `File.read`, `Dir.glob`,
+or `Rails.logger.warn` process-wide, one of those threads can hit the replacement with an argument shape
+the stub never anticipated, and the test fails on something it never called.
 
-- **[#10](https://github.com/tadasant/zimmer/issues/10)** `ClaudeModelConfigurationAuditTest` — a
-  global `File.stub` races background threads. Noted as having turned `main` red.
-- **[#5](https://github.com/tadasant/zimmer/issues/5)** `SessionsControllerTest#test_should_refresh_all…`
-  intermittently reports "Test is missing assertions" (the body exits before any assert).
-- **[#3](https://github.com/tadasant/zimmer/issues/3)** `Zeitwerk::NameError: GoodJob::Job` — GoodJob's
-  model intermittently fails to autoload.
-- **[#2](https://github.com/tadasant/zimmer/issues/2)** `CleanupOrphanedSessionsJobTest` uses a *global*
-  `assert_no_enqueued_jobs`, which under the parallel suite sees other tests' jobs.
+The fixes all pull the seam in rather than patching the global:
+
+- **`ClaudeModelConfigurationAudit`** takes an injectable `reader:` (defaulting to `File`); the
+  unreadable-settings test passes a small double instead of stubbing `File.file?`/`File.read` for the
+  whole process.
+- **`SessionsControllerTest#refresh_all`** writes real transcript files to the path the controller
+  computes, so there are no `Dir`/`File` mocks to race.
+- **`TriggerTest`** captures log output through a swapped-in `StringIO` logger and asserts a substring,
+  which is indifferent to a concurrent `BroadcastService` circuit-breaker warn — where a strict
+  `expects(:warn)` rejected it as an unexpected invocation.
+- **`CleanupOrphanedSessionsJobTest`** scopes its no-enqueue assertion to the session under test rather
+  than to a job class the cleanup sweep may legitimately enqueue for other orphans.
+- **`GoodJob::Job` autoload** is forced in `test/test_helper.rb` before `parallelize` forks, so no worker
+  thread races the lazy Zeitwerk load.
+
+The rule that prevents the next one: **do not stub, mock, or set expectations on a shared global
+(`File`, `Dir`, `Kernel`, `Rails.logger`) in this suite.** Inject a seam, point at a real temp file, or
+capture output — anything scoped to the object and lifetime under test.
 
 ## The catalog coupling — read this before you debug
 
