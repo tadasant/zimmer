@@ -2,21 +2,24 @@
 name: zimmer-deploy-staging
 title: Deploy Zimmer to Staging
 description: >
-  Deploy a Zimmer change to the staging environment. Staging is on-demand and
-  manual-dispatch only — the `Deploy staging` workflow takes a `ref` input, so it
-  can build and deploy an UNMERGED feature branch, which is the main reason to
-  use it. Covers dispatching the run, why the box is reachable only over the
-  Tailscale tailnet (not a public URL), watching the deploy, tearing it back
-  down, and what an agent session can and cannot do without AWS/DO credentials.
-  There is NO production deploy workflow in this repo.
+  Deploy a Zimmer change to the staging environment. Staging is a PERSISTENT
+  Kamal-deployed droplet, and the `Deploy staging` workflow is manual-dispatch
+  only — it takes a `ref` input, so it can build and deploy an UNMERGED feature
+  branch, which is the main reason to use it. Covers dispatching the run, the
+  Kamal container swap, watching the deploy, rolling back, and what an agent
+  session can and cannot do without DO/Tailscale credentials. There is NO
+  production deploy workflow in this repo.
 user-invocable: true
 ---
 
 # Deploy Zimmer to Staging
 
-Staging is **on-demand**: a DigitalOcean droplet that gets created by a deploy and
-destroyed nightly. It is dispatched manually and can build from any branch, so it
-is the way to exercise an **unmerged** change on a real box.
+Staging is a **persistent** DigitalOcean droplet reconciled through remote
+Terraform state. Deploys are dispatched manually and can build from any branch, so
+staging is the way to exercise an **unmerged** change on a real box.
+
+Kamal owns everything above the host: a deploy swaps containers with a
+health-gated zero-downtime cutover, it does **not** rebuild the droplet.
 
 ## The critical facts
 
@@ -29,11 +32,18 @@ is the way to exercise an **unmerged** change on a real box.
   and publishes that image and fires a `repository_dispatch`
   (`zimmer-image-published`) to notify it. Do not go looking for a prod deploy
   here, and do not try to deploy prod from this repo.
-- **Staging is not on a public URL.** `infra/terraform/staging.tfvars.example`
-  sets `domain = ""` (DNS skipped) and the DigitalOcean firewall drops public
-  `:80`. The box is reachable **only over the Tailscale tailnet**, as MagicDNS
-  host `zimmer-staging`. `https://docs.zimmer.tadasant.com/operate/deploying/` mentions
-  `staging.zimmer.tadasant.com`, but that hostname does not resolve by default.
+- **The droplet persists.** It is **not** torn down nightly and **not** recreated
+  per deploy. `teardown-staging.yml` is manual-dispatch only. The named volumes
+  (clones, Claude credentials, `gh` auth, Postgres data) survive deploys — which
+  is the point, and also why a rotated `STAGING_DB_PASSWORD` can strand the app
+  against an already-initialized Postgres.
+- **`recreate_droplet` is for bootstrap changes only.** Terraform sets
+  `ignore_changes = [user_data]`, so changing cloud-init, the Caddyfile, or the
+  Kamal deploy key needs `-replace`. Normal app deploys must leave it off.
+- **Staging has a domain**: `staging.zimmer.tadasant.com` (Caddy terminates TLS on
+  :443 in front of kamal-proxy; the A record and cert are managed by
+  `domain-cert-staging.yml`, not Terraform). It is also reachable over the
+  Tailscale tailnet as MagicDNS host `zimmer-staging`.
 
 ## Dispatching a deploy
 
@@ -57,28 +67,28 @@ gh run watch "$(gh run list --workflow=deploy-staging.yml --limit 1 --json datab
 
 What the run does, in order: builds and pushes
 `ghcr.io/tadasant/zimmer-base:staging` and `ghcr.io/tadasant/zimmer:staging-<short-sha>`
-(+ `:staging-latest`) → reaps the previous droplet and firewall tagged
-`zimmer-staging` → `bash scripts/tailnet-reap-node.sh zimmer-staging` (so the
-redeployed box reclaims the clean MagicDNS name) → `terraform apply` in
-`infra/terraform` with `staging.tfvars` → joins the tailnet → health-checks
-`http://<tailnet-ip>/up`, polling 40 × 15s.
+(+ `:staging-latest`) → `terraform apply` against **remote state** (DigitalOcean
+Spaces, `backend.staging.hcl`), which reconciles the existing droplet in place →
+joins the tailnet and resolves `zimmer-staging`'s IP → prints an **observability
+preflight** → `kamal deploy` (health-gated container swap) → verifies web *and*
+worker → renews the domain cert.
 
-The tfstate is **ephemeral** (no remote backend) — which is exactly why the
-workflow reaps the prior droplet/firewall/tailnet node by tag rather than by
-state. A deploy is a full replace, not an in-place update.
+The tfstate is **remote**, so a re-run updates in place rather than replacing the
+box. A deploy is a container swap, not a rebuild.
 
 ## Verifying the deployed box
 
-You need to be on the tailnet. From a machine that is:
-
 ```bash
+curl -sf https://staging.zimmer.tadasant.com/up && echo "STAGING UP"
+# or, on the tailnet:
 curl -sf http://zimmer-staging/up && echo "STAGING UP"
 ```
 
-If your session is **not** on the tailnet, you cannot reach staging directly —
-say so rather than pretending to verify. The workflow's own health-check step
-(`/up`, 40 × 15s) is legitimate evidence the deploy came up; cite the green run
-and link it.
+If your session cannot reach staging, say so rather than pretending to verify. The
+workflow's own verification step is legitimate evidence: it health-checks `/up`
+**and** asserts the worker is stably running (Running + a stable `RestartCount`),
+which is the check that catches a worker crash-looping on a bad DB password. Cite
+the green run and link it.
 
 The deploy job runs in the `staging` GitHub environment and shares the
 `staging-lifecycle` concurrency group with the teardown workflow, so a deploy and
@@ -86,9 +96,9 @@ a teardown can never race.
 
 ## Tearing it down
 
-Staging self-destructs nightly at **08:00 UTC** (`teardown-staging.yml`, cron
-`0 8 * * *`). Don't leave a droplet running longer than you need, but also don't
-panic about cleanup — it is automatic. To do it immediately:
+`teardown-staging.yml` is **manual-dispatch only** — there is no nightly cron, and
+the droplet is meant to stay up. Destroying it throws away the durable volumes
+(clones, Claude credentials, `gh` auth, Postgres data), so do it deliberately:
 
 ```bash
 gh workflow run teardown-staging.yml
@@ -114,6 +124,8 @@ flag the gap rather than inventing credentials.
 
 ## Related
 
+- `skills/zimmer-debug-staging/SKILL.md` — when the deploy is green but staging is
+  broken, silent, or hanging.
 - `https://docs.zimmer.tadasant.com/operate/deploying/` — the full deploy guide.
 - `https://docs.zimmer.tadasant.com/operate/provisioning/` — branch protection, staging secrets, Tailscale ACLs/tags.
 - `infra/terraform/README.md` — running Terraform by hand.

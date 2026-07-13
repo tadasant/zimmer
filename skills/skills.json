@@ -52,6 +52,17 @@
       "zimmer"
     ]
   },
+  "zimmer-debug-staging": {
+    "id": "zimmer-debug-staging",
+    "title": "Debug Zimmer's Staging Environment",
+    "description": "Diagnose a broken or silent Zimmer staging deployment. Covers the four places staging's truth lives (the deploy run, the containers on the droplet, the OTLP logs in VictoriaLogs, the errors in GlitchTip), the `bin/rails obs:status` / `obs:smoke` diagnostics that exist because Zimmer's telemetry is a HARD NO-OP when misconfigured, LogsQL queries scoped to `deployment.environment=staging`, and the failure modes that make staging look healthy while doing nothing (a dead worker, an unset RAILS_MASTER_KEY, a rotated DB password against a durable volume). Use when a staging deploy fails, when sessions hang, or when telemetry is missing.",
+    "path": "zimmer-debug-staging",
+    "category": "zimmer",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
   "zimmer-change-ai-artifact": {
     "id": "zimmer-change-ai-artifact",
     "title": "Change a Zimmer AI Artifact",

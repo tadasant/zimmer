@@ -58,6 +58,38 @@ posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Sla
 watch. Staging alerts are only distinguishable from production's by the posting bot (*Zimmer
 (Staging)*), so point staging at a different channel if that noise is unwelcome.
 
+### Telemetry is a hard no-op when misconfigured, and says nothing
+
+`config/initializers/otel_logs_exporter.rb` needs **both** `OTEL_LOGS_EXPORTER_ENDPOINT` and
+`OTEL_LOGS_EXPORTER_BEARER_TOKEN`; `config/initializers/sentry.rb` needs `SENTRY_DSN_BACKEND`. Any of
+them missing and the initializer does nothing at all — no raise, no warning, a perfectly healthy boot,
+and no data. Staging shipped exactly zero telemetry for its entire existence this way, and nothing
+anywhere said so.
+
+The no-op is the right default (it keeps dev, test, and CI off the network), so the mitigation is
+visibility rather than a hard failure: `deploy-staging.yml` prints an observability preflight on every
+run, and `bin/rails obs:status` / `bin/rails obs:smoke` answer the question from inside the container.
+Absence of data is still never, by itself, evidence of absence of errors.
+
+### Staging cannot have its own OTLP ingest token
+
+The obs stack's ingest gateway matches the `Authorization` header against a **single** shared token,
+so staging authenticates with the same bearer token as production. There is no per-environment ingest
+credential, and revoking staging's access means revoking production's. Separation happens *after*
+ingest, via the `deployment.environment` resource attribute — which is a labeling boundary, not a
+security one.
+
+Errors do get a real boundary: staging and production point at different GlitchTip projects, because a
+DSN selects a project and GlitchTip's alert rules are per-project with no environment filter.
+
+### Nothing prevents a staging error from paging production's alert channel
+
+The separation between staging and production telemetry is the `deployment.environment` attribute, and
+it only works if the *consumer* honors it. An alert rule that selects on `{service.name="zimmer"}`
+alone matches staging records identically to production ones. Zimmer emits the label correctly; it
+cannot enforce that the alert rules on the other side filter by it. Those rules live in a separate
+repository.
+
 ### SSH hardening only reaches a droplet that is rebuilt
 
 SSH is now [tailnet-only](/operate/provisioning/#ssh-is-tailnet-only): the firewall opens no public
