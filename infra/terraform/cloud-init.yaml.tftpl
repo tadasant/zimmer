@@ -23,8 +23,10 @@ write_files:
     content: |
       ${indent(6, deploy_ssh_pubkey)}
   # Admin/tooling keys authorized for root on top of the Kamal key (var.admin_ssh_pubkeys):
-  # the shared operator key the ssh-* MCP servers connect with. Both environments get
-  # them from THIS one path, so staging and production cannot drift on who can get in.
+  # the operator key the ssh-* MCP servers connect with. The list is per environment and the
+  # environments are NOT meant to match -- the key Zimmer's agent sessions hold is authorized
+  # on staging and withheld from production, which is where those sessions run (see
+  # docs/operate/ssh-access.md#who-is-authorized-where).
   # Empty list = file is empty and the append loop below no-ops.
   - path: /root/.ssh/admin_keys.pub
     permissions: "0600"

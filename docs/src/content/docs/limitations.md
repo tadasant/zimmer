@@ -148,20 +148,22 @@ the step to the mirror's workflow.
 
 Tracked in [#151](https://github.com/tadasant/zimmer/issues/151).
 
-### An agent session's SSH key is root on the host it runs on
+### An agent session's SSH key is root on every host it can reach, and no session is scoped
 
 The [operator SSH key](/operate/provisioning/#the-ssh-identity-an-agent-session-holds) that agent
-sessions authenticate with is authorized for `root` through `admin_ssh_pubkeys`, on every Zimmer host.
-A session running on production holds a key that is root on **its own host** — it can SSH back into the
-box it is executing on, and into staging, with full privileges.
+sessions authenticate with is authorized for `root` — there is no unprivileged SSH user on a Zimmer
+box. It opens staging, the observability host, and the CI runner, at full privilege, from any session.
 
-That is the deal Zimmer takes deliberately: these sessions exist to operate the fleet, and a
-narrower identity (a non-root user, per-host keys) would not let them do the job. What keeps it
-bounded is that it is a *separate* identity from the Kamal deploy key, so it can be revoked on its own,
-and that the hosts answer publickey SSH only on the tailnet (`:2222`) — never on the public internet.
+There is **no per-session scoping**. Every session in the worker container inherits the same key, so
+"which sessions may SSH where" is not a question Zimmer can answer: they can all go everywhere the key
+goes. The only real control is which hosts authorize the key, and that is a per-host decision made
+outside the app.
 
-There is no per-session scoping. Any session on the box can use the key; Zimmer does not gate which
-sessions may SSH where.
+That control is used in exactly one place, and it is the important one: **production does not
+authorize the key**. A session runs *on* production, and a session with root on its own host can take
+the orchestrator down with itself inside the blast radius. Staging is disposable, so the same key
+there is an accepted trade. See [who is authorized where](/operate/ssh-access/#who-is-authorized-where)
+— and do not reconcile the two lists.
 
 ### Admin keys are add-only
 

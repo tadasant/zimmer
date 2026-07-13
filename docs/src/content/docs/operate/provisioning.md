@@ -18,7 +18,7 @@ Terraform only provisions the **host**. The app image, its env, and the data sto
 | `region` / `droplet_size` | default `nyc3` / `s-2vcpu-4gb` |
 | `domain` | `""` by default. Set it to turn on [custom-domain HTTPS over the tailnet](/operate/deploying/#custom-domain-https-over-the-tailnet) — cloud-init runs a Caddy terminator on `:443` fronting kamal-proxy. Terraform does not create the DNS record; the `domain-cert` workflow owns the A record. |
 | `manage_project` | still `false`. Remote state fixes the case where Terraform *created* the project, but a **pre-existing** one (both envs have one) still 409s on its account-unique name. Turning it on needs a one-time `terraform import` first; a DO Project is just a console folder, so it isn't worth the failure mode. |
-| `admin_ssh_pubkeys` | Operator/tooling public keys cloud-init authorizes for `root`, on top of the Kamal deploy key. The **one** mechanism both environments use, so staging and production cannot drift on who can get in. `[]` by default — set it per environment in `*.tfvars`, never as a module default, so a fork does not silently authorize someone else's key. It rides cloud-init, so a key added here [reaches only a rebuilt box](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet). |
+| `admin_ssh_pubkeys` | Operator/tooling public keys cloud-init authorizes for `root`, on top of the Kamal deploy key. Per environment, and the environments are **[deliberately not the same](/operate/ssh-access/#who-is-authorized-where)** — do not reconcile them. `[]` by default: set it in `*.tfvars`, never as a module default, so a fork does not silently authorize someone else's key. It rides cloud-init, so a key added here [reaches only a rebuilt box](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet). |
 | `ssh_key_fingerprints` | DigitalOcean-registered keys. **Leave it empty.** It is `ForceNew` on `digitalocean_droplet`, so adding a key makes the deploy workflow's auto-approved `terraform apply` *destroy and recreate the droplet* — skipping the tailnet-node reap that only runs behind `recreate_droplet`, which lands the replacement as `zimmer-<env>-1` and breaks the hostname the deploy resolves. Use `admin_ssh_pubkeys`: it rides cloud-init, which is under `ignore_changes`, so it can never force-replace the box. |
 | `managed_db_cluster_name` | `""` for staging (Kamal runs a throwaway Postgres accessory); set for production |
 
@@ -149,13 +149,21 @@ Tailscale SSH. Terraform is what makes it survive the *next* rebuild; the manual
 it work *now*.
 :::
 
-:::caution[This key is root on every Zimmer host]
-`admin_ssh_pubkeys` authorizes `root`. A session running **on production** therefore holds a key that
-is root on its own host, and on every other host that authorizes the same key. That blast radius is
-accepted deliberately — operating the fleet is the job these sessions exist to do — and it is why the
-key is a **separate identity** from the Kamal deploy key: revoking it is deleting one line from
-`admin_ssh_pubkeys` (plus a rebuild — [admin keys are add-only](/limitations/#admin-keys-are-add-only)),
-with no effect on deploys.
+:::caution[This key is root on every host that authorizes it — and production deliberately does not]
+`admin_ssh_pubkeys` authorizes `root`; there is no unprivileged SSH user. So the only thing bounding
+what a session can reach is **which hosts authorize the key**, and production is left out on purpose:
+a session runs *on* production, and a session holding root on its own host can take the orchestrator
+down with itself still inside it. Staging, the observability box, and the CI runner do authorize it —
+that is the fleet these sessions exist to operate.
+
+The full table, and the second layer that keeps a production session from even *attaching* an SSH MCP
+server aimed at its own host, are in [who is authorized
+where](/operate/ssh-access/#who-is-authorized-where). Do not reconcile the lists so they match.
+
+Being a **separate identity** from the Kamal deploy key is what makes any of this revocable: dropping
+one line from a key list has no effect on deploys ([admin keys are
+add-only](/limitations/#admin-keys-are-add-only), so a live box also needs the line removed from
+`/root/.ssh/authorized_keys`).
 :::
 
 ## Where secrets end up that they shouldn't
