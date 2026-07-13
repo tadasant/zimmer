@@ -66,15 +66,30 @@ Prerequisites and the environment variables that matter are in
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and the agent instructions in
-[AGENTS.md](AGENTS.md) (`CLAUDE.md` is a symlink to it). Docs live in [`docs/`](docs) and are
-updated in the same PR as the behavior they describe.
+**Zimmer does not accept pull requests** — it's maintained as a single circle of trust, so
+every change lands through the maintainer. PRs opened against this repo are closed
+automatically with a pointer back here. Please don't take it personally; it keeps the
+project coherent.
+
+**Detailed issues are very welcome, though, and get triaged quickly.** A precise bug report
+or a concrete feature request is the highest-leverage thing you can send:
+
+- 🐞 [Report a bug](https://github.com/tadasant/zimmer/issues/new?template=bug_report.yml) — exact reproduction steps, real output, impact.
+- 💡 [Request a feature](https://github.com/tadasant/zimmer/issues/new?template=feature_request.yml) — the problem, a concrete proposal, and any precedent.
+- 💬 [Ask a question](https://github.com/tadasant/zimmer/discussions) in Discussions.
+
+**Forking is welcome.** It's MIT-licensed — fork it, run it, build on it.
+
+If you're working locally (on a fork, or just poking around), the same checks CI runs are:
 
 ```bash
 bundle exec rubocop         # lint
 bin/brakeman -q             # security scan
 bin/rails test              # unit + integration
 ```
+
+Architecture and agent instructions live in [AGENTS.md](AGENTS.md) (`CLAUDE.md` is a symlink
+to it); docs live in [`docs/`](docs).
 
 ## License
 

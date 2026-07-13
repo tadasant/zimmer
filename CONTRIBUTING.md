@@ -3,16 +3,27 @@
 Thanks for your interest in Zimmer! This is an early-stage project extracted from
 an internal orchestrator, so expect some rough edges.
 
+## How to contribute: issues, not pull requests
+
+Zimmer is maintained as a single circle of trust, so **it does not accept pull
+requests** — every change lands through the maintainer, and PRs opened against this
+repo are closed automatically with a friendly pointer back to this policy. It's not
+personal; it keeps the project coherent.
+
+The most useful thing you can send is a **detailed issue**, and those are triaged
+quickly:
+
+- 🐞 **[Report a bug](https://github.com/tadasant/zimmer/issues/new?template=bug_report.yml)** — exact reproduction steps, real output, impact, and version.
+- 💡 **[Request a feature](https://github.com/tadasant/zimmer/issues/new?template=feature_request.yml)** — the problem, a concrete proposal, and any precedent in the repo.
+- 💬 **[Ask a question](https://github.com/tadasant/zimmer/discussions)** in Discussions.
+
+**Forking is welcome** — it's MIT-licensed, so fork it, run it, and build on it. The
+rest of this guide helps you get it running and find your way around the code.
+
 ## Development setup
 
-See the [README](README.md#quick-start-development). In short: Ruby 3.4.6,
+See the [README](README.md#try-it-locally). In short: Ruby 3.4.6,
 PostgreSQL, Redis, then `bundle install && bin/rails db:setup && bin/dev`.
-
-## Branch & PR workflow
-
-- Work on a feature branch off the latest `main`.
-- `main` is protected: changes land via pull request with green CI.
-- Keep PRs scoped; write a clear description of what changed and why.
 
 ## Tests, lint, and security
 
