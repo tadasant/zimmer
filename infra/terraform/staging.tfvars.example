@@ -40,9 +40,17 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 # Note what that means: a session running ON this host holds a key that is root on this
 # host. That blast radius is accepted (it is the point -- these sessions operate the
 # fleet), and the separate identity is what keeps it revocable.
+#
+# `root@local` is the maintainer's LOCAL BREAK-GLASS KEY -- a human's key, on purpose. The
+# other two entries belong to machines that reach the box through Zimmer or through CI, so
+# when Zimmer itself is down, or a deploy is what broke, none of them is a way in. This one
+# is: it is on a laptop, and it needs nothing but the tailnet to work. Production already
+# authorizes it; staging did not, and that drift is exactly the kind this variable exists
+# to prevent. Do not "clean it up" as a stray personal key -- it is the last door.
 admin_ssh_pubkeys = [
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEp3tk5RCh76zPddFcoyY01MazsyHnacqo0KrAczCY6 zimmer-production-operator",
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmRanTTxADIQWHp9PZqOAFQX2SVXibTqVXb0D3AtuiU agent-orchestrator-prod-hetzner",
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINtfKYBq3IWBflQJ8lXNhfgJAmS6RynvC2A1m0eFy3Zn root@local",
 ]
 
 # Custom-domain HTTPS over the tailnet: turns on the Caddy TLS terminator on :443,

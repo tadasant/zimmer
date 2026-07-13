@@ -171,9 +171,26 @@ Edit it in **`infra/terraform/staging.tfvars.example`**, not in `staging.tfvars`
 ```hcl
 # infra/terraform/staging.tfvars.example
 admin_ssh_pubkeys = [
-  "ssh-ed25519 AAAA...replace-with-your-own-public-key you@example.com",
+  "ssh-ed25519 AAAA... zimmer-production-operator",      # the identity agent sessions hold
+  "ssh-ed25519 AAAA... agent-orchestrator-prod-hetzner", # the orchestrator that drives the fleet
+  "ssh-ed25519 AAAA... root@local",                      # the maintainer's break-glass laptop key
 ]
 ```
+
+If you are forking Zimmer, those are **the author's** keys: replace them with your own, or the first
+deploy authorizes a stranger for root on your droplet. A public key is not a secret, which is why they
+are committed — but the list is per-environment configuration, not a default to inherit.
+
+### The break-glass key
+
+Two of those three entries only reach the box *through* something: the orchestrator key belongs to the
+machine that runs Zimmer's own sessions, and the Kamal deploy key belongs to CI. When Zimmer is down,
+or when a deploy is what broke, neither is a way in. The `root@local` entry is a human's key on a
+laptop, authorized for root on every environment for exactly that case — nothing but the tailnet has
+to be working for it to let you in.
+
+It is deliberate, and it is the reason the same list is asserted on staging and production rather than
+being tailored per environment. Do not prune it as a stray personal key.
 
 Do **not** reach for `ssh_key_fingerprints` (DigitalOcean-registered keys) instead. It is `ForceNew` on
 `digitalocean_droplet`, so adding a key there makes the deploy's auto-approved `terraform apply`
@@ -214,11 +231,11 @@ Removal has no such path. The cloud-init loop only ever **appends**, so taking a
 `admin_ssh_pubkeys` revokes nothing on a running droplet: that needs a rebuild, or an edit of
 `authorized_keys` on the box. See [Admin keys are add-only](/limitations/#admin-keys-are-add-only).
 
-:::note[Zimmer agent sessions have no SSH key of their own]
-There is no private key in a session container today, so an `ssh-*` MCP server attached to a session
-fails its healthcheck for lack of an *identity* — not for lack of firewall or ACL access. Giving
-sessions their own operator keypair is in flight; until it lands, the key material described above is
-an operator's, not an agent's.
+:::note[One of these keys belongs to Zimmer's own sessions]
+`zimmer-production-operator` is not an operator's key — it is the identity **agent sessions** hold.
+`OperatorSshKeyProvisioner` writes its private half into the session container, which is what lets an
+`ssh-*` MCP server attached to a session reach these hosts at all. See [the SSH identity an agent
+session holds](/operate/provisioning/#the-ssh-identity-an-agent-session-holds).
 :::
 
 ## Why sshd is configured the way it is
