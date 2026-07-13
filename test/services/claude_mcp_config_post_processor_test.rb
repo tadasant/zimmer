@@ -204,6 +204,8 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_nil query_params(zimmer["url"])["allowed_agent_roots"],
       "The catalog's unrestricted entry must NOT be narrowed to the root's subagent list — " \
       "start_session must still accept roots outside that list"
+    assert_equal "http://localhost:3000/mcp", url_without_query(zimmer["url"]),
+      "The surviving catalog entry is still retargeted at the local instance"
     assert_empty processor.injected_mcp_servers,
       "Nothing is injected when a catalog zimmer entry already covers the surface"
   end

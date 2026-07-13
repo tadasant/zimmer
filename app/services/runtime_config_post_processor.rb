@@ -89,6 +89,12 @@ class RuntimeConfigPostProcessor
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
 
+    # Nothing injected means no Zimmer entry needs retarget/secret resolution: this
+    # path runs only for a session with blank mcp_servers/skills/hooks/plugins, so
+    # no catalog `zimmer` entry (which arrives via default_mcp_servers → the
+    # post_process! branch) can be present for inject_subagent_server! to skip over.
+    # A catalog entry that DID reach here would be left un-retargeted by this early
+    # return — but by construction one cannot.
     return if injected_mcp_servers.empty?
 
     retarget_zimmer_servers_to_current_env!(servers)
@@ -185,10 +191,16 @@ class RuntimeConfigPostProcessor
   # MCP world every Zimmer variant is the SAME URL differentiated only by query
   # param, so blindly writing servers["zimmer"] would overwrite a catalog-provided
   # full-surface entry with our root-restricted one — silently narrowing
-  # start_session's allowed_agent_roots with no error. The catalog entry is at
-  # least as capable (it is the unrestricted, full-surface server), so skipping
-  # keeps start_session's full root surface. Retargeting still points it at the
-  # current instance.
+  # start_session's allowed_agent_roots with no error. Skipping keeps
+  # start_session's full root surface, and retargeting still points the surviving
+  # entry at the current instance.
+  #
+  # This trusts the catalog's naming convention: the bare `zimmer` key is reserved
+  # for the unrestricted, full-surface server, while scoped variants are named
+  # `zimmer-*` (see mcp.json). So an entry under this exact key is at least as
+  # capable as the one we would inject. A plain key check is therefore enough —
+  # unlike the self-session dedup, which must inspect tool_groups because it
+  # matches every `zimmer*` name, not one reserved key.
   def inject_subagent_server!(servers)
     root = find_root
     return unless root&.default_subagent_roots&.any?
