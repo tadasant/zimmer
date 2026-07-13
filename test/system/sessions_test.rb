@@ -207,10 +207,14 @@ class SessionsTest < ApplicationSystemTestCase
 
     fill_in "session[prompt]", with: "Look up docs and file an issue"
 
-    # Select two catalog MCP servers by name.
+    # Select two catalog MCP servers by name. The dropdown renders only the first
+    # 10 matches, so a server further down the catalog (notion) is not visible until
+    # the input filters the list — type its name to narrow before clicking.
     find("[data-mcp-server-select-target='input']").click
     find(".server-item[data-name='linear']").click
-    find("[data-mcp-server-select-target='input']").click
+    notion_input = find("[data-mcp-server-select-target='input']")
+    notion_input.click
+    notion_input.send_keys("notion")
     find(".server-item[data-name='notion']").click
 
     # Click elsewhere to close the dropdown
@@ -351,9 +355,12 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Should show server titles and descriptions in dropdown
     assert_selector ".server-item", minimum: 2
-    # Verify AppSignal and Playwright server info is shown (titles, not names)
-    assert_text "AppSignal - PulseMCP Prod"
-    assert_text "Playwright Custom"
+    # Verify the dropdown renders server titles (not slugs). Assert against the first
+    # couple of servers from the catalog itself so this stays correct as the catalog
+    # changes; both fall within the dropdown's 10-item display cap.
+    ServersConfig.all.first(2).each do |server|
+      assert_text server.title
+    end
   end
 
   # Test session list functionality
@@ -657,10 +664,13 @@ class SessionsTest < ApplicationSystemTestCase
   test "changing to agent root without goal clears the field" do
     visit new_session_url
 
+    # The new-session form only renders radios for user-invocable agent roots, so
+    # pick from that set — a non-invocable root has no `agent_root_<name>` element to
+    # drive, and getElementById would return null.
     # Find an agent root with a goal
-    agent_root_with_condition = AgentRootsConfig.all.find { |r| r.default_goal.present? }
+    agent_root_with_condition = AgentRootsConfig.user_invocable.find { |r| r.default_goal.present? }
     # Find an agent root without a goal
-    agent_root_without_condition = AgentRootsConfig.all.find { |r| r.default_goal.blank? }
+    agent_root_without_condition = AgentRootsConfig.user_invocable.find { |r| r.default_goal.blank? }
 
     if agent_root_with_condition && agent_root_without_condition
       # Select agent root with goal (radios are hidden — go through the controller)
@@ -819,10 +829,12 @@ class SessionsTest < ApplicationSystemTestCase
   test "changing to agent root without default MCP servers clears selection" do
     visit new_session_url
 
+    # Only user-invocable roots render a radio in the form; pick from that set so the
+    # `agent_root_<name>` element the script drives actually exists in the DOM.
     # Find an agent root with MCP servers
-    agent_root_with_servers = AgentRootsConfig.all.find { |r| r.default_mcp_servers.present? }
+    agent_root_with_servers = AgentRootsConfig.user_invocable.find { |r| r.default_mcp_servers.present? }
     # Find an agent root without MCP servers
-    agent_root_without_servers = AgentRootsConfig.all.find { |r| r.default_mcp_servers.blank? }
+    agent_root_without_servers = AgentRootsConfig.user_invocable.find { |r| r.default_mcp_servers.blank? }
 
     skip "Need agent roots with and without MCP servers" unless agent_root_with_servers && agent_root_without_servers
 
