@@ -173,11 +173,11 @@ the same**:
 | --- | --- | --- | --- | --- |
 | `zimmer-production-operator` — the key a Zimmer **agent session** holds | **no — deliberately excluded** | yes | yes | yes |
 | `agent-orchestrator-prod-hetzner` — the orchestrator, which runs on a **separate** host | yes | yes | — | — |
-| `root@local` — a human's laptop, break-glass only | yes | being added | — | — |
+| `root@local` — a human's laptop, break-glass only | yes | no | — | — |
 | the Kamal deploy key (`var.deploy_ssh_pubkey`) | yes | yes | — | — |
 
 A `—` means "not part of this deployment's access model", not "denied". The one cell that is a
-*decision* is the first one.
+*decision* is the first one: every other `no` is just a key nobody needed there.
 
 ### Root on production is for humans and for an off-box orchestrator. Not for a session running on it.
 
@@ -212,7 +212,9 @@ capability is taken away twice, independently:
 1. **Authorization** — production's `/root/.ssh/authorized_keys` does not contain the operator key,
    and neither does the list production converges *from*
    ([`admin_authorized_keys.pub`](#each-environments-key-list-lives-somewhere-different), in the
-   private companion repo). A converge cannot re-add what is not declared.
+   private companion repo). A converge cannot re-add what is not declared — and for production that
+   file is the *only* place a key can be declared, because production does not use
+   `admin_ssh_pubkeys` at all (see below). There is one door, and the key is not on the list for it.
 2. **Availability** — the AIR catalog production runs on does not even *offer* the SSH MCP server
    that points at production. A session cannot attach a server it cannot see, so it never gets as far
    as presenting a key.
@@ -231,17 +233,18 @@ Three things about that snippet are easy to get wrong:
 - **`exclude` is a per-type object**, keyed by artifact type. The flat-array form
   (`"exclude": ["@local/x"]`) is rejected by the schema outright — it is not a deprecated spelling, it
   does not resolve.
-- **The scope is `@local`, not the catalog's `name`.** That catalog is named `tadasant-artifacts`, but
-  its indexes are local paths (`./artifacts/mcp.json`), and [AIR scopes every local index under
-  `@local`](/air/overview/#the-identity-model-is-the-load-bearing-idea). `@tadasant-artifacts/…` would
-  match nothing and warn.
+- **The scope is `@local`, not the catalog's `name`.** A catalog whose indexes are local paths
+  contributes its artifacts under `@local`, [whatever the catalog calls
+  itself](/air/overview/#the-identity-model-is-the-load-bearing-idea). Reaching for the catalog's
+  `name` as the scope matches nothing, and AIR says so in a warning rather than an error.
 - **`exclude` is the *only* composition control AIR has** — no override, no field-level patching. You
   drop the artifact or you keep it.
 
-The entry stays in that catalog's `mcp.json`, so the server is still attachable from a checkout that
-resolves without the exclude — a laptop, where the client is off-box and none of the reasoning above
-applies. Excluding an artifact is [an expected drop, not a degraded
-resolve](/air/zimmer-integration/), so it does not trip `AirCatalogService`'s dangling-reference check.
+The entry is still *in* that catalog's `mcp.json` — `exclude` drops it at resolve time rather than
+deleting it — so the server remains available to a human running it by hand from a laptop, where the
+client is off-box and none of the reasoning above applies. Excluding an artifact is [an expected drop,
+not a degraded resolve](/air/zimmer-integration/), so it does not trip `AirCatalogService`'s
+dangling-reference check.
 
 Zimmer's own [in-image catalog](/air/zimmer-integration/#the-catalog-is-self-contained-and-offline) —
 the `mcp.json` in this repository, which `config/environments/production.rb` falls back to when the
@@ -256,14 +259,27 @@ on production**:
 
 | Environment | Declared in | Converged by |
 | --- | --- | --- |
-| staging | `infra/terraform/staging.tfvars.example` → `admin_ssh_pubkeys` (**this** repo) | cloud-init, on rebuild |
-| production | `zimmer/admin_authorized_keys.pub` (the [private companion repo](/operate/companion-repo/)) | its `authorize-admin-keys-prod` workflow, live over Tailscale SSH |
+| staging | `infra/terraform/staging.tfvars.example` → `admin_ssh_pubkeys` (**this** repo) | cloud-init, at droplet creation |
+| production | `zimmer/admin_authorized_keys.pub` (the [private companion repo](/operate/companion-repo/)) | its `authorize-admin-keys-prod` workflow, live over Tailscale SSH — and re-asserted by the prod deploy, so it self-heals across a rebuild |
+
+The two environments do not merely hold different lists — they use **different mechanisms**, and this
+is the detail that makes the exclusion hold:
+
+- **Production's admin keys are not a Terraform variable at all.** Its private `production.tfvars`
+  leaves `admin_ssh_pubkeys` unset (it defaults to `[]`) and says so explicitly, because keys managed
+  as *file content* can be converged onto a live box, while keys managed through cloud-init reach a
+  box only when it is created. So production has exactly **one** declaration site,
+  `admin_authorized_keys.pub` — nothing else can put a key on that box, which is what turns "the key
+  is not in the file" into a real guarantee rather than a race with the next `terraform apply`.
+- **Staging's admin keys are the Terraform variable**, because staging is rebuilt freely and
+  cloud-init is the natural path.
 
 The only Terraform variables file in this repo is `staging.tfvars.example`, and the only workflows
 that consume it are `deploy-staging` and `teardown-staging`. Production's Terraform state, tfvars, and
-key list are all private. So the operator key sitting in `staging.tfvars.example` authorizes it on
-**staging and nothing else** — which is intended: a session reaching *staging* is the point, it is
-disposable, and a session that destroys it costs a rebuild.
+key list are all private. **Nothing in this repository authorizes a key on production.** So the
+operator key sitting in `staging.tfvars.example` authorizes it on **staging and nothing else** — which
+is intended: a session reaching *staging* is the point, it is disposable, and a session that destroys
+it costs a rebuild.
 
 ## Operator keys
 
@@ -272,11 +288,18 @@ Edit the staging list in **`infra/terraform/staging.tfvars.example`**, not in `s
 `*.tfvars` is gitignored. The example file *is* the tfvars.
 
 ```hcl
-# infra/terraform/staging.tfvars.example
+# infra/terraform/staging.tfvars.example — what is actually committed
 admin_ssh_pubkeys = [
-  "ssh-ed25519 AAAA...replace-with-your-own-public-key you@example.com",
+  "ssh-ed25519 AAAA...FEp3 zimmer-production-operator",      # Zimmer's agent sessions
+  "ssh-ed25519 AAAA...EmRa agent-orchestrator-prod-hetzner", # the orchestrator, off-box
 ]
 ```
+
+:::danger[Forking: those are real keys, not placeholders]
+The committed example is not a template with a dummy value in it — it holds the upstream author's two
+real public keys, and `deploy-staging.yml` copies the file verbatim. Deploy it unchanged and you have
+authorized **him** for `root` on **your** droplet. Replace both with your own, or set `[]`.
+:::
 
 Do **not** reach for `ssh_key_fingerprints` (DigitalOcean-registered keys) instead. It is `ForceNew` on
 `digitalocean_droplet`, so adding a key there makes the deploy's auto-approved `terraform apply`
@@ -310,13 +333,15 @@ tailscale ssh root@zimmer \
 
 That is the same idempotent append cloud-init does at boot. The author automates it as an
 `authorize-admin-keys-prod` workflow in the [private companion repo](/operate/companion-repo/), which
-is the natural home for it — production's deploy pipeline lives there, not here. The workflow
-converges from `zimmer/admin_authorized_keys.pub`, so a key belongs in that file too, or the next run
-does not know about it and the next rebuild drops it.
+is the natural home for it — production's deploy pipeline lives there, not here. It converges from
+`zimmer/admin_authorized_keys.pub`, and the prod deploy re-asserts the same file, so that file — not
+a tfvars entry — is what a key must be in to survive: a hand-appended key that nobody wrote down is
+dropped by the next rebuild, since production's cloud-init list is empty by design.
 
-That is also the reason the operator key has to stay **out** of `admin_authorized_keys.pub`, not just
-out of the live `authorized_keys`: a converge run reads the declared list, and anything declared there
-gets re-added. Revoking a key on the box while leaving it in the file buys you one deploy of safety.
+That cuts exactly the other way for a key you want **gone**, which is why the operator key has to stay
+out of `admin_authorized_keys.pub` and not merely out of the live `authorized_keys`: a converge reads
+the declared list and re-adds everything on it. Revoking a key on the box while leaving it in the file
+buys you one deploy of safety.
 
 Removal has no such path. The cloud-init loop only ever **appends**, so taking a key out of
 `admin_ssh_pubkeys` revokes nothing on a running droplet: that needs a rebuild, or an edit of
