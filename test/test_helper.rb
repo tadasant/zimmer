@@ -109,6 +109,24 @@ if ActionView::Resolver.caching?
   end
 end
 
+# Force-load GoodJob's engine models in the parent process, before parallelize()
+# forks workers. GoodJob::Job pulls in nested constants (GoodJob::Job::Lockable,
+# …) and is the class_name target of GoodJob::Process#locked_jobs. Left to lazy
+# Zeitwerk autoload, the first test (or a GoodJob background thread inside a
+# worker) to touch it can race the autoload and raise
+#   Zeitwerk::NameError: expected file .../good_job/job.rb to define constant
+#   GoodJob::Job, but didn't
+# or "Missing model class GoodJob::Job for the GoodJob::Process#locked_jobs
+# association" (issue #3). This does not reproduce when config.eager_load is on
+# (CI sets CI=true for exactly that reason), but a bare `bin/rails test` runs with
+# eager loading off. Referencing the constants here — and eagerly resolving the
+# association's klass — makes every forked worker inherit them already defined, so
+# no autoload happens under threads regardless of the eager_load setting.
+if defined?(GoodJob)
+  GoodJob::Job
+  GoodJob::Process.reflect_on_association(:locked_jobs)&.klass
+end
+
 module ActiveSupport
   class TestCase
     # Run tests in parallel. CI sets PARALLEL_WORKERS to throttle system test jobs

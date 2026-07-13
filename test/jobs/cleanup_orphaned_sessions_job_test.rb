@@ -167,13 +167,21 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
       scheduled_at: 2.minutes.from_now
     )
 
-    # Scope to AgentSessionJob (the resume job) rather than a global assertion:
-    # under the full parallel suite CleanupOrphanedSessionsJob may enqueue work for
-    # other orphaned sessions in the worker's DB, which a bare assert_no_enqueued_jobs
-    # would count. The intent here is only that THIS parked session is not re-queued.
-    assert_no_enqueued_jobs only: AgentSessionJob do
-      CleanupOrphanedSessionsJob.perform_now
+    # Scope the assertion to THIS parked session rather than to the whole
+    # AgentSessionJob class. Under the full parallel suite CleanupOrphanedSessionsJob
+    # scans every session in the worker's DB and may legitimately enqueue a resume
+    # job for some other orphan; a bare `assert_no_enqueued_jobs` (or even
+    # `only: AgentSessionJob`) would count those and fail non-deterministically. The
+    # intent here is only that @session — parked awaiting its future clone retry — is
+    # not itself re-queued. Every AgentSessionJob enqueue path passes session_id as
+    # its first positional argument, so we filter enqueued jobs by @session.id.
+    CleanupOrphanedSessionsJob.perform_now
+
+    resume_jobs_for_session = enqueued_jobs.select do |job|
+      job[:job] == AgentSessionJob && Array(job[:args]).include?(@session.id)
     end
+    assert_empty resume_jobs_for_session,
+      "parked session #{@session.id} must not be re-queued while its clone retry is pending"
 
     @session.reload
     assert_equal "running", @session.status

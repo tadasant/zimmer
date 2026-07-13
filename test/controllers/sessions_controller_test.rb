@@ -2918,39 +2918,56 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   # Test refresh_all action
   test "should refresh all non-archived sessions" do
-    # Create multiple sessions with transcripts
+    # Archive any pre-existing (fixture) sessions so the "Refreshed N" count is a
+    # deterministic function of the three sessions this test creates, not of
+    # whatever else happens to be in the worker's DB.
+    Session.where.not(status: :archived).update_all(status: :archived)
+
     session1 = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt 1", status: :running)
     session2 = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt 2", status: :waiting)
     session3 = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt 3", status: :archived)
 
-    [ session1, session2, session3 ].each do |session|
-      clone_path = "/fake/clone/path/#{session.id}"
-      session.update!(metadata: { "clone_path" => clone_path })
-    end
-
     transcript_content1 = "{\"role\":\"user\",\"content\":\"Test message #{session1.id}\"}\n"
     transcript_content2 = "{\"role\":\"user\",\"content\":\"Test message #{session2.id}\"}\n"
-    fake_transcript_file1 = "/fake/.claude/projects/-fake-clone-path-#{session1.id}/test-session.jsonl"
-    fake_transcript_file2 = "/fake/.claude/projects/-fake-clone-path-#{session2.id}/test-session.jsonl"
 
-    Dir.expects(:exist?).returns(true).at_least_once
-    Dir.expects(:glob).returns([ fake_transcript_file1, fake_transcript_file2 ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
-    # Use any_parameters to handle both file reads flexibly
-    File.stubs(:read).with(fake_transcript_file1).returns(transcript_content1)
-    File.stubs(:read).with(fake_transcript_file2).returns(transcript_content2)
+    # Write REAL transcript files on disk at the location the controller computes
+    # (~/.claude/projects/<sanitized clone_path>), instead of globally stubbing
+    # Dir.exist?/Dir.glob/File.mtime/File.read. Those process-wide singleton mocks
+    # race the suite's background threads: a concurrent File.read/Dir.glob trips
+    # mocha "unexpected invocation", which (raised before the first assert) left
+    # this test with 0 assertions and a spurious failure (#5). Real files exercise
+    # the true filesystem path with no global monkeypatching.
+    created_dirs = []
+    [ [ session1, transcript_content1 ], [ session2, transcript_content2 ] ].each do |session, content|
+      clone_path = File.join(Dir.tmpdir, "zimmer-refresh-all-#{session.id}-#{SecureRandom.hex(4)}")
+      session.update!(metadata: { "clone_path" => clone_path })
+
+      transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(clone_path))
+      FileUtils.mkdir_p(transcript_dir)
+      created_dirs << transcript_dir
+      File.write(File.join(transcript_dir, "session-#{session.id}.jsonl"), content)
+    end
+
+    # Give the archived session a clone_path + on-disk transcript too, to prove it
+    # is skipped because it is archived — not merely because it lacks a transcript.
+    session3_clone = File.join(Dir.tmpdir, "zimmer-refresh-all-archived-#{session3.id}-#{SecureRandom.hex(4)}")
+    session3.update!(metadata: { "clone_path" => session3_clone })
+    session3_dir = File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(session3_clone))
+    FileUtils.mkdir_p(session3_dir)
+    created_dirs << session3_dir
+    File.write(File.join(session3_dir, "session-#{session3.id}.jsonl"), "{\"role\":\"user\",\"content\":\"archived\"}\n")
 
     post refresh_all_sessions_url
     assert_redirected_to root_path
-    assert_match /Refreshed 2 session/, flash[:notice]
+    assert_match(/Refreshed 2 session/, flash[:notice])
 
     # Verify transcripts were updated for non-archived sessions
     session1.reload
     session2.reload
     session3.reload
 
-    assert_not_nil session1.transcript
-    assert_not_nil session2.transcript
+    assert_equal transcript_content1, session1.transcript
+    assert_equal transcript_content2, session2.transcript
     # Archived session should not be refreshed
     assert_nil session3.transcript
 
@@ -2958,6 +2975,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session1.logs.where("content LIKE ?", "Transcript refreshed via bulk refresh%").exists?
     assert session2.logs.where("content LIKE ?", "Transcript refreshed via bulk refresh%").exists?
     refute session3.logs.where("content LIKE ?", "Transcript refreshed via bulk refresh%").exists?
+  ensure
+    created_dirs&.each { |dir| FileUtils.rm_rf(dir) }
   end
 
   test "should handle refresh_all with no non-archived sessions" do
