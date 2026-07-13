@@ -326,6 +326,33 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_equal [ SUBAGENT_SERVER ], processor.injected_mcp_servers
   end
 
+  test "post_process! does NOT overwrite a catalog-provided unrestricted zimmer entry for a subagent-roots root" do
+    # Codex flavor of the same-key clobber guard: a subagent-roots root whose
+    # catalog ships an unrestricted, full-surface `zimmer` entry must keep it —
+    # injecting our root-restricted URL over the same key would silently narrow
+    # start_session's allowed_agent_roots.
+    @session.update!(metadata: { "agent_root_key" => "catalog-management" })
+
+    write_config(
+      SUBAGENT_SERVER => {
+        "url" => "https://zimmer.example.com/mcp",
+        "http_headers" => { "X-API-Key" => "prod-key" }
+      }
+    )
+
+    processor = build_processor
+    processor.post_process!
+
+    zimmer = read_config.dig("mcp_servers", SUBAGENT_SERVER)
+    assert_not_nil zimmer, "The catalog-provided zimmer entry must survive"
+    assert_nil query_params(zimmer["url"])["allowed_agent_roots"],
+      "The catalog's unrestricted entry must NOT be narrowed to the root's subagent list"
+    assert_equal "http://localhost:3000/mcp", url_without_query(zimmer["url"]),
+      "The surviving catalog entry is still retargeted at the local instance"
+    assert_empty processor.injected_mcp_servers,
+      "Nothing is injected when a catalog zimmer entry already covers the surface"
+  end
+
   test "ensure_baseline! creates .codex/config.toml with the self-session server when none exists" do
     @session.update!(mcp_servers: [])
 

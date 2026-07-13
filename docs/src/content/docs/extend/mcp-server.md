@@ -125,6 +125,12 @@ The `zimmer` entry is full-surface, which is why it *does* cover the self-sessio
 root gets one server, not two. A catalog entry you select yourself (`zimmer`, `zimmer-sessions`,
 `zimmer-self-session` in `mcp.json`) that is full-surface suppresses the injection the same way.
 
+Both injections are defensive about a name collision. If the catalog already supplies a `zimmer`
+entry, the subagent injection leaves it alone rather than overwriting it — the two are the same URL
+differentiated only by query param, so writing the root-restricted `allowed_agent_roots` over a
+catalog-provided full-surface entry would silently narrow what the session may spawn. The
+catalog's entry (retargeted) wins, and `start_session` keeps its full root surface.
+
 Outside production, every `zimmer*` entry is **retargeted** at the instance preparing the session:
 the origin is rewritten and the API key replaced, while the query string (the scoping) is preserved.
 A staging session orchestrates staging, not production — even though the catalog's URLs say
