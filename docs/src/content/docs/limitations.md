@@ -129,6 +129,25 @@ ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -p 2222 root
 # still bad ->  Permission denied (publickey,password).
 ```
 
+### Production's forced root-password expiry has no converge path
+
+🔴 DigitalOcean force-expires root's password on any droplet created without a DO-registered SSH key —
+which is the deliberate posture here — and `pam_unix` then rejects
+[every real-OpenSSH session on `:2222`](/operate/provisioning/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session)
+*after* publickey auth succeeds. cloud-init clears it at first boot, and
+`scripts/clear-root-password-expiry.sh` repairs a box that already exists — including one whose
+password DigitalOcean's **Reset root password** flow has just re-expired.
+
+The staging deploy runs that script on every deploy. **Production's deploy workflow is not in this
+repo** (it lives in the private mirror), so nothing converges production. Production's OpenSSH works
+today only by accident: its root password happened to be changed at some point, which reset `lastchg`.
+Rebuild it and it comes up broken, exactly like staging did.
+
+Run the script by hand from a tailnet host — `scripts/clear-root-password-expiry.sh zimmer` — or add
+the step to the mirror's workflow.
+
+Tracked in [#151](https://github.com/tadasant/zimmer/issues/151).
+
 ### Admin keys are add-only
 
 `admin_ssh_pubkeys` appends to `/root/.ssh/authorized_keys` and never prunes. **Removing** a key from
@@ -146,6 +165,13 @@ completes "successfully" regardless.
 
 Before setting `recreate_droplet: true`, confirm (a) `TAILSCALE_AUTH_KEY` is valid and not exhausted,
 and (b) you can actually log into the DigitalOcean web console for the droplet.
+
+That console door has a catch. cloud-init deletes root's password (`usermod -p '*'`) — it must, or
+[pam_unix rejects every OpenSSH session](/operate/provisioning/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session) —
+so there is no password to type at a console login prompt. Getting one means DigitalOcean's **Reset
+root password**, which mails a new one *and* force-expires it again (`lastchg=0`). So the reset that
+buys you a console also re-breaks `:2222` until the next staging deploy converges it, or until
+`scripts/clear-root-password-expiry.sh` is run against the box.
 
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 
