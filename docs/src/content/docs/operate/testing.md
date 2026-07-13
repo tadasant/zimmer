@@ -36,7 +36,8 @@ the shared runner has a companion system-test semaphore keyed on the `test-syste
 because it pins `PARALLEL_WORKERS=1` — the persistent per-worker `--user-data-dir` in
 `test/application_system_test_case.rb` does not tolerate concurrent Chrome instances. Chrome is
 assumed pre-provisioned on the runner; the CI branch of that file points Selenium at
-`/usr/bin/chromium-browser` with `--no-sandbox`. This closed [#87](https://github.com/tadasant/zimmer/issues/87).
+`/usr/bin/chromium-browser` with `--no-sandbox`. This closes
+[#87](https://github.com/tadasant/zimmer/issues/87).
 
 ## What CI does not run
 
@@ -57,6 +58,7 @@ Several tests `skip` when a credential or file is absent — which in CI means t
 | `secrets_loader_test.rb:158` | "Credentials key not available (CI environment)" |
 | `references_config_test.rb:79` | "references directory not found" |
 | `air_catalog_ref_rewriter_test.rb:190,198` | "air.production.json not present" / "no `github://` catalogs to pin" |
+| `sessions_test.rb` "changing agent root updates MCP server selection…" | Needs **two** agent roots with `default_mcp_servers`. Only `playwright-custom` declares `default_in_roots` (→ `zimmer`), so exactly one root qualifies and the test always skips — the root→MCP-defaults switch has no system coverage. |
 
 That last pair means the catalog-pinning feature has zero CI coverage — the code path exists,
 the tests exist, and neither runs. Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).

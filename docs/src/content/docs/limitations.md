@@ -876,7 +876,8 @@ provisioned with a Playwright browser, and `account_rotation_test.js` needs the 
 binary against a mock Anthropic server. The system suite covers the overlapping UI.
 
 Tracked in [#162](https://github.com/tadasant/zimmer/issues/162). (The broader "system tests do not
-run in CI" gap, [#87](https://github.com/tadasant/zimmer/issues/87), is now closed.)
+run in CI" gap, [#87](https://github.com/tadasant/zimmer/issues/87), is closed by the `test-system`
+job.)
 
 ### Four open flaky-test issues
 

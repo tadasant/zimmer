@@ -227,6 +227,16 @@ jobs:
         run: bin/rails tailwindcss:build
       - name: Run system tests
         run: bin/rails test:system
+      # Capybara writes a PNG per failing test to tmp/screenshots. Without this, a
+      # failure that only reproduces on the runner is undebuggable from the log alone.
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: system-test-screenshots
+          path: tmp/screenshots/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Builds the Astro Starlight documentation site in docs/. Keeps the site from
   # silently rotting: a broken link, bad frontmatter, or a page missing from the
@@ -269,17 +279,21 @@ jobs:
   # from their results.
   #
   # Three properties make it a correct gate:
-  #   1. `if: ${{ always() }}` — it runs even when a dependency fails (a plain `needs:`
-  #      job is skipped when any dependency fails, which would leave the required check
-  #      perpetually "skipped" and block the branch). It has NO fork-guard `if:`, so it
-  #      never skips itself — a skipped required check blocks branch protection.
+  #   1. `if: ${{ !cancelled() }}` — it still runs when a *dependency* fails (a plain
+  #      `needs:` job is skipped when any dependency fails, which would leave the required
+  #      check perpetually "skipped"), but it does NOT run when the whole run is cancelled.
+  #      `always()` would be wrong here: this workflow sets `cancel-in-progress: true`, so
+  #      every superseded run would execute this job, see `cancelled` in needs.*.result, and
+  #      exit 1 — converting a cancelled run into a *failed* one and tripping the CI-failure
+  #      alert, which deliberately stays quiet on `cancelled`. It carries no fork-guard `if:`.
   #   2. It fails on any dependency that reported `failure` or `cancelled`.
   #   3. `skipped` dependencies do NOT fail it and are NOT counted as passes: the several
   #      jobs above carry fork-guard `if:` conditions and report `skipped` on fork PRs.
   #      A fork PR therefore sees every job skip and this gate go green — the same
   #      fork tradeoff the individual jobs already make; trusted branches run everything.
+  #      (This job has no checkout step, so a fork PR never executes fork code here.)
   all-checks-pass:
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: self-hosted
     needs:
       - lint

@@ -353,7 +353,7 @@ class SessionsTest < ApplicationSystemTestCase
     # Click to open the dropdown
     find("[data-mcp-server-select-target='input']").click
 
-    # Should show server titles and descriptions in dropdown
+    # Should show server titles in the dropdown
     assert_selector ".server-item", minimum: 2
     # Verify the dropdown renders server titles (not slugs). Assert against the first
     # couple of servers from the catalog itself so this stays correct as the catalog
@@ -637,7 +637,7 @@ class SessionsTest < ApplicationSystemTestCase
     visit new_session_url
 
     # Find agent roots with different goals
-    agent_roots_with_conditions = AgentRootsConfig.all.select { |r| r.default_goal.present? }
+    agent_roots_with_conditions = AgentRootsConfig.user_invocable.select { |r| r.default_goal.present? }
 
     if agent_roots_with_conditions.size >= 2
       first_agent_root = agent_roots_with_conditions.first
@@ -707,7 +707,7 @@ class SessionsTest < ApplicationSystemTestCase
     # Find agent roots that share the same URL (monorepo)
     # e.g., agent-orchestrator and general-agent both use https://github.com/tadasant/zimmer-catalog.git
     agents_url = "https://github.com/tadasant/zimmer-catalog.git"
-    roots_sharing_url = AgentRootsConfig.all.select { |r| r.url == agents_url }
+    roots_sharing_url = AgentRootsConfig.user_invocable.select { |r| r.url == agents_url }
 
     if roots_sharing_url.size >= 2
       # Example: agent-orchestrator has goal, general-agent doesn't
@@ -770,7 +770,7 @@ class SessionsTest < ApplicationSystemTestCase
     visit new_session_url
 
     # Find an agent root with MCP servers configured
-    agent_root_with_servers = AgentRootsConfig.all.find { |r| r.default_mcp_servers.present? }
+    agent_root_with_servers = AgentRootsConfig.user_invocable.find { |r| r.default_mcp_servers.present? }
 
     skip "No agent roots with default MCP servers configured" unless agent_root_with_servers
 
@@ -794,7 +794,7 @@ class SessionsTest < ApplicationSystemTestCase
     visit new_session_url
 
     # Find agent roots with different MCP servers
-    agent_roots_with_servers = AgentRootsConfig.all.select { |r| r.default_mcp_servers.present? }
+    agent_roots_with_servers = AgentRootsConfig.user_invocable.select { |r| r.default_mcp_servers.present? }
 
     skip "Need at least 2 agent roots with different MCP servers" unless agent_roots_with_servers.size >= 2
 
@@ -862,7 +862,7 @@ class SessionsTest < ApplicationSystemTestCase
     visit new_session_url
 
     # Find an agent root with MCP servers
-    agent_root_with_servers = AgentRootsConfig.all.find { |r| r.default_mcp_servers.present? }
+    agent_root_with_servers = AgentRootsConfig.user_invocable.find { |r| r.default_mcp_servers.present? }
 
     skip "No agent roots with default MCP servers configured" unless agent_root_with_servers
 
