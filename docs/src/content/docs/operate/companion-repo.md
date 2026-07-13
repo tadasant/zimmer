@@ -310,9 +310,15 @@ jobs:
 6. If the service runs agent sessions, add a root for it to `artifacts/roots.json`.
 7. If those sessions SSH anywhere, set `PROD_OPERATOR_SSH_KEY` (base64 of the operator private key)
    as a GitHub Actions secret in this repo and export it in the deploy job, and authorize the public
-   half in `admin_ssh_pubkeys` — see [the SSH identity an agent session
+   half on the hosts the sessions need — see [the SSH identity an agent session
    holds](/operate/provisioning/#the-ssh-identity-an-agent-session-holds). Without it, sessions have
    no SSH key and every `ssh-*` MCP server fails its startup health check.
+
+   **Do not authorize it on the host the sessions run on.** That key is root, and a session with root
+   on its own box can destroy the service executing it. The production host is excluded on purpose,
+   at two layers — it is absent from `admin_authorized_keys.pub`, *and* the production catalog's
+   `air.json` carries an `exclude` for the SSH MCP server that points at it, so a session cannot even
+   attach one. See [who is authorized where](/operate/ssh-access/#who-is-authorized-where).
 
 Keep the shape identical across services. The consistency is what lets one deploy workflow —
 and one mental model — cover everything you run.

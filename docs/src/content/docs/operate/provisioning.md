@@ -149,13 +149,21 @@ Tailscale SSH. Terraform is what makes it survive the *next* rebuild; the manual
 it work *now*.
 :::
 
-:::caution[This key is root on every Zimmer host]
-`admin_ssh_pubkeys` authorizes `root`. A session running **on production** therefore holds a key that
-is root on its own host, and on every other host that authorizes the same key. That blast radius is
-accepted deliberately — operating the fleet is the job these sessions exist to do — and it is why the
-key is a **separate identity** from the Kamal deploy key: revoking it is deleting one line from
-`admin_ssh_pubkeys` (plus a rebuild — [admin keys are add-only](/limitations/#admin-keys-are-add-only)),
-with no effect on deploys.
+:::caution[This key is root on every host that authorizes it — and production deliberately does not]
+`admin_ssh_pubkeys` authorizes `root`; there is no unprivileged SSH user. So the only thing bounding
+what a session can reach is **which hosts authorize the key**, and production is left out on purpose:
+a session runs *on* production, and a session holding root on its own host can take the orchestrator
+down with itself still inside it. Staging, the observability box, and the CI runner do authorize it —
+that is the fleet these sessions exist to operate.
+
+The full table, and the second layer that keeps a production session from even *attaching* an SSH MCP
+server aimed at its own host, are in [who is authorized
+where](/operate/ssh-access/#who-is-authorized-where). Do not reconcile the lists so they match.
+
+Being a **separate identity** from the Kamal deploy key is what makes any of this revocable: dropping
+one line from a key list has no effect on deploys ([admin keys are
+add-only](/limitations/#admin-keys-are-add-only), so a live box also needs the line removed from
+`/root/.ssh/authorized_keys`).
 :::
 
 ## Where secrets end up that they shouldn't

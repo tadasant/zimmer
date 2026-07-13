@@ -111,13 +111,16 @@ variable "admin_ssh_pubkeys" {
   type        = list(string)
   default     = []
   description = <<-EOT
-    Admin SSH public keys authorized for root, on top of the Kamal deploy key. This
-    is the ONE mechanism both environments use to authorize an operator/tooling key
-    (e.g. a shared key that an SSH-based MCP server connects with), so staging and
-    production cannot drift apart on who can get in.
+    Admin SSH public keys authorized for root, on top of the Kamal deploy key -- how a
+    cloud-init-provisioned droplet learns an operator/tooling key (e.g. the key an
+    SSH-based MCP server connects with).
 
     Set it per environment in *.tfvars -- NOT as a default here, so a fork does not
-    silently authorize someone else's key on its own box.
+    silently authorize someone else's key on its own box. The lists are per environment
+    on purpose and are NOT meant to be identical: the key Zimmer's own agent sessions
+    hold is authorized on staging and deliberately withheld from production, because
+    those sessions RUN ON production and this variable authorizes root. See
+    docs/operate/ssh-access.md#who-is-authorized-where before reconciling them.
 
     Deliberately NOT var.ssh_key_fingerprints (DigitalOcean-registered keys): that
     argument is ForceNew on digitalocean_droplet, so adding a key there would make
