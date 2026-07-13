@@ -1,6 +1,6 @@
 ---
 title: Agent roots
-description: What a root is, the nine that ship, subagent roots, and how a root's defaults seed a session.
+description: What a root is, the eleven that ship, subagent roots, and how a root's defaults seed a session.
 sidebar:
   order: 3
 ---
@@ -37,11 +37,12 @@ The `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`,
 computes them by [inverting `default_in_roots`](/air/overview/#default_in_roots--the-inversion) from
 each artifact's own entry.
 
-## The ten roots that ship
+## The eleven roots that ship
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
 | `zimmer` | ✅ | `tadasant/zimmer` | Work on Zimmer itself. All 5 skills default here. |
+| `zimmer-router` | ❌ | `tadasant/zimmer` | The baseline router. `Session::ROUTER_AGENT_ROOT`; every quick-router / chat-bubble submission is created against it. Ships with no default artifacts — it cannot yet dispatch downstream sessions ([why](/limitations/#the-baseline-zimmer-router-root-cant-spawn-downstream-sessions-out-of-the-box)). |
 | `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
 | `agent-orchestrator` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents/agent-orchestrator` |
 | `agents` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents` — the catalog artifacts |
@@ -69,8 +70,8 @@ distinct locations. That is its own change.
 `roots.json` also gives `agent-orchestrator` the `display_name` "Zimmer" — the *same* display name
 as the `zimmer` root — so the two are already indistinguishable in a picker.
 
-**The roots that actually work today:** `zimmer`, `general-agent` (the default), and
-`tadasant-internal`.
+**The roots that actually work today:** `zimmer`, `zimmer-router` (the quick-router target),
+`general-agent` (the default), and `tadasant-internal`.
 Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 :::
 

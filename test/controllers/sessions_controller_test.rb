@@ -4261,6 +4261,22 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(session)
   end
 
+  # Exercises the real shipped catalog (no AgentRootsConfig.find! stub): a router
+  # root missing from roots.json raises AgentRootNotFoundError here, which the
+  # stubbed tests above cannot catch.
+  test "quick_prompt resolves the router root from the real catalog and dispatches" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    assert_difference("Session.count", 1) do
+      post quick_prompt_sessions_url, params: { prompt: "Add a healthcheck endpoint" }
+    end
+
+    session = Session.last
+    assert_equal Session::ROUTER_AGENT_ROOT, session.metadata["agent_root_key"]
+    assert_equal AgentRootsConfig.find!(Session::ROUTER_AGENT_ROOT).url, session.git_root
+    assert_redirected_to session_path(session)
+  end
+
   test "quick_prompt rejects blank prompt" do
     post quick_prompt_sessions_url, params: { prompt: "   " }
     assert_redirected_to root_path
