@@ -44,10 +44,10 @@ health-gated zero-downtime cutover, it does **not** rebuild the droplet.
   `staging.zimmer.tadasant.com` gets a real cert (Caddy terminates TLS on :443 in
   front of kamal-proxy; the A record and cert are managed by
   `domain-cert-staging.yml`, not Terraform) — but that A record points at the
-  droplet's **tailnet IP**, and the DigitalOcean firewall opens only `22/tcp` and
-  `41641/udp`. So the domain resolves for everyone and answers for nobody off the
-  tailnet. You need the tailnet either way; the domain just gives you HTTPS and a
-  stable `APP_HOST` for OAuth callbacks.
+  droplet's **tailnet IP**, and the DigitalOcean firewall opens no public TCP port
+  at all (only `41641/udp`, for Tailscale itself). So the domain resolves for
+  everyone and answers for nobody off the tailnet. You need the tailnet either way;
+  the domain just gives you HTTPS and a stable `APP_HOST` for OAuth callbacks.
 
 ## Dispatching a deploy
 
