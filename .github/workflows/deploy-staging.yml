@@ -188,9 +188,13 @@ jobs:
           STAGING_API_KEYS: ${{ secrets.STAGING_API_KEYS }}
           STAGING_DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
           STAGING_RAILS_MASTER_KEY: ${{ secrets.STAGING_RAILS_MASTER_KEY }}
-          SENTRY_DSN_BACKEND: ${{ secrets.SENTRY_DSN_BACKEND }}
-          OTEL_LOGS_EXPORTER_ENDPOINT: ${{ secrets.OTEL_LOGS_EXPORTER_ENDPOINT }}
-          OTEL_LOGS_EXPORTER_BEARER_TOKEN: ${{ secrets.OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
+          # Observability. STAGING_-prefixed on purpose -- see .kamal/secrets.staging.
+          # STAGING_SENTRY_DSN_BACKEND must be the DSN of a SEPARATE GlitchTip project
+          # (zimmer-staging), never production's: GlitchTip's Slack alert has no
+          # environment filter, so a shared DSN makes every staging error page #alerts.
+          STAGING_SENTRY_DSN_BACKEND: ${{ secrets.STAGING_SENTRY_DSN_BACKEND }}
+          STAGING_OTEL_LOGS_EXPORTER_ENDPOINT: ${{ secrets.STAGING_OTEL_LOGS_EXPORTER_ENDPOINT }}
+          STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN: ${{ secrets.STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
         run: |
           set -euo pipefail
           # API_KEYS is a comma-separated list; the injected self-session MCP server
@@ -213,6 +217,33 @@ jobs:
             echo "::warning::Staging will boot, but SecretsLoader serves nothing: Slack triggers and AlertService"
             echo "::warning::go quiet, and every MCP server with a \${VAR} from mcp_secrets fails to start a session."
           fi
+          # Observability preflight. Also non-fatal -- both initializers are hard
+          # no-ops on an empty value, so staging boots fine without them. But an
+          # unset obs secret is otherwise INVISIBLE: the app logs nothing, Kamal
+          # reports success, and the only symptom is an empty Grafana. Print the state
+          # on every deploy so "staging ships no telemetry" is a line you can read,
+          # not a thing you have to go discover.
+          #
+          # Report only whether each secret is SET, never its value. These arrive from
+          # `secrets.*`, and GitHub masks a secret's value anywhere in the log -- so
+          # echoing the endpoint would print `***` and tell you nothing, while any
+          # attempt to print a "safe substring" of the DSN would be one malformed value
+          # away from leaking the whole thing. Set/unset is the entire question here
+          # anyway; `bin/rails obs:status` on the box reports the endpoint.
+          echo "--- observability preflight ---"
+          if [ -n "${STAGING_OTEL_LOGS_EXPORTER_ENDPOINT:-}" ] && [ -n "${STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN:-}" ]; then
+            echo "✅ OTLP logs ON (endpoint + bearer token set; deployment.environment=staging)"
+          else
+            echo "::warning::OTLP logs are OFF: set BOTH STAGING_OTEL_LOGS_EXPORTER_ENDPOINT and"
+            echo "::warning::STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN. Either one missing is a silent no-op,"
+            echo "::warning::and staging logs will never reach VictoriaLogs."
+          fi
+          if [ -n "${STAGING_SENTRY_DSN_BACKEND:-}" ]; then
+            echo "✅ GlitchTip errors ON (DSN set -- it must be a STAGING-only project)"
+          else
+            echo "::warning::GlitchTip errors are OFF: STAGING_SENTRY_DSN_BACKEND is unset."
+          fi
+          echo "-------------------------------"
           kamal accessory boot all -d staging
           kamal deploy -d staging \
             --version="${{ steps.img.outputs.tag }}" \

@@ -46,7 +46,8 @@ could not reach the box.
 | `STAGING_DB_PASSWORD` | the staging Postgres accessory's password — a stable secret, deliberately *not* derived from `SECRET_KEY_BASE` (rotating the latter must stay safe; `POSTGRES_PASSWORD` only takes effect on first initdb) |
 | `STAGING_API_KEYS` | REST API bearer keys |
 | `STAGING_RAILS_MASTER_KEY` | decrypts the committed `config/credentials/staging.yml.enc` (`mcp_secrets`: `SLACK_BOT_TOKEN`, `ENG_ALERTS_SLACK_CHANNEL_ID`). Optional — without it the deploy still succeeds, but Slack and every credential-bearing MCP server go quiet ([why](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent)) |
-| `OTEL_LOGS_EXPORTER_ENDPOINT` / `_BEARER_TOKEN`, `SENTRY_DSN_BACKEND` | optional observability |
+| `STAGING_OTEL_LOGS_EXPORTER_ENDPOINT` / `STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN` | ship staging's WARN/ERROR/FATAL logs over OTLP. **Both** are required — either one missing is a silent no-op ([observability](/operate/observability/)) |
+| `STAGING_SENTRY_DSN_BACKEND` | staging's GlitchTip DSN. Must be a **staging-only project**, never production's — a DSN selects a project, and GlitchTip's alert rules are per-project with no environment filter |
 | `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
