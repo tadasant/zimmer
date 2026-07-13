@@ -38,6 +38,20 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     end
   end
 
+  # Session::ROUTER_AGENT_ROOT names the baseline root that every quick-router /
+  # chat-bubble submission is created against. If that root is absent from the
+  # shipped catalog (roots.json), create_from_agent_root! raises
+  # AgentRootNotFoundError and the dashboard's quick router breaks with "Router
+  # agent root not configured", so the constant must always resolve against the
+  # real, shipped catalog.
+  test "Session::ROUTER_AGENT_ROOT resolves to a shipped baseline router root" do
+    router = AgentRootsConfig.find!(Session::ROUTER_AGENT_ROOT)
+
+    assert_equal "zimmer-router", router.name
+    assert_equal "https://github.com/tadasant/zimmer.git", router.url
+    refute router.user_invocable?, "the router root is dispatched by the quick router, not picked from the new-session form"
+  end
+
   test "returns list of agent root names" do
     names = AgentRootsConfig.names
 
