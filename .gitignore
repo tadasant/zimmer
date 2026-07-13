@@ -57,9 +57,8 @@
 
 # Zimmer injects .claude/ into each session clone at prepare time (skills, hooks,
 # .mcp.json, ${SECRET} substitutions). It is runtime state, never source — do not
-# commit it. Generic skills like `pr` / `wait-for-ci` ship from the orchestrator's
-# default skill set; Zimmer-specific skills live in the top-level AIR catalog
-# (skills/, references/, …), not here.
+# commit it. Every skill Zimmer ships, generic or Zimmer-specific, lives in the
+# top-level AIR catalog (skills/, references/, …) and is copied in from there.
 .claude/
 node_modules/
 
