@@ -154,11 +154,13 @@ jobs:
           exit 1
 
       # DigitalOcean force-expires root's password on any droplet created without a
-      # DO-registered SSH key (ssh_key_fingerprints is deliberately empty -- it is ForceNew).
-      # cloud-init now clears that at first boot, but it only runs at CREATION, so a droplet
-      # that predates the fix stays broken: publickey on :2222 succeeds and pam_unix then
-      # refuses the session. Converge it on every deploy over Tailscale SSH (:22 -- the path
-      # the expiry does not block). Idempotent, so it no-ops on an already-healthy box.
+      # DO-registered SSH key (ssh_key_fingerprints is deliberately empty -- it is ForceNew),
+      # and pam_unix then refuses EVERY real-OpenSSH session on :2222 after publickey auth has
+      # already succeeded. cloud-init clears that at first boot, but it only runs at CREATION:
+      # a droplet that predates it -- or one whose password was reset through the DO console,
+      # which re-expires it -- stays broken. So converge on every deploy, over Tailscale SSH
+      # (:22, the path the expiry does not block). Convergent and retried, so a healthy box
+      # and a still-booting one both come out fine.
       - name: Clear forced root-password expiry (converge)
         env:
           STAGING_HOST: ${{ steps.host.outputs.staging_host }}

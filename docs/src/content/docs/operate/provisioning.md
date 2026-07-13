@@ -148,7 +148,8 @@ authenticates by tailnet identity and does not run `pam_unix` at all: Kamal depl
 and every `tailscale ssh` break-glass keep working on a box whose OpenSSH is entirely dead. It is a
 failure only a *real* OpenSSH client can see.
 
-cloud-init therefore drops the password before `ssh.socket` comes up:
+cloud-init therefore drops the password in `runcmd`, ahead of the restart that puts sshd on `:2222` —
+so there is no window where the port answers and every session dies:
 
 ```yaml
 - usermod -p '*' root
@@ -158,15 +159,21 @@ cloud-init therefore drops the password before `ssh.socket` comes up:
 Root is key-only here, so the password has no legitimate use — removing it also invalidates the one
 DigitalOcean emailed. `usermod -p '*'` sets an **invalid** hash; `passwd -d` would leave an *empty*
 one, which means "no password required" rather than "no password login". `-M -1` disables aging, so it
-cannot re-expire.
+cannot re-expire. (PAM reads `/etc/shadow` on every authentication, so the repair takes effect on the
+next connection either way — the ordering just closes that window.)
 
 :::caution[cloud-init only runs at creation — live boxes need the converge]
 A droplet that already exists keeps `lastchg=0` forever; nothing re-runs `runcmd`. That is why
-`scripts/clear-root-password-expiry.sh` exists and why the staging deploy runs it on **every** deploy
-(idempotent, and it connects over Tailscale SSH on `:22` — the one path the expiry does not block).
+`scripts/clear-root-password-expiry.sh` exists and why the staging deploy runs it on **every** deploy.
+It is convergent, and it goes over Tailscale SSH on `:22` — the one path the expiry does not block.
+
 Production is repaired on its next rebuild, or by pointing the same script at it. Production's OpenSSH
 works today only by accident: its root password happened to be changed at some point, which reset
 `lastchg`.
+
+This is not a one-time migration, either. DigitalOcean's **Reset root password** plants a fresh
+password and force-expires it again, so any box it is used on comes back with `lastchg=0` and a dead
+`:2222` until the script runs.
 :::
 
 ## Where secrets end up that they shouldn't

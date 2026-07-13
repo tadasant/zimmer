@@ -182,7 +182,17 @@ runcmd:
   # forced-change flag is what unblocks pam_unix. It also invalidates the password DO emailed
   # out. `-M -1` disables aging entirely, so this cannot re-expire later.
   #
-  # `$(date ...)` is safe in this template: Terraform interpolates only `${` and `%{`.
+  # Ahead of the restart below, not because PAM caches anything -- it re-reads /etc/shadow on
+  # every authentication -- but so :2222 never answers during the window in which it would
+  # accept a key and then throw the session away.
+  #
+  # The $(date ...) below survives templatefile untouched: Terraform interpolates only a
+  # dollar or a percent followed by a brace, and a dollar-paren is neither.
+  #
+  # Never write either of those two-character sequences anywhere in this file, COMMENTS
+  # INCLUDED. templatefile parses the whole file as one template -- a comment is not a
+  # comment to it -- so one in a comment is still parsed as an expression and fails the
+  # apply with a syntax error. test/infra/cloud_init_template_test.rb enforces this.
   - usermod -p '*' root
   - chage -d $(date +%Y-%m-%d) -M -1 root
   - systemctl daemon-reload
