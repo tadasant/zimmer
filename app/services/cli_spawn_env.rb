@@ -114,6 +114,13 @@ module CliSpawnEnv
   # - DATABASE_ADAPTER: Database type (postgresql)
   # - RAILS_ENV: Force child to determine its own environment
   #
+  # Secret material cleared:
+  # - ZIMMER_OPERATOR_SSH_KEY: the operator SSH private key (base64). The Rails
+  #   process needs it to write the key file; the agent needs only the PATH of that
+  #   file (SSH_PRIVATE_KEY_PATH, set in apply_operator_ssh_key below). Leaving the
+  #   material in the child's environment would put a root-on-every-host private key
+  #   one `env` away from a transcript.
+  #
   # Bundler variables cleared (explicit list, plus a BUNDLE*-prefix sweep below):
   # - BUNDLE_PATH: Where Bundler looks for gems
   # - BUNDLE_GEMFILE: Path to Gemfile
@@ -175,6 +182,7 @@ module CliSpawnEnv
       RUBYLIB
       RUBYOPT
       RUBYGEMS_GEMDEPS
+      ZIMMER_OPERATOR_SSH_KEY
     ]
 
     # Set each inherited env var to nil to unset it in the child process

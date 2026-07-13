@@ -28,8 +28,12 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 #
 # `zimmer-production-operator` is the identity ZIMMER'S OWN AGENT SESSIONS hold: the
 # private half rides Kamal's env.secret as ZIMMER_OPERATOR_SSH_KEY, and
-# OperatorSshKeyProvisioner writes it to ~/.ssh/id_ed25519 in the container. Authorizing
-# it here is what makes an ssh-* MCP server in a session able to reach this box at all.
+# OperatorSshKeyProvisioner writes it to ~/.ssh/zimmer_operator_ed25519 in the container.
+# Authorizing it here is what makes an ssh-* MCP server in a session able to reach this box.
+#
+# It takes effect on the NEXT droplet creation only -- cloud-init runs once, and the
+# droplet's lifecycle block ignores user_data changes -- so a live box also needs the key
+# appended to /root/.ssh/authorized_keys by hand. See docs/operate/provisioning.md.
 # It is deliberately a SEPARATE keypair from the Kamal deploy key and from the
 # orchestrator's key, so it can be revoked on its own by deleting this one line.
 #

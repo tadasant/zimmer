@@ -26,6 +26,10 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   CONFIG_RELATIVE_PATH = File.join(".codex", "config.toml")
   MCP_SERVERS_KEY = "mcp_servers"
 
+  # Host env var naming the operator SSH key file, forwarded to every stdio server
+  # (see forward_operator_ssh_key!). Not a secret — a path.
+  OPERATOR_SSH_KEY_PATH_VAR = "SSH_PRIVATE_KEY_PATH"
+
   private
 
   def config_path
@@ -75,6 +79,7 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     servers.each_value do |entry|
       next unless entry.is_a?(Hash)
 
+      forward_operator_ssh_key!(entry)
       inline_forwarded_secrets!(entry)
       # resolve_entry! handles the literal `env` table, `args`, and `url`. Codex
       # keeps literal HTTP headers under `http_headers` (not `headers`), so
@@ -83,6 +88,37 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
       secrets_interpolator.resolve_hash_values!(entry["http_headers"]) if entry["http_headers"].is_a?(Hash)
       NpxPrefixRewriter.rewrite!(entry)
     end
+  end
+
+  # Ask Codex to forward SSH_PRIVATE_KEY_PATH — the path of the operator SSH key
+  # (OperatorSshKeyProvisioner) — to every stdio MCP server.
+  #
+  # Claude Code hands a stdio MCP server its own environment, so exporting the variable
+  # in the spawn env (CliSpawnEnv#apply_operator_ssh_key) is enough there. Codex does
+  # NOT: it builds each server's environment from a fixed whitelist (HOME, PATH, LANG,
+  # …) plus exactly the variables the entry names in `env_vars`. SSH_PRIVATE_KEY_PATH is
+  # in neither, so without this an `ssh-*` server under a Codex session sees no key and
+  # fails its health check — the very bug the provisioner exists to fix, half-fixed.
+  #
+  # Only stdio servers have an environment at all (an HTTP entry has `url`, not
+  # `command`), and only when a key was actually provisioned — a deployment with no
+  # operator key configured gets no forwarding line pointing at a file that isn't there.
+  # The value is a path, never key material.
+  def forward_operator_ssh_key!(entry)
+    return if entry["command"].blank?
+    return unless operator_ssh_key?
+
+    forwarded = entry["env_vars"]
+    forwarded = [] unless forwarded.is_a?(Array)
+    entry["env_vars"] = forwarded | [ OPERATOR_SSH_KEY_PATH_VAR ]
+  end
+
+  # Memoized across the entries of one post_process! run (the provisioner is idempotent
+  # but touches the filesystem, and a session can attach many servers).
+  def operator_ssh_key?
+    return @operator_ssh_key if defined?(@operator_ssh_key)
+
+    @operator_ssh_key = OperatorSshKeyProvisioner.ensure!.present?
   end
 
   # Move every SecretsLoader-resolvable var out of Codex's host-env forwarding
