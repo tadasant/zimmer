@@ -62,7 +62,7 @@ class CodexRuntimeAdapter
 
   class CodexCliError < StandardError; end
 
-  attr_accessor :process_manager, :file_system, :ao_session_id
+  attr_accessor :process_manager, :file_system, :zimmer_session_id
 
   def initialize(logger: Rails.logger)
     @logger = logger
@@ -210,7 +210,7 @@ class CodexRuntimeAdapter
   # content is built by the Codex prompt contribution (#3783); this adapter only
   # delivers it.
   #
-  # The Zimmer-managed prompt is written below AgentsMdWriter::AO_SECTION_MARKER, and
+  # The Zimmer-managed prompt is written below AgentsMdWriter::ZIMMER_SECTION_MARKER, and
   # any content already above that marker is preserved. This keeps the spawn-time
   # write consistent with the prepare-time AgentsMdWriter (which uses the same
   # marker): a committed AGENTS.md the repo ships flows through above the marker,
@@ -221,7 +221,7 @@ class CodexRuntimeAdapter
     return if append_system_prompt.blank?
 
     path = File.join(working_dir, "AGENTS.md")
-    marker = AgentsMdWriter::AO_SECTION_MARKER
+    marker = AgentsMdWriter::ZIMMER_SECTION_MARKER
     section = "#{marker}\n\n#{append_system_prompt}\n"
 
     preserved =

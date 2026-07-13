@@ -91,7 +91,7 @@
           </div>
           <div>
             <h3 class="text-sm font-medium text-gray-900 mb-1">git_root vs. agent_root</h3>
-            <p><code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">git_root</code> is a repository URL or local path on a session — a free-form string. <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_root</code> is the name of a preconfigured catalog entry (e.g., <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent-orchestrator</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">zimmer-router</code>) that resolves to a <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">git_root</code> plus defaults for <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">branch</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">subdirectory</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">mcp_servers</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_skills</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_hooks</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_plugins</code>, and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">model</code>. You can pass either when creating a session — passing <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_root</code> is the recommended way to spawn sessions on configured roots.</p>
+            <p><code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">git_root</code> is a repository URL or local path on a session — a free-form string. <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_root</code> is the name of a preconfigured catalog entry (e.g., <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">zimmer</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">zimmer-router</code>) that resolves to a <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">git_root</code> plus defaults for <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">branch</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">subdirectory</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">mcp_servers</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_skills</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_hooks</code>, <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">catalog_plugins</code>, and <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">model</code>. You can pass either when creating a session — passing <code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">agent_root</code> is the recommended way to spawn sessions on configured roots.</p>
           </div>
         </div>
       </div>
@@ -271,7 +271,7 @@
                 <div class="bg-gray-900 rounded-md p-3 overflow-x-auto">
                   <pre class="text-xs text-gray-100 font-mono">curl -X POST -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"agent_root": "agent-orchestrator", "prompt": "Add unit tests for the Session model"}' \
+  -d '{"agent_root": "zimmer", "prompt": "Add unit tests for the Session model"}' \
   "<%= request.base_url %>/api/v1/sessions"</pre>
                 </div>
                 <p class="text-xs text-gray-700 font-medium mt-2">Example (with explicit git_root):</p>
@@ -941,7 +941,7 @@ BASE_URL="<%= request.base_url %>/api/v1"
 curl -X POST "$BASE_URL/sessions" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"agent_root": "agent-orchestrator", "prompt": "Fix the bug"}'
+  -d '{"agent_root": "zimmer", "prompt": "Fix the bug"}'
 
 # List running sessions
 curl "$BASE_URL/sessions?status=running" -H "X-API-Key: $API_KEY"
@@ -969,7 +969,7 @@ headers = {"X-API-Key": API_KEY}
 
 # Create a session using an agent_root
 resp = requests.post(f"{BASE_URL}/sessions", headers=headers, json={
-    "agent_root": "agent-orchestrator",
+    "agent_root": "zimmer",
     "prompt": "Fix the auth bug"
 })
 session = resp.json()["session"]
@@ -997,7 +997,7 @@ const resp = await fetch(`${BASE_URL}/sessions`, {
   method: "POST",
   headers,
   body: JSON.stringify({
-    agent_root: "agent-orchestrator",
+    agent_root: "zimmer",
     prompt: "Fix the auth bug"
   })
 });

@@ -286,7 +286,7 @@ Tracked in [#55](https://github.com/tadasant/zimmer/issues/55).
 
 ### Extension env contributions are unreachable from Codex
 
-`Ao::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — despite the hook
+`Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — despite the hook
 receiving a `runtime` context that implies it's generic.
 
 Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).

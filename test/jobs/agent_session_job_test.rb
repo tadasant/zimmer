@@ -6116,7 +6116,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Build a corrupt per-clone _npx cache tree under the real clones base dir so
     # NpxCacheHealService's path-safety guard accepts it.
     clones_base = File.join(Dir.home, ".zimmer", "clones")
-    clone_dir = File.join(clones_base, "ao-test-heal-#{SecureRandom.hex(4)}")
+    clone_dir = File.join(clones_base, "zimmer-test-heal-#{SecureRandom.hex(4)}")
     working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
     hash = "49a1f4c1ceebda27"
     corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", hash)
@@ -6161,7 +6161,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # recognize the extraction signature, so the poisoned tree stuck and every
     # retry crashed identically until the session was orphaned.
     clones_base = File.join(Dir.home, ".zimmer", "clones")
-    clone_dir = File.join(clones_base, "ao-test-heal-tar-#{SecureRandom.hex(4)}")
+    clone_dir = File.join(clones_base, "zimmer-test-heal-tar-#{SecureRandom.hex(4)}")
     working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
     hash = "dbbb2997d8a4f060"
     corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", hash)

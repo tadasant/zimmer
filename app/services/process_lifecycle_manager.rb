@@ -120,7 +120,7 @@ class ProcessLifecycleManager
     # handle_failed_resume_recovery, or a retry service reusing this adapter). If the id
     # were only set in #spawn, those respawned MCP servers would post elicitations with a
     # blank session-id and get a 404 "Session not found" from the elicitation endpoint.
-    @cli_adapter.ao_session_id = session.id
+    @cli_adapter.zimmer_session_id = session.id
 
     @mutex = Mutex.new
     @state = :idle

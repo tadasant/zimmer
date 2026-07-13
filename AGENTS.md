@@ -60,7 +60,7 @@ don't leave slop behind when you fix a stale fact.
 - `app/services/` — service objects (process management, transcript polling,
   runtime registry, config services).
 - `app/services/runtime_registry.rb` — the pluggable-runtime seam (`claude_code`, `codex`).
-- `app/services/ao/` — the removable-extension seam.
+- `app/services/zimmer/` — the removable-extension seam.
 
 The prose for all of the above is in `docs/`.
 
