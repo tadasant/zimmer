@@ -126,6 +126,61 @@ class OtelLogsExporter
     @queue.close if @queue.respond_to?(:close)
   end
 
+  # Records enqueued but not yet picked up by the export thread. `bin/rails
+  # obs:smoke` polls this so a test batch is handed to the network before the
+  # process exits — `at_exit { shutdown }` closes the queue, so anything still
+  # sitting in it at exit is dropped silently.
+  def pending
+    @queue.size
+  end
+
+  # Everything an operator needs to answer "is this instance shipping logs, and
+  # where to?" — deliberately WITHOUT the bearer token, so it is safe to print in
+  # a deploy log or paste into a PR. Read by `bin/rails obs:status`.
+  def describe
+    {
+      endpoint: @endpoint.to_s,
+      service_name: @service_name,
+      environment: @env_name,
+      running: @thread&.alive? || false,
+      pending: pending
+    }
+  end
+
+  # Outcome of one OTLP export attempt. `ok` is true only for a 2xx.
+  DeliveryResult = Struct.new(:ok, :code, :body, :error, keyword_init: true) do
+    def to_s
+      return "error: #{error}" if error
+      "HTTP #{code}#{body.to_s.empty? ? "" : " #{body}"}"
+    end
+  end
+
+  # Synchronously POST one batch and RETURN the outcome rather than only warning
+  # about it. The background run_loop wraps this in fire-and-forget
+  # warn-on-failure semantics, which is right for the hot path but useless when
+  # you are debugging silence: a wrong bearer token (401), a wrong path (404),
+  # and a firewalled collector all look identical from inside the app. `bin/rails
+  # obs:smoke` calls this directly to turn that silence into a status code.
+  def deliver(records)
+    body = build_envelope(records)
+    http = Net::HTTP.new(@endpoint.host, @endpoint.port)
+    http.use_ssl = (@endpoint.scheme == "https")
+    http.open_timeout = 5
+    http.read_timeout = 10
+    request = Net::HTTP::Post.new(@endpoint.request_uri)
+    request["Authorization"] = "Bearer #{@token}"
+    request["Content-Type"] = "application/json"
+    request.body = body
+    response = http.request(request)
+    DeliveryResult.new(
+      ok: response.is_a?(Net::HTTPSuccess),
+      code: response.code,
+      body: response.body.to_s[0, 200]
+    )
+  rescue => e
+    DeliveryResult.new(ok: false, error: "#{e.class}: #{e.message}")
+  end
+
   private
 
   def run_loop
@@ -145,21 +200,10 @@ class OtelLogsExporter
   end
 
   def send_batch(records)
-    body = build_envelope(records)
-    http = Net::HTTP.new(@endpoint.host, @endpoint.port)
-    http.use_ssl = (@endpoint.scheme == "https")
-    http.open_timeout = 5
-    http.read_timeout = 10
-    request = Net::HTTP::Post.new(@endpoint.request_uri)
-    request["Authorization"] = "Bearer #{@token}"
-    request["Content-Type"] = "application/json"
-    request.body = body
-    response = http.request(request)
-    unless response.is_a?(Net::HTTPSuccess)
-      warn "[otel_logs_exporter] non-2xx from #{@endpoint}: #{response.code} #{response.body.to_s[0, 200]}"
-    end
-  rescue => e
-    warn "[otel_logs_exporter] export failed: #{e.class}: #{e.message}"
+    result = deliver(records)
+    return if result.ok
+
+    warn "[otel_logs_exporter] export to #{@endpoint} failed: #{result}"
   end
 
   def build_envelope(records)

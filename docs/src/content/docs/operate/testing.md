@@ -2,7 +2,7 @@
 title: Testing philosophy
 description: What CI runs, what it doesn't, the contract tests that keep runtimes honest, and the catalog coupling that can redden the whole suite at once.
 sidebar:
-  order: 4
+  order: 5
 ---
 
 ## What CI runs

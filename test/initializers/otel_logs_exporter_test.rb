@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 # Unit tests for the OTLP/HTTP logs exporter
 # (config/initializers/otel_logs_exporter.rb) that ships Zimmer's ERROR signal to
@@ -250,5 +251,82 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
     assert_nothing_raised do
       assert_equal true, appender.error("boom")
     end
+  end
+
+  # ---- deliver (the synchronous, inspectable export) ------------------------
+  # The background run_loop can only ever warn to stderr, which makes a rejected
+  # batch indistinguishable from an idle pipeline. `deliver` returns the outcome
+  # so `bin/rails obs:smoke` can turn "no data in Grafana" into a status code.
+
+  def stub_http_response(klass, code)
+    response = klass.new("1.1", code, "")
+    response.stubs(:body).returns("")
+    Net::HTTP.any_instance.stubs(:request).returns(response)
+  end
+
+  test "deliver reports ok on a 2xx from the collector" do
+    stub_http_response(Net::HTTPOK, "200")
+
+    result = build_exporter.deliver([ { severity: "ERROR", body: "x", attributes: {} } ])
+
+    assert result.ok
+    assert_equal "200", result.code
+    assert_nil result.error
+  end
+
+  test "deliver reports the status code on a rejected batch (e.g. a bad bearer token)" do
+    stub_http_response(Net::HTTPUnauthorized, "401")
+
+    result = build_exporter.deliver([ { severity: "ERROR", body: "x", attributes: {} } ])
+
+    assert_not result.ok
+    assert_equal "401", result.code
+    assert_match(/HTTP 401/, result.to_s)
+  end
+
+  test "deliver captures a transport failure instead of raising" do
+    Net::HTTP.any_instance.stubs(:request).raises(Errno::ECONNREFUSED, "connection refused")
+
+    result = nil
+    assert_nothing_raised { result = build_exporter.deliver([ { severity: "ERROR", body: "x", attributes: {} } ]) }
+
+    assert_not result.ok
+    assert_nil result.code
+    assert_match(/Errno::ECONNREFUSED/, result.error)
+  end
+
+  test "send_batch swallows a rejected batch so the export thread survives it" do
+    stub_http_response(Net::HTTPUnauthorized, "401")
+    exporter = build_exporter
+
+    assert_nothing_raised do
+      capture_io { exporter.send(:send_batch, [ { severity: "ERROR", body: "x", attributes: {} } ]) }
+    end
+  end
+
+  # ---- describe / pending (what `bin/rails obs:status` reads) ---------------
+
+  test "describe reports where logs are shipped without leaking the bearer token" do
+    exporter = build_exporter
+
+    described = exporter.describe
+
+    assert_equal "https://obs.example.test/otel/v1/logs", described[:endpoint]
+    assert_equal "zimmer", described[:service_name]
+    assert_equal Rails.env.to_s, described[:environment]
+    # Not started, so no thread — the honest answer for a `.new` instance.
+    assert_equal false, described[:running]
+    assert_not_includes described.to_s, "test-token"
+  end
+
+  test "pending counts records the export thread has not yet picked up" do
+    exporter = build_exporter
+
+    assert_equal 0, exporter.pending
+    exporter.enqueue({ severity: "ERROR", body: "x", attributes: {} })
+    assert_equal 1, exporter.pending
+
+    drain(exporter)
+    assert_equal 0, exporter.pending
   end
 end
