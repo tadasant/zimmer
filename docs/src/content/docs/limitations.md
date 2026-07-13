@@ -502,6 +502,23 @@ indistinguishable in a picker. That looks like a bug.
 
 Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 
+### The baseline `zimmer-router` root can't spawn downstream sessions out of the box
+
+`zimmer-router` (the `Session::ROUTER_AGENT_ROOT` behind every quick-router / chat-bubble submission)
+ships with **no** session-orchestration MCP server on by default. The obvious wiring —
+`default_in_roots: ["zimmer-router"]` on the `zimmer-sessions` catalog entry — is unsafe in
+production: `zimmer-sessions`' catalog URL is the placeholder `https://zimmer.example.com/...`, and
+`RuntimeConfigPostProcessor#retarget_zimmer_servers_to_current_env!` is a **no-op in production**
+(`return if Rails.env.production?`). Staging/dev rewrite that placeholder to the instance's real
+`ZIMMER_*_BASE_URL`; production does not, so a prod router session would try to connect to a dead host
+and — because an unrecoverable MCP connection is fatal (`AgentSessionJob` → `session.fail!`) — fail on
+startup. The auto-injected `zimmer-self-session` server is unaffected: `SelfSessionInjector` builds its
+URL from `ZIMMER_*_BASE_URL` directly rather than from the catalog. So the router starts cleanly in
+every environment, but to let it *dispatch* downstream sessions an operator must wire a
+session-scoped Zimmer MCP server whose URL resolves correctly in their environment (e.g. a custom
+`AIR_CONFIG` catalog with real URLs, or lifting the prod retarget no-op). See
+`app/services/runtime_config_post_processor.rb` and `app/services/self_session_injector.rb`.
+
 ---
 
 ## Sessions

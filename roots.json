@@ -9,6 +9,14 @@
     "user_invocable": true,
     "default_goal": "open-reviewed-green-pr"
   },
+  "zimmer-router": {
+    "name": "zimmer-router",
+    "display_name": "Zimmer Router",
+    "description": "Baseline router root: receives freeform quick-router / chat-bubble input and dispatches it to the right downstream session. It is the target of Session::ROUTER_AGENT_ROOT and is not user-invocable (it is invoked by the dashboard's quick router, not picked from the new-session form).",
+    "url": "https://github.com/tadasant/zimmer.git",
+    "default_branch": "main",
+    "user_invocable": false
+  },
   "agent-orchestrator": {
     "name": "agent-orchestrator",
     "display_name": "Zimmer",
