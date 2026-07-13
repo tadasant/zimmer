@@ -160,11 +160,10 @@ container boot silently run the old CLI and the old Chromium.
 
 ## The workflows
 
-Every workflow but one runs on **`runs-on: self-hosted`** — PulseMCP's shared Hetzner
-runner pool, which zimmer piggybacks on through repo-level runner registration so
-its CI stays off the GitHub-hosted Actions minute quota. This piggyback is
-temporary; the plan is a tadasant-dedicated runner on DigitalOcean, tracked in
-[tadasant-internal#25](https://github.com/tadasant/tadasant-internal/issues/25).
+Every workflow but one runs on **`runs-on: self-hosted`** — a shared self-hosted
+runner pool that this repo registers against, so its CI stays off the GitHub-hosted
+Actions minute quota. If you fork Zimmer you would point these at your own runners
+(or switch the jobs back to `ubuntu-latest`).
 See [Running on the shared self-hosted runner](#running-on-the-shared-self-hosted-runner)
 for what that requires of a Rails job.
 
@@ -223,12 +222,12 @@ Three details worth knowing before you touch it:
 
 ### Running on the shared self-hosted runner
 
-The runner box is shared across the PulseMCP org, so a job cannot assume it has the
+The runner box is shared across several repos, so a job cannot assume it has the
 machine to itself. Four things follow, and every Rails job in `ci.yml` already does
 them:
 
 - **`ruby/setup-ruby` gets `self-hosted: true` and `bundler-cache: false`.**
-  `self-hosted: true` (the PulseMCP-org standard) selects the Ruby already staged in
+  `self-hosted: true` selects the Ruby already staged in
   each runner's own `$RUNNER_TOOL_CACHE` instead of downloading one — the action's
   download path extracts into a hardcoded `/opt/hostedtoolcache` the runner user can't
   write, so on this box the flag is mandatory, not optional. `bundler-cache: false`
