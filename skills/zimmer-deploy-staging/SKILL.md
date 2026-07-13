@@ -23,8 +23,8 @@ is the way to exercise an **unmerged** change on a real box.
 - **Staging deploys are `workflow_dispatch`-only.** `.github/workflows/deploy-staging.yml`
   (workflow name: **`Deploy staging`**) never auto-deploys. It takes a `ref` input
   ("Branch/tag/SHA to build & deploy"), falling back to `github.ref`.
-- **There is NO production deploy workflow in this repo.** Production lives in the
-  private `tadasant-internal` repo and auto-upgrades to the newest
+- **There is NO production deploy workflow in this repo.** Production lives in a
+  private companion repo and auto-upgrades to the newest
   `ghcr.io/tadasant/zimmer` image. `release-image.yml` (on push to `main`) builds
   and publishes that image and fires a `repository_dispatch`
   (`zimmer-image-published`) to notify it. Do not go looking for a prod deploy
