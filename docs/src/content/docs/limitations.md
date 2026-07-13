@@ -211,8 +211,8 @@ touches ACME). What is missing is TLS — `https://staging.zimmer.tadasant.com` 
 the window rolls forward and `domain-cert-staging` is re-run. Reach the box by tailnet IP or MagicDNS
 in the meantime.
 
-So rebuilds are cheap, but not free. If you expect several in a day — chasing a cloud-init change, say
-— spend the first ones knowing the fifth is the last one that keeps HTTPS.
+So rebuilds are cheap, but not free: the fifth one in a week is the last that gets a cert. If you
+expect several in a day — chasing a cloud-init change, say — count them.
 
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 

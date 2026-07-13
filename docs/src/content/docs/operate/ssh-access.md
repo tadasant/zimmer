@@ -173,7 +173,7 @@ Edit it in **`infra/terraform/staging.tfvars.example`**, not in `staging.tfvars`
 admin_ssh_pubkeys = [
   "ssh-ed25519 AAAA... zimmer-production-operator",      # the identity agent sessions hold
   "ssh-ed25519 AAAA... agent-orchestrator-prod-hetzner", # the orchestrator that drives the fleet
-  "ssh-ed25519 AAAA... root@local",                      # the maintainer's break-glass laptop key
+  "ssh-ed25519 AAAA... root@local",                      # the maintainer's laptop key
 ]
 ```
 
@@ -181,16 +181,21 @@ If you are forking Zimmer, those are **the author's** keys: replace them with yo
 deploy authorizes a stranger for root on your droplet. A public key is not a secret, which is why they
 are committed — but the list is per-environment configuration, not a default to inherit.
 
-### The break-glass key
+### The maintainer's laptop key
 
-Two of those three entries only reach the box *through* something: the orchestrator key belongs to the
-machine that runs Zimmer's own sessions, and the Kamal deploy key belongs to CI. When Zimmer is down,
-or when a deploy is what broke, neither is a way in. The `root@local` entry is a human's key on a
-laptop, authorized for root on every environment for exactly that case — nothing but the tailnet has
-to be working for it to let you in.
+`root@local` is a human's key, and it is in the list on purpose. The other two entries belong to
+machines: `agent-orchestrator-prod-hetzner` to the host that runs Zimmer's sessions,
+`zimmer-production-operator` to the sessions themselves. When Zimmer is down — or when a deploy is what
+broke — neither of those is a hand you can put on the box.
 
-It is deliberate, and it is the reason the same list is asserted on staging and production rather than
-being tailored per environment. Do not prune it as a stray personal key.
+It is not the *only* door: Tailscale SSH on `:22` needs no key at all, and it is the one to reach for
+first. This key is the independent one — a real OpenSSH shell on `:2222`, held by a person rather than
+by a machine, that does not depend on the tailnet's SSH policy resolving your identity the way you
+expect it to.
+
+Both environments authorize it, and nothing *enforces* that: production's `admin_ssh_pubkeys` lives in
+the [private companion repo](/operate/companion-repo/), so the two lists are kept in step by hand. That
+is the discipline this key exists inside. Do not prune it as a stray personal key.
 
 Do **not** reach for `ssh_key_fingerprints` (DigitalOcean-registered keys) instead. It is `ForceNew` on
 `digitalocean_droplet`, so adding a key there makes the deploy's auto-approved `terraform apply`
