@@ -128,6 +128,55 @@ sshd pre-auth queue was saturated to the point that SSH was effectively down. Be
 `terraform apply` runs on **every** deploy, the firewall rule in code is what keeps it shut: a
 hand-fix through the DigitalOcean API is reverted by the next deploy, which is exactly what happened.
 
+### DigitalOcean force-expires root's password, and that rejects every OpenSSH session
+
+Create a droplet with **no DO-registered SSH key** — which is exactly what `ssh_key_fingerprints = []`
+does — and DigitalOcean sets a random root password, emails it out, and marks it as needing an
+immediate change (`chage -d 0 root`, i.e. `lastchg=0` in `/etc/shadow`).
+
+That flag is not cosmetic. `pam_unix`'s **account** stack refuses a session outright when
+`lastchg == 0`, *after* publickey auth has already succeeded:
+
+```console
+$ ssh -p 2222 -i ~/.ssh/id_ed25519 root@zimmer-staging 'hostname'
+You are required to change your password immediately (administrator enforced).
+Password change required but no TTY available.
+```
+
+So `:2222` authenticates you and then throws the session away — the publickey path is unusable, and
+the `ssh-agent-mcp-server` MCP fails its healthcheck. Tailscale SSH on `:22` never notices, because it
+authenticates by tailnet identity and does not run `pam_unix` at all: Kamal deploys, CI health checks,
+and every `tailscale ssh` break-glass keep working on a box whose OpenSSH is entirely dead. It is a
+failure only a *real* OpenSSH client can see.
+
+cloud-init therefore drops the password in `runcmd`, ahead of the restart that puts sshd on `:2222` —
+so there is no window where the port answers and every session dies:
+
+```yaml
+- usermod -p '*' root
+- chage -d $(date +%Y-%m-%d) -M -1 root
+```
+
+Root is key-only here, so the password has no legitimate use — removing it also invalidates the one
+DigitalOcean emailed. `usermod -p '*'` sets an **invalid** hash; `passwd -d` would leave an *empty*
+one, which means "no password required" rather than "no password login". `-M -1` disables aging, so it
+cannot re-expire. (PAM reads `/etc/shadow` on every authentication, so the repair takes effect on the
+next connection either way — the ordering just closes that window.)
+
+:::caution[cloud-init only runs at creation — live boxes need the converge]
+A droplet that already exists keeps `lastchg=0` forever; nothing re-runs `runcmd`. That is why
+`scripts/clear-root-password-expiry.sh` exists and why the staging deploy runs it on **every** deploy.
+It is convergent, and it goes over Tailscale SSH on `:22` — the one path the expiry does not block.
+
+Production is repaired on its next rebuild, or by pointing the same script at it. Production's OpenSSH
+works today only by accident: its root password happened to be changed at some point, which reset
+`lastchg`.
+
+This is not a one-time migration, either. DigitalOcean's **Reset root password** plants a fresh
+password and force-expires it again, so any box it is used on comes back with `lastchg=0` and a dead
+`:2222` until the script runs.
+:::
+
 ## Where secrets end up that they shouldn't
 
 :::caution[The Tailscale auth key is in the droplet's `user_data`]
