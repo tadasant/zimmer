@@ -32,7 +32,7 @@ flowchart TB
             end
             TS["tailscaled<br/>MagicDNS: zimmer-staging"]
         end
-        FW["Firewall<br/>inbound: 22/tcp, 41641/udp ONLY<br/>NO public app ingress"]
+        FW["Firewall<br/>inbound: 41641/udp ONLY<br/>NO public TCP at all — not even SSH"]
     end
 
     GH["GHCR<br/>ghcr.io/tadasant/zimmer<br/>ghcr.io/tadasant/zimmer-base"]

@@ -8,7 +8,26 @@
 environment          = "staging"
 region               = "nyc3"
 droplet_size         = "s-2vcpu-4gb"
-ssh_key_fingerprints = [] # e.g. ["aa:bb:cc:..."] -- DO-registered SSH key fingerprints
+ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: this argument is
+# ForceNew on the droplet, so adding one here makes the deploy workflow's auto-approved
+# `terraform apply` destroy and recreate the box without reaping the tailnet node. Authorize
+# operator keys through admin_ssh_pubkeys below instead -- it rides cloud-init, which is under
+# `ignore_changes`, so it can never force-replace the droplet.
+
+# Admin/tooling SSH public keys authorized for root, on top of the Kamal deploy key.
+# cloud-init appends them to /root/.ssh/authorized_keys, and they are reachable ONLY over
+# the tailnet on :2222 (real OpenSSH; tailnet :22 is Tailscale SSH, which ignores publickey).
+#
+# This is the shared Agent Orchestrator key the ssh-tadasant-zimmer-* MCP servers connect
+# with. It was authorized on production but NOT on staging, which is why the staging MCP
+# server could never authenticate -- this line is that fix. Production sets the same key
+# through the same variable in its own tfvars.
+#
+# FORKING / SELF-HOSTING: replace this with YOUR key. A public key is not a secret, but
+# leaving someone else's here authorizes them for root on your droplet.
+admin_ssh_pubkeys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmRanTTxADIQWHp9PZqOAFQX2SVXibTqVXb0D3AtuiU agent-orchestrator-prod-hetzner",
+]
 
 # Custom-domain HTTPS over the tailnet: turns on the Caddy TLS terminator on :443,
 # fronting kamal-proxy. The cert and the `domain -> tailnet IP` A record are managed
