@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 require "minitest/mock"
 require "timeout"
 
@@ -11,6 +12,10 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     # Inject mock dependencies for testing
     @mock_process_manager = MockProcessManager.new
     @adapter.process_manager = @mock_process_manager
+    # The provisioner writes through raw File/FileUtils, not the injected file system,
+    # so a developer with ZIMMER_OPERATOR_SSH_KEY exported would otherwise have the
+    # suite write a key into their real ~/.ssh. Tests that need a path re-stub this.
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
   end
 
   teardown do
@@ -1972,6 +1977,47 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   class FakeEnvContribExtension < Zimmer::Extension
     def id = "fake_env_contrib"
     def spawn_env_contribution(context = {}) = (context[:runtime].to_s == "claude_code") ? { "ENABLE_TOOL_SEARCH" => "true" } : {}
+  end
+
+  test "spawn_process exports SSH_PRIVATE_KEY_PATH so the ssh-* MCP servers find the operator key" do
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns("/home/rails/.ssh/zimmer_operator_ed25519")
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_equal "/home/rails/.ssh/zimmer_operator_ed25519", env_vars["SSH_PRIVATE_KEY_PATH"]
+  end
+
+  test "spawn_process leaves SSH_PRIVATE_KEY_PATH unset when no operator key is configured" do
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_nil env_vars["SSH_PRIVATE_KEY_PATH"]
+  end
+
+  test "spawn_process unsets ZIMMER_OPERATOR_SSH_KEY so the agent never sees the key material" do
+    original = ENV["ZIMMER_OPERATOR_SSH_KEY"]
+    ENV["ZIMMER_OPERATOR_SSH_KEY"] = "c2VjcmV0LWtleS1tYXRlcmlhbA=="
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert env_vars.key?("ZIMMER_OPERATOR_SSH_KEY"), "expected the var to be explicitly unset in the child"
+    assert_nil env_vars["ZIMMER_OPERATOR_SSH_KEY"]
+  ensure
+    original.nil? ? ENV.delete("ZIMMER_OPERATOR_SSH_KEY") : ENV["ZIMMER_OPERATOR_SSH_KEY"] = original
+  end
+
+  test "spawn_process respects an explicit SSH_PRIVATE_KEY_PATH from the session .env" do
+    File.write(File.join(@test_dir, ".env"), "SSH_PRIVATE_KEY_PATH=/custom/key\n")
+    OperatorSshKeyProvisioner.expects(:ensure!).never
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_equal "/custom/key", env_vars["SSH_PRIVATE_KEY_PATH"]
   end
 
   test "spawn_process sets ENABLE_TOOL_SEARCH to false by default" do

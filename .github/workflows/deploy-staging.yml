@@ -201,6 +201,10 @@ jobs:
           STAGING_API_KEYS: ${{ secrets.STAGING_API_KEYS }}
           STAGING_DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
           STAGING_RAILS_MASTER_KEY: ${{ secrets.STAGING_RAILS_MASTER_KEY }}
+          # Base64 of the operator SSH private key (see .kamal/secrets.staging). Unset
+          # is survivable: the app boots, but sessions get no SSH identity and every
+          # ssh-* MCP server fails its startup health check.
+          STAGING_OPERATOR_SSH_KEY: ${{ secrets.STAGING_OPERATOR_SSH_KEY }}
           # Observability. STAGING_-prefixed on purpose -- see .kamal/secrets.staging.
           # STAGING_SENTRY_DSN_BACKEND must be the DSN of a SEPARATE GlitchTip project
           # (zimmer-staging), never production's: GlitchTip's Slack alert has no
@@ -255,6 +259,15 @@ jobs:
             echo "✅ GlitchTip errors ON (DSN set -- it must be a STAGING-only project)"
           else
             echo "::warning::GlitchTip errors are OFF: STAGING_SENTRY_DSN_BACKEND is unset."
+          fi
+          # Same reasoning as above: an unset SSH key is survivable but invisible --
+          # the app boots and only the ssh-* MCP servers fail, inside a session, with a
+          # health-check error nobody is watching for.
+          if [ -n "${STAGING_OPERATOR_SSH_KEY:-}" ]; then
+            echo "✅ Session SSH identity ON (operator key set; decoded to ~/.ssh/zimmer_operator_ed25519 on boot)"
+          else
+            echo "::warning::Sessions will have NO SSH identity: STAGING_OPERATOR_SSH_KEY is unset,"
+            echo "::warning::so every ssh-* MCP server fails its startup health check."
           fi
           echo "-------------------------------"
           kamal accessory boot all -d staging
