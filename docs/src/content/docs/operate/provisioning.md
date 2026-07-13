@@ -48,6 +48,7 @@ could not reach the box.
 | `STAGING_RAILS_MASTER_KEY` | decrypts the committed `config/credentials/staging.yml.enc` (`mcp_secrets`: `SLACK_BOT_TOKEN`, `ENG_ALERTS_SLACK_CHANNEL_ID`). Optional — without it the deploy still succeeds, but Slack and every credential-bearing MCP server go quiet ([why](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent)) |
 | `STAGING_OTEL_LOGS_EXPORTER_ENDPOINT` / `STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN` | ship staging's WARN/ERROR/FATAL logs over OTLP. **Both** are required — either one missing is a silent no-op ([observability](/operate/observability/)) |
 | `STAGING_SENTRY_DSN_BACKEND` | staging's GlitchTip DSN. Must be a **staging-only project**, never production's — a DSN selects a project, and GlitchTip's alert rules are per-project with no environment filter |
+| `STAGING_OPERATOR_SSH_KEY` | base64 of the operator SSH **private** key — the identity agent sessions SSH with ([below](#the-ssh-identity-an-agent-session-holds)). Optional: without it the app boots fine and only the `ssh-*` MCP servers fail |
 | `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
@@ -175,6 +176,70 @@ works today only by accident: its root password happened to be changed at some p
 This is not a one-time migration, either. DigitalOcean's **Reset root password** plants a fresh
 password and force-expires it again, so any box it is used on comes back with `lastchg=0` and a dead
 `:2222` until the script runs.
+:::
+
+## The SSH identity an agent session holds
+
+An agent session runs as a child process of the worker container, so it inherits that container's
+`$HOME` (`/home/rails`). The image ships no SSH key, and none of the durable volumes cover `~/.ssh` —
+so out of the box a session has **no SSH identity at all**, and every `ssh-*` MCP server dies on its
+startup health check with `All configured authentication methods failed`. That reads like the host
+rejected the key; there was no key.
+
+One ed25519 keypair (comment `zimmer-production-operator`) fixes that, and it travels in two halves:
+
+| Half | Where it lives | How it gets there |
+| --- | --- | --- |
+| private | the `ZIMMER_OPERATOR_SSH_KEY` env var, **base64-encoded** | a GitHub Actions secret (`STAGING_OPERATOR_SSH_KEY`; `PROD_OPERATOR_SSH_KEY` in the [private repo](/operate/companion-repo/)) → Kamal `env.secret` → `OperatorSshKeyProvisioner` decodes it to `~/.ssh/zimmer_operator_ed25519` (`0600`) at boot and at every spawn |
+| public | `admin_ssh_pubkeys` in `*.tfvars` | cloud-init → `/root/.ssh/authorized_keys`, reachable only over the tailnet on `:2222` |
+
+Four details are load-bearing:
+
+- **Base64, not the PEM.** Kamal hands env vars to Docker through an env-file, and a Docker env-file
+  cannot carry a newline. A raw PEM arrives truncated at its first line break.
+- **Zimmer's own filename, not `id_ed25519`.** Every consumer is handed an explicit path, so nothing
+  needs the conventional name — and writing it would clobber the personal key of a developer or
+  self-hoster who sets the variable and runs `bin/rails console`. An agent that wants the plain CLI
+  runs `ssh -i "$SSH_PRIVATE_KEY_PATH"` (and, since nothing seeds `known_hosts`, an explicit
+  `-o StrictHostKeyChecking=accept-new`).
+- **The key has to be a *path*.** `ssh-agent-mcp-server` is an ssh2 publickey client: it reads
+  `SSH_AUTH_SOCK` first and `SSH_PRIVATE_KEY_PATH` second, and nothing else — it does not go looking
+  in `~/.ssh`. There is no ssh-agent in the container, so `CliSpawnEnv` exports
+  `SSH_PRIVATE_KEY_PATH` into the [spawn environment](/sessions/spawning/#the-spawn-environment).
+- **The two runtimes reach the MCP server differently.** Claude Code hands a stdio MCP server its own
+  environment, so the spawn env is enough. Codex does not: it builds each server's environment from a
+  fixed whitelist plus exactly the vars the entry names in `env_vars`. So
+  `CodexConfigTomlPostProcessor` adds `SSH_PRIVATE_KEY_PATH` to every stdio server's `env_vars` in
+  `.codex/config.toml`. Miss that and the fix works for Claude sessions and silently does not for
+  Codex ones.
+
+The key material itself is deliberately **not** a `mcp_secret`:
+`AgentSessionJob#inject_secrets_to_env_file` writes every `mcp_secret` in plaintext into the session
+clone's `.env`, inside the git tree the agent operates on. `CliSpawnEnv` also unsets
+`ZIMMER_OPERATOR_SSH_KEY` for the agent process — a session needs the key's path, never its bytes.
+
+Nothing is fatal when the key is absent: the app boots, and only SSH-based MCP servers fail. The
+staging deploy prints whether the secret is set for exactly that reason.
+
+:::caution[Authorizing the public half only takes effect on a rebuild]
+`admin_ssh_pubkeys` rides `user_data`, and the droplet's `lifecycle` block **ignores changes to
+`user_data`** — deliberately, so a normal deploy can never force-replace the box. Adding a key
+therefore produces no plan diff, and a running droplet never authorizes it: cloud-init only runs at
+creation ([admin keys are add-only](/limitations/#admin-keys-are-add-only)).
+
+To authorize the key on a **live** host, either `recreate_droplet: true` (destructive — fine for
+staging, not for production), or append the public key to `/root/.ssh/authorized_keys` by hand over
+Tailscale SSH. Terraform is what makes it survive the *next* rebuild; the manual append is what makes
+it work *now*.
+:::
+
+:::caution[This key is root on every Zimmer host]
+`admin_ssh_pubkeys` authorizes `root`. A session running **on production** therefore holds a key that
+is root on its own host, and on every other host that authorizes the same key. That blast radius is
+accepted deliberately — operating the fleet is the job these sessions exist to do — and it is why the
+key is a **separate identity** from the Kamal deploy key: revoking it is deleting one line from
+`admin_ssh_pubkeys` (plus a rebuild — [admin keys are add-only](/limitations/#admin-keys-are-add-only)),
+with no effect on deploys.
 :::
 
 ## Where secrets end up that they shouldn't

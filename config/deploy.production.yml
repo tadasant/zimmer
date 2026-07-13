@@ -78,6 +78,10 @@ env:
     # ZIMMER_ name now, and prod's encrypted mcp_secrets carries it too.
     - AGENT_ORCHESTRATOR_PROD_API_KEY
     - ZIMMER_PROD_API_KEY
+    # Base64 of the operator SSH private key. OperatorSshKeyProvisioner decodes it into
+    # ~/.ssh/zimmer_operator_ed25519 so agent sessions (and the ssh-* MCP servers they
+    # attach) have an SSH identity; without it they have none. See .kamal/secrets.production.
+    - ZIMMER_OPERATOR_SSH_KEY
     - SENTRY_DSN_BACKEND
     - OTEL_LOGS_EXPORTER_ENDPOINT
     - OTEL_LOGS_EXPORTER_BEARER_TOKEN
