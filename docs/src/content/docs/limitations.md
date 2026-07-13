@@ -58,12 +58,63 @@ posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Sla
 watch. Staging alerts are only distinguishable from production's by the posting bot (*Zimmer
 (Staging)*), so point staging at a different channel if that noise is unwelcome.
 
-### SSH is open to `0.0.0.0/0`
+### SSH hardening only reaches a droplet that is rebuilt
 
-`infra/terraform/main.tf:257-261` opens `22/tcp` to the whole internet. SSH is genuinely needed — it
-is Kamal's deploy channel — but there is no variable to scope it to a set of admin CIDRs.
+SSH is now [tailnet-only](/operate/provisioning/#ssh-is-tailnet-only): the firewall opens no public
+TCP port, real OpenSSH listens on a tailnet-only `:2222`, and sshd takes password auth off. But two of
+those three land through **cloud-init**, and the droplet carries `ignore_changes = [user_data]` — so
+they only reach a box that is *rebuilt*.
 
-Tracked in [#120](https://github.com/tadasant/zimmer/issues/120).
+The firewall change is the exception and the one that matters most: it is a plain resource, so a
+normal `terraform apply` closes public `:22` on the existing droplet immediately. What waits for a
+rebuild is the `:2222` listener and the `PasswordAuthentication no` drop-in. Until then a long-lived
+droplet keeps whatever sshd posture it booted with — which, on an Ubuntu cloud image, is
+**`PermitRootLogin yes` + `PasswordAuthentication yes`** (see below).
+
+Deploy with `recreate_droplet: true` to force the rebuild, or apply the two files by hand and let the
+next rebuild converge.
+
+### Neither the sshd config files nor `sshd -T` tell you what sshd is actually doing
+
+Two independent traps, and they stack. Both bit this repo for real.
+
+**The config files lie.** `/etc/ssh/sshd_config.d/60-cloudimg-settings.conf` says
+`PasswordAuthentication no`. sshd takes the **first** value it sees for a keyword, and cloud-init
+writes `PasswordAuthentication yes` into `50-cloud-init.conf`, which sorts first — so `60`'s `no`
+never won, and root password auth was genuinely accepted on both droplets while the file said
+otherwise. That is why the hardening drop-in is `10-hardening.conf`: it has to sort *before* `50`.
+
+**`sshd -T` also lies** — it is a fresh *parse* of the config on disk, not a readout of the running
+daemon. Ubuntu's `ssh.socket` is `Accept=no`, so it hands its sockets to **one long-lived `sshd -D`**
+that parsed its config once, at start. Write a hardening drop-in without restarting `ssh.service` and
+`sshd -T` will cheerfully report `passwordauthentication no` while the live daemon keeps taking
+passwords. This is exactly what happened when the fix was first applied to production by hand.
+
+The only honest check is what the daemon *advertises on the wire*:
+
+```bash
+ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -p 2222 root@<host>
+# key-only  ->  Permission denied (publickey).
+# still bad ->  Permission denied (publickey,password).
+```
+
+### Admin keys are add-only
+
+`admin_ssh_pubkeys` appends to `/root/.ssh/authorized_keys` and never prunes. **Removing** a key from
+the list does not revoke it from a running droplet — that needs a rebuild or a manual edit. Adding is
+also rebuild-only (it rides `user_data`), so the variable is really "who gets authorized on the next
+rebuild", not a live access-control list.
+
+### A rebuilt droplet has exactly one fallback door, and it is the DigitalOcean console
+
+The firewall now permits **zero public TCP**. On a `recreate_droplet` rebuild, if `tailscale up` fails
+— an expired or exhausted auth key is the likely way, and the key is frozen into `user_data` at first
+boot — then there is no tailnet, so no Tailscale SSH; `:2222` is unreachable from outside the tailnet;
+there is no public `:22`; and Kamal cannot reach the box either. `runcmd` has no `set -e`, so the boot
+completes "successfully" regardless.
+
+Before setting `recreate_droplet: true`, confirm (a) `TAILSCALE_AUTH_KEY` is valid and not exhausted,
+and (b) you can actually log into the DigitalOcean web console for the droplet.
 
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains)
 

@@ -18,7 +18,8 @@ Terraform only provisions the **host**. The app image, its env, and the data sto
 | `region` / `droplet_size` | default `nyc3` / `s-2vcpu-4gb` |
 | `domain` | `""` by default. Set it to turn on [custom-domain HTTPS over the tailnet](/operate/deploying/#custom-domain-https-over-the-tailnet) — cloud-init runs a Caddy terminator on `:443` fronting kamal-proxy. Terraform does not create the DNS record; the `domain-cert` workflow owns the A record. |
 | `manage_project` | still `false`. Remote state fixes the case where Terraform *created* the project, but a **pre-existing** one (both envs have one) still 409s on its account-unique name. Turning it on needs a one-time `terraform import` first; a DO Project is just a console folder, so it isn't worth the failure mode. |
-| `ssh_key_fingerprints` | |
+| `admin_ssh_pubkeys` | Operator/tooling public keys cloud-init authorizes for `root`, on top of the Kamal deploy key. The **one** mechanism both environments use, so staging and production cannot drift on who can get in. `[]` by default — set it per environment in `*.tfvars`, never as a module default, so a fork does not silently authorize someone else's key. |
+| `ssh_key_fingerprints` | DigitalOcean-registered keys. **Leave it empty.** It is `ForceNew` on `digitalocean_droplet`, so adding a key makes the deploy workflow's auto-approved `terraform apply` *destroy and recreate the droplet* — skipping the tailnet-node reap that only runs behind `recreate_droplet`, which lands the replacement as `zimmer-<env>-1` and breaks the hostname the deploy resolves. Use `admin_ssh_pubkeys`: it rides cloud-init, which is under `ignore_changes`, so it can never force-replace the box. |
 | `managed_db_cluster_name` | `""` for staging (Kamal runs a throwaway Postgres accessory); set for production |
 
 **Secrets** (as `TF_VAR_*`):
@@ -79,6 +80,53 @@ It posts a smoke-test message to #alerts instead of a real alert. If the job goe
 annotation names the exact cause (`not_in_channel`, `invalid_auth`, `missing_scope`, …) and what to
 do about it.
 
+## SSH is tailnet-only
+
+`digitalocean_firewall.zimmer` opens **no public TCP port at all** — the single inbound rule is
+Tailscale's `41641/udp`. There is no `22` rule, and adding one back is the thing not to do. On the
+tailnet interface, SSH is two different servers:
+
+| Port | Server | Authenticates by | Used by |
+| --- | --- | --- | --- |
+| `:22` | **Tailscale SSH** (`tailscale up --ssh`) | tailnet identity — it ignores publickey entirely | Kamal's deploys, and `tailscale ssh root@zimmer-<env>` for break-glass |
+| `:2222` | **real OpenSSH** (an `ssh.socket` drop-in) | publickey (`admin_ssh_pubkeys` + the Kamal key) | plain publickey clients that cannot speak Tailscale SSH — e.g. the `ssh-agent-mcp-server` MCP |
+
+A DigitalOcean cloud firewall filters the **public** interface only; it does not filter `tailscale0`.
+So tailnet peers reach both ports and the internet reaches neither, with no firewall rule for either.
+
+Only the firewall enforces that, though — `:2222` binds `0.0.0.0`, so it is the *absence of any TCP
+inbound rule* that keeps the internet out, not the bind. Detach `digitalocean_firewall.zimmer` from the
+droplet and `:2222` is world-reachable immediately, with no rule in Terraform to grep for. (It is
+key-only sshd, so the exposure is bounded — but the firewall is the control.)
+
+:::caution[Three gotchas that will waste your afternoon]
+Ubuntu 24.04 **socket-activates** sshd, so the listen set belongs to `ssh.socket`, not `sshd_config`:
+
+- **Do not use `Port 2222`.** It is not ignored — `openssh-server` ships an `sshd-socket-generator`
+  that turns a `Port`/`ListenAddress` line into a generated `ssh.socket` drop-in which **resets**
+  `ListenStream=`. So `Port 2222` would *move* sshd off `:22` instead of adding `:2222`. A drop-in
+  appends; that is why we use one.
+- **The drop-in filename must sort late** (`zz-tailnet-altport.conf`). systemd applies drop-ins in
+  filename order, and that generated `addresses.conf` starts with a bare `ListenStream=` reset — a
+  `10-` prefix would be silently wiped the moment anyone adds a `Port` line.
+- **List both address families.** The shipped `ssh.socket` sets `BindIPv6Only=ipv6-only` (the unit —
+  *not* the `net.ipv6.bindv6only` sysctl, which is `0`), so a bare `ListenStream=2222` binds IPv6 only
+  and every IPv4 client gets `Connection refused`.
+:::
+
+sshd itself is key-only (`10-hardening.conf`: `PasswordAuthentication no`, `PermitRootLogin
+prohibit-password`). Two things about that file are load-bearing: its name sorts before
+`50-cloud-init.conf` (sshd takes the **first** match), and **`ssh.service` must be restarted** for it
+to take effect — `Accept=no` means one long-lived `sshd -D` parses the config once at start, not per
+connection. See
+[`sshd -T` is the only honest way to read sshd's config](/limitations/#sshd--t-is-the-only-honest-way-to-read-sshds-config).
+
+This posture replaced a genuinely dangerous one: `22/tcp` open to `0.0.0.0/0` against an sshd that
+accepted **root password auth**, with both droplets under a sustained brute-force flood — staging's
+sshd pre-auth queue was saturated to the point that SSH was effectively down. Because
+`terraform apply` runs on **every** deploy, the firewall rule in code is what keeps it shut: a
+hand-fix through the DigitalOcean API is reverted by the next deploy, which is exactly what happened.
+
 ## Where secrets end up that they shouldn't
 
 :::caution[The Tailscale auth key is in the droplet's `user_data`]
@@ -90,12 +138,6 @@ key).
 `user_data` is readable from the DigitalOcean metadata service by anything on the box, including every
 agent process Zimmer spawns. An ephemeral, reusable tailnet auth key limits the blast radius, but a
 long-lived one there is worth avoiding.
-:::
-
-:::danger[SSH is open to `0.0.0.0/0`]
-`digitalocean_firewall.zimmer` allows `22/tcp` from anywhere. SSH is genuinely needed — it is Kamal's
-deploy channel — but there is no variable to scope it to a set of admin CIDRs.
-([#120](https://github.com/tadasant/zimmer/issues/120))
 :::
 
 :::danger[Nothing is encrypted at rest in the database]
