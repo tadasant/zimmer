@@ -7840,7 +7840,11 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     mock_fs.mkdir_p(clone_path)
     mock_fs.mkdir_p(working_directory)
+    # The adapter writes stderr under the working directory; the resume path
+    # reconstructs the path under the clone root (issue #187). Provide both, so
+    # this fixture takes no position on which of the two is correct.
     mock_fs.write(File.join(clone_path, "claude_stderr.log"), "")
+    mock_fs.write(File.join(working_directory, "claude_stderr.log"), "")
 
     # A resumable conversation exists — but only under the *working directory's*
     # transcript path. SigtermRetryService only finds it if it was handed the real
@@ -7912,7 +7916,11 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     mock_fs.mkdir_p(clone_path)
     mock_fs.mkdir_p(working_directory)
+    # The adapter writes stderr under the working directory; the resume path
+    # reconstructs the path under the clone root (issue #187). Provide both, so
+    # this fixture takes no position on which of the two is correct.
     mock_fs.write(File.join(clone_path, "claude_stderr.log"), "")
+    mock_fs.write(File.join(working_directory, "claude_stderr.log"), "")
     write_transcript_with_assistant_message(mock_fs, working_directory, session_uuid)
 
     current_pid = first_pid

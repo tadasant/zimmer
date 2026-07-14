@@ -28,16 +28,15 @@ class ClaudeCliAdapter
   # reject a nil chdir deep inside the C call with "no implicit conversion of nil
   # into String", which tells an operator nothing about which argument was nil.
   #
-  # A nil working_dir is always a caller bug: either the session never established
-  # a clone (it died during its first spawn, before metadata was written) or a
-  # caller failed to load the established one from session metadata. Name both —
-  # the second was the actual cause in issue #183, and the message's previous
-  # insistence on the first sent the operator hunting for a missing clone that was
-  # sitting intact on disk.
+  # A nil working_dir is always a caller bug, and it has two possible causes: the
+  # session never established a clone (it died during its first spawn, before
+  # metadata was written), or a caller failed to load the established one from
+  # session metadata. The message names both — naming only the first sends an
+  # operator hunting for a missing clone that may be sitting intact on disk.
   #
-  # Exposed as a class method so test doubles (MockClaudeCliAdapter) enforce the
-  # same contract; a double that happily spawns with a nil working dir hides
-  # exactly this class of bug from the suite.
+  # A class method so the test double enforces the identical contract: a double
+  # that spawns happily with a nil working dir hides this class of bug from the
+  # suite.
   def self.validate_working_dir!(working_dir)
     return unless working_dir.nil? || (working_dir.is_a?(String) && working_dir.strip.empty?)
 
