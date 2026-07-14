@@ -1,7 +1,7 @@
 {
   "$schema": "https://pulsemcp.github.io/air/schemas/air.schema.json",
   "name": "zimmer-catalog",
-  "description": "Zimmer's self-contained AIR catalog. Every artifact index lives in this repo and resolves fully offline (no private GitHub catalogs, no network), so the app's config services always resolve non-empty data. Skills in `skills/` are Zimmer-specific and default-on for the `zimmer` root via `default_in_roots`; generic workflow skills come from the orchestrator's own default skill set.",
+  "description": "Zimmer's self-contained AIR catalog. Every artifact index lives in this repo and resolves fully offline (no private GitHub catalogs, no network), so the app's config services always resolve non-empty data. `skills/` carries both the Zimmer-specific skills (`category: zimmer`) and the vendored generic workflow skills (`category: workflow` — `pr`, `wait-for-ci`, `recover-from-compaction-thrashing`); a standalone install inherits nothing from an outside orchestrator, so anything a session needs is default-on for the `zimmer` root via `default_in_roots`.",
   "gitProtocol": "https",
   "extensions": [
     "@pulsemcp/air-adapter-claude",
