@@ -259,9 +259,23 @@ class TriggerCondition < ApplicationRecord
     Array(configuration["seen_issue_keys"])
   end
 
+  # What this condition watches. The poller snapshots this at the start of a tick and
+  # re-checks it before writing, so a UI edit that lands mid-tick is not clobbered by
+  # state computed against the old scope.
+  def github_watch_scope
+    [ github_repos.sort, github_target, github_labels.sort ]
+  end
+
   # Persist poller state without disturbing the user-facing configuration keys.
-  def write_github_state!(state)
-    update!(configuration: configuration.merge(state), last_polled_at: Time.current)
+  #
+  # last_triggered_at rides along in the SAME write as the state it belongs to. Updating it
+  # per-fire in a separate statement left a window where the session was created, that write
+  # raised, and the item was therefore never recorded as seen — so the next tick created a
+  # second session for it.
+  def write_github_state!(state, fired: false)
+    attrs = { configuration: configuration.merge(state), last_polled_at: Time.current }
+    attrs[:last_triggered_at] = Time.current if fired
+    update!(attrs)
   end
 
   # Human-readable schedule description

@@ -115,7 +115,10 @@ class TriggersController < ApplicationController
 
   # Manually invoke a trigger, optionally with variable overrides
   def invoke
-    variables = params.permit(:link, :text, :author, :channel, :event)
+    # Must stay in step with Trigger::USER_INPUT_VARIABLES — the manual-run form renders an
+    # input per variable the template uses, and anything not permitted here is silently
+    # dropped and interpolated as an empty string.
+    variables = params.permit(*Trigger::USER_INPUT_VARIABLES.map(&:to_sym))
     prompt = @trigger.interpolate_prompt(**variables.to_h.symbolize_keys)
 
     session = @trigger.create_session!(prompt: prompt)

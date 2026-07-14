@@ -248,11 +248,13 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     end
   end
 
-  test "new-issue query scopes to issues in the watched repos since the cursor" do
+  test "new-issue query scopes to issues in the watched repos around the cursor" do
     stub_search do |queries|
       GithubTriggerPollerJob.perform_now
       query = queries.find { |q| q.start_with?("is:issue ") }
-      assert_equal "is:issue (repo:tadasant/zimmer) created:>=2026-07-01T00:00:00Z", query
+      # Cursor is 2026-07-01T00:00:00Z; the window opens INDEX_LAG_GRACE (30m) earlier so a
+      # late-indexed issue behind the cursor is still caught. See the index-lag test below.
+      assert_equal "is:issue (repo:tadasant/zimmer) created:>=2026-06-30T23:30:00Z", query
     end
   end
 
@@ -280,5 +282,121 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_includes prompt, "**Repository:** tadasant/zimmer"
     assert_includes prompt, "**Number:** #88"
     assert_includes prompt, "https://github.com/tadasant/zimmer/issues/88"
+  end
+
+  # ── Regressions caught in review ──────────────────────────────────────────
+
+  test "a label typed in the wrong case still matches — GitHub label search is case-insensitive" do
+    # GitHub's `label:` qualifier ignores case, so the search returns the item; an exact-string
+    # filter here would discard it and the condition would silently never fire.
+    @label_condition.update!(configuration: @label_condition.configuration.merge(
+      "labels" => [ "Ready To Merge" ]
+    ))
+    @label_condition.update!(configuration: @label_condition.configuration.merge("seen_items" => []))
+
+    stub_search(label: [ item(number: 12, labels: [ "ready to merge" ]) ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    # Keyed by the CONFIGURED casing, so the key is stable across ticks.
+    assert_equal [ "tadasant/zimmer#12:Ready To Merge" ], @label_condition.reload.github_seen_items
+
+    stub_search(label: [ item(number: 12, labels: [ "ready to merge" ]) ]) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
+  test "a dropped follow-up does not count as a fire, so the item is retried" do
+    # A reuse_session trigger whose target session is busy returns the session truthily but
+    # drops the prompt. Recording that as seen would consume the event and do no work.
+    labelled = [ item(number: 21, labels: [ "ready to merge" ]) ]
+    session = sessions(:active_session)
+    Trigger.any_instance.stubs(:create_session!).returns(session)
+    Trigger.any_instance.stubs(:last_follow_up_dropped?).returns(true)
+
+    stub_search(label: labelled) do
+      GithubTriggerPollerJob.perform_now
+    end
+    assert_equal [], @label_condition.reload.github_seen_items,
+                 "a dropped follow-up must leave the item unseen so the next tick retries it"
+
+    Trigger.any_instance.unstub(:last_follow_up_dropped?)
+    Trigger.any_instance.unstub(:create_session!)
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [ "tadasant/zimmer#21:ready to merge" ], @label_condition.reload.github_seen_items
+  end
+
+  test "an issue indexed late is still fired, not jumped over by the cursor" do
+    # GitHub's search index is eventually consistent AND unordered: of two issues opened
+    # seconds apart, the newer can be indexed first. A bare `created:>=cursor` would fire the
+    # newer, advance past it, and never see the older one.
+    older = item(number: 60, pr: false, created_at: "2026-07-12T09:00:10Z")
+    newer = item(number: 61, pr: false, created_at: "2026-07-12T09:00:40Z")
+
+    # Tick 1: only the NEWER issue is indexed yet.
+    stub_search(issue: [ newer ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal "2026-07-12T09:00:40Z", @issue_condition.reload.github_last_issue_at
+
+    # Tick 2: the older issue finally appears. It is BEHIND the cursor, but inside the
+    # lag-grace window, so it still fires — exactly once.
+    stub_search(issue: [ older, newer ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    prompt = Session.order(:created_at).last.prompt
+    assert_includes prompt, "tadasant/zimmer/issues/60"
+
+    # Tick 3: both are known. Nothing re-fires.
+    stub_search(issue: [ older, newer ]) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
+  test "the issue query reaches back behind the cursor to absorb index lag" do
+    stub_search do |queries|
+      GithubTriggerPollerJob.perform_now
+      query = queries.find { |q| q.start_with?("is:issue ") }
+      # Cursor is 2026-07-01T00:00:00Z; the window opens INDEX_LAG_GRACE earlier.
+      assert_includes query, "created:>=2026-06-30T23:30:00Z"
+    end
+  end
+
+  test "state computed against a stale scope is discarded when the condition is re-scoped mid-tick" do
+    # Simulate a UI edit landing while the tick is in flight: the search returns items for the
+    # OLD scope, but by the time we write, the user has re-scoped (and thus re-baselined).
+    condition_id = @label_condition.id
+    GithubSearchService.stub(:search_issues, lambda { |query, **_|
+      next [] unless query.start_with?("is:open ")
+      TriggerCondition.find(condition_id).update!(
+        configuration: { "repos" => [ "tadasant/zimmer", "tadasant/other" ],
+                         "target" => "pull_request", "labels" => [ "ready to merge" ] }
+      )
+      [ item(number: 30, labels: [ "ready to merge" ]) ]
+    }) do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    @label_condition.reload
+    assert_equal [ "tadasant/zimmer", "tadasant/other" ].sort, @label_condition.github_repos.sort,
+                 "the user's edit must survive the poller's write"
+    assert_not @label_condition.github_baselined?,
+               "the re-baseline requested by the edit must not be undone by the in-flight tick"
+  end
+
+  test "a template that names only Slack-shared variables still gets a GitHub context block" do
+    # {{text}} is also a Slack variable, so it does not identify which PR this is.
+    @label_condition.trigger.update!(prompt_template: "Look at this: {{text}}")
+
+    stub_search(label: [ item(number: 99, labels: [ "ready to merge" ]) ]) do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    prompt = Session.order(:created_at).last.prompt
+    assert_includes prompt, "**Number:** #99"
+    assert_includes prompt, "https://github.com/tadasant/zimmer/pull/99"
   end
 end

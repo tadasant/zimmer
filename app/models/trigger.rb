@@ -90,20 +90,23 @@ class Trigger < ApplicationRecord
   # ({{time}} and {{date}} are auto-populated)
   USER_INPUT_VARIABLES = %w[link text author channel event repo number title labels].freeze
 
-  # The subset a GitHub condition can fill in. GithubTriggerPollerJob checks whether a
-  # template mentions any of them: a template that names none of them gets the PR/issue
-  # appended as a context block instead, so a GitHub-triggered session always receives
-  # the repo, number and URL it needs to act without re-fetching.
-  GITHUB_TEMPLATE_VARIABLES = %w[link text author event repo number title labels].freeze
+  # The variables that IDENTIFY which GitHub item a session was fired for.
+  #
+  # Deliberately not the full set a GitHub condition can fill in. {{text}}, {{author}} and
+  # {{event}} are also the Slack variables, so a trigger with both a Slack and a GitHub
+  # condition and a template like "New message: {{text}}" would look like it names GitHub
+  # context while telling the session nothing about which PR it is looking at. Only these
+  # three actually pin down the item, so only these three suppress the context block.
+  GITHUB_IDENTITY_VARIABLES = %w[link repo number].freeze
 
   # Returns the user-input variable names used in this trigger's prompt template
   def prompt_variables
     USER_INPUT_VARIABLES.select { |var| prompt_template.include?("{{#{var}}}") }
   end
 
-  # Whether this trigger's template pulls in any GitHub item detail itself.
+  # Whether this trigger's template identifies the GitHub item on its own.
   def references_github_context?
-    GITHUB_TEMPLATE_VARIABLES.any? { |var| prompt_template.include?("{{#{var}}}") }
+    GITHUB_IDENTITY_VARIABLES.any? { |var| prompt_template.include?("{{#{var}}}") }
   end
 
   # Interpolate variables into the prompt template

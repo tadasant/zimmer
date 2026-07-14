@@ -124,6 +124,9 @@ watched repos.
 `target` is `pull_request` (the default) or `issue`. Any *one* of `labels` firing is enough — they
 are ORed, not ANDed. Up to 20 repos.
 
+Labels are matched **case-insensitively**, because GitHub's `label:` search qualifier is. Typing
+`Ready To Merge` for a repo label named `ready to merge` works.
+
 The motivating flow: the `pr` skill applies `ready to merge` as its terminal act, and a
 `github_label` trigger on that label is what picks it up and fires the merge gate.
 
@@ -166,12 +169,22 @@ The semantics that follow — all of them covered by tests:
 | A tick is skipped (deploy, rate limit) | Harmless. The seen-set is state, not a cursor, so the next tick still sees the label. |
 | PR is closed or merged while labelled | Drops out of the `is:open` search, and so out of the seen-set. If it is reopened still labelled, it fires again. |
 | You add a repo or a label to the condition | The condition **re-baselines**. Items already labelled in the newly-watched scope are absorbed, not stampeded into sessions. |
+| A `reuse_session` trigger *drops* the follow-up (target session busy) | Not counted as a fire. The item stays unseen and is retried next tick, rather than the event being silently consumed. |
+| Session creation fails for an item | Same — the item is not recorded, so the next tick retries it. |
 
 `github_issue` conditions are genuinely event-shaped — an issue's creation time never changes — so
-those use an ordinary `created_at` cursor. The wrinkle is that GitHub's `created:` qualifier has
-only *second* granularity, so a strict `>` would silently drop an issue that shared its second with
-the previous tick's newest. The cursor is therefore inclusive (`>=`) and paired with a small set of
-keys already fired at that exact second.
+those use an ordinary `created_at` cursor. Two wrinkles, both of which would otherwise lose issues
+silently:
+
+- GitHub's `created:` qualifier has only *second* granularity, so a strict `>` would drop an issue
+  that shared its second with the previous tick's newest. The cursor is inclusive (`>=`).
+- GitHub's search index is eventually consistent **and unordered** — of two issues opened seconds
+  apart, the newer can be indexed first. A cursor that advanced to the newer one would then never
+  see the older. So each tick re-queries a **30-minute window behind** the cursor
+  (`GithubTriggerPollerJob::INDEX_LAG_GRACE`), and a set of already-fired keys covering that window
+  is what stops the re-query from firing them twice. Observed indexing lag in practice is seconds;
+  an issue indexed more than 30 minutes late is missed.
+
 
 In both cases state advances only for items that actually produced a session. A failure to create
 one leaves the item to be retried on the next tick rather than swallowing it.

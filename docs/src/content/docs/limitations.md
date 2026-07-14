@@ -850,7 +850,33 @@ Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and
 a steady API burn.
 
+The `github_label` and `github_issue` trigger conditions are polled too, once a minute, against
+GitHub's search API. Webhooks would remove the latency floor, but they need a public ingress that
+Zimmer's tailnet posture does not currently offer.
+
 Tracked in [#79](https://github.com/tadasant/zimmer/issues/79).
+
+### A `github_issue` trigger can fire itself
+
+`github_issue` conditions match *any* new issue in a watched repo, with no author filter and no
+exclusion of issues Zimmer itself opened. An agent fired by such a trigger that files a follow-up
+issue in the same repo will fire the trigger again — and so on.
+
+`ao_event` conditions have explicit loop protection (a session whose `metadata["trigger_id"]` is the
+trigger never re-fires it); the GitHub conditions have no equivalent, because the loop runs through
+GitHub rather than through a session. Until they do, don't point a `github_issue` trigger at a repo
+whose triaging agent files issues.
+
+### A `github_issue` trigger misses an issue indexed more than 30 minutes late
+
+GitHub's search index is eventually consistent and unordered. `GithubTriggerPollerJob` re-queries a
+30-minute window behind its cursor (`INDEX_LAG_GRACE`) so that an issue indexed *after* a newer one
+is still picked up. Observed lag is on the order of seconds, so the window is generous — but an issue
+that takes longer than that to appear in the search index falls behind the window and is never fired.
+There is no reconciliation pass to catch it.
+
+`github_label` conditions are immune to this: they compare against current state, not a cursor, so a
+late-indexed item simply fires on whichever tick it first appears.
 
 ---
 

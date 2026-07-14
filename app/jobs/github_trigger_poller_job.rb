@@ -65,6 +65,11 @@ class GithubTriggerPollerJob < ApplicationJob
   # blow out the session's context before the agent has read its instructions.
   MAX_BODY_LENGTH = 10_000
 
+  # How far behind its cursor a github_issue condition re-queries, to absorb GitHub's
+  # eventually-consistent (and unordered) search index. An issue indexed later than this
+  # after being opened is missed; observed lag in practice is on the order of seconds.
+  INDEX_LAG_GRACE = 30.minutes
+
   def perform
     AlertBatcher.with_batch do
       TriggerCondition.github
@@ -98,22 +103,33 @@ class GithubTriggerPollerJob < ApplicationJob
   # ── github_label ────────────────────────────────────────────────────────────
 
   def process_label_condition(condition)
-    items = GithubSearchService.search_issues(label_query(condition))
+    scope = condition.github_watch_scope
 
-    # One key per (item, label). Watching two labels and having both added is two
-    # distinct "the label was added" events; keying by item alone would swallow the
-    # second one forever, since the item would already be in the seen-set.
-    watched = condition.github_labels.to_set
+    # Sorted, so pagination is stable. GitHub's default best-match order is not stable
+    # across page fetches, and for a condition matching >100 items an item that shuffled
+    # between pages would drop out of current_keys, leave the seen-set, and re-fire.
+    items = GithubSearchService.search_issues(label_query(condition), sort: "created", order: "asc")
+
+    # One key per (item, label). Watching two labels and having both added is two distinct
+    # "the label was added" events; keying by item alone would swallow the second forever.
+    #
+    # Labels are matched case-INSENSITIVELY, and the key uses the configured casing rather
+    # than GitHub's. GitHub's `label:` search qualifier already ignores case, so a user who
+    # types "Ready To Merge" for a repo label named "ready to merge" gets the item back from
+    # the search — and an exact-string filter here would then discard it, leaving a condition
+    # that silently never fires with nothing in the logs to say why.
+    watched = condition.github_labels.index_by { |label| label.downcase }
     candidates = {}
     items.each do |item|
       labels_for(item).each do |label|
-        candidates["#{item_key(item)}:#{label}"] = [ item, label ] if watched.include?(label)
+        configured = watched[label.downcase]
+        candidates["#{item_key(item)}:#{configured}"] = [ item, configured ] if configured
       end
     end
     current_keys = candidates.keys.to_set
 
     unless condition.github_baselined?
-      condition.write_github_state!("seen_items" => current_keys.to_a.sort)
+      write_state(condition, scope, { "seen_items" => current_keys.to_a.sort })
       Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} " \
                         "with #{current_keys.size} already-labelled item(s); firing none"
       return
@@ -133,7 +149,7 @@ class GithubTriggerPollerJob < ApplicationJob
 
     # Keys that failed to produce a session are in neither set, so the next tick sees
     # them as new again and retries.
-    condition.write_github_state!("seen_items" => (retained + fired).to_a.sort)
+    write_state(condition, scope, { "seen_items" => (retained + fired).to_a.sort }, fired: fired.any?)
   end
 
   def label_query(condition)
@@ -148,25 +164,35 @@ class GithubTriggerPollerJob < ApplicationJob
   # ── github_issue ────────────────────────────────────────────────────────────
 
   def process_new_issue_condition(condition)
+    scope = condition.github_watch_scope
     cursor = condition.github_last_issue_at
 
     # First tick: start the clock. Issues that predate the condition are history, not
     # events this trigger was created to react to.
     if cursor.blank?
       now = Time.current.utc.iso8601
-      condition.write_github_state!("last_issue_at" => now, "seen_issue_keys" => [])
+      write_state(condition, scope, { "last_issue_at" => now, "seen_issue_keys" => [] })
       Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} at #{now}; firing none"
       return
     end
 
+    # Query from BEFORE the cursor, not from it. GitHub's search index is eventually
+    # consistent and not ordered: of two issues opened seconds apart, the newer can be
+    # indexed first. A bare `created:>=cursor` would fire the newer one, advance the cursor
+    # past it, and then never see the older one when it finally appears — a silent, permanent
+    # miss. Re-querying a INDEX_LAG_GRACE-wide window behind the cursor means a late-indexed
+    # issue is still inside the window when it shows up; seen_issue_keys (which covers the
+    # whole window, not just the cursor's second) is what keeps it from firing twice.
+    window_start = (Time.iso8601(cursor) - INDEX_LAG_GRACE).utc.iso8601
+
     query = [
       "is:issue",
       GithubSearchService.repo_group(condition.github_repos),
-      "created:>=#{cursor}"
+      "created:>=#{window_start}"
     ].join(" ")
 
-    # Ascending, so the cursor can advance through the batch and stop cleanly at the
-    # first item that fails to produce a session.
+    # Ascending, so the cursor advances through the batch and stops cleanly at the first
+    # item that fails to produce a session.
     items = GithubSearchService.search_issues(query, sort: "created", order: "asc")
     return if items.empty?
 
@@ -174,34 +200,33 @@ class GithubTriggerPollerJob < ApplicationJob
     fresh = items.reject { |item| already_fired.include?(item_key(item)) }
     return if fresh.empty?
 
-    newest = nil
+    newest_at = cursor
     fired_keys = already_fired.dup
 
     fresh.each do |item|
       break unless fire(condition, item, event: "issue opened")
 
-      newest = item
       fired_keys << item_key(item)
+      newest_at = item["created_at"] if item["created_at"].to_s > newest_at.to_s
     end
 
-    # Nothing fired: leave the cursor where it is so the whole batch is retried. This is
-    # also what absorbs GitHub's search-index lag — an issue not yet indexed simply
-    # arrives on a later tick, because the cursor never moved past it.
-    return if newest.nil?
+    # Nothing fired: leave the cursor alone so the whole batch is retried next tick.
+    return if fired_keys == already_fired
 
-    new_cursor = newest["created_at"]
-
-    # Everything already fired that shares the new cursor's second must be remembered:
-    # the inclusive `created:>=` re-queries that second on the next tick.
-    seen_at_cursor = items
-      .select { |item| item["created_at"] == new_cursor && fired_keys.include?(item_key(item)) }
+    # Remember every fired issue still inside the lag window we will re-query next tick.
+    # Anything older than the window can never come back, so it is dropped — which is what
+    # bounds this set to "issues opened in the last INDEX_LAG_GRACE" rather than forever.
+    horizon = (Time.iso8601(newest_at) - INDEX_LAG_GRACE).utc.iso8601
+    retained_keys = items
+      .select { |item| fired_keys.include?(item_key(item)) && item["created_at"].to_s >= horizon }
       .map { |item| item_key(item) }
       .uniq
       .sort
 
-    condition.write_github_state!(
-      "last_issue_at" => new_cursor,
-      "seen_issue_keys" => seen_at_cursor
+    write_state(
+      condition, scope,
+      { "last_issue_at" => newest_at, "seen_issue_keys" => retained_keys },
+      fired: true
     )
   end
 
@@ -228,15 +253,45 @@ class GithubTriggerPollerJob < ApplicationJob
     prompt = "#{prompt}\n\n#{context_block(item, event: event)}" unless trigger.references_github_context?
 
     session = trigger.create_session!(prompt: prompt)
-    condition.update!(last_triggered_at: Time.current)
 
-    Rails.logger.info "[GithubTriggerPollerJob] Created session #{session&.id} for trigger " \
+    # create_session! returns the session truthily even when a reuse_session trigger DROPPED
+    # the follow-up prompt (target session busy, enqueue_messages off). Treating that as a
+    # fire would record the item as seen and consume the event without any work ever having
+    # been done. AoEventTriggerJob and ScheduleTriggerJob guard the same way.
+    if session.nil? || trigger.last_follow_up_dropped?
+      Rails.logger.warn "[GithubTriggerPollerJob] Trigger #{trigger.id} dropped the follow-up for " \
+                        "#{item_key(item)} (#{event}); leaving it unseen so the next tick retries"
+      return false
+    end
+
+    Rails.logger.info "[GithubTriggerPollerJob] Created session #{session.id} for trigger " \
                       "#{trigger.id} from #{item_key(item)} (#{event})"
     true
   rescue => e
     Rails.logger.error "[GithubTriggerPollerJob] Failed to create session for " \
                        "#{item_key(item)} (#{event}): #{e.message}"
     false
+  end
+
+  # Persist poller state, unless the user changed what the condition watches while this tick
+  # was in flight.
+  #
+  # A tick holds its `configuration` hash across a GitHub search and N session creations —
+  # seconds. If a UI edit lands in that window it re-baselines the condition (dropping the
+  # cursor keys), and a blind merge of our now-stale hash would both undo that re-baseline and
+  # revert the user's repo/label edit. Re-reading the row and comparing the watched scope
+  # closes it: when the scope moved, we drop this tick's state on the floor and let the next
+  # tick baseline against what the user actually asked for.
+  def write_state(condition, scope, state, fired: false)
+    condition.reload
+
+    if condition.github_watch_scope != scope
+      Rails.logger.info "[GithubTriggerPollerJob] Condition #{condition.id} was re-scoped mid-poll; " \
+                        "discarding this tick's state so the next one re-baselines"
+      return
+    end
+
+    condition.write_github_state!(state, fired: fired)
   end
 
   def context_block(item, event:)
