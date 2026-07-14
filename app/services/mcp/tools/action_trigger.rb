@@ -12,7 +12,7 @@ module Mcp
     # it in place instead of appending a duplicate.
     class ActionTrigger < Tool
       ACTIONS = %w[create update delete toggle].freeze
-      TRIGGER_TYPES = %w[slack schedule].freeze
+      TRIGGER_TYPES = %w[slack schedule github_label github_issue].freeze
       STATUSES = %w[enabled disabled].freeze
 
       tool_name "action_trigger"
@@ -29,10 +29,27 @@ module Mcp
         **Trigger types:**
         - **slack**: Triggered by Slack events (requires configuration with channel_id)
         - **schedule**: Triggered on a recurring or one-time schedule
+        - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
+        - **github_issue**: Triggered when a new issue is opened in a watched repo
 
         **Schedule configuration:**
         - **Recurring**: `{"interval": 2, "unit": "hours", "timezone": "UTC"}` — fires every N units
         - **One-time**: `{"scheduled_at": "2026-04-15T14:30:00", "timezone": "America/New_York"}` — fires once at the specified datetime (ISO 8601), then auto-disables
+
+        **GitHub configuration:**
+        - **github_label**: `{"repos": ["owner/a", "owner/b"], "target": "pull_request", "labels": ["ready to merge"]}`
+          — `target` is `pull_request` (default) or `issue`; any ONE of `labels` firing is enough.
+        - **github_issue**: `{"repos": ["owner/a"]}`
+
+        GitHub triggers fire on the label being *added*, not on it merely being present: an item
+        that already carries the label when the trigger is created is absorbed into a baseline on
+        the first poll and does NOT fire retroactively. Removing and re-adding the label fires again.
+        Editing `repos`/`labels`/`target` re-baselines the condition, so widening the watch does not
+        stampede sessions for everything already labelled.
+
+        Triggered sessions receive the repo, number, URL, title, author, body and labels — via the
+        `{{repo}}`, `{{number}}`, `{{link}}`, `{{title}}`, `{{author}}`, `{{text}}`, `{{labels}}` and
+        `{{event}}` template variables, or appended as a context block if the template names none.
 
         Use search_triggers first to see available triggers and Slack channels.
       DESC

@@ -50,6 +50,7 @@ class Trigger < ApplicationRecord
   scope :with_slack_conditions, -> { joins(:trigger_conditions).where(trigger_conditions: { condition_type: "slack" }).distinct }
   scope :with_schedule_conditions, -> { joins(:trigger_conditions).where(trigger_conditions: { condition_type: "schedule" }).distinct }
   scope :with_ao_event_conditions, -> { joins(:trigger_conditions).where(trigger_conditions: { condition_type: "ao_event" }).distinct }
+  scope :with_github_conditions, -> { joins(:trigger_conditions).where(trigger_conditions: { condition_type: TriggerCondition::GITHUB_CONDITION_TYPES }).distinct }
 
   def enabled?
     status == "enabled"
@@ -87,16 +88,32 @@ class Trigger < ApplicationRecord
 
   # Variables that require user input during manual invocation
   # ({{time}} and {{date}} are auto-populated)
-  USER_INPUT_VARIABLES = %w[link text author channel event].freeze
+  USER_INPUT_VARIABLES = %w[link text author channel event repo number title labels].freeze
+
+  # The variables that IDENTIFY which GitHub item a session was fired for.
+  #
+  # Deliberately not the full set a GitHub condition can fill in. {{text}}, {{author}} and
+  # {{event}} are also the Slack variables, so a trigger with both a Slack and a GitHub
+  # condition and a template like "New message: {{text}}" would look like it names GitHub
+  # context while telling the session nothing about which PR it is looking at. Only these
+  # three actually pin down the item, so only these three suppress the context block.
+  GITHUB_IDENTITY_VARIABLES = %w[link repo number].freeze
 
   # Returns the user-input variable names used in this trigger's prompt template
   def prompt_variables
     USER_INPUT_VARIABLES.select { |var| prompt_template.include?("{{#{var}}}") }
   end
 
+  # Whether this trigger's template identifies the GitHub item on its own.
+  def references_github_context?
+    GITHUB_IDENTITY_VARIABLES.any? { |var| prompt_template.include?("{{#{var}}}") }
+  end
+
   # Interpolate variables into the prompt template
-  # Supported variables: {{link}}, {{text}}, {{author}}, {{channel}}, {{time}}, {{date}}, {{event}}
-  def interpolate_prompt(link: nil, text: nil, author: nil, channel: nil, event: nil)
+  # Supported variables: {{link}}, {{text}}, {{author}}, {{channel}}, {{time}}, {{date}},
+  # {{event}}, and — for GitHub conditions — {{repo}}, {{number}}, {{title}}, {{labels}}
+  def interpolate_prompt(link: nil, text: nil, author: nil, channel: nil, event: nil,
+                         repo: nil, number: nil, title: nil, labels: nil)
     result = prompt_template.dup
     result.gsub!("{{link}}", link.to_s) if result.include?("{{link}}")
     result.gsub!("{{text}}", text.to_s) if result.include?("{{text}}")
@@ -105,6 +122,10 @@ class Trigger < ApplicationRecord
     result.gsub!("{{time}}", Time.current.strftime("%H:%M")) if result.include?("{{time}}")
     result.gsub!("{{date}}", Time.current.strftime("%Y-%m-%d")) if result.include?("{{date}}")
     result.gsub!("{{event}}", event.to_s) if result.include?("{{event}}")
+    result.gsub!("{{repo}}", repo.to_s) if result.include?("{{repo}}")
+    result.gsub!("{{number}}", number.to_s) if result.include?("{{number}}")
+    result.gsub!("{{title}}", title.to_s) if result.include?("{{title}}")
+    result.gsub!("{{labels}}", Array(labels).join(", ")) if result.include?("{{labels}}")
     result
   end
 

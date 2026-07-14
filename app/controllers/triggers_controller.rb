@@ -115,7 +115,10 @@ class TriggersController < ApplicationController
 
   # Manually invoke a trigger, optionally with variable overrides
   def invoke
-    variables = params.permit(:link, :text, :author, :channel, :event)
+    # Must stay in step with Trigger::USER_INPUT_VARIABLES — the manual-run form renders an
+    # input per variable the template uses, and anything not permitted here is silently
+    # dropped and interpolated as an empty string.
+    variables = params.permit(*Trigger::USER_INPUT_VARIABLES.map(&:to_sym))
     prompt = @trigger.interpolate_prompt(**variables.to_h.symbolize_keys)
 
     session = @trigger.create_session!(prompt: prompt)
@@ -261,7 +264,7 @@ class TriggersController < ApplicationController
       catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, allowed_user_ids: [] ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, allowed_user_ids: [], repos: [], labels: [] ]
       ]
     ).tap do |p|
       # Ensure mcp_servers is an array and strip blanks from form submission

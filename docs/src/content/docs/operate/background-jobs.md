@@ -25,6 +25,7 @@ From `config.good_job.cron`:
 | 30s | `GithubCommentPollerJob` | Poll PR review comments |
 | 1m | `SlackTriggerPollerJob` | Poll Slack channels for trigger conditions |
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
+| 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
 | 2m | `GitHubMergeConflictPollerJob` | Detect merge conflicts on open PRs |
 | 2m | `CliStatusRefreshJob` | Refresh the `gh` / `claude` / `codex` version cache |
 | 5m | `CleanupOrphanedSessionsJob` | Sessions marked `running` whose process is gone |
@@ -54,9 +55,12 @@ Most jobs run on `default`. Two are deliberately isolated:
 
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
-- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob`. `SlackService` retries up to 10 times
-  with a blocking 1-second `sleep` inside the job thread, and the comment admits this would
-  "saturate the queue's whole thread pool."
+- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`.
+  `SlackService` retries up to 10 times with a blocking 1-second `sleep` inside the job thread, and
+  the comment admits this would "saturate the queue's whole thread pool." `GithubTriggerPollerJob`
+  is capped for the same reason: it shells out to `gh` once per condition, and a slow tick must not
+  stack against itself. Its polling is idempotent — state only advances for items that produced a
+  session — so a skipped tick is simply picked up by the next run.
 
 :::caution[A Slack rate-limit episode stalls all Slack polling]
 `total_limit: 1` caps the blast radius, but it also means no Slack polling at all while you're

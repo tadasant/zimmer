@@ -309,8 +309,13 @@
           <li><code class="bg-gray-100 px-1 rounded">{{channel}}</code> - Channel name (Slack conditions)</li>
           <li><code class="bg-gray-100 px-1 rounded">{{time}}</code> - Current time (HH:MM)</li>
           <li><code class="bg-gray-100 px-1 rounded">{{date}}</code> - Current date (YYYY-MM-DD)</li>
-          <li><code class="bg-gray-100 px-1 rounded">{{event}}</code> - Event description (Zimmer Event conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{event}}</code> - Event description (Zimmer Event and GitHub conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{repo}}</code> - Repository, <code class="bg-gray-100 px-1 rounded">owner/name</code> (GitHub conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{number}}</code> - PR or issue number (GitHub conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{title}}</code> - PR or issue title (GitHub conditions)</li>
+          <li><code class="bg-gray-100 px-1 rounded">{{labels}}</code> - Current labels, comma-separated (GitHub conditions)</li>
         </ul>
+        <p class="mt-2 text-xs text-gray-500">For GitHub conditions, <code class="bg-gray-100 px-1 rounded">{{link}}</code> is the PR/issue URL, <code class="bg-gray-100 px-1 rounded">{{text}}</code> its body, and <code class="bg-gray-100 px-1 rounded">{{author}}</code> its author. A template that uses none of the GitHub variables gets the PR/issue appended as a context block, so the session always knows which item it was fired for.</p>
       </div>
     </div>
   </div>
