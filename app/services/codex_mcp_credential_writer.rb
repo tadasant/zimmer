@@ -121,7 +121,50 @@ class CodexMcpCredentialWriter
     "#{server_name}|#{hash_val}"
   end
 
+  # Reads the token entries Codex currently has in ~/.codex/.credentials.json,
+  # keyed by the same "<server_name>|<hash>" key #write! stores them under.
+  #
+  # Zimmer writes Codex's store from the DB on every spawn and Codex does not
+  # refresh MCP tokens itself (see the class header — openai/codex#17265), so in
+  # practice this never surfaces a token newer than the DB. It is implemented for
+  # contract symmetry so McpOauthRuntimeReconciler can run uniformly across
+  # runtimes; the Keychain is not read here because the file is authoritative on
+  # Zimmer's Linux workers.
+  #
+  # @return [Hash{String => RuntimeMcpTokenSnapshot}] empty when nothing is stored
+  def read_runtime_credentials
+    data = read_credentials_from_file
+    return {} unless data.is_a?(Hash)
+
+    data.each_with_object({}) do |(key, entry), snapshots|
+      next unless entry.is_a?(Hash)
+
+      snapshots[key] = RuntimeMcpTokenSnapshot.new(
+        access_token: entry["access_token"],
+        refresh_token: entry["refresh_token"],
+        expires_at: millis_to_time(entry["expires_at"])
+      )
+    end
+  end
+
   private
+
+  # Reads and parses ~/.codex/.credentials.json, or {} if absent/corrupt.
+  def read_credentials_from_file
+    return {} unless File.exist?(CODEX_CREDENTIALS_PATH)
+
+    JSON.parse(File.read(CODEX_CREDENTIALS_PATH))
+  rescue JSON::ParserError => e
+    Rails.logger.warn "[CodexMcpCredentialWriter] Failed to parse existing credentials: #{e.message}"
+    {}
+  end
+
+  # Converts Codex's millisecond-epoch expires_at to a Time, or nil.
+  def millis_to_time(millis)
+    return nil if millis.nil?
+
+    Time.at(millis.to_i / 1000.0).utc
+  end
 
   # Builds the flat ~/.codex/.credentials.json entry (snake_case) for a resolved
   # credential. expires_at is milliseconds since epoch. scopes is an array.
@@ -186,16 +229,7 @@ class CodexMcpCredentialWriter
     codex_dir = File.dirname(CODEX_CREDENTIALS_PATH)
     FileUtils.mkdir_p(codex_dir)
 
-    existing_data = if File.exist?(CODEX_CREDENTIALS_PATH)
-      begin
-        JSON.parse(File.read(CODEX_CREDENTIALS_PATH))
-      rescue JSON::ParserError => e
-        Rails.logger.warn "[CodexMcpCredentialWriter] Failed to parse existing credentials: #{e.message}"
-        {}
-      end
-    else
-      {}
-    end
+    existing_data = read_credentials_from_file
 
     # The Codex file is a flat map of "<name>|<hash>" => entry (no envelope key).
     existing_data = {} unless existing_data.is_a?(Hash)

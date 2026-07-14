@@ -97,10 +97,16 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     retry_ids = []
 
     credentials_needing_refresh.find_each do |credential|
+      # Adopt any token the agent runtime already refreshed (and rotated) on disk
+      # before we hit the network. Without this the cron can present a DB refresh
+      # token a session rotated away and get invalid_grant on a live credential.
+      runtime_reconciler.reconcile!(credential)
+
       # Use database-level locking to prevent concurrent refresh attempts
       # from multiple workers racing on the same credential
       credential.with_lock do
-        # Re-check inside lock — another worker may have already refreshed
+        # Re-check inside lock — another worker (or the reconcile above) may have
+        # already advanced this token past the refresh window
         next unless credential.expiring_soon?(REFRESH_WINDOW)
         next unless credential.can_refresh?
 
@@ -135,6 +141,10 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     still_failing_ids = []
 
     McpOauthCredential.where(id: credential_ids).find_each do |credential|
+      # A session may have refreshed this token on disk between the failed attempt
+      # and this retry — adopt it so we don't retry against a rotated-away token.
+      runtime_reconciler.reconcile!(credential)
+
       credential.with_lock do
         # Re-check inside lock — the token may have been refreshed (or become
         # unrefreshable) since this retry was scheduled
@@ -169,6 +179,14 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     wait = RETRY_BACKOFF * (2**(attempt - 1))
     Rails.logger.info "[RefreshMcpOauthTokensJob] #{credential_ids.size} credential(s) failed transiently, scheduling retry #{attempt}/#{MAX_RETRIES} in #{wait.to_i}s"
     self.class.set(wait: wait).perform_later(retry_credential_ids: credential_ids, attempt: attempt)
+  end
+
+  # Reconciles DB credentials against the runtime's on-disk store before refreshing.
+  # Only Claude Code refreshes MCP tokens mid-session (Codex is written-not-trusted,
+  # see CodexMcpCredentialWriter), and its store is keyed by the same credential_key
+  # Zimmer persists, so the reconciler matches each credential by its own key.
+  def runtime_reconciler
+    @runtime_reconciler ||= McpOauthRuntimeReconciler.new(ClaudeMcpCredentialWriter.new)
   end
 
   def credentials_needing_refresh

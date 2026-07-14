@@ -28,6 +28,15 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
       writer = klass.new
       assert_respond_to writer, :write!
       assert_respond_to writer, :credential_key_for
+      assert_respond_to writer, :read_runtime_credentials
+    end
+
+    test "#{klass}#read_runtime_credentials returns a Hash of RuntimeMcpTokenSnapshot" do
+      # With no credential store present the reader must return an empty Hash, not
+      # raise — a missing store means "nothing to adopt".
+      result = klass.new.read_runtime_credentials
+      assert_kind_of Hash, result
+      result.each_value { |v| assert_kind_of RuntimeMcpTokenSnapshot, v }
     end
 
     test "#{klass}#write! accepts the required keyword arguments" do
