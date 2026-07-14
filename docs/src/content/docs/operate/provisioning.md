@@ -83,6 +83,7 @@ resize command.
 | `STAGING_SENTRY_DSN_BACKEND` | staging's GlitchTip DSN. Must be a **staging-only project**, never production's — a DSN selects a project, and GlitchTip's alert rules are per-project with no environment filter |
 | `STAGING_OPERATOR_SSH_KEY` | base64 of the operator SSH **private** key — the identity agent sessions SSH with ([below](#the-ssh-identity-an-agent-session-holds)). Optional: without it the app boots fine and only the `ssh-*` MCP servers fail |
 | `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | base64 of the `zimmer-secrets-staging` resolver service-account key — the first link of the `${VAR}` chain ([Parameter Store](/operate/secrets-parameter-store/#staging-gets-its-own-project-and-one-more-link-than-production)). Optional: without it the app boots fine and every `${VAR}` resolves from `staging.yml.enc` as before |
+| `STAGING_GH_TOKEN` | a **non-primary** (`tadasant-test`) GitHub PAT that authenticates the `gh` CLI on the box → `GH_TOKEN` env var. Powers `GithubTriggerPollerJob`'s `gh api search/issues` and git's clone credential helper ([below](#staging-gh-auth-the-tadasant-test-account)). Optional: without it the poller skips every tick and private clones fail |
 | `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
 
 ## GitHub Actions variables
@@ -99,6 +100,54 @@ A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own c
 `docs/DEPLOYING_ON_DIGITALOCEAN.md` told you to use `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; that was
 wrong and would fail.
 :::
+
+## Staging `gh` auth (the `tadasant-test` account)
+
+The staging box needs the `gh` CLI authenticated for two things: `GithubTriggerPollerJob` shells out
+to `gh api search/issues` (and gates on `gh auth status` succeeding), and git clones go through the
+`gh auth git-credential` helper that `Dockerfile.base` wires up. With no credential the poller runs on
+schedule but **skips every tick** — `github_label` / `github_issue` triggers silently never fire — and
+private clones fail.
+
+Staging authenticates with a **dedicated, non-primary** GitHub account — **`tadasant-test`**, never
+Tadas's personal `tadasant` — so the box never holds his personal token. The mechanism is a
+`GH_TOKEN` environment variable, **not** an interactive `gh auth login`:
+
+- `gh` reads `GH_TOKEN` straight from the process environment. Verified on the staging image
+  (`gh` 2.96.0): with `GH_TOKEN` set, `gh auth status` reports `using token (GH_TOKEN)`, and
+  `gh auth git-credential get` echoes `username=x-access-token` / `password=$GH_TOKEN` — so the
+  **same** token authenticates both the poller and git clones.
+- **Why not `gh auth login`.** Staging is rebuilt from scratch on every *Deploy staging* run, and an
+  interactive login does not survive container recreation. `GH_TOKEN` is re-injected by Kamal on every
+  deploy, so it is durable across rebuilds. It flows:
+  `STAGING_GH_TOKEN` (Actions secret) → `.kamal/secrets.staging` (`GH_TOKEN=$STAGING_GH_TOKEN`) →
+  `config/deploy.staging.yml` `env.secret` → `GH_TOKEN` in the `web` **and** `worker` containers (the
+  poller runs on the worker). The deploy workflow prints a set/unset preflight line for it.
+
+### Runbook: mint and store the token
+
+The **first step cannot be automated** — minting the PAT requires a browser signed in as
+`tadasant-test`:
+
+1. **Sign in to GitHub as `tadasant-test`** (not `tadasant`) and confirm the account can see the repos
+   staging must search — e.g. it can read `tadasant/zimmer` issues/PRs. For public repos no grant is
+   needed; for private repos add `tadasant-test` as a read collaborator.
+2. **Mint a least-privilege PAT** under that account. Either:
+   - a **fine-grained** token scoped to only the repos staging searches, with **read-only** *Issues*,
+     *Pull requests*, *Contents*, and *Metadata*; or
+   - a **classic** token with just `repo` (or nothing beyond public access if every target repo is
+     public — `gh search` only needs a valid token for API access, not write).
+
+   **Never grant `workflow` scope.** Any agent session on the worker can read the token back with
+   `gh auth token`; a `workflow`-scoped token would let it rewrite `.github/workflows/**`.
+3. **Store it in two places:** the `STAGING_GH_TOKEN` GitHub Actions secret on **`tadasant/zimmer`**
+   (Settings → Secrets and variables → Actions → New repository secret), and 1Password (so it can be
+   rotated/recovered). It is a repo secret, not org-level — `tadasant` is a personal account.
+4. **Deploy staging.** The next *Deploy staging* run injects `GH_TOKEN` into the containers; verify
+   with `gh auth status` on the box (or watch the poller create sessions from a labelled item).
+
+This is staging-only. Production's `gh` auth is a separate device-flow mechanism in the companion repo
+and is untouched by this.
 
 ## Slack CI failure alerts
 
