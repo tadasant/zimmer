@@ -63,12 +63,17 @@ watch. Staging alerts are only distinguishable from production's by the posting 
 `config/initializers/otel_logs_exporter.rb` needs **both** `OTEL_LOGS_EXPORTER_ENDPOINT` and
 `OTEL_LOGS_EXPORTER_BEARER_TOKEN`; `config/initializers/sentry.rb` needs `SENTRY_DSN_BACKEND`. Any of
 them missing and the initializer does nothing at all — no raise, no warning, a perfectly healthy boot,
-and no data. A deployment can sit in that state indefinitely, and nothing anywhere says so.
+and no data. A deployment can sit in that state indefinitely, and nothing anywhere says so. Staging did
+exactly that: every layer of the wiring was in place except the two GitHub Actions secrets, so it shipped
+nothing at all, healthily, for as long as anyone cared to look.
 
 The no-op is a reasonable default on a machine that never sets the variables, so the mitigation is
-visibility rather than a hard failure: `deploy-staging.yml` prints an observability preflight on every
-run, and `bin/rails obs:status` / `bin/rails obs:smoke` answer the question from inside the container.
-Absence of data is still never, by itself, evidence of absence of errors.
+visibility rather than a hard failure. On **staging** that visibility is now enforced: `deploy-staging.yml`
+prints an observability preflight, and then — when both secrets are set — runs `bin/rails obs:smoke` in the
+deployed container and fails the run if the collector rejects the ingest or the exporter is off anyway.
+**Production has no such gate** (it deploys from a separate repo), so there the mitigation is still only
+`bin/rails obs:status` / `bin/rails obs:smoke`, run by hand. Absence of data is never, by itself, evidence
+of absence of errors.
 
 What the no-op is *not* is an environment guard. Zimmer's agent sessions run inside the production
 container, so the production values are present in their environment — and a `RAILS_ENV=test`

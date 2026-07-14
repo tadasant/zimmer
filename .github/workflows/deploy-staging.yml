@@ -317,6 +317,88 @@ jobs:
           echo "::error::Health check did not pass in time"
           exit 1
 
+      # Prove the deployed container is ACTUALLY shipping logs, rather than trusting
+      # that it must be because the secrets were set.
+      #
+      # The preflight above reports what the DEPLOY SHELL knows -- whether the two
+      # secrets are non-empty. That is a strictly weaker claim than "logs reach
+      # VictoriaLogs", and the gap between them is invisible by construction: the
+      # exporter's background thread can only warn to stderr, so a bearer token that
+      # Caddy rejects (401), a wrong endpoint path (404), and a collector that is
+      # simply down all look identical from outside the box -- identical, in fact, to
+      # a perfectly healthy staging that just had no errors to ship. Absence of data
+      # is never evidence of absence of errors.
+      #
+      # `bin/rails obs:smoke` closes that gap from INSIDE the running container: it
+      # performs a synchronous OTLP ingest probe and reports the collector's status
+      # code, then exercises the real Rails.logger -> broadcast appender -> export
+      # thread path. It prints no bearer token and no DSN, so its output is safe in a
+      # public build log.
+      #
+      # Deliberately runs AFTER the cutover, not as a gate before it: the app is
+      # already live and healthy at this point, and broken telemetry is not a reason
+      # to withhold a good deploy. What it must not do is stay quiet -- so a
+      # definitively misconfigured export (an HTTP rejection, or an exporter that is
+      # OFF despite both secrets being set) fails the run, turning "staging silently
+      # ships nothing" into a red X on the deploy that caused it.
+      - name: Verify staging is shipping logs to the obs stack
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+          STAGING_OTEL_LOGS_EXPORTER_ENDPOINT: ${{ secrets.STAGING_OTEL_LOGS_EXPORTER_ENDPOINT }}
+          STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN: ${{ secrets.STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Nothing configured, nothing to verify. A fork or self-hoster with no obs
+          # stack must not have its deploy fail over telemetry it never asked for --
+          # the preflight already warned that the export is off.
+          if [ -z "${STAGING_OTEL_LOGS_EXPORTER_ENDPOINT:-}" ] || [ -z "${STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN:-}" ]; then
+            echo "OTLP logs are not configured for this deploy; skipping the ingest probe."
+            exit 0
+          fi
+
+          web=$(ssh root@"${STAGING_HOST}" \
+            'docker ps --filter "name=zimmer-web" --format "{{.Names}}" | head -1')
+          if [ -z "$web" ]; then
+            echo "::error::no zimmer-web container to probe from"
+            exit 1
+          fi
+
+          echo "--- bin/rails obs:smoke (in $web) ---"
+          out=$(ssh root@"${STAGING_HOST}" "docker exec $web bin/rails obs:smoke" 2>&1)
+          echo "$out"
+          echo "-------------------------------------"
+
+          # An HTTP rejection is unambiguous misconfiguration: the collector answered,
+          # and said no. 401 = the token does not match the ingest gateway's;
+          # 404 = the endpoint path is wrong.
+          if grep -q "rejected (HTTP" <<<"$out"; then
+            echo "::error::staging's OTLP ingest was REJECTED by the collector -- see the status code above."
+            echo "::error::401 -> STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN does not match the obs ingest gateway."
+            echo "::error::404 -> STAGING_OTEL_LOGS_EXPORTER_ENDPOINT path is wrong (want .../otel/v1/logs, no trailing slash)."
+            exit 1
+          fi
+
+          # Both secrets are set, yet the app booted with the exporter disabled: the
+          # values did not survive the trip through .kamal/secrets.staging into the
+          # container. Precisely the silent drift this step exists to catch.
+          if grep -q "exporter disabled" <<<"$out"; then
+            echo "::error::both OTLP secrets are set, but the container's exporter is OFF."
+            echo "::error::The values did not reach the app -- check env.secret in config/deploy.staging.yml"
+            echo "::error::and the mapping in .kamal/secrets.staging."
+            exit 1
+          fi
+
+          # No HTTP answer at all (DNS, timeout, firewall). The obs droplet being down
+          # is not this deploy's fault and must not fail it -- but it is not a pass
+          # either, so say so where it will be seen.
+          if grep -q "rejected (error:" <<<"$out"; then
+            echo "::warning::staging could not REACH the collector (no HTTP response). The obs stack may be down;"
+            echo "::warning::staging's logs are being dropped until it is back."
+            exit 0
+          fi
+
+          echo "✅ staging's OTLP ingest was accepted (deployment.environment=staging)"
+
   # Re-point the `staging.zimmer.tadasant.com` A record at the (possibly new) tailnet
   # IP and push a real cert. Without this, a freshly-provisioned droplet serves only
   # cloud-init's self-signed bootstrap cert and the A record still points at the old
