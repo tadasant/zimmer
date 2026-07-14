@@ -816,15 +816,6 @@ while the state advances anyway.
 
 Tracked in [#73](https://github.com/tadasant/zimmer/issues/73).
 
-### Prompt attachments live on container-local `/tmp`
-
-`ImageStorageService` (`/tmp/agent-orchestrator-images`) and `FileStorageService`
-(`/tmp/agent-orchestrator-files`). In the two-container topology the code's own docs describe, the web
-container writes the file and the worker container reads it, and `/tmp` is not shared. Ephemeral, no
-S3, despite a "pluggable" comment.
-
-Tracked in [#74](https://github.com/tadasant/zimmer/issues/74).
-
 ### The session page auto-refreshes with a `<meta>` tag
 
 `session.rb:573` — a 5-second meta-refresh window, in a Hotwire app.

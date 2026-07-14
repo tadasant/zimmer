@@ -1,7 +1,7 @@
 # ImageStorageService - Abstraction for temporary image storage
 #
 # This service provides a pluggable interface for storing images attached to
-# agent session prompts. Currently uses the local /tmp filesystem, but is
+# agent session prompts. Stores images on the durable `~/.zimmer` volume, but is
 # designed to be easily extended for more persistent storage (S3, etc.).
 #
 # Usage:
@@ -13,7 +13,7 @@
 #     uploaded_file: file,        # ActionDispatch::Http::UploadedFile
 #     filename: "screenshot.png"
 #   )
-#   result[:path]      # => "/tmp/agent-orchestrator-images/123/abc123.png"
+#   result[:path]      # => ".../agent-orchestrator-images/123/abc123.png"
 #   result[:media_type] # => "image/png"
 #
 #   # Retrieve an image as base64 for CLI
@@ -23,7 +23,13 @@
 #   service.cleanup!
 #
 # Storage location:
-#   /tmp/agent-orchestrator-images/<session_id>/<uuid>.<ext>
+#   <storage_root>/<session_id>/<uuid>.<ext>
+#
+# where <storage_root> resolves under the durable `zimmer_data` volume shared by
+# the web and worker containers (see .base_dir). Cross-container visibility is
+# load-bearing: the web container writes the upload and the worker container's
+# agent reads it back to base64-inline it, so the bytes MUST live on a mount both
+# roles see.
 #
 # Supported formats: JPEG, PNG, GIF, WebP
 # Maximum size: 10MB per image
@@ -44,8 +50,8 @@ class ImageStorageService
   # Maximum image size: 10MB
   MAX_IMAGE_SIZE = 10.megabytes
 
-  # Base directory for image storage
-  BASE_DIR = "/tmp/agent-orchestrator-images".freeze
+  # Subdirectory (under the durable ~/.zimmer root) that holds images.
+  STORAGE_SUBDIR = "agent-orchestrator-images"
 
   attr_reader :session_id, :file_system
 
@@ -166,23 +172,46 @@ class ImageStorageService
     copied_images
   end
 
+  # Root of the image storage tree, before per-session subdirectories.
+  #
+  # Resolves under the durable `zimmer_data` volume (~/.zimmer) — a sibling of
+  # ClonesDirectory.base, the SAME mount that is bind-mounted into BOTH the web
+  # and worker containers in production. This cross-container visibility is the
+  # whole point: an upload written by the web role (Puma) has to be readable by
+  # the agent running in the worker role (GoodJob :external), which reads the
+  # file back to base64-inline it. Per-container `/tmp` is an ephemeral overlay
+  # that is NOT shared between the two roles, so files written there never reach
+  # the worker (see limitations #74).
+  #
+  # Override with the AGENT_IMAGES_DIR environment variable. If you point it
+  # OUTSIDE the mounted named volume you MUST add a corresponding durable volume
+  # mount that both roles share, or the worker will not see uploads. Resolved at
+  # call time (never memoized) so tests that stub HOME and ops that set the
+  # override are both honored without a process restart.
+  def self.storage_root
+    configured = ENV["AGENT_IMAGES_DIR"].presence
+    return File.expand_path(configured) if configured
+
+    File.join(File.dirname(ClonesDirectory.base), STORAGE_SUBDIR)
+  end
+
   # Root directory under which all session directories live.
   #
-  # In production and development this is BASE_DIR verbatim. In the test
+  # In production and development this is storage_root verbatim. In the test
   # environment it is namespaced per worker *process* so that parallel test
   # workers cannot delete each other's files.
   #
   # Parallel test workers run in separate processes, each with its own test
   # database. Because `fixtures :all` seeds every worker's database identically,
   # `Session.create!` hands out colliding ids across workers. All workers
-  # otherwise share the single BASE_DIR on /tmp, so one worker's teardown
+  # otherwise share the single storage_root, so one worker's teardown
   # `cleanup!` would wipe the session directory another worker is still reading
   # from — producing intermittent ENOENT errors. Keying the root by Process.pid
   # gives each worker an isolated tree. See issues #3455 and #3741.
   def self.base_dir
-    return BASE_DIR unless Rails.env.test?
+    return storage_root unless Rails.env.test?
 
-    File.join(BASE_DIR, "test-worker-#{Process.pid}")
+    File.join(storage_root, "test-worker-#{Process.pid}")
   end
 
   # Get storage directory for this session

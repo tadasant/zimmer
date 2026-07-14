@@ -111,7 +111,7 @@ class FileStorageServiceTest < ActiveSupport::TestCase
 
   test "validates path is within session directory" do
     refute @service.exists?("/etc/passwd")
-    refute @service.exists?("/tmp/agent-orchestrator-files/other-session/file.txt")
+    refute @service.exists?(File.join(FileStorageService.base_dir, "other-session", "file.txt"))
     refute @service.exists?(nil)
   end
 
@@ -125,7 +125,7 @@ class FileStorageServiceTest < ActiveSupport::TestCase
 
     refute @service.exists?(@service.session_dir + "/../../../etc/passwd")
     refute @service.exists?("#{@service.session_dir}/sub/../../../etc/passwd")
-    refute @service.exists?("/tmp/agent-orchestrator-files/#{@session_id}/../other/file")
+    refute @service.exists?(File.join(FileStorageService.base_dir, @session_id.to_s, "..", "other", "file"))
   end
 
   test "rejects invalid session_id types" do
@@ -202,7 +202,64 @@ class FileStorageServiceTest < ActiveSupport::TestCase
     refute_equal @service.session_dir, other.session_dir
   end
 
+  # --- Cross-container durability -------------------------------------------
+  #
+  # In production the web container writes the upload and a SEPARATE worker
+  # container reads it. They share only the durable ~/.zimmer volume; per-
+  # container /tmp is not shared. These tests pin the storage base to that shared
+  # location so a regression back to /tmp (which silently breaks attachments in
+  # the two-container topology) fails here.
+
+  test "storage_root resolves under the durable shared volume, not container-local /tmp" do
+    ENV.delete("AGENT_FILES_DIR")
+    ENV.delete("AGENT_CLONES_DIR")
+
+    refute FileStorageService.storage_root.start_with?("/tmp"),
+      "attachments must not live on per-container /tmp; got #{FileStorageService.storage_root}"
+
+    # Sibling of the clones base, under the same durable ~/.zimmer mount that is
+    # bind-mounted into both the web and worker roles.
+    assert_equal File.dirname(ClonesDirectory.base), File.dirname(FileStorageService.storage_root)
+    assert_equal "agent-orchestrator-files", File.basename(FileStorageService.storage_root)
+  ensure
+    restore_clone_env
+  end
+
+  test "storage_root honors the AGENT_FILES_DIR override" do
+    ENV["AGENT_FILES_DIR"] = "/mnt/durable/files"
+    assert_equal "/mnt/durable/files", FileStorageService.storage_root
+  ensure
+    restore_clone_env
+  end
+
+  test "storage_root expands a relative AGENT_FILES_DIR override" do
+    ENV["AGENT_FILES_DIR"] = "relative/files"
+    assert_equal File.expand_path("relative/files"), FileStorageService.storage_root
+  ensure
+    restore_clone_env
+  end
+
+  test "storage_root follows HOME so web and worker resolve the same mount" do
+    ENV.delete("AGENT_FILES_DIR")
+    ENV.delete("AGENT_CLONES_DIR")
+    original_home = ENV["HOME"]
+    Dir.mktmpdir("files-home") do |tmp_home|
+      ENV["HOME"] = tmp_home
+      assert_equal File.join(tmp_home, ".zimmer", "agent-orchestrator-files"),
+        FileStorageService.storage_root
+    ensure
+      ENV["HOME"] = original_home
+    end
+  ensure
+    restore_clone_env
+  end
+
   private
+
+  def restore_clone_env
+    ENV.delete("AGENT_FILES_DIR")
+    ENV.delete("AGENT_CLONES_DIR")
+  end
 
   def with_max_file_size(value)
     original = FileStorageService::MAX_FILE_SIZE
