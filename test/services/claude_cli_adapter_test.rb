@@ -1680,6 +1680,29 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal "test_key", env_vars["API_KEY"]
   end
 
+  test "spawn_process unsets SENTRY_DSN_BACKEND so an agent's rails commands can't page production" do
+    # Agent sessions run inside the production container, so the production GlitchTip
+    # DSN (the one wired to Slack #alerts) is in the parent ENV. It must not reach the
+    # agent's shell: any bin/rails command in a repo clone would initialize the SDK
+    # against it and report the clone's exceptions as production errors (issue #176).
+    command = [ "claude", "test" ]
+    @adapter.send(:spawn_process, command, working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert env_vars.key?("SENTRY_DSN_BACKEND"), "SENTRY_DSN_BACKEND should be present (set to nil to unset)"
+    assert_nil env_vars["SENTRY_DSN_BACKEND"]
+  end
+
+  test "spawn_process lets a clone's .env set its own SENTRY_DSN_BACKEND" do
+    File.write(File.join(@test_dir, ".env"), "SENTRY_DSN_BACKEND=https://public@glitchtip.example.test/9")
+
+    command = [ "claude", "test" ]
+    @adapter.send(:spawn_process, command, working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_equal "https://public@glitchtip.example.test/9", env_vars["SENTRY_DSN_BACKEND"]
+  end
+
   test "spawn_process preserves explicit config from .env file" do
     # Simulate a .env file with explicit test database and bundler config
     env_content = <<~ENV

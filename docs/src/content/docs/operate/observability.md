@@ -71,6 +71,36 @@ per-project with no environment filter — so sharing one DSN across both enviro
 make every staging error page the production alert channel, forever. Give staging its own
 project and its own DSN.
 
+## Only production and staging may report
+
+`config/initializers/sentry.rb` sets an environment allowlist:
+
+```ruby
+config.enabled_environments = %w[production staging]
+```
+
+Any other `Rails.env` — `test`, `development`, an ad-hoc one — drops events at the client,
+**even when `SENTRY_DSN_BACKEND` is set**. That last clause is the whole point, and it is not
+belt-and-braces.
+
+Zimmer runs its agent sessions *inside the production container*. That is deliberate, but it
+means the production DSN is present in the environment of every agent-session shell. Without
+the allowlist, the first `bin/rails` command an agent runs in a repo clone — in any
+`RAILS_ENV` — initializes the SDK against the **production** GlitchTip project, and the
+clone's exceptions arrive as production errors on the production Slack alert channel. It is
+not a hypothetical: a `RAILS_ENV=test bin/rails db:prepare` failing against an agent's scratch
+Postgres paged `#alerts` with a database error that never happened in production
+([#176](https://github.com/tadasant/zimmer/issues/176)).
+
+A guard on "is the DSN set?" cannot prevent that, because the DSN genuinely is set. Only the
+environment gate holds. Two layers now enforce it:
+
+- **The initializer** refuses to send outside production/staging — the Rails-layer guarantee.
+- **The spawn env** (`CliSpawnEnv#clear_inherited_env_vars`) unsets `SENTRY_DSN_BACKEND` in
+  every agent-session child process, alongside `DATABASE_*`, `RAILS_ENV`, and the operator SSH
+  key. The agent's shell never sees the production DSN at all, for any tool it runs — not just
+  Rails ones. A clone that wants its own DSN can still set one in its `.env`.
+
 ## Configuring it
 
 The three variables reach the container as Kamal secrets (`env.secret` in
