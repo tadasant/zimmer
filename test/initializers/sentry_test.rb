@@ -24,9 +24,23 @@ class SentryInitializerTest < ActiveSupport::TestCase
   # Loads the real initializer as if the app were booting in `rails_env` with
   # SENTRY_DSN_BACKEND set, then swaps in a DummyTransport (and disables the
   # background worker) so captured events are observable synchronously and
-  # in-memory. The transport swap preserves the initializer's own configuration —
-  # dsn, environment, enabled_environments — so the send/drop decision under test
-  # is the initializer's, not the test's.
+  # in-memory. The swapped-in client is built from a dup of the initializer's own
+  # configuration — dsn, environment, enabled_environments — and the SDK drops
+  # disallowed events in Client#capture_event, *before* the transport. So the
+  # send/drop decision under test is the initializer's, not the test's: strip
+  # enabled_environments from the initializer and these events land in the
+  # DummyTransport and the assertions fail.
+  #
+  # Do NOT "simplify" this to Sentry::TestHelper#setup_sentry_test. That helper
+  # force-adds the current environment to enabled_environments, which would
+  # silently destroy the exact thing being tested.
+  #
+  # Sentry.close (in the ensure) nils the main hub and the thread-local hub, so
+  # each case starts and ends with an uninitialized SDK — which is what the rest
+  # of the suite (e.g. ErrorReporterTest) assumes. Two residues survive close and
+  # are harmless: the SDK's Net::HTTP/Redis patches stay prepended (they no-op
+  # unless Sentry.initialized?), and each init stacks an at_exit { close } (a
+  # repeat close is a no-op).
   def boot_sentry(rails_env, dsn: FAKE_DSN)
     original_dsn = ENV["SENTRY_DSN_BACKEND"]
     ENV["SENTRY_DSN_BACKEND"] = dsn
@@ -124,6 +138,14 @@ class SentryInitializerTest < ActiveSupport::TestCase
     boot_sentry("production", dsn: nil) do
       refute Sentry.initialized?
       refute ErrorReporter.reporting_enabled?
+    end
+  end
+
+  # An empty Kamal secret is a plausible production misconfiguration, and `.present?`
+  # (not `nil?`) is what stands between it and a DSN-less Sentry.init raise.
+  test "an empty DSN is a hard no-op, not a half-initialized SDK" do
+    boot_sentry("production", dsn: "") do
+      refute Sentry.initialized?
     end
   end
 end

@@ -129,8 +129,9 @@ module CliSpawnEnv
   #   against it. A scratch-Postgres connection error in a RAILS_ENV=test rake task
   #   then pages the production error channel. config/initializers/sentry.rb refuses
   #   to send outside production/staging, which stops it at the Rails layer; clearing
-  #   the DSN here stops it at the process boundary, for every tool the agent runs.
-  #   A clone that genuinely wants a DSN can still set one in its own .env.
+  #   the DSN here stops it at the process boundary, for every tool an agent session
+  #   spawns — not just Rails ones. A clone that genuinely wants its own DSN (a
+  #   non-Zimmer project, say) can still set one in its .env, which wins as always.
   #
   # Bundler variables cleared (explicit list, plus a BUNDLE*-prefix sweep below):
   # - BUNDLE_PATH: Where Bundler looks for gems
