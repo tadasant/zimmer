@@ -311,6 +311,18 @@ class GithubTriggerPollerJob < ApplicationJob
 
     session = trigger.create_session!(prompt: prompt)
 
+    # Burst control suppressed the spawn: the trigger has exceeded its cap and is
+    # spawning nothing until the burst subsides. Leave the item unseen so it fires
+    # for real once the trigger is back under its cap (its label is still there —
+    # the seen-set is state, so nothing is lost). This is expected behavior, not a
+    # dropped wake, so log it at info rather than storming WARN per item per tick
+    # for the whole burst.
+    if session.nil? && trigger.last_fire_burst_suppressed?
+      Rails.logger.info "[GithubTriggerPollerJob] Trigger #{trigger.id} is burst-suppressed for " \
+                        "#{item_key(item)} (#{event}); leaving it unseen so it fires once the burst ends"
+      return false
+    end
+
     # create_session! returns the session truthily even when a reuse_session trigger DROPPED
     # the follow-up prompt (target session busy, enqueue_messages off). Treating that as a
     # fire would record the item as seen and consume the event without any work ever having
