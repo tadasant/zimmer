@@ -1,3 +1,1 @@
-# Elicitation fixtures are intentionally empty.
-# Tests create elicitations inline to avoid FK constraint issues with
-# transactional test cleanup when other tests manipulate sessions.
+# Empty on purpose: tests create the elicitations they need inline.

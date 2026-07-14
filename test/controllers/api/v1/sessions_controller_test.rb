@@ -165,6 +165,24 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "claude_code", json["session"]["agent_runtime"]
   end
 
+  # parent_session_id is a permitted create param, and the sessions table refuses a
+  # pointer to a session that does not exist — so an unknown id has to come back as a
+  # validation error, not an ActiveRecord::InvalidForeignKey 500.
+  test "should reject create with a parent_session_id that references no session" do
+    assert_no_difference("Session.count") do
+      post api_v1_sessions_path, params: {
+        agent_runtime: "claude_code",
+        git_root: "https://github.com/test/repo.git",
+        branch: "main",
+        parent_session_id: 999_999_999
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_includes json["messages"].join(" "), "must reference an existing session"
+  end
+
   test "should create session with prompt and queue job" do
     assert_enqueued_with(job: AgentSessionJob) do
       post api_v1_sessions_path, params: {

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_06_010000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_14_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -462,14 +462,15 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_06_010000) do
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id"
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id"
   add_foreign_key "claude_account_quota_snapshots", "claude_accounts"
-  add_foreign_key "elicitations", "sessions"
-  add_foreign_key "enqueued_messages", "sessions"
-  add_foreign_key "logs", "sessions"
-  add_foreign_key "mcp_oauth_pending_flows", "sessions"
-  add_foreign_key "notifications", "sessions"
+  add_foreign_key "elicitations", "sessions", on_delete: :cascade
+  add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
+  add_foreign_key "logs", "sessions", on_delete: :cascade
+  add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
+  add_foreign_key "notifications", "sessions", on_delete: :cascade
   add_foreign_key "runtime_login_attempts", "claude_accounts"
   add_foreign_key "sessions", "categories", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "blocked_by_session_id", on_delete: :nullify
-  add_foreign_key "subagent_transcripts", "sessions"
+  add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
+  add_foreign_key "subagent_transcripts", "sessions", on_delete: :cascade
   add_foreign_key "trigger_conditions", "triggers"
 end
