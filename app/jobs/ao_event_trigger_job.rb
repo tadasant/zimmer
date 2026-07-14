@@ -126,14 +126,23 @@ class AoEventTriggerJob < ApplicationJob
             event: event_label(event_name, session)
           )
           result_session = trigger.create_session!(prompt: prompt)
+
+          # A burst-suppressed fire delivered nothing, so it must not consume the
+          # condition: advancing last_triggered_at would spend a session-scoped
+          # condition's one-shot guard, and the auto-delete below would destroy a
+          # wake trigger that never woke anything.
+          if trigger.last_fire_burst_suppressed?
+            Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} is burst-suppressed for session #{session.id} #{event_name} — no session created, condition left unfired"
+            next
+          end
+
           condition.update!(last_triggered_at: Time.current)
           if result_session
             Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for session #{session.id} #{event_name}, created/reused session #{result_session.id}"
           else
-            # nil = burst control suppressed the spawn, or a one-time reuse
-            # trigger's target session was gone. Neither is an error.
-            reason = trigger.last_fire_burst_suppressed? ? "burst-suppressed" : "no reusable target session"
-            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for session #{session.id} #{event_name}, but no session was created (#{reason})"
+            # Burst suppression already skipped above, so nil here means a
+            # one-time reuse trigger whose target session is gone. Not an error.
+            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for session #{session.id} #{event_name}, but no session was created (no reusable target session)"
           end
 
           # One-time wake-up triggers (only session-scoped ao_events and/or

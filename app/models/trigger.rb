@@ -10,24 +10,23 @@ class Trigger < ApplicationRecord
 
   # --- Burst control -------------------------------------------------------
   #
-  # `max_sessions_per_minute` caps how many NEW sessions a trigger may spawn in
-  # a rolling one-minute window. NULL means unbounded (the pre-existing
-  # behavior, and the default for every trigger).
+  # `max_sessions_per_minute` caps how many NEW sessions a trigger may spawn in a
+  # one-minute window (anchored at the first fire and tumbling, not sliding).
+  # NULL means unbounded (the pre-existing behavior, and the default for every
+  # trigger).
   #
   # Once the cap is exceeded the trigger enters a *burst*: it spawns exactly one
   # burst-notice session (linking the sessions it did spawn in the window) and
-  # then spawns nothing at all until the burst subsides. A burst is "over" once
-  # BURST_COOLDOWN passes with no further spawn attempt — every suppressed
-  # attempt pushes `burst_active_until` forward, so an outage that keeps
-  # producing events for an hour keeps the trigger quiet for that hour and still
-  # yields exactly ONE notice, not one per tick.
+  # then spawns nothing at all for the rest of the burst. A burst ends
+  # BURST_COOLDOWN after the trigger last EXCEEDED its cap — so an outage that
+  # keeps producing events faster than the cap keeps the trigger quiet for as
+  # long as it lasts, and still yields exactly ONE notice, not one per tick.
   #
   # BURST_COOLDOWN is deliberately several times the poll cadence, NOT one minute.
   # The pollers tick every minute, so a one-minute cooldown expires exactly as the
   # next tick's events arrive: the burst would "end", the cap would refill, and a
   # sustained outage would produce a fresh batch of sessions and a fresh notice
-  # every minute — the stream of notices this control exists to prevent. Five
-  # quiet minutes is the boundary of one burst.
+  # every minute — the stream of notices this control exists to prevent.
   BURST_WINDOW = 1.minute
   BURST_COOLDOWN = 5.minutes
 
@@ -57,6 +56,7 @@ class Trigger < ApplicationRecord
   validate :catalog_plugins_must_be_array
   validate :catalog_plugins_must_exist_in_catalog, if: :catalog_plugins_changed?
 
+  before_save :clear_burst_state_when_limit_changes
   before_validation :clear_enqueue_messages_without_reuse_session
   before_validation :clear_resuscitate_archived_without_reuse_session
   validate :validate_enqueue_messages_requires_reuse_session
@@ -205,9 +205,13 @@ class Trigger < ApplicationRecord
   end
 
   # True when this trigger is currently inside a burst it has already noticed:
-  # every spawn attempt is suppressed until the burst subsides.
+  # every fire is suppressed until the burst ends. Requires a cap to be set —
+  # clearing the cap ends any burst (see #clear_burst_state_when_limit_changes),
+  # and an unbounded trigger is never suppressed regardless of leftover state.
   def bursting?
-    burst_active_until.present? && burst_active_until > Time.current
+    max_sessions_per_minute.present? &&
+      burst_active_until.present? &&
+      burst_active_until > Time.current
   end
 
   # Whether the most recent #create_session! call on this in-memory instance was
@@ -710,7 +714,18 @@ class Trigger < ApplicationRecord
       )
       nil
     when :burst
-      spawn_burst_notice_session!(triggering_prompt: prompt)
+      begin
+        spawn_burst_notice_session!(triggering_prompt: prompt)
+      rescue
+        # The notice is the ONLY thing the operator gets out of a burst. If
+        # spawning it fails (unhealable agent root, DB error), do not leave the
+        # trigger latched into a burst it never announced — that is silent death,
+        # the worst outcome available. Clear the burst so the next fire re-opens
+        # it and tries the notice again; the window is still over the cap, so
+        # that fire cannot spawn an ordinary session instead.
+        update_columns(burst_active_until: nil, updated_at: Time.current)
+        raise
+      end
     else
       session = create_new_session!(prompt: prompt)
       record_burst_window_session!(session)
@@ -718,54 +733,81 @@ class Trigger < ApplicationRecord
     end
   end
 
-  # Atomically decide whether this fire may spawn. The read-modify-write of the
-  # window counters happens under a row lock, so two jobs firing the same
-  # trigger concurrently (ScheduleTriggerJob and AoEventTriggerJob can overlap)
-  # cannot both reserve the last slot.
+  # Atomically decide what this fire may do. The read-modify-write of the window
+  # counters happens under a row lock, so two jobs firing the same trigger
+  # concurrently (ScheduleTriggerJob and AoEventTriggerJob can overlap) can
+  # neither both take the last slot nor both open the burst.
+  #
+  # `burst_window_count` counts FIRES ATTEMPTED in the current window, not
+  # sessions spawned. That distinction is what lets the burst end: the cooldown
+  # is pushed forward only by a window that is itself over the cap, so the burst
+  # lasts as long as the trigger keeps EXCEEDING its cap — not as long as any
+  # event at all keeps arriving. Extending it on every suppressed fire (the
+  # obvious implementation) would mean a channel with any baseline chatter could
+  # never leave a burst: one 50-message spike would silently disable the trigger
+  # forever.
   #
   # The slot is reserved BEFORE the session exists, so a spawn that then raises
-  # still consumes budget. That errs toward under-spawning, which is the safe
-  # direction for a control whose whole job is to bound spawns.
+  # still consumes budget. That errs toward under-spawning, the safe direction
+  # for a control whose whole job is to bound spawns.
   def reserve_burst_slot!
     return :allowed if max_sessions_per_minute.blank?
 
     with_lock do
       now = Time.current
 
-      # Burst already open and noticed: stay quiet, and hold it open as long as
-      # events keep arriving. This is what makes an hour-long outage produce one
-      # notice instead of one per minute.
-      if burst_active_until.present? && burst_active_until > now
-        update_columns(burst_active_until: now + BURST_COOLDOWN, updated_at: now)
-        next :suppressed
+      # Read the burst state BEFORE this fire touches it: a fire that lands
+      # inside an already-open burst is suppressed, whatever it does to the
+      # counters below.
+      was_bursting = burst_active_until.present? && burst_active_until > now
+
+      # The window is anchored at the first fire and rolls over wholesale once it
+      # ages out (a tumbling window, not a sliding one — minute-resolution pollers
+      # don't justify the bookkeeping a sliding window would need).
+      if burst_window_started_at.blank? || burst_window_started_at <= now - BURST_WINDOW
+        roll_burst_window!(now)
       end
 
-      # Start a fresh window when the current one has aged out, or when a burst
-      # has expired (BURST_COOLDOWN passed with no attempt — the burst is over).
-      if burst_window_started_at.blank? ||
-         burst_window_started_at <= now - BURST_WINDOW ||
-         burst_active_until.present?
-        reset_burst_window!(now)
-      end
+      attempts = burst_window_count + 1
+      update_columns(burst_window_count: attempts, updated_at: now)
 
-      if burst_window_count >= max_sessions_per_minute
-        update_columns(burst_active_until: now + BURST_COOLDOWN, updated_at: now)
-        next :burst
-      end
+      # A window that exceeds the cap holds the burst open — and opens it, if it
+      # wasn't. A window that stays under the cap does neither, so the burst
+      # expires BURST_COOLDOWN after the trigger last exceeded its cap.
+      over_cap = attempts > max_sessions_per_minute
+      update_columns(burst_active_until: now + BURST_COOLDOWN, updated_at: now) if over_cap
 
-      update_columns(burst_window_count: burst_window_count + 1, updated_at: now)
+      next :suppressed if was_bursting
+      next :burst if over_cap
+
       :allowed
     end
   end
 
-  def reset_burst_window!(now)
+  # Start a new counting window. Deliberately does NOT touch burst_active_until:
+  # whether a burst is open is a question of time since the cap was last
+  # exceeded, not of which window we're in.
+  def roll_burst_window!(now)
     update_columns(
       burst_window_started_at: now,
       burst_window_count: 0,
       burst_window_session_ids: [],
-      burst_active_until: nil,
       updated_at: now
     )
+  end
+
+  # Editing the cap clears any burst in progress. This is the operator's escape
+  # hatch: a trigger stuck suppressing (because events really are still pouring
+  # in) can be brought back immediately by re-saving its cap, rather than waiting
+  # the burst out. Internal bookkeeping writes all go through update_columns, so
+  # they never trip this callback.
+  def clear_burst_state_when_limit_changes
+    return unless will_save_change_to_max_sessions_per_minute?
+
+    self.burst_window_started_at = nil
+    self.burst_window_count = 0
+    self.burst_window_session_ids = []
+    self.burst_active_until = nil
   end
 
   # Record a spawned session against the current window so a burst notice can
@@ -821,14 +863,15 @@ class Trigger < ApplicationRecord
 
       The trigger is capped at #{max_sessions_per_minute} session(s) per minute. More events than that arrived
       inside one minute, so Zimmer stopped spawning a session per event and spawned this one
-      instead. Until the burst subsides (no further events for #{BURST_COOLDOWN.inspect}), this trigger
-      spawns nothing at all, and the events that arrive in the meantime are dropped — not queued,
-      not replayed. You will not get another burst notice for this burst.
+      instead. The trigger now spawns nothing at all until the burst ends — #{BURST_COOLDOWN.inspect} after the
+      last minute in which it exceeded its cap. Events that arrive in the meantime are dropped —
+      not queued, not replayed. You will not get another burst notice for this burst.
 
       Sessions this trigger spawned in this window before it hit the cap:
       #{links.join("\n")}
 
-      Trigger: #{base}/triggers/#{id}
+      The trigger page lists every session it has spawned, which is the authoritative list:
+      #{base}/triggers/#{id}
 
       The event that tipped the cap (truncated):
       ```

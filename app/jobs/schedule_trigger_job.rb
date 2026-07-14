@@ -53,6 +53,15 @@ class ScheduleTriggerJob < ApplicationJob
     # Create or reuse session
     session = trigger.create_session!(prompt: prompt)
 
+    # A burst-suppressed fire delivered NOTHING. Treat it like the dropped-wake
+    # case below: don't advance the condition (so the schedule stays due and
+    # fires for real once the burst ends) and don't auto-delete a one-time
+    # trigger that never did its job.
+    if trigger.last_fire_burst_suppressed?
+      Rails.logger.info "[ScheduleTriggerJob] Condition #{condition.id} on trigger #{trigger.id} is burst-suppressed — leaving it due; it will fire when the burst ends"
+      return
+    end
+
     # Update condition's last_triggered_at
     condition.update!(last_triggered_at: Time.current)
 
@@ -88,11 +97,9 @@ class ScheduleTriggerJob < ApplicationJob
     if session
       Rails.logger.info "[ScheduleTriggerJob] Created/reused session #{session.id} for trigger #{trigger_id}"
     else
-      # create_session! returns nil when it spawned nothing: burst control
-      # suppressed the fire, or a one-time reuse trigger's target session is
-      # gone. Neither is an error.
-      reason = trigger.last_fire_burst_suppressed? ? "burst-suppressed" : "no reusable target session"
-      Rails.logger.info "[ScheduleTriggerJob] Trigger #{trigger_id} fired but created no session (#{reason})"
+      # Burst suppression already returned above, so nil here means a one-time
+      # reuse trigger whose target session is gone. Not an error.
+      Rails.logger.info "[ScheduleTriggerJob] Trigger #{trigger_id} fired but created no session (no reusable target session)"
     end
   rescue => e
     # Always advance last_triggered_at to prevent infinite retry loops.
