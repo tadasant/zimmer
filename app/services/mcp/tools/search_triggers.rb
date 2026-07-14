@@ -88,6 +88,7 @@ module Mcp
           "- **Status:** #{trigger.status}",
           "- **Agent Root:** #{trigger.agent_root_name}",
           "- **Reuse Session:** #{trigger.reuse_session ? 'Yes' : 'No'}",
+          "- **Max Sessions/Minute:** #{burst_limit_summary(trigger)}",
           "- **MCP Servers:** #{trigger.mcp_servers.presence&.join(', ') || '(none)'}"
         ]
         lines << "- **Goal:** #{trigger.goal}" if trigger.goal.present?
@@ -147,7 +148,8 @@ module Mcp
           triggers.each do |trigger|
             lines << "### #{trigger.name} (ID: #{trigger.id})"
             lines << "- **Conditions:** #{condition_types_summary(trigger)} | **Status:** #{trigger.status} | " \
-                     "**Sessions:** #{trigger.sessions_created_count}"
+                     "**Sessions:** #{trigger.sessions_created_count} | " \
+                     "**Max Sessions/Minute:** #{burst_limit_summary(trigger)}"
             trigger.trigger_conditions.each { |condition| lines << "  - #{condition.description}" }
             lines << ""
           end
@@ -180,6 +182,17 @@ module Mcp
       def condition_types_summary(trigger)
         types = trigger.trigger_conditions.map(&:condition_type).uniq
         types.any? ? types.join(", ") : "(none)"
+      end
+
+      # The burst cap, plus a loud marker when the trigger is currently inside a
+      # burst — that's the state in which it is spawning nothing at all, so a
+      # caller wondering why the trigger looks dead needs to see it here.
+      def burst_limit_summary(trigger)
+        return "(no limit)" if trigger.max_sessions_per_minute.blank?
+
+        summary = trigger.max_sessions_per_minute.to_s
+        summary += " ⚠️ BURSTING — spawns suppressed until the burst subsides" if trigger.bursting?
+        summary
       end
 
       # A Slack outage (or an unconfigured workspace) must not sink the trigger

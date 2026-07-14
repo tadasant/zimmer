@@ -125,6 +125,42 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert json["trigger"]["conditions"].any? { |c| c["condition_type"] == "slack" }
   end
 
+  test "should create a trigger with a burst cap and expose it in the payload" do
+    post api_v1_triggers_path, params: {
+      name: "Capped Alerts Trigger",
+      agent_root_name: "zimmer",
+      prompt_template: "Check this: {{link}}",
+      max_sessions_per_minute: 3,
+      trigger_conditions_attributes: [
+        {
+          condition_type: "slack",
+          configuration: { channel_id: "C123456", channel_name: "alerts", event_type: "new_message" }
+        }
+      ]
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert_equal 3, json["trigger"]["max_sessions_per_minute"]
+    assert_equal false, json["trigger"]["bursting"]
+    assert_equal 3, Trigger.find(json["trigger"]["id"]).max_sessions_per_minute
+  end
+
+  test "should reject a non-positive burst cap" do
+    post api_v1_triggers_path, params: {
+      name: "Bad Cap",
+      agent_root_name: "zimmer",
+      prompt_template: "Check this: {{link}}",
+      max_sessions_per_minute: 0,
+      trigger_conditions_attributes: [
+        { condition_type: "slack", configuration: { channel_id: "C1", channel_name: "alerts", event_type: "new_message" } }
+      ]
+    }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["messages"].join, "Max sessions per minute must be greater than 0"
+  end
+
   test "should create schedule trigger with conditions" do
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {

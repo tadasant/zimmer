@@ -85,7 +85,15 @@ class ScheduleTriggerJob < ApplicationJob
       end
     end
 
-    Rails.logger.info "[ScheduleTriggerJob] Created/reused session #{session.id} for trigger #{trigger_id}"
+    if session
+      Rails.logger.info "[ScheduleTriggerJob] Created/reused session #{session.id} for trigger #{trigger_id}"
+    else
+      # create_session! returns nil when it spawned nothing: burst control
+      # suppressed the fire, or a one-time reuse trigger's target session is
+      # gone. Neither is an error.
+      reason = trigger.last_fire_burst_suppressed? ? "burst-suppressed" : "no reusable target session"
+      Rails.logger.info "[ScheduleTriggerJob] Trigger #{trigger_id} fired but created no session (#{reason})"
+    end
   rescue => e
     # Always advance last_triggered_at to prevent infinite retry loops.
     # Without this, a persistent error (e.g. invalid MCP server reference)

@@ -122,6 +122,20 @@ class TriggersController < ApplicationController
     prompt = @trigger.interpolate_prompt(**variables.to_h.symbolize_keys)
 
     session = @trigger.create_session!(prompt: prompt)
+
+    if session.nil?
+      message = if @trigger.last_fire_burst_suppressed?
+        "Trigger \"#{@trigger.name}\" is in a burst: it exceeded its cap of " \
+        "#{@trigger.max_sessions_per_minute} session(s) per minute, so no session was created. " \
+        "See the burst-notice session it already spawned."
+      else
+        "Trigger \"#{@trigger.name}\" fired but created no session — its target session is no longer reusable."
+      end
+
+      redirect_to trigger_path(@trigger), alert: message
+      return
+    end
+
     redirect_to session_path(session), notice: "Trigger \"#{@trigger.name}\" fired manually. Session created."
   rescue => e
     redirect_to trigger_path(@trigger), alert: "Failed to invoke trigger: #{e.message}"
@@ -258,6 +272,7 @@ class TriggersController < ApplicationController
       :reuse_session,
       :enqueue_messages,
       :resuscitate_archived,
+      :max_sessions_per_minute,
       mcp_servers: [],
       catalog_skills: [],
       catalog_hooks: [],
@@ -267,6 +282,8 @@ class TriggersController < ApplicationController
         configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, allowed_user_ids: [], repos: [], labels: [] ]
       ]
     ).tap do |p|
+      # An empty number field means "no cap" (unbounded), not 0.
+      p[:max_sessions_per_minute] = nil if p[:max_sessions_per_minute].blank?
       # Ensure mcp_servers is an array and strip blanks from form submission
       p[:mcp_servers] = (p[:mcp_servers] || []).reject(&:blank?)
       # Ensure catalog_skills is an array and strip blanks from form submission

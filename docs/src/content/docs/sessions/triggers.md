@@ -241,6 +241,63 @@ a *configured* host (a rate-limit or network blip), which still raises and alert
 real incident rather than an unconfigured environment.
 :::
 
+## Burst control
+
+A trigger can cap how many sessions it spawns per minute: **max sessions per minute**
+(`Trigger#max_sessions_per_minute`, on the triggers form, the REST API, and the `action_trigger` MCP
+tool). It is **opt-in** — unset means unbounded, which is how every trigger behaved before the
+setting existed.
+
+It exists because nothing bounded a trigger before. A burst of messages in a watched Slack channel
+spawned one session per message — 50 of them, trashed by hand — and a sustained outage generating
+alerts could have spawned sessions until the fleet was overwhelmed. A single Slack poll tick can
+carry many messages, so the cap has to bound spawns *within* a tick, not just across ticks.
+
+The cap is enforced at `Trigger#create_session!` — the one chokepoint every condition type funnels
+through — so it covers `slack`, `schedule`, and `ao_event` triggers at once.
+
+```mermaid
+flowchart TD
+    F["trigger fires"] --> B{"already bursting?"}
+    B -->|yes| S["spawn nothing, drop the event<br/>(push the burst's cooldown out)"]
+    B -->|no| W{"spawns this minute<br/>&lt; cap?"}
+    W -->|yes| N["spawn the session as usual"]
+    W -->|no| BN["spawn ONE burst-notice session,<br/>linking the sessions spawned this minute"]
+    BN --> S
+```
+
+What each state means:
+
+- **Under the cap:** the trigger spawns exactly as it does today.
+- **Over the cap:** the trigger spawns **one** burst-notice session instead of the session the event
+  asked for. Its prompt links the sessions the trigger already spawned in that window (so you can
+  jump straight to them), quotes the event that tipped the cap, and asks the agent to investigate the
+  burst rather than work the events. That session carries no goal — the trigger's goal describes the
+  work the *event* asked for, not investigating a burst — and it never becomes the `reuse_session`
+  target.
+- **During the burst:** the trigger spawns **nothing at all**, and sends **no further notices**. Each
+  suppressed event pushes the burst's cooldown out, so an outage that alerts for an hour keeps the
+  trigger quiet for that hour and still produces exactly one notice.
+
+A burst ends when the events stop: **five quiet minutes** (`Trigger::BURST_COOLDOWN`) with no fire at
+all. The cooldown is deliberately several times the one-minute poll cadence — at one minute it would
+expire exactly as the next tick's events arrive, refilling the cap and producing a fresh notice every
+minute, which is the stream this control exists to prevent.
+
+:::caution[Suppressed events are dropped, not queued]
+The Slack poller advances its cursor past every message it fetched, whatever each message produced.
+Messages suppressed during a burst are therefore **dropped** — not replayed when the burst ends.
+That's deliberate: replaying them would spawn the very sessions the cap just prevented. The
+burst-notice session is your record that they happened.
+:::
+
+Follow-ups into a **reused** session are not capped: they spawn nothing, and a `reuse_session`
+trigger tops out at one session by construction. The cap counts *new session spawns*.
+
+The state lives on the trigger row (`burst_window_started_at`, `burst_window_count`,
+`burst_window_session_ids`, `burst_active_until`) and the check-and-reserve happens under a row lock,
+so two jobs firing the same trigger concurrently can't both take the last slot.
+
 ## Wake-up semantics
 
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"

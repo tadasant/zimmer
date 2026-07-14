@@ -32,6 +32,26 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_includes output, "- **Agent Root:** zimmer"
   end
 
+  test "creates a trigger with a burst cap, and clears it on update" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Capped Watcher",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "New message: {{link}}",
+      "max_sessions_per_minute" => 3,
+      "configuration" => { "channel_id" => "C123", "channel_name" => "alerts" }
+    )
+
+    trigger = Trigger.find_by!(name: "Capped Watcher")
+    assert_equal 3, trigger.max_sessions_per_minute
+    assert_includes output, "- **Max Sessions/Minute:** 3"
+
+    update_output = @tool.call("action" => "update", "id" => trigger.id, "max_sessions_per_minute" => nil)
+    assert_nil trigger.reload.max_sessions_per_minute
+    assert_includes update_output, "- **Max Sessions/Minute:** (no limit)"
+  end
+
   test "creates a one-time schedule trigger" do
     @tool.call(
       "action" => "create",

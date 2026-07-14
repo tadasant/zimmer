@@ -8,6 +8,36 @@
 class Trigger < ApplicationRecord
   STATUSES = %w[enabled disabled].freeze
 
+  # --- Burst control -------------------------------------------------------
+  #
+  # `max_sessions_per_minute` caps how many NEW sessions a trigger may spawn in
+  # a rolling one-minute window. NULL means unbounded (the pre-existing
+  # behavior, and the default for every trigger).
+  #
+  # Once the cap is exceeded the trigger enters a *burst*: it spawns exactly one
+  # burst-notice session (linking the sessions it did spawn in the window) and
+  # then spawns nothing at all until the burst subsides. A burst is "over" once
+  # BURST_COOLDOWN passes with no further spawn attempt — every suppressed
+  # attempt pushes `burst_active_until` forward, so an outage that keeps
+  # producing events for an hour keeps the trigger quiet for that hour and still
+  # yields exactly ONE notice, not one per tick.
+  #
+  # BURST_COOLDOWN is deliberately several times the poll cadence, NOT one minute.
+  # The pollers tick every minute, so a one-minute cooldown expires exactly as the
+  # next tick's events arrive: the burst would "end", the cap would refill, and a
+  # sustained outage would produce a fresh batch of sessions and a fresh notice
+  # every minute — the stream of notices this control exists to prevent. Five
+  # quiet minutes is the boundary of one burst.
+  BURST_WINDOW = 1.minute
+  BURST_COOLDOWN = 5.minutes
+
+  # Cap on how many session links the burst-notice prompt carries. A sane limit
+  # is small, but nothing stops an operator setting it to 500.
+  MAX_BURST_NOTICE_LINKS = 25
+
+  # How much of the event that tipped the cap to quote in the notice prompt.
+  BURST_NOTICE_PROMPT_EXCERPT = 500
+
   belongs_to :last_session, class_name: "Session", optional: true
   has_many :trigger_conditions, dependent: :destroy
   accepts_nested_attributes_for :trigger_conditions, allow_destroy: true, reject_if: :all_blank
@@ -17,6 +47,9 @@ class Trigger < ApplicationRecord
   validates :agent_root_name, presence: true
   validates :prompt_template, presence: true
   validates :trigger_conditions, presence: { message: "must have at least one condition" }
+  validates :max_sessions_per_minute,
+    numericality: { only_integer: true, greater_than: 0 },
+    allow_nil: true
   validate :catalog_skills_must_be_array
   validate :catalog_skills_must_exist_in_catalog, if: :catalog_skills_changed?
   validate :catalog_hooks_must_be_array
@@ -129,8 +162,15 @@ class Trigger < ApplicationRecord
     result
   end
 
-  # Create a new session from this trigger's template, or reuse an existing one
+  # Create a new session from this trigger's template, or reuse an existing one.
+  #
+  # Returns the session that was created or reused, or nil when nothing was
+  # created: the trigger is burst-suppressed (see #spawn_with_burst_control!),
+  # or a one-time reuse trigger's target session is gone. Callers must handle
+  # nil.
   def create_session!(prompt:)
+    @last_fire_burst_suppressed = false
+
     # Heal any catalog references that no longer exist before creating or
     # reusing a session. Each heal method persists the fix so subsequent
     # fires won't encounter the same issue.
@@ -161,7 +201,21 @@ class Trigger < ApplicationRecord
       end
     end
 
-    create_new_session!(prompt: prompt)
+    spawn_with_burst_control!(prompt: prompt)
+  end
+
+  # True when this trigger is currently inside a burst it has already noticed:
+  # every spawn attempt is suppressed until the burst subsides.
+  def bursting?
+    burst_active_until.present? && burst_active_until > Time.current
+  end
+
+  # Whether the most recent #create_session! call on this in-memory instance was
+  # dropped by burst control. Callers use this to distinguish "nothing spawned
+  # because we're rate-limited" from "nothing spawned because the target session
+  # was gone."
+  def last_fire_burst_suppressed?
+    @last_fire_burst_suppressed == true
   end
 
   # A one-time reuse trigger is one where reuse_session is enabled and ALL
@@ -630,6 +684,162 @@ class Trigger < ApplicationRecord
     return if invalid_plugins.empty?
 
     errors.add(:catalog_plugins, "contains invalid plugin(s): #{invalid_plugins.join(', ')}")
+  end
+
+  # The burst-control gate. Every path that would SPAWN a session funnels
+  # through here; follow-ups into a reused session don't, because they spawn
+  # nothing (and a reuse trigger tops out at one session by construction).
+  #
+  # Three outcomes:
+  #   :allowed    — under the cap; spawn as usual and record the session so the
+  #                 notice, if one follows, can link it.
+  #   :burst      — this fire would exceed the cap. Spawn ONE burst-notice
+  #                 session instead of the session the event asked for.
+  #   :suppressed — the burst is already open and noticed. Spawn nothing. The
+  #                 event is dropped (Slack's cursor still advances), which is
+  #                 the point: the operator gets one session to investigate a
+  #                 burst, not a session per event in it.
+  def spawn_with_burst_control!(prompt:)
+    case reserve_burst_slot!
+    when :suppressed
+      @last_fire_burst_suppressed = true
+      Rails.logger.info(
+        "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) is burst-suppressed " \
+        "(cap: #{max_sessions_per_minute}/min, burst open until #{burst_active_until&.iso8601}) — " \
+        "dropping this fire; the burst notice has already been sent"
+      )
+      nil
+    when :burst
+      spawn_burst_notice_session!(triggering_prompt: prompt)
+    else
+      session = create_new_session!(prompt: prompt)
+      record_burst_window_session!(session)
+      session
+    end
+  end
+
+  # Atomically decide whether this fire may spawn. The read-modify-write of the
+  # window counters happens under a row lock, so two jobs firing the same
+  # trigger concurrently (ScheduleTriggerJob and AoEventTriggerJob can overlap)
+  # cannot both reserve the last slot.
+  #
+  # The slot is reserved BEFORE the session exists, so a spawn that then raises
+  # still consumes budget. That errs toward under-spawning, which is the safe
+  # direction for a control whose whole job is to bound spawns.
+  def reserve_burst_slot!
+    return :allowed if max_sessions_per_minute.blank?
+
+    with_lock do
+      now = Time.current
+
+      # Burst already open and noticed: stay quiet, and hold it open as long as
+      # events keep arriving. This is what makes an hour-long outage produce one
+      # notice instead of one per minute.
+      if burst_active_until.present? && burst_active_until > now
+        update_columns(burst_active_until: now + BURST_COOLDOWN, updated_at: now)
+        next :suppressed
+      end
+
+      # Start a fresh window when the current one has aged out, or when a burst
+      # has expired (BURST_COOLDOWN passed with no attempt — the burst is over).
+      if burst_window_started_at.blank? ||
+         burst_window_started_at <= now - BURST_WINDOW ||
+         burst_active_until.present?
+        reset_burst_window!(now)
+      end
+
+      if burst_window_count >= max_sessions_per_minute
+        update_columns(burst_active_until: now + BURST_COOLDOWN, updated_at: now)
+        next :burst
+      end
+
+      update_columns(burst_window_count: burst_window_count + 1, updated_at: now)
+      :allowed
+    end
+  end
+
+  def reset_burst_window!(now)
+    update_columns(
+      burst_window_started_at: now,
+      burst_window_count: 0,
+      burst_window_session_ids: [],
+      burst_active_until: nil,
+      updated_at: now
+    )
+  end
+
+  # Record a spawned session against the current window so a burst notice can
+  # link the sessions the operator now has to deal with.
+  def record_burst_window_session!(session)
+    return if max_sessions_per_minute.blank? || session.blank?
+
+    with_lock do
+      ids = ((burst_window_session_ids || []) + [ session.id ]).uniq.last(MAX_BURST_NOTICE_LINKS)
+      update_columns(burst_window_session_ids: ids, updated_at: Time.current)
+    end
+  end
+
+  # The one session a burst produces. It deliberately does NOT:
+  #   - update last_session_id (a reuse trigger must never follow up INTO the
+  #     notice session), or
+  #   - carry the trigger's goal (the trigger's goal describes the work the
+  #     event asked for; this session's job is to investigate the burst).
+  def spawn_burst_notice_session!(triggering_prompt:)
+    session = Session.create_from_agent_root!(
+      agent_root_name: agent_root_name,
+      prompt: burst_notice_prompt(triggering_prompt: triggering_prompt),
+      mcp_servers: mcp_servers,
+      catalog_skills: catalog_skills,
+      catalog_hooks: catalog_hooks,
+      catalog_plugins: catalog_plugins,
+      metadata: { trigger_id: id, trigger_name: name, burst_notice: true }
+    )
+
+    update_columns(last_triggered_at: Time.current)
+    Trigger.update_counters(id, sessions_created_count: 1)
+
+    # A trigger hitting its cap is not routine: something is generating events
+    # far faster than the operator expected, and it will not self-resolve.
+    Rails.logger.warn(
+      "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) exceeded its cap of " \
+      "#{max_sessions_per_minute} session(s)/minute — spawned burst-notice session #{session.id} " \
+      "and suppressed further spawns until the burst subsides. Sessions spawned in this window: " \
+      "#{burst_window_session_ids.inspect}"
+    )
+
+    session
+  end
+
+  def burst_notice_prompt(triggering_prompt:)
+    base = AppUrl.base_url
+    links = burst_window_session_ids.map { |session_id| "- #{base}/sessions/#{session_id}" }
+    links = [ "- (none — the cap was hit on the first fire of the window)" ] if links.empty?
+    excerpt = triggering_prompt.to_s.truncate(BURST_NOTICE_PROMPT_EXCERPT)
+
+    <<~PROMPT
+      ⚠️ Burst detected — this session exists because the trigger "#{name}" (ID: #{id}) hit its rate cap.
+
+      The trigger is capped at #{max_sessions_per_minute} session(s) per minute. More events than that arrived
+      inside one minute, so Zimmer stopped spawning a session per event and spawned this one
+      instead. Until the burst subsides (no further events for #{BURST_COOLDOWN.inspect}), this trigger
+      spawns nothing at all, and the events that arrive in the meantime are dropped — not queued,
+      not replayed. You will not get another burst notice for this burst.
+
+      Sessions this trigger spawned in this window before it hit the cap:
+      #{links.join("\n")}
+
+      Trigger: #{base}/triggers/#{id}
+
+      The event that tipped the cap (truncated):
+      ```
+      #{excerpt}
+      ```
+
+      Something is producing far more events than usual — an outage, a retry storm, a runaway
+      producer. Investigate: look at the sessions above and the events behind them, work out what is
+      generating the volume, and report what you find. Do NOT do the work for every event
+      individually, and do not re-spawn the suppressed ones.
+    PROMPT
   end
 
   def create_new_session!(prompt:)
