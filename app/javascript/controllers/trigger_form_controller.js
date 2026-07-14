@@ -2,13 +2,14 @@ import { Controller } from "@hotwired/stimulus"
 
 // Handles trigger form interactivity including:
 // - Adding/removing trigger conditions
-// - Condition type switching (Slack, Schedule, Zimmer Event) per condition card
+// - Condition type switching (Slack, Schedule, Zimmer Event, GitHub) per condition card
 // - Schedule mode switching (Recurring/One-time) per condition card
 // - Schedule unit-dependent field visibility (day of week, time, timezone)
 export default class extends Controller {
   static targets = [
     "conditionsContainer", "conditionCard", "conditionTypeSelect",
     "slackConfig", "scheduleConfig", "aoEventConfig",
+    "githubConfig", "githubLabelFields",
     "channelSelect", "channelStatus", "channelId", "channelName",
     "channelManual", "channelManualInput",
     "unitSelect", "dayOfWeekContainer", "timeContainer", "timezoneContainer",
@@ -41,6 +42,11 @@ export default class extends Controller {
         this.updateScheduleModeInCard(card, checkedRadio.value)
       }
 
+      // Initialize GitHub field visibility (and the disabled state that keeps a
+      // non-GitHub condition from submitting empty repos/labels into its config)
+      const typeSelect = card.querySelector("[data-trigger-form-target='conditionTypeSelect']")
+      this.updateGithubFieldsInCard(card, typeSelect ? typeSelect.value : "")
+
       // Lazily load the channel dropdown for any card whose Slack config is already visible
       this.maybeLoadChannels(card)
     })
@@ -68,8 +74,34 @@ export default class extends Controller {
     if (scheduleConfig) scheduleConfig.classList.toggle("hidden", type !== "schedule")
     if (aoEventConfig) aoEventConfig.classList.toggle("hidden", type !== "ao_event")
 
+    this.updateGithubFieldsInCard(card, type)
+
     // Lazily load the channel list the first time this card's Slack config is shown
     if (type === "slack") this.loadChannelsForCard(card)
+  }
+
+  // Show/hide the GitHub fields for a card, and disable the ones that are hidden.
+  //
+  // Disabling is what keeps the submitted configuration honest. Both GitHub types share
+  // one repos textarea, so without it a Slack condition would post an empty `repos` array
+  // into its own config, and a github_issue condition would post a `labels` array the UI
+  // never showed it — a stale label filter the model would then have to guess about.
+  updateGithubFieldsInCard(card, type) {
+    const githubConfig = card.querySelector("[data-trigger-form-target='githubConfig']")
+    const labelFields = card.querySelector("[data-trigger-form-target='githubLabelFields']")
+    const isGithub = type === "github_label" || type === "github_issue"
+
+    if (githubConfig) {
+      githubConfig.classList.toggle("hidden", !isGithub)
+      const repos = githubConfig.querySelector("textarea[name*='[repos]']")
+      if (repos) repos.disabled = !isGithub
+    }
+
+    if (labelFields) {
+      const showLabels = type === "github_label"
+      labelFields.classList.toggle("hidden", !showLabels)
+      labelFields.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !showLabels })
+    }
   }
 
   // ── Slack channel dropdown ──────────────────────────────────────────────
@@ -350,6 +382,8 @@ export default class extends Controller {
             <option value="slack">Slack - Channel messages or @mentions</option>
             <option value="schedule">Schedule - Time-based (recurring or one-time)</option>
             <option value="ao_event">Zimmer Event - Internal system event</option>
+            <option value="github_label">GitHub Label - A label is added to a PR or issue</option>
+            <option value="github_issue">GitHub Issue - A new issue is opened</option>
           </select>
         </div>
 
@@ -483,6 +517,36 @@ export default class extends Controller {
               <option value="session_archived">Session archived</option>
             </select>
             <p class="mt-1 text-xs text-gray-500">Fires when an autonomous session transitions to the selected state. Sessions created by this trigger are excluded to prevent loops.</p>
+          </div>
+        </div>
+
+        <div data-trigger-form-target="githubConfig" class="hidden space-y-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Repositories <span class="text-red-500">*</span></label>
+            <textarea name="${name}[configuration][repos][]" rows="3" disabled placeholder="owner/repo&#10;owner/another-repo" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"></textarea>
+            <p class="mt-1 text-xs text-gray-500">One <code class="bg-gray-100 px-1 rounded">owner/name</code> per line. All repos are checked in a single GitHub search request, so adding repos costs no extra API budget.</p>
+          </div>
+
+          <div data-trigger-form-target="githubLabelFields" class="hidden space-y-3">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Watch <span class="text-red-500">*</span></label>
+              <select name="${name}[configuration][target]" disabled class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+                <option value="pull_request">Pull requests</option>
+                <option value="issue">Issues</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Labels <span class="text-red-500">*</span></label>
+              <textarea name="${name}[configuration][labels][]" rows="2" disabled placeholder="ready to merge" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"></textarea>
+              <p class="mt-1 text-xs text-gray-500">One label per line. The condition fires when <strong>any</strong> of them is added.</p>
+            </div>
+          </div>
+
+          <div class="rounded-md bg-blue-50 border border-blue-200 p-3">
+            <p class="text-xs text-blue-800">
+              Fires on the <strong>event</strong>, not the current state. An item that already carries the label (or already exists) when you save this condition is recorded as a baseline on the first poll and does <strong>not</strong> fire retroactively. Removing and re-adding a label fires again. Editing the repos or labels above re-baselines the condition.
+            </p>
           </div>
         </div>
       </div>

@@ -112,3 +112,37 @@ multi_ao_event_condition:
   condition_type: ao_event
   configuration:
     event_name: session_needs_input
+
+# Conditions for github_label_trigger — already baselined (seen_items present)
+github_label_condition:
+  trigger: github_label_trigger
+  condition_type: github_label
+  configuration:
+    repos:
+      - tadasant/zimmer
+    target: pull_request
+    labels:
+      - ready to merge
+    seen_items: []
+
+# Conditions for github_issue_trigger — already baselined (last_issue_at present)
+github_issue_condition:
+  trigger: github_issue_trigger
+  condition_type: github_issue
+  configuration:
+    repos:
+      - tadasant/zimmer
+    last_issue_at: "2026-07-01T00:00:00Z"
+    seen_issue_keys: []
+
+# Condition on a disabled trigger — the poller must skip it
+disabled_github_label_condition:
+  trigger: disabled_github_label_trigger
+  condition_type: github_label
+  configuration:
+    repos:
+      - tadasant/zimmer
+    target: pull_request
+    labels:
+      - ready to merge
+    seen_items: []

@@ -168,6 +168,12 @@
                       <span class="text-gray-500">(session #<%= condition.watched_session_id %>)</span>
                     <% end %>
                   </span>
+                <% when "github_label", "github_issue" %>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-800 text-white">GitHub</span>
+                  <span class="text-sm text-gray-900"><%= condition.description.sub("GitHub: ", "") %></span>
+                <% else %>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800"><%= condition.condition_type %></span>
+                  <span class="text-sm text-gray-900"><%= condition.description %></span>
                 <% end %>
                 <% if condition.last_triggered_at %>
                   <span class="text-xs text-gray-400">(last: <%= time_ago_in_words(condition.last_triggered_at) %> ago)</span>
