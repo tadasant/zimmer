@@ -2125,12 +2125,20 @@ class AgentSessionJob < ApplicationJob
     # Terminate the Claude CLI process
     terminate_process(session, process_pid, clone_path, log_buffer)
 
-    # Check if any failures are due to OAuth-related errors - these indicate OAuth is required
-    # Patterns: "Unauthorized"/"401" (standard auth errors), "Supported scopes" (servers like
-    # Tally that report OAuth scopes in the error), "oauth" (generic OAuth error messages)
-    oauth_failures = failed_servers.select do |server|
-      error = server["error"].to_s
-      error.match?(/unauthorized|401|supported scopes|oauth/i)
+    # Split the auth-type failures by whether the server can actually BE authorized
+    # via OAuth. An auth error alone does NOT imply OAuth: a server that authenticates
+    # with a static credential header (e.g. Zimmer's own `zimmer*` entries, which send
+    # `X-API-Key: ${ZIMMER_PROD_API_KEY}`) returns the very same 401 when its API token
+    # is invalid, expired, or under-scoped — and no amount of OAuth can mint a valid API
+    # token. Classifying those as oauth_required strands the user in an unresolvable loop:
+    # they complete the OAuth flow, the session restarts, and it fails on the identical 401
+    # while the real error ("invalid_token: Failed to verify token") is never shown.
+    #
+    # McpOauthCredentialInjector.oauth_capable_server? is the same predicate the
+    # pre-spawn OAuth gate uses, so both paths agree on what an OAuth server is.
+    auth_failures = failed_servers.select { |server| auth_error?(server["error"]) }
+    oauth_failures, static_credential_failures = auth_failures.partition do |server|
+      McpOauthCredentialInjector.oauth_capable_server?(server["name"])
     end
 
     if oauth_failures.any?
@@ -2157,6 +2165,39 @@ class AgentSessionJob < ApplicationJob
         metadata: (session.metadata || {}).merge(
           "failure_reason" => "oauth_required",
           "oauth_required_servers" => oauth_required_servers
+        )
+      )
+    elsif static_credential_failures.any?
+      # Auth failure on a server whose credential is a static header/token, not OAuth.
+      # Terminal and NOT retried: a rejected API token does not become valid 30 seconds
+      # later, so the backoff ladder would only delay the real error by ~3.5 minutes.
+      #
+      # Recorded as mcp_connection_failed so the existing failure UI surfaces the raw
+      # per-server error (Session#failure_detail → "MCP Connection Failure Details"),
+      # which is what the user actually needs to see — e.g. a hosted MCP server's
+      # "invalid_token: Failed to verify token: no user or account information".
+      static_credential_failures.each do |server|
+        credential_vars = ServersConfig.find(server["name"])&.required_headers || []
+        hint = credential_vars.any? ? " Check the credential(s): #{credential_vars.join(', ')}." : ""
+
+        log_buffer.add(
+          "MCP server '#{server['name']}' rejected its credentials (#{server['error']}). " \
+          "This server authenticates with a static token, not OAuth, so authorizing it will not help.#{hint}",
+          level: "error"
+        )
+      end
+
+      log_buffer.flush
+
+      Rails.logger.warn(
+        "MCP static-credential authentication failed — session failed without retry " \
+        "| session_id=#{session.id} failed_servers=#{static_credential_failures.map { |s| s["name"] }.join(",")}"
+      )
+
+      session.update!(
+        metadata: (session.metadata || {}).merge(
+          "failure_reason" => "mcp_connection_failed",
+          "mcp_failed_servers" => failed_servers
         )
       )
     else
@@ -2219,6 +2260,21 @@ class AgentSessionJob < ApplicationJob
   rescue => e
     Rails.logger.error "[AgentSessionJob] Error handling MCP failure: #{e.message}"
     false
+  end
+
+  # Error-text patterns that indicate an MCP server rejected our credentials:
+  # "Unauthorized"/"401" (standard auth errors), "Supported scopes" (servers like Tally
+  # that report OAuth scopes in the error), "oauth"/"invalid_token" (explicit auth errors).
+  #
+  # This says only "authentication failed" — NOT "OAuth is required". Deciding whether
+  # OAuth can fix it requires knowing how the server authenticates; see
+  # McpOauthCredentialInjector.oauth_capable_server?.
+  AUTH_ERROR_PATTERN = /unauthorized|401|supported scopes|oauth|invalid_token/i
+
+  # @param error [String, nil] the raw error text reported for a failed MCP server
+  # @return [Boolean] true when the error looks like an authentication rejection
+  def auth_error?(error)
+    error.to_s.match?(AUTH_ERROR_PATTERN)
   end
 
   # Remove any partially-populated `_npx/<hash>` cache tree that a failed MCP
