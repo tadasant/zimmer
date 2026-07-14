@@ -2844,4 +2844,100 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal spawned.goal, @trigger.goal
     assert_equal spawned.id, @trigger.reload.last_session_id
   end
+
+  test "burst control: a burst ends after the traffic falls back under the cap, not only after total silence" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 3)
+
+    # A spike opens the burst.
+    10.times { |i| @trigger.create_session!(prompt: "Alert #{i}") }
+    assert @trigger.reload.bursting?
+
+    # The spike is over, but the channel keeps its ordinary trickle of one
+    # message a minute — well under the cap. These are dropped while the burst
+    # is still open, and crucially they must NOT keep renewing it: if every
+    # dropped event pushed the cooldown out, one spike would silently disable
+    # the trigger forever.
+    [ 2, 3, 4 ].each do |minute|
+      travel minute.minutes do
+        assert_no_difference("Session.count") do
+          assert_nil @trigger.create_session!(prompt: "Ordinary message at +#{minute}m")
+        end
+        assert @trigger.reload.bursting?, "still inside the burst, so still suppressed"
+      end
+    end
+
+    # Five minutes after the last minute in which the trigger exceeded its cap,
+    # the burst is over and ordinary traffic spawns sessions again — even though
+    # events never stopped arriving.
+    travel(Trigger::BURST_COOLDOWN + 1.minute) do
+      assert_not @trigger.reload.bursting?
+
+      assert_difference("Session.count", 1) do
+        assert_not_nil @trigger.create_session!(prompt: "Back to normal")
+      end
+    end
+
+    assert_equal 1, burst_notice_sessions_for(@trigger).size
+  end
+
+  test "burst control: a failed burst-notice spawn does not latch the trigger into a silent burst" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 1)
+
+    @trigger.create_session!(prompt: "Alert 1")
+
+    # The notice spawn blows up (unhealable root, DB error, ...).
+    Session.stubs(:create_from_agent_root!).raises(RuntimeError, "boom")
+    assert_raises(RuntimeError) { @trigger.create_session!(prompt: "Alert 2") }
+
+    # The burst must not be left open with no notice ever sent — that is silent
+    # death. It is cleared so the next fire can try the notice again.
+    assert_not @trigger.reload.bursting?
+
+    Session.unstub(:create_from_agent_root!)
+    stub_session_creation
+
+    notice = @trigger.create_session!(prompt: "Alert 3")
+    assert_equal true, notice.metadata["burst_notice"]
+    assert_equal 1, burst_notice_sessions_for(@trigger).size
+
+    # ...and that retry did not spawn an ordinary session instead: the window is
+    # still over the cap.
+    ordinary = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s)
+      .reject { |session| session.metadata["burst_notice"] }
+    assert_equal 1, ordinary.size
+  end
+
+  test "burst control: editing the cap clears a burst in progress (the operator's escape hatch)" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 3)
+    10.times { |i| @trigger.create_session!(prompt: "Alert #{i}") }
+    assert @trigger.reload.bursting?
+
+    @trigger.update!(max_sessions_per_minute: 10)
+
+    assert_not @trigger.bursting?
+    assert_nil @trigger.burst_active_until
+    assert_equal 0, @trigger.burst_window_count
+
+    assert_difference("Session.count", 1) do
+      assert_not_nil @trigger.create_session!(prompt: "After the operator raised the cap")
+    end
+  end
+
+  test "burst control: clearing the cap makes the trigger unbounded again immediately" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 3)
+    10.times { |i| @trigger.create_session!(prompt: "Alert #{i}") }
+    assert @trigger.reload.bursting?
+
+    @trigger.update!(max_sessions_per_minute: nil)
+
+    assert_not @trigger.bursting?, "an unbounded trigger is never reported as bursting"
+
+    assert_difference("Session.count", 5) do
+      5.times { |i| assert_not_nil @trigger.create_session!(prompt: "Unbounded #{i}") }
+    end
+  end
 end

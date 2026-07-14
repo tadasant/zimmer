@@ -136,6 +136,14 @@ class TriggersController < ApplicationController
       return
     end
 
+    if session.metadata["burst_notice"]
+      redirect_to session_path(session),
+        alert: "Trigger \"#{@trigger.name}\" exceeded its cap of #{@trigger.max_sessions_per_minute} " \
+               "session(s) per minute. This is the burst-notice session it spawned instead — the " \
+               "session you asked for was not created."
+      return
+    end
+
     redirect_to session_path(session), notice: "Trigger \"#{@trigger.name}\" fired manually. Session created."
   rescue => e
     redirect_to trigger_path(@trigger), alert: "Failed to invoke trigger: #{e.message}"
@@ -282,8 +290,12 @@ class TriggersController < ApplicationController
         configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, allowed_user_ids: [], repos: [], labels: [] ]
       ]
     ).tap do |p|
-      # An empty number field means "no cap" (unbounded), not 0.
-      p[:max_sessions_per_minute] = nil if p[:max_sessions_per_minute].blank?
+      # An empty number field means "no cap" (unbounded), not 0. Only rewrite the
+      # key when the client actually sent it — assigning it unconditionally would
+      # make any partial update that omits the field silently clear the cap.
+      if p.key?(:max_sessions_per_minute) && p[:max_sessions_per_minute].blank?
+        p[:max_sessions_per_minute] = nil
+      end
       # Ensure mcp_servers is an array and strip blanks from form submission
       p[:mcp_servers] = (p[:mcp_servers] || []).reject(&:blank?)
       # Ensure catalog_skills is an array and strip blanks from form submission
