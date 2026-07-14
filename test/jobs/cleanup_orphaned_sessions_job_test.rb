@@ -31,7 +31,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert_nil @session.running_job_id
 
     # Verify logs were created
-    warning_log = @session.logs.find_by(level: "warning")
+    warning_log = orphan_detection_warning(@session)
     assert_not_nil warning_log
     assert_includes warning_log.content, "Detected orphaned session"
 
@@ -59,7 +59,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert_nil @session.running_job_id
 
     # Verify logs were created
-    warning_log = @session.logs.find_by(level: "warning")
+    warning_log = orphan_detection_warning(@session)
     assert_not_nil warning_log
     assert_includes warning_log.content, "Job finished without updating session status"
   end
@@ -77,7 +77,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert_nil @session.running_job_id
 
     # Verify logs were created
-    warning_log = @session.logs.find_by(level: "warning")
+    warning_log = orphan_detection_warning(@session)
     assert_not_nil warning_log
     assert_includes warning_log.content, "Job was orphaned or lost"
   end
@@ -421,7 +421,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert_nil @session.running_job_id
 
     # Verify logs were created
-    warning_log = @session.logs.find_by(level: "warning")
+    warning_log = orphan_detection_warning(@session)
     assert_not_nil warning_log
     assert_includes warning_log.content, "Detected orphaned session"
     assert_includes warning_log.content, "Job was orphaned or lost"
@@ -473,7 +473,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert_nil @session.running_job_id
 
     # Verify logs were created
-    warning_log = @session.logs.find_by(level: "warning")
+    warning_log = orphan_detection_warning(@session)
     assert_not_nil warning_log
     assert_includes warning_log.content, "Detected orphaned session"
     assert_includes warning_log.content, "Job was orphaned or lost"
@@ -506,7 +506,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert_nil @session.running_job_id
 
     # Verify logs mention stale lock
-    warning_log = @session.logs.find_by(level: "warning")
+    warning_log = orphan_detection_warning(@session)
     assert_not_nil warning_log
     assert_includes warning_log.content, "stale lock from dead process"
   end
@@ -539,7 +539,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert_nil @session.running_job_id
 
     # Verify logs mention no activity
-    warning_log = @session.logs.find_by(level: "warning")
+    warning_log = orphan_detection_warning(@session)
     assert_not_nil warning_log
     assert_includes warning_log.content, "No activity for"
   ensure
@@ -919,5 +919,25 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
 
     @session.reload
     assert_equal "needs_input", @session.status
+  end
+
+  private
+
+  # Fetch the orphan-detection warning deterministically.
+  #
+  # A single CleanupOrphanedSessionsJob run can leave MORE THAN ONE warning log
+  # on the same session: the orphan-detection warning ("Detected orphaned
+  # session: ...") from recover_orphaned_session, plus a "Recovery auto-continue
+  # skipped: ..." warning when continue_recovery_paused_sessions later picks up
+  # the now recovery-paused session but can't auto-continue it (this fixture
+  # session has no session_id / working_directory). Both are level "warning".
+  #
+  # `@session.logs.find_by(level: "warning")` issues `LIMIT 1` with NO `ORDER BY`
+  # (the logs association has no default order and Log has no default_scope), so
+  # which of the two warnings Postgres returns is non-deterministic — the source
+  # of this suite's flakiness. Look the orphan-detection log up by its stable
+  # content prefix instead so the assertion targets exactly one row.
+  def orphan_detection_warning(session)
+    session.logs.find_by("level = ? AND content LIKE ?", "warning", "Detected orphaned session%")
   end
 end
