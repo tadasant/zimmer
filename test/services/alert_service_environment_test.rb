@@ -44,17 +44,28 @@ class AlertServiceEnvironmentTest < ActiveSupport::TestCase
   test "only production and staging may page the alert channel" do
     assert_equal %w[production staging], AlertService::ENABLED_ENVIRONMENTS
 
-    %w[production staging].each do |env|
-      Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new(env))
-      assert AlertService.alerting_enabled?, "#{env} should be allowed to alert"
-    end
+    # Restored explicitly rather than left to Mocha, which unstubs only after the
+    # Rails teardown chain has already run against a faked Rails.env.
+    original = Rails.env
+    begin
+      %w[production staging].each do |env|
+        Rails.env = env
+        assert AlertService.alerting_enabled?, "#{env} should be allowed to alert"
+      end
 
-    %w[test development ad-hoc].each do |env|
-      Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new(env))
-      assert_not AlertService.alerting_enabled?, "#{env} must not be allowed to alert"
+      %w[test development ad-hoc].each do |env|
+        Rails.env = env
+        assert_not AlertService.alerting_enabled?, "#{env} must not be allowed to alert"
+      end
+    ensure
+      Rails.env = original
     end
   end
 
+  # The verbatim alert from the incident. The job that emitted it lives on an unmerged
+  # branch, which is the point: a poller that was never deployed still paged the
+  # production channel, because its TEST run had production's Slack token. The ids are
+  # FixtureSet.identify hashes -- this alert is made entirely of fixture data.
   test "raise_alert does not post to Slack from the test environment even when Slack is configured" do
     with_configured_slack do
       assert_not AlertService.raise_alert(

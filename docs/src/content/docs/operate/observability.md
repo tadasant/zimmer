@@ -124,17 +124,22 @@ from an agent's shell by `CliSpawnEnv`: `SLACK_BOT_TOKEN` is deliberately passed
 "configured" in exactly the way production is. Any alert its tests exercise then pages the
 on-call channel with **fixture** data.
 
-That is not hypothetical either. A test run of a GitHub-trigger poller paged `#alerts` with:
+That is not hypothetical either. An agent running the test suite of a trigger poller — on a
+feature branch, against its own scratch database — paged `#alerts` with:
 
 ```
 Condition 949208330 on trigger 'Ready-to-merge PR gate' (ID: 887723230) failed:
 wrong number of arguments (given 2, expected 3)
 ```
 
-Those ids are `ActiveRecord::FixtureSet.identify` hashes of fixture labels, and the trigger names
-are fixture names — but nothing in the alert says so, so it was read back as a production outage
-and triaged as one. The environment allowlist is what makes an alert's presence in the channel
-mean what it claims to mean.
+Every id there is an `ActiveRecord::FixtureSet.identify` hash of a fixture label, and
+`Ready-to-merge PR gate` is a fixture's `name:` — the alert is made **entirely** of test data. But
+nothing in it says so, and an alert in `#alerts` claims to be production by its presence there. It
+was read back as a production outage and triaged as one: the "failing trigger" did not exist, the
+poller it named was not deployed, and the arity error was a half-finished working tree. Two
+sessions were spent before anyone checked whether the ids were real.
+
+The environment allowlist is what makes an alert's presence in that channel mean what it claims.
 
 The guard also declines *before* the dedup cache is written, so a non-production run cannot
 consume the dedup window and silence the same alert in production for the next hour.

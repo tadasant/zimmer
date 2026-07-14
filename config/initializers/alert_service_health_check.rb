@@ -9,7 +9,12 @@
 # Does NOT block boot — just a visible log warning.
 
 Rails.application.config.after_initialize do
-  next if Rails.env.test?
+  # Outside production/staging the environment allowlist drops alerts whatever the
+  # configuration says (AlertService::ENABLED_ENVIRONMENTS), so here a missing token
+  # is not a misconfiguration worth warning about — and a present one would not be
+  # the reassurance this warning implies. Only the environments that can actually
+  # alert are worth health-checking.
+  next unless AlertService.alerting_enabled?
 
   # Skip during asset precompilation or other non-server contexts
   if defined?(Rake) && Rake.respond_to?(:application) && Rake.application.respond_to?(:top_level_tasks)
