@@ -14,5 +14,5 @@
     "ci",
     "workflow"
   ],
-  "description": "Bundles Zimmer's test/CI skill and the git-push CI reminder hook for a tight push→CI loop. The generic wait-for-ci skill is not bundled here — it comes from the orchestrator's default skill set."
+  "description": "Bundles Zimmer's test/CI skill and the git-push CI reminder hook for a tight push→CI loop. The generic wait-for-ci skill is not bundled here — it is vendored in the catalog and already default-on for the `zimmer` root."
 }

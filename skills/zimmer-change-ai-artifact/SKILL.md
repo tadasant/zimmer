@@ -61,11 +61,14 @@ directly from app code** — go through `AirCatalogService`.
 
    `path` is **relative to `skills/skills.json`** — AIR absolutizes it on resolve.
 
-3. Only **Zimmer-specific** skills belong here. Generic workflow skills (`pr`,
-   `wait-for-ci`, `analyze-agent-transcript`, …) come from the orchestrator's own
-   default skill set. Duplicating one here creates a shortname collision, and AIR
-   **hard-fails the entire resolve** on a cross-scope collision — which takes down
-   catalog resolution for every session, not just yours.
+3. **Vendor generic skills too — this catalog is the only source.** A standalone
+   Zimmer install inherits nothing from an outside orchestrator, so generic
+   workflow skills (`pr`, `wait-for-ci`, `recover-from-compaction-thrashing`) are
+   vendored here just like the Zimmer-specific ones. Group them with
+   `"category": "workflow"` so the skill picker keeps them distinct from the
+   `zimmer` ones. Everything resolves under a single `@local/` scope, so there is
+   no cross-scope shortname collision to worry about — just never register the
+   same id twice.
 
 ## `default_in_roots` — how an artifact becomes default-on
 

@@ -19,5 +19,10 @@
     "title": "Anti-slop Rubric",
     "description": "A gradeable per-page checklist for keeping the docs from reading or looking AI-generated: voice tells (contrast framing, rule of three, hype words, emphasis-bold) and design tells (colored stripes, tinted-pill nav, line noise, colored glows). Use it to grade and fix prose and theme.",
     "file": "ANTI_SLOP_RUBRIC.md"
+  },
+  "git-workflow": {
+    "title": "Git Workflow Guide",
+    "description": "The shared git workflow the `pr` skill deep-links to: branch naming, the merged-branch guard, PR description format (one line per paragraph), the closing-issues keyword rules, and the verification/proof standards a PR must meet. Bundled into the `pr` skill's references at prepare time so its links resolve.",
+    "file": "GIT_WORKFLOW.md"
   }
 }

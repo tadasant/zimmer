@@ -104,7 +104,7 @@ a catalog that fails to resolve does not fail one test. It fails every test that
 simultaneously, with `ActiveRecord::RecordInvalid`.
 
 The triggers are subtle: a plugin bundling a skill that no longer exists, a `default_in_roots` naming an
-unknown root, a skill shortname colliding with one from the orchestrator's default skill set.
+unknown root, a skill registered in `skills.json` with no `SKILL.md` body behind its `path`.
 
 If you see a sudden wave of `RecordInvalid` across unrelated session tests, suspect the catalog before
 you suspect your change. Run `air resolve` and read *stderr*, not the exit code — AIR

@@ -76,5 +76,41 @@
     "references": [
       "engineering-practices"
     ]
+  },
+  "pr": {
+    "id": "pr",
+    "title": "Push Working State to a PR",
+    "description": "Push working state to a PR — commit all changes, push to a feature branch, open the PR, self-review, run a fresh-eyes subagent review, and wait for CI. Generic workflow usable across all repos. Its git conventions (branch naming, PR description format, verification/proof standards, wrong-branch recovery) live in the bundled `git-workflow` reference.",
+    "path": "pr",
+    "category": "workflow",
+    "user_invocable": false,
+    "default_in_roots": [
+      "zimmer"
+    ],
+    "references": [
+      "git-workflow"
+    ]
+  },
+  "recover-from-compaction-thrashing": {
+    "id": "recover-from-compaction-thrashing",
+    "title": "Recover From Compaction Thrashing",
+    "description": "Avoid and recover from compaction thrashing by delegating verbose tool calls to inline subagents. Consult it when a compaction boundary appears in your transcript, when an autocompact warning fires, or before a tool call likely to dump >3k tokens of raw output (large file reads, SSH log streams, browser/Playwright sessions, verbose reads, multi-input PR body drafts, big `gh` outputs). Delegating those calls to a subagent — which returns distilled findings instead of raw output — keeps your main thread lean so the next compaction does not erase the work you just did.",
+    "path": "recover-from-compaction-thrashing",
+    "category": "workflow",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
+  "wait-for-ci": {
+    "id": "wait-for-ci",
+    "title": "Wait for CI",
+    "description": "Block until CI passes or fails on the current PR. Use it every time you push a commit and intend to tell the user the work is done — never present a pushed commit as complete without first confirming CI is green. Also use it when waiting on CI before merging, deploying, or moving on to the next task in a multi-step plan.",
+    "path": "wait-for-ci",
+    "category": "workflow",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
   }
 }
