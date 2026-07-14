@@ -257,13 +257,11 @@ class AgentSessionJob < ApplicationJob
     session = Session.find(session_id)
     clone_path = nil
     # The directory the runtime CLI is spawned in — the clone root, or a
-    # subdirectory of it when the session has an agent root. Every code path
-    # through #perform must assign it before the monitoring loop, which hands it
-    # to ProcessLifecycleManager#handle_exit for the recovery spawns (SIGTERM
-    # retry, context-length compaction, failed-resume recovery). Declared here so
-    # that dependency is explicit rather than incidental to some branch happening
-    # to assign it (issue #183: the resume_monitoring branch did not, and Ruby
-    # silently handed the recovery spawns a nil working dir).
+    # subdirectory of it when the session has an agent root. Every path through
+    # #perform must assign it before the monitoring loop, which hands it to
+    # ProcessLifecycleManager#handle_exit for the recovery spawns (SIGTERM retry,
+    # context-length compaction, failed-resume recovery). A nil here disables all
+    # three: the adapter refuses to spawn without a working directory.
     working_directory = nil
     process_pid = nil
     stderr_log_path = nil
@@ -417,9 +415,8 @@ class AgentSessionJob < ApplicationJob
       if resume_monitoring
         # Retrieve existing process info from metadata. working_directory is
         # rehydrated the same way the follow-up path does it (below): the recorded
-        # working directory, falling back to the clone root for sessions that
-        # predate that metadata key. The monitoring loop passes it to
-        # handle_exit, so a nil here disables every exit-recovery spawn.
+        # working directory, falling back to the clone root for rows that carry no
+        # working_directory key.
         process_pid = session.metadata&.dig("process_pid")
         clone_path = session.metadata&.dig("clone_path")
         working_directory = session.metadata&.dig("working_directory") || clone_path
