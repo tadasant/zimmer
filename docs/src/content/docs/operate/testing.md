@@ -96,6 +96,36 @@ The rule that prevents the next one: **do not stub, mock, or set expectations on
 (`File`, `Dir`, `Kernel`, `Rails.logger`) in this suite.** Inject a seam, point at a real temp file, or
 capture output — anything scoped to the object and lifetime under test.
 
+### The browser suite has its own root cause: the moving target
+
+The system suite flakes for a different reason, and it has its own one-line answer.
+
+Selenium clicks by coordinate. It reads the element's bounding rect, checks the element is really on
+top at that point, then asks Chrome to dispatch a pointer event there — separate round trips. An
+element that is animating has *moved* by the time the event is dispatched, so the click lands on
+whatever slid into those coordinates instead. Nothing raises: the interactability check passed when it
+ran. The test just fails later, somewhere else, on an assertion about a page it never meant to be on.
+
+That is exactly how "the session detail drawer closes via the close button and Escape"
+([run 29343563011](https://github.com/tadasant/zimmer/actions/runs/29343563011)) failed. The drawer
+panel slides in under
+`transition-transform duration-300`. The test waits for the lazy Turbo Frame to render, which can
+resolve inside those 300ms, then clicks Close while the panel is still travelling. The click landed a
+few dozen pixels to the right of the button — on the adjacent "open full page" link, which carries
+`data-turbo-frame="_top"` and navigates the entire document to the session page. The drawer, and the
+dashboard behind it, ceased to exist; the assertion that the panel is `aria-hidden='true'` reported "no
+matches", pointing at a close handler that was never the problem.
+
+`test/application_system_test_case.rb` sets `Capybara.disable_animation = true`, which serves every page
+with `transition: none !important; animation-duration: 0s`. Elements snap to their final position, so
+nothing in the suite is ever a moving target. Waiting out the animation test-by-test would have fixed
+this one test and left the trap armed for the next one.
+
+The rule: **never wait out an animation to make a click land — remove the motion.** And when a system
+test fails only on the runner, look at the screenshot: `test-system` uploads `tmp/capybara/` (that is
+where `capybara/rails` points `Capybara.save_path`) as the `system-test-screenshots` artifact on
+failure. The picture of the wrong page is usually the whole diagnosis.
+
 ## The catalog coupling — read this before you debug
 
 :::danger[A broken catalog fails every session test at once]
