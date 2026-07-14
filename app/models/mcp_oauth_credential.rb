@@ -138,7 +138,7 @@ class McpOauthCredential < ApplicationRecord
       if permanent_refresh_failure?(response)
         invalidate_refresh_token!(response)
       else
-        Rails.logger.error "[McpOauthCredential] Token refresh failed: #{response.code} - #{response.body}"
+        Rails.logger.error "[McpOauthCredential] Token refresh failed for #{server_name} (#{credential_key}): #{response.code} - #{response.body}"
       end
       false
     end
@@ -146,8 +146,22 @@ class McpOauthCredential < ApplicationRecord
 
   private
 
+  # A refresh is permanently dead when the token endpoint rejects the
+  # refresh_token grant with a 4xx. Some servers signal this with a
+  # spec-compliant JSON body ({"error": "invalid_grant"}); others just return a
+  # bare HTML "400 Bad Request". Both mean the same thing — the refresh token is
+  # no longer usable and re-auth is required — so classify the whole 4xx class as
+  # permanent regardless of body format. The JSON error-field check remains as a
+  # more-specific classifier layered on top (it also covers the rare provider
+  # that returns one of these errors with a non-4xx status). 5xx and other
+  # non-4xx responses stay on the loud ERROR path so real outages surface.
   def permanent_refresh_failure?(response)
-    PERMANENT_REFRESH_ERRORS.include?(oauth_error(response.body))
+    client_error?(response) || PERMANENT_REFRESH_ERRORS.include?(oauth_error(response.body))
+  end
+
+  def client_error?(response)
+    code = response.code.to_i
+    code >= 400 && code < 500
   end
 
   def invalidate_refresh_token!(response)

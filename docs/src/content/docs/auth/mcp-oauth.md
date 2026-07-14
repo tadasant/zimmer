@@ -131,8 +131,14 @@ It splits network errors carefully:
 
 That distinction is the kind of care that's easy to skip and expensive to skip.
 
-On a permanent failure (`invalid_grant` / `invalid_client` / `unauthorized_client`) it nulls the
-refresh token but keeps a still-valid access token instead of force-expiring it.
+A refresh is treated as **permanent** when the token endpoint rejects the `refresh_token` grant with
+any `4xx` — the refresh token is dead and re-auth is required. Most servers signal this with a
+spec-compliant JSON body (`{"error": "invalid_grant" | "invalid_client" | "unauthorized_client"}`),
+but some return a bare HTML `400 Bad Request`, so the `4xx` status code — not the body — is what
+classifies it. On a permanent failure it nulls the refresh token but keeps a still-valid access token
+instead of force-expiring it. `5xx` and other non-`4xx` responses are treated as transient: they stay
+on the loud `ERROR` log path (which pages `#alerts`) so real outages surface, and the refresh token is
+left intact to retry on the next cron run.
 
 ## Known problems
 
