@@ -218,6 +218,19 @@ seen-set and then re-fire every labelled item the moment the syntax was correcte
 builds is the syntax GitHub evaluates — whichever default the API ends up settling on.
 :::
 
+:::note[No gh credential → the poller skips, it does not storm]
+The poller shells out to the `gh` CLI, which authenticates from a `gh auth login` credential or a
+`GH_TOKEN`/`GITHUB_TOKEN` in the environment. On an instance whose worker has neither, every tick
+would otherwise fail one API call per condition and alert on each — an every-minute error storm over
+a missing credential.
+
+So each tick preflights `GithubSearchService.configured?` (a quiet `gh auth status`) and returns early
+when it is false, logging a single WARN — the same shape as `SlackTriggerPollerJob`'s
+`return unless SlackService.configured?`. This is deliberately distinct from a transient API failure on
+a *configured* host (a rate-limit or network blip), which still raises and alerts, because that is a
+real incident rather than an unconfigured environment.
+:::
+
 ## Wake-up semantics
 
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"

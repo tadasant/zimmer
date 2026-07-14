@@ -71,12 +71,29 @@ class GithubTriggerPollerJob < ApplicationJob
   INDEX_LAG_GRACE = 30.minutes
 
   def perform
+    conditions = TriggerCondition.github
+      .joins(:trigger)
+      .where(triggers: { status: "enabled" })
+      .includes(:trigger)
+
+    # Nothing to poll — don't spend a `gh auth status` subprocess every minute on the
+    # (common) instance that has no GitHub triggers at all.
+    return unless conditions.exists?
+
+    # Degrade gracefully when the environment has no GitHub credential, exactly as
+    # SlackTriggerPollerJob returns early on an unconfigured Slack. Without this, an
+    # environment whose worker lacks `gh auth` (e.g. staging) shells out once per
+    # condition every tick, each call failing with "please run: gh auth login", and the
+    # per-condition rescue below turns every one into an alert — an every-minute storm
+    # over a missing credential. One WARN per tick is enough to make the gap visible.
+    unless GithubSearchService.configured?
+      Rails.logger.warn "[GithubTriggerPollerJob] gh CLI is not authenticated " \
+                        "(no gh auth login / GH_TOKEN); skipping GitHub trigger polling this tick"
+      return
+    end
+
     AlertBatcher.with_batch do
-      TriggerCondition.github
-        .joins(:trigger)
-        .where(triggers: { status: "enabled" })
-        .includes(:trigger)
-        .find_each do |condition|
+      conditions.find_each do |condition|
         process_condition(condition)
       rescue => e
         Rails.logger.error "[GithubTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
