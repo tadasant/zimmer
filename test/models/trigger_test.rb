@@ -2648,4 +2648,200 @@ class TriggerTest < ActiveSupport::TestCase
   ensure
     Rails.logger = original_logger
   end
+
+  # ---------------------------------------------------------------------------
+  # Burst control
+  #
+  # A Slack alerts channel received a burst of messages and the trigger watching
+  # it spawned 50 sessions — one per message — which the operator trashed by
+  # hand. max_sessions_per_minute bounds that: over the cap, the trigger spawns
+  # ONE burst-notice session (linking what it did spawn) and then goes quiet for
+  # the rest of the burst.
+  # ---------------------------------------------------------------------------
+
+  def stub_session_creation
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+  end
+
+  def burst_notice_sessions_for(trigger)
+    Session.where("metadata->>'trigger_id' = ?", trigger.id.to_s)
+      .select { |s| s.metadata["burst_notice"] }
+  end
+
+  test "max_sessions_per_minute must be a positive integer when set" do
+    @trigger.max_sessions_per_minute = 0
+    assert_not @trigger.valid?
+    assert_includes @trigger.errors[:max_sessions_per_minute], "must be greater than 0"
+
+    @trigger.max_sessions_per_minute = -1
+    assert_not @trigger.valid?
+
+    @trigger.max_sessions_per_minute = 3
+    assert @trigger.valid?
+
+    @trigger.max_sessions_per_minute = nil
+    assert @trigger.valid?, "a nil cap means unbounded and must stay valid"
+  end
+
+  test "burst control: a trigger under its limit spawns normally" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 3)
+
+    assert_difference("Session.count", 2) do
+      2.times { |i| assert_not_nil @trigger.create_session!(prompt: "Alert #{i}") }
+    end
+
+    assert_empty burst_notice_sessions_for(@trigger)
+    assert_not @trigger.reload.bursting?
+    assert_equal 2, @trigger.burst_window_count
+  end
+
+  test "burst control: N events in one window with a limit of 3 spawn exactly 3 sessions plus one burst notice" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 3)
+
+    # 10 events arrive inside one window — as they would inside a single Slack poll tick.
+    assert_difference("Session.count", 4) do
+      10.times { |i| @trigger.create_session!(prompt: "Alert #{i}") }
+    end
+
+    notices = burst_notice_sessions_for(@trigger)
+    assert_equal 1, notices.size
+
+    spawned = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s)
+      .reject { |s| s.metadata["burst_notice"] }
+    assert_equal 3, spawned.size
+
+    # The notice links the sessions the operator now has to deal with.
+    notice = notices.first
+    spawned.each do |session|
+      assert_includes notice.prompt, "/sessions/#{session.id}"
+    end
+    assert_match(/Burst detected/, notice.prompt)
+
+    # The notice never becomes the reuse target, and the trigger is now bursting.
+    @trigger.reload
+    assert_not_equal notice.id, @trigger.last_session_id
+    assert @trigger.bursting?
+  end
+
+  test "burst control: a continuing burst spawns zero further sessions and zero further notices" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 3)
+
+    10.times { |i| @trigger.create_session!(prompt: "Alert #{i}") }
+    assert_equal 4, Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).count
+
+    # The outage keeps producing alerts. Next poll tick, 30 seconds later.
+    travel 30.seconds do
+      assert_no_difference("Session.count") do
+        20.times { |i| assert_nil @trigger.create_session!(prompt: "Continuing alert #{i}") }
+      end
+      assert @trigger.last_fire_burst_suppressed?
+    end
+
+    # And the tick after that, past the original window — still no second notice.
+    travel 90.seconds do
+      assert_no_difference("Session.count") do
+        20.times { |i| assert_nil @trigger.create_session!(prompt: "Still going #{i}") }
+      end
+    end
+
+    # Four minutes in, the outage is still going: still quiet, still one notice.
+    travel 4.minutes do
+      assert_no_difference("Session.count") do
+        20.times { |i| assert_nil @trigger.create_session!(prompt: "Hour-long outage #{i}") }
+      end
+    end
+
+    assert_equal 1, burst_notice_sessions_for(@trigger).size
+    assert_equal 4, Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).count
+  end
+
+  test "burst control: the burst ends once the events stop, and the trigger spawns again" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 3)
+
+    10.times { |i| @trigger.create_session!(prompt: "Alert #{i}") }
+    assert @trigger.reload.bursting?
+
+    # Quiet for longer than the cooldown: the burst is over.
+    travel(Trigger::BURST_COOLDOWN + 1.second) do
+      assert_not @trigger.reload.bursting?
+
+      assert_difference("Session.count", 1) do
+        assert_not_nil @trigger.create_session!(prompt: "A single, normal alert")
+      end
+      assert_equal 1, @trigger.reload.burst_window_count
+    end
+
+    assert_equal 1, burst_notice_sessions_for(@trigger).size
+  end
+
+  test "burst control: a trigger with no limit set is unbounded, exactly as before" do
+    stub_session_creation
+    assert_nil @trigger.max_sessions_per_minute
+
+    assert_difference("Session.count", 10) do
+      10.times { |i| assert_not_nil @trigger.create_session!(prompt: "Alert #{i}") }
+    end
+
+    assert_empty burst_notice_sessions_for(@trigger)
+    assert_not @trigger.reload.bursting?
+    assert_equal 0, @trigger.burst_window_count, "no cap means no burst bookkeeping"
+  end
+
+  test "burst control: the window rolls, so a steady trickle under the cap never bursts" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 3)
+
+    assert_difference("Session.count", 6) do
+      6.times do |i|
+        travel(i * (Trigger::BURST_WINDOW + 1.second)) do
+          assert_not_nil @trigger.create_session!(prompt: "Trickle #{i}")
+        end
+      end
+    end
+
+    assert_empty burst_notice_sessions_for(@trigger)
+  end
+
+  test "burst control: follow-ups into a reused session are not capped (they spawn nothing)" do
+    stub_session_creation
+    session = @trigger.create_session!(prompt: "Initial prompt")
+    @trigger.update!(reuse_session: true, last_session_id: session.id, max_sessions_per_minute: 1)
+    session.update_column(:status, Session.statuses[:needs_input])
+
+    assert_no_difference("Session.count") do
+      5.times do |i|
+        reused = @trigger.create_session!(prompt: "Follow-up #{i}")
+        assert_equal session.id, reused.id
+        session.update_column(:status, Session.statuses[:needs_input])
+      end
+    end
+
+    assert_empty burst_notice_sessions_for(@trigger)
+    assert_not @trigger.reload.bursting?
+  end
+
+  test "burst control: the burst notice carries no goal and does not become the reuse target" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 1)
+    assert @trigger.goal.present?, "fixture should carry a goal for this to be meaningful"
+
+    spawned = @trigger.create_session!(prompt: "Alert 1")
+    notice = @trigger.create_session!(prompt: "Alert 2")
+
+    assert_equal true, notice.metadata["burst_notice"]
+    assert_nil notice.goal, "the notice investigates the burst; the trigger's goal is not its goal"
+    assert_equal spawned.goal, @trigger.goal
+    assert_equal spawned.id, @trigger.reload.last_session_id
+  end
 end

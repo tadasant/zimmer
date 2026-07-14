@@ -92,6 +92,10 @@ limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` · `GE
 Conditions are nested via `trigger_conditions_attributes`. The web UI's `triggers#invoke` route has
 no API equivalent.
 
+`max_sessions_per_minute` (integer, nullable) sets the trigger's [burst
+cap](/sessions/triggers/#burst-control); `null` — the default — means unbounded. The trigger payload
+also reports `bursting`, true while the trigger is inside a burst and spawning nothing.
+
 ## Notifications
 
 `GET /notifications` (`status=read|unread`) · `GET /notifications/:id` ·
