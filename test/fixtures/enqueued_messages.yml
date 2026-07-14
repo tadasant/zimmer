@@ -1,5 +1,4 @@
 # Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
 
-# Empty fixture file - enqueued messages are created dynamically in tests
-# This file exists to ensure the enqueued_messages table is properly truncated
-# when fixtures are loaded, preventing foreign key violations from stale data.
+# Empty on purpose: tests create the enqueued messages they need inline. The file
+# still exists so the table is truncated when fixtures load.
