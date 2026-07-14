@@ -133,6 +133,11 @@ Rails.application.configure do
       class: "SlackTriggerPollerJob",
       description: "Poll Slack channels for triggers and create sessions"
     },
+    github_trigger_poller: {
+      cron: "* * * * *", # Every minute — one search request per condition, against a 30/min budget
+      class: "GithubTriggerPollerJob",
+      description: "Poll GitHub for label-added and new-issue trigger conditions and create sessions"
+    },
     slack_trigger_health_check: {
       cron: "45 * * * *", # Every hour at minute 45 (offset from other hourly jobs)
       class: "SlackTriggerHealthCheckJob",
