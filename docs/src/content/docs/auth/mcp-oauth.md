@@ -134,6 +134,40 @@ That distinction is the kind of care that's easy to skip and expensive to skip.
 On a permanent failure (`invalid_grant` / `invalid_client` / `unauthorized_client`) it nulls the
 refresh token but keeps a still-valid access token instead of force-expiring it.
 
+## Capturing the token the runtime rotates (write-back)
+
+Zimmer is not the only party that refreshes these tokens. Claude Code has its own MCP OAuth client:
+when an access token lapses mid-session it refreshes it and writes the new pair back to
+`~/.claude/.credentials.json`. Notion (and other OAuth 2.1 servers) **rotate** refresh tokens —
+every refresh mints a new refresh token and revokes the prior one — so once Claude Code refreshes,
+the refresh token in Zimmer's DB is already dead.
+
+`ClaudeMcpCredentialWriter#merge_preserving_fresher!` protects that fresher on-disk entry only while
+its paired access token is still valid. Across an idle gap longer than the access token's TTL (~1h
+for Notion) the on-disk access token lapses, so on the next spawn Zimmer's stale DB entry wins and
+clobbers the good on-disk refresh token. The next refresh — Claude Code's at connect time, or
+`RefreshMcpOauthTokensJob`'s from cron — then presents the revoked token and gets
+`invalid_grant: Invalid refresh token`, and the server drops offline until a human re-authorizes.
+
+`McpOauthRuntimeReconciler` closes that loop. Before Zimmer refreshes or injects a credential it reads
+the runtime's on-disk store (`RuntimeMcpCredentialWriter#read_runtime_credentials`) and, if the
+runtime holds a strictly newer token pair — a later access-token expiry means the runtime refreshed
+after Zimmer last wrote the row — adopts that pair into the DB. Crucially it adopts even when the
+on-disk access token has already expired: a rotated refresh token is the live head of the chain
+regardless of its paired access token's TTL, which is the exact case `merge_preserving_fresher!`
+drops. `ClaudeAccount#sync_tokens_from_filesystem!` does the same thing for the runtime's own account
+tokens; MCP OAuth credentials had no equivalent, which is why they went stale.
+
+The reconciler runs in two places:
+
+- **`McpOauthCredentialInjector`**, on every spawn, before it decides whether to refresh or gate the
+  session — so a session never injects (or re-auth-prompts against) a rotated-away token.
+- **`RefreshMcpOauthTokensJob`**, before the cron refreshes each credential — so the cron adopts a
+  session's rotation instead of burning the stale DB token against the provider's reuse detection.
+
+Only Claude Code refreshes MCP tokens mid-session; Codex is written-not-trusted (Zimmer rewrites its
+store every spawn), so reconciling against Codex is a harmless no-op.
+
 ## Known problems
 
 :::danger[Anyone who can reach the host can start an OAuth flow for any session]

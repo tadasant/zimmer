@@ -603,6 +603,80 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
 
   private
 
+  test "check_credentials_status captures a runtime-rotated refresh token back into the DB" do
+    credential = mcp_oauth_credentials(:notion)
+    server_config = mock_server_config(name: "notion", type: "streamable-http", url: "https://mcp.notion.com/mcp")
+
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? server_config : nil }) do
+      key = McpOauthCredential.compute_credential_key(
+        "notion", { type: "streamable-http", url: "https://mcp.notion.com/mcp", headers: {} }
+      )
+      # The DB holds a stale, already-rotated-away pair whose access token has lapsed.
+      credential.update!(
+        credential_key: key,
+        access_token: "stale-access",
+        refresh_token: "rotated-away-refresh",
+        expires_at: 2.hours.ago
+      )
+
+      # A prior Claude Code session refreshed + rotated the token and left a newer
+      # pair on disk (fresh access token valid for 30 more minutes).
+      rotated_expiry_ms = ((Time.current + 30.minutes).to_f * 1000).to_i
+      entries = {
+        key => {
+          "serverName" => "notion",
+          "accessToken" => "runtime-fresh-access",
+          "refreshToken" => "runtime-rotated-refresh",
+          "expiresAt" => rotated_expiry_ms
+        }
+      }
+
+      session = mock_claude_session([ "notion" ])
+      injector = McpOauthCredentialInjector.new(session, working_directory: @working_directory)
+
+      status = with_claude_runtime_store(entries) { injector.check_credentials_status }
+
+      credential.reload
+      assert_equal "runtime-rotated-refresh", credential.refresh_token,
+        "the rotated refresh token from disk must be persisted back to the DB"
+      assert_equal "runtime-fresh-access", credential.access_token
+      assert credential.active?, "adopting the fresher pair makes the credential active again"
+      assert status["notion"][:credential_valid], "status must reflect the recovered credential as valid"
+      assert_not status["notion"][:requires_reauth]
+    end
+  end
+
+  # A session stub that resolves to the Claude runtime credential writer, so the
+  # injector's reconciler reads Claude Code's on-disk store.
+  def mock_claude_session(servers)
+    runtime = Object.new
+    runtime.define_singleton_method(:mcp_credential_writer_class) { ClaudeMcpCredentialWriter }
+
+    session = Object.new
+    session.define_singleton_method(:mcp_servers) { servers }
+    session.define_singleton_method(:runtime) { runtime }
+    session
+  end
+
+  # Points ClaudeMcpCredentialWriter's credential-store constant at a temp file
+  # holding the given mcpOAuth entries for the duration of the block.
+  def with_claude_runtime_store(entries)
+    ClaudeMcpCredentialWriter.any_instance.stubs(:macos?).returns(false)
+    dir = Dir.mktmpdir("claude-runtime-store")
+    path = File.join(dir, ".credentials.json")
+    File.write(path, JSON.generate("mcpOAuth" => entries))
+
+    klass = ClaudeMcpCredentialWriter
+    original = klass::CLAUDE_CREDENTIALS_PATH
+    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
+    klass.const_set(:CLAUDE_CREDENTIALS_PATH, path)
+    yield
+  ensure
+    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
+    klass.const_set(:CLAUDE_CREDENTIALS_PATH, original)
+    FileUtils.rm_rf(dir) if dir
+  end
+
   # Helper to create a mock server config object
   def mock_server_config(name:, type:, url:, headers: {})
     config = Object.new
