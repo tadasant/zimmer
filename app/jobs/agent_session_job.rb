@@ -1136,6 +1136,7 @@ class AgentSessionJob < ApplicationJob
       waiting_on_elicitation = false
       last_sigterm_retry_at = session.metadata&.dig("last_sigterm_at") ? Time.parse(session.metadata["last_sigterm_at"]) : nil
       last_api_error_retry_at = session.metadata&.dig("last_api_error_retry_at") ? Time.parse(session.metadata["last_api_error_retry_at"]) : nil
+      last_signal_death_at = session.metadata&.dig("last_signal_death_at") ? Time.parse(session.metadata["last_signal_death_at"]) : nil
 
       loop do
         loop_iteration += 1
@@ -1343,6 +1344,7 @@ class AgentSessionJob < ApplicationJob
               # Update retry timestamps to track successful run duration for reset logic
               last_sigterm_retry_at = Time.current
               last_api_error_retry_at = Time.current
+              last_signal_death_at = Time.current
               # Restart log streaming thread for new process
               log_streaming_thread&.kill if log_streaming_thread&.alive?
               log_streaming_thread = start_log_streaming(session, process_pid, stderr_log_path, working_directory)
@@ -1397,6 +1399,8 @@ class AgentSessionJob < ApplicationJob
                 "context_length_compact_failed"
               when /API error retry limit exhausted/i
                 "api_error_retries_exhausted"
+              when /Signal death resume limit exhausted/i
+                "signal_death_retries_exhausted"
               when /Clone directory no longer exists/i
                 # Benign terminal case: the clone was GC'd after the session was torn
                 # down, so a continuation re-spawn is impossible (not a system fault).
@@ -1515,6 +1519,7 @@ class AgentSessionJob < ApplicationJob
         # periods of successful operation (see issue #459).
         check_and_reset_sigterm_retry_counter(session, last_sigterm_retry_at, log_buffer)
         check_and_reset_api_error_retry_counter(session, last_api_error_retry_at, log_buffer)
+        check_and_reset_signal_death_retry_counter(session, last_signal_death_at, log_buffer)
 
         # 6. Check for fallback: end_turn + dead process
         # This should rarely trigger now that we're in the same job,
@@ -2522,6 +2527,42 @@ class AgentSessionJob < ApplicationJob
     )
   rescue => e
     Rails.logger.error "[AgentSessionJob] Error resetting API error retry counter: #{e.message}"
+  end
+
+  # Reset the signal-death resume counter once a resumed process has been running
+  # successfully for SIGTERM_RETRY_RESET_THRESHOLD seconds.
+  #
+  # Uses the same threshold and principle as the SIGTERM/API resets: a genuinely
+  # long-running session that OOMs (SIGKILL) once every few hours should get a
+  # fresh resume budget after each stable stretch, rather than accumulating toward
+  # MAX_SIGNAL_DEATH_RETRIES over its whole lifetime and then failing permanently.
+  #
+  # @param session [Session] The current session
+  # @param last_signal_death_at [Time, nil] When the last signal-death resume occurred
+  # @param log_buffer [LogBuffer] Buffer for logging
+  def check_and_reset_signal_death_retry_counter(session, last_signal_death_at, log_buffer)
+    return unless last_signal_death_at
+    return unless session.metadata&.dig("signal_death_retry_count")&.positive?
+
+    time_since_last_death = Time.current - last_signal_death_at
+    return unless time_since_last_death >= SIGTERM_RETRY_RESET_THRESHOLD
+
+    previous_count = session.metadata["signal_death_retry_count"]
+    with_db_retry do
+      session.update!(
+        metadata: session.metadata.except(
+          "signal_death_retry_count",
+          "last_signal_death_at"
+        )
+      )
+    end
+
+    log_buffer.add(
+      "Signal-death resume counter reset (was #{previous_count}) - process stable for #{time_since_last_death.round}s",
+      level: "info"
+    )
+  rescue => e
+    Rails.logger.error "[AgentSessionJob] Error resetting signal-death retry counter: #{e.message}"
   end
 
   # Terminate a running process

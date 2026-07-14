@@ -4616,6 +4616,55 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
+  # Signal-Death (OOM/SIGKILL) Resume Counter Reset Tests
+  # ============================================================================
+
+  test "check_and_reset_signal_death_retry_counter resets counter after threshold" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: {
+        "signal_death_retry_count" => 2,
+        "last_signal_death_at" => "2025-11-29T18:22:09Z"
+      }
+    )
+
+    # A resumed process that has been stable past the threshold gets a fresh budget.
+    last_signal_death_at = 65.seconds.ago
+    job.send(:check_and_reset_signal_death_retry_counter, @session, last_signal_death_at, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    assert_nil @session.metadata["signal_death_retry_count"]
+    assert_nil @session.metadata["last_signal_death_at"]
+
+    logs = @session.logs.reload.pluck(:content)
+    assert logs.any? { |log| log.include?("Signal-death resume counter reset") }
+  end
+
+  test "check_and_reset_signal_death_retry_counter does not reset before threshold" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: {
+        "signal_death_retry_count" => 2,
+        "last_signal_death_at" => "2025-11-29T18:22:09Z"
+      }
+    )
+
+    last_signal_death_at = 30.seconds.ago
+    job.send(:check_and_reset_signal_death_retry_counter, @session, last_signal_death_at, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    assert_equal 2, @session.metadata["signal_death_retry_count"]
+  end
+
+  # ============================================================================
   # API Error Retry Counter Reset Tests
   # ============================================================================
 
