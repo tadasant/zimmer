@@ -63,7 +63,7 @@ Several tests `skip` when a credential or file is absent — which in CI means t
 That last pair means the catalog-pinning feature has zero CI coverage — the code path exists,
 the tests exist, and neither runs. Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
 
-## Flaky tests and the one root cause behind them
+## Flaky tests and the two root causes behind them
 
 A run of CI flakes ([#2](https://github.com/tadasant/zimmer/issues/2),
 [#3](https://github.com/tadasant/zimmer/issues/3), [#5](https://github.com/tadasant/zimmer/issues/5),
@@ -117,9 +117,15 @@ dashboard behind it, ceased to exist; the assertion that the panel is `aria-hidd
 matches", pointing at a close handler that was never the problem.
 
 `test/application_system_test_case.rb` sets `Capybara.disable_animation = true`, which serves every page
-with `transition: none !important; animation-duration: 0s`. Elements snap to their final position, so
-nothing in the suite is ever a moving target. Waiting out the animation test-by-test would have fixed
-this one test and left the trap armed for the next one.
+with `transition: none !important; animation-duration: 0s`. CSS-animated elements snap to their final
+position, so they are never moving targets. Waiting out the animation test-by-test would have fixed this
+one test and left the trap armed for the next one.
+
+One gap survives, so know where it is: the injected CSS does **not** defeat a JS-driven
+`scrollIntoView({ behavior: "smooth" })` — per CSSOM-View, an explicit `behavior` in the options beats
+the CSS `scroll-behavior` property. The select/autocomplete controllers (`goal`, `mcp-server-select`,
+`plugins-select`, `hooks-select`, `slash-command`, `subagent-accordion`) scroll their options that way,
+so a test clicking an option mid-scroll is still aiming at a moving target.
 
 The rule: **never wait out an animation to make a click land — remove the motion.** And when a system
 test fails only on the runner, look at the screenshot: `test-system` uploads `tmp/capybara/` (that is
