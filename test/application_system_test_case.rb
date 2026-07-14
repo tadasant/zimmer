@@ -13,6 +13,26 @@ require "selenium-webdriver"
 # This ensures the same Rack server thread is reused across all tests in a worker
 Capybara.reuse_server = true
 
+# Serve every page with CSS transitions and animations forced to zero duration
+# (Capybara injects `transition: none !important; animation-duration: 0s` into each
+# HTML response via a Rack middleware).
+#
+# An element that animates into place is a moving target, and Selenium clicks by
+# coordinate: it reads the element's bounding rect, then asks Chrome to dispatch a
+# pointer event there, as separate round trips. A mid-transition element has drifted
+# by the time the event is dispatched, so the click silently lands on whatever slid
+# into those coordinates — the interactability check passed when it ran, so nothing
+# raises. That is what made the session-drawer close test flaky.
+#
+# This covers CSS transitions and animations, which is where the suite's moving
+# targets come from. It does NOT defeat a JS-driven `scrollIntoView({ behavior:
+# "smooth" })` — per CSSOM-View an explicit `behavior` beats the CSS property — so a
+# test driving one of the dropdown controllers that scroll their options that way is
+# still clicking at a moving target.
+#
+# The full diagnosis is in docs/src/content/docs/operate/testing.md.
+Capybara.disable_animation = true
+
 # Generate a unique user data directory for each parallel test worker
 # This allows Chrome to reuse profile data between tests, significantly
 # reducing browser startup time while maintaining isolation between workers.
