@@ -363,8 +363,19 @@ jobs:
             exit 1
           fi
 
+          # Capture WITHOUT letting `set -e` abort on a non-zero rc. obs:smoke itself
+          # only ever `puts` and exits 0 -- every misconfiguration it detects
+          # (rejection, unreachable, exporter-off) is reported in its OUTPUT, which the
+          # grep classification below is what reads. So a non-zero rc here is never the
+          # probe's verdict; it means the harness around it failed to run: a transient
+          # SSH drop, the container vanishing between the `docker ps` above and this
+          # `docker exec`, or Rails failing to boot the rake process. Aborting at the
+          # assignment (which `set -e` would do) would both swallow `$out` before it is
+          # echoed AND fail a deploy that already passed the health-gated cutover --
+          # exactly the "broken telemetry must not withhold a good deploy" intent this
+          # step is built around, inverted. So keep the rc and classify on it below.
           echo "--- bin/rails obs:smoke (in $web) ---"
-          out=$(ssh root@"${STAGING_HOST}" "docker exec $web bin/rails obs:smoke" 2>&1)
+          out=$(ssh root@"${STAGING_HOST}" "docker exec \"$web\" bin/rails obs:smoke" 2>&1) && rc=0 || rc=$?
           echo "$out"
           echo "-------------------------------------"
 
@@ -394,6 +405,28 @@ jobs:
           if grep -q "rejected (error:" <<<"$out"; then
             echo "::warning::staging could not REACH the collector (no HTTP response). The obs stack may be down;"
             echo "::warning::staging's logs are being dropped until it is back."
+            exit 0
+          fi
+
+          # Ingest was accepted (endpoint + token are good), but the async export
+          # thread that ships the LIVE logger path is dead -- the synchronous probe
+          # passed while `Rails.logger.error` records would queue and never ship. A
+          # real degradation, so surface it; not this deploy's failure to fix, so warn
+          # rather than fail.
+          if grep -q "export thread is NOT running" <<<"$out"; then
+            echo "::warning::OTLP ingest was accepted, but the exporter's async thread is not running --"
+            echo "::warning::the synchronous probe ships, but live Rails.logger records do not. Check the"
+            echo "::warning::web container's boot logs for an otel_logs_exporter thread crash."
+            exit 0
+          fi
+
+          # The probe harness itself failed to run (SSH drop, container gone, Rails
+          # boot failure) -- NOT a verdict on the ingest, since obs:smoke exits 0 for
+          # every state it can actually diagnose. Don't fail the already-live deploy
+          # over it; make the un-run probe visible so it is not read as a pass.
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::could not run the ingest probe (obs:smoke exited $rc before reporting a verdict)."
+            echo "::warning::The deploy is already live and health-gated; telemetry was left UNVERIFIED, not confirmed broken."
             exit 0
           fi
 
