@@ -14,6 +14,10 @@ class AlertBatcherTest < ActiveSupport::TestCase
     SlackService.stubs(:configured?).returns(true)
     SlackService.stubs(:client).returns(@mock_client)
     SecretsLoader.stubs(:get).with("ENG_ALERTS_SLACK_CHANNEL_ID").returns("C123")
+
+    # Batching/aggregation is what's under test here, so these opt in to alerting.
+    # The environment allowlist is asserted on its own in AlertServiceEnvironmentTest.
+    AlertService.stubs(:alerting_enabled?).returns(true)
   end
 
   teardown do

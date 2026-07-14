@@ -10,6 +10,11 @@ class AlertServiceTest < ActiveSupport::TestCase
     @original_cache = Rails.cache
     @memory_cache = ActiveSupport::Cache::MemoryStore.new
     Rails.cache = @memory_cache
+
+    # These tests are about the dedup/formatting/delivery logic, so they opt in to
+    # alerting. The environment allowlist that normally holds this shut in test is
+    # asserted on its own in AlertServiceEnvironmentTest.
+    AlertService.stubs(:alerting_enabled?).returns(true)
   end
 
   teardown do

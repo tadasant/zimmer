@@ -24,7 +24,29 @@ class AlertService
   # Cache key prefix for deduplication
   CACHE_PREFIX = "alert_service:dedup:"
 
+  # Environments whose alerts may reach the #eng-alerts Slack channel.
+  #
+  # The `configured?` check does NOT keep test and development quiet, because a
+  # Slack token proves nothing about which environment is holding it. Zimmer runs
+  # its agent sessions *inside the production container*, so every agent-session
+  # shell inherits production's SLACK_BOT_TOKEN and ENG_ALERTS_SLACK_CHANNEL_ID:
+  # a `RAILS_ENV=test bin/rails test` in an agent's repo clone is "configured" in
+  # exactly the way production is, and any alert a test exercises then pages the
+  # on-call channel with fixture data. That is not hypothetical — it happened, and
+  # the fixture ids in the resulting alerts were read back as a production outage.
+  #
+  # Sentry's `enabled_environments` closes this same hole on the exception path
+  # (config/initializers/sentry.rb, issue #176). This closes it on the alert path.
+  # Only Rails.env can tell the two apart, so only Rails.env is trusted here.
+  ENABLED_ENVIRONMENTS = %w[production staging].freeze
+
   class << self
+    # Whether this process is allowed to page the alert channel at all.
+    # @return [Boolean]
+    def alerting_enabled?
+      ENABLED_ENVIRONMENTS.include?(Rails.env)
+    end
+
     # Raise an operational alert to #eng-alerts
     #
     # When an AlertBatcher block is open on the current thread, the alert is
@@ -38,6 +60,8 @@ class AlertService
     # @param dedup_key [String, nil] Custom deduplication key. If nil, derived from title + source.
     # @return [Boolean] true if alert was sent/batched, false if suppressed or failed
     def raise_alert(title, details: nil, source: nil, dedup_key: nil)
+      return false unless alerting_enabled_for?(title, source)
+
       key = dedup_key || default_dedup_key(title, source)
 
       if AlertBatcher.open?
@@ -56,6 +80,10 @@ class AlertService
     # This is effectively the non-batching core of raise_alert, extracted so
     # the batcher can reuse the dedup + Slack-post logic on flush.
     def emit(title, details:, source:, dedup_key:)
+      # AlertBatcher.flush! calls emit directly, bypassing raise_alert. Guarding
+      # only raise_alert would leave that second door into Slack open.
+      return false unless alerting_enabled_for?(title, source)
+
       if suppressed?(dedup_key)
         logger.info("Alert suppressed (duplicate within #{DEDUP_WINDOW.inspect})", title: title, source: source, dedup_key: dedup_key)
         return false
@@ -88,6 +116,20 @@ class AlertService
     end
 
     private
+
+    # Declines — loudly, to the local log — when this environment may not alert.
+    # The alert still has somewhere to go (stdout), it just does not go to Slack,
+    # and critically it does not touch the dedup cache: a dropped alert must not
+    # consume the window that would otherwise silence the same alert in production.
+    def alerting_enabled_for?(title, source)
+      return true if alerting_enabled?
+
+      logger.info(
+        "Alert suppressed (#{Rails.env} is not an alerting environment)",
+        title: title, source: source, enabled_environments: ENABLED_ENVIRONMENTS
+      )
+      false
+    end
 
     def channel_id
       SecretsLoader.get("ENG_ALERTS_SLACK_CHANNEL_ID") || ENV["ENG_ALERTS_SLACK_CHANNEL_ID"]
