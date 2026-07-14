@@ -35,6 +35,37 @@ class SessionTest < ActiveSupport::TestCase
     assert session.valid?, "Session should be valid without a prompt"
   end
 
+  # parent_session_id arrives straight from client params (POST /api/v1/sessions permits
+  # it), and the database refuses a pointer to a session that does not exist. Catching an
+  # unknown id here is what makes that a 422 naming the field rather than a 500.
+  test "should reject a parent_session_id that references no session" do
+    session = Session.new(
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      parent_session_id: 999_999_999
+    )
+
+    assert_not session.valid?
+    assert_includes session.errors[:parent_session_id], "must reference an existing session"
+  end
+
+  test "should accept a parent_session_id that references a real session" do
+    parent = Session.create!(
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main"
+    )
+    session = Session.new(
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      parent_session_id: parent.id
+    )
+
+    assert_predicate session, :valid?
+  end
+
   test "should validate prompt length when provided" do
     session = Session.new(
       agent_runtime: "claude_code",

@@ -292,6 +292,12 @@ class Session < ApplicationRecord
   validate :catalog_plugins_must_be_array
   validate :catalog_plugins_must_exist_in_catalog, if: :catalog_plugins_changed?
   validate :git_root_format, if: :git_root?
+  # parent_session_id is client-supplied (POST /api/v1/sessions permits it, and the
+  # dashboard passes it straight through from params), and `belongs_to ..., optional:
+  # true` does not check that the row exists. The database refuses a pointer to a
+  # missing session, so without this an unknown id would surface as an
+  # ActiveRecord::InvalidForeignKey 500 instead of a 422 naming the bad field.
+  validate :parent_session_must_exist, if: :parent_session_id_changed?
 
   after_create :set_default_title
   after_create_commit :enqueue_session_inference
@@ -1111,6 +1117,13 @@ class Session < ApplicationRecord
     return if invalid_plugins.empty?
 
     errors.add(:catalog_plugins, "contains invalid plugin(s): #{invalid_plugins.join(', ')}")
+  end
+
+  def parent_session_must_exist
+    return if parent_session_id.blank?
+    return if Session.exists?(id: parent_session_id)
+
+    errors.add(:parent_session_id, "must reference an existing session")
   end
 
   def git_root_format

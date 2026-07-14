@@ -989,6 +989,21 @@ It checks 3 of the retry strategy's 5 predicates.
 
 Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
 
+### `db/schema.rb` is a Rails 8.0-format dump, and CI never runs the migrations
+
+🟡 `db/schema.rb` says `ActiveRecord::Schema[8.0]` and lists columns in declaration order, while
+`Gemfile.lock` pins Rails 8.1, whose dumper sorts columns alphabetically. So `bin/rails db:migrate`
+rewrites all ~450 lines regardless of how small the migration was, and the author has to either
+commit that reformat or hand-write the schema entry and throw the dump away.
+
+CI cannot catch the drift that invites: both test jobs build the database with `bin/rails
+db:test:prepare`, which *loads* `schema.rb` and never runs a migration — so a `schema.rb` that
+disagrees with `db/migrate/` passes CI and diverges from production, which does run them. Until that
+is fixed, a migration PR should verify the two agree by hand (load the schema into a scratch database,
+run the migrations into another, and diff the introspected result).
+
+Tracked in [#182](https://github.com/tadasant/zimmer/issues/182).
+
 ---
 
 ## Development environment

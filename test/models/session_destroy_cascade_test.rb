@@ -2,23 +2,33 @@
 
 require "test_helper"
 
-# Deleting a session must clean up after itself in the DATABASE, not only in
-# ActiveRecord.
+# Deleting a session cleans up after itself in the DATABASE, not only in ActiveRecord.
 #
 # Session declares `dependent: :destroy` for every table that references it, which
 # covers `session.destroy`. It does not cover a row-level delete: `Session.delete_all`
-# (which most of this suite's setup blocks use), `session.delete`, or a `DELETE FROM
-# sessions` typed into psql all skip the callbacks. Without an ON DELETE rule on the
-# foreign key, Postgres refuses those deletes outright — that is the
-# `PG::ForeignKeyViolation ... still referenced from table "notifications"` this suite
-# used to raise, and the reason the fixture files for elicitations, enqueued_messages
-# and subagent_transcripts are deliberately empty. The same violation can reach
-# `session.destroy` too: a notification INSERT that commits between destroy's
-# child-delete and its parent-delete leaves a row the parent delete then trips over.
+# (which many of this suite's setup blocks use), `session.delete`, or a `DELETE FROM
+# sessions` typed into psql all skip the callbacks and go straight to the database.
+# Without an ON DELETE rule on the foreign key, Postgres refuses those deletes with a
+# foreign-key violation. The same violation can reach `session.destroy` itself: a
+# notification INSERT that commits between destroy's child-delete and its parent-delete
+# leaves a row the parent delete then trips over.
 #
-# These tests pin the ON DELETE rules, so the invariant survives whichever path a
-# caller takes.
+# These tests pin the ON DELETE rules, so the invariant holds whichever path a caller
+# takes.
 class SessionDestroyCascadeTest < ActiveSupport::TestCase
+  # Every foreign key that points at `sessions`, and the rule each one carries:
+  # [from_table, column, on_delete].
+  EXPECTED_SESSION_FOREIGN_KEYS = [
+    [ "elicitations", "session_id", :cascade ],
+    [ "enqueued_messages", "session_id", :cascade ],
+    [ "logs", "session_id", :cascade ],
+    [ "mcp_oauth_pending_flows", "session_id", :cascade ],
+    [ "notifications", "session_id", :cascade ],
+    [ "sessions", "blocked_by_session_id", :nullify ],
+    [ "sessions", "parent_session_id", :nullify ],
+    [ "subagent_transcripts", "session_id", :cascade ]
+  ].freeze
+
   test "row-level delete of a session with notifications does not raise a foreign key violation" do
     session = create_session
     notification = Notification.create!(session: session, notification_type: "needs_input")
@@ -88,21 +98,21 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     assert_not Log.exists?(log.id)
   end
 
-  # Guards the rules themselves rather than one path through them: a future migration
-  # that adds a table referencing sessions without an ON DELETE rule reintroduces the
-  # foreign-key violation, and fails here instead of in production.
-  test "every foreign key into sessions declares an on_delete rule" do
+  # Guards the rules themselves rather than one path through them. A table added later
+  # that references sessions — or an existing key that loses its rule — fails here,
+  # with the expected set spelling out what each key is supposed to do, instead of
+  # surfacing as a foreign-key violation in production.
+  test "the foreign keys into sessions carry exactly the expected on_delete rules" do
     connection = ActiveRecord::Base.connection
-    referencing = connection.tables.flat_map { |table| connection.foreign_keys(table) }
-                            .select { |fk| fk.to_table == "sessions" }
+    actual = connection.tables
+                       .flat_map { |table| connection.foreign_keys(table) }
+                       .select { |fk| fk.to_table == "sessions" }
+                       .map { |fk| [ fk.from_table, fk.column, fk.on_delete ] }
+                       .sort
 
-    assert_operator referencing.size, :>=, 7, "expected the known session-referencing foreign keys"
-
-    referencing.each do |fk|
-      assert_not_nil fk.on_delete,
-        "#{fk.from_table}.#{fk.column} references sessions with no ON DELETE rule; " \
-        "a row-level session delete would raise a foreign-key violation"
-    end
+    assert_equal EXPECTED_SESSION_FOREIGN_KEYS.sort, actual,
+      "a foreign key into sessions changed. A key with no ON DELETE rule (nil) makes a " \
+      "row-level session delete raise; update this list only alongside a deliberate migration."
   end
 
   private
