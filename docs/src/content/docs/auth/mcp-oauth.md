@@ -136,9 +136,10 @@ any `4xx` — the refresh token is dead and re-auth is required. Most servers si
 spec-compliant JSON body (`{"error": "invalid_grant" | "invalid_client" | "unauthorized_client"}`),
 but some return a bare HTML `400 Bad Request`, so the `4xx` status code — not the body — is what
 classifies it. On a permanent failure it nulls the refresh token but keeps a still-valid access token
-instead of force-expiring it. `5xx` and other non-`4xx` responses are treated as transient: they stay
-on the loud `ERROR` log path (which pages `#alerts`) so real outages surface, and the refresh token is
-left intact to retry on the next cron run.
+instead of force-expiring it. **Transient** failures — `429` rate-limits and `5xx` outages — are
+excluded first: the refresh token itself is not implicated, so it is left intact and the failure stays
+on the loud `ERROR` log path (which pages `#alerts`) to retry on the next cron run. This transient /
+permanent split matches `XOauthCredential`.
 
 ## Known problems
 

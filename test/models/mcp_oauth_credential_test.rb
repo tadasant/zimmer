@@ -214,7 +214,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     # still be classified permanent (WARN + natural re-auth), not logged as an
     # ERROR that pages the production #alerts channel.
     html_body = "<!DOCTYPE html>\n<html><body><pre>Bad Request</pre></body></html>"
-    response = build_html_error_response(400, html_body)
+    response = build_raw_response(400, html_body)
 
     logged = capture_logger_levels do
       Net::HTTP.stub(:post_form, response) do
@@ -234,7 +234,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
   test "refresh! treats a 401 with a non-JSON body as a permanent failure" do
     credential = mcp_oauth_credentials(:expiring_soon)
 
-    response = build_html_error_response(401, "Unauthorized")
+    response = build_raw_response(401, "Unauthorized")
 
     logged = capture_logger_levels do
       Net::HTTP.stub(:post_form, response) do
@@ -253,7 +253,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     credential = mcp_oauth_credentials(:expiring_soon)
     original_refresh_token = credential.refresh_token
 
-    response = build_html_error_response(503, "Service Unavailable")
+    response = build_raw_response(503, "Service Unavailable")
 
     logged = capture_logger_levels do
       Net::HTTP.stub(:post_form, response) do
@@ -265,6 +265,28 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
 
     credential.reload
     # A transient failure must not drop the refresh token — we retry later.
+    assert_equal original_refresh_token, credential.refresh_token
+    assert credential.can_refresh?
+  end
+
+  test "refresh! treats a 429 rate-limit as transient, not permanent, and keeps the refresh token" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    original_refresh_token = credential.refresh_token
+
+    response = build_raw_response(429, "Too Many Requests")
+
+    logged = capture_logger_levels do
+      Net::HTTP.stub(:post_form, response) do
+        assert_not credential.refresh!
+      end
+    end
+
+    # A rate limit is transient: stay loud and, crucially, do NOT drop a
+    # still-good refresh token — the next cron run retries.
+    assert_includes logged, :error
+    assert_not_includes logged, :warn
+
+    credential.reload
     assert_equal original_refresh_token, credential.refresh_token
     assert credential.can_refresh?
   end
@@ -296,9 +318,11 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     response
   end
 
-  # A response whose body is a raw string (e.g. an HTML error page), not JSON.
-  def build_html_error_response(status, body_string)
-    response = Net::HTTPClientError.new("1.1", status.to_s, "Error")
+  # A response whose body is a raw string (e.g. an HTML error page), not JSON,
+  # using the Net class that actually corresponds to the status.
+  def build_raw_response(status, body_string)
+    klass = Net::HTTPResponse::CODE_TO_OBJ[status.to_s] || Net::HTTPResponse
+    response = klass.new("1.1", status.to_s, "")
     response.define_singleton_method(:code) { status.to_s }
     response.define_singleton_method(:body) { body_string }
     response
