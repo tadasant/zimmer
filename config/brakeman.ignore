@@ -183,6 +183,29 @@
         295
       ],
       "note": "Intentional and required: CertExpiryChecker is the cert-expiry renewal canary (CertExpiryMonitorJob). It must read the served leaf certificate even when it is expired or otherwise untrusted, because an imminently-expiring/expired cert is exactly the condition it alerts on — chain verification would raise and defeat the purpose. The handshake is outbound-only to our own hosts to read notAfter; no data is sent over the connection."
+    },
+    {
+      "warning_type": "Command Injection",
+      "warning_code": 14,
+      "fingerprint": "702e30b1d50a60f5cc8291fd0b8ab8ff9ae30f44f3b123aaf3a0f77de697a94b",
+      "check_name": "Execute",
+      "message": "Possible command injection",
+      "file": "app/services/github_search_service.rb",
+      "line": 104,
+      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
+      "code": "Open3.capture3(\"gh\", \"api\", \"-X\", \"GET\", \"search/issues\", \"--raw-field\", \"q=#{query}\", \"--field\", \"advanced_search=true\", \"--field\", \"per_page=#{100}\", \"--field\", \"page=#{page}\", \"--field\", \"--field\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "GithubSearchService",
+        "method": "self.request"
+      },
+      "user_input": "query",
+      "confidence": "Medium",
+      "cwe_id": [
+        77
+      ],
+      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. No shell is spawned, so the interpolated query is a single argv element and cannot break out into a command. Repos are validated against TriggerCondition::GITHUB_REPO_FORMAT before they are stored, and label text is quoted into the GitHub search query, where the worst case is a malformed search rather than command execution."
     }
   ],
   "updated": "2026-06-12 00:00:00 +0000",
