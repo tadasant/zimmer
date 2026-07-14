@@ -123,6 +123,21 @@ Staging's deploy-side names are `STAGING_`-prefixed, like every other staging se
 these are actually set, so an unset secret is a line you can read rather than a thing you have
 to discover months later.
 
+Staging shares production's **ingest token**, and that is not an oversight. The obs stack's
+ingest gateway matches one bearer value, so there is no such thing as a staging-only ingest
+credential — and none is needed, because the two environments are separated by
+`deployment.environment`, not by their credential. Sharing the token lets staging in; the
+attribute keeps it out of production's alerts. The **DSN** is the opposite case and must not
+be shared, for the reason [above](#how-environments-are-told-apart): it selects a GlitchTip
+project, and a project is exactly what alerting keys on.
+
+Once both secrets are set, `Deploy staging` verifies the claim rather than assuming it: after
+the health-gated cutover it runs `bin/rails obs:smoke` inside the deployed container and
+**fails the run** if the collector rejects the ingest (a 401 on the token, a 404 on the path)
+or if the exporter is off despite both secrets being present. Deploying a staging box that
+silently ships nothing is no longer a thing that can happen quietly — production has no
+equivalent gate, since it deploys from a separate repo.
+
 ## Diagnosing it
 
 Two rake tasks exist because "no data in Grafana" is not a diagnosis. Neither prints a bearer
