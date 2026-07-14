@@ -399,4 +399,106 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_includes prompt, "**Number:** #99"
     assert_includes prompt, "https://github.com/tadasant/zimmer/pull/99"
   end
+
+  # ── The rescue must not hide a broken poller ──────────────────────────────
+  #
+  # `perform` rescues per-condition errors into an alert. That is right for a transient
+  # GitHub failure, but it means an exception raised on EVERY condition — an arity error,
+  # a typo, a nil — is invisible to any test that only asserts a negative ("no session was
+  # created"), because a poller that raises creates no sessions either.
+  #
+  # A braceless `write_state(condition, scope, "seen_items" => ...)` shipped exactly that
+  # way: under Ruby 3's kwarg separation the trailing string-keyed hash is swept into the
+  # keyword hash, leaving 2 positional args for 3 required params, and every tick died with
+  # "wrong number of arguments (given 2, expected 3)".
+  #
+  # These tests drive process_condition DIRECTLY, outside the rescue, so any exception
+  # propagates and fails with its real message. Crucially they cover EVERY write_state call
+  # site — the first-poll/baseline branch and the steady-state branch are *different* calls,
+  # and a test that only exercises a baselined condition never reaches the baseline one.
+
+  # Strips the poller-owned keys, putting a condition back in its never-polled state so the
+  # first-poll branch is the one that runs.
+  def un_baseline!(condition)
+    condition.update_column(
+      :configuration,
+      condition.configuration.except("seen_items", "last_issue_at", "seen_issue_keys")
+    )
+    condition.reload
+  end
+
+  test "process_condition drives a github_label condition through both write paths without raising" do
+    job = GithubTriggerPollerJob.new
+    labelled = [ item(number: 5, labels: [ "ready to merge" ]) ]
+
+    # 1. First poll — the BASELINE write path.
+    un_baseline!(@label_condition)
+    GithubSearchService.stub(:search_issues, ->(*, **) { labelled }) do
+      assert_nothing_raised { job.send(:process_condition, @label_condition) }
+    end
+    assert_equal [ "tadasant/zimmer#5:ready to merge" ], @label_condition.reload.github_seen_items
+
+    # 2. Second poll — the STEADY-STATE write path (a different write_state call site).
+    GithubSearchService.stub(:search_issues, ->(*, **) { labelled }) do
+      assert_nothing_raised { job.send(:process_condition, @label_condition) }
+    end
+    assert_equal [ "tadasant/zimmer#5:ready to merge" ], @label_condition.reload.github_seen_items
+  end
+
+  test "process_condition drives a github_issue condition through both write paths without raising" do
+    job = GithubTriggerPollerJob.new
+    issue = [ item(number: 6, pr: false, created_at: "2026-07-12T09:00:00Z") ]
+
+    # 1. First poll — the BASELINE write path (sets the cursor, fires nothing).
+    un_baseline!(@issue_condition)
+    GithubSearchService.stub(:search_issues, ->(*, **) { issue }) do
+      assert_nothing_raised { job.send(:process_condition, @issue_condition) }
+    end
+    assert_not_nil @issue_condition.reload.github_last_issue_at
+
+    # 2. Wind the cursor back so the next poll sees the issue as new, exercising the
+    #    STEADY-STATE write path.
+    @issue_condition.update!(configuration: @issue_condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T08:00:00Z", "seen_issue_keys" => []
+    ))
+    GithubSearchService.stub(:search_issues, ->(*, **) { issue }) do
+      assert_nothing_raised { job.send(:process_condition, @issue_condition) }
+    end
+    assert_equal "2026-07-12T09:00:00Z", @issue_condition.reload.github_last_issue_at
+  end
+
+  test "a poll of both condition types never reaches the alert path, on first poll or steady state" do
+    # If any condition raises, perform's rescue calls AlertService.raise_alert. Asserting it
+    # is never called is what turns a swallowed exception into a test failure instead of
+    # silence. Both conditions start un-baselined, so the first perform exercises the
+    # baseline branches and the second the steady-state ones.
+    AlertService.expects(:raise_alert).never
+
+    un_baseline!(@label_condition)
+    un_baseline!(@issue_condition)
+
+    label_items = [ item(number: 8, labels: [ "ready to merge" ]) ]
+    issue_items = [ item(number: 9, pr: false, created_at: "2026-07-12T10:00:00Z") ]
+
+    # Poll 1 — the baseline branches.
+    stub_search(label: label_items, issue: issue_items) do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    # A new-issue condition baselines its cursor to NOW and fires nothing, so the fixture
+    # issue is history to it. Wind the cursor back so poll 2 genuinely has work to do and
+    # exercises the steady-state branch rather than short-circuiting on an empty result.
+    @issue_condition.update!(configuration: @issue_condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T08:00:00Z", "seen_issue_keys" => []
+    ))
+
+    # Poll 2 — the steady-state branches.
+    stub_search(label: label_items, issue: issue_items) do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    # Both paths actually did their work, so the expectation above is not vacuous.
+    assert_equal [ "tadasant/zimmer#8:ready to merge" ], @label_condition.reload.github_seen_items
+    assert_equal "2026-07-12T10:00:00Z", @issue_condition.reload.github_last_issue_at
+  end
 end
