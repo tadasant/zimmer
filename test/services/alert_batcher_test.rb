@@ -9,6 +9,10 @@ class AlertBatcherTest < ActiveSupport::TestCase
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
 
+    # AlertService only dispatches in production (AlertService::ALERTING_ENVIRONMENTS);
+    # these tests assert the batched Slack-post path, so present a production env.
+    Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new("production"))
+
     # Every test uses a configured AlertService → fresh Slack mock per test
     @mock_client = mock("slack_client")
     SlackService.stubs(:configured?).returns(true)

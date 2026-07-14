@@ -7,6 +7,9 @@
 # - Deduplication/throttling via Rails cache (Redis) to prevent alert spam
 # - Well-formatted Slack Block Kit messages
 # - Graceful degradation if Slack is unavailable
+# - Environment gating: only the production environment may page the
+#   production #eng-alerts channel (see ALERTING_ENVIRONMENTS). Non-production
+#   instances that inherit production's Slack secrets stay silent.
 #
 # Usage:
 #   AlertService.raise_alert("Trigger firing error",
@@ -23,6 +26,20 @@ class AlertService
 
   # Cache key prefix for deduplication
   CACHE_PREFIX = "alert_service:dedup:"
+
+  # Environments permitted to dispatch operational alerts to the #eng-alerts
+  # Slack channel. Production only — deliberately narrower than Sentry's
+  # production+staging allowlist (config/initializers/sentry.rb), because the
+  # channel ID resolved here (ENG_ALERTS_SLACK_CHANNEL_ID) is the *production*
+  # alert channel, and a non-production Zimmer instance inherits both a Slack
+  # bot token and that channel ID. Zimmer runs its agent sessions inside the
+  # production container and staging shares production's secrets, so without
+  # this gate a staging job (e.g. a per-minute GithubTriggerPollerJob failing
+  # on missing gh auth) pages the *production* #alerts channel once a minute.
+  # Allowlisting staging would reintroduce exactly that bug. A non-production
+  # instance that genuinely wants alerts points ENG_ALERTS_SLACK_CHANNEL_ID at
+  # its own channel; this env gate is defense-in-depth on top of that config.
+  ALERTING_ENVIRONMENTS = %w[production].freeze
 
   class << self
     # Raise an operational alert to #eng-alerts
@@ -89,6 +106,14 @@ class AlertService
 
     private
 
+    # Whether the current Rails environment is permitted to page the
+    # production #eng-alerts channel. Gates the sole Slack dispatch choke
+    # point (post_to_slack) so both raise_alert and AlertBatcher-flushed
+    # emits are covered. See ALERTING_ENVIRONMENTS for why this is prod-only.
+    def environment_permits_alerting?
+      ALERTING_ENVIRONMENTS.include?(Rails.env.to_s)
+    end
+
     def channel_id
       SecretsLoader.get("ENG_ALERTS_SLACK_CHANNEL_ID") || ENV["ENG_ALERTS_SLACK_CHANNEL_ID"]
     end
@@ -122,6 +147,15 @@ class AlertService
 
     # Post a formatted alert message to the #eng-alerts Slack channel
     def post_to_slack(title, details: nil, source: nil)
+      unless environment_permits_alerting?
+        logger.info(
+          "Alert not dispatched: #{Rails.env} is not an alerting environment " \
+          "(#{ALERTING_ENVIRONMENTS.join(', ')} only)",
+          title: title, source: source
+        )
+        return false
+      end
+
       unless configured?
         logger.warn("AlertService not configured (missing Slack token or channel ID)")
         return false

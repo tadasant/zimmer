@@ -28,6 +28,7 @@ anything anywhere saying so. Do not infer "no errors" from "no data"; ask the ap
 | --- | --- | --- | --- |
 | WARN/ERROR/FATAL logs | OTLP/HTTP JSON | an OTel collector → VictoriaLogs | `OTEL_LOGS_EXPORTER_ENDPOINT` **and** `OTEL_LOGS_EXPORTER_BEARER_TOKEN` |
 | Exceptions | Sentry SDK | GlitchTip | `SENTRY_DSN_BACKEND` **and** `Rails.env` ∈ {`production`, `staging`} |
+| Operational alerts | Slack Web API | `#eng-alerts` | Slack bot token **and** `ENG_ALERTS_SLACK_CHANNEL_ID` **and** `Rails.env` = `production` ([why prod-only](#operational-alerts-page-from-production-only)) |
 | Metrics | — | — | not shipped |
 | Traces | — | — | not shipped (`traces_sample_rate = 0.0`) |
 
@@ -102,6 +103,32 @@ environment gate holds. Two layers now enforce it:
   every agent-session child process, alongside `DATABASE_*`, `RAILS_ENV`, and the operator SSH
   key. The agent's shell never sees the production DSN at all, for any tool an agent session
   spawns — not just Rails ones. A clone that wants its own DSN can still set one in its `.env`.
+
+## Operational alerts page from production only
+
+GlitchTip is not the only thing that pages `#alerts`. `AlertService.raise_alert` posts to the
+channel **directly** — a separate path from the Sentry "new issue" hook, used by background
+jobs (`SystemHealthMonitorJob`, `ScheduleTriggerJob`, the health checks) to page a formatted
+operational alert. It has its own environment gate, and it is deliberately **narrower** than
+Sentry's:
+
+```ruby
+# app/services/alert_service.rb
+ALERTING_ENVIRONMENTS = %w[production].freeze
+```
+
+Production only — not `production` **and** `staging`. The Sentry path can safely allow both
+because staging points at its own GlitchTip project (its own DSN). `AlertService` cannot: it
+resolves a single channel ID, `ENG_ALERTS_SLACK_CHANNEL_ID`, which is the **production**
+`#eng-alerts` channel. A non-production instance that inherits production's Slack bot token and
+that channel ID — which staging does, running the same image with the same secrets — would page
+the production channel for its own failures. That is not hypothetical: a per-minute
+`GithubTriggerPollerJob` failing on missing `gh` auth on **staging** paged `#alerts` once a
+minute. `AlertService` now refuses to dispatch outside `production`, at its sole Slack
+choke point, so both the direct `raise_alert` path and the `AlertBatcher`-flushed path are
+covered. A non-production deployment that genuinely wants operational alerts points
+`ENG_ALERTS_SLACK_CHANNEL_ID` at its **own** channel; the environment gate is defense-in-depth
+on top of that.
 
 ## Configuring it
 
