@@ -125,3 +125,32 @@ multi_condition_trigger:
   prompt_template: "Triggered by one of multiple conditions. {{event}} {{link}}"
   sessions_created_count: 0
   reuse_session: false
+
+github_label_trigger:
+  name: Ready-to-merge PR gate
+  status: enabled
+  agent_root_name: zimmer
+  prompt_template: |
+    {{repo}}#{{number}} was labelled ({{event}}).
+
+    Link: {{link}}
+  sessions_created_count: 0
+  reuse_session: false
+
+github_issue_trigger:
+  name: New issue triage
+  status: enabled
+  agent_root_name: zimmer
+  prompt_template: |
+    Triage this issue.
+  sessions_created_count: 0
+  reuse_session: false
+
+disabled_github_label_trigger:
+  name: Disabled GitHub label watcher
+  status: disabled
+  agent_root_name: zimmer
+  prompt_template: |
+    {{repo}}#{{number}} was labelled.
+  sessions_created_count: 0
+  reuse_session: false

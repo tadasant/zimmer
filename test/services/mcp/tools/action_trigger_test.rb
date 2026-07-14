@@ -218,6 +218,56 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_match(/Unknown action "explode"/, error.message)
   end
 
+  test "creates a github_label trigger" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Ready To Merge Gate",
+      "trigger_type" => "github_label",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => 'Rate {{repo}}#{{number}}: {{link}}',
+      "configuration" => {
+        "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ],
+        "target" => "pull_request",
+        "labels" => [ "ready to merge" ]
+      }
+    )
+
+    condition = Trigger.find_by!(name: "Ready To Merge Gate").trigger_conditions.sole
+    assert_equal "github_label", condition.condition_type
+    assert_equal [ "tadasant/zimmer", "tadasant/zimmer-catalog" ], condition.github_repos
+    assert_equal [ "ready to merge" ], condition.github_labels
+    assert condition.github_pull_requests?
+    assert_includes output, "- **Conditions:** github_label"
+  end
+
+  test "creates a github_issue trigger" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Issue Triage",
+      "trigger_type" => "github_issue",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "Triage {{link}}",
+      "configuration" => { "repos" => [ "tadasant/zimmer" ] }
+    )
+
+    condition = Trigger.find_by!(name: "Issue Triage").trigger_conditions.sole
+    assert_equal "github_issue", condition.condition_type
+    assert_equal [ "tadasant/zimmer" ], condition.github_repos
+  end
+
+  test "rejects a github trigger with a malformed repo" do
+    assert_raises(ActiveRecord::RecordInvalid) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Bad Repo",
+        "trigger_type" => "github_issue",
+        "agent_root_name" => "zimmer",
+        "prompt_template" => "Triage {{link}}",
+        "configuration" => { "repos" => [ "not-a-repo" ] }
+      )
+    end
+  end
+
   test "requires an action" do
     assert_raises(Mcp::ToolError) { @tool.call({}) }
   end

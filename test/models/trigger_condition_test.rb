@@ -45,6 +45,8 @@ class TriggerConditionTest < ActiveSupport::TestCase
                        when "slack" then { "channel_id" => "C123", "channel_name" => "test" }
                        when "schedule" then { "unit" => "minutes", "interval" => 5 }
                        when "ao_event" then { "event_name" => "session_needs_input" }
+                       when "github_label" then { "repos" => [ "tadasant/zimmer" ], "target" => "pull_request", "labels" => [ "ready to merge" ] }
+                       when "github_issue" then { "repos" => [ "tadasant/zimmer" ] }
                        end
       )
       assert condition.valid?, "Expected condition_type '#{type}' to be valid, got errors: #{condition.errors.full_messages}"
@@ -759,6 +761,148 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "mark_polled! updates last_message_ts when provided" do
     @slack_condition.mark_polled!(message_ts: "1704153600.000000")
     assert_equal "1704153600.000000", @slack_condition.last_message_ts
+  end
+
+  # ── GitHub conditions ─────────────────────────────────────────────────────
+
+  def github_label_config(overrides = {})
+    { "repos" => [ "tadasant/zimmer" ], "target" => "pull_request", "labels" => [ "ready to merge" ] }.merge(overrides)
+  end
+
+  test "github_label condition is valid with repos, target and labels" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_label",
+      configuration: github_label_config
+    )
+
+    assert condition.valid?, condition.errors.full_messages.to_sentence
+    assert_equal [ "tadasant/zimmer" ], condition.github_repos
+    assert_equal [ "ready to merge" ], condition.github_labels
+    assert condition.github_pull_requests?
+  end
+
+  test "github_issue condition needs only repos" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_issue",
+      configuration: { "repos" => [ "tadasant/zimmer" ] }
+    )
+
+    assert condition.valid?, condition.errors.full_messages.to_sentence
+  end
+
+  test "github condition requires at least one repo" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_issue",
+      configuration: { "repos" => [] }
+    )
+
+    assert_not condition.valid?
+    assert_match(/at least one repo/, condition.errors[:configuration].to_sentence)
+  end
+
+  test "github condition rejects repos that are not owner/name" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_issue",
+      configuration: { "repos" => [ "zimmer", "tadasant/zimmer" ] }
+    )
+
+    assert_not condition.valid?
+    assert_match(/owner\/name format/, condition.errors[:configuration].to_sentence)
+  end
+
+  test "github condition rejects more repos than one search query can carry" do
+    repos = Array.new(TriggerCondition::MAX_GITHUB_REPOS + 1) { |i| "owner/repo-#{i}" }
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_issue",
+      configuration: { "repos" => repos }
+    )
+
+    assert_not condition.valid?
+    assert_match(/at most #{TriggerCondition::MAX_GITHUB_REPOS} repos/, condition.errors[:configuration].to_sentence)
+  end
+
+  test "github_label condition requires at least one label" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_label",
+      configuration: github_label_config("labels" => [])
+    )
+
+    assert_not condition.valid?
+    assert_match(/at least one label/, condition.errors[:configuration].to_sentence)
+  end
+
+  test "github_label condition rejects an unknown target" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_label",
+      configuration: github_label_config("target" => "discussion")
+    )
+
+    assert_not condition.valid?
+    assert_match(/target must be one of/, condition.errors[:configuration].to_sentence)
+  end
+
+  test "repos and labels submitted as newline-separated text are normalized to arrays" do
+    # This is the shape the trigger form's textareas post: one array element with newlines.
+    condition = TriggerCondition.create!(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_label",
+      configuration: {
+        "repos" => [ "tadasant/zimmer\n tadasant/zimmer-catalog \n\ntadasant/zimmer" ],
+        "labels" => [ "ready to merge\nurgent" ],
+        "target" => "pull_request"
+      }
+    )
+
+    assert_equal [ "tadasant/zimmer", "tadasant/zimmer-catalog" ], condition.github_repos
+    assert_equal [ "ready to merge", "urgent" ], condition.github_labels
+  end
+
+  test "github_issue conditions drop label fields the UI never showed them" do
+    condition = TriggerCondition.create!(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_issue",
+      configuration: { "repos" => [ "tadasant/zimmer" ], "labels" => [ "stale" ], "target" => "issue" }
+    )
+
+    assert_not condition.configuration.key?("labels")
+    assert_not condition.configuration.key?("target")
+  end
+
+  test "poll state survives an edit that does not change what is watched" do
+    condition = trigger_conditions(:github_label_condition)
+    condition.update!(configuration: condition.configuration.merge("seen_items" => [ "tadasant/zimmer#1:ready to merge" ]))
+
+    # A UI save posts only the user-facing keys; the cursor must not be collateral damage.
+    condition.update!(configuration: github_label_config)
+
+    assert_equal [ "tadasant/zimmer#1:ready to merge" ], condition.reload.github_seen_items
+    assert condition.github_baselined?
+  end
+
+  test "widening the watched scope re-baselines instead of stampeding sessions" do
+    condition = trigger_conditions(:github_label_condition)
+    condition.update!(configuration: condition.configuration.merge("seen_items" => [ "tadasant/zimmer#1:ready to merge" ]))
+
+    condition.update!(configuration: github_label_config("repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ]))
+
+    condition.reload
+    assert_not condition.github_baselined?,
+                "adding a repo must drop the seen-set so its already-labelled PRs are baselined, not fired"
+  end
+
+  test "github condition descriptions read as events" do
+    label = trigger_conditions(:github_label_condition)
+    assert_equal "GitHub: 'ready to merge' added to PRs in tadasant/zimmer", label.description
+
+    issue = trigger_conditions(:github_issue_condition)
+    assert_equal "GitHub: new issue in tadasant/zimmer", issue.description
   end
 
   private

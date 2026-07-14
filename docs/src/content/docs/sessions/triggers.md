@@ -1,6 +1,6 @@
 ---
 title: Triggers and schedules
-description: The three trigger condition types, how they create or resume sessions, and the wake-up semantics that back an agent's "wake me later" tools.
+description: The five trigger condition types, how they create or resume sessions, and the wake-up semantics that back an agent's "wake me later" tools.
 sidebar:
   order: 5
 ---
@@ -10,7 +10,7 @@ trigger creates a new session — or resumes an existing one.
 
 Conditions on a trigger are ORed. Any one firing fires the trigger.
 
-## The three condition types
+## The five condition types
 
 ```mermaid
 flowchart LR
@@ -18,11 +18,15 @@ flowchart LR
         SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention)"]
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
         AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived"]
+        GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
+        GI["github_issue<br/>repos"]
     end
 
     SL -->|"SlackTriggerPollerJob<br/>(cron, every minute)"| T["Trigger"]
     SC -->|"ScheduleTriggerJob<br/>(cron, every minute)"| T
     AO -->|"AoEventTriggerJob<br/>(enqueued from state machine callbacks)"| T
+    GL -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
+    GI -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
 
     T --> H["heal stale catalog refs"]
     H --> D{"reuse_session?"}
@@ -104,6 +108,103 @@ callbacks (deferred via `after_all_transactions_commit`, so the row is visible t
 With `watched_session_id` it's session-scoped and one-shot. Without it, it's a broadcast, and
 it only fires for `is_autonomous` sessions.
 
+### `github_label`
+
+Fires when one of the watched labels is **added** to a pull request or an issue in one of the
+watched repos.
+
+```json
+{
+  "repos": ["tadasant/zimmer", "tadasant/zimmer-catalog"],
+  "target": "pull_request",
+  "labels": ["ready to merge"]
+}
+```
+
+`target` is `pull_request` (the default) or `issue`. Any *one* of `labels` firing is enough — they
+are ORed, not ANDed. Up to 20 repos.
+
+The motivating flow: the `pr` skill applies `ready to merge` as its terminal act, and a
+`github_label` trigger on that label is what picks it up and fires the merge gate.
+
+### `github_issue`
+
+Fires when a new issue is opened in one of the watched repos. Repos are the only configuration.
+
+```json
+{ "repos": ["tadasant/zimmer"] }
+```
+
+### What a GitHub-triggered session receives
+
+The prompt template can use `{{repo}}`, `{{number}}`, `{{link}}`, `{{title}}`, `{{author}}`,
+`{{text}}` (the body), `{{labels}}` and `{{event}}`.
+
+A template that names *none* of them gets the item appended as a context block instead, so a
+GitHub-triggered session always knows its repo, number and URL without re-fetching them.
+
+### The state-vs-event problem, and what Zimmer chose
+
+"A label was added" is an **event**, but a poll can only observe **state** — the label is
+*currently* there. A timestamp cursor cannot bridge that gap: a PR's `updated_at` moves for every
+push and comment, so a cursor would either re-fire a still-labelled PR forever or miss a label
+added during a quiet moment.
+
+So `github_label` conditions keep a **seen-set**, not a cursor. Each tick asks GitHub for the set
+of open items that currently carry a watched label, keys them as `owner/repo#number:label`, and
+fires on the *difference* against the previous tick. That set then becomes the new seen-set.
+
+The semantics that follow — all of them covered by tests:
+
+| Situation | What happens |
+| --- | --- |
+| Label added to a PR | Fires **once**. |
+| PR keeps the label across many ticks | Never re-fires — the key stays in the seen-set. |
+| PR already carried the label when you created the trigger | **Does not fire.** The first tick records a baseline and fires nothing. |
+| Label removed, then added again | Fires **again**. Removal drops the key; re-adding makes it new. |
+| Two watched labels added to one item | Two events, so two sessions. Keys are per `(item, label)`. |
+| A tick is skipped (deploy, rate limit) | Harmless. The seen-set is state, not a cursor, so the next tick still sees the label. |
+| PR is closed or merged while labelled | Drops out of the `is:open` search, and so out of the seen-set. If it is reopened still labelled, it fires again. |
+| You add a repo or a label to the condition | The condition **re-baselines**. Items already labelled in the newly-watched scope are absorbed, not stampeded into sessions. |
+
+`github_issue` conditions are genuinely event-shaped — an issue's creation time never changes — so
+those use an ordinary `created_at` cursor. The wrinkle is that GitHub's `created:` qualifier has
+only *second* granularity, so a strict `>` would silently drop an issue that shared its second with
+the previous tick's newest. The cursor is therefore inclusive (`>=`) and paired with a small set of
+keys already fired at that exact second.
+
+In both cases state advances only for items that actually produced a session. A failure to create
+one leaves the item to be retried on the next tick rather than swallowing it.
+
+### Rate-limit budget
+
+Every condition costs **one** search request per tick, whatever its repo count: GitHub's search API
+expresses all the watched repos and labels as a single query.
+
+```
+is:open is:pr (repo:tadasant/zimmer OR repo:tadasant/zimmer-catalog) (label:"ready to merge")
+```
+
+The search API is rate-limited **separately** from the core API — 30 requests/minute authenticated,
+against core's 5,000/hour. At one tick per minute, *N* GitHub conditions cost *N* of those 30. The
+existing `GithubCommentPollerJob` spends from the core bucket, so the two never contend.
+
+Polling every minute holds comfortably: ~10 conditions is a third of the search budget, and adding
+repos to a condition is free.
+
+:::caution[The query syntax is pinned on purpose]
+GitHub is migrating its issue-search API to an "advanced" query syntax, and the two syntaxes are
+mutually incompatible for the multi-repo query this poller is built on — legacy wants
+`repo:a repo:b` (implicit OR) and 422s on the explicit form; advanced wants `(repo:a OR repo:b)`
+and *silently returns zero rows* for the implicit one.
+
+The silent zero is the dangerous half. Under the seen-set semantics an empty result means "nothing
+carries the label", so a query that quietly started being evaluated as advanced would drain the
+seen-set and then re-fire every labelled item the moment the syntax was corrected.
+`GithubSearchService` therefore pins `advanced_search=true` on every request, so the syntax Zimmer
+builds is the syntax GitHub evaluates — whichever default the API ends up settling on.
+:::
+
 ## Wake-up semantics
 
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"
@@ -136,12 +237,16 @@ re-fire that trigger.
 
 ## Everything is polled
 
-Everything external is polled. There are no webhooks anywhere in Zimmer.
+Everything external is polled. There are no webhooks anywhere in Zimmer — including the GitHub
+trigger types, which poll the search API rather than receiving `issues`/`pull_request` webhook
+deliveries. Webhooks would need a public ingress that Zimmer's tailnet posture does not currently
+offer; polling needs nothing but the outbound `gh` credential that is already there.
 
 | Job | Cadence |
 | --- | --- |
 | `SlackTriggerPollerJob` | every minute |
 | `ScheduleTriggerJob` | every minute |
+| `GithubTriggerPollerJob` | every minute |
 | `GitHubPullRequestPollerJob` | every 30 seconds |
 | `GithubCommentPollerJob` | every 30 seconds |
 | `GitHubMergeConflictPollerJob` | every 2 minutes |

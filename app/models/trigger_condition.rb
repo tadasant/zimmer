@@ -10,12 +10,33 @@
 #     Recurring: { "unit" => "hours", "interval" => 2, "timezone" => "UTC" }
 #     One-time:  { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "America/New_York" }
 # - "ao_event": Fires on internal Zimmer events (e.g., session transitions to needs_input)
+# - "github_label": Fires when a watched label is ADDED to a PR/issue in a watched repo
+#     { "repos" => ["owner/a"], "target" => "pull_request", "labels" => ["ready to merge"] }
+# - "github_issue": Fires when a new issue is opened in a watched repo
+#     { "repos" => ["owner/a"] }
+#
+# Both GitHub types are polled by GithubTriggerPollerJob, which owns the runtime keys
+# it stores back into `configuration` (GITHUB_POLL_STATE_KEYS). See that job for the
+# state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
-  CONDITION_TYPES = %w[slack schedule ao_event].freeze
+  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
   EVENT_TYPES = %w[new_message bot_mention].freeze
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
   AO_EVENT_NAMES = %w[session_needs_input session_failed session_archived].freeze
+
+  GITHUB_CONDITION_TYPES = %w[github_label github_issue].freeze
+  GITHUB_TARGETS = %w[pull_request issue].freeze
+  GITHUB_REPO_FORMAT = %r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z}
+
+  # Bounds the length of the single search query the poller builds for a condition.
+  # 20 repos is a ~750-character query, which GitHub accepts comfortably.
+  MAX_GITHUB_REPOS = 20
+
+  # Keys inside `configuration` that belong to the poller, not the user. They are
+  # never rendered as form fields, so a UI edit submits a configuration hash without
+  # them — see #preserve_github_poll_state for why they are merged back in.
+  GITHUB_POLL_STATE_KEYS = %w[seen_items last_issue_at seen_issue_keys].freeze
 
   belongs_to :trigger
 
@@ -23,9 +44,13 @@ class TriggerCondition < ApplicationRecord
   validates :configuration, presence: true
   validate :validate_configuration_for_type
 
+  before_validation :normalize_github_configuration, if: :github_condition?
+  before_validation :preserve_github_poll_state, if: :github_condition?
+
   scope :slack, -> { where(condition_type: "slack") }
   scope :schedule, -> { where(condition_type: "schedule") }
   scope :ao_event, -> { where(condition_type: "ao_event") }
+  scope :github, -> { where(condition_type: GITHUB_CONDITION_TYPES) }
 
   # Slack configuration accessors
   def channel_id
@@ -184,6 +209,61 @@ class TriggerCondition < ApplicationRecord
     condition_type == "ao_event" && watched_session_id.present?
   end
 
+  # GitHub configuration accessors
+  def github_condition?
+    GITHUB_CONDITION_TYPES.include?(condition_type)
+  end
+
+  # Repositories this condition watches, as "owner/name" strings.
+  def github_repos
+    Array(configuration["repos"]).filter_map { |repo| repo.to_s.strip.presence }
+  end
+
+  # Labels a github_label condition fires on (OR semantics: any one of them).
+  def github_labels
+    Array(configuration["labels"]).filter_map { |label| label.to_s.strip.presence }
+  end
+
+  # Whether a github_label condition watches pull requests or issues.
+  def github_target
+    configuration["target"].presence || "pull_request"
+  end
+
+  def github_pull_requests?
+    github_target == "pull_request"
+  end
+
+  # ── Poller state (owned by GithubTriggerPollerJob) ──────────────────────────
+
+  # The set of "owner/repo#number:label" keys the poller saw carrying a watched
+  # label on its last tick. Its ABSENCE — not its emptiness — is what marks a
+  # condition as never-polled: a condition whose repos genuinely have no labelled
+  # items has a present-but-empty seen-set, and must not be re-baselined.
+  def github_baselined?
+    configuration.key?("seen_items")
+  end
+
+  def github_seen_items
+    Array(configuration["seen_items"])
+  end
+
+  # Cursor for github_issue conditions: the created_at of the newest issue fired.
+  def github_last_issue_at
+    configuration["last_issue_at"].presence
+  end
+
+  # Keys of the issues already fired that were created in the cursor's exact second.
+  # GitHub's `created:` qualifier has second granularity, so that second is re-queried
+  # on every tick and its already-fired issues have to be filtered out by identity.
+  def github_seen_issue_keys
+    Array(configuration["seen_issue_keys"])
+  end
+
+  # Persist poller state without disturbing the user-facing configuration keys.
+  def write_github_state!(state)
+    update!(configuration: configuration.merge(state), last_polled_at: Time.current)
+  end
+
   # Human-readable schedule description
   def schedule_description
     return nil unless condition_type == "schedule"
@@ -250,9 +330,24 @@ class TriggerCondition < ApplicationRecord
         "Zimmer Event: #{ao_event_name}"
       end
       session_scoped_ao_event? ? "#{base} (session ##{watched_session_id})" : base
+    when "github_label"
+      kind = github_pull_requests? ? "PRs" : "issues"
+      quoted = github_labels.map { |label| "'#{label}'" }.join(" or ")
+      "GitHub: #{quoted.presence || '(no labels)'} added to #{kind} in #{github_repos_summary}"
+    when "github_issue"
+      "GitHub: new issue in #{github_repos_summary}"
     else
       "Unknown trigger"
     end
+  end
+
+  # Compact repo list for #description — the full list can run to 20 entries.
+  def github_repos_summary
+    repos = github_repos
+    return "(no repos)" if repos.empty?
+    return repos.join(", ") if repos.length <= 2
+
+    "#{repos.first}, #{repos.second} +#{repos.length - 2} more"
   end
 
   # Check if the schedule trigger should fire now
@@ -302,6 +397,74 @@ class TriggerCondition < ApplicationRecord
 
   private
 
+  # The trigger form submits repos and labels as one-per-line textareas (a single
+  # array element containing newlines); the REST API and MCP surface send real JSON
+  # arrays. Flatten both into a deduped array of strings so validation, the poller,
+  # and the query builder all see one shape.
+  def normalize_github_configuration
+    return unless configuration.is_a?(Hash)
+
+    configuration["repos"] = split_lines(configuration["repos"])
+
+    if condition_type == "github_label"
+      configuration["labels"] = split_lines(configuration["labels"])
+      configuration["target"] = configuration["target"].presence || "pull_request"
+    else
+      # A github_issue condition fires on creation, not on labels. Drop the fields
+      # so a type switch in the form can't leave a stale label filter behind that
+      # the UI no longer shows but #description would still claim.
+      configuration.delete("labels")
+      configuration.delete("target")
+    end
+  end
+
+  # Labels may legitimately contain commas ("needs review, blocked"), so lines are
+  # the only separator. Repos cannot contain either.
+  def split_lines(value)
+    Array(value)
+      .flat_map { |entry| entry.to_s.split(/\r?\n/) }
+      .filter_map { |entry| entry.strip.presence }
+      .uniq
+  end
+
+  # The poller stores its cursor inside `configuration`, but the trigger form only
+  # renders the user-facing keys — so a plain "save" in the UI submits a hash with
+  # the cursor missing and would silently reset it. Merge the persisted state back in
+  # whenever the incoming configuration omits it.
+  #
+  # The exception is a change to WHAT the condition watches. Adding a repo or a label
+  # widens the query, and every item already carrying the label in the newly-watched
+  # scope would look new against the old seen-set and fire at once. Dropping the state
+  # instead re-baselines the condition on the next tick, which keeps the guarantee that
+  # matters: an item labelled before you asked to watch it does not fire retroactively.
+  def preserve_github_poll_state
+    return if new_record?
+    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
+    return unless configuration_changed?
+
+    if github_watch_scope_changed?
+      GITHUB_POLL_STATE_KEYS.each { |key| configuration.delete(key) }
+      return
+    end
+
+    GITHUB_POLL_STATE_KEYS.each do |key|
+      next if configuration.key?(key)
+      configuration[key] = configuration_was[key] if configuration_was.key?(key)
+    end
+  end
+
+  def github_watch_scope_changed?
+    scope_of = lambda do |config|
+      [
+        split_lines(config["repos"]).sort,
+        config["target"].to_s,
+        split_lines(config["labels"]).sort
+      ]
+    end
+
+    scope_of.call(configuration) != scope_of.call(configuration_was)
+  end
+
   def parse_schedule_time(reference_time)
     return reference_time.beginning_of_day unless schedule_time.present?
     parts = schedule_time.to_s.split(":")
@@ -323,6 +486,33 @@ class TriggerCondition < ApplicationRecord
       validate_schedule_configuration
     when "ao_event"
       validate_ao_event_configuration
+    when "github_label", "github_issue"
+      validate_github_configuration
+    end
+  end
+
+  def validate_github_configuration
+    repos = github_repos
+
+    if repos.empty?
+      errors.add(:configuration, "must include at least one repo for GitHub conditions")
+    elsif repos.length > MAX_GITHUB_REPOS
+      errors.add(:configuration, "must watch at most #{MAX_GITHUB_REPOS} repos (got #{repos.length})")
+    else
+      malformed = repos.reject { |repo| repo.match?(GITHUB_REPO_FORMAT) }
+      if malformed.any?
+        errors.add(:configuration, "repos must be in owner/name format: #{malformed.join(', ')}")
+      end
+    end
+
+    return unless condition_type == "github_label"
+
+    if github_labels.empty?
+      errors.add(:configuration, "must include at least one label for GitHub label conditions")
+    end
+
+    unless GITHUB_TARGETS.include?(github_target)
+      errors.add(:configuration, "target must be one of: #{GITHUB_TARGETS.join(', ')}")
     end
   end
 

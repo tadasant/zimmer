@@ -9,7 +9,7 @@ module Mcp
     # fired by one or more conditions (OR semantics), so a type filter matches
     # triggers with at least one condition of that type.
     class SearchTriggers < Tool
-      TRIGGER_TYPES = %w[slack schedule ao_event].freeze
+      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
       STATUSES = %w[enabled disabled].freeze
 
       tool_name "search_triggers"
@@ -26,11 +26,13 @@ module Mcp
         - **slack**: Triggers fired by Slack messages
         - **schedule**: Recurring or one-time scheduled triggers
         - **ao_event**: Triggers fired by internal Zimmer state transitions (e.g., a session entering needs_input or failed). These back the `wake_me_up_when_session_changes_state` tool.
+        - **github_label**: Triggers fired when a watched label is added to a PR/issue in a watched repo
+        - **github_issue**: Triggers fired when a new issue is opened in a watched repo
 
         A trigger may have multiple conditions (OR semantics) — filtering by trigger_type returns triggers that have at least one condition of that type.
 
         **Use cases:**
-        - View configured automations (scheduled tasks, Slack integrations, ao_event waiters)
+        - View configured automations (scheduled tasks, Slack integrations, GitHub watchers, ao_event waiters)
         - Check trigger status and execution history
         - Discover available Slack channels for new triggers
       DESC
