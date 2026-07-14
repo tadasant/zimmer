@@ -10,6 +10,12 @@ class AlertServiceTest < ActiveSupport::TestCase
     @original_cache = Rails.cache
     @memory_cache = ActiveSupport::Cache::MemoryStore.new
     Rails.cache = @memory_cache
+
+    # Alerting only dispatches in production (see AlertService::ALERTING_ENVIRONMENTS).
+    # The dispatch/formatting/dedup tests below exercise the Slack-post path, so
+    # present a production environment by default. The environment-gate tests at
+    # the bottom override this explicitly to assert non-production is silenced.
+    Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new("production"))
   end
 
   teardown do
@@ -310,5 +316,71 @@ class AlertServiceTest < ActiveSupport::TestCase
 
     result = AlertService.raise_alert("Test alert")
     assert_not result
+  end
+
+  # === Environment gate (regression: staging paging the production channel) ===
+  #
+  # ENG_ALERTS_SLACK_CHANNEL_ID is the PRODUCTION #eng-alerts channel, and a
+  # non-production Zimmer instance inherits production's Slack bot token and
+  # that channel ID (agent sessions run inside the production container;
+  # staging shares its secrets). A staging job that fails once a minute (e.g.
+  # GithubTriggerPollerJob with no gh auth) therefore paged the production
+  # channel every minute. AlertService now refuses to dispatch outside
+  # production regardless of how it is configured.
+
+  %w[staging development test uat].each do |env_name|
+    test "raise_alert does not dispatch to Slack in #{env_name} even when fully configured" do
+      Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new(env_name))
+
+      mock_client = mock("slack_client")
+      # The load-bearing assertion: the Slack client is NEVER called off-prod,
+      # even though the token + prod channel ID are both present.
+      mock_client.expects(:chat_postMessage).never
+
+      SlackService.stubs(:configured?).returns(true)
+      SlackService.stubs(:client).returns(mock_client)
+      SecretsLoader.stubs(:get).with("ENG_ALERTS_SLACK_CHANNEL_ID").returns("C123")
+
+      result = AlertService.raise_alert("Staging noise", details: "gh auth missing", source: "GithubTriggerPollerJob")
+      assert_not result, "raise_alert should return false when the environment is not allowlisted for alerting"
+    end
+  end
+
+  test "raise_alert dispatches to Slack in production when configured" do
+    Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new("production"))
+
+    mock_client = mock("slack_client")
+    mock_client.expects(:chat_postMessage).once.returns(true)
+
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:client).returns(mock_client)
+    SecretsLoader.stubs(:get).with("ENG_ALERTS_SLACK_CHANNEL_ID").returns("C123")
+
+    result = AlertService.raise_alert("Real production page", source: "SystemHealthMonitorJob")
+    assert result
+  end
+
+  test "AlertBatcher-flushed emits are also environment gated" do
+    Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new("staging"))
+
+    mock_client = mock("slack_client")
+    # Alerts recorded inside a batch also funnel through post_to_slack on flush,
+    # so the gate must hold for the batched path too.
+    mock_client.expects(:chat_postMessage).never
+
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:client).returns(mock_client)
+    SecretsLoader.stubs(:get).with("ENG_ALERTS_SLACK_CHANNEL_ID").returns("C123")
+
+    AlertBatcher.with_batch do
+      AlertService.raise_alert("Batched staging alert", source: "SlackTriggerPollerJob")
+      AlertService.raise_alert("Another batched staging alert", source: "SlackTriggerPollerJob")
+    end
+  end
+
+  test "ALERTING_ENVIRONMENTS is production-only (narrower than Sentry's allowlist)" do
+    # Guards against a future edit that widens this to include staging, which
+    # would reintroduce the production-channel paging bug.
+    assert_equal %w[production], AlertService::ALERTING_ENVIRONMENTS
   end
 end
