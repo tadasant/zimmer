@@ -9,8 +9,10 @@ Zimmer ships two signals to an external observability stack: **logs** over OTLP/
 **errors** to a Sentry-compatible service (GlitchTip). It ships neither metrics nor traces.
 
 Both signals are **off by default** and turn on only when their environment variables are
-present. That is deliberate — dev, test, and CI never touch the network — but it has a sharp
-edge worth stating up front:
+present. Errors carry a second gate on top of that — they ship from `production` and `staging`
+only, [whatever the DSN says](#only-production-and-staging-may-report) — because Zimmer's own
+agent sessions run inside the production container and inherit its environment. The env-var
+gate alone has a sharp edge worth stating up front:
 
 :::caution[A misconfigured deployment is indistinguishable from a healthy quiet one]
 `config/initializers/otel_logs_exporter.rb` and `config/initializers/sentry.rb` are **hard
@@ -25,7 +27,7 @@ anything anywhere saying so. Do not infer "no errors" from "no data"; ask the ap
 | Signal | Transport | Destination | Enabled by |
 | --- | --- | --- | --- |
 | WARN/ERROR/FATAL logs | OTLP/HTTP JSON | an OTel collector → VictoriaLogs | `OTEL_LOGS_EXPORTER_ENDPOINT` **and** `OTEL_LOGS_EXPORTER_BEARER_TOKEN` |
-| Exceptions | Sentry SDK | GlitchTip | `SENTRY_DSN_BACKEND` |
+| Exceptions | Sentry SDK | GlitchTip | `SENTRY_DSN_BACKEND` **and** `Rails.env` ∈ {`production`, `staging`} |
 | Metrics | — | — | not shipped |
 | Traces | — | — | not shipped (`traces_sample_rate = 0.0`) |
 
@@ -98,8 +100,8 @@ environment gate holds. Two layers now enforce it:
 - **The initializer** refuses to send outside production/staging — the Rails-layer guarantee.
 - **The spawn env** (`CliSpawnEnv#clear_inherited_env_vars`) unsets `SENTRY_DSN_BACKEND` in
   every agent-session child process, alongside `DATABASE_*`, `RAILS_ENV`, and the operator SSH
-  key. The agent's shell never sees the production DSN at all, for any tool it runs — not just
-  Rails ones. A clone that wants its own DSN can still set one in its `.env`.
+  key. The agent's shell never sees the production DSN at all, for any tool an agent session
+  spawns — not just Rails ones. A clone that wants its own DSN can still set one in its `.env`.
 
 ## Configuring it
 
