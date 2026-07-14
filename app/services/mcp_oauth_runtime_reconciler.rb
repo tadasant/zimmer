@@ -84,6 +84,19 @@ class McpOauthRuntimeReconciler
   rescue ActiveRecord::RecordNotFound
     # The credential was deleted between load and lock — nothing to adopt.
     false
+  rescue StandardError => e
+    # Reconciliation is best-effort. A lock-contention or update failure
+    # (ActiveRecord::Deadlocked, LockWaitTimeout, a dropped connection) is
+    # exactly what concurrent sessions plus the cron can produce on a hot row,
+    # and it must never propagate: in the spawn gate it would fail the session,
+    # and in RefreshMcpOauthTokensJob it would be logged at .error and page the
+    # alert channel for a self-resolving condition. Leave the DB copy in place —
+    # the next spawn or cron run reconciles cleanly.
+    Rails.logger.warn(
+      "[McpOauthRuntimeReconciler] Skipped reconciliation for " \
+      "#{credential.server_name} (#{credential.credential_key}): #{e.class}: #{e.message}"
+    )
+    false
   end
 
   private

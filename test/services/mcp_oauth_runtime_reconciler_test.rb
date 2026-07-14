@@ -152,4 +152,23 @@ class McpOauthRuntimeReconcilerTest < ActiveSupport::TestCase
     @credential.reload
     assert_equal "db-refresh-token", @credential.refresh_token
   end
+
+  test "swallows a lock or update failure and returns false without raising" do
+    # A hot row under concurrent sessions + the cron can raise Deadlocked /
+    # LockWaitTimeout from with_lock. Reconciliation is best-effort: it must not
+    # propagate (which would fail a spawn or page the alert channel), leaving the
+    # DB copy untouched for the next attempt.
+    entry = snapshot(
+      access_token: "runtime-access-token",
+      refresh_token: "runtime-rotated-refresh-token",
+      expires_at: 2.hours.from_now
+    )
+    @credential.define_singleton_method(:with_lock) do |*|
+      raise ActiveRecord::Deadlocked, "deadlock detected"
+    end
+
+    result = nil
+    assert_nothing_raised { result = reconciler_for(entry).reconcile!(@credential) }
+    assert_not result
+  end
 end
