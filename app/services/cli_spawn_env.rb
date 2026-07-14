@@ -121,6 +121,17 @@ module CliSpawnEnv
   #   material in the child's environment would put a root-on-every-host private key
   #   one `env` away from a transcript.
   #
+  # Production telemetry cleared (issue #176):
+  # - SENTRY_DSN_BACKEND: the write DSN of the *production* GlitchTip project, the
+  #   one with the Slack #alerts hook on it. Agent sessions run inside the production
+  #   container, so without this the DSN is inherited by every agent shell — and any
+  #   `bin/rails` command an agent runs in a repo clone initializes the Sentry SDK
+  #   against it. A scratch-Postgres connection error in a RAILS_ENV=test rake task
+  #   then pages the production error channel. config/initializers/sentry.rb refuses
+  #   to send outside production/staging, which stops it at the Rails layer; clearing
+  #   the DSN here stops it at the process boundary, for every tool the agent runs.
+  #   A clone that genuinely wants a DSN can still set one in its own .env.
+  #
   # Bundler variables cleared (explicit list, plus a BUNDLE*-prefix sweep below):
   # - BUNDLE_PATH: Where Bundler looks for gems
   # - BUNDLE_GEMFILE: Path to Gemfile
@@ -183,6 +194,7 @@ module CliSpawnEnv
       RUBYOPT
       RUBYGEMS_GEMDEPS
       ZIMMER_OPERATOR_SSH_KEY
+      SENTRY_DSN_BACKEND
     ]
 
     # Set each inherited env var to nil to unset it in the child process

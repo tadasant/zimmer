@@ -387,6 +387,14 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_nil env["RAILS_ENV"]
   end
 
+  test "spawn unsets SENTRY_DSN_BACKEND so an agent's rails commands can't page production" do
+    @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
+
+    env = @mock_process_manager.spawned_processes.last[:env]
+    assert env.key?("SENTRY_DSN_BACKEND"), "SENTRY_DSN_BACKEND should be present (set to nil to unset)"
+    assert_nil env["SENTRY_DSN_BACKEND"]
+  end
+
   test "spawn loads .env from the working directory" do
     @mock_file_system.write(File.join(@test_dir, ".env"), "FOO=bar\nBAZ=qux\n")
 

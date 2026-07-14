@@ -11,8 +11,11 @@
 # makes them visible in GlitchTip without changing their non-fatal behavior.
 #
 # Every method is a hard no-op when Sentry is not initialized (i.e. when
-# SENTRY_DSN_BACKEND is unset, which is always the case in development and
-# test), so callers can wire it in unconditionally.
+# SENTRY_DSN_BACKEND is unset), so callers can wire it in unconditionally. And
+# when the SDK *is* initialized outside production/staging — an agent session
+# inherits the production DSN from its container — the environment allowlist in
+# config/initializers/sentry.rb drops the event at the client, so nothing these
+# methods hand to Sentry leaves the process.
 module ErrorReporter
   module_function
 
