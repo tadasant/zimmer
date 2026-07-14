@@ -13,6 +13,34 @@ require "selenium-webdriver"
 # This ensures the same Rack server thread is reused across all tests in a worker
 Capybara.reuse_server = true
 
+# Serve every page with CSS transitions and animations forced to zero duration
+# (Capybara injects `transition: none !important; animation-duration: 0s` into the
+# <head> of each HTML response via a Rack middleware).
+#
+# Without this, any element that animates into place is a MOVING TARGET, and a
+# synthetic click against a moving target silently lands on the wrong element.
+# Selenium clicks by coordinate: it reads the element's bounding rect, checks that
+# the element really is on top at that point, then asks Chrome to dispatch a
+# pointer event there. Those are separate round trips. If the element is mid
+# transition it has drifted by the time the event is dispatched, so the click hits
+# whatever slid into those coordinates instead — no error is raised, because the
+# interactability check passed when it ran.
+#
+# That is what made "the session detail drawer closes via the close button and
+# Escape" flaky. The drawer panel slides in under `transition-transform
+# duration-300`; the test waits only for the lazy Turbo Frame to render, which can
+# resolve well inside those 300ms. The panel is still travelling leftwards when the
+# Close button is clicked, so the click lands a few dozen pixels to its right — on
+# the adjacent "open full page" link, which carries `data-turbo-frame="_top"` and
+# navigates the whole document to the session page. The dashboard (and with it the
+# drawer panel) is gone, so the assertion that the panel is `aria-hidden='true'`
+# fails with "no matches".
+#
+# Waiting for the animation in the test instead would only re-hide the same race
+# behind a new one: every future test that drives an animated element would have to
+# remember to do it. Removing the motion removes the whole class.
+Capybara.disable_animation = true
+
 # Generate a unique user data directory for each parallel test worker
 # This allows Chrome to reuse profile data between tests, significantly
 # reducing browser startup time while maintaining isolation between workers.
