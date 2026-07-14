@@ -7,6 +7,10 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   setup do
     @label_condition = trigger_conditions(:github_label_condition)
     @issue_condition = trigger_conditions(:github_issue_condition)
+    # perform preflights `gh auth status` via GithubSearchService.configured?. Default it
+    # to configured so the behavioral tests below exercise the polling path rather than the
+    # graceful-degradation early return; the unconfigured path has its own tests.
+    GithubSearchService.stubs(:configured?).returns(true)
   end
 
   # An item shaped like the search-API fields the poller actually reads.
@@ -192,6 +196,41 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     end
 
     assert_equal before, @label_condition.reload.github_seen_items
+  end
+
+  # ── Graceful degradation when gh is unauthenticated ───────────────────────
+  #
+  # An environment whose worker has no gh credential (observed on staging: every tick
+  # failed with "please run: gh auth login") must not shell out per condition and alert
+  # per failure every minute. The poller preflights GithubSearchService.configured? and
+  # skips the whole tick when it is false — the same shape as SlackTriggerPollerJob's
+  # `return unless SlackService.configured?`. This is deliberately distinct from a
+  # transient API failure on a CONFIGURED host, which still raises and alerts (above).
+
+  test "skips the tick without searching or alerting when gh is not authenticated" do
+    GithubSearchService.stubs(:configured?).returns(false)
+    GithubSearchService.expects(:search_issues).never
+    AlertService.expects(:raise_alert).never
+
+    before_label = @label_condition.github_seen_items
+    before_issue = @issue_condition.github_last_issue_at
+
+    assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+
+    # State is untouched — a missing credential is not a poll, so nothing advances.
+    assert_equal before_label, @label_condition.reload.github_seen_items
+    assert_equal before_issue, @issue_condition.reload.github_last_issue_at
+  end
+
+  test "does not preflight gh auth at all when there are no GitHub conditions to poll" do
+    # The common instance has no GitHub triggers; it must not spend a `gh auth status`
+    # subprocess every minute for nothing.
+    Trigger.with_github_conditions.destroy_all
+
+    GithubSearchService.expects(:configured?).never
+    GithubSearchService.expects(:search_issues).never
+
+    assert_nothing_raised { GithubTriggerPollerJob.perform_now }
   end
 
   # ── github_issue: created_at cursor ───────────────────────────────────────

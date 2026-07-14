@@ -878,6 +878,16 @@ There is no reconciliation pass to catch it.
 `github_label` conditions are immune to this: they compare against current state, not a cursor, so a
 late-indexed item simply fires on whichever tick it first appears.
 
+### The GitHub trigger poller needs a `gh` credential in the environment that runs it
+
+`GithubTriggerPollerJob` runs on the **worker**, and shells out to `gh`. If that environment has no
+`gh auth login` credential and no `GH_TOKEN`/`GITHUB_TOKEN`, the poller cannot search GitHub and every
+`github_label`/`github_issue` trigger silently never fires. The poller detects this and skips the tick
+with a single WARN rather than erroring per-condition — so the failure mode is "nothing happens", which
+is quiet but easy to miss. Staging shipped without this credential, which is how the gap was found.
+
+Check with `gh auth status` in the worker container; fix by providing a token to that environment.
+
 ---
 
 ## API

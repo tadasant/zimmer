@@ -33,6 +33,27 @@ class GithubSearchService
   MAX_PAGES = 10
 
   class << self
+    # Whether the `gh` CLI can actually authenticate to GitHub from this process —
+    # via a stored `gh auth login` credential OR a GH_TOKEN/GITHUB_TOKEN in the
+    # environment, both of which `gh auth status` recognizes.
+    #
+    # This is the GitHub analogue of SlackService.configured?, and the poller guards
+    # on it the same way SlackTriggerPollerJob guards on that. The staging worker ships
+    # no gh credential, so without this every tick shelled out N times, each failing
+    # with "please run: gh auth login", and each failure alerted — an every-minute
+    # error storm over a missing credential the poller can simply detect and skip.
+    #
+    # Kept deliberately distinct from a transient API failure: an *unconfigured*
+    # environment is not an incident (skip quietly), whereas a rate-limit or network
+    # error on a configured host still raises out of search_issues and alerts.
+    def configured?
+      _out, _err, status = Open3.capture3("gh", "auth", "status")
+      status.success?
+    rescue => e
+      Rails.logger.warn "[GithubSearchService] gh auth preflight failed: #{e.class}: #{e.message}"
+      false
+    end
+
     # Runs a search query and returns every matching item.
     #
     # Raises rather than returning a partial result. The poller derives its seen-set
