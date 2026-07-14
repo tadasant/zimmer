@@ -65,10 +65,28 @@ watch. Staging alerts are only distinguishable from production's by the posting 
 them missing and the initializer does nothing at all — no raise, no warning, a perfectly healthy boot,
 and no data. A deployment can sit in that state indefinitely, and nothing anywhere says so.
 
-The no-op is the right default (it keeps dev, test, and CI off the network), so the mitigation is
+The no-op is a reasonable default on a machine that never sets the variables, so the mitigation is
 visibility rather than a hard failure: `deploy-staging.yml` prints an observability preflight on every
 run, and `bin/rails obs:status` / `bin/rails obs:smoke` answer the question from inside the container.
 Absence of data is still never, by itself, evidence of absence of errors.
+
+What the no-op is *not* is an environment guard. Zimmer's agent sessions run inside the production
+container, so the production values are present in their environment — and a `RAILS_ENV=test`
+process with a production DSN reports to the production error project, which is how a test-env
+database error once paged the production Slack channel. Errors are therefore additionally gated on
+`Rails.env` being `production` or `staging`
+([details](/operate/observability/#only-production-and-staging-may-report)).
+
+### An agent session's shell still carries the OTLP ingest token
+
+`SENTRY_DSN_BACKEND` is scrubbed from agent-session child processes (`CliSpawnEnv`), but
+`OTEL_LOGS_EXPORTER_ENDPOINT` and `OTEL_LOGS_EXPORTER_BEARER_TOKEN` are not. Two consequences: the
+shared ingest token sits in every agent shell's environment, one `env` away from a transcript; and a
+`bin/rails` command an agent runs in a repo clone ships that clone's WARN/ERROR lines to the real obs
+stack. Neither pages anyone — the records are stamped `deployment.environment=test`, and production
+alert rules scope to `deployment.environment=production` — so this is noise and credential exposure,
+not false alerting. Scrubbing them too would stop agent-session log export outright, which is a
+bigger decision than it looks; it has not been made.
 
 ### Staging cannot have its own OTLP ingest token
 

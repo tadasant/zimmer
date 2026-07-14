@@ -46,8 +46,19 @@ namespace :obs do
       puts "        Both must be non-empty; either one missing is a silent no-op."
     end
 
-    if dsn.present? && Sentry.initialized?
+    # `Sentry.initialized?` is NOT the same question as "do errors ship". The SDK
+    # initializes whenever the DSN is present, in any environment; the environment
+    # allowlist in config/initializers/sentry.rb then drops events at the client
+    # outside production/staging. Reporting ON off `initialized?` would tell an
+    # agent-session shell — which inherits the production DSN — that its test-env
+    # errors are being shipped, when they are (deliberately) being dropped.
+    if Sentry.initialized? && Sentry.configuration.sending_allowed?
       puts "  [ON ] Errors     -> #{redacted_dsn(dsn)} (environment=#{Rails.env})"
+    elsif Sentry.initialized?
+      puts "  [OFF] Errors     -- SENTRY_DSN_BACKEND set, but Rails.env=#{Rails.env} is not in" \
+           " enabled_environments (#{Sentry.configuration.enabled_environments.join(", ")})."
+      puts "        Events are dropped at the client. This is the guard that keeps a"
+      puts "        non-production process from paging the production alert channel."
     else
       puts "  [OFF] Errors     -- SENTRY_DSN_BACKEND=#{dsn.present? ? "set but Sentry not initialized" : "UNSET"}"
     end
@@ -64,6 +75,7 @@ namespace :obs do
   desc "Emit a uniquely-tagged record through every live telemetry path and report whether the collector accepted it."
   task smoke: :environment do
     marker = "obs-smoke-#{SecureRandom.hex(6)}"
+    glitchtip_probed = false
     exporter = OtelLogsExporter.instance
 
     puts "marker: #{marker}"
@@ -122,11 +134,18 @@ namespace :obs do
     # 3. GlitchTip. Sentry.close flushes the SDK's background worker; it also
     #    permanently disables the client, which is correct for a one-shot rake
     #    process and is why this task must not be invoked in-process.
-    if Sentry.initialized?
+    if Sentry.initialized? && Sentry.configuration.sending_allowed?
       puts "[3/3] GlitchTip event"
       Sentry.capture_message("[obs:smoke] #{marker}", level: :error)
       Sentry.close
       puts "      captured + flushed"
+      glitchtip_probed = true
+    elsif Sentry.initialized?
+      # Capturing here would print "captured + flushed" for an event the client
+      # discards, and then send you looking for it in GlitchTip. Say so instead.
+      puts "[3/3] GlitchTip event -- SKIPPED: Rails.env=#{Rails.env} is not in enabled_environments" \
+           " (#{Sentry.configuration.enabled_environments.join(", ")});"
+      puts "      the DSN is set, but events are dropped at the client. Nothing to smoke-test."
     else
       puts "[3/3] GlitchTip event -- SKIPPED: Sentry not initialized (SENTRY_DSN_BACKEND unset)."
     end
@@ -136,6 +155,8 @@ namespace :obs do
     puts "  curl -s http://127.0.0.1:9428/select/logsql/query --data-urlencode \\"
     puts "    'query={service.name=\"zimmer\"} deployment.environment:=#{Rails.env} \"#{marker}\"'"
     puts "Expect 2 records (the probe + the live logger line) if both steps above passed."
-    puts "In GlitchTip: search the zimmer-#{Rails.env} project's issues for #{marker}."
+    if glitchtip_probed
+      puts "In GlitchTip: search the zimmer-#{Rails.env} project's issues for #{marker}."
+    end
   end
 end

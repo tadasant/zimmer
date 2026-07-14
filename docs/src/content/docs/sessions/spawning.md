@@ -69,7 +69,12 @@ Shared scrubbing (`CliSpawnEnv`):
 - Loads a per-clone `.env` file if present (1 MB cap).
 - Clears inherited env vars — `DATABASE_*`, `RAILS_ENV`, `GEM_*`, `RUBY*`, and a sweep of
   everything prefixed `BUNDLE*`. Without this the agent would inherit Zimmer's own database
-  credentials and Ruby toolchain.
+  credentials and Ruby toolchain. Two secrets are cleared for their own reasons:
+  `ZIMMER_OPERATOR_SSH_KEY` (the agent gets the key's *path*, not its material) and
+  `SENTRY_DSN_BACKEND` (the production error DSN — an agent running `bin/rails` in a clone
+  would otherwise report that clone's exceptions as
+  [production errors](/operate/observability/#only-production-and-staging-may-report)).
+  A value in the clone's `.env` always wins.
 - Sets `AO_SESSION_SCRATCH_DIR` — a durable per-session scratch directory.
 - Sets `SSH_PRIVATE_KEY_PATH` — the [operator SSH key](/operate/provisioning/#the-ssh-identity-an-agent-session-holds)
   the session authenticates with, when one is configured. The key file is written by
