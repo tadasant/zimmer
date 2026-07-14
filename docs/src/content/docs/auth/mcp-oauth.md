@@ -168,6 +168,15 @@ The reconciler runs in two places:
 Only Claude Code refreshes MCP tokens mid-session; Codex is written-not-trusted (Zimmer rewrites its
 store every spawn), so reconciling against Codex is a harmless no-op.
 
+This is also what makes an OAuth MCP connection **survive a worker/clone recreation**. When a session
+is recovered after a deploy or restart, the relaunch goes through the follow-up spawn path, which
+re-injects credentials and re-writes `.mcp.json` before spawning `claude --resume`. Before the
+write-back existed, that relaunch re-injected the *stale* DB refresh token, so Claude Code's reconnect
+refreshed against a rotated-away token, got `invalid_grant`, and the server came back with all its
+tools reporting `No such tool available`. The restart didn't break the token — it forced the
+reconnect that exposed an already-stale one. With the reconciler, the relaunch injects the token the
+previous run rotated to, and the server reconnects.
+
 ## Known problems
 
 :::danger[Anyone who can reach the host can start an OAuth flow for any session]
@@ -204,4 +213,25 @@ Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 When a server advertises no DCR endpoint, `client_id` falls back to the literal `"agent-orchestrator"`.
 Whether any real server accepts that is unclear — it looks like it would only work against a server
 that ignores `client_id` entirely.
+:::
+
+:::caution[Re-authorizing a server does not reach an already-running session]
+`McpOauthController#callback` updates the `McpOauthCredential` and calls `McpOauthResumeService`, which
+only re-spawns a session that was *blocked* on OAuth (`failed` with `oauth_required`, or `waiting` with
+`oauth_required_servers`). A session that is `running` or `needs_input` is `:not_blocked`, so the new
+credential is written to the DB but has no effect on the live agent — Claude Code loads its MCP servers
+once at launch and cannot hot-reload them, so Zimmer cannot inject a new connection into the running
+process. For a `running` session that is a runtime limitation; for a `needs_input` session it
+self-heals a turn later, because the next message re-injects the fresh credential on the follow-up
+spawn. The gap is that re-auth gives no immediate feedback or re-establishment.
+Tracked in [#195](https://github.com/tadasant/zimmer/issues/195).
+:::
+
+:::caution[A server that fails before it connects disappears from the status instead of showing "failed"]
+`mcp_servers_status` is built by `McpLogPollerService` from the per-server log directories Claude Code
+creates under `~/.cache/claude-cli-nodejs/<project>/mcp-logs-<name>/`. A server that never gets far
+enough to create a log directory (e.g. an OAuth-blocked streamable-http server stripped from the
+launch) produces no key at all, and `McpStatusPersisting` merges rather than replaces, so it is simply
+absent — not `failed`, not `disconnected`. In the UI a broken server then looks unconfigured rather
+than broken. Tracked in [#196](https://github.com/tadasant/zimmer/issues/196).
 :::
