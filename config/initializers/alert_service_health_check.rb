@@ -28,6 +28,18 @@ Rails.application.config.after_initialize do
       "Add missing values to Rails credentials (config/credentials/#{Rails.env}.yml.enc) or environment variables."
     )
   end
+
+  # Even when fully configured, alerting only dispatches under RAILS_ENV=production
+  # (AlertService::ALERTING_ENVIRONMENTS). A non-production instance inherits
+  # production's Slack token + channel ID, so configured? is true there too — note
+  # the deliberate silence so a quiet #eng-alerts in staging isn't mistaken for a
+  # misconfiguration.
+  if AlertService.configured? && !AlertService.alerting_environment?
+    Rails.logger.info(
+      "[AlertServiceHealthCheck] AlertService is configured but alerting is environment-gated off " \
+      "in #{Rails.env} (dispatches under production only) — operational alerts are intentionally not sent."
+    )
+  end
 rescue => e
   Rails.logger.warn("[AlertServiceHealthCheck] Health check failed: #{e.message}")
 end

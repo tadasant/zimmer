@@ -106,7 +106,7 @@ environment gate holds. Two layers now enforce it:
 
 ## Operational alerts page from production only
 
-GlitchTip is not the only thing that pages `#alerts`. `AlertService.raise_alert` posts to the
+GlitchTip is not the only thing that pages `#eng-alerts`. `AlertService.raise_alert` posts to the
 channel **directly** — a separate path from the Sentry "new issue" hook, used by background
 jobs (`SystemHealthMonitorJob`, `ScheduleTriggerJob`, the health checks) to page a formatted
 operational alert. It has its own environment gate, and it is deliberately **narrower** than
@@ -122,13 +122,18 @@ because staging points at its own GlitchTip project (its own DSN). `AlertService
 resolves a single channel ID, `ENG_ALERTS_SLACK_CHANNEL_ID`, which is the **production**
 `#eng-alerts` channel. A non-production instance that inherits production's Slack bot token and
 that channel ID — which staging does, running the same image with the same secrets — would page
-the production channel for its own failures. That is not hypothetical: a per-minute
-`GithubTriggerPollerJob` failing on missing `gh` auth on **staging** paged `#alerts` once a
-minute. `AlertService` now refuses to dispatch outside `production`, at its sole Slack
-choke point, so both the direct `raise_alert` path and the `AlertBatcher`-flushed path are
-covered. A non-production deployment that genuinely wants operational alerts points
-`ENG_ALERTS_SLACK_CHANNEL_ID` at its **own** channel; the environment gate is defense-in-depth
-on top of that.
+the production channel for its own failures. That is not hypothetical: a per-minute background
+poller failing on missing `gh` auth on **staging** paged `#eng-alerts` once a minute.
+`AlertService` now refuses to dispatch outside `production`, at its sole Slack choke point, so
+both the direct `raise_alert` path and the `AlertBatcher`-flushed path are covered.
+
+The gate is **env-only**: it fires before the token/channel-ID check, so alerting is enabled
+solely under `RAILS_ENV=production`, no matter how `ENG_ALERTS_SLACK_CHANNEL_ID` is set. It does
+not replace the config-hygiene fix (don't hand a non-production instance the production channel
+ID) — the two are independent defenses against paging the production channel, and this one is
+the stronger because it holds even when the production channel ID is inherited, which is exactly
+the situation that triggered the bug. A deployment that genuinely needs non-production alerting
+must widen `ALERTING_ENVIRONMENTS` in code **and** point that environment at its own channel.
 
 ## Configuring it
 

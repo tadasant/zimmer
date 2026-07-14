@@ -323,10 +323,10 @@ class AlertServiceTest < ActiveSupport::TestCase
   # ENG_ALERTS_SLACK_CHANNEL_ID is the PRODUCTION #eng-alerts channel, and a
   # non-production Zimmer instance inherits production's Slack bot token and
   # that channel ID (agent sessions run inside the production container;
-  # staging shares its secrets). A staging job that fails once a minute (e.g.
-  # GithubTriggerPollerJob with no gh auth) therefore paged the production
-  # channel every minute. AlertService now refuses to dispatch outside
-  # production regardless of how it is configured.
+  # staging runs the same image with the same secrets). A non-production job
+  # that fails once a minute therefore paged the production channel every
+  # minute. AlertService now refuses to dispatch outside production regardless
+  # of how it is configured.
 
   %w[staging development test uat].each do |env_name|
     test "raise_alert does not dispatch to Slack in #{env_name} even when fully configured" do
@@ -341,8 +341,10 @@ class AlertServiceTest < ActiveSupport::TestCase
       SlackService.stubs(:client).returns(mock_client)
       SecretsLoader.stubs(:get).with("ENG_ALERTS_SLACK_CHANNEL_ID").returns("C123")
 
-      result = AlertService.raise_alert("Staging noise", details: "gh auth missing", source: "GithubTriggerPollerJob")
+      result = AlertService.raise_alert("Staging noise", details: "auth missing", source: "SlackTriggerPollerJob")
       assert_not result, "raise_alert should return false when the environment is not allowlisted for alerting"
+
+      assert_not AlertService.alerting_environment?, "#{env_name} must not be an alerting environment"
     end
   end
 
@@ -358,6 +360,7 @@ class AlertServiceTest < ActiveSupport::TestCase
 
     result = AlertService.raise_alert("Real production page", source: "SystemHealthMonitorJob")
     assert result
+    assert AlertService.alerting_environment?, "production must be an alerting environment"
   end
 
   test "AlertBatcher-flushed emits are also environment gated" do

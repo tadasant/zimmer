@@ -31,14 +31,23 @@ class AlertService
   # Slack channel. Production only — deliberately narrower than Sentry's
   # production+staging allowlist (config/initializers/sentry.rb), because the
   # channel ID resolved here (ENG_ALERTS_SLACK_CHANNEL_ID) is the *production*
-  # alert channel, and a non-production Zimmer instance inherits both a Slack
-  # bot token and that channel ID. Zimmer runs its agent sessions inside the
-  # production container and staging shares production's secrets, so without
-  # this gate a staging job (e.g. a per-minute GithubTriggerPollerJob failing
-  # on missing gh auth) pages the *production* #alerts channel once a minute.
-  # Allowlisting staging would reintroduce exactly that bug. A non-production
-  # instance that genuinely wants alerts points ENG_ALERTS_SLACK_CHANNEL_ID at
-  # its own channel; this env gate is defense-in-depth on top of that config.
+  # #eng-alerts channel, and a non-production Zimmer instance inherits both a
+  # Slack bot token and that channel ID. Zimmer runs its agent sessions inside
+  # the production container and staging runs the same image with the same
+  # secrets, so without this gate a non-production background job that fails on
+  # a per-tick schedule (as happened live: a staging poller failing once a
+  # minute on missing gh auth) pages the *production* #eng-alerts channel every
+  # minute. Allowlisting staging would reintroduce exactly that bug.
+  #
+  # This gate fires before the token/channel-ID check, so it is env-only:
+  # alerting is enabled *only* under RAILS_ENV=production, regardless of how
+  # ENG_ALERTS_SLACK_CHANNEL_ID is set. It composes with, rather than replaces,
+  # the config-hygiene fix (don't hand a non-production instance the production
+  # channel ID): the two are independent defenses against paging the production
+  # channel, and this one is the stronger because it holds even when the prod
+  # channel ID is inherited — which is exactly the situation today. A
+  # deployment that genuinely needs non-production alerting must widen this
+  # constant in code *and* point that environment at its own channel.
   ALERTING_ENVIRONMENTS = %w[production].freeze
 
   class << self
@@ -89,6 +98,18 @@ class AlertService
       SlackService.configured? && channel_id.present?
     end
 
+    # Whether the current Rails environment is permitted to page the production
+    # #eng-alerts channel. Gates the sole Slack dispatch choke point
+    # (post_to_slack), so both the direct raise_alert path and the
+    # AlertBatcher-flushed path are covered. Public so the boot health check can
+    # tell "misconfigured" apart from "configured but deliberately silent in a
+    # non-production environment". See ALERTING_ENVIRONMENTS for why it is
+    # production-only.
+    # @return [Boolean]
+    def alerting_environment?
+      ALERTING_ENVIRONMENTS.include?(Rails.env.to_s)
+    end
+
     # Returns a list of missing configuration components, or an empty array if fully configured.
     # Used by the boot-time health check initializer to provide actionable diagnostics.
     # @return [Array<String>] list of missing components (e.g. ["Slack token missing"])
@@ -105,14 +126,6 @@ class AlertService
     end
 
     private
-
-    # Whether the current Rails environment is permitted to page the
-    # production #eng-alerts channel. Gates the sole Slack dispatch choke
-    # point (post_to_slack) so both raise_alert and AlertBatcher-flushed
-    # emits are covered. See ALERTING_ENVIRONMENTS for why this is prod-only.
-    def environment_permits_alerting?
-      ALERTING_ENVIRONMENTS.include?(Rails.env.to_s)
-    end
 
     def channel_id
       SecretsLoader.get("ENG_ALERTS_SLACK_CHANNEL_ID") || ENV["ENG_ALERTS_SLACK_CHANNEL_ID"]
@@ -147,7 +160,7 @@ class AlertService
 
     # Post a formatted alert message to the #eng-alerts Slack channel
     def post_to_slack(title, details: nil, source: nil)
-      unless environment_permits_alerting?
+      unless alerting_environment?
         logger.info(
           "Alert not dispatched: #{Rails.env} is not an alerting environment " \
           "(#{ALERTING_ENVIRONMENTS.join(', ')} only)",
