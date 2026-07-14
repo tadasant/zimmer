@@ -1,4 +1,12 @@
 module SessionsHelper
+  # Extracts the actionable error line(s) from a failed session's exception
+  # message so the failure UI can surface them prominently above the raw output.
+  # Returns nil when the message doesn't mix warnings and errors (nothing to
+  # disambiguate) — see ExceptionMessageHighlighter.
+  def failure_error_highlights(exception_message)
+    ExceptionMessageHighlighter.highlights(exception_message)
+  end
+
   # Resolve a goal value to its display name using predefined goals.
   # Returns the matching goal name, "Custom" if set but unrecognized, or nil if blank.
   def goal_display_name(goal, goals_for_select)

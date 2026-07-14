@@ -8,6 +8,12 @@
     noise — is always reachable. This deliberately avoids a hover/click popover,
     which is unreliable on mobile.
 
+    When the exception message mixes non-fatal warnings (e.g. AIR deprecation
+    notices) with the real error, the actionable error line(s) are extracted and
+    surfaced in a prominent "Actionable Error" callout ABOVE the full output, so
+    a leading deprecation warning can't be the first — and only — thing the user
+    reads. The full output is always still rendered below, untruncated.
+
     OAuth-required failures are surfaced by a dedicated banner elsewhere, so this
     partial renders nothing for them. %>
 <% if agent_session.failed? && agent_session.metadata&.dig("failure_reason").present? %>
@@ -45,8 +51,19 @@
         </div>
       <% end %>
       <% if exception_msg.present? %>
+        <% error_highlights = failure_error_highlights(exception_msg) %>
+        <% if error_highlights.present? %>
+          <%# When the failure mixes non-fatal warnings (e.g. AIR deprecation
+              notices) with the real error, pull the actionable error to the top
+              so it isn't buried behind the warning. The full output still renders
+              untruncated below. %>
+          <div class="mt-1">
+            <div class="text-red-600 text-[10px] font-semibold uppercase tracking-wide">Actionable Error</div>
+            <pre class="mt-0.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded border border-red-300 bg-red-100 p-2 text-xs font-mono font-semibold text-red-900"><%= error_highlights %></pre>
+          </div>
+        <% end %>
         <div class="mt-1">
-          <div class="text-red-400 text-[10px] font-semibold uppercase tracking-wide">Exception Details<%= " (#{exception_class})" if exception_class.present? %></div>
+          <div class="text-red-400 text-[10px] font-semibold uppercase tracking-wide"><%= error_highlights.present? ? "Full Output" : "Exception Details" %><%= " (#{exception_class})" if exception_class.present? %></div>
           <pre class="mt-0.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded border border-red-200 bg-red-50 p-2 text-xs font-mono text-red-800"><%= exception_msg %></pre>
         </div>
       <% end %>
