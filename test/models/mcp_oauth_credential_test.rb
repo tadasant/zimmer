@@ -206,7 +206,81 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     assert credential.requires_reauth?
   end
 
+  test "refresh! treats a 400 with a non-JSON (HTML) body as a permanent failure and does not log an error" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+
+    # Some token endpoints reject a dead refresh token with a bare HTML 400
+    # "Bad Request" rather than a spec-compliant JSON error body. This must
+    # still be classified permanent (WARN + natural re-auth), not logged as an
+    # ERROR that pages the production #alerts channel.
+    html_body = "<!DOCTYPE html>\n<html><body><pre>Bad Request</pre></body></html>"
+    response = build_html_error_response(400, html_body)
+
+    logged = capture_logger_levels do
+      Net::HTTP.stub(:post_form, response) do
+        assert_not credential.refresh!
+      end
+    end
+
+    assert_not_includes logged, :error, "a non-JSON 4xx refresh failure must not hit the ERROR (paging) path"
+    assert_includes logged, :warn, "a permanent refresh failure should log a WARN"
+
+    credential.reload
+    # Routed through invalidate_refresh_token!: dead refresh token dropped.
+    assert_nil credential.refresh_token
+    assert_not credential.can_refresh?
+  end
+
+  test "refresh! treats a 401 with a non-JSON body as a permanent failure" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+
+    response = build_html_error_response(401, "Unauthorized")
+
+    logged = capture_logger_levels do
+      Net::HTTP.stub(:post_form, response) do
+        assert_not credential.refresh!
+      end
+    end
+
+    assert_not_includes logged, :error
+    assert_includes logged, :warn
+
+    credential.reload
+    assert_nil credential.refresh_token
+  end
+
+  test "refresh! keeps a 5xx transient failure on the loud ERROR path" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    original_refresh_token = credential.refresh_token
+
+    response = build_html_error_response(503, "Service Unavailable")
+
+    logged = capture_logger_levels do
+      Net::HTTP.stub(:post_form, response) do
+        assert_not credential.refresh!
+      end
+    end
+
+    assert_includes logged, :error, "a 5xx outage must stay loud so real problems surface"
+
+    credential.reload
+    # A transient failure must not drop the refresh token — we retry later.
+    assert_equal original_refresh_token, credential.refresh_token
+    assert credential.can_refresh?
+  end
+
   private
+
+  # Captures which Rails.logger severity levels were emitted during the block.
+  def capture_logger_levels
+    levels = []
+    fake = Object.new
+    %i[error warn info debug].each do |level|
+      fake.define_singleton_method(level) { |*_args| levels << level }
+    end
+    Rails.stub(:logger, fake) { yield }
+    levels
+  end
 
   def build_token_response(body_hash)
     response = Net::HTTPSuccess.new("1.1", "200", "OK")
@@ -219,6 +293,14 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     response = Net::HTTPUnauthorized.new("1.1", status.to_s, "Unauthorized")
     response.define_singleton_method(:code) { status.to_s }
     response.define_singleton_method(:body) { body_hash.to_json }
+    response
+  end
+
+  # A response whose body is a raw string (e.g. an HTML error page), not JSON.
+  def build_html_error_response(status, body_string)
+    response = Net::HTTPClientError.new("1.1", status.to_s, "Error")
+    response.define_singleton_method(:code) { status.to_s }
+    response.define_singleton_method(:body) { body_string }
     response
   end
 end
