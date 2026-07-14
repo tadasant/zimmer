@@ -8,6 +8,10 @@
 #   adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 #   result = adapter.execute(prompt: "Test", session_id: "123", working_dir: "/tmp")
 #   adapter.executed_commands  # => [{ prompt: "Test", session_id: "123", ... }]
+#
+# The spawn entrypoints enforce ClaudeCliAdapter's nil/blank working_dir guard, so a
+# caller that spawns without a working directory fails here exactly as it does in
+# production (ClaudeCliAdapter::ClaudeCliError) instead of silently "succeeding".
 class MockClaudeCliAdapter
   include RuntimeCliAdapter
 
@@ -29,6 +33,8 @@ class MockClaudeCliAdapter
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
               append_system_prompt: nil, model: nil, dangerously_skip_permissions: true, debug: false,
               auto_compact_window: ClaudeCliAdapter::DEFAULT_AUTO_COMPACT_WINDOW)
+    ClaudeCliAdapter.validate_working_dir!(working_dir)
+
     command_info = {
       prompt: prompt,
       session_id: session_id,
@@ -60,6 +66,8 @@ class MockClaudeCliAdapter
   def resume(session_id:, prompt: nil, working_dir:, images: nil, mcp_config_path: nil,
              append_system_prompt: nil, model: nil, dangerously_skip_permissions: true, debug: false,
              auto_compact_window: ClaudeCliAdapter::DEFAULT_AUTO_COMPACT_WINDOW)
+    ClaudeCliAdapter.validate_working_dir!(working_dir)
+
     resume_info = {
       session_id: session_id,
       prompt: prompt,

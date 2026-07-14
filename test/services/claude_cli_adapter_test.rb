@@ -910,7 +910,11 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     # Must NOT surface the cryptic "no implicit conversion of nil into String"
     refute_match(/no implicit conversion of nil into String/, error.message)
     assert_match(/working directory is missing/, error.message)
-    assert_match(/started fresh/, error.message)
+    # Both causes are named, because the message must not send an operator hunting
+    # for a missing clone when the clone is intact and the caller simply failed to
+    # load it from metadata (issue #183).
+    assert_match(/never established a clone/, error.message)
+    assert_match(/session\.metadata\["working_directory"\]/, error.message)
   end
 
   test "spawn_process raises an actionable ClaudeCliError when working_dir is blank" do

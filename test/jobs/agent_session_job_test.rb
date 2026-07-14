@@ -7745,7 +7745,303 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "Elicitation marker remains set — it was never resolved or expired in this test"
   end
 
+  # ============================================================================
+  # Exit recovery on the resume_monitoring path (Issue #183)
+  #
+  # A job started with resume_monitoring: true (the orphaned-session recovery
+  # path) rehydrates its state from session.metadata rather than creating a clone.
+  # It used to rehydrate everything except working_directory, so the monitoring
+  # loop handed ProcessLifecycleManager#handle_exit a nil working dir — and every
+  # recovery spawn behind it (SIGTERM retry, context-length compaction,
+  # failed-resume recovery) refused to spawn. In production this meant a
+  # recovered session's SIGTERM auto-retry could never succeed: all 3 attempts
+  # died on the adapter's nil-working-dir guard and the session failed with
+  # sigterm_retries_exhausted.
+  # ============================================================================
+
+  test "resume_monitoring passes the session's working directory to handle_exit" do
+    session_uuid = SecureRandom.uuid
+    clone_path = "/tmp/test-clone-183"
+    # The agent-root case: working_directory is a subdirectory of the clone, so a
+    # nil-or-clone_path answer here is unambiguously wrong.
+    working_directory = File.join(clone_path, "artifacts/agent-roots/zimmer-router")
+
+    @session.update!(
+      session_id: session_uuid,
+      status: :running,
+      metadata: {
+        "process_pid" => 12345,
+        "clone_path" => clone_path,
+        "working_directory" => working_directory
+      }
+    )
+
+    handle_exit_working_dirs = []
+    job = build_resume_monitoring_job(clone_path: clone_path, pid: 12345, exit_status: MockProcessManager::MockStatus.new(0))
+    capture_handle_exit_working_dir(job, handle_exit_working_dirs)
+
+    perform_with_stubs(job: job) { job.perform(@session.id, nil, resume_monitoring: true) }
+
+    assert_equal 1, handle_exit_working_dirs.size, "handle_exit should have been called once"
+    assert_equal working_directory, handle_exit_working_dirs.first,
+      "handle_exit must receive the session's recorded working directory, not nil"
+  end
+
+  test "resume_monitoring falls back to clone_path when metadata has no working_directory" do
+    session_uuid = SecureRandom.uuid
+    clone_path = "/tmp/test-clone-183-fallback"
+
+    # Sessions created before working_directory was recorded only have clone_path.
+    # Match the follow-up path's `|| clone_path` fallback rather than passing nil.
+    @session.update!(
+      session_id: session_uuid,
+      status: :running,
+      metadata: {
+        "process_pid" => 12345,
+        "clone_path" => clone_path
+      }
+    )
+
+    handle_exit_working_dirs = []
+    job = build_resume_monitoring_job(clone_path: clone_path, pid: 12345, exit_status: MockProcessManager::MockStatus.new(0))
+    capture_handle_exit_working_dir(job, handle_exit_working_dirs)
+
+    perform_with_stubs(job: job) { job.perform(@session.id, nil, resume_monitoring: true) }
+
+    assert_equal [ clone_path ], handle_exit_working_dirs,
+      "handle_exit should fall back to clone_path when working_directory is absent from metadata"
+  end
+
+  test "SIGTERM retry on a resume_monitoring job spawns in the session's working directory and succeeds" do
+    session_uuid = SecureRandom.uuid
+    clone_path = "/tmp/test-clone-183-sigterm"
+    working_directory = File.join(clone_path, "artifacts/agent-roots/zimmer-router")
+    first_pid = 12345
+    second_pid = 12346
+
+    @session.update!(
+      session_id: session_uuid,
+      status: :running,
+      metadata: {
+        "process_pid" => first_pid,
+        "clone_path" => clone_path,
+        "working_directory" => working_directory
+      }
+    )
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p(clone_path)
+    mock_fs.mkdir_p(working_directory)
+    mock_fs.write(File.join(clone_path, "claude_stderr.log"), "")
+
+    # A resumable conversation exists — but only under the *working directory's*
+    # transcript path. SigtermRetryService only finds it if it was handed the real
+    # working directory; with nil it sees no conversation and starts fresh.
+    write_transcript_with_assistant_message(mock_fs, working_directory, session_uuid)
+
+    current_pid = first_pid
+    mock_cli_adapter.resume_hook = ->(_opts) do
+      current_pid = second_pid
+      { pid: second_pid, stderr_log_path: File.join(clone_path, "claude_stderr.log") }
+    end
+
+    wait_call_count = 0
+    mock_process_manager.wait_hook = ->(pid, _flags) do
+      wait_call_count += 1
+      if pid == first_pid
+        # The recovered process is killed by SIGTERM, exactly as in production
+        # session 179 (the superseded turn was terminated by the recovery path).
+        [ pid, MockProcessManager::MockStatus.signaled(15) ]
+      elsif pid == second_pid && wait_call_count >= 10
+        [ pid, MockProcessManager::MockStatus.new(0) ]
+      end
+    end
+    mock_process_manager.running_hook = ->(pid) { pid == current_pid }
+
+    perform_with_stubs(job: job, skip_retry_delays: true) do
+      job.perform(@session.id, nil, resume_monitoring: true)
+    end
+
+    @session.reload
+
+    assert_equal 1, mock_cli_adapter.resumed_sessions.size, "The SIGTERM retry should have spawned exactly one process"
+    assert_equal working_directory, mock_cli_adapter.resumed_sessions.first[:working_dir],
+      "The retry must spawn in the session's working directory"
+
+    assert_equal 1, @session.metadata["sigterm_retry_count"]
+    assert_nil @session.metadata["failure_reason"], "The session must not fail with sigterm_retries_exhausted"
+    refute_equal "failed", @session.status
+
+    assert @session.logs.any? { |log| log.content.include?("SIGTERM retry 1 successful") },
+      "Should log a successful SIGTERM retry"
+  end
+
+  test "SIGTERM retry on a resume_monitoring job resumes the existing conversation instead of starting fresh" do
+    session_uuid = SecureRandom.uuid
+    clone_path = "/tmp/test-clone-183-resume-branch"
+    working_directory = File.join(clone_path, "artifacts/agent-roots/zimmer-router")
+    first_pid = 22345
+    second_pid = 22346
+
+    @session.update!(
+      session_id: session_uuid,
+      status: :running,
+      metadata: {
+        "process_pid" => first_pid,
+        "clone_path" => clone_path,
+        "working_directory" => working_directory
+      }
+    )
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p(clone_path)
+    mock_fs.mkdir_p(working_directory)
+    mock_fs.write(File.join(clone_path, "claude_stderr.log"), "")
+    write_transcript_with_assistant_message(mock_fs, working_directory, session_uuid)
+
+    current_pid = first_pid
+    mock_cli_adapter.resume_hook = ->(_opts) do
+      current_pid = second_pid
+      { pid: second_pid, stderr_log_path: File.join(clone_path, "claude_stderr.log") }
+    end
+
+    wait_call_count = 0
+    mock_process_manager.wait_hook = ->(pid, _flags) do
+      wait_call_count += 1
+      if pid == first_pid
+        [ pid, MockProcessManager::MockStatus.signaled(15) ]
+      elsif pid == second_pid && wait_call_count >= 10
+        [ pid, MockProcessManager::MockStatus.new(0) ]
+      end
+    end
+    mock_process_manager.running_hook = ->(pid) { pid == current_pid }
+
+    perform_with_stubs(job: job, skip_retry_delays: true) do
+      job.perform(@session.id, nil, resume_monitoring: true)
+    end
+
+    @session.reload
+
+    # conversation_exists?(working_directory) found the transcript, so the retry
+    # took the resume branch. With a nil working directory it silently discarded
+    # the conversation and re-ran the original prompt from scratch.
+    assert_equal 1, mock_cli_adapter.resumed_sessions.size, "Retry should resume the existing conversation"
+    assert_empty mock_cli_adapter.executed_commands, "Retry must not start a fresh conversation with the original prompt"
+    assert_empty @session.logs.select { |log| log.content.include?("No existing conversation found") },
+      "Retry must not report the resumable conversation as missing"
+  end
+
   private
+
+  # A job wired with mocks for the resume_monitoring path: an existing clone, a
+  # live process, and a process exit that drives the monitoring loop into
+  # handle_exit.
+  def build_resume_monitoring_job(clone_path:, pid:, exit_status:)
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    mock_fs.mkdir_p(clone_path)
+    mock_fs.write(File.join(clone_path, "claude_stderr.log"), "")
+
+    mock_process_manager.running_hook = ->(running_pid) { running_pid == pid }
+    mock_process_manager.wait_hook = ->(waited_pid, _flags) { [ waited_pid, exit_status ] }
+
+    job
+  end
+
+  # Records the working_dir the monitoring loop hands to handle_exit, and
+  # short-circuits the exit decision — these tests assert the argument, not the
+  # recovery behavior behind it (that is covered by the SIGTERM tests above).
+  def capture_handle_exit_working_dir(job, recorded_working_dirs)
+    job.define_singleton_method(:create_lifecycle_manager) do |session, log_buffer|
+      manager = ProcessLifecycleManager.new(
+        session: session,
+        cli_adapter: cli_adapter_for(session),
+        process_manager: @process_manager,
+        log_buffer: log_buffer,
+        file_system: @file_system
+      )
+
+      manager.define_singleton_method(:handle_exit) do |_status, working_dir:|
+        recorded_working_dirs << working_dir
+        ProcessLifecycleManager::ExitDecision.new(action: :needs_input)
+      end
+
+      manager
+    end
+  end
+
+  # A Claude transcript containing an assistant message, at the path
+  # SigtermRetryService#conversation_exists? derives from the working directory.
+  def write_transcript_with_assistant_message(mock_fs, working_directory, session_uuid)
+    transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(working_directory))
+    mock_fs.mkdir_p(transcript_dir)
+    mock_fs.write(
+      File.join(transcript_dir, "#{session_uuid}.jsonl"),
+      [
+        { "type" => "user", "message" => { "content" => "Hello" } }.to_json,
+        { "type" => "assistant", "message" => { "content" => [ { "type" => "text", "text" => "Hi!" } ] } }.to_json
+      ].join("\n")
+    )
+  end
+
+  # The monitoring loop's ambient collaborators (transcript polling, the log
+  # streaming thread, the poll-interval sleep) stubbed out. skip_retry_delays
+  # also removes SigtermRetryService's backoff and process-verification sleeps,
+  # which would otherwise add ~8s of real waiting per retry.
+  def perform_with_stubs(job:, skip_retry_delays: false, &block)
+    poller_stub = ->(_session, file_system: nil, broadcast_service: nil) {
+      poller = Object.new
+      def poller.poll_and_broadcast; true; end
+      poller
+    }
+    thread_stub = ->(&_thread_block) {
+      thread = Object.new
+      def thread.alive?; false; end
+      def thread.kill; end
+      def thread.join(*); end
+      thread
+    }
+    sleepless_retry_service = ->(session, **kwargs) do
+      service = SigtermRetryService.allocate
+      service.send(:initialize, session, **kwargs)
+      service.define_singleton_method(:sleep) { |_duration| }
+      service
+    end
+
+    TranscriptPollerService.stub(:new, poller_stub) do
+      Thread.stub(:new, thread_stub) do
+        job.stub(:sleep, ->(_duration) { }) do
+          if skip_retry_delays
+            SigtermRetryService.stub(:new, sleepless_retry_service, &block)
+          else
+            block.call
+          end
+        end
+      end
+    end
+  end
 
   # Swaps the frozen credentials-path constant to a temp file for the duration
   # of the block so tests never touch the real ~/.claude/.credentials.json.
