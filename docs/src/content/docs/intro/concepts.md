@@ -83,9 +83,9 @@ A markdown procedure (`SKILL.md`) that the agent can invoke — "how to run the 
 "how to deploy staging." Resolved from the catalog and copied into `.claude/skills/<id>/` in
 the clone before the agent starts.
 
-Zimmer's catalog ships five, all default-on for the `zimmer` root: `sync-docs`,
-`zimmer-start-dev-server`, `zimmer-run-tests`, `zimmer-deploy-staging`,
-`zimmer-change-ai-artifact`.
+Zimmer's catalog ships seven, all default-on for the `zimmer` root: `sync-docs`,
+`zimmer-start-dev-server`, `zimmer-run-tests`, `zimmer-deploy-staging`, `zimmer-debug-staging`,
+`zimmer-deploy-docs`, `zimmer-change-ai-artifact`.
 
 → [Skills, plugins, hooks, references](/air/artifacts/)
 

@@ -280,14 +280,24 @@ jobs:
           [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ] || build_anyway "Base SHA is the null SHA (new branch)"
           git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || build_anyway "Base commit ${BASE_SHA} is not in this clone"
 
-          changed="$(git diff --name-only "$BASE_SHA" HEAD)"
+          # `set -e` is deliberately NOT on (see the guards above, which rely on `||`), so a
+          # failing `git diff` would otherwise leave `changed` empty and quietly resolve to
+          # docs=false — failing CLOSED, the exact thing the comment above promises we don't do.
+          changed="$(git diff --name-only "$BASE_SHA" HEAD)" || build_anyway "git diff against ${BASE_SHA} failed"
+
           echo "--- files changed vs ${BASE_SHA} ---"
           echo "$changed"
           echo "------------------------------------"
 
           # ci.yml itself is in the filter so that a change to THIS logic still exercises
           # the job it gates.
-          if printf '%s\n' "$changed" | grep -qE '^(docs/|\.github/workflows/ci\.yml$)'; then
+          #
+          # A here-string, NOT `printf ... | grep -q`: grep -q exits on the first match, and a
+          # diff big enough to exceed the 64KiB pipe buffer would hand the writer a SIGPIPE
+          # (exit 141), which `pipefail` then promotes to the pipeline's status — sending us
+          # down the else branch and skipping the docs build on a change that DID touch docs/.
+          # alert-ci-failure.yml carries the same warning; it is a real trap in this repo.
+          if grep -qE '^(docs/|\.github/workflows/ci\.yml$)' <<<"$changed"; then
             echo "docs=true" >> "$GITHUB_OUTPUT"
             echo "docs/ touched → building the docs site."
           else
@@ -303,13 +313,16 @@ jobs:
   # This job BUILDS but does not DEPLOY. Publishing to Cloudflare Pages is on-demand and
   # lives in deploy-docs.yml; see docs/src/content/docs/meta/contributing.md.
   #
-  # Gated on `changes` so it only runs when docs/ actually moved. On a fork PR `changes`
-  # is skipped by its own fork guard, so `needs.changes.outputs.docs` is empty and this
-  # job skips too — the same outcome the fork guard produced before, and `all-checks-pass`
-  # already treats a skipped dependency as allowed.
+  # Gated on `changes` so it only runs when docs/ actually moved, and `all-checks-pass`
+  # already treats the resulting `skipped` as allowed.
+  #
+  # It KEEPS its own fork guard rather than leaning on `changes` being skipped on a fork PR.
+  # That would be true today, but it makes fork-safety purely transitive: loosen `changes`'s
+  # guard and this job would `npm ci && npm run build` fork-authored code on the SELF-HOSTED
+  # runner. Every other job states its own guard; this one does too.
   docs_site:
     needs: changes
-    if: ${{ needs.changes.outputs.docs == 'true' }}
+    if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.changes.outputs.docs == 'true' }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4

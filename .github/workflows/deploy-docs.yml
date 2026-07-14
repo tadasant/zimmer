@@ -52,6 +52,10 @@ on:
   schedule:
     - cron: "17 9 * * 1" # Mondays, 09:17 UTC
 
+# Serialized so two deploys can't race to publish the site. Note the GHA queue holds only ONE
+# pending run per group: a burst of dispatches can cancel a queued run (including, in principle,
+# the weekly production refresh). A cancelled run is not a failed one, so it alerts nothing --
+# but the cron repeats, so the worst case is a stale week, not a stuck site.
 concurrency:
   group: docs-deploy
   cancel-in-progress: false
@@ -66,6 +70,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
+          # Needed by the production ancestry check below, which compares against origin/main.
+          fetch-depth: 0
 
       # Wrangler infers production-vs-preview from --branch and nothing else: a deployment
       # whose branch matches the project's production branch (`main`) goes live on the
@@ -86,6 +92,21 @@ jobs:
           env_choice="${env_choice:-preview}"
 
           if [ "$env_choice" = "production" ]; then
+            # Defaulting `environment` to preview stops an ACCIDENTAL publish, but it does not
+            # stop a deliberate `-f ref=my-branch -f environment=production` from putting
+            # unreviewed content on the PUBLIC docs site. Require the commit to actually be on
+            # main's history.
+            #
+            # Ancestry, not equality: `HEAD == origin/main` would also block rolling production
+            # back to an earlier main SHA, which is the one thing you most want to be able to do
+            # when a bad docs deploy is live.
+            git fetch -q origin main
+            if ! git merge-base --is-ancestor HEAD origin/main; then
+              echo "::error::Refusing to publish $(git rev-parse --short HEAD) to production: it is not on main's history."
+              echo "::error::A production deploy goes live on docs.zimmer.tadasant.com. Merge the change first,"
+              echo "::error::or dispatch with environment=preview to get a *.pages.dev URL for this branch."
+              exit 1
+            fi
             branch="main"
           else
             branch="$(git rev-parse --abbrev-ref HEAD)"
@@ -95,8 +116,9 @@ jobs:
             if [ "$branch" = "HEAD" ]; then
               branch="preview-$(git rev-parse --short HEAD)"
             fi
-            # Pages branch aliases are lowercase alphanumerics and dashes, capped short.
-            branch="$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]' | tr '/_' '--' | sed 's/[^a-z0-9-]//g' | cut -c1-28)"
+            # Pages branch aliases are lowercase alphanumerics and dashes, capped short. The
+            # trailing `sed` strips a dash the truncation may have left dangling.
+            branch="$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]' | tr '/_' '--' | sed 's/[^a-z0-9-]//g' | cut -c1-28 | sed 's/-*$//')"
             branch="${branch:-preview}"
             # Belt and braces: a preview deploy must never land on the production branch.
             if [ "$branch" = "main" ]; then
@@ -164,27 +186,39 @@ jobs:
           set -euo pipefail
           # --commit-dirty=true: Wrangler otherwise warns and prompts about deploying from
           # a tree it considers dirty (the build just wrote dist/, which is gitignored).
+          # $RUNNER_TEMP, not a fixed /tmp path: this is a SHARED self-hosted runner box and
+          # concurrent jobs would clobber each other's log.
+          log="${RUNNER_TEMP:-/tmp}/wrangler-docs.log"
+
           npx --yes wrangler@4 pages deploy dist \
             --project-name=zimmer \
             --branch="${{ steps.target.outputs.branch }}" \
             --commit-hash="$(git rev-parse HEAD)" \
-            --commit-dirty=true 2>&1 | tee /tmp/wrangler-docs.log
+            --commit-dirty=true 2>&1 | tee "$log"
 
-          url="$(grep -oE 'https://[a-z0-9.-]+\.pages\.dev' /tmp/wrangler-docs.log | tail -1 || true)"
+          url="$(grep -oE 'https://[a-z0-9.-]+\.pages\.dev' "$log" | tail -1 || true)"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
 
+      # REF is free text from a dispatch input, so it arrives through `env:` rather than being
+      # interpolated into the script body -- a ${{ }} expansion of an attacker-chosen string
+      # directly into `run:` is a shell-injection sink. Same rule alert-ci-failure.yml follows.
       - name: Summarize
+        env:
+          REF: ${{ inputs.ref || github.ref }}
+          ENVIRONMENT: ${{ steps.target.outputs.environment }}
+          BRANCH: ${{ steps.target.outputs.branch }}
+          URL: ${{ steps.deploy.outputs.url }}
         run: |
           {
             echo "### Docs deployed"
             echo
             echo "| | |"
             echo "| --- | --- |"
-            echo "| Environment | \`${{ steps.target.outputs.environment }}\` |"
-            echo "| Pages branch | \`${{ steps.target.outputs.branch }}\` |"
-            echo "| Ref | \`${{ inputs.ref || github.ref }}\` (\`$(git rev-parse --short HEAD)\`) |"
-            echo "| Deployment URL | ${{ steps.deploy.outputs.url || '_not parsed from wrangler output_' }} |"
-            if [ "${{ steps.target.outputs.environment }}" = "production" ]; then
+            echo "| Environment | \`${ENVIRONMENT}\` |"
+            echo "| Pages branch | \`${BRANCH}\` |"
+            echo "| Ref | \`${REF}\` (\`$(git rev-parse --short HEAD)\`) |"
+            echo "| Deployment URL | ${URL:-_not parsed from wrangler output_} |"
+            if [ "$ENVIRONMENT" = "production" ]; then
               echo "| Live at | https://docs.zimmer.tadasant.com |"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

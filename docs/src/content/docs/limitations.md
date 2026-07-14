@@ -1013,6 +1013,19 @@ for — use `ac.sh` when you need isolation.
 
 ## Product gaps
 
+### The public docs site is allowed to lag behind `main`
+
+Docs deploys are [on-demand](/meta/contributing/#deploying): pushing to `main` does not publish the
+site. So a merged docs change is **not live** until someone dispatches `Deploy docs`, or until the
+weekly cron (Mondays 09:17 UTC) refreshes production from `main`. In the worst case
+`docs.zimmer.tadasant.com` is a week behind the repository.
+
+That is a deliberate trade — Cloudflare Pages was spending 4.5–8 minutes of build behind a queue up
+to 27 minutes on *every* push and *every* PR, overwhelmingly to republish prose that hadn't changed —
+but it does mean the site is no longer a trustworthy read of `main`. **If the published page disagrees
+with the repo, the repo is right.** Dispatch a production deploy if a docs change needs to be public
+before the cron runs.
+
 ### Auto-categorization has no feedback loop
 
 [Issue #16](https://github.com/tadasant/zimmer/issues/16): an LLM sorts new sessions into categories.

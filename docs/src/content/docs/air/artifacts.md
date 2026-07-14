@@ -13,7 +13,7 @@ staging." It lives in `skills/<id>/SKILL.md` and is registered in `skills/skills
 At prepare time AIR copies it into `.claude/skills/<id>/` in the clone, along with any references it
 declares.
 
-**The five that ship**, all `default_in_roots: ["zimmer"]`:
+**The seven that ship**, all `default_in_roots: ["zimmer"]`:
 
 | Skill | What it does |
 | --- | --- |
@@ -21,6 +21,8 @@ declares.
 | `zimmer-run-tests` | Run the test suite the way this repo expects. |
 | `zimmer-start-dev-server` | Bring up a local instance for e2e verification. |
 | `zimmer-deploy-staging` | Drive the staging deploy workflow. |
+| `zimmer-debug-staging` | Diagnose a staging deploy that is green but broken, silent, or hanging. |
+| `zimmer-deploy-docs` | Decide whether a docs change is worth publishing — and publish it. The default is *don't*. |
 | `zimmer-change-ai-artifact` | The guide to changing the catalog itself. |
 
 The generic workflow skills are vendored here too, under `category: workflow`:
