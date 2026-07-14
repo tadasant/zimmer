@@ -52,6 +52,17 @@
       "zimmer"
     ]
   },
+  "zimmer-deploy-docs": {
+    "id": "zimmer-deploy-docs",
+    "title": "Deploy Zimmer's Docs Site",
+    "description": "Decide whether a docs change warrants publishing the site — and publish it if so. Zimmer's docs site does NOT auto-deploy: the `Deploy docs` workflow is workflow_dispatch-only (plus one weekly production refresh), because Cloudflare Pages' Git integration was rebuilding the site on every push and every PR at 4.5–8 min of build plus up to 27 min of queue. The default answer is DO NOT deploy: CI already proves the site builds, so prose changes need nothing. Deploy when you have changed how the docs LOOK or restructured a large swath of them — the cases where something can plausibly be broken in a way only a rendered page reveals. Covers the criteria, dispatching a preview vs a production deploy, and reading back the URL.",
+    "path": "zimmer-deploy-docs",
+    "category": "zimmer",
+    "user_invocable": true,
+    "default_in_roots": [
+      "zimmer"
+    ]
+  },
   "zimmer-debug-staging": {
     "id": "zimmer-debug-staging",
     "title": "Debug Zimmer's Staging Environment",

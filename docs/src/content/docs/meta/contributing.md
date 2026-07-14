@@ -112,7 +112,63 @@ useful than a confident guess, and it's an issue waiting to be filed.
 ## Deploying
 
 The site is live at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com), built from `docs/`
-by Cloudflare Pages. Every push to `main` redeploys it, and every PR gets a preview URL.
+and hosted on Cloudflare Pages.
+
+**Pushing does not deploy it.** Deploys are on-demand: the
+[`Deploy docs`](https://github.com/tadasant/zimmer/actions/workflows/deploy-docs.yml) workflow is
+`workflow_dispatch`-only, plus one weekly cron (Mondays 09:17 UTC) that refreshes production from
+`main`.
+
+```bash
+# preview — a throwaway *.pages.dev URL for an unmerged branch
+gh workflow run deploy-docs.yml -f ref="$(git rev-parse --abbrev-ref HEAD)" -f environment=preview
+
+# production — publishes to docs.zimmer.tadasant.com
+gh workflow run deploy-docs.yml -f ref=main -f environment=production
+```
+
+`environment` defaults to `preview`, so an argument-less dispatch can't accidentally publish an
+unreviewed branch. The workflow builds the site on the GitHub runner (~30s) and uploads the static
+output with `wrangler pages deploy` — it does not ask Cloudflare to build anything.
+
+### Why it works this way
+
+Cloudflare Pages' Git integration used to rebuild the site on every push to `main` **and** every push
+to every PR branch: 4.5–8 minutes of build each, behind a queue measured as high as 27 minutes, and
+reported back as a check on the PR. Almost all of those builds republished byte-identical prose for a
+commit that never touched `docs/`. So the automatic builds are off, and this workflow replaced them.
+
+CI still **builds** the site on every change that touches `docs/` — the `docs_site` job in `ci.yml`,
+which catches broken frontmatter, a dead link, or a page missing from the sidebar. That's the check
+that matters for prose. A deploy answers a different question ("does it *look* right?"), which is why
+it's reserved for changes to how the site looks or a large restructuring. The
+[`zimmer-deploy-docs` skill](https://github.com/tadasant/zimmer/blob/main/skills/zimmer-deploy-docs/SKILL.md)
+encodes that judgment for agent sessions.
+
+:::caution[A merged docs change is not live]
+`main` and `docs.zimmer.tadasant.com` are allowed to diverge; the weekly cron is what reconciles them.
+If the public site disagrees with `main`, check `main` before "fixing" the page — the site being behind
+is the design. If something needs to be public *now*, dispatch a production deploy.
+:::
+
+### Cloudflare configuration
+
+Two Actions secrets drive the deploy:
+
+| Secret | What it is |
+| --- | --- |
+| `CLOUDFLARE_PAGES_API_TOKEN` | Account-scoped token with the **Cloudflare Pages: Edit** permission. Deliberately **separate** from `CLOUDFLARE_API_TOKEN`, which is `Zone:DNS:Edit + Zone:Zone:Read` for ACME DNS-01 cert issuance and cannot deploy Pages. |
+| `CLOUDFLARE_ACCOUNT_ID` | The Cloudflare account ID. |
+
+The Pages project (`zimmer`) stays connected to the Git repo — Cloudflare's Git integration is a
+one-way door, and a connected project can never be converted back to a pure Direct Upload project —
+but its automatic deployments are turned off, which
+[Cloudflare explicitly supports](https://developers.cloudflare.com/pages/configuration/git-integration/#disable-automatic-deployments)
+precisely so you can push builds with Wrangler instead. In the dashboard, under the project's
+**Settings → Build → Branch control**:
+
+- **Enable automatic production branch deployments:** off
+- **Preview branch:** `None (Disable automatic branch deployments)`
 
 **Re-creating the Pages project from scratch** (you need a human with Cloudflare access):
 
@@ -129,6 +185,8 @@ by Cloudflare Pages. Every push to `main` redeploys it, and every PR gets a prev
    `tadasant.com` zone, so it will create the CNAME for you.
 5. If you pick a different hostname, set `SITE_URL` to it — `docs/astro.config.mjs` reads that env
    var and falls back to `https://docs.zimmer.tadasant.com`.
+6. Turn the automatic deployments back off (Branch control, above) — a fresh Git-connected project
+   has them on, which is the thing this setup exists to avoid.
 
 :::caution[This site is public; Zimmer is not]
 The Zimmer app is tailnet-only by design. This documentation site is a static, public artifact — it

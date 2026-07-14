@@ -98,6 +98,13 @@ limitations, hacks, and known-broken edges belong on the
 [Known limitations](https://docs.zimmer.tadasant.com/limitations/) page; it is a feature, not a confession.
 If you spot a doc that's drifted from the code, that's a great thing to open an issue about.
 
+**Pushing does not publish the site.** CI *builds* `docs/` on any change that touches it (the
+`docs_site` job), which is what catches broken frontmatter, dead links, or a page missing from the
+sidebar — and that's all a prose change needs. Publishing is on-demand via the `Deploy docs`
+workflow, reserved for changes to how the site *looks* or a large restructuring, with a weekly cron
+refreshing production from `main`. See
+[Deploying](https://docs.zimmer.tadasant.com/meta/contributing/#deploying).
+
 `cd docs && npm run build` is what the `docs_site` CI job runs.
 
 ## License

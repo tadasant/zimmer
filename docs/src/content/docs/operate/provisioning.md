@@ -83,6 +83,9 @@ resize command.
 | `STAGING_SENTRY_DSN_BACKEND` | staging's GlitchTip DSN. Must be a **staging-only project**, never production's — a DSN selects a project, and GlitchTip's alert rules are per-project with no environment filter |
 | `STAGING_OPERATOR_SSH_KEY` | base64 of the operator SSH **private** key — the identity agent sessions SSH with ([below](#the-ssh-identity-an-agent-session-holds)). Optional: without it the app boots fine and only the `ssh-*` MCP servers fail |
 | `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
+| `CLOUDFLARE_API_TOKEN` | `domain-cert-staging.yml` — issuing the Let's Encrypt cert via ACME DNS-01 and upserting the `domain → tailnet IP` A record. Scoped **`Zone:DNS:Edit + Zone:Zone:Read`** on the one zone. It has no account-level permission, so it **cannot deploy Pages** |
+| `CLOUDFLARE_PAGES_API_TOKEN` | `deploy-docs.yml` — publishing the docs site with `wrangler pages deploy`. An **account**-scoped token with **Cloudflare Pages: Edit**. Deliberately a *separate* secret from `CLOUDFLARE_API_TOKEN` above: widening the DNS/cert token to cover Pages would hand the cert workflow the ability to publish the docs site, for no benefit |
+| `CLOUDFLARE_ACCOUNT_ID` | `deploy-docs.yml` — the Cloudflare account the Pages project lives in |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
 A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own comment says so.

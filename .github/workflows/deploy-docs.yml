@@ -1,0 +1,190 @@
+name: Deploy docs
+
+# Builds the Astro Starlight site in docs/ and uploads it straight to the `zimmer`
+# Cloudflare Pages project with Wrangler. Manual dispatch, plus one weekly refresh --
+# it deliberately does NOT fire on push.
+#
+# Why this workflow exists: Cloudflare Pages' Git integration used to rebuild the site
+# on every push to `main` AND on every push to every PR branch. Each of those builds
+# cost 4.5-8 minutes, plus a queue that has been measured as high as 27 minutes (the
+# account's Pages builds are serialized across projects), and reported back as a check
+# on the PR. The overwhelming majority of them republished byte-identical prose for a
+# commit that never touched docs/. Those automatic builds are turned off on the
+# Cloudflare side (Settings -> Build -> Branch control); this workflow is what replaces
+# them.
+#
+# Cloudflare's Git integration is a one-way door -- a Git-connected project can never be
+# converted back into a pure Direct Upload project -- but it explicitly blesses the
+# hybrid this workflow depends on: disable automatic deployments on every branch, then
+# push builds with Wrangler.
+# https://developers.cloudflare.com/pages/configuration/git-integration/#disable-automatic-deployments
+#
+# Building here instead of on Cloudflare's builders is also just faster: the same
+# `npm ci && npm run build` takes ~30s on the self-hosted runner (it is the `docs_site`
+# job in ci.yml) versus the 4.5-8 min Cloudflare was spending on it.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/tag/SHA to build & deploy"
+        required: false
+        default: ""
+      environment:
+        description: >-
+          production = publish to docs.zimmer.tadasant.com. preview = a throwaway
+          *.pages.dev URL for this branch, which is what you want when you are eyeballing
+          an unmerged docs change. Defaults to preview on purpose: putting an unreviewed
+          branch on the public docs site should take a deliberate choice.
+        type: choice
+        options:
+          - preview
+          - production
+        required: false
+        default: preview
+
+  # The backstop. With auto-deploy off, a merged docs change is NOT live until someone
+  # publishes it -- so without this, docs.zimmer.tadasant.com would silently drift behind
+  # `main` forever, which is a worse bug than the one this workflow is fixing (AGENTS.md's
+  # whole premise is that the docs stay true commit-by-commit). One production build a
+  # week keeps that invariant with ~1 Pages build instead of the ~15/day the Git
+  # integration was doing. Delete this `schedule:` block if you want a strictly zero-
+  # automatic-deploys world and are willing to publish by hand.
+  schedule:
+    - cron: "17 9 * * 1" # Mondays, 09:17 UTC
+
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # Wrangler infers production-vs-preview from --branch and nothing else: a deployment
+      # whose branch matches the project's production branch (`main`) goes live on the
+      # custom domain; any other branch name gets its own preview URL. So the branch name
+      # IS the environment switch, and it has to be resolved deliberately rather than
+      # inherited from whatever ref we happen to be sitting on.
+      - name: Resolve target branch
+        id: target
+        run: |
+          set -euo pipefail
+
+          # `inputs` is empty on a schedule run, so the weekly refresh has to name its own
+          # environment. Anything else defaults to preview.
+          env_choice="${{ inputs.environment }}"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            env_choice="production"
+          fi
+          env_choice="${env_choice:-preview}"
+
+          if [ "$env_choice" = "production" ]; then
+            branch="main"
+          else
+            branch="$(git rev-parse --abbrev-ref HEAD)"
+            # A dispatch against a tag or a raw SHA leaves a detached HEAD, whose "branch"
+            # is the literal string HEAD. Substitute something stable that can never be
+            # mistaken for `main` -- i.e. can never accidentally publish to production.
+            if [ "$branch" = "HEAD" ]; then
+              branch="preview-$(git rev-parse --short HEAD)"
+            fi
+            # Pages branch aliases are lowercase alphanumerics and dashes, capped short.
+            branch="$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]' | tr '/_' '--' | sed 's/[^a-z0-9-]//g' | cut -c1-28)"
+            branch="${branch:-preview}"
+            # Belt and braces: a preview deploy must never land on the production branch.
+            if [ "$branch" = "main" ]; then
+              branch="preview-main"
+            fi
+          fi
+
+          echo "environment=$env_choice" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "environment=$env_choice -> Pages branch '$branch'"
+
+      # Fail here, loudly and with instructions, rather than letting Wrangler die with an
+      # opaque authentication error.
+      - name: Preflight — Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::CLOUDFLARE_PAGES_API_TOKEN is not set."
+            echo "::error::Mint a Cloudflare API token with the 'Cloudflare Pages: Edit' ACCOUNT permission"
+            echo "::error::on the tadasant account, and add it as the CLOUDFLARE_PAGES_API_TOKEN secret."
+            echo "::error::It must be a SEPARATE secret from CLOUDFLARE_API_TOKEN: that one is scoped"
+            echo "::error::Zone:DNS:Edit + Zone:Zone:Read for ACME DNS-01 cert issuance in"
+            echo "::error::domain-cert-staging.yml, it carries no account-level Pages permission, and"
+            echo "::error::widening it would hand the cert workflow the ability to publish the docs site."
+            missing=1
+          fi
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not set. It is the account ID shown in the Cloudflare"
+            echo "::error::dashboard sidebar (Workers & Pages -> the account). Add it as an Actions secret."
+            missing=1
+          fi
+          [ "$missing" -eq 0 ] || exit 1
+          echo "✅ Cloudflare Pages credentials present"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install docs dependencies
+        run: npm ci
+        working-directory: docs
+
+      # SITE_URL is deliberately left unset: docs/astro.config.mjs falls back to
+      # https://docs.zimmer.tadasant.com. On a preview build that makes the canonical
+      # <link> and the sitemap point at production, which is cosmetically wrong and
+      # functionally irrelevant -- every in-page link Starlight emits is root-relative, so
+      # a preview deploy navigates entirely within itself.
+      - name: Build docs site
+        run: npm run build
+        working-directory: docs
+
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # --commit-dirty=true: Wrangler otherwise warns and prompts about deploying from
+          # a tree it considers dirty (the build just wrote dist/, which is gitignored).
+          npx --yes wrangler@4 pages deploy dist \
+            --project-name=zimmer \
+            --branch="${{ steps.target.outputs.branch }}" \
+            --commit-hash="$(git rev-parse HEAD)" \
+            --commit-dirty=true 2>&1 | tee /tmp/wrangler-docs.log
+
+          url="$(grep -oE 'https://[a-z0-9.-]+\.pages\.dev' /tmp/wrangler-docs.log | tail -1 || true)"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize
+        run: |
+          {
+            echo "### Docs deployed"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Environment | \`${{ steps.target.outputs.environment }}\` |"
+            echo "| Pages branch | \`${{ steps.target.outputs.branch }}\` |"
+            echo "| Ref | \`${{ inputs.ref || github.ref }}\` (\`$(git rev-parse --short HEAD)\`) |"
+            echo "| Deployment URL | ${{ steps.deploy.outputs.url || '_not parsed from wrangler output_' }} |"
+            if [ "${{ steps.target.outputs.environment }}" = "production" ]; then
+              echo "| Live at | https://docs.zimmer.tadasant.com |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

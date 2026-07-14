@@ -238,12 +238,78 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Does this ref touch the docs site at all? Only `docs_site` below consumes this, and
+  # only to skip itself on the ~90% of pushes that never go near docs/.
+  #
+  # This job is cheap on purpose: no Ruby, no services, and a full-history checkout that
+  # costs ~0.5s because the repo is a 3.5 MiB pack. It exists as a separate job (rather
+  # than a step inside docs_site) so a non-docs push frees the docs_site runner slot
+  # outright on the shared self-hosted pool, instead of holding it while it decides to do
+  # nothing.
+  #
+  # It FAILS OPEN. Every path where the base commit can't be resolved — a force-push, a
+  # brand-new branch whose `before` is the null SHA, a shallow clone missing the base —
+  # builds the docs anyway. A false "skip" would let a broken docs site through the gate;
+  # a false "build" just costs 30 seconds.
+  changes:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: self-hosted
+    outputs:
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect docs changes
+        id: filter
+        env:
+          # On a PR, actions/checkout leaves HEAD at the merge commit, so diffing against
+          # the base branch's SHA yields exactly the PR's own changes. On a push, `before`
+          # is the previous tip of the branch.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -uo pipefail
+
+          build_anyway() {
+            echo "docs=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$1 — building the docs site anyway (failing open)."
+            exit 0
+          }
+
+          [ -n "${BASE_SHA:-}" ] || build_anyway "No base SHA for this event"
+          [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ] || build_anyway "Base SHA is the null SHA (new branch)"
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || build_anyway "Base commit ${BASE_SHA} is not in this clone"
+
+          changed="$(git diff --name-only "$BASE_SHA" HEAD)"
+          echo "--- files changed vs ${BASE_SHA} ---"
+          echo "$changed"
+          echo "------------------------------------"
+
+          # ci.yml itself is in the filter so that a change to THIS logic still exercises
+          # the job it gates.
+          if printf '%s\n' "$changed" | grep -qE '^(docs/|\.github/workflows/ci\.yml$)'; then
+            echo "docs=true" >> "$GITHUB_OUTPUT"
+            echo "docs/ touched → building the docs site."
+          else
+            echo "docs=false" >> "$GITHUB_OUTPUT"
+            echo "docs/ untouched → skipping the docs site build."
+          fi
+
   # Builds the Astro Starlight documentation site in docs/. Keeps the site from
   # silently rotting: a broken link, bad frontmatter, or a page missing from the
   # sidebar fails here rather than at deploy time. No Ruby needed — this is the
   # one Node-only job.
+  #
+  # This job BUILDS but does not DEPLOY. Publishing to Cloudflare Pages is on-demand and
+  # lives in deploy-docs.yml; see docs/src/content/docs/meta/contributing.md.
+  #
+  # Gated on `changes` so it only runs when docs/ actually moved. On a fork PR `changes`
+  # is skipped by its own fork guard, so `needs.changes.outputs.docs` is empty and this
+  # job skips too — the same outcome the fork guard produced before, and `all-checks-pass`
+  # already treats a skipped dependency as allowed.
   docs_site:
-    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: changes
+    if: ${{ needs.changes.outputs.docs == 'true' }}
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -292,10 +358,16 @@ jobs:
   #      A fork PR therefore sees every job skip and this gate go green — the same
   #      fork tradeoff the individual jobs already make; trusted branches run everything.
   #      (This job has no checkout step, so a fork PR never executes fork code here.)
+  #      `docs_site` also legitimately skips on any change that does not touch docs/.
+  #
+  # `changes` is in `needs:` for a reason beyond ordering: it is what decides whether
+  # `docs_site` runs at all, so if IT fails, `docs_site` skips and the docs would sail
+  # through unbuilt. Depending on it converts that hole into a red gate.
   all-checks-pass:
     if: ${{ !cancelled() }}
     runs-on: self-hosted
     needs:
+      - changes
       - lint
       - security
       - verify_lockfile
