@@ -1,27 +1,32 @@
 # FileStorageService - Abstraction for temporary general-file storage
 #
 # Sibling to ImageStorageService for non-image attachments (text, source code,
-# logs, JSON, CSV, PDFs, etc.). Stores files on the local /tmp filesystem keyed
-# by session, with the same lifecycle (temp_<uuid> → real session migration on
-# session create).
+# logs, JSON, CSV, PDFs, etc.). Stores files on the durable `~/.zimmer` volume
+# keyed by session, with the same lifecycle (temp_<uuid> → real session
+# migration on session create).
 #
 # Usage:
 #   service = FileStorageService.new(session_id: 123)
 #
 #   # Store a file from upload
 #   result = service.store(uploaded_file: file)
-#   result[:path]              # => "/tmp/agent-orchestrator-files/123/abc123-notes.md"
+#   result[:path]              # => ".../agent-orchestrator-files/123/abc123-notes.md"
 #   result[:original_filename] # => "notes.md"
 #   result[:size]              # => 12345
 #
 #   # List files
-#   service.list # => ["/tmp/agent-orchestrator-files/123/abc123-notes.md", ...]
+#   service.list # => [".../agent-orchestrator-files/123/abc123-notes.md", ...]
 #
 #   # Clean up session files
 #   service.cleanup!
 #
 # Storage location:
-#   /tmp/agent-orchestrator-files/<session_id>/<unique_id>-<sanitized_filename>
+#   <storage_root>/<session_id>/<unique_id>-<sanitized_filename>
+#
+# where <storage_root> resolves under the durable `zimmer_data` volume shared by
+# the web and worker containers (see .base_dir). This cross-container visibility
+# is load-bearing: the web container writes the upload and the worker container's
+# agent reads it back, so the bytes MUST live on a mount both roles see.
 #
 # Maximum size: 500MB per file
 #
@@ -38,8 +43,8 @@ class FileStorageService
   # Maximum file size: 500MB
   MAX_FILE_SIZE = 500.megabytes
 
-  # Base directory for file storage
-  BASE_DIR = "/tmp/agent-orchestrator-files".freeze
+  # Subdirectory (under the durable ~/.zimmer root) that holds general files.
+  STORAGE_SUBDIR = "agent-orchestrator-files"
 
   # Maximum length for a sanitized filename component (preserves agent-readability)
   MAX_FILENAME_LENGTH = 120
@@ -165,9 +170,31 @@ class FileStorageService
     copied
   end
 
+  # Root of the file storage tree, before per-session subdirectories.
+  #
+  # Resolves under the durable `zimmer_data` volume (~/.zimmer) — a sibling of
+  # ClonesDirectory.base, the SAME mount that is bind-mounted into BOTH the web
+  # and worker containers in production. This cross-container visibility is the
+  # whole point: an upload written by the web role (Puma) has to be readable by
+  # the agent running in the worker role (GoodJob :external). Per-container
+  # `/tmp` is an ephemeral overlay that is NOT shared between the two roles, so
+  # files written there never reach the worker (see limitations #74).
+  #
+  # Override with the AGENT_FILES_DIR environment variable. If you point it
+  # OUTSIDE the mounted named volume you MUST add a corresponding durable volume
+  # mount that both roles share, or the worker will not see uploads. Resolved at
+  # call time (never memoized) so tests that stub HOME and ops that set the
+  # override are both honored without a process restart.
+  def self.storage_root
+    configured = ENV["AGENT_FILES_DIR"].presence
+    return File.expand_path(configured) if configured
+
+    File.join(File.dirname(ClonesDirectory.base), STORAGE_SUBDIR)
+  end
+
   # Root directory under which all session directories live.
   #
-  # In production and development this is BASE_DIR verbatim. In the test
+  # In production and development this is storage_root verbatim. In the test
   # environment it is namespaced per worker *process* so that parallel test
   # workers cannot delete each other's files.
   #
@@ -175,14 +202,14 @@ class FileStorageService
   # database. Because `fixtures :all` seeds every worker's database identically,
   # `Session.create!` hands out colliding ids across workers (and the service
   # tests pick random ids from the same range). All workers otherwise share the
-  # single BASE_DIR on /tmp, so one worker's teardown `cleanup!` would wipe the
+  # single storage_root, so one worker's teardown `cleanup!` would wipe the
   # session directory another worker is still reading from — producing
   # intermittent ENOENT errors. Keying the root by Process.pid gives each worker
   # an isolated tree. See issues #3455 and #3741.
   def self.base_dir
-    return BASE_DIR unless Rails.env.test?
+    return storage_root unless Rails.env.test?
 
-    File.join(BASE_DIR, "test-worker-#{Process.pid}")
+    File.join(storage_root, "test-worker-#{Process.pid}")
   end
 
   # Get storage directory for this session.

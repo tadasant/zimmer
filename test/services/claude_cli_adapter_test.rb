@@ -2434,6 +2434,30 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal "", content[0]["text"]
   end
 
+  test "load_image_as_base64 accepts a path under the durable image storage root" do
+    image_path = File.join(ImageStorageService.storage_root, "42", "abc.png")
+    mock_fs = Minitest::Mock.new
+    mock_fs.expect(:binread, "PNGBYTES", [ image_path ])
+    @adapter.file_system = mock_fs
+
+    result = @adapter.send(:load_image_as_base64, image_path)
+
+    assert_equal Base64.strict_encode64("PNGBYTES"), result
+    mock_fs.verify
+  end
+
+  test "load_image_as_base64 rejects a container-local /tmp path outside the storage root" do
+    # A path on per-container /tmp (the old, non-shared location) must be rejected
+    # by the defense-in-depth prefix check now that storage lives on the shared volume.
+    stale_path = "/tmp/agent-orchestrator-images/42/abc.png"
+
+    error = assert_raises(ClaudeCliAdapter::ClaudeCliError) do
+      @adapter.send(:load_image_as_base64, stale_path)
+    end
+    assert_match(/Invalid image path/, error.message)
+    assert_includes error.message, ImageStorageService.storage_root
+  end
+
   test "execute with large prompt preserves all options" do
     large_prompt = "a" * (100.kilobytes + 1)
 
