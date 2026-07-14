@@ -227,12 +227,11 @@ jobs:
         run: bin/rails tailwindcss:build
       - name: Run system tests
         run: bin/rails test:system
-      # Rails writes a PNG per failing system test to `Capybara.save_path`, and
-      # `capybara/rails` sets that to tmp/capybara — NOT the tmp/screenshots this step
-      # used to point at. The step therefore "succeeded" on every failing run while
-      # uploading nothing (`if-no-files-found: ignore`), leaving failures that only
-      # reproduce on the runner undebuggable from the log alone. Upload both paths so
-      # the screenshot survives wherever Rails decides to put it.
+      # Rails writes a PNG per failing system test to `Capybara.save_path`, which
+      # `capybara/rails` points at tmp/capybara (it falls back to tmp/screenshots only
+      # when save_path is unset, which `require "capybara/rails"` never leaves it).
+      # Both are listed so the artifact survives either way. Without the screenshot, a
+      # failure that only reproduces on the runner is undebuggable from the log alone.
       - name: Upload failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4
