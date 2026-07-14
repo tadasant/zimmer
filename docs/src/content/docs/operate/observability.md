@@ -103,6 +103,49 @@ environment gate holds. Two layers now enforce it:
   key. The agent's shell never sees the production DSN at all, for any tool an agent session
   spawns — not just Rails ones. A clone that wants its own DSN can still set one in its `.env`.
 
+## The same gate on the alert path
+
+Exceptions are not the only way into `#alerts`. `AlertService.raise_alert` posts there directly,
+and every poller and trigger job calls it — that is how an operator learns a Slack poll or a
+trigger condition is failing.
+
+That path needs the identical gate, for the identical reason, so `app/services/alert_service.rb`
+carries its own allowlist:
+
+```ruby
+ENABLED_ENVIRONMENTS = %w[production staging].freeze
+```
+
+`AlertService.configured?` — "is there a Slack token and a channel id?" — cannot stand in for it.
+A token proves nothing about *which environment is holding it*. Agent sessions run inside the
+production container, and unlike `SENTRY_DSN_BACKEND` the Slack credentials are **not** stripped
+from an agent's shell by `CliSpawnEnv`: `SLACK_BOT_TOKEN` is deliberately passed through to the
+`slack-workspace` MCP server (`mcp.json`), so an agent's `RAILS_ENV=test bin/rails test` is
+"configured" in exactly the way production is. Any alert its tests exercise then pages the
+on-call channel with **fixture** data.
+
+That is not hypothetical either. A test run of a GitHub-trigger poller paged `#alerts` with:
+
+```
+Condition 949208330 on trigger 'Ready-to-merge PR gate' (ID: 887723230) failed:
+wrong number of arguments (given 2, expected 3)
+```
+
+Those ids are `ActiveRecord::FixtureSet.identify` hashes of fixture labels, and the trigger names
+are fixture names — but nothing in the alert says so, so it was read back as a production outage
+and triaged as one. The environment allowlist is what makes an alert's presence in the channel
+mean what it claims to mean.
+
+The guard also declines *before* the dedup cache is written, so a non-production run cannot
+consume the dedup window and silence the same alert in production for the next hour.
+
+:::note[Why one layer here, two for Sentry]
+Sentry gets a second layer — `CliSpawnEnv` unsets its DSN in agent shells. The Slack credentials
+cannot be unset the same way without breaking the `slack-workspace` MCP server that agent sessions
+legitimately use. The environment allowlist is the layer that holds regardless, because it holds
+even when the production token genuinely is present.
+:::
+
 ## Configuring it
 
 The three variables reach the container as Kamal secrets (`env.secret` in
