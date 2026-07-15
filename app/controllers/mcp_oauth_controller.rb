@@ -16,12 +16,18 @@
 # 6. Controller exchanges code for tokens, stores credentials
 # 7. When all OAuth flows complete, session can proceed
 class McpOauthController < ApplicationController
-  layout "application_shell"
+  # The real app-wide layout. (An earlier "application_shell" name pointed at a template
+  # that does not exist in this repo — a leftover from the squashed AO import — so any
+  # HTML render here, e.g. the error page or the manual authorization page, raised
+  # MissingTemplate. "application" is the layout every other page uses.)
+  layout "application"
 
-  # POST/GET callback may not have CSRF token from OAuth provider
-  # Initiate action may also have stale CSRF tokens after deploys, so we skip it there too
+  # POST/GET callback may not have CSRF token from OAuth provider.
+  # Initiate and complete may also have stale CSRF tokens after deploys (the manual
+  # authorization page can sit open while the user consents in another tab), so we skip
+  # them there too.
   # Security is maintained via: valid session_id required, OAuth state parameter protection
-  skip_forgery_protection only: [ :callback, :initiate ]
+  skip_forgery_protection only: [ :callback, :initiate, :complete ]
 
   # GET /mcp_oauth/status/:session_id
   # Returns the OAuth status for a session's MCP servers
@@ -55,18 +61,35 @@ class McpOauthController < ApplicationController
     # Get the MCP server config for credential key computation
     mcp_server_config = get_mcp_server_config(server_name)
 
+    oauth_service = McpOauthService.new
+
     # Check for pre-registered OAuth config first (takes precedence over server probing)
     # Some servers like BigQuery don't require auth for initialization but do for tool calls
     preregistered_oauth = PreregisteredOauthConfig.find_for_server(server_name)
 
     if preregistered_oauth
+      # Thread the RFC 8707 resource indicator through the pre-registered path too, so
+      # audience-binding servers accept the token. Derive it from the server URL the same
+      # way the probe path does, unless the config sets an explicit `resource` (a blank
+      # value suppresses it, for servers that reject an unexpected resource param).
+      resource = if preregistered_oauth.resource.nil?
+        oauth_service.canonical_resource(nil, server_url)
+      else
+        preregistered_oauth.resource.presence
+      end
+
       oauth_metadata = {
         authorization_endpoint: preregistered_oauth.authorization_endpoint,
         token_endpoint: preregistered_oauth.token_endpoint,
         client_id: preregistered_oauth.client_id,
         client_secret: preregistered_oauth.client_secret,
-        scopes: preregistered_oauth.scopes
+        scopes: preregistered_oauth.scopes,
+        resource: resource,
+        manual: preregistered_oauth.manual?
       }
+      # A configured redirect_uri (e.g. the localhost redirect the third-party client
+      # permits) wins over Zimmer's hosted callback.
+      redirect_uri = preregistered_oauth.redirect_uri.presence || oauth_service.build_redirect_uri
       Rails.logger.info "[McpOauthController] Using pre-registered OAuth for #{server_name}"
     else
       # Fall back to probing the server to discover OAuth metadata via RFC 8414/9728.
@@ -74,7 +97,6 @@ class McpOauthController < ApplicationController
       # block so servers that require a pre-registered client (e.g. Slack) use it
       # instead of the `zimmer` placeholder.
       catalog_server = ServersConfig.find(server_name)
-      oauth_service = McpOauthService.new
       requirement = oauth_service.check_oauth_requirement(
         server_url,
         configured_client_id: catalog_server&.oauth_client_id,
@@ -96,6 +118,7 @@ class McpOauthController < ApplicationController
         scopes: requirement.metadata.scopes_supported&.join(" "),
         resource: requirement.metadata.resource
       }
+      redirect_uri = oauth_service.build_redirect_uri
     end
 
     unless oauth_metadata && oauth_metadata[:authorization_endpoint]
@@ -116,8 +139,6 @@ class McpOauthController < ApplicationController
     existing_pending&.destroy
 
     # Create pending flow
-    oauth_service ||= McpOauthService.new
-    redirect_uri = oauth_service.build_redirect_uri
     pending_flow = McpOauthPendingFlow.create_for_session!(
       session: @session,
       server_name: server_name,
@@ -127,8 +148,15 @@ class McpOauthController < ApplicationController
       mcp_server_config: mcp_server_config
     )
 
-    # Redirect to OAuth provider
-    redirect_to pending_flow.authorization_url, allow_other_host: true
+    if pending_flow.manual?
+      # Out-of-band completion: the user consents in their own browser (which lands on a
+      # localhost/oob redirect with nothing listening) and pastes the resulting URL back.
+      @pending_flow = pending_flow
+      render :manual
+    else
+      # Redirect to OAuth provider; Zimmer's hosted callback finishes the flow.
+      redirect_to pending_flow.authorization_url, allow_other_host: true
+    end
   end
 
   # GET /mcp_oauth/callback
@@ -168,29 +196,102 @@ class McpOauthController < ApplicationController
       return
     end
 
-    # Exchange code for tokens
-    oauth_service = McpOauthService.new
-    token_data = oauth_service.exchange_code_for_tokens(pending_flow, params[:code])
+    session = pending_flow.session
+    credential = store_tokens_and_resume(pending_flow, params[:code])
 
-    unless token_data && token_data["access_token"]
+    unless credential
       pending_flow.destroy
       render_error("Failed to exchange authorization code for tokens. Please try again.")
       return
     end
 
-    # Store the credentials
+    flash[:notice] = "Successfully authorized #{credential.server_name}"
+    redirect_to session_path(session)
+  end
+
+  # POST /mcp_oauth/complete
+  # Completes a manual ("paste-back") OAuth flow. The user consented in their own
+  # browser, which landed on a localhost/oob redirect with nothing listening; they paste
+  # the full redirect URL (or the bare code) here, and we finish the token exchange using
+  # the persisted PKCE code_verifier and redirect_uri.
+  def complete
+    state = params[:state]
+
+    unless state.present?
+      render_error("Missing state parameter")
+      return
+    end
+
+    pending_flow = McpOauthPendingFlow.find_by(state: state)
+
+    unless pending_flow
+      render_error("OAuth flow not found. It may have expired.")
+      return
+    end
+
+    if pending_flow.expired?
+      pending_flow.destroy
+      render_error("OAuth flow has expired. Please try again.")
+      return
+    end
+
+    code = pending_flow.authorization_code_from_pasted(params[:redirect_response])
+
+    unless code.present?
+      @pending_flow = pending_flow
+      @error_message = "Couldn't find an authorization code in what you pasted, or the state didn't match. " \
+        "Paste the full URL your browser landed on (it contains ?code=…&state=…), or just the code value."
+      render :manual, status: :bad_request
+      return
+    end
+
+    session = pending_flow.session
+    credential = store_tokens_and_resume(pending_flow, code)
+
+    unless credential
+      @pending_flow = pending_flow
+      @error_message = "Failed to exchange the authorization code for tokens. " \
+        "The code may have already been used or expired — re-authorize and paste a fresh URL."
+      render :manual, status: :bad_request
+      return
+    end
+
+    flash[:notice] = "Successfully authorized #{credential.server_name}"
+    redirect_to session_path(session)
+  end
+
+  private
+
+  # Exchanges the authorization code for tokens, stores the credential, and resumes the
+  # session if every blocking OAuth flow is now complete. Shared by the hosted callback
+  # and the manual paste-back completion.
+  #
+  # On success: destroys the pending flow, fires the (idempotent) resume, and returns the
+  # stored credential. On failure (no usable token in the response): leaves the pending
+  # flow intact and returns nil, so the caller can decide whether to retry or clean up.
+  #
+  # @param pending_flow [McpOauthPendingFlow]
+  # @param code [String] the authorization code
+  # @return [McpOauthCredential, nil]
+  def store_tokens_and_resume(pending_flow, code)
+    oauth_service = McpOauthService.new
+    token_data = oauth_service.exchange_code_for_tokens(pending_flow, code)
+    tokens = oauth_service.extract_tokens(token_data)
+
+    return nil unless tokens
+
     credential = McpOauthCredential.find_or_initialize_by(credential_key: pending_flow.credential_key)
     credential.update!(
       server_name: pending_flow.server_name,
       server_url: pending_flow.server_url,
       client_id: pending_flow.client_id,
       client_secret: pending_flow.client_secret,
-      access_token: token_data["access_token"],
-      refresh_token: token_data["refresh_token"],
+      access_token: tokens["access_token"],
+      refresh_token: tokens["refresh_token"],
       token_endpoint: pending_flow.token_endpoint,
-      scopes: token_data["scope"],
+      scopes: tokens["scope"],
       resource: pending_flow.resource,
-      expires_at: token_data["expires_in"] ? Time.current + token_data["expires_in"].to_i.seconds : nil
+      expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil
     )
 
     session = pending_flow.session
@@ -205,11 +306,8 @@ class McpOauthController < ApplicationController
     # session's original prompt.
     McpOauthResumeService.new(session).call
 
-    flash[:notice] = "Successfully authorized #{credential.server_name}"
-    redirect_to session_path(session)
+    credential
   end
-
-  private
 
   def render_error(message)
     @error_message = message

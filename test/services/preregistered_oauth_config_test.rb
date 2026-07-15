@@ -183,6 +183,105 @@ class PreregisteredOauthConfigTest < ActiveSupport::TestCase
     end
   end
 
+  # --- Public client (no client_secret) support ---
+
+  test "find_for_server returns a public client when client_secret is absent" do
+    # A public OAuth client (RFC 6749 §2.1) authenticates with PKCE alone — no secret.
+    config = {
+      slack: {
+        client_id: "1601185624273.8899143856786",
+        authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+        token_endpoint: "https://slack.com/api/oauth.v2.user.access"
+      }
+    }
+    with_custom_oauth_credentials(config) do
+      client = PreregisteredOauthConfig.find_for_server("slack")
+      assert_not_nil client, "public client (no secret) should still load"
+      assert_equal "1601185624273.8899143856786", client.client_id
+      assert_nil client.client_secret
+    end
+  end
+
+  test "find_for_server still requires client_id" do
+    config = {
+      broken: {
+        client_secret: "s",
+        authorization_endpoint: "https://example.com/auth",
+        token_endpoint: "https://example.com/token"
+      }
+    }
+    with_custom_oauth_credentials(config) do
+      assert_nil PreregisteredOauthConfig.find_for_server("broken")
+    end
+  end
+
+  test "find_for_server still requires both endpoints" do
+    config = {
+      broken: {
+        client_id: "id",
+        authorization_endpoint: "https://example.com/auth"
+        # no token_endpoint
+      }
+    }
+    with_custom_oauth_credentials(config) do
+      assert_nil PreregisteredOauthConfig.find_for_server("broken")
+    end
+  end
+
+  test "find_for_server loads redirect_uri, manual, and resource fields" do
+    config = {
+      slack: {
+        client_id: "cid",
+        authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+        token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+        scopes: "channels:history,users:read",
+        redirect_uri: "http://localhost:3118/callback",
+        manual: true,
+        resource: ""
+      }
+    }
+    with_custom_oauth_credentials(config) do
+      client = PreregisteredOauthConfig.find_for_server("slack")
+      assert_not_nil client
+      assert_equal "http://localhost:3118/callback", client.redirect_uri
+      assert client.manual?
+      assert_equal "", client.resource
+      assert_equal "channels:history,users:read", client.scopes
+    end
+  end
+
+  test "manual? defaults to false when not configured" do
+    config = {
+      basic: {
+        client_id: "cid",
+        client_secret: "sec",
+        authorization_endpoint: "https://example.com/auth",
+        token_endpoint: "https://example.com/token"
+      }
+    }
+    with_custom_oauth_credentials(config) do
+      client = PreregisteredOauthConfig.find_for_server("basic")
+      assert_not client.manual?
+      assert_nil client.redirect_uri
+      assert_nil client.resource
+    end
+  end
+
+  test "OAuthClient#to_public_h excludes client_secret and includes new fields" do
+    client = PreregisteredOauthConfig::OAuthClient.new(
+      key: "slack",
+      client_id: "cid",
+      authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+      token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+      redirect_uri: "http://localhost:3118/callback",
+      manual: true
+    )
+    hash = client.to_public_h
+    refute hash.key?(:client_secret)
+    assert_equal "http://localhost:3118/callback", hash[:redirect_uri]
+    assert_equal true, hash[:manual]
+  end
+
   private
 
   def skip_unless_oauth_credentials_available

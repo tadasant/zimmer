@@ -16,8 +16,21 @@
 #       token_endpoint: "https://oauth2.googleapis.com/token"
 #       scopes: "https://www.googleapis.com/auth/bigquery"
 #
-# Required fields: client_id, client_secret, authorization_endpoint, token_endpoint
-# Optional fields: scopes
+# Public clients (RFC 6749 §2.1 + PKCE, no client_secret) are supported too — omit
+# `client_secret` entirely. The official hosted Slack MCP client is the motivating case:
+# it is a public client that only permits a localhost redirect, so it also sets
+# `redirect_uri` and `manual: true` (see below):
+#   mcp_oauth_clients:
+#     slack:
+#       client_id: "1601185624273.8899143856786"
+#       authorization_endpoint: "https://slack.com/oauth/v2_user/authorize"
+#       token_endpoint: "https://slack.com/api/oauth.v2.user.access"
+#       scopes: "channels:history,groups:history,search:read.public,users:read"
+#       redirect_uri: "http://localhost:3118/callback"
+#       manual: true
+#
+# Required fields: client_id, authorization_endpoint, token_endpoint
+# Optional fields: client_secret (omit for public/PKCE clients), scopes, redirect_uri, manual, resource
 #
 # The key under mcp_oauth_clients must exactly match the server name (e.g., "bigquery-example").
 # Google OAuth automatically adds access_type=offline and prompt=consent for refresh tokens
@@ -25,15 +38,28 @@
 class PreregisteredOauthConfig
   # OAuth client configuration
   class OAuthClient
-    attr_reader :key, :client_id, :client_secret, :authorization_endpoint, :token_endpoint, :scopes
+    attr_reader :key, :client_id, :client_secret, :authorization_endpoint,
+      :token_endpoint, :scopes, :redirect_uri, :resource
 
-    def initialize(key:, client_id:, client_secret:, authorization_endpoint:, token_endpoint:, scopes: nil)
+    def initialize(key:, client_id:, authorization_endpoint:, token_endpoint:,
+      client_secret: nil, scopes: nil, redirect_uri: nil, manual: false, resource: nil)
       @key = key
       @client_id = client_id
       @client_secret = client_secret
       @authorization_endpoint = authorization_endpoint
       @token_endpoint = token_endpoint
       @scopes = scopes
+      @redirect_uri = redirect_uri
+      @manual = manual
+      @resource = resource
+    end
+
+    # Whether this client completes out-of-band ("paste-back"): the user consents in
+    # their own browser at a localhost/oob redirect the third-party client already
+    # permits, then pastes the resulting redirect URL back into Zimmer. Used for public
+    # clients that cannot whitelist Zimmer's hosted callback (e.g. official Slack MCP).
+    def manual?
+      !!@manual
     end
 
     def to_h
@@ -43,7 +69,10 @@ class PreregisteredOauthConfig
         client_secret: client_secret,
         authorization_endpoint: authorization_endpoint,
         token_endpoint: token_endpoint,
-        scopes: scopes
+        scopes: scopes,
+        redirect_uri: redirect_uri,
+        manual: manual?,
+        resource: resource
       }
     end
 
@@ -54,7 +83,10 @@ class PreregisteredOauthConfig
         client_id: client_id,
         authorization_endpoint: authorization_endpoint,
         token_endpoint: token_endpoint,
-        scopes: scopes
+        scopes: scopes,
+        redirect_uri: redirect_uri,
+        manual: manual?,
+        resource: resource
       }
     end
   end
@@ -96,10 +128,13 @@ class PreregisteredOauthConfig
 
     private
 
-    # Load OAuth client configuration for a specific key
+    # Load OAuth client configuration for a specific key.
+    #
+    # Requires client_id + both endpoints. client_secret is optional — a config with
+    # no secret is a public client (RFC 6749 §2.1) that authenticates with PKCE alone.
     def load_client(key)
       config = oauth_clients_config&.dig(key.to_sym)
-      return nil unless config&.dig(:client_id).present? && config&.dig(:client_secret).present?
+      return nil unless config&.dig(:client_id).present?
 
       authorization_endpoint = config[:authorization_endpoint]
       token_endpoint = config[:token_endpoint]
@@ -114,7 +149,10 @@ class PreregisteredOauthConfig
         client_secret: config[:client_secret],
         authorization_endpoint: authorization_endpoint,
         token_endpoint: token_endpoint,
-        scopes: config[:scopes]
+        scopes: config[:scopes],
+        redirect_uri: config[:redirect_uri],
+        manual: config[:manual] || false,
+        resource: config[:resource]
       )
     end
 

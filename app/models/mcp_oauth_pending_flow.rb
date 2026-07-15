@@ -66,6 +66,7 @@ class McpOauthPendingFlow < ApplicationRecord
       redirect_uri: redirect_uri,
       scopes: oauth_metadata[:scopes],
       resource: oauth_metadata[:resource],
+      manual: oauth_metadata[:manual] || false,
       mcp_server_config: mcp_server_config,
       expires_at: EXPIRATION_DURATION.from_now
     )
@@ -74,6 +75,39 @@ class McpOauthPendingFlow < ApplicationRecord
   # Returns true if this flow has expired
   def expired?
     expires_at < Time.current
+  end
+
+  # Extracts the authorization code from a value the user pastes back after consenting
+  # in their own browser (manual / out-of-band completion).
+  #
+  # Accepts either:
+  # - a full redirect URL (or bare query string) the browser landed on, e.g.
+  #   "http://localhost:3118/callback?code=abc&state=xyz" — the `code` is extracted and,
+  #   when the URL carries a `state`, it MUST match this flow's state (CSRF defense,
+  #   mirroring the hosted callback), or
+  # - a bare authorization code with no URL/query structure.
+  #
+  # @param pasted [String] the value pasted back by the user
+  # @return [String, nil] the authorization code, or nil if none / on a state mismatch
+  def authorization_code_from_pasted(pasted)
+    value = pasted.to_s.strip
+    return nil if value.blank?
+
+    # Treat anything that looks like a URL or carries a query string as a redirect URL;
+    # otherwise treat the whole value as a bare code.
+    looks_like_url = value.match?(%r{\Ahttps?://}i) || value.include?("?") || value.include?("code=")
+    return value unless looks_like_url
+
+    query = value.include?("?") ? value.split("?", 2).last : value
+    query = query.split("#", 2).first # drop any fragment
+    params = URI.decode_www_form(query.to_s).to_h
+
+    returned_state = params["state"]
+    return nil if returned_state.present? && returned_state != state
+
+    params["code"].presence
+  rescue ArgumentError
+    nil
   end
 
   # Returns true if this is a localhost OAuth flow
