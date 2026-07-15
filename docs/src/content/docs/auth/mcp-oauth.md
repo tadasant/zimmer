@@ -161,12 +161,14 @@ mcp_oauth_clients:
     scopes: "channels:history,groups:history,search:read.public,users:read"
     redirect_uri: "http://localhost:3118/callback"    # the loopback redirect the Slack app permits
     manual: true
+    resource: ""                                      # Slack OAuth is not RFC 8707 — suppress the indicator
 ```
 
 The key (`slack`) must match the MCP server name in the catalog, whose URL is `https://mcp.slack.com/mcp`.
 Slack returns the *user* token nested under `authed_user.access_token` (a top-level `access_token`, when
-present, is the bot token); Zimmer unwraps it. If Slack rejects the RFC 8707 `resource` indicator that
-the pre-registered path derives by default, set `resource: ""` in the entry to suppress it.
+present, is the bot token); Zimmer unwraps it. `resource: ""` is set because Slack's OAuth endpoints are
+not the RFC 8707 audience-binding kind — for a genuine MCP auth server, omit the key instead and the
+pre-registered path derives the resource indicator from the server URL automatically.
 
 :::note[The Slack `client_id` is public; wiring it into prod is a human step]
 `1601185624273.8899143856786` and the `3118` loopback redirect are taken from the distributed Claude
