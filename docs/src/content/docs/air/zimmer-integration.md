@@ -186,7 +186,7 @@ can hit the same propagation race; the more common cause is the mirror image —
 catalog id still requested by a *persisted* session or trigger (e.g. the skill `pr` renamed to
 `open-pr` while a daily trigger still asked for `pr`). That's a permanent caller-config error, not
 broken-system behavior, so it fails the session at WARN with an actionable message ("requested skill
-'pr' does not exist … update this session/trigger's skills") instead of paging `#alerts`. The
+'pr' does not exist … update this session/trigger's skills") instead of paging `#eng-alerts`. The
 persisted-data fix — pointing the trigger at the new id — is a human/operator action; the session
 just has to fail *visibly* without paging ops.
 
