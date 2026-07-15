@@ -172,6 +172,18 @@ class ImageStorageService
     copied_images
   end
 
+  # Reclaim a session's stored images (best-effort; never raises).
+  #
+  # Now that storage is durable (see .storage_root) it is no longer wiped by
+  # container recreation, so it must be reaped explicitly. Called from the clone
+  # GC so attachments share the clone/scratch lifecycle rather than accumulating
+  # on the shared volume forever.
+  def self.cleanup_for(session_id)
+    new(session_id: session_id).cleanup!
+  rescue ArgumentError => e
+    Rails.logger.warn("[ImageStorageService] cleanup_for skipped invalid session #{session_id.inspect}: #{e.message}")
+  end
+
   # Root of the image storage tree, before per-session subdirectories.
   #
   # Resolves under the durable `zimmer_data` volume (~/.zimmer) — a sibling of
