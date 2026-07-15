@@ -607,7 +607,7 @@ class AgentSessionJob < ApplicationJob
         if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
           begin
             air_service.prepare!
-          rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError => e
+          rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError, AirPrepareService::ArtifactResolutionError => e
             fail_session_for_air_config_error!(session, log_buffer, e)
             return
           end
@@ -836,7 +836,7 @@ class AgentSessionJob < ApplicationJob
           if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
             begin
               air_service.prepare!
-            rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError => e
+            rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError, AirPrepareService::ArtifactResolutionError => e
               fail_session_for_air_config_error!(session, log_buffer, e)
               return
             end
@@ -2879,17 +2879,18 @@ class AgentSessionJob < ApplicationJob
   end
 
   # Fail a session gracefully after `air prepare` hit a session-*configuration*
-  # problem: either the agent root can't be resolved from the AIR catalog even
-  # after a cache refresh, or a selected MCP server interpolates a ${VAR} that
-  # Zimmer's SecretsLoader doesn't carry. Both are deterministic, non-retryable, and
-  # operator-fixable — nothing is broken system-side — so they are logged at WARN
-  # and the session is failed here, rather than allowed to bubble to ActiveJob as
-  # a terminal job crash that pages #eng-alerts. Mirrors the oauth_required
-  # graceful-fail path. Callers must `return` immediately afterwards.
+  # problem: the agent root can't be resolved from the AIR catalog even after a
+  # cache refresh, a selected skill/MCP/hook/plugin id is absent from the catalog,
+  # or a selected MCP server interpolates a ${VAR} that Zimmer's SecretsLoader
+  # doesn't carry. All are deterministic, non-retryable, and operator-fixable —
+  # nothing is broken system-side — so they are logged at WARN and the session is
+  # failed here, rather than allowed to bubble to ActiveJob as a terminal job crash
+  # that pages #eng-alerts. Mirrors the oauth_required graceful-fail path. Callers
+  # must `return` immediately afterwards.
   #
   # @param session [Session] the session to fail
   # @param log_buffer [LogBuffer] buffer for the warning line
-  # @param error [AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError]
+  # @param error [AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError, AirPrepareService::ArtifactResolutionError]
   def fail_session_for_air_config_error!(session, log_buffer, error)
     case error
     when AirPrepareService::SecretResolutionError
@@ -2900,6 +2901,20 @@ class AgentSessionJob < ApplicationJob
       message = "Session failed: AIR prepare could not resolve required secret(s) #{missing} — " \
                 "add them to Zimmer's mcp_secrets credentials, or deselect the MCP server that " \
                 "needs them (#{error.message})"
+    when AirPrepareService::ArtifactResolutionError
+      # Name the missing artifact so the session owner knows exactly which id to
+      # fix — the usual cause is a renamed/removed catalog id (e.g. `pr` → `open-pr`)
+      # still requested by this session or its trigger.
+      artifact = [ error.artifact_type, error.artifact_id ].all?(&:present?) ?
+        "#{error.artifact_type} '#{error.artifact_id}'" : "artifact"
+      failure_reason = "air_artifact_unresolvable"
+      extra_metadata = {
+        "unresolvable_artifact_type" => error.artifact_type,
+        "unresolvable_artifact_id" => error.artifact_id
+      }.compact
+      message = "Session failed: requested #{artifact} does not exist in the AIR catalog — it may " \
+                "have been renamed or removed; update this session/trigger's skills and MCP servers " \
+                "to a valid id (#{error.message})"
     else
       failure_reason = "air_root_unresolvable"
       extra_metadata = {}

@@ -52,6 +52,28 @@ class AirPrepareService
     end
   end
 
+  # Raised when `air prepare` reports that a selected skill / MCP server / hook /
+  # plugin id is absent from the resolved AIR catalog — AIR's adapters emit
+  # `Unknown <type> ID "<id>". Available: ...`. Sibling to RootResolutionError, and
+  # for the same reason: the caller asked for an artifact that does not exist, which
+  # is a deterministic, non-retryable, session-scoped *configuration* problem, not
+  # broken-system behavior. The usual cause is a renamed or removed catalog id still
+  # referenced by a persisted session/trigger — e.g. the skill `pr` renamed to
+  # `open-pr` in the catalog while a daily trigger still requested `pr`. Retrying
+  # never helps and nothing is wrong server-side, so AgentSessionJob fails the
+  # session gracefully at WARN rather than letting an unhandled error bubble to
+  # ActiveJob and page #eng-alerts. Carries the offending artifact type and id so
+  # the failure message can tell the owner exactly which id to fix.
+  class ArtifactResolutionError < AirPrepareError
+    attr_reader :artifact_type, :artifact_id
+
+    def initialize(message, artifact_type: nil, artifact_id: nil)
+      super(message)
+      @artifact_type = artifact_type
+      @artifact_id = artifact_id
+    end
+  end
+
   AIR_CLI_VERSION = "0.13.0"
 
   # Hard wall-clock cap for a single `air prepare` invocation. AIR shells out to
@@ -95,6 +117,24 @@ class AirPrepareService
   # and ultimately to raise RootResolutionError (a graceful, non-paging failure)
   # rather than a plain AirPrepareError that would page as an unhandled job crash.
   ROOT_NOT_FOUND_PATTERN = /Root\s+"[^"]*"\s+not found/
+
+  # Signature AIR's adapters emit (exit 1) when a selected skill / MCP server /
+  # hook / plugin id is absent from the resolved catalog. Built by air-adapter's
+  # `resolveActivations` (see @pulsemcp/air-adapter-claude claude-adapter.js):
+  #
+  #   Unknown <type> ID "<id>". Available: <keys> (<n> total).
+  #
+  # where <type> is one of skill, MCP server, hook, plugin. The `Unknown … ID "…"`
+  # shape is the stable anchor, and the quoted id is captured so the failure
+  # message can name it. Matched in run_air_prepare_command! to bust a
+  # possibly-stale catalog cache once and retry — a just-added id may not have
+  # propagated to this worker yet, the same race ROOT_NOT_FOUND_PATTERN handles —
+  # and ultimately to raise ArtifactResolutionError (a graceful, non-paging
+  # failure) rather than a plain AirPrepareError that would page as an unhandled
+  # job crash. The commonest cause is the mirror image: a renamed/removed id still
+  # requested by a persisted session/trigger, where the refresh can't help and the
+  # graceful failure is the point.
+  UNKNOWN_ARTIFACT_PATTERN = /Unknown (skill|MCP server|hook|plugin) ID "([^"]*)"/
 
   # Signature AIR emits (exit 1) when a selected MCP server or hook interpolates a
   # ${VAR} that neither the environment nor the @pulsemcp/air-secrets-env transform
@@ -349,6 +389,13 @@ class AirPrepareService
   # RootResolutionError (a graceful, non-paging failure) so AgentSessionJob can
   # fail the session cleanly instead of letting it page #eng-alerts.
   #
+  # An unknown skill/MCP/hook/plugin id ("Unknown <type> ID") gets the same
+  # refresh-once-then-fail-gracefully treatment as a bad root, raising
+  # ArtifactResolutionError. A freshly-added id can hit the same propagation race,
+  # so we refresh once; but the commonest cause is a renamed/removed id still
+  # requested by a persisted session/trigger, which the refresh can't fix — that's
+  # exactly when the graceful, non-paging failure matters.
+  #
   # An unresolved ${VAR} gets the same graceful treatment via
   # SecretResolutionError, but without the refresh-and-retry dance: a missing
   # secret is not a propagation race, so it is raised on the first attempt.
@@ -376,6 +423,7 @@ class AirPrepareService
         )
         transient = transient_air_failure?(error.message)
         root_not_found = ROOT_NOT_FOUND_PATTERN.match?(error.message)
+        unknown_artifact = UNKNOWN_ARTIFACT_PATTERN.match(error.message)
         unresolved_variables = unresolved_variable_names(error.message)
       rescue BoundedSubprocess::TimeoutError => e
         # A watchdog kill means `air prepare` hung — most likely the catalog clone
@@ -386,6 +434,7 @@ class AirPrepareService
         )
         transient = true
         root_not_found = false
+        unknown_artifact = nil
         unresolved_variables = []
       end
 
@@ -401,13 +450,15 @@ class AirPrepareService
         raise SecretResolutionError.new(error.message, variable_names: unresolved_variables)
       end
 
-      # Root-not-found: bust the (possibly stale) catalog cache once and retry.
+      # Root-not-found and unknown-artifact (skill/MCP/hook/plugin id) are both
+      # catalog-resolution failures that can be a stale-cache propagation race for a
+      # freshly-merged id: bust the (possibly stale) catalog cache once and retry.
       # The refresh is bounded and best-effort — if it fails we fall through to
-      # raising RootResolutionError below rather than masking the original error.
-      if root_not_found && !catalog_refreshed
+      # raising the graceful config error below rather than masking the original.
+      if (root_not_found || unknown_artifact) && !catalog_refreshed
         catalog_refreshed = true
         Rails.logger.info(
-          "[AirPrepareService] AIR prepare reported root not found; refreshing " \
+          "[AirPrepareService] AIR prepare reported an unresolvable catalog id; refreshing " \
           "catalog cache and retrying once attempt=#{attempt} error=#{error.message}"
         )
         refresh_catalog_cache!(env)
@@ -424,6 +475,23 @@ class AirPrepareService
           "attempts=#{attempt} error=#{error.message}"
         )
         raise RootResolutionError, error.message
+      end
+
+      # Artifact id still unknown after a fresh catalog: the caller asked for a
+      # skill/MCP/hook/plugin that does not exist — typically a renamed or removed
+      # catalog id still referenced by a persisted session/trigger. Deterministic
+      # and operator-fixable, so fail gracefully (WARN + ArtifactResolutionError)
+      # instead of raising a plain AirPrepareError that would page as a job crash.
+      if unknown_artifact
+        Rails.logger.warn(
+          "[AirPrepareService] AIR prepare artifact unresolvable after catalog refresh " \
+          "type=#{unknown_artifact[1]} id=#{unknown_artifact[2]} attempts=#{attempt} error=#{error.message}"
+        )
+        raise ArtifactResolutionError.new(
+          error.message,
+          artifact_type: unknown_artifact[1],
+          artifact_id: unknown_artifact[2]
+        )
       end
 
       if transient && attempt < max_attempts
