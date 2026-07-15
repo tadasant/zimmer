@@ -388,7 +388,38 @@ class AirCatalogService
     end
 
     def air_env
-      { "AIR_CONFIG" => effective_air_json_path }
+      { "AIR_CONFIG" => effective_air_json_path }.merge(provider_credentials_env)
+    end
+
+    # Credentials the AIR CLI needs in its *process* environment while composing
+    # the catalog — as opposed to the ${VAR} placeholders that air-secrets-env
+    # substitutes into entries at `air prepare` time.
+    #
+    # The only such credential today is AIR_GITHUB_TOKEN: the air-provider-github
+    # extension reads it from the resolve/update subprocess's ENV to authenticate
+    # its fetch of any private `github://…` catalog source declared in air.json.
+    # Zimmer already carries this token in mcp_secrets (encrypted credentials),
+    # but mcp_secrets only reaches the AIR CLI as ${VAR} substitution during
+    # `air prepare` (AirPrepareService passes SecretsLoader.all) — it is NOT the
+    # same as exporting the token into the provider's process env. Without this
+    # bridge the `air resolve` / `air update` fetch runs tokenless, 401s on the
+    # private repo, and AIR silently drops the source (leaving only the locally
+    # indexed servers), so none of the github-composed MCP servers appear.
+    #
+    # Scoped deliberately to just this one token rather than all of
+    # SecretsLoader.all: unrelated mcp_secrets are meant to stay ${VAR}
+    # placeholders in the resolved tree (which we cache in CatalogSnapshot and
+    # surface via get_configs / the settings UI), and must never be materialized
+    # into that output. Only merged when present, so an operator-set process-env
+    # AIR_GITHUB_TOKEN (e.g. CI) still passes through via Open3's env inheritance.
+    def provider_credentials_env
+      token = SecretsLoader.get("AIR_GITHUB_TOKEN")
+      token.present? ? { "AIR_GITHUB_TOKEN" => token } : {}
+    rescue => e
+      # A credentials read failure must never take down catalog resolution; fall
+      # back to whatever the process env already carries.
+      Rails.logger.warn "[AirCatalogService] could not load AIR_GITHUB_TOKEN from secrets: #{e.class}: #{e.message}"
+      {}
     end
 
     # Rewrite the base air.json with the pin set and persist it to tmp/. Returns
