@@ -59,7 +59,7 @@ sequenceDiagram
 
     U->>Z: POST /mcp_oauth/initiate (server_name, session_id)
     alt a PreregisteredOauthConfig exists
-        Note over Z: Rails credentials: mcp_oauth_clients.{name}<br/>client_id, secret, endpoints, scopes — wins outright
+        Note over Z: Rails credentials: mcp_oauth_clients.{name}<br/>client_id, endpoints, scopes — wins outright<br/>client_secret optional (public client); manual+redirect_uri opt in to paste-back
     else discovery
         Z->>AS: GET /.well-known/oauth-protected-resource (RFC 9728)
         AS-->>Z: { resource, authorization_servers }
@@ -91,6 +91,89 @@ sequenceDiagram
         Note over S: trim the list, wait for the rest
     end
 ```
+
+## Public clients and manual (paste-back) completion
+
+Two capabilities let Zimmer authorize against servers that expose a **public OAuth client**
+(no client secret) and only permit a **localhost / out-of-band redirect** — the motivating case
+being the official hosted Slack MCP server (`https://mcp.slack.com/mcp`), which is designed to be
+used with Slack's own app `client_id` + a localhost redirect + PKCE, and which deliberately does
+not support DCR.
+
+### Public clients (no client_secret)
+
+A `mcp_oauth_clients` entry may omit `client_secret` entirely. Such a client is a public client
+(RFC 6749 §2.1) that proves possession with PKCE alone (RFC 7636). The token exchange omits the
+`client_secret` parameter when the flow has no secret and relies on the persisted `code_verifier`;
+when a secret *is* configured, the previous `client_secret_post` behavior is preserved.
+
+### Manual (paste-back) completion
+
+Some public clients only permit a redirect URI they already whitelisted — for the official Slack
+client that is `http://localhost:3118/callback`, the loopback redirect the Claude Code Slack plugin
+uses. Zimmer's hosted callback (`https://<host>/mcp_oauth/callback`) cannot be added to someone
+else's app, so those flows complete **out-of-band**:
+
+1. `redirect_uri` comes from the pre-registered config (the localhost/oob URI the client permits)
+   rather than the hosted callback.
+2. `initiate` renders a **paste-back page** instead of redirecting: it shows the authorize link and
+   an input for the redirect URL.
+3. You open the authorize link, consent in your own browser, and land on the localhost redirect
+   with nothing listening — that failed page load is expected; the value you need is in the address
+   bar (`?code=…&state=…`).
+4. You paste that full URL (or the bare `code`) back. `complete` extracts the `code`, validates
+   `state` against the persisted flow (the same CSRF check the hosted callback does), and finishes
+   the exchange using the persisted PKCE `code_verifier` and `redirect_uri`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as You
+    participant Z as Zimmer
+    participant B as Your browser
+    participant AS as Slack (auth + token)
+
+    U->>Z: POST /mcp_oauth/initiate (manual-mode server)
+    Z->>Z: create pending flow (localhost redirect_uri, manual=true)
+    Z-->>U: render paste-back page (authorize link + input)
+    U->>B: open authorize link
+    B->>AS: authorize (PKCE, public client_id)
+    AS-->>B: 302 http://localhost:3118/callback?code=…&state=…
+    Note over B: nothing is listening — page fails to load (expected)
+    U->>Z: POST /mcp_oauth/complete (paste full URL / bare code)
+    Z->>Z: extract code, validate state
+    Z->>AS: POST oauth.v2.user.access (code + code_verifier, no secret)
+    AS-->>Z: { authed_user: { access_token, scope } }
+    Z->>Z: unwrap authed_user.access_token, store credential, resume
+```
+
+### Configuring the official Slack MCP
+
+The official Slack app is a public client. Wire it up entirely through credentials — no code change
+per server:
+
+```yaml
+mcp_oauth_clients:
+  slack:
+    client_id: "1601185624273.8899143856786"        # official Slack app (public; not a secret)
+    authorization_endpoint: "https://slack.com/oauth/v2_user/authorize"
+    token_endpoint: "https://slack.com/api/oauth.v2.user.access"
+    scopes: "channels:history,groups:history,search:read.public,users:read"
+    redirect_uri: "http://localhost:3118/callback"    # the loopback redirect the Slack app permits
+    manual: true
+```
+
+The key (`slack`) must match the MCP server name in the catalog, whose URL is `https://mcp.slack.com/mcp`.
+Slack returns the *user* token nested under `authed_user.access_token` (a top-level `access_token`, when
+present, is the bot token); Zimmer unwraps it. If Slack rejects the RFC 8707 `resource` indicator that
+the pre-registered path derives by default, set `resource: ""` in the entry to suppress it.
+
+:::note[The Slack `client_id` is public; wiring it into prod is a human step]
+`1601185624273.8899143856786` and the `3118` loopback redirect are taken from the distributed Claude
+Code Slack plugin — they are public identifiers, not secrets. Writing the entry into
+`config/credentials/production.yml.enc` still requires the prod master key, so it is a one-time human
+step. The code path and its tests do not depend on live Slack.
+:::
 
 ## The credential key is a copy of Claude Code's private algorithm
 
