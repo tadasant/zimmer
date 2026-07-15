@@ -398,13 +398,14 @@ class AirCatalogService
     # The only such credential today is AIR_GITHUB_TOKEN: the air-provider-github
     # extension reads it from the resolve/update subprocess's ENV to authenticate
     # its fetch of any private `github://…` catalog source declared in air.json.
-    # Zimmer already carries this token in mcp_secrets (encrypted credentials),
-    # but mcp_secrets only reaches the AIR CLI as ${VAR} substitution during
-    # `air prepare` (AirPrepareService passes SecretsLoader.all) — it is NOT the
-    # same as exporting the token into the provider's process env. Without this
-    # bridge the `air resolve` / `air update` fetch runs tokenless, 401s on the
-    # private repo, and AIR silently drops the source (leaving only the locally
-    # indexed servers), so none of the github-composed MCP servers appear.
+    # Zimmer already carries this token in mcp_secrets (encrypted credentials).
+    # The `air prepare` path (AirPrepareService) already merges *all* of
+    # SecretsLoader.all into its subprocess env, so the provider is authenticated
+    # there — but the resolve/update path built a minimal AIR_CONFIG-only env and
+    # merged no secrets at all. So the `air resolve` / `air update` fetch ran
+    # tokenless, 401'd on the private repo, and AIR silently dropped the source
+    # (leaving only the locally indexed servers), so none of the github-composed
+    # MCP servers appeared in the resolved catalog / get_configs.
     #
     # Scoped deliberately to just this one token rather than all of
     # SecretsLoader.all: unrelated mcp_secrets are meant to stay ${VAR}

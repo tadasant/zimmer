@@ -194,8 +194,8 @@ during **catalog resolution** (`air resolve` / `air update`), not just at sessio
 The provider authenticates to GitHub by reading `AIR_GITHUB_TOKEN` from the resolve process's
 environment. Add that PAT (with `repo` read on the private catalog repo) to `mcp_secrets` under the
 name `AIR_GITHUB_TOKEN`: Zimmer bridges just that one value from `mcp_secrets` into the `air resolve` /
-`air update` subprocess environment so the fetch is authenticated. This is distinct from ordinary
-`${VAR}` substitution — `air-secrets-env` substitutes `${VAR}` placeholders *inside* resolved entries,
-which does **not** export `AIR_GITHUB_TOKEN` into the provider's process env. Without the token the
-fetch runs unauthenticated, GitHub returns 401, and AIR silently drops the private source — leaving
-only your locally-indexed artifacts and none of the github-composed ones.
+`air update` subprocess environment so the fetch is authenticated. (Session `air prepare` already had
+it — that path merges *all* of `mcp_secrets` into its subprocess env; the gap was specifically the
+catalog resolve/update path, which built a minimal `AIR_CONFIG`-only env and merged no secrets.)
+Without the token the fetch runs unauthenticated, GitHub returns 401, and AIR silently drops the
+private source — leaving only your locally-indexed artifacts and none of the github-composed ones.
