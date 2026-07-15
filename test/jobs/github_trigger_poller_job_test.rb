@@ -86,22 +86,86 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
   end
 
-  test "removing and re-adding a label fires again" do
-    stub_search(label: [ item(number: 7, labels: [ "ready to merge" ]) ]) do
-      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
-    end
+  test "a labelled PR that transiently drops out of one search does not re-fire when it returns" do
+    # The regression this whole grace mechanism exists for. GitHub's search index is eventually
+    # consistent, so a still-open, still-labelled PR can be absent from one tick's results and
+    # back on the next. Reading that single miss as a label removal drops the key and re-fires a
+    # duplicate gate session — observed in production as `#106:ready to merge` firing while it
+    # was already recorded in seen_items.
+    labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
 
-    # Label removed: the item leaves the search, so it leaves the seen-set.
-    stub_search(label: []) do
-      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
-    end
-    assert_equal [], @label_condition.reload.github_seen_items
-
-    # Re-added: the key is new again.
-    stub_search(label: [ item(number: 7, labels: [ "ready to merge" ]) ]) do
+    stub_search(label: labelled) do
       assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
     end
     assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
+
+    # One tick where the index fails to return the PR. It is NOT dropped, and nothing fires.
+    stub_search(label: []) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items,
+                 "a one-tick search blip must not drop the key from the seen-set"
+
+    # The PR reappears. Because its key was retained, it is not new — so no duplicate session.
+    stub_search(label: labelled) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
+  end
+
+  test "removing a label for the full grace window, then re-adding it, fires again" do
+    labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
+
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    # The label is genuinely removed. The key survives the grace window — absent but held —
+    # for REMOVAL_GRACE_TICKS - 1 ticks, so a real removal takes the full window to register.
+    (GithubTriggerPollerJob::REMOVAL_GRACE_TICKS - 1).times do
+      stub_search(label: []) do
+        assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+      end
+      assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items,
+                   "the key must be held through the grace window, not dropped on first miss"
+    end
+
+    # The tick that reaches REMOVAL_GRACE_TICKS consecutive misses accepts the removal.
+    stub_search(label: []) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [], @label_condition.reload.github_seen_items,
+                 "after the grace window of sustained absence the key is dropped"
+
+    # Re-added once the key has been dropped: it is new again, so it fires.
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
+  end
+
+  test "a miss streak resets the moment the label reappears, so a later removal gets the full grace" do
+    # Guards against an off-by-one where a transient blip permanently "uses up" part of the
+    # grace: after the PR reappears, a subsequent genuine removal must again get the full window.
+    labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
+
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    # Blip, then back.
+    stub_search(label: []) { GithubTriggerPollerJob.perform_now }
+    stub_search(label: labelled) { GithubTriggerPollerJob.perform_now }
+    assert_equal({}, @label_condition.reload.github_seen_missing_counts,
+                 "reappearing must clear the miss streak")
+
+    # A fresh removal still gets the full grace window before dropping.
+    (GithubTriggerPollerJob::REMOVAL_GRACE_TICKS - 1).times do
+      stub_search(label: []) { GithubTriggerPollerJob.perform_now }
+      assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
+    end
+    stub_search(label: []) { GithubTriggerPollerJob.perform_now }
+    assert_equal [], @label_condition.reload.github_seen_items
   end
 
   test "an item carrying only unwatched labels does not fire" do

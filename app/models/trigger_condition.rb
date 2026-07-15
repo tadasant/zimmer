@@ -36,7 +36,7 @@ class TriggerCondition < ApplicationRecord
   # Keys inside `configuration` that belong to the poller, not the user. They are
   # never rendered as form fields, so a UI edit submits a configuration hash without
   # them — see #preserve_github_poll_state for why they are merged back in.
-  GITHUB_POLL_STATE_KEYS = %w[seen_items last_issue_at seen_issue_keys].freeze
+  GITHUB_POLL_STATE_KEYS = %w[seen_items seen_missing_counts last_issue_at seen_issue_keys].freeze
 
   belongs_to :trigger
 
@@ -245,6 +245,17 @@ class TriggerCondition < ApplicationRecord
 
   def github_seen_items
     Array(configuration["seen_items"])
+  end
+
+  # Companion to seen_items: how many consecutive polls each seen key has been ABSENT
+  # from the search. GitHub's search index is eventually consistent, so a still-labelled
+  # PR can vanish from one tick's results and reappear on the next; dropping its key on
+  # the first miss re-fires it. The poller keeps a key through a short grace window,
+  # counting misses here, and only accepts a key as genuinely unlabelled once it has
+  # been absent long enough. A confirmed-present key carries no entry.
+  def github_seen_missing_counts
+    raw = configuration["seen_missing_counts"]
+    raw.is_a?(Hash) ? raw : {}
   end
 
   # Cursor for github_issue conditions: the created_at of the newest issue fired.
