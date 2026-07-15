@@ -171,6 +171,33 @@ class CodexMcpCredentialWriterTest < ActiveSupport::TestCase
     assert_equal (Time.at(1_768_098_636).utc.to_f * 1000).to_i, decoded["expires_at"]
   end
 
+  test "read_runtime_credentials parses the flat file entries into snapshots" do
+    expires_ms = ((Time.current + 42.minutes).to_f * 1000).to_i
+    File.write(@credentials_file, JSON.generate(
+      "notion|abc123" => {
+        "server_name" => "notion",
+        "access_token" => "on-disk-access",
+        "refresh_token" => "on-disk-refresh",
+        "expires_at" => expires_ms
+      }
+    ))
+
+    snapshots = with_credentials_path(@credentials_file) { @writer.read_runtime_credentials }
+
+    snapshot = snapshots["notion|abc123"]
+    assert_equal "on-disk-access", snapshot.access_token
+    assert_equal "on-disk-refresh", snapshot.refresh_token
+    assert_in_delta expires_ms / 1000, snapshot.expires_at.to_i, 1
+  end
+
+  test "read_runtime_credentials returns {} when the file is absent or corrupt" do
+    missing = File.join(@working_directory, "does-not-exist.json")
+    assert_empty(with_credentials_path(missing) { @writer.read_runtime_credentials })
+
+    File.write(@credentials_file, "{ not json")
+    assert_empty(with_credentials_path(@credentials_file) { @writer.read_runtime_credentials })
+  end
+
   private
 
   def resolved_credential(**overrides)

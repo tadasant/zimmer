@@ -54,7 +54,59 @@ class ClaudeMcpCredentialWriter
     McpOauthCredential.compute_credential_key(server_name, server_config)
   end
 
+  # Reads the mcpOAuth entries Claude Code currently has on disk, keyed by the
+  # same "server_name|hash" key #write! stores them under. This is how Zimmer
+  # captures a token Claude Code refreshed (and, for rotating providers, rotated)
+  # mid-session back into its DB. On macOS the Keychain is Claude Code's primary
+  # store, so its entries win over the file; on Linux only the file exists.
+  #
+  # @return [Hash{String => RuntimeMcpTokenSnapshot}] empty when nothing is stored
+  def read_runtime_credentials
+    entries = mcp_oauth_map(read_credentials_from_file)
+    entries = entries.merge(mcp_oauth_map(read_keychain_data(keychain_username))) if macos?
+
+    entries.each_with_object({}) do |(key, entry), snapshots|
+      next unless entry.is_a?(Hash)
+
+      snapshots[key] = RuntimeMcpTokenSnapshot.new(
+        access_token: entry["accessToken"],
+        refresh_token: entry["refreshToken"],
+        expires_at: millis_to_time(entry["expiresAt"])
+      )
+    end
+  end
+
   private
+
+  # Extracts the mcpOAuth sub-map from a parsed credentials blob, tolerating a nil
+  # or non-Hash blob (missing file / unexpected shape).
+  def mcp_oauth_map(data)
+    return {} unless data.is_a?(Hash)
+
+    map = data["mcpOAuth"]
+    map.is_a?(Hash) ? map : {}
+  end
+
+  # Reads and parses ~/.claude/.credentials.json, or {} if absent/corrupt.
+  def read_credentials_from_file
+    return {} unless File.exist?(CLAUDE_CREDENTIALS_PATH)
+
+    JSON.parse(File.read(CLAUDE_CREDENTIALS_PATH))
+  rescue JSON::ParserError => e
+    Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to parse existing credentials: #{e.message}"
+    {}
+  end
+
+  # Converts Claude Code's millisecond-epoch expiresAt to a Time, or nil.
+  def millis_to_time(millis)
+    return nil if millis.nil?
+
+    Time.at(millis.to_i / 1000.0).utc
+  end
+
+  def keychain_username
+    ENV.fetch("USER") { Open3.capture3("whoami")[0].strip }
+  end
 
   # Merges Zimmer's freshly-resolved mcpOAuth entries into the on-disk/keychain map
   # without clobbering a fresher, still-valid token Claude Code wrote at runtime
@@ -121,16 +173,7 @@ class ClaudeMcpCredentialWriter
     FileUtils.mkdir_p(claude_dir)
 
     # Read existing credentials file if it exists
-    existing_data = if File.exist?(CLAUDE_CREDENTIALS_PATH)
-      begin
-        JSON.parse(File.read(CLAUDE_CREDENTIALS_PATH))
-      rescue JSON::ParserError => e
-        Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to parse existing credentials: #{e.message}"
-        {}
-      end
-    else
-      {}
-    end
+    existing_data = read_credentials_from_file
 
     # Merge our MCP OAuth credentials with existing ones, preserving any fresher,
     # still-valid token Claude Code wrote at runtime under the same key.
@@ -152,7 +195,7 @@ class ClaudeMcpCredentialWriter
   # Claude Code uses: security find-generic-password -a "$USER" -w -s "Claude Code-credentials"
   # and stores data as hex-encoded JSON.
   def write_credentials_to_keychain(credentials)
-    username = ENV.fetch("USER") { Open3.capture3("whoami")[0].strip }
+    username = keychain_username
 
     # Read existing keychain data
     existing_data = read_keychain_data(username) || {}
