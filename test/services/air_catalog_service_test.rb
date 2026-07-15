@@ -130,6 +130,46 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     assert_not captured_env.key?("AIR_GITHUB_TOKEN")
   end
 
+  test "omits AIR_GITHUB_TOKEN when mcp_secrets carries only a blank value" do
+    captured_env = nil
+    SecretsLoader.stub(:get, ->(_key) { "" }) do
+      without_install_bootstrap do
+        AirCatalogService.stub(:air_binary, @fake_binary) do
+          Open3.stub(:capture3, ->(env, _bin, *_args) {
+            captured_env = env
+            [ JSON.generate("skills" => {}), "", fake_status(0) ]
+          }) do
+            AirCatalogService.entries_for(:skills)
+          end
+        end
+      end
+    end
+
+    # A blank secret is treated as absent (present? is false), so the key is
+    # omitted rather than clobbering an inherited process-env token with "".
+    assert_not captured_env.key?("AIR_GITHUB_TOKEN")
+  end
+
+  test "resolve still succeeds when the secrets read raises (token bridge is best-effort)" do
+    captured_env = nil
+    SecretsLoader.stub(:get, ->(_key) { raise "credentials unavailable" }) do
+      without_install_bootstrap do
+        AirCatalogService.stub(:air_binary, @fake_binary) do
+          Open3.stub(:capture3, ->(env, _bin, *_args) {
+            captured_env = env
+            [ JSON.generate("skills" => { "alpha" => { "description" => "ok" } }), "", fake_status(0) ]
+          }) do
+            # Resolution must not blow up just because the token read failed.
+            assert_equal [ "alpha" ], AirCatalogService.entries_for(:skills).keys
+          end
+        end
+      end
+    end
+
+    assert_not captured_env.key?("AIR_GITHUB_TOKEN")
+    assert_equal @air_json, captured_env["AIR_CONFIG"]
+  end
+
   test "bridges AIR_GITHUB_TOKEN into the air update subprocess env as well" do
     update_env = nil
     calls = ->(env, _bin, *args) do
