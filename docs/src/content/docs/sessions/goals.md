@@ -15,9 +15,20 @@ From `config/goals.json`:
 | ID | What it demands |
 | --- | --- |
 | `codebase-question` | Research and answer inline. Do not create files, PRs, or branches. Stop in `needs_input`. |
-| `open-reviewed-green-pr` | Open a PR, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof. Then stop. The default for most roots. |
+| `open-reviewed-green-pr` | Open the PR through the `open-pr` skill, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof, then apply the `ready to merge` label. Then stop. The default for most roots. |
 | `open-reviewed-green-pr-with-version-bump` | Same, plus a mandatory version bump when server source changed. |
 | `e2e-verified-green-pr` | Same, plus: state the critical path up front, spin up a real dev server, drive it with browser automation, record video and screenshots, embed them in the PR. |
+
+All three PR goals name the `open-pr` skill as the canonical way to commit, push, open, and
+finalize the PR — agents are told not to hand-roll their own commit/push/PR sequence when that
+skill is available. The skill's terminal act is applying the `ready to merge` label, and the
+goal text now makes that label part of "done."
+
+The label is deliberately disambiguated in the goal text, because its name collides with the
+"leave it unmerged for the human" instruction. Applying `ready to merge` does **not** merge the
+PR and does **not** claim a human has reviewed it — it is the agent's own claim that self-review,
+fresh-eyes review, and green CI are complete. It is fully compatible with leaving the PR unmerged
+in `needs_input`; "do not merge" is not a reason to skip the label.
 
 Every one of them ends with the same two instructions: stop and wait in `needs_input`, and
 do not archive yourself — because an open session with an unreviewed PR is the user's to-do
