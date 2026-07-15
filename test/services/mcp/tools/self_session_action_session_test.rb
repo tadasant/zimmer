@@ -53,4 +53,23 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "archive") }
     assert_match(/"session_id" parameter is required/, error.message)
   end
+
+  # The self-management surface deliberately withholds capability/config
+  # reconfiguration — the same reason it excludes change_model and
+  # change_mcp_servers. A session must not be able to rewrite its own skills,
+  # plugins, goal, or category through the server injected into it.
+  test "refuses capability/config edits that belong only to the full surface" do
+    session = sessions(:needs_input)
+    session.update!(catalog_skills: [ "sync-docs" ])
+
+    %w[change_skills change_hooks change_plugins change_goal change_auto_compact_window change_category set_blocked toggle_push_notifications].each do |action|
+      error = assert_raises(Mcp::ToolError) do
+        @tool.call("action" => action, "session_id" => session.id, "skills" => [ "pr" ], "goal" => "x")
+      end
+      assert_match(/Unknown action "#{action}"/, error.message)
+    end
+
+    # Nothing leaked through.
+    assert_equal [ "sync-docs" ], session.reload.catalog_skills
+  end
 end
