@@ -180,6 +180,16 @@ not found"**: it triggers one inline bounded `air update` (cache bust) and a ret
 freshly-merged root can legitimately be absent from a worker's up-to-15-minutes-stale cache. If
 it's still absent, it raises a graceful `RootResolutionError`.
 
+An **unknown skill / MCP server / hook / plugin id** (`Unknown <type> ID "<id>"`) gets the same
+refresh-once-then-fail-gracefully treatment, raising `ArtifactResolutionError`. A freshly-added id
+can hit the same propagation race; the more common cause is the mirror image — a renamed or removed
+catalog id still requested by a *persisted* session or trigger (e.g. the skill `pr` renamed to
+`open-pr` while a daily trigger still asked for `pr`). That's a permanent caller-config error, not
+broken-system behavior, so it fails the session at WARN with an actionable message ("requested skill
+'pr' does not exist … update this session/trigger's skills") instead of paging `#alerts`. The
+persisted-data fix — pointing the trigger at the new id — is a human/operator action; the session
+just has to fail *visibly* without paging ops.
+
 ## The AIR CLI is installed lazily, at runtime
 
 `AirPrepareService.ensure_air_installed!` runs `npm install` into `AIR_INSTALL_DIR` on first use,

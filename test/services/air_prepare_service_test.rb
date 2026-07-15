@@ -567,6 +567,140 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       service.send(:unresolved_variable_names, with_preamble)
   end
 
+  test "run_air_prepare_command! refreshes the catalog cache and retries once when a selected skill id is unknown, then succeeds" do
+    # The propagation-race twin of root-not-found: a skill merged to the catalog
+    # minutes earlier can be absent from this worker's up-to-15-min-stale AIR cache,
+    # so `air prepare --skill <id>` fails with "Unknown skill ID" even though the id
+    # is valid. The service must bust the cache inline (a bounded `air update`) and
+    # retry rather than failing/paging.
+    sleeps = []
+    prepare_attempts = 0
+    update_calls = 0
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      case command_array[1]
+      when "prepare"
+        prepare_attempts += 1
+        if prepare_attempts == 1
+          [ "", "Error: Unknown skill ID \"open-pr\". Available: @local/pr (72 total).", stub(success?: false, exitstatus: 1) ]
+        else
+          [ "", "", stub(success?: true, exitstatus: 0) ]
+        end
+      when "update"
+        update_calls += 1
+        [ "", "", stub(success?: true, exitstatus: 0) ]
+      else
+        raise "unexpected air command: #{command_array.inspect}"
+      end
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(s) { sleeps << s }
+      )
+      service.prepare! # must NOT raise — the cache refresh makes the skill resolvable
+    end
+
+    assert_equal 2, prepare_attempts, "should retry air prepare once after the cache refresh"
+    assert_equal 1, update_calls, "should bust the catalog cache exactly once via a bounded air update"
+    assert_empty sleeps, "unknown-artifact refresh-and-retry should not use the transient backoff schedule"
+  end
+
+  test "run_air_prepare_command! raises ArtifactResolutionError when a skill id is still unknown after a catalog refresh" do
+    # The 2026-07-15 incident: the skill `pr` was renamed to `open-pr`, but a
+    # persisted daily trigger still requested `pr`, so `air prepare` exited 1 with
+    # "Unknown skill ID" even against a fresh catalog. This must raise the graceful,
+    # non-paging ArtifactResolutionError (carrying the type + id) instead of a plain
+    # AirPrepareError that AgentSessionJob would re-raise into a paging job crash,
+    # and must only refresh the cache once.
+    prepare_attempts = 0
+    update_calls = 0
+    sleeps = []
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      case command_array[1]
+      when "prepare"
+        prepare_attempts += 1
+        [ "", "Error: Unknown skill ID \"pr\". Available: @local/open-pr (72 total).", stub(success?: false, exitstatus: 1) ]
+      when "update"
+        update_calls += 1
+        [ "", "", stub(success?: true, exitstatus: 0) ]
+      else
+        raise "unexpected air command: #{command_array.inspect}"
+      end
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(s) { sleeps << s }
+      )
+      error = assert_raises(AirPrepareService::ArtifactResolutionError) { service.prepare! }
+      assert_equal "skill", error.artifact_type
+      assert_equal "pr", error.artifact_id
+      assert_match(/Unknown skill ID "pr"/, error.message)
+    end
+
+    assert_equal 2, prepare_attempts, "should attempt prepare once, refresh, then retry exactly once"
+    assert_equal 1, update_calls, "should refresh the cache exactly once even though the id stays unknown"
+    assert_empty sleeps, "an unknown artifact must not use the transient backoff schedule"
+  end
+
+  test "run_air_prepare_command! raises ArtifactResolutionError for an unknown MCP server id" do
+    # The classification covers every adapter artifact type, not just skills: AIR
+    # emits the same `Unknown <type> ID` shape for MCP servers/hooks/plugins, and
+    # all are permanent caller-config errors that must fail gracefully.
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      case command_array[1]
+      when "prepare"
+        [ "", "Error: Unknown MCP server ID \"reframe-old\". Available: @local/reframe (11 total).", stub(success?: false, exitstatus: 1) ]
+      when "update"
+        [ "", "", stub(success?: true, exitstatus: 0) ]
+      else
+        raise "unexpected air command: #{command_array.inspect}"
+      end
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      )
+      error = assert_raises(AirPrepareService::ArtifactResolutionError) { service.prepare! }
+      assert_equal "MCP server", error.artifact_type
+      assert_equal "reframe-old", error.artifact_id
+    end
+  end
+
+  test "an unknown artifact id is not misclassified as a transient air prepare failure" do
+    # Guards the fix in both directions: the unknown-artifact signature must not
+    # overlap the transient patterns (which would retry it on the backoff schedule),
+    # and unrelated failures must NOT match the unknown-artifact pattern.
+    service = AirPrepareService.new(
+      session: @session,
+      working_directory: @working_dir,
+      file_system: @mock_fs
+    )
+    unknown = "Error: Unknown skill ID \"pr\". Available: @local/open-pr (72 total)."
+
+    refute service.send(:transient_air_failure?, unknown)
+    assert AirPrepareService::UNKNOWN_ARTIFACT_PATTERN.match?(unknown)
+
+    refute AirPrepareService::UNKNOWN_ARTIFACT_PATTERN.match?("Error: Root \"x\" not found.")
+    refute AirPrepareService::UNKNOWN_ARTIFACT_PATTERN.match?("Error: something else broke")
+    refute AirPrepareService::UNKNOWN_ARTIFACT_PATTERN.match?("fatal: unable to access github.com")
+  end
+
+  test "ArtifactResolutionError is a subclass of AirPrepareError" do
+    # Callers that rescue AirPrepareError broadly still catch artifact-resolution
+    # failures; only AgentSessionJob's narrower rescue distinguishes them.
+    assert AirPrepareService::ArtifactResolutionError < AirPrepareService::AirPrepareError
+  end
+
   test "SecretResolutionError is a subclass of AirPrepareError" do
     assert AirPrepareService::SecretResolutionError < AirPrepareService::AirPrepareError
   end

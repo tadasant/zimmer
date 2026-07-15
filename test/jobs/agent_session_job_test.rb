@@ -1251,6 +1251,69 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "an unresolvable root must not emit .error logs — it must not page #eng-alerts"
   end
 
+  # Regression for the 2026-07-15 #alerts page (Zimmer session 274 / daily trigger
+  # "Daily Meeting Capture"): the AIR skill id `pr` was renamed to `open-pr` in the
+  # catalog, but the persisted trigger still requested `pr`, so `air prepare` exited
+  # 1 with "Unknown skill ID" and the resulting AirPrepareError crashed the job and
+  # paged. An unknown/renamed artifact id is a permanent caller-config error — the
+  # job must fail the session gracefully at WARN (same treatment as
+  # RootResolutionError) with an actionable message, and never emit an .error log.
+  test "should fail the session gracefully at warning when prepare! raises ArtifactResolutionError" do
+    ServersConfig.stubs(:exists?).returns(true)
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      catalog_skills: [ "capture-meeting", "pr" ],
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone"
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!).raises(
+      AirPrepareService::ArtifactResolutionError.new(
+        "AIR prepare failed (exit 1): Error: Unknown skill ID \"pr\". Available: @local/open-pr (72 total).",
+        artifact_type: "skill",
+        artifact_id: "pr"
+      )
+    )
+    AirPrepareService.any_instance.expects(:ensure_baseline_mcp_config!).never
+
+    job = AgentSessionJob.new
+    process_manager = MockProcessManager.new
+    job.process_manager = process_manager
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    new_clone_path = "/tmp/recreated-clone-artifact-unresolvable"
+    job.file_system.mkdir_p(new_clone_path)
+
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    }) do
+      job.perform(@session.id, "Follow up after restore")
+    end
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "air_artifact_unresolvable", @session.metadata["failure_reason"]
+    assert_equal "skill", @session.metadata["unresolvable_artifact_type"]
+    assert_equal "pr", @session.metadata["unresolvable_artifact_id"]
+    assert_nil @session.running_job_id
+    assert_empty process_manager.spawned_processes,
+      "the session must not spawn an agent process after a failed prepare!"
+
+    warning = @session.logs.where(level: "warning")
+      .find { |l| l.content.include?("skill 'pr'") }
+    assert warning, "expected a warning-level log naming the missing skill, got: " \
+      "#{@session.logs.map { |l| [ l.level, l.content ] }.inspect}"
+    assert_match(/does not exist/, warning.content,
+      "the owner should be told the requested id is not in the catalog")
+
+    assert_empty @session.logs.where(level: "error"),
+      "an unknown skill id must not emit .error logs — it must not page #alerts"
+  end
+
   # Regression for session 9563: when a regenerated .mcp.json carries fewer
   # servers than the session has actually connected to, the loss must be written
   # into the session's own log at warning level. Previously the session simply
