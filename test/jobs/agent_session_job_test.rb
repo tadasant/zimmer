@@ -1251,7 +1251,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "an unresolvable root must not emit .error logs — it must not page #eng-alerts"
   end
 
-  # Regression for the 2026-07-15 #alerts page (Zimmer session 274 / daily trigger
+  # Regression for the 2026-07-15 #eng-alerts page (Zimmer session 274 / daily trigger
   # "Daily Meeting Capture"): the AIR skill id `pr` was renamed to `open-pr` in the
   # catalog, but the persisted trigger still requested `pr`, so `air prepare` exited
   # 1 with "Unknown skill ID" and the resulting AirPrepareError crashed the job and
@@ -1259,7 +1259,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # job must fail the session gracefully at WARN (same treatment as
   # RootResolutionError) with an actionable message, and never emit an .error log.
   test "should fail the session gracefully at warning when prepare! raises ArtifactResolutionError" do
-    ServersConfig.stubs(:exists?).returns(true)
+    # Stub the catalog check so the persisted "stale id" the incident describes can
+    # be saved onto the session — the whole point is a skill id that was valid when
+    # persisted but has since been renamed/removed from the catalog.
+    SkillsConfig.stubs(:exists?).returns(true)
     @session.update!(
       session_id: SecureRandom.uuid,
       status: :running,
@@ -1311,7 +1314,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "the owner should be told the requested id is not in the catalog")
 
     assert_empty @session.logs.where(level: "error"),
-      "an unknown skill id must not emit .error logs — it must not page #alerts"
+      "an unknown skill id must not emit .error logs — it must not page #eng-alerts"
   end
 
   # Regression for session 9563: when a regenerated .mcp.json carries fewer
