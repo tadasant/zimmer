@@ -185,3 +185,17 @@ Production's real catalog lives in a private companion repo (`air.json` +
 `mcp_secrets` (the `${VAR}` values your `mcp.json` references) come from
 `config/credentials/production.yml.enc`, decrypted by `RAILS_MASTER_KEY`. Deliver the `.enc` file the
 same way (mounted alongside), and pass `RAILS_MASTER_KEY` as a Kamal secret.
+
+#### Private `github://` catalog sources need `AIR_GITHUB_TOKEN`
+
+If your `air.json` composes catalog content from a **private** `github://` source (via the
+`@pulsemcp/air-provider-github` extension), that source is fetched by shelling out to the AIR CLI
+during **catalog resolution** (`air resolve` / `air update`), not just at session `air prepare` time.
+The provider authenticates to GitHub by reading `AIR_GITHUB_TOKEN` from the resolve process's
+environment. Add that PAT (with `repo` read on the private catalog repo) to `mcp_secrets` under the
+name `AIR_GITHUB_TOKEN`: Zimmer bridges just that one value from `mcp_secrets` into the `air resolve` /
+`air update` subprocess environment so the fetch is authenticated. This is distinct from ordinary
+`${VAR}` substitution — `air-secrets-env` substitutes `${VAR}` placeholders *inside* resolved entries,
+which does **not** export `AIR_GITHUB_TOKEN` into the provider's process env. Without the token the
+fetch runs unauthenticated, GitHub returns 401, and AIR silently drops the private source — leaving
+only your locally-indexed artifacts and none of the github-composed ones.

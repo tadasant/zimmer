@@ -89,6 +89,71 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     assert_equal %w[resolve --json --no-scope --git-protocol https], captured_args
   end
 
+  test "bridges AIR_GITHUB_TOKEN from mcp_secrets into the air resolve subprocess env" do
+    captured_env = nil
+    SecretsLoader.stub(:get, ->(key) { key == "AIR_GITHUB_TOKEN" ? "ghp_from_mcp_secrets" : nil }) do
+      without_install_bootstrap do
+        AirCatalogService.stub(:air_binary, @fake_binary) do
+          Open3.stub(:capture3, ->(env, _bin, *_args) {
+            captured_env = env
+            [ JSON.generate("skills" => {}), "", fake_status(0) ]
+          }) do
+            AirCatalogService.entries_for(:skills)
+          end
+        end
+      end
+    end
+
+    # The air-provider-github extension reads this from the subprocess ENV to
+    # authenticate its fetch of private github:// catalog sources during resolve.
+    assert_equal "ghp_from_mcp_secrets", captured_env["AIR_GITHUB_TOKEN"]
+    assert_equal @air_json, captured_env["AIR_CONFIG"]
+  end
+
+  test "does not inject AIR_GITHUB_TOKEN when mcp_secrets does not carry it" do
+    captured_env = nil
+    SecretsLoader.stub(:get, ->(_key) { nil }) do
+      without_install_bootstrap do
+        AirCatalogService.stub(:air_binary, @fake_binary) do
+          Open3.stub(:capture3, ->(env, _bin, *_args) {
+            captured_env = env
+            [ JSON.generate("skills" => {}), "", fake_status(0) ]
+          }) do
+            AirCatalogService.entries_for(:skills)
+          end
+        end
+      end
+    end
+
+    # Absent from mcp_secrets: leave the key out entirely so any operator-set
+    # process-env token (e.g. CI) still reaches the CLI via Open3's env inheritance.
+    assert_not captured_env.key?("AIR_GITHUB_TOKEN")
+  end
+
+  test "bridges AIR_GITHUB_TOKEN into the air update subprocess env as well" do
+    update_env = nil
+    calls = ->(env, _bin, *args) do
+      if args.first == "update"
+        update_env = env
+        [ "updated\n", "", fake_status(0) ]
+      else
+        [ JSON.generate("skills" => {}), "", fake_status(0) ]
+      end
+    end
+
+    SecretsLoader.stub(:get, ->(key) { key == "AIR_GITHUB_TOKEN" ? "ghp_from_mcp_secrets" : nil }) do
+      without_install_bootstrap do
+        AirCatalogService.stub(:air_binary, @fake_binary) do
+          Open3.stub(:capture3, calls) do
+            AirCatalogService.refresh!
+          end
+        end
+      end
+    end
+
+    assert_equal "ghp_from_mcp_secrets", update_env["AIR_GITHUB_TOKEN"]
+  end
+
   test "passes shortname-keyed entries through unchanged (AIR 0.1.1 --no-scope owns scope stripping)" do
     with_air_resolve(
       "roots" => {
