@@ -157,6 +157,15 @@ So `github_label` conditions keep a **seen-set**, not a cursor. Each tick asks G
 of open items that currently carry a watched label, keys them as `owner/repo#number:label`, and
 fires on the *difference* against the previous tick. That set then becomes the new seen-set.
 
+A key is not dropped from the seen-set the instant it is missing, though. GitHub's search index is
+eventually consistent, so a still-open, still-labelled PR can vanish from one tick's results and
+return on the next. Treating that single miss as a label removal drops the key, and the reappearing
+PR then looks new and re-fires a duplicate session — the label poller's version of the index lag the
+`github_issue` path below guards against. So a missing key is **retained through a short grace
+window** (`GithubTriggerPollerJob::REMOVAL_GRACE_TICKS` consecutive misses — roughly three minutes at
+the one-minute cadence, tracked in the companion `seen_missing_counts`) before it is accepted as
+genuinely unlabelled. A real removal simply takes that long to register.
+
 The semantics that follow — all of them covered by tests:
 
 | Situation | What happens |
@@ -164,10 +173,11 @@ The semantics that follow — all of them covered by tests:
 | Label added to a PR | Fires **once**. |
 | PR keeps the label across many ticks | Never re-fires — the key stays in the seen-set. |
 | PR already carried the label when you created the trigger | **Does not fire.** The first tick records a baseline and fires nothing. |
-| Label removed, then added again | Fires **again**. Removal drops the key; re-adding makes it new. |
+| PR briefly drops out of the search (index blip) then returns | **Does not re-fire.** The key is held through the grace window, so the reappearance is not seen as new. |
+| Label removed, then added again | Fires **again**, once the removal has persisted through the grace window. Removal eventually drops the key; re-adding makes it new. |
 | Two watched labels added to one item | Two events, so two sessions. Keys are per `(item, label)`. |
-| A tick is skipped (deploy, rate limit) | Harmless. The seen-set is state, not a cursor, so the next tick still sees the label. |
-| PR is closed or merged while labelled | Drops out of the `is:open` search, and so out of the seen-set. If it is reopened still labelled, it fires again. |
+| A tick is skipped (deploy, rate limit) | Harmless. The seen-set is state, not a cursor, so the next tick still sees the label. Misses are only counted on a real poll, so downtime never expires a key's grace early. |
+| PR is closed or merged while labelled | Drops out of the `is:open` search; after the grace window it leaves the seen-set. If it is reopened still labelled, it fires again. |
 | You add a repo or a label to the condition | The condition **re-baselines**. Items already labelled in the newly-watched scope are absorbed, not stampeded into sessions. |
 | A `reuse_session` trigger *drops* the follow-up (target session busy) | Not counted as a fire. The item stays unseen and is retried next tick, rather than the event being silently consumed. |
 | Session creation fails for an item | Same — the item is not recorded, so the next tick retries it. |

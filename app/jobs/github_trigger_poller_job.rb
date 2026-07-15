@@ -29,8 +29,17 @@
 #   present-but-empty set, and must not be baselined a second time.
 # - **Re-labelling fires again.** Removing the label drops the key; adding it back makes
 #   the key new. That is the honest reading of "the label was added" — it happened twice.
+#   A key is not dropped on the FIRST tick it is missing, though: GitHub's search index is
+#   eventually consistent, so a still-labelled PR can vanish from one tick's results and
+#   return on the next. Dropping it immediately would re-fire a duplicate session (the label
+#   poller's version of the index lag the github_issue path below guards against). A missing
+#   key is therefore retained through REMOVAL_GRACE_TICKS consecutive misses — tracked in the
+#   companion `seen_missing_counts` — and only then accepted as genuinely unlabelled. A real
+#   removal simply takes that many ticks to register before a re-add counts as a new event.
 # - **A skipped tick is harmless.** The seen-set is state, not a cursor: a missed run
-#   changes nothing, because the next run still sees the label and still fires.
+#   changes nothing, because the next run still sees the label and still fires. (A skipped
+#   tick also does not advance the removal grace, since misses are only counted on a real
+#   poll — so downtime can never expire a key's grace early.)
 # - **A closed item drops out** of the `is:open` search and so out of the seen-set. If it
 #   is reopened still carrying the label, it fires again — a reopened PR is worth
 #   re-evaluating, and the alternative (remembering closed items forever) is unbounded.
@@ -69,6 +78,15 @@ class GithubTriggerPollerJob < ApplicationJob
   # eventually-consistent (and unordered) search index. An issue indexed later than this
   # after being opened is missed; observed lag in practice is on the order of seconds.
   INDEX_LAG_GRACE = 30.minutes
+
+  # The github_label seen-set's defense against that same eventually-consistent index: a
+  # seen key that disappears from the search is retained for this many consecutive misses
+  # before being accepted as genuinely unlabelled and dropped. A transient under-return (the
+  # PR is still open and labelled, GitHub's index just did not return it this tick) is thus
+  # absorbed rather than re-firing the item next tick. At the one-minute poll cadence this is
+  # roughly three minutes of sustained absence — well beyond observed index blips, yet short
+  # enough that a real remove-then-re-add of the label still fires again promptly.
+  REMOVAL_GRACE_TICKS = 3
 
   def perform
     conditions = TriggerCondition.github
@@ -146,16 +164,17 @@ class GithubTriggerPollerJob < ApplicationJob
     current_keys = candidates.keys.to_set
 
     unless condition.github_baselined?
-      write_state(condition, scope, { "seen_items" => current_keys.to_a.sort })
+      write_state(condition, scope, { "seen_items" => current_keys.to_a.sort, "seen_missing_counts" => {} })
       Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} " \
                         "with #{current_keys.size} already-labelled item(s); firing none"
       return
     end
 
     seen = condition.github_seen_items.to_set
+    missing_counts = condition.github_seen_missing_counts
 
-    # Keys we already knew about AND that still carry the label. Anything that lost its
-    # label is deliberately dropped here, which is what lets a re-label fire again.
+    # Keys we already knew about AND that still carry the label. These are confirmed
+    # present, so any miss streak they were carrying is cleared below.
     retained = current_keys & seen
     fired = Set.new
 
@@ -164,9 +183,30 @@ class GithubTriggerPollerJob < ApplicationJob
       fired << key if fire(condition, item, event: "label added: #{label}")
     end
 
-    # Keys that failed to produce a session are in neither set, so the next tick sees
-    # them as new again and retries.
-    write_state(condition, scope, { "seen_items" => (retained + fired).to_a.sort }, fired: fired.any?)
+    # A key that was seen but is absent this tick is NOT dropped on sight. GitHub's search
+    # index is eventually consistent, so a still-labelled PR can vanish from one tick's
+    # results and return on the next; dropping its key immediately makes it look new again
+    # and re-fires a duplicate session — the label poller's version of the index-lag the
+    # github_issue path guards against. Instead we retain the key through REMOVAL_GRACE_TICKS
+    # consecutive misses, and only once it has been absent that long do we accept the label
+    # as genuinely removed and drop it — at which point a real remove-then-re-add fires again.
+    grace_retained = Set.new
+    next_missing = {}
+    (seen - current_keys).each do |key|
+      misses = missing_counts.fetch(key, 0) + 1
+      next if misses >= REMOVAL_GRACE_TICKS
+
+      grace_retained << key
+      next_missing[key] = misses
+    end
+
+    # Keys that failed to produce a session are in neither retained, fired, nor grace_retained,
+    # so the next tick sees them as new again and retries.
+    write_state(
+      condition, scope,
+      { "seen_items" => (retained + fired + grace_retained).to_a.sort, "seen_missing_counts" => next_missing },
+      fired: fired.any?
+    )
   end
 
   def label_query(condition)
