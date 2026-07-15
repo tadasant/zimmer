@@ -127,6 +127,17 @@ class StaleCloneCleanupJob < ApplicationJob
       cleaned_anything = true
     end
 
+    # Reclaim durable prompt-attachment storage (files + images) on the same
+    # lifecycle. It now lives on the shared ~/.zimmer volume (see
+    # FileStorageService.storage_root), so it is no longer wiped by container
+    # recreation and must be reaped explicitly or it accumulates forever.
+    if attachments_exist?(session.id)
+      FileStorageService.cleanup_for(session.id)
+      ImageStorageService.cleanup_for(session.id)
+      Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale prompt attachments for session #{session.id}"
+      cleaned_anything = true
+    end
+
     artifact_service = CloneArtifactService.new
     if artifact_service.cleanup_artifacts(session.id)
       Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale artifacts for session #{session.id}"
@@ -143,6 +154,14 @@ class StaleCloneCleanupJob < ApplicationJob
     end
 
     true
+  end
+
+  # Whether any durable prompt-attachment storage exists for the session.
+  def attachments_exist?(session_id)
+    Dir.exist?(FileStorageService.new(session_id: session_id).session_dir) ||
+      Dir.exist?(ImageStorageService.new(session_id: session_id).session_dir)
+  rescue ArgumentError
+    false
   end
 
   # Filesystem-level sweep: finds clone directories not referenced by any active

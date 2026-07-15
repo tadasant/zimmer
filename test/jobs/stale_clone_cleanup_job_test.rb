@@ -58,6 +58,26 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     end
   end
 
+  test "reclaims durable prompt attachments alongside the stale clone" do
+    file_service = FileStorageService.new(session_id: @session.id)
+    image_service = ImageStorageService.new(session_id: @session.id)
+    begin
+      file_service.store(data: "notes", filename: "notes.md")
+      png = [ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A ].pack("C*") + ("x" * 32)
+      image_service.store(data: Base64.strict_encode64(png), filename: "shot.png")
+      assert Dir.exist?(file_service.session_dir), "file attachments should exist before cleanup"
+      assert Dir.exist?(image_service.session_dir), "image attachments should exist before cleanup"
+
+      StaleCloneCleanupJob.perform_now
+
+      assert_not Dir.exist?(file_service.session_dir), "file attachments should be reaped with the clone"
+      assert_not Dir.exist?(image_service.session_dir), "image attachments should be reaped with the clone"
+    ensure
+      file_service.cleanup!
+      image_service.cleanup!
+    end
+  end
+
   test "does not clean up clones within stale threshold" do
     # Update session to be recently archived (within threshold)
     recent_archived_at = (StaleCloneCleanupJob::STALE_THRESHOLD - 1.minute).ago
