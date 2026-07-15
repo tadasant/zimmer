@@ -182,6 +182,8 @@ class Session < ApplicationRecord
     prompt_too_long_hang_detected_at_line
     api_error_retry_count
     last_api_error_retry_at
+    signal_death_retry_count
+    last_signal_death_at
     quota_limit_count
     last_quota_limit_at
     last_quota_limit_message

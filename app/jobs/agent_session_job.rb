@@ -1136,6 +1136,7 @@ class AgentSessionJob < ApplicationJob
       waiting_on_elicitation = false
       last_sigterm_retry_at = session.metadata&.dig("last_sigterm_at") ? Time.parse(session.metadata["last_sigterm_at"]) : nil
       last_api_error_retry_at = session.metadata&.dig("last_api_error_retry_at") ? Time.parse(session.metadata["last_api_error_retry_at"]) : nil
+      last_signal_death_at = session.metadata&.dig("last_signal_death_at") ? Time.parse(session.metadata["last_signal_death_at"]) : nil
 
       loop do
         loop_iteration += 1
@@ -1343,6 +1344,7 @@ class AgentSessionJob < ApplicationJob
               # Update retry timestamps to track successful run duration for reset logic
               last_sigterm_retry_at = Time.current
               last_api_error_retry_at = Time.current
+              last_signal_death_at = Time.current
               # Restart log streaming thread for new process
               log_streaming_thread&.kill if log_streaming_thread&.alive?
               log_streaming_thread = start_log_streaming(session, process_pid, stderr_log_path, working_directory)
@@ -1397,6 +1399,8 @@ class AgentSessionJob < ApplicationJob
                 "context_length_compact_failed"
               when /API error retry limit exhausted/i
                 "api_error_retries_exhausted"
+              when /Signal death resume limit exhausted/i
+                "signal_death_retries_exhausted"
               when /Clone directory no longer exists/i
                 # Benign terminal case: the clone was GC'd after the session was torn
                 # down, so a continuation re-spawn is impossible (not a system fault).
@@ -1515,6 +1519,7 @@ class AgentSessionJob < ApplicationJob
         # periods of successful operation (see issue #459).
         check_and_reset_sigterm_retry_counter(session, last_sigterm_retry_at, log_buffer)
         check_and_reset_api_error_retry_counter(session, last_api_error_retry_at, log_buffer)
+        check_and_reset_signal_death_retry_counter(session, last_signal_death_at, log_buffer)
 
         # 6. Check for fallback: end_turn + dead process
         # This should rarely trigger now that we're in the same job,
@@ -2125,12 +2130,20 @@ class AgentSessionJob < ApplicationJob
     # Terminate the Claude CLI process
     terminate_process(session, process_pid, clone_path, log_buffer)
 
-    # Check if any failures are due to OAuth-related errors - these indicate OAuth is required
-    # Patterns: "Unauthorized"/"401" (standard auth errors), "Supported scopes" (servers like
-    # Tally that report OAuth scopes in the error), "oauth" (generic OAuth error messages)
-    oauth_failures = failed_servers.select do |server|
-      error = server["error"].to_s
-      error.match?(/unauthorized|401|supported scopes|oauth/i)
+    # Split the auth-type failures by whether the server can actually BE authorized
+    # via OAuth. An auth error alone does NOT imply OAuth: a server that authenticates
+    # with a static credential header (e.g. Zimmer's own `zimmer*` entries, which send
+    # `X-API-Key: ${ZIMMER_PROD_API_KEY}`) returns the very same 401 when its API token
+    # is invalid, expired, or under-scoped — and no amount of OAuth can mint a valid API
+    # token. Classifying those as oauth_required strands the user in an unresolvable loop:
+    # they complete the OAuth flow, the session restarts, and it fails on the identical 401
+    # while the real error ("invalid_token: Failed to verify token") is never shown.
+    #
+    # McpOauthCredentialInjector.oauth_capable_server? is the same predicate the
+    # pre-spawn OAuth gate uses, so both paths agree on what an OAuth server is.
+    auth_failures = failed_servers.select { |server| auth_error?(server["error"]) }
+    oauth_failures, static_credential_failures = auth_failures.partition do |server|
+      McpOauthCredentialInjector.oauth_capable_server?(server["name"])
     end
 
     if oauth_failures.any?
@@ -2157,6 +2170,39 @@ class AgentSessionJob < ApplicationJob
         metadata: (session.metadata || {}).merge(
           "failure_reason" => "oauth_required",
           "oauth_required_servers" => oauth_required_servers
+        )
+      )
+    elsif static_credential_failures.any?
+      # Auth failure on a server whose credential is a static header/token, not OAuth.
+      # Terminal and NOT retried: a rejected API token does not become valid 30 seconds
+      # later, so the backoff ladder would only delay the real error by ~3.5 minutes.
+      #
+      # Recorded as mcp_connection_failed so the existing failure UI surfaces the raw
+      # per-server error (Session#failure_detail → "MCP Connection Failure Details"),
+      # which is what the user actually needs to see — e.g. a hosted MCP server's
+      # "invalid_token: Failed to verify token: no user or account information".
+      static_credential_failures.each do |server|
+        credential_vars = ServersConfig.find(server["name"])&.required_headers || []
+        hint = credential_vars.any? ? " Check the credential(s): #{credential_vars.join(', ')}." : ""
+
+        log_buffer.add(
+          "MCP server '#{server['name']}' rejected its credentials (#{server['error']}). " \
+          "This server authenticates with a static token, not OAuth, so authorizing it will not help.#{hint}",
+          level: "error"
+        )
+      end
+
+      log_buffer.flush
+
+      Rails.logger.warn(
+        "MCP static-credential authentication failed — session failed without retry " \
+        "| session_id=#{session.id} failed_servers=#{static_credential_failures.map { |s| s["name"] }.join(",")}"
+      )
+
+      session.update!(
+        metadata: (session.metadata || {}).merge(
+          "failure_reason" => "mcp_connection_failed",
+          "mcp_failed_servers" => failed_servers
         )
       )
     else
@@ -2219,6 +2265,21 @@ class AgentSessionJob < ApplicationJob
   rescue => e
     Rails.logger.error "[AgentSessionJob] Error handling MCP failure: #{e.message}"
     false
+  end
+
+  # Error-text patterns that indicate an MCP server rejected our credentials:
+  # "Unauthorized"/"401" (standard auth errors), "Supported scopes" (servers like Tally
+  # that report OAuth scopes in the error), "oauth"/"invalid_token" (explicit auth errors).
+  #
+  # This says only "authentication failed" — NOT "OAuth is required". Deciding whether
+  # OAuth can fix it requires knowing how the server authenticates; see
+  # McpOauthCredentialInjector.oauth_capable_server?.
+  AUTH_ERROR_PATTERN = /unauthorized|401|supported scopes|oauth|invalid_token/i
+
+  # @param error [String, nil] the raw error text reported for a failed MCP server
+  # @return [Boolean] true when the error looks like an authentication rejection
+  def auth_error?(error)
+    error.to_s.match?(AUTH_ERROR_PATTERN)
   end
 
   # Remove any partially-populated `_npx/<hash>` cache tree that a failed MCP
@@ -2466,6 +2527,42 @@ class AgentSessionJob < ApplicationJob
     )
   rescue => e
     Rails.logger.error "[AgentSessionJob] Error resetting API error retry counter: #{e.message}"
+  end
+
+  # Reset the signal-death resume counter once a resumed process has been running
+  # successfully for SIGTERM_RETRY_RESET_THRESHOLD seconds.
+  #
+  # Uses the same threshold and principle as the SIGTERM/API resets: a genuinely
+  # long-running session that OOMs (SIGKILL) once every few hours should get a
+  # fresh resume budget after each stable stretch, rather than accumulating toward
+  # MAX_SIGNAL_DEATH_RETRIES over its whole lifetime and then failing permanently.
+  #
+  # @param session [Session] The current session
+  # @param last_signal_death_at [Time, nil] When the last signal-death resume occurred
+  # @param log_buffer [LogBuffer] Buffer for logging
+  def check_and_reset_signal_death_retry_counter(session, last_signal_death_at, log_buffer)
+    return unless last_signal_death_at
+    return unless session.metadata&.dig("signal_death_retry_count")&.positive?
+
+    time_since_last_death = Time.current - last_signal_death_at
+    return unless time_since_last_death >= SIGTERM_RETRY_RESET_THRESHOLD
+
+    previous_count = session.metadata["signal_death_retry_count"]
+    with_db_retry do
+      session.update!(
+        metadata: session.metadata.except(
+          "signal_death_retry_count",
+          "last_signal_death_at"
+        )
+      )
+    end
+
+    log_buffer.add(
+      "Signal-death resume counter reset (was #{previous_count}) - process stable for #{time_since_last_death.round}s",
+      level: "info"
+    )
+  rescue => e
+    Rails.logger.error "[AgentSessionJob] Error resetting signal-death retry counter: #{e.message}"
   end
 
   # Terminate a running process

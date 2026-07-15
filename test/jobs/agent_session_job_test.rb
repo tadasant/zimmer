@@ -4616,6 +4616,55 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
+  # Signal-Death (OOM/SIGKILL) Resume Counter Reset Tests
+  # ============================================================================
+
+  test "check_and_reset_signal_death_retry_counter resets counter after threshold" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: {
+        "signal_death_retry_count" => 2,
+        "last_signal_death_at" => "2025-11-29T18:22:09Z"
+      }
+    )
+
+    # A resumed process that has been stable past the threshold gets a fresh budget.
+    last_signal_death_at = 65.seconds.ago
+    job.send(:check_and_reset_signal_death_retry_counter, @session, last_signal_death_at, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    assert_nil @session.metadata["signal_death_retry_count"]
+    assert_nil @session.metadata["last_signal_death_at"]
+
+    logs = @session.logs.reload.pluck(:content)
+    assert logs.any? { |log| log.include?("Signal-death resume counter reset") }
+  end
+
+  test "check_and_reset_signal_death_retry_counter does not reset before threshold" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: {
+        "signal_death_retry_count" => 2,
+        "last_signal_death_at" => "2025-11-29T18:22:09Z"
+      }
+    )
+
+    last_signal_death_at = 30.seconds.ago
+    job.send(:check_and_reset_signal_death_retry_counter, @session, last_signal_death_at, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    assert_equal 2, @session.metadata["signal_death_retry_count"]
+  end
+
+  # ============================================================================
   # API Error Retry Counter Reset Tests
   # ============================================================================
 
@@ -6332,16 +6381,17 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   test "check_and_handle_mcp_failure detects 401 as oauth_required" do
-    # Test that "401" in the error message also triggers oauth_required
+    # Test that "401" in the error message also triggers oauth_required — but only
+    # for an OAuth-capable (remote, no static credential header) server like figma.
     @session.update!(
       status: :running,
-      mcp_servers: [ "linear" ],
+      mcp_servers: [ "figma" ],
       custom_metadata: {
         "should_fail_session" => true,
         "mcp_failed_servers" => [
-          { "name" => "linear", "status" => "failed", "error" => "Connection failed with status 401" }
+          { "name" => "figma", "status" => "failed", "error" => "Connection failed with status 401" }
         ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: linear"
+        "mcp_failure_reason" => "MCP server(s) failed to connect: figma"
       }
     )
 
@@ -6359,17 +6409,18 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   test "check_and_handle_mcp_failure detects Supported scopes as oauth_required" do
-    # Simulate Tally's OAuth error: server responds with supported scopes instead of 401
+    # An OAuth server may respond with supported scopes instead of 401. Uses an
+    # OAuth-capable (remote, no static credential header) server like notion.
     @session.update!(
       status: :running,
-      mcp_servers: [ "tally" ],
+      mcp_servers: [ "notion" ],
       custom_metadata: {
         "should_fail_session" => true,
         "mcp_failed_servers" => [
-          { "name" => "tally", "status" => "failed",
+          { "name" => "notion", "status" => "failed",
             "error" => "HTTP Connection failed after 7094ms: Supported scopes: user, forms, responses, webhooks, mcp | Connection failed after 7094ms: Supported scopes: user, forms, responses, webhooks, mcp" }
         ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: tally"
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion"
       }
     )
 
@@ -6387,21 +6438,22 @@ class AgentSessionJobTest < ActiveJob::TestCase
     oauth_servers = @session.metadata["oauth_required_servers"]
     assert_not_nil oauth_servers
     assert_equal 1, oauth_servers.length
-    assert_equal "tally", oauth_servers.first["server_name"]
+    assert_equal "notion", oauth_servers.first["server_name"]
   end
 
   test "check_and_handle_mcp_failure detects oauth keyword as oauth_required" do
-    # Generic OAuth error message should also trigger oauth_required
+    # Generic OAuth error message should also trigger oauth_required for an
+    # OAuth-capable server.
     @session.update!(
       status: :running,
-      mcp_servers: [ "tally" ],
+      mcp_servers: [ "notion" ],
       custom_metadata: {
         "should_fail_session" => true,
         "mcp_failed_servers" => [
-          { "name" => "tally", "status" => "failed",
+          { "name" => "notion", "status" => "failed",
             "error" => "OAuth authentication required" }
         ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: tally"
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion"
       }
     )
 
@@ -6418,7 +6470,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     oauth_servers = @session.metadata["oauth_required_servers"]
     assert_not_nil oauth_servers
     assert_equal 1, oauth_servers.length
-    assert_equal "tally", oauth_servers.first["server_name"]
+    assert_equal "notion", oauth_servers.first["server_name"]
   end
 
   test "check_and_handle_mcp_failure retries non-auth errors instead of immediately failing" do
@@ -6590,6 +6642,147 @@ class AgentSessionJobTest < ActiveJob::TestCase
     oauth_servers = @session.metadata["oauth_required_servers"]
     assert_equal 1, oauth_servers.length
     assert_equal "notion", oauth_servers.first["server_name"]
+  end
+
+  # --- Auth failures on static-credential (non-OAuth) servers ------------------
+  #
+  # Zimmer's own native `zimmer-sessions` server authenticates with a static
+  # `X-API-Key: ${ZIMMER_PROD_API_KEY}` header. When that key is invalid or under-scoped
+  # the server returns 401 invalid_token. Matching /401/ on the error text and raising the
+  # "OAuth Authorization Required" banner is an unresolvable dead end: the user completes
+  # the OAuth flow, the session restarts, and it fails again on the identical 401, never
+  # showing them the real error. These regression tests lock in the corrected routing.
+
+  # A representative 401 from a static-header MCP server.
+  STATIC_CREDENTIAL_401_ERROR = 'HTTP transport options: {"url":"https://zimmer.example.com/mcp",' \
+    '"headers":{"X-API-Key":"[REDACTED]"},"hasAuthProvider":false} | ' \
+    "HTTP Connection failed after 6536ms: Streamable HTTP error: Error POSTing to endpoint: " \
+    '{"error":"invalid_token","error_description":"Failed to verify token: no user or account information"} ' \
+    "(code: 401, errno: none)"
+
+  test "check_and_handle_mcp_failure does NOT classify a 401 from a static-header server as oauth_required" do
+    @session.update!(
+      status: :running,
+      mcp_servers: [ "zimmer-sessions" ],
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "zimmer-sessions", "status" => "failed", "error" => STATIC_CREDENTIAL_401_ERROR }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: zimmer-sessions"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    log_buffer = LogBuffer.new(@session)
+
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    assert_equal true, result
+    @session.reload
+
+    # The bug: this used to be "oauth_required" and rendered an unresolvable OAuth banner.
+    assert_equal "mcp_connection_failed", @session.metadata["failure_reason"]
+    assert_nil @session.metadata["oauth_required_servers"]
+    assert_equal "failed", @session.status
+
+    # The REAL error must reach the user, not an OAuth prompt. failure_detail is what
+    # _failure_details.html.erb renders in the "MCP Connection Failure Details" block.
+    assert_match(/invalid_token/, @session.failure_detail)
+    assert_match(/Failed to verify token: no user or account information/, @session.failure_detail)
+  end
+
+  test "check_and_handle_mcp_failure fails a static-credential auth error immediately without retrying" do
+    # A rejected API token does not become valid 30s later, so burning the retry ladder
+    # would only delay the real error by ~3.5 minutes.
+    @session.update!(
+      status: :running,
+      mcp_servers: [ "zimmer-sessions" ],
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "zimmer-sessions", "status" => "failed", "error" => STATIC_CREDENTIAL_401_ERROR }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: zimmer-sessions"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_nil @session.metadata["mcp_retry_count"], "static-credential auth failure must not schedule a retry"
+
+    # The user is told plainly that OAuth is not the fix, and which credential to check.
+    log_buffer.flush
+    log_text = @session.logs.pluck(:content).join("\n")
+    assert_match(/authenticates with a static token, not OAuth/, log_text)
+    assert_match(/ZIMMER_PROD_API_KEY/, log_text)
+  end
+
+  test "check_and_handle_mcp_failure still classifies a 401 from an OAuth-capable server as oauth_required" do
+    # The other half of the contract: genuine OAuth servers must keep reaching the banner,
+    # and must carry a usable server_url (a nil url renders a dead Authorize button).
+    @session.update!(
+      status: :running,
+      mcp_servers: [ "notion" ],
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "notion", "status" => "failed", "error" => "Connection failed with status 401" }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+    oauth_servers = @session.metadata["oauth_required_servers"]
+    assert_equal 1, oauth_servers.length
+    assert_equal "notion", oauth_servers.first["server_name"]
+    assert_equal "https://mcp.notion.com/mcp", oauth_servers.first["server_url"]
+  end
+
+  test "check_and_handle_mcp_failure prefers the OAuth banner when both an OAuth and a static-credential server 401" do
+    # A real OAuth server that can be authorized must still win: the banner is actionable
+    # for it. Only the OAuth-capable server is offered for authorization; the
+    # static-credential server is not (authorizing it would not help).
+    @session.update!(
+      status: :running,
+      mcp_servers: [ "notion", "zimmer-sessions" ],
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "notion", "status" => "failed", "error" => "Unauthorized" },
+          { "name" => "zimmer-sessions", "status" => "failed", "error" => STATIC_CREDENTIAL_401_ERROR }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion, zimmer-sessions"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+
+    # Only the genuinely OAuth-capable server is offered for authorization.
+    oauth_servers = @session.metadata["oauth_required_servers"]
+    assert_equal [ "notion" ], oauth_servers.map { |s| s["server_name"] }
   end
 
   # Tests for OAuth credential injection on follow-up prompts

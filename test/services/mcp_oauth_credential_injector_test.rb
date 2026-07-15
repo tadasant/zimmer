@@ -601,6 +601,53 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     end
   end
 
+  # --- .oauth_capable_server? -------------------------------------------------
+  #
+  # The single source of truth for "can this server actually be authorized via OAuth?",
+  # shared by the pre-spawn gate and AgentSessionJob's post-spawn failure classifier.
+  # These assert against the REAL catalog so the predicate stays honest about the
+  # servers actually registered in mcp.json.
+
+  test "oauth_capable_server? is true for a remote server with no static credential header" do
+    # notion/figma are hosted OAuth servers: remote, no headers in the catalog.
+    assert McpOauthCredentialInjector.oauth_capable_server?("notion")
+    assert McpOauthCredentialInjector.oauth_capable_server?("figma")
+  end
+
+  test "oauth_capable_server? is false for a server authenticated by a static credential header" do
+    # Zimmer's own `zimmer*` entries authenticate with `X-API-Key: ${ZIMMER_PROD_API_KEY}`.
+    # That header IS the credential — there is no OAuth flow to run, so a 401 from these
+    # servers must never be routed to the OAuth banner.
+    refute McpOauthCredentialInjector.oauth_capable_server?("zimmer")
+    refute McpOauthCredentialInjector.oauth_capable_server?("zimmer-sessions")
+    refute McpOauthCredentialInjector.oauth_capable_server?("zimmer-self-session")
+  end
+
+  test "oauth_capable_server? is false for a stdio server" do
+    # stdio servers are local processes authenticated via env vars — no OAuth flow exists.
+    refute McpOauthCredentialInjector.oauth_capable_server?("playwright-custom")
+    refute McpOauthCredentialInjector.oauth_capable_server?("linear")
+  end
+
+  test "oauth_capable_server? is false for a server missing from the catalog" do
+    # Without a catalog entry there is no server_url, so an OAuth banner would render a
+    # dead "Authorize" button that can never resolve.
+    refute McpOauthCredentialInjector.oauth_capable_server?("does-not-exist-in-catalog")
+  end
+
+  test "static_credential_header? ignores blank and non-credential headers" do
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "Authorization" => "Bearer x" })
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "X-API-Key" => "abc" })
+    # HTTP header names are case-insensitive (RFC 7230)
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "authorization" => "Bearer x" })
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "x-api-key" => "abc" })
+
+    refute McpOauthCredentialInjector.static_credential_header?(headers: { "Authorization" => "  " })
+    refute McpOauthCredentialInjector.static_credential_header?(headers: { "X-Trace-Id" => "abc" })
+    refute McpOauthCredentialInjector.static_credential_header?(headers: {})
+    refute McpOauthCredentialInjector.static_credential_header?(headers: nil)
+  end
+
   private
 
   test "check_credentials_status captures a runtime-rotated refresh token back into the DB" do
