@@ -554,6 +554,48 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select '[data-error-popover-content-value*="ROOT_CAUSE_AT_THE_VERY_END"]', count: 0
   end
 
+  # When an `air prepare` failure mixes a long, non-fatal deprecation warning
+  # with the real error, the actionable error line is pulled into a prominent
+  # "Actionable Error" callout ABOVE the full output — so the warning can't be
+  # the first (and only visible) thing the user reads. The full output still
+  # renders below, untruncated.
+  test "show surfaces the actionable error above the warnings for a mixed air-prepare failure" do
+    real_error = "Error: Unresolved variables in /clones/x: ${SENTRY_DSN}_#{SecureRandom.hex(4)}"
+    warnings = (1..60).map { |i|
+      "warning: Inline plugin bodies are deprecated as of v0.13.0 and will be removed (line #{i})"
+    }.join("\n")
+    exception_message = "#{warnings}\n#{real_error}"
+
+    session = sessions(:failed)
+    session.update!(
+      metadata: (session.metadata || {}).merge(
+        "failure_reason" => "exception",
+        "exception_class" => "AirPrepareService::AirPrepareError",
+        "exception_message" => exception_message,
+        "exit_status" => 1
+      )
+    )
+
+    get session_url(session)
+    assert_response :success
+
+    # The prominent callout is present and carries the real error.
+    assert_select "pre.font-semibold", text: /#{Regexp.escape(real_error)}/
+
+    # The callout leads with the actionable error, not the deprecation warning:
+    # the error's first appearance in the HTML precedes the warning wall.
+    error_pos = response.body.index(real_error)
+    warning_pos = response.body.index("deprecated as of v0.13.0")
+    assert error_pos, "actionable error must be rendered"
+    assert warning_pos, "warning must still be rendered in the full output"
+    assert error_pos < warning_pos,
+      "actionable error (#{error_pos}) must appear before the first warning (#{warning_pos})"
+
+    # The full, untruncated output is still available below the callout.
+    assert_match "Full Output", response.body
+    assert_match "deprecated as of v0.13.0 and will be removed (line 60)", response.body
+  end
+
   # MCP-connection failures surface each failed server's full error in the same
   # untruncated scrollable block.
   test "show renders full untruncated mcp connection failure detail" do

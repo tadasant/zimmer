@@ -177,5 +177,7 @@ The state machine is not the only actor:
   is gone.
 - **`ZombieReaperJob`** reaps dead child processes.
 - **`SessionRecoveryService`** handles hung and interrupted sessions on a best-effort basis;
-  `SigtermRetryService` covers SIGTERM'd sessions (deploys, OOM) with a bounded retry ladder
-  (`MAX_RETRIES = 3`).
+  `SigtermRetryService` covers gracefully SIGTERM'd sessions (deploys) with a bounded retry
+  ladder (`MAX_RETRIES = 3`); an abnormal signal death (SIGKILL from an OOM kill, SIGSEGV, …)
+  is instead resumed by `ProcessLifecycleManager#handle_signal_death`
+  (`MAX_SIGNAL_DEATH_RETRIES = 3`) — see [Spawning](/sessions/spawning/#when-the-process-exits).

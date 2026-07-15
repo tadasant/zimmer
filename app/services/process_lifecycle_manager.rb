@@ -71,6 +71,14 @@ class ProcessLifecycleManager
   # Enough to capture the operative error without dumping an unbounded log.
   STDERR_TAIL_LINES = 20
 
+  # Maximum resume attempts after an abnormal signal death (SIGKILL/SIGSEGV/etc.),
+  # e.g. an OOM kill of a long-running session. Mirrors SigtermRetryService's
+  # MAX_RETRIES. The counter is reset by AgentSessionJob once a resumed process
+  # runs stably (SIGTERM_RETRY_RESET_THRESHOLD), so a genuinely long-lived session
+  # that OOMs occasionally gets a fresh budget each time rather than accumulating
+  # toward a permanent failure over its lifetime.
+  MAX_SIGNAL_DEATH_RETRIES = 3
+
   # Result structures
   SpawnResult = Struct.new(:success, :pid, :stderr_log_path, :error, keyword_init: true) do
     def success?
@@ -410,6 +418,29 @@ class ProcessLifecycleManager
         return handle_retryable_api_error(working_dir)
       end
 
+      # Abnormal signal death (SIGKILL/9, SIGSEGV/11, SIGBUS/7, …) — most commonly a
+      # cgroup OOM kill of a long-running, large-transcript session. Unlike SIGTERM
+      # (a graceful deploy/shutdown ask) this is an unexpected, external kill. Left
+      # to fall through, it would surface as a scary terminal `failed` and only get
+      # picked up ~15 min later by the generic stuck-session sweep. Instead we resume
+      # the existing session immediately with a bounded retry budget, so a heartbeat/
+      # long-running orchestrator survives an OOM the way it already survives SIGTERM.
+      #
+      # Placed LAST among the recovery branches (after the stderr-driven context-
+      # length/auth/API-error checks) so a signaled exit that ALSO carries a more
+      # specific, recoverable stderr condition still routes to that specific handler —
+      # only a "pure" signal death (no matching stderr condition) resumes here.
+      #
+      # This never hijacks an AO-initiated termination: a user pause / ownership
+      # supersede / timeout kill never reaches handle_exit (those paths return without
+      # calling it), the session.running? guard at the top short-circuits a status
+      # change, and the hung-process terminator's SIGTERM→SIGKILL escalation is caught
+      # by the recovery_termination_initiated check above. A signal reaching here is
+      # therefore genuinely external.
+      if signal_death_exit?(status)
+        return handle_signal_death(status, working_dir)
+      end
+
       # General failure case
       error_msg = exit_status_description(status)
       add_log("Process failed with #{error_msg}", level: "error")
@@ -500,6 +531,75 @@ class ProcessLifecycleManager
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :aborted)
     end
+  end
+
+  # Handle an abnormal signal death (SIGKILL/SIGSEGV/etc.) by resuming the session.
+  #
+  # Bounded by MAX_SIGNAL_DEATH_RETRIES. Each attempt resumes the existing runtime
+  # session id (via spawn_continuation) with the SYSTEM_RECOVERY prompt so the agent
+  # picks up where it left off. AgentSessionJob resets signal_death_retry_count once
+  # a resumed process runs stably, so this is a per-incident budget, not a lifetime
+  # cap. Per the logging philosophy, intermediate attempts log at .info; we only
+  # escalate to .warning (and a terminal :failed) once the budget is exhausted.
+  #
+  # Note: Called while in :handling_exit state. Must transition to :running
+  # on success or :idle on failure/abort before returning.
+  #
+  # @param status [Process::Status] The signal-death exit status
+  # @param working_dir [String] Working directory for spawning the resume
+  # @return [ExitDecision] Decision on what to do next
+  def handle_signal_death(status, working_dir)
+    signal_desc = exit_status_description(status)
+    retry_count = session.metadata&.dig("signal_death_retry_count").to_i
+
+    if retry_count >= MAX_SIGNAL_DEATH_RETRIES
+      add_log(
+        "Process killed by #{signal_desc} and signal-death resume limit reached " \
+        "(#{MAX_SIGNAL_DEATH_RETRIES} attempts) — failing session",
+        level: "warning"
+      )
+      @logger.warn("Signal-death resume limit exhausted", signal: signal_desc, attempts: retry_count)
+      surface_stderr_to_session_log
+      @mutex.synchronize { @state = :idle }
+      return ExitDecision.new(
+        action: :failed,
+        error_message: "Signal death resume limit exhausted (last: #{signal_desc})"
+      )
+    end
+
+    # Re-confirm the session is still running to avoid racing a user pause/archive.
+    unless wait_and_confirm_still_running
+      add_log("Session status changed during signal-death handling, aborting resume", level: "info")
+      @mutex.synchronize { @state = :idle }
+      return ExitDecision.new(action: :aborted)
+    end
+
+    next_attempt = retry_count + 1
+    with_db_retry do
+      session.update!(
+        metadata: (session.metadata || {}).merge(
+          "signal_death_retry_count" => next_attempt,
+          "last_signal_death_at" => Time.current.iso8601
+        )
+      )
+    end
+
+    add_log(
+      "Process killed by #{signal_desc} (likely OOM or external kill) — resuming session " \
+      "(attempt #{next_attempt}/#{MAX_SIGNAL_DEATH_RETRIES})",
+      level: "info"
+    )
+    @logger.info("Recovering from signal death", signal: signal_desc, attempt: next_attempt)
+
+    # spawn_continuation resumes the existing runtime session id and handles its own
+    # state transitions + error rescue (returning :failed if the resume itself fails).
+    # A resume that lands on a vanished conversation is caught on the next loop by the
+    # failed_resume_recovery path, which restarts fresh from the original prompt.
+    spawn_continuation(
+      working_dir: working_dir,
+      prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+      reason: "signal death (#{signal_desc})"
+    )
   end
 
   # Handle context length error with /compact retry
@@ -778,6 +878,24 @@ class ProcessLifecycleManager
   # Check if process exited due to SIGTERM
   def sigterm_exit?(status)
     status.exitstatus == 143 || status.termsig == 15
+  end
+
+  # Check if the process was killed by an abnormal signal that is NOT SIGTERM.
+  # SIGTERM has its own graceful-shutdown retry path (handle_sigterm_exit); this
+  # catches everything else a kernel/external actor can throw at the process —
+  # SIGKILL (9, OOM killer), SIGSEGV (11), SIGBUS (7), SIGABRT (6), etc.
+  #
+  # Matches both a raw signaled exit (status.signaled?, termsig set) AND the
+  # shell/wrapper 128+N translation (exit code > 128), mirroring how sigterm_exit?
+  # accepts both termsig 15 and exit 143. SIGTERM in either form is excluded so it
+  # keeps its dedicated path. A normal exit (code <= 128, e.g. 0/1/2) is not a
+  # signal death and takes the exit-code paths.
+  def signal_death_exit?(status)
+    return false if sigterm_exit?(status)
+    return true if status.signaled?
+
+    exitstatus = status.exitstatus
+    exitstatus.present? && exitstatus > 128
   end
 
   # Surface the tail of the process's stderr to the session log on a genuine

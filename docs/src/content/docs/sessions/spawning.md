@@ -118,7 +118,9 @@ streaming flag. The transcript file on disk is the only source of truth.
 
 ## When the process exits
 
-`ProcessLifecycleManager#handle_exit` asks the runtime's retry strategy five questions:
+`ProcessLifecycleManager#handle_exit` asks the runtime's retry strategy a series of
+questions, then — as a last recovery branch before giving up — checks for an abnormal
+signal death:
 
 ```mermaid
 flowchart TD
@@ -133,12 +135,26 @@ flowchart TD
     Q -->|transient| RT["retry with backoff"]
     Q -->|no| F{"failed_resume_recovery_needed?"}
     F -->|yes| FR["restart from scratch"]
-    F -->|no| FAIL["fail! → failed"]
+    F -->|no| SD{"signal_death_exit?<br/>(SIGKILL/OOM, non-SIGTERM)"}
+    SD -->|yes| SDR["handle_signal_death<br/>resume same session<br/>(MAX_SIGNAL_DEATH_RETRIES = 3)"]
+    SD -->|no| FAIL["fail! → failed"]
     CR --> P
     AR --> P
     RO --> P
     RT --> P
+    SDR --> P
 ```
+
+A non-SIGTERM signaled exit — most commonly a cgroup **OOM kill** (SIGKILL) of a
+long-running, large-transcript session — is treated as recoverable rather than
+terminal: `handle_signal_death` resumes the existing runtime session id immediately
+(seconds, versus the ~15-minute stuck-session sweep), bounded by
+`MAX_SIGNAL_DEATH_RETRIES` so an OOM crash-loop can't resume forever. The counter is
+reset once a resumed process runs stably, so a session that OOMs occasionally gets a
+fresh per-incident budget. Exhausting it fails with `failure_reason:
+signal_death_retries_exhausted`. AO-initiated SIGKILLs (the hung-process terminator
+escalating SIGTERM→SIGKILL) are excluded by the `recovery_termination_initiated` guard
+upstream of this check.
 
 :::danger[Every one of those questions is answered by a regex against CLI prose]
 There is no structured exit signal. Zimmer determines *why* a session died by string-matching

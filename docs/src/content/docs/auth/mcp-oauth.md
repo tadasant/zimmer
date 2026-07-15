@@ -36,6 +36,17 @@ A session that needs OAuth fails fast: it goes to `failed` with
 `failure_reason: oauth_required` instead of hanging or prompting, and the UI turns that into Authorize buttons. Completing the flow
 resumes it.
 
+The **post-spawn** MCP-failure classifier (`AgentSessionJob#check_and_handle_mcp_failure`)
+applies the same rule. An auth-shaped error (`401`, `Unauthorized`, `Supported scopes`,
+`invalid_token`, …) only becomes `oauth_required` when the server is actually
+OAuth-capable — `McpOauthCredentialInjector.oauth_capable_server?`: in the catalog, remote
+transport, and **no** static credential header. A static-header server (e.g. Zimmer's own
+`zimmer*` entries, which send `X-API-Key: ${ZIMMER_PROD_API_KEY}`) returns the same 401 when
+its token is invalid or under-scoped, but no OAuth flow can mint a valid API token, so that
+failure is recorded as `mcp_connection_failed` — surfacing the raw error and the credential
+to check — rather than a dead-end Authorize button. This is the single predicate shared with
+the pre-spawn gate above.
+
 ## The authorization flow
 
 ```mermaid

@@ -1469,22 +1469,26 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "Should abort when recovery_termination_initiated flag is set even for SIGTERM"
   end
 
-  test "handle_exit does not abort on SIGKILL when recovery_termination_initiated flag is absent" do
+  test "handle_exit auto-recovers on external SIGKILL when recovery_termination_initiated flag is absent" do
     @mock_cli_adapter.execute_hook = ->(opts) do
       { pid: 12345, stderr_log_path: "/tmp/stderr.log" }
     end
 
-    # No recovery flag set
+    # No recovery flag set — this is a genuinely external SIGKILL (e.g. an OOM kill
+    # of a long-running session), distinct from the AO-initiated hung-process
+    # termination that sets recovery_termination_initiated (asserted above).
     manager = create_manager
-    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
 
-    # SIGKILL without recovery flag should still fail normally
     status = MockProcessManager::MockStatus.signaled(9)
     decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
 
-    assert_equal :failed, decision.action,
-      "Should fail normally when recovery flag is absent"
-    assert_match(/SIGKILL/, decision.error_message)
+    # Rather than surfacing a terminal :failed, an external signal death resumes the
+    # existing session so the work continues.
+    assert_equal :continue, decision.action,
+      "External SIGKILL should auto-recover (resume) rather than fail terminally"
+    assert_equal :running, manager.current_state
+    assert_equal 1, @session.reload.metadata["signal_death_retry_count"]
   end
 
   test "handle_exit logs recovery-initiated termination" do
@@ -1505,6 +1509,112 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     log_contents = logs.map(&:content).join("\n")
 
     assert_match(/recovery-initiated/, log_contents)
+  end
+
+  # ============================================================================
+  # Abnormal Signal Death (OOM / SIGKILL / SIGSEGV) Auto-Recovery Tests
+  #
+  # Regression coverage for the incident where a long-running, heartbeat-monitored
+  # session was cgroup-OOM-killed (SIGKILL/9) and left in a terminal `failed` state
+  # until the generic ~15-min stuck-session sweep noticed it. A signal death is now
+  # a recoverable/transient condition: the session resumes immediately (bounded by
+  # MAX_SIGNAL_DEATH_RETRIES) instead of failing.
+  # ============================================================================
+
+  test "signal_death_exit? classifies non-SIGTERM signals as signal death" do
+    manager = create_manager
+
+    # Raw signaled exits (termsig set).
+    assert manager.send(:signal_death_exit?, MockProcessManager::MockStatus.signaled(9)),
+      "SIGKILL (9) is a signal death"
+    assert manager.send(:signal_death_exit?, MockProcessManager::MockStatus.signaled(11)),
+      "SIGSEGV (11) is a signal death"
+    # Shell/wrapper 128+N translation (exit code > 128).
+    assert manager.send(:signal_death_exit?, MockProcessManager::MockStatus.new(137)),
+      "Exit 137 (128+9, SIGKILL) is a signal death"
+    assert manager.send(:signal_death_exit?, MockProcessManager::MockStatus.new(139)),
+      "Exit 139 (128+11, SIGSEGV) is a signal death"
+
+    # SIGTERM in either form keeps its dedicated retry path.
+    refute manager.send(:signal_death_exit?, MockProcessManager::MockStatus.signaled(15)),
+      "SIGTERM (15) has its own retry path, not signal death"
+    refute manager.send(:signal_death_exit?, MockProcessManager::MockStatus.new(143, termsig: 15)),
+      "Exit 143 (SIGTERM) is not signal death"
+
+    # Normal / non-signal exit codes are not signal death.
+    refute manager.send(:signal_death_exit?, MockProcessManager::MockStatus.new(0)),
+      "A normal exit is not signal death"
+    refute manager.send(:signal_death_exit?, MockProcessManager::MockStatus.new(1)),
+      "Exit 1 (normal completion) is not signal death"
+    refute manager.send(:signal_death_exit?, MockProcessManager::MockStatus.new(2)),
+      "A small non-zero exit code is not signal death"
+  end
+
+  test "handle_exit resumes the existing session on OOM SIGKILL instead of failing" do
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+    end
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    status = MockProcessManager::MockStatus.signaled(9)
+    decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
+
+    # Auto-recovers rather than terminal failure.
+    assert_equal :continue, decision.action
+    assert_nil decision.error_message
+    assert_equal :running, manager.current_state
+
+    # Resumed the EXISTING runtime session id with the recovery prompt.
+    assert_equal 1, @mock_cli_adapter.resumed_sessions.size
+    resume = @mock_cli_adapter.resumed_sessions.last
+    assert_equal @session.session_id, resume[:session_id]
+    assert_equal AutomatedPrompts::SYSTEM_RECOVERY, resume[:prompt]
+
+    # Tracked the attempt for the bounded retry budget.
+    assert_equal 1, @session.reload.metadata["signal_death_retry_count"]
+    assert @session.metadata["last_signal_death_at"].present?
+  end
+
+  test "handle_exit increments the signal-death retry counter across successive kills" do
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+    end
+
+    @session.update!(metadata: @session.metadata.merge("signal_death_retry_count" => 1))
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_equal 2, @session.reload.metadata["signal_death_retry_count"]
+  end
+
+  test "handle_exit fails terminally once the signal-death resume budget is exhausted" do
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+    end
+
+    # Already at the max — the next signal death must not resume again.
+    @session.update!(
+      metadata: @session.metadata.merge(
+        "signal_death_retry_count" => ProcessLifecycleManager::MAX_SIGNAL_DEATH_RETRIES
+      )
+    )
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/Signal death resume limit exhausted/, decision.error_message)
+    assert_equal :idle, manager.current_state
+    # No additional resume was attempted.
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.size
   end
 
   # ============================================================================
