@@ -130,7 +130,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     assert credential.can_refresh?
     assert_not credential.requires_reauth?
     assert_includes log_output, "ERROR"
-    assert_includes log_output, "[McpOauthCredential] Token refresh failed: 503"
+    assert_includes log_output, "[McpOauthCredential] Token refresh failed for #{credential.server_name} (#{credential.credential_key}): 503"
   end
 
   test "invalid_client refresh failure is treated as permanent (refresh token dropped, valid access token kept)" do
