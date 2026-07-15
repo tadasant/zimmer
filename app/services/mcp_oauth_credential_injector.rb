@@ -72,6 +72,12 @@ class McpOauthCredentialInjector
       # so we can attempt to refresh them before asking for re-authentication
       credential = McpOauthCredential.for_credential_key(credential_key).first
 
+      # Before judging expiry, adopt any token the runtime refreshed (and, for
+      # rotating providers, rotated) in a prior session — otherwise the DB copy
+      # can be a refresh token that's already been rotated away, and we'd report
+      # the server as needing re-auth when a live token is sitting on disk.
+      reconcile_from_runtime!(credential, server_name, server_config) if credential
+
       # If credential exists but is expired or expiring soon, try to refresh it
       # Use database-level locking to prevent concurrent refresh attempts from
       # multiple sessions, which could lead to race conditions with single-use refresh tokens
@@ -173,6 +179,10 @@ class McpOauthCredentialInjector
 
       next unless credential
 
+      # Adopt any runtime-rotated token before deciding whether to refresh, so a
+      # refresh runs from the freshest token rather than a rotated-away one.
+      reconcile_from_runtime!(credential, server_name, server_config)
+
       # Refresh token if needed
       if credential.needs_refresh? && credential.can_refresh?
         begin
@@ -199,6 +209,33 @@ class McpOauthCredentialInjector
     end
 
     credentials
+  end
+
+  # Captures a token the runtime refreshed mid-session back into the DB before we
+  # evaluate or refresh this credential. Best-effort: a read/lock failure must
+  # never block a spawn, so the reconciler swallows its own errors and a runtime
+  # that can't be resolved just leaves the DB copy in place.
+  def reconcile_from_runtime!(credential, server_name, server_config)
+    reconciler = runtime_reconciler
+    return unless reconciler
+
+    reconciler.reconcile!(
+      credential,
+      runtime_key: credential_writer.credential_key_for(server_name, server_config)
+    )
+  end
+
+  # The reconciler reads the session runtime's on-disk credential store once and
+  # reuses that snapshot across every server on the session. Returns nil (and
+  # skips reconciliation) if the session's runtime credential writer can't be
+  # resolved — reconciliation is an optimization, never a spawn prerequisite.
+  def runtime_reconciler
+    return @runtime_reconciler if defined?(@runtime_reconciler)
+
+    @runtime_reconciler = McpOauthRuntimeReconciler.new(credential_writer)
+  rescue StandardError => e
+    Rails.logger.warn "[McpOauthCredentialInjector] Skipping runtime reconciliation: #{e.message}"
+    @runtime_reconciler = nil
   end
 
   # Gets the MCP server config from the catalog

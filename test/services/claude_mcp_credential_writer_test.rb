@@ -259,6 +259,74 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     assert_equal "runtime-valid-token", entry["accessToken"], "must keep the still-valid runtime token when Zimmer's has no expiry"
   end
 
+  test "read_runtime_credentials parses mcpOAuth entries into snapshots" do
+    expires_ms = ((Time.current + 42.minutes).to_f * 1000).to_i
+    File.write(@credentials_file, JSON.generate(
+      "mcpOAuth" => {
+        "notion|abc123" => {
+          "serverName" => "notion",
+          "accessToken" => "on-disk-access",
+          "refreshToken" => "on-disk-refresh",
+          "expiresAt" => expires_ms
+        }
+      }
+    ))
+
+    snapshots = with_credentials_path(@credentials_file) { @writer.read_runtime_credentials }
+
+    snapshot = snapshots["notion|abc123"]
+    assert_equal "on-disk-access", snapshot.access_token
+    assert_equal "on-disk-refresh", snapshot.refresh_token
+    # expiresAt (ms) is parsed back into a Time
+    assert_in_delta expires_ms / 1000, snapshot.expires_at.to_i, 1
+  end
+
+  test "read_runtime_credentials leaves expires_at nil when the entry has no expiresAt" do
+    File.write(@credentials_file, JSON.generate(
+      "mcpOAuth" => { "notion|abc123" => { "accessToken" => "a", "refreshToken" => "r" } }
+    ))
+
+    snapshots = with_credentials_path(@credentials_file) { @writer.read_runtime_credentials }
+
+    assert_nil snapshots["notion|abc123"].expires_at
+  end
+
+  test "read_runtime_credentials returns {} when the file is absent" do
+    missing = File.join(@working_directory, "does-not-exist.json")
+
+    snapshots = with_credentials_path(missing) { @writer.read_runtime_credentials }
+
+    assert_empty snapshots
+  end
+
+  test "read_runtime_credentials returns {} when the file is corrupt" do
+    File.write(@credentials_file, "{ not json")
+
+    snapshots = with_credentials_path(@credentials_file) { @writer.read_runtime_credentials }
+
+    assert_empty snapshots
+  end
+
+  test "read_runtime_credentials round-trips what write! stored" do
+    expires_at = Time.at(1_768_098_636).utc
+    credential = resolved_credential(
+      credential_key: "notion|abc123",
+      access_token: "written-access",
+      refresh_token: "written-refresh",
+      expires_at: expires_at
+    )
+
+    snapshots = with_credentials_path(@credentials_file) do
+      @writer.write!(working_directory: @working_directory, credentials: [ credential ])
+      @writer.read_runtime_credentials
+    end
+
+    snapshot = snapshots["notion|abc123"]
+    assert_equal "written-access", snapshot.access_token
+    assert_equal "written-refresh", snapshot.refresh_token
+    assert_equal expires_at.to_i, snapshot.expires_at.to_i
+  end
+
   private
 
   def resolved_credential(**overrides)

@@ -30,6 +30,14 @@
 #   shape stays owned by the runtime, while the protocol-level DB identity
 #   (McpOauthCredential.compute_credential_key) stays runtime-agnostic.
 #
+# read_runtime_credentials -> Hash{String => RuntimeMcpTokenSnapshot}
+#   The read-side mirror of #write!: parse the runtime's on-disk credential store
+#   and return whatever token pairs it currently holds, keyed by the same
+#   credential key #write! stored them under. This is how Zimmer captures a token
+#   the runtime refreshed and rotated mid-session back into its DB
+#   (McpOauthRuntimeReconciler). Returns {} when the store is absent or
+#   unreadable — a missing store means "nothing to adopt", never an error.
+#
 # The shared contract is exercised by
 # test/contracts/runtime_mcp_credential_writer_contract_test.rb against every
 # writer.
