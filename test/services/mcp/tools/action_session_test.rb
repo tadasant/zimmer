@@ -175,6 +175,11 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/Invalid hooks: not-a-hook/, error.message)
   end
 
+  test "change_hooks requires the hooks parameter" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "change_hooks", "session_id" => sessions(:needs_input).id) }
+    assert_match(/"hooks" parameter is required/, error.message)
+  end
+
   test "change_plugins replaces the session's catalog plugins" do
     session = sessions(:needs_input)
 
@@ -244,6 +249,13 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/"goal" parameter is required/, error.message)
   end
 
+  test "change_goal rejects an over-length goal" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_goal", "session_id" => sessions(:needs_input).id, "goal" => "x" * (Session::GOAL_MAX_LENGTH + 1))
+    end
+    assert_match(/Goal is too long/, error.message)
+  end
+
   test "change_auto_compact_window updates the window and rejects invalid values" do
     session = sessions(:needs_input)
 
@@ -261,6 +273,12 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       @tool.call("action" => "change_auto_compact_window", "session_id" => session.id, "auto_compact_window" => "lots")
     end
     assert_match(/must be a positive integer/, not_int.message)
+
+    # 0 fails the /\A\d+\z/-then-bounds path (it parses but is out of range).
+    zero = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_auto_compact_window", "session_id" => session.id, "auto_compact_window" => 0)
+    end
+    assert_match(/must be between 1 and/, zero.message)
   end
 
   test "change_category assigns and clears the organizational category" do
@@ -309,6 +327,13 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       @tool.call("action" => "set_blocked", "session_id" => session.id, "blocked_by_session_id" => session.id)
     end
     assert_match(/cannot be blocked by itself/, error.message)
+  end
+
+  test "set_blocked rejects a non-existent blocker session" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "set_blocked", "session_id" => sessions(:needs_input).id, "blocked_by_session_id" => 999_999)
+    end
+    assert_match(/Session #999999 not found/, error.message)
   end
 
   test "toggle_push_notifications flips the push flag" do

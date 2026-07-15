@@ -26,7 +26,7 @@ module Mcp
       PLUGINS_DESC = 'Required for "change_plugins" action. Array of catalog plugin IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
       GOAL_DESC = 'Required for "change_goal" action. The goal text to set for the session; pass an empty string to clear the goal.'
       AUTO_COMPACT_WINDOW_DESC = 'Required for "change_auto_compact_window" action. The context (auto-compact) window in tokens, a positive integer. Applies on the next turn or restart, not the currently running process.'
-      CATEGORY_ID_DESC = 'Required for "change_category" action. The organizational category ID to assign; pass null (or omit) to move the session back to Uncategorized.'
+      CATEGORY_ID_DESC = 'Required for "change_category" action (the key must be present). The organizational category ID to assign; pass null to move the session back to Uncategorized.'
       BLOCKED_BY_SESSION_ID_DESC = 'Required for "set_blocked" action. The ID of the session that blocks this one; pass null to clear the blocked-by relationship.'
       ENABLED_DESC = 'Optional for "set_heartbeat" action. When true, enables the session heartbeat; when false, disables it. Omit to leave the enabled state unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       INTERVAL_SECONDS_DESC = 'Optional for "set_heartbeat" action. Heartbeat cadence in seconds (30–86400). Omit to leave the interval unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
@@ -105,8 +105,6 @@ module Mcp
         - **set_blocked**: Set or clear the session's blocked-by relationship (requires "blocked_by_session_id"; null clears it)
         - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
-
-        List-valued fields (mcp_servers, skills, hooks, plugins) use replace semantics: the array you pass becomes the whole set, it is not merged with the existing one. These changes persist to the session and take effect the next time the session's runtime config is prepared (e.g. on the next turn or unarchive), matching how change_mcp_servers behaves — they do not hot-reconfigure a currently running process.
         - **fork**: Fork a session from a specific transcript message (requires "message_index")
         - **refresh**: Refresh a single session's status from the execution provider
         - **refresh_all**: Refresh all active sessions (no session_id needed)
@@ -114,6 +112,8 @@ module Mcp
         - **update_title**: Update the title of a session (requires "title")
         - **toggle_favorite**: Toggle favorite status on a session
         - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed)
+
+        List-valued fields (mcp_servers, skills, hooks, plugins) use replace semantics: the array you pass becomes the whole set, it is not merged with the existing one. These changes persist to the session and take effect the next time the session's runtime config is prepared (e.g. on the next turn or unarchive), matching how change_mcp_servers behaves — they do not hot-reconfigure a currently running process.
 
         **Use cases:**
         - Provide additional instructions to an agent
@@ -499,7 +499,7 @@ module Mcp
           "",
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
-          "- **#{spec[:label]}:** #{format_list(items)}"
+          "- **#{spec[:label]}:** #{format_list(session.public_send(spec[:attribute]))}"
         ].join("\n")
       end
 
