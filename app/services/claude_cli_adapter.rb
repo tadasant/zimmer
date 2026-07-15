@@ -347,8 +347,10 @@ class ClaudeCliAdapter
   # Defense-in-depth: validates path is within the expected image storage directory
   # even though callers should already validate via ImageStorageService.exists?
   def load_image_as_base64(path)
-    # Validate path is within expected image storage directory (defense-in-depth)
-    expected_prefix = "/tmp/agent-orchestrator-images/"
+    # Validate path is within expected image storage directory (defense-in-depth).
+    # Resolve the storage root at call time so this tracks ImageStorageService's
+    # durable, cross-container base rather than a hardcoded /tmp path.
+    expected_prefix = File.join(ImageStorageService.storage_root, "")
     resolved_path = File.expand_path(path)
     unless resolved_path.start_with?(expected_prefix)
       raise ClaudeCliError, "Invalid image path: must be within #{expected_prefix}"

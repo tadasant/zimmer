@@ -65,6 +65,13 @@ class DeferredCloneCleanupJob < ApplicationJob
     # archived session, regardless of which clone-cleanup path is taken below.
     SessionScratchDirectory.cleanup_for(session_id)
 
+    # Reclaim durable prompt-attachment storage (files + images) on the same
+    # lifecycle. It now lives on the shared ~/.zimmer volume (see
+    # FileStorageService.storage_root), so container recreation no longer wipes
+    # it and it must be reaped explicitly to avoid unbounded growth.
+    FileStorageService.cleanup_for(session_id)
+    ImageStorageService.cleanup_for(session_id)
+
     # Perform the actual cleanup
     clone_path = session.metadata&.dig("clone_path")
 

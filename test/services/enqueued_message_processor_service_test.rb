@@ -375,10 +375,10 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
       content: "Look at this",
       position: 1,
       images: [
-        { "path" => "/tmp/agent-orchestrator-images/#{@session.id}/abc.png", "media_type" => "image/png" }
+        { "path" => File.join(ImageStorageService.base_dir, @session.id.to_s, "abc.png"), "media_type" => "image/png" }
       ],
       files: [
-        { "path" => "/tmp/agent-orchestrator-files/#{@session.id}/notes.md",
+        { "path" => File.join(FileStorageService.base_dir, @session.id.to_s, "notes.md"),
           "original_filename" => "notes.md", "size" => 11 }
       ]
     )
