@@ -95,7 +95,7 @@ class ImageStorageServiceTest < ActiveSupport::TestCase
     # These should all fail - attempting to escape the session directory
     refute @service.exists?(@service.session_dir + "/../../../etc/passwd")
     refute @service.exists?(@service.session_dir + "/../../other/file")
-    refute @service.exists?("/tmp/agent-orchestrator-images/#{@session_id}/../12346/image.png")
+    refute @service.exists?(File.join(ImageStorageService.base_dir, @session_id.to_s, "..", "12346", "image.png"))
     refute @service.exists?("#{@service.session_dir}/subdir/../../../etc/passwd")
   end
 
@@ -201,5 +201,53 @@ class ImageStorageServiceTest < ActiveSupport::TestCase
     result2 = @service.store(data: @valid_png_base64)
 
     refute_equal result1[:path], result2[:path]
+  end
+
+  # --- Cross-container durability -------------------------------------------
+  #
+  # The web container writes the upload; a SEPARATE worker container reads it
+  # back to base64-inline it for the CLI. They share only the durable ~/.zimmer
+  # volume, so the storage base must resolve there, not on per-container /tmp.
+
+  test "storage_root resolves under the durable shared volume, not container-local /tmp" do
+    ENV.delete("AGENT_IMAGES_DIR")
+    ENV.delete("AGENT_CLONES_DIR")
+
+    refute ImageStorageService.storage_root.start_with?("/tmp"),
+      "images must not live on per-container /tmp; got #{ImageStorageService.storage_root}"
+
+    assert_equal File.dirname(ClonesDirectory.base), File.dirname(ImageStorageService.storage_root)
+    assert_equal "agent-orchestrator-images", File.basename(ImageStorageService.storage_root)
+  ensure
+    restore_clone_env
+  end
+
+  test "storage_root honors the AGENT_IMAGES_DIR override" do
+    ENV["AGENT_IMAGES_DIR"] = "/mnt/durable/images"
+    assert_equal "/mnt/durable/images", ImageStorageService.storage_root
+  ensure
+    restore_clone_env
+  end
+
+  test "storage_root follows HOME so web and worker resolve the same mount" do
+    ENV.delete("AGENT_IMAGES_DIR")
+    ENV.delete("AGENT_CLONES_DIR")
+    original_home = ENV["HOME"]
+    Dir.mktmpdir("images-home") do |tmp_home|
+      ENV["HOME"] = tmp_home
+      assert_equal File.join(tmp_home, ".zimmer", "agent-orchestrator-images"),
+        ImageStorageService.storage_root
+    ensure
+      ENV["HOME"] = original_home
+    end
+  ensure
+    restore_clone_env
+  end
+
+  private
+
+  def restore_clone_env
+    ENV.delete("AGENT_IMAGES_DIR")
+    ENV.delete("AGENT_CLONES_DIR")
   end
 end
