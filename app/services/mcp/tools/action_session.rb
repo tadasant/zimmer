@@ -16,11 +16,18 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "set_heartbeat", "fork", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Not used for other actions.'
-      MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session.'
+      MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session (replaces the existing set — this is not a merge).'
       MODEL_DESC = 'Required for "change_model" action. The model identifier to use (e.g., "opus", "sonnet").'
+      SKILLS_DESC = 'Required for "change_skills" action. Array of catalog skill IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected. Call get_configs / the skills catalog for valid IDs.'
+      HOOKS_DESC = 'Required for "change_hooks" action. Array of catalog hook IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
+      PLUGINS_DESC = 'Required for "change_plugins" action. Array of catalog plugin IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
+      GOAL_DESC = 'Required for "change_goal" action. The goal text to set for the session; pass an empty string to clear the goal.'
+      AUTO_COMPACT_WINDOW_DESC = 'Required for "change_auto_compact_window" action. The context (auto-compact) window in tokens, a positive integer. Applies on the next turn or restart, not the currently running process.'
+      CATEGORY_ID_DESC = 'Required for "change_category" action (the key must be present). The organizational category ID to assign; pass null to move the session back to Uncategorized.'
+      BLOCKED_BY_SESSION_ID_DESC = 'Required for "set_blocked" action. The ID of the session that blocks this one; pass null to clear the blocked-by relationship.'
       ENABLED_DESC = 'Optional for "set_heartbeat" action. When true, enables the session heartbeat; when false, disables it. Omit to leave the enabled state unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       INTERVAL_SECONDS_DESC = 'Optional for "set_heartbeat" action. Heartbeat cadence in seconds (30–86400). Omit to leave the interval unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       MESSAGE_INDEX_DESC = 'Required for "fork" action. The transcript message index to fork from.'
@@ -36,6 +43,14 @@ module Mcp
         unarchive
         change_mcp_servers
         change_model
+        change_skills
+        change_hooks
+        change_plugins
+        change_goal
+        change_auto_compact_window
+        change_category
+        set_blocked
+        toggle_push_notifications
         set_heartbeat
         fork
         refresh
@@ -50,8 +65,25 @@ module Mcp
       SESSIONLESS_ACTIONS = %w[refresh_all bulk_archive].freeze
 
       MAX_MCP_SERVERS = 50
+      MAX_MCP_SERVER_NAME_LENGTH = 100
+      MAX_CATALOG_SKILLS = 100
+      MAX_CATALOG_HOOKS = 100
+      MAX_CATALOG_PLUGINS = 50
+      MAX_CATALOG_ITEM_ID_LENGTH = 100
       MAX_SESSION_NOTES_LENGTH = 50_000
       REFRESH_ALL_LIMIT = 50
+
+      # Shared spec for the three replace-semantics catalog list fields
+      # (skills/hooks/plugins). Each mirrors change_mcp_servers: validate every id
+      # against its catalog, persist the whole list (replace, not merge), and log
+      # the delta. Config regeneration is deliberately deferred to the next
+      # prepare/unarchive — the same as change_mcp_servers — so an archived session
+      # picks the new set up when it is next prepared.
+      CATALOG_LIST_FIELDS = {
+        "change_skills" => { attribute: :catalog_skills, param: "skills", label: "Skills", max: MAX_CATALOG_SKILLS, config: "SkillsConfig" },
+        "change_hooks" => { attribute: :catalog_hooks, param: "hooks", label: "Hooks", max: MAX_CATALOG_HOOKS, config: "HooksConfig" },
+        "change_plugins" => { attribute: :catalog_plugins, param: "plugins", label: "Plugins", max: MAX_CATALOG_PLUGINS, config: "PluginsConfig" }
+      }.freeze
 
       description <<~DESC
         Perform an action on an agent session.
@@ -62,8 +94,16 @@ module Mcp
         - **restart**: Restart an idle or failed session without providing new input
         - **archive**: Archive a session (marks as completed)
         - **unarchive**: Restore an archived session to idle "needs_input" status
-        - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter)
+        - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set)
         - **change_model**: Update the model for a session (requires "model" parameter, e.g., "opus", "sonnet")
+        - **change_skills**: Update the catalog skills for a session (requires "skills" parameter; replaces the set). Invalid skill IDs are rejected.
+        - **change_hooks**: Update the catalog hooks for a session (requires "hooks" parameter; replaces the set). Invalid hook IDs are rejected.
+        - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected.
+        - **change_goal**: Update the goal for a session (requires "goal" parameter; empty string clears it)
+        - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
+        - **change_category**: Assign the session's organizational category (requires "category_id"; null moves it to Uncategorized)
+        - **set_blocked**: Set or clear the session's blocked-by relationship (requires "blocked_by_session_id"; null clears it)
+        - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
         - **fork**: Fork a session from a specific transcript message (requires "message_index")
         - **refresh**: Refresh a single session's status from the execution provider
@@ -73,12 +113,14 @@ module Mcp
         - **toggle_favorite**: Toggle favorite status on a session
         - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed)
 
+        List-valued fields (mcp_servers, skills, hooks, plugins) use replace semantics: the array you pass becomes the whole set, it is not merged with the existing one. These changes persist to the session and take effect the next time the session's runtime config is prepared (e.g. on the next turn or unarchive), matching how change_mcp_servers behaves — they do not hot-reconfigure a currently running process.
+
         **Use cases:**
         - Provide additional instructions to an agent
         - Control session lifecycle (pause, restart, fork, refresh)
-        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, update_notes, update_title)
-        - Reconfigure session MCP server access
-        - Change the model used by a session
+        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, update_notes, update_title, change_category, set_blocked, toggle_push_notifications)
+        - Reconfigure session capabilities (MCP servers, skills, hooks, plugins, model, context window)
+        - Set or clear a session's goal
       DESC
 
       input_schema({
@@ -93,6 +135,13 @@ module Mcp
           force_immediate: { type: "boolean", description: FORCE_IMMEDIATE_DESC },
           mcp_servers: { type: "array", items: { type: "string" }, description: MCP_SERVERS_DESC },
           model: { type: "string", description: MODEL_DESC },
+          skills: { type: "array", items: { type: "string" }, description: SKILLS_DESC },
+          hooks: { type: "array", items: { type: "string" }, description: HOOKS_DESC },
+          plugins: { type: "array", items: { type: "string" }, description: PLUGINS_DESC },
+          goal: { type: "string", description: GOAL_DESC },
+          auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC },
+          category_id: { type: [ "number", "null" ], description: CATEGORY_ID_DESC },
+          blocked_by_session_id: { type: [ "number", "null" ], description: BLOCKED_BY_SESSION_ID_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
           message_index: { type: "number", description: MESSAGE_INDEX_DESC },
@@ -137,6 +186,12 @@ module Mcp
         when "unarchive" then unarchive(find_session(args["session_id"]))
         when "change_mcp_servers" then change_mcp_servers(find_session(args["session_id"]), args)
         when "change_model" then change_model(find_session(args["session_id"]), args)
+        when "change_skills", "change_hooks", "change_plugins" then change_catalog_list(find_session(args["session_id"]), action, args)
+        when "change_goal" then change_goal(find_session(args["session_id"]), args)
+        when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
+        when "change_category" then change_category(find_session(args["session_id"]), args)
+        when "set_blocked" then set_blocked(find_session(args["session_id"]), args)
+        when "toggle_push_notifications" then toggle_push_notifications(find_session(args["session_id"]))
         when "set_heartbeat" then set_heartbeat(find_session(args["session_id"]), args)
         when "fork" then fork_session(find_session(args["session_id"]), args)
         when "refresh" then refresh(find_session(args["session_id"]))
@@ -392,6 +447,175 @@ module Mcp
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
           "- **Model:** #{session.config&.dig('model').presence || '(default)'}"
+        ].join("\n")
+      end
+
+      # Shared body for change_skills / change_hooks / change_plugins. Mirrors
+      # change_mcp_servers: replace-not-merge, reject any id outside the catalog
+      # (listing valid options so a rename like `pr` → `open-pr` is easy to fix),
+      # persist, and log the delta. The unknown-id rejection is what prevents an
+      # invalid value from being persisted and bricking the session on next prepare.
+      def change_catalog_list(session, action, args)
+        spec = CATALOG_LIST_FIELDS.fetch(action)
+        param = spec[:param]
+
+        # Plugins can bundle MCP servers (see Session#derive_mcp_servers_from_plugins),
+        # so on a restricted connection they are a bypass of the same agent-root MCP
+        # lock change_mcp_servers enforces. Skills and hooks carry no such server
+        # expansion, so only plugins inherit the guard.
+        if action == "change_plugins" && context.restricted?
+          raise ToolError, "The \"change_plugins\" action is not allowed when this connection is restricted to " \
+                           "specific agent roots. Plugins can add MCP servers, which are locked to the defaults configured for each allowed agent root."
+        end
+
+        unless args[param].is_a?(Array)
+          raise ToolError, "The \"#{param}\" parameter is required for the \"#{action}\" action."
+        end
+
+        items = args[param]
+        raise ToolError, "Maximum #{spec[:max]} #{spec[:label].downcase}" if items.length > spec[:max]
+
+        items = items.reject(&:blank?).map { |s| s.to_s.strip.first(MAX_CATALOG_ITEM_ID_LENGTH) }
+
+        config = spec[:config].constantize
+        invalid = items.reject { |id| config.exists?(id) }
+        if invalid.any?
+          valid = config.all.map(&:id).sort
+          raise ToolError, "Invalid #{spec[:label].downcase}: #{invalid.join(', ')}. Valid #{spec[:label].downcase}: #{valid.join(', ')}"
+        end
+
+        old_items = session.public_send(spec[:attribute]) || []
+        session.update!(spec[:attribute] => items)
+
+        added = items - old_items
+        removed = old_items - items
+        changes = []
+        changes << "added: #{added.join(', ')}" if added.any?
+        changes << "removed: #{removed.join(', ')}" if removed.any?
+        session.logs.create!(content: "#{spec[:label]} updated via MCP (#{changes.join('; ')})", level: "info") if changes.any?
+
+        [
+          "## #{spec[:label]} Updated",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **#{spec[:label]}:** #{format_list(session.public_send(spec[:attribute]))}"
+        ].join("\n")
+      end
+
+      def change_goal(session, args)
+        unless args.key?("goal")
+          raise ToolError, "The \"goal\" parameter is required for the \"change_goal\" action."
+        end
+
+        goal = args["goal"].to_s.strip.presence
+        if goal && goal.length > Session::GOAL_MAX_LENGTH
+          raise ToolError, "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)"
+        end
+
+        old_goal = session.goal
+        session.update!(goal: goal)
+
+        if old_goal != goal
+          change_desc = if goal.blank?
+            "Goal cleared"
+          elsif old_goal.blank?
+            "Goal set"
+          else
+            "Goal updated"
+          end
+          session.logs.create!(content: "#{change_desc} via MCP", level: "info")
+        end
+
+        [
+          "## Goal Updated",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Goal:** #{session.goal.presence || '(none)'}"
+        ].join("\n")
+      end
+
+      def change_auto_compact_window(session, args)
+        raw = args["auto_compact_window"]
+        unless raw.to_s.match?(/\A\d+\z/)
+          raise ToolError, "The \"auto_compact_window\" parameter is required for the \"change_auto_compact_window\" action and must be a positive integer."
+        end
+
+        window = raw.to_i
+        if window <= 0 || window > Session::MAX_AUTO_COMPACT_WINDOW
+          raise ToolError, "\"auto_compact_window\" must be between 1 and #{Session::MAX_AUTO_COMPACT_WINDOW}."
+        end
+
+        old_window = session.auto_compact_window
+        session.update!(auto_compact_window: window)
+        session.logs.create!(content: "Context window updated via MCP (#{old_window} → #{window}); applies on next turn or restart", level: "info") if old_window != window
+
+        [
+          "## Context Window Updated",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Auto-compact Window:** #{session.auto_compact_window} tokens"
+        ].join("\n")
+      end
+
+      def change_category(session, args)
+        unless args.key?("category_id")
+          raise ToolError, "The \"category_id\" parameter is required for the \"change_category\" action (pass null to clear)."
+        end
+
+        category_id = args["category_id"].presence
+        category = nil
+        if category_id
+          category = Category.find_by(id: category_id)
+          raise ToolError, "Category ##{category_id} not found" unless category
+        end
+
+        session.update!(category_id: category&.id)
+
+        [
+          "## Category Updated",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Category:** #{category&.name || '(uncategorized)'}"
+        ].join("\n")
+      end
+
+      def set_blocked(session, args)
+        unless args.key?("blocked_by_session_id")
+          raise ToolError, "The \"blocked_by_session_id\" parameter is required for the \"set_blocked\" action (pass null to clear)."
+        end
+
+        blocker_id = args["blocked_by_session_id"].presence
+        blocker = nil
+        if blocker_id
+          blocker = Session.find_by(id: blocker_id)
+          raise ToolError, "Session ##{blocker_id} not found" unless blocker
+          raise ToolError, "A session cannot be blocked by itself" if blocker.id == session.id
+        end
+
+        session.update!(blocked_by_session_id: blocker&.id)
+
+        [
+          "## Blocked-by Updated",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Blocked By:** #{blocker ? "##{blocker.id}" : '(none)'}"
+        ].join("\n")
+      end
+
+      def toggle_push_notifications(session)
+        session.update!(push_notifications_enabled: !session.push_notifications_enabled)
+
+        [
+          "## Push Notifications Toggled",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Push Notifications:** #{session.push_notifications_enabled ? 'Enabled' : 'Disabled'}"
         ].join("\n")
       end
 
