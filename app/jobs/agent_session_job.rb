@@ -2997,9 +2997,16 @@ class AgentSessionJob < ApplicationJob
         next
       end
 
-      # Otherwise, probe the server to see if OAuth is required
+      # Otherwise, probe the server to see if OAuth is required. Pass through any
+      # statically-configured client id (catalog `oauth` block) so the resolved
+      # metadata carries the pre-registered client rather than the fallback literal.
       begin
-        requirement = oauth_service.check_oauth_requirement(server_url)
+        catalog_server = ServersConfig.find(server_name)
+        requirement = oauth_service.check_oauth_requirement(
+          server_url,
+          configured_client_id: catalog_server&.oauth_client_id,
+          configured_client_secret: catalog_server&.oauth_client_secret
+        )
 
         if requirement.required
           log_buffer.add(
