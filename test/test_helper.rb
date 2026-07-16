@@ -109,46 +109,37 @@ if ActionView::Resolver.caching?
   end
 end
 
-# Force-load GoodJob's engine models in the parent process, before parallelize()
-# forks workers. GoodJob::Job pulls in nested constants (GoodJob::Job::Lockable,
-# …) and is the class_name target of GoodJob::Process#locked_jobs. Left to lazy
-# Zeitwerk autoload, the first test (or a GoodJob background thread inside a
-# worker) to touch it can race the autoload and raise
-#   Zeitwerk::NameError: expected file .../good_job/job.rb to define constant
-#   GoodJob::Job, but didn't
-# or "Missing model class GoodJob::Job for the GoodJob::Process#locked_jobs
-# association" (issue #3). This does not reproduce when config.eager_load is on
-# (CI sets CI=true for exactly that reason), but a bare `bin/rails test` runs with
-# eager loading off. Referencing the constants here — and eagerly resolving the
-# association's klass — makes every forked worker inherit them already defined, so
-# no autoload happens under threads regardless of the eager_load setting.
-if defined?(GoodJob)
-  GoodJob::Job
-  GoodJob::Process.reflect_on_association(:locked_jobs)&.klass
-end
-
-# Force-load TranscriptFileLocator in the parent process, before parallelize()
-# forks workers — for the same reason as GoodJob::Job above.
+# Resolve the ENTIRE application constant graph in the parent process, before
+# parallelize() forks its workers. This replaces the per-constant "resolve gate"
+# that used to live here (force-loading GoodJob::Job, its locked_jobs
+# association, TranscriptFileLocator, …, one hand-added line at a time) — and
+# supersedes #210, which added the TranscriptFileLocator line.
 #
-# TranscriptFileLocator is a leaf utility that no test references directly at load
-# time; it is only reached deep inside service code (SigtermRetryService,
-# ApiErrorRetryService, ContextLengthRetryService, AuthRecoveryService,
-# ClaudeTranscriptSource, SessionsController#refresh_transcript, …), and several of
-# those call sites run inside a background Thread the session-monitoring code spawns.
-# Ruby's `autoload` fires exactly once: if the very first reference in a worker
-# happens from such a thread and the load is interrupted (e.g. the thread is killed
-# during test teardown), the one-shot autoload entry is consumed without the
-# constant ever being defined, and every later reference in that worker — even a
-# plain synchronous one — raises `NameError: uninitialized constant
-# TranscriptFileLocator`. Because it depends on which test touches the constant
-# first in each forked worker, it surfaces only under certain `--seed` orderings
-# (e.g. run 29525970639, seed 59501: 13 errors + 123 cascading assertion failures
-# across every TranscriptFileLocator-using test), which is why it can pass for many
-# commits and then go red on an unrelated PR that merely shifted the ordering.
-# Referencing the constant here defines it in the parent, so every forked worker
-# inherits it already loaded and no autoload can be consumed under a thread —
-# regardless of the eager_load setting.
-TranscriptFileLocator
+# The failure class it closes: a leaf constant reached only from deep service
+# code — sometimes inside a background thread the session-monitoring code spawns
+# — is left as a lazy Zeitwerk autoload. Ruby's autoload fires exactly once: if
+# the first reference in a forked worker comes from such a thread and the load is
+# interrupted (e.g. the thread is killed during test teardown), the one-shot
+# autoload entry is consumed without the constant ever being defined. Every later
+# reference in that worker then raises `uninitialized constant` /
+# `Zeitwerk::NameError`. Which worker gets poisoned, and whether a poisoning
+# reference runs first, depends entirely on the random --seed ordering (issues
+# #2, #3, #5, #10; run 29525970639). Force-loading one constant at a time is
+# whack-a-mole; every new leaf touched inside a thread needs another line.
+#
+# eager_load! loads every managed file up front, so after this call there is no
+# pending autoload for any thread to race: each constant is `defined?` with a nil
+# `autoload?` hook, and a reference just returns it — no load, no interruptible
+# window — in every forked worker, for the whole graph rather than two hand-picked
+# constants.
+#
+# config.eager_load is already ON in CI and OFF for a bare local `bin/rails test`
+# (config/environments/test.rb ties it to ENV["CI"]). Calling eager_load! here is
+# a cheap idempotent no-op when eager loading already ran at boot, and on the
+# local path it extends the same guarantee without depending on the env var.
+# Running it immediately before the fork keeps the guarantee tight regardless of
+# the setting.
+Rails.application.eager_load!
 
 module ActiveSupport
   class TestCase
