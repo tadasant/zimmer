@@ -180,6 +180,19 @@ not found"**: it triggers one inline bounded `air update` (cache bust) and a ret
 freshly-merged root can legitimately be absent from a worker's up-to-15-minutes-stale cache. If
 it's still absent, it raises a graceful `RootResolutionError`.
 
+Requested **skill** ids get one more guard, *before* the invocation. A session's `catalog_skills`
+are validated against the catalog when the session is created, but the catalog moves on
+independently: a local skill renamed (`pr` → `open-pr`) or removed leaves a stale id in a
+long-lived session's stored config. `air prepare` hard-rejects an unknown skill id with exit 1
+(`Error: Unknown skill ID "pr". …`), which would brick startup. So `AirPrepareService#valid_catalog_skills`
+drops any id not in the live catalog, logs a warning, and raises a deduped "Session self-healed:
+stale catalog skill(s) removed" alert — then prepares with the survivors. This mirrors
+`Trigger#heal_stale_catalog_skills!` (which self-heals the *trigger* path) and gives an unknown
+*skill* the same non-fatal degradation an unknown *root* already gets. It does **not** persist the
+cleaned list — a session prepares once, so the scrub is in-memory only; if the catalog itself failed
+to load (so every id would look stale), the guard leaves the list untouched rather than stripping
+everything.
+
 ## The AIR CLI is installed lazily, at runtime
 
 `AirPrepareService.ensure_air_installed!` runs `npm install` into `AIR_INSTALL_DIR` on first use,
