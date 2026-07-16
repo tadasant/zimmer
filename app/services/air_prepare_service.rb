@@ -306,7 +306,15 @@ class AirPrepareService
     # (`--skills a,b`) to singular + variadic (`--skill a --skill b`). The plural
     # forms are no longer accepted by the CLI parser. Repeat each flag per value
     # so Commander collects them unambiguously regardless of adjacent flags.
-    cmd += session.catalog_skills.flat_map { |id| [ "--skill", id ] } if session.catalog_skills.present?
+    #
+    # Skill ids are scrubbed against the live catalog first: a session's stored
+    # skills were valid when the session was created, but the catalog evolves
+    # independently, so a renamed/removed local skill (e.g. `pr` → `open-pr`)
+    # leaves a stale id that `air prepare` would hard-reject with exit 1 —
+    # bricking startup. valid_catalog_skills drops such ids with a warning +
+    # self-heal alert instead. See its comment for the full rationale.
+    valid_skills = valid_catalog_skills
+    cmd += valid_skills.flat_map { |id| [ "--skill", id ] } if valid_skills.present?
     effective_mcp_servers = session.user_selected_mcp_servers
     cmd += effective_mcp_servers.flat_map { |id| [ "--mcp-server", id ] } if effective_mcp_servers.present?
     cmd += session.catalog_hooks.flat_map { |id| [ "--hook", id ] } if session.catalog_hooks.present?
@@ -323,6 +331,67 @@ class AirPrepareService
     run_air_prepare_command!(cmd, env)
 
     Rails.logger.info "[AirPrepareService] AIR prepare completed successfully"
+  end
+
+  # The session's requested catalog skills, with any id that no longer exists in
+  # the live catalog dropped.
+  #
+  # A session's `catalog_skills` are validated against the catalog at creation
+  # time, but the catalog evolves independently of the sessions that reference
+  # it: a local skill can be renamed (the `pr` → `open-pr` rename that triggered
+  # this) or removed long after a session's config was frozen. `air prepare`
+  # HARD-validates every requested skill id and exits 1 on the first unknown one
+  # (`Error: Unknown skill ID "pr". Available: …@local/open-pr… (72 total).`),
+  # which AirPrepareError-bricks session startup entirely.
+  #
+  # A stale id in stored config must not be able to brick startup, so we drop it
+  # here — with a warning log and a self-heal alert — and prepare with the
+  # survivors. This mirrors the Trigger#heal_stale_catalog_skills! self-heal that
+  # already guards the trigger path, and gives an unknown *skill* the same
+  # non-fatal degradation an unknown *root* already gets (RootResolutionError).
+  #
+  # Unlike the trigger heal, this does NOT persist the cleaned list: a session
+  # prepares once and AirPrepareService has no mandate to mutate the session
+  # record. Operational cleanup of the stored config is handled separately.
+  def valid_catalog_skills
+    requested = Array(session.catalog_skills).reject(&:blank?)
+    return requested if requested.empty?
+
+    # Safety: if the catalog failed to load, SkillsConfig.all is [] (build_skills
+    # rescues CatalogError to []), so every id would look stale. Don't strip the
+    # whole list on a transient catalog miss — let `air prepare` run with the
+    # requested set and resolve the catalog itself. Mirrors the same guard in
+    # Trigger#heal_stale_catalog_skills!.
+    return requested if SkillsConfig.all.empty?
+
+    stale = requested.reject { |id| SkillsConfig.exists?(id) }
+    return requested if stale.empty?
+
+    valid = requested - stale
+    Rails.logger.warn(
+      "[AirPrepareService] Dropping stale skill(s) #{stale.inspect} not in the AIR catalog " \
+      "before `air prepare` for session #{session.id}. Remaining skills: #{valid.inspect}"
+    )
+    alert_stale_skills_dropped(stale, valid)
+    valid
+  end
+
+  # Surface a dropped stale skill the same way the trigger self-heal does: a
+  # deduped #eng-alerts notice so the stale stored config is still visible even
+  # though it's no longer fatal. Dedup is per-session so a retrying prepare
+  # doesn't spam the channel.
+  def alert_stale_skills_dropped(stale, valid)
+    AlertService.raise_alert(
+      "Session self-healed: stale catalog skill(s) removed",
+      details: "Session *#{session.id}* referenced catalog skill(s) that no longer exist in the catalog:\n" \
+               "• Removed: #{stale.join(', ')}\n" \
+               "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
+               "The stale reference(s) were dropped so `air prepare` could proceed. " \
+               "The session started with the remaining skills.\n\n" \
+               "<#{AppUrl.base_url}/sessions/#{session.id}|View session in Zimmer>",
+      source: "AirPrepareService#run_air_prepare!",
+      dedup_key: "session_stale_skills_#{session.id}"
+    )
   end
 
   # Invoke `air prepare` under a watchdog timeout, retrying with backoff on
