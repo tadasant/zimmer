@@ -311,10 +311,11 @@ class AirPrepareService
     # skills were valid when the session was created, but the catalog evolves
     # independently, so a renamed/removed local skill (e.g. `pr` → `open-pr`)
     # leaves a stale id that `air prepare` would hard-reject with exit 1 —
-    # bricking startup. valid_catalog_skills drops such ids with a warning +
+    # bricking startup. scrubbed_catalog_skills drops such ids with a warning +
     # self-heal alert instead. See its comment for the full rationale.
-    valid_skills = valid_catalog_skills
-    cmd += valid_skills.flat_map { |id| [ "--skill", id ] } if valid_skills.present?
+    # scrubbed_catalog_skills logs + alerts when it drops a stale id (see below).
+    skills = scrubbed_catalog_skills
+    cmd += skills.flat_map { |id| [ "--skill", id ] } if skills.present?
     effective_mcp_servers = session.user_selected_mcp_servers
     cmd += effective_mcp_servers.flat_map { |id| [ "--mcp-server", id ] } if effective_mcp_servers.present?
     cmd += session.catalog_hooks.flat_map { |id| [ "--hook", id ] } if session.catalog_hooks.present?
@@ -353,7 +354,11 @@ class AirPrepareService
   # Unlike the trigger heal, this does NOT persist the cleaned list: a session
   # prepares once and AirPrepareService has no mandate to mutate the session
   # record. Operational cleanup of the stored config is handled separately.
-  def valid_catalog_skills
+  #
+  # Named for the transformation rather than as a bare query because it is
+  # side-effecting on the drop path (WARN log + self-heal alert), matching the
+  # codebase convention that a plain-noun reader is pure.
+  def scrubbed_catalog_skills
     requested = Array(session.catalog_skills).reject(&:blank?)
     return requested if requested.empty?
 

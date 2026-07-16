@@ -187,8 +187,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   # A session's catalog_skills are validated at creation time, but the catalog
   # evolves independently: a local skill can be renamed (`pr` → `open-pr`) or
   # removed long after the session's config was frozen. `air prepare` hard-rejects
-  # an unknown skill id with exit 1, which used to AirPrepareError-brick session
-  # startup entirely. These assert the id is dropped-with-a-warning instead.
+  # an unknown skill id with exit 1, which without this scrub AirPrepareError-bricks
+  # session startup entirely. These assert the id is dropped-with-a-warning instead.
   # update_column is used to plant a stale id past the model's create-time
   # validation, mirroring a catalog that changed after the session was saved.
 
