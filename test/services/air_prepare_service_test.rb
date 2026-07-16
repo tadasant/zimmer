@@ -182,6 +182,113 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes cmd_args, "playwright-custom"
   end
 
+  # --- Stale/renamed skill id graceful degradation ---------------------------
+  #
+  # A session's catalog_skills are validated at creation time, but the catalog
+  # evolves independently: a local skill can be renamed (`pr` → `open-pr`) or
+  # removed long after the session's config was frozen. `air prepare` hard-rejects
+  # an unknown skill id with exit 1, which used to AirPrepareError-brick session
+  # startup entirely. These assert the id is dropped-with-a-warning instead.
+  # update_column is used to plant a stale id past the model's create-time
+  # validation, mirroring a catalog that changed after the session was saved.
+
+  test "prepare! drops a stale/renamed skill id not in the catalog and prepares with the survivors" do
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
+    AlertService.stubs(:raise_alert)
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      )
+      # Must NOT raise — a stale id degrades to a drop, not a brick.
+      service.prepare!
+    end
+
+    cmd_args = captured_cmd[1..]
+    skill_values = cmd_args.each_cons(2).select { |a, _| a == "--skill" }.map(&:last)
+    assert_equal [ "zimmer-run-tests" ], skill_values,
+      "only the catalog-resident skill should be requested; the stale id must be dropped " \
+      "(and leave no dangling --skill flag)"
+    refute_includes cmd_args, "renamed-away-skill",
+      "the stale skill id must never reach `air prepare`, which would hard-reject it"
+  end
+
+  test "prepare! emits a session self-heal alert when it drops a stale skill id" do
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
+
+    AlertService.expects(:raise_alert).with(
+      "Session self-healed: stale catalog skill(s) removed",
+      has_entries(
+        source: "AirPrepareService#run_air_prepare!",
+        dedup_key: "session_stale_skills_#{@session.id}"
+      )
+    ).once
+
+    stub_air_subprocess(proc { |*args, **opts|
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      )
+      service.prepare!
+    end
+  end
+
+  test "prepare! does not alert or drop when every requested skill exists in the catalog" do
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests" ])
+    AlertService.expects(:raise_alert).never
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      )
+      service.prepare!
+    end
+
+    assert_includes captured_cmd[1..], "zimmer-run-tests"
+  end
+
+  test "prepare! does NOT strip skills when the catalog failed to load (SkillsConfig empty)" do
+    # If the catalog load failed, SkillsConfig.all rescues to [] and every id would
+    # look stale — stripping the whole list would be destructive. Guard: leave the
+    # requested set intact and let `air prepare` resolve the catalog itself.
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
+    SkillsConfig.stubs(:all).returns([])
+    AlertService.expects(:raise_alert).never
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      )
+      service.prepare!
+    end
+
+    cmd_args = captured_cmd[1..]
+    assert_includes cmd_args, "zimmer-run-tests"
+    assert_includes cmd_args, "renamed-away-skill",
+      "with an unloadable catalog we must not strip anything; air prepare resolves it"
+  end
+
   test "prepare! sources the AIR adapter id from the session's runtime registry bundle" do
     # The adapter passed to `air prepare <adapter>` must come from
     # RuntimeRegistry (via session.runtime.air_adapter_name), not a hardcoded
