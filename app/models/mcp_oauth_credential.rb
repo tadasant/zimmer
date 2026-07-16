@@ -127,10 +127,20 @@ class McpOauthCredential < ApplicationRecord
 
     if response.code == "200"
       token_data = JSON.parse(response.body)
+      # Unwrap the same nested shapes the initial exchange handles (e.g. Slack rotation
+      # returns the user token under authed_user.access_token). Reading the top level
+      # blindly would store nil and destroy a working credential on the next cron run.
+      tokens = McpOauthService.new.extract_tokens(token_data)
+
+      unless tokens && tokens["access_token"].present?
+        Rails.logger.error "[McpOauthCredential] Token refresh returned no usable access token for #{server_name} (#{credential_key})"
+        return false
+      end
+
       update!(
-        access_token: token_data["access_token"],
-        refresh_token: token_data["refresh_token"] || self.refresh_token,
-        expires_at: token_data["expires_in"] ? Time.current + token_data["expires_in"].to_i.seconds : nil
+        access_token: tokens["access_token"],
+        refresh_token: tokens["refresh_token"] || self.refresh_token,
+        expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil
       )
       Rails.logger.info "[McpOauthCredential] Token refresh succeeded for #{server_name}"
       true

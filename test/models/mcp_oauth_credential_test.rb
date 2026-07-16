@@ -166,6 +166,46 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     assert_not captured_params.key?(:resource)
   end
 
+  test "refresh! unwraps a nested authed_user.access_token (Slack rotation shape)" do
+    credential = mcp_oauth_credentials(:expired_with_refresh)
+
+    # Slack token rotation returns the refreshed user token nested under authed_user,
+    # exactly like the initial exchange — the refresh path must unwrap it too.
+    response = build_token_response({
+      "ok" => true,
+      "authed_user" => {
+        "access_token" => "xoxp-rotated",
+        "refresh_token" => "xoxe-next",
+        "expires_in" => 43200
+      }
+    })
+
+    Net::HTTP.stub(:post_form, ->(_uri, _params) { response }) do
+      assert credential.refresh!
+    end
+
+    credential.reload
+    assert_equal "xoxp-rotated", credential.access_token
+    assert_equal "xoxe-next", credential.refresh_token
+  end
+
+  test "refresh! returns false and preserves the existing token when the 200 response has no usable token" do
+    credential = mcp_oauth_credentials(:expired_with_refresh)
+    original_access = credential.access_token
+    original_refresh = credential.refresh_token
+
+    # A malformed/empty 200 must not null out a working credential.
+    response = build_token_response({ "ok" => false, "error" => "internal_error" })
+
+    Net::HTTP.stub(:post_form, ->(_uri, _params) { response }) do
+      assert_not credential.refresh!
+    end
+
+    credential.reload
+    assert_equal original_access, credential.access_token
+    assert_equal original_refresh, credential.refresh_token
+  end
+
   test "refresh! permanent failure drops the refresh token but preserves a still-valid access token" do
     credential = mcp_oauth_credentials(:expiring_soon)
     original_token = credential.access_token
