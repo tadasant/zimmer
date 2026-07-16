@@ -208,6 +208,146 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     assert_equal "dcr-client-secret", result.client_secret
   end
 
+  # --- configured (statically pre-registered) client id tests ---
+
+  test "fetch_oauth_metadata uses a configured client id instead of performing DCR" do
+    # Slack-shaped server: discovery resolves the authorization/token endpoints
+    # AND advertises a registration_endpoint, but the client must be pre-registered.
+    # The configured client id must win over DCR so the authorize URL is valid.
+    auth_server_json = {
+      "authorization_endpoint" => "https://slack.com/oauth/v2_user/authorize",
+      "token_endpoint" => "https://slack.com/api/oauth.v2.access",
+      "registration_endpoint" => "https://slack.com/oauth/register",
+      "scopes_supported" => [ "chat:write" ]
+    }
+
+    dcr_called = false
+    mock_http = Object.new
+    mock_http.define_singleton_method(:use_ssl=) { |_| }
+    mock_http.define_singleton_method(:open_timeout=) { |_| }
+    mock_http.define_singleton_method(:read_timeout=) { |_| }
+    mock_http.define_singleton_method(:request) do |req|
+      dcr_called = true if req.is_a?(Net::HTTP::Post)
+      response = Net::HTTPSuccess.new("1.1", "200", "OK")
+      response.define_singleton_method(:code) { "200" }
+      response.define_singleton_method(:body) { auth_server_json.to_json }
+      response.define_singleton_method(:[]) { |_key| "application/json" }
+      response
+    end
+
+    result = stub_net_http(mock_http) do
+      @service.fetch_oauth_metadata(
+        "https://mcp.slack.com/mcp",
+        configured_client_id: "1601185624273.8899143856786"
+      )
+    end
+
+    assert_equal "1601185624273.8899143856786", result.client_id
+    assert_not dcr_called, "DCR must not run when a client id is statically configured"
+  end
+
+  test "fetch_oauth_metadata carries a configured client secret through for confidential clients" do
+    auth_server_json = {
+      "authorization_endpoint" => "https://auth.example.com/authorize",
+      "token_endpoint" => "https://auth.example.com/token"
+    }
+
+    mock_http = Object.new
+    mock_http.define_singleton_method(:use_ssl=) { |_| }
+    mock_http.define_singleton_method(:open_timeout=) { |_| }
+    mock_http.define_singleton_method(:read_timeout=) { |_| }
+    mock_http.define_singleton_method(:request) do |_req|
+      response = Net::HTTPSuccess.new("1.1", "200", "OK")
+      response.define_singleton_method(:code) { "200" }
+      response.define_singleton_method(:body) { auth_server_json.to_json }
+      response.define_singleton_method(:[]) { |_key| "application/json" }
+      response
+    end
+
+    result = stub_net_http(mock_http) do
+      @service.fetch_oauth_metadata(
+        "https://api.example.com/mcp",
+        configured_client_id: "cid-123",
+        configured_client_secret: "shh-secret"
+      )
+    end
+
+    assert_equal "cid-123", result.client_id
+    assert_equal "shh-secret", result.client_secret
+  end
+
+  test "fetch_oauth_metadata falls back to agent-orchestrator only without DCR or a configured client" do
+    # No registration_endpoint and no configured client id: the legacy public-client
+    # fallback still applies so servers that accept any client id keep working.
+    auth_server_json = {
+      "authorization_endpoint" => "https://auth.example.com/authorize",
+      "token_endpoint" => "https://auth.example.com/token"
+    }
+
+    mock_http = Object.new
+    mock_http.define_singleton_method(:use_ssl=) { |_| }
+    mock_http.define_singleton_method(:open_timeout=) { |_| }
+    mock_http.define_singleton_method(:read_timeout=) { |_| }
+    mock_http.define_singleton_method(:request) do |_req|
+      response = Net::HTTPSuccess.new("1.1", "200", "OK")
+      response.define_singleton_method(:code) { "200" }
+      response.define_singleton_method(:body) { auth_server_json.to_json }
+      response.define_singleton_method(:[]) { |_key| "application/json" }
+      response
+    end
+
+    result = stub_net_http(mock_http) do
+      @service.fetch_oauth_metadata("https://api.example.com/mcp")
+    end
+
+    assert_equal "agent-orchestrator", result.client_id
+  end
+
+  test "fetch_oauth_metadata_from_url uses a configured client id instead of performing DCR" do
+    # The 401 / WWW-Authenticate: resource_metadata=… probe path. A Slack-style
+    # server that only 401s lands here, so the configured client id must win over
+    # the advertised registration_endpoint on this branch too.
+    protected_resource_json = {
+      "resource" => "https://mcp.slack.com",
+      "authorization_servers" => [ "https://slack.com" ]
+    }
+    auth_server_json = {
+      "authorization_endpoint" => "https://slack.com/oauth/v2_user/authorize",
+      "token_endpoint" => "https://slack.com/api/oauth.v2.access",
+      "registration_endpoint" => "https://slack.com/oauth/register"
+    }
+
+    dcr_called = false
+    mock_http = Object.new
+    mock_http.define_singleton_method(:use_ssl=) { |_| }
+    mock_http.define_singleton_method(:open_timeout=) { |_| }
+    mock_http.define_singleton_method(:read_timeout=) { |_| }
+    mock_http.define_singleton_method(:request) do |req|
+      dcr_called = true if req.is_a?(Net::HTTP::Post)
+      body = if req.path.include?("oauth-protected-resource")
+        protected_resource_json.to_json
+      else
+        auth_server_json.to_json
+      end
+      response = Net::HTTPSuccess.new("1.1", "200", "OK")
+      response.define_singleton_method(:code) { "200" }
+      response.define_singleton_method(:body) { body }
+      response.define_singleton_method(:[]) { |_key| "application/json" }
+      response
+    end
+
+    result = stub_net_http(mock_http) do
+      @service.send(:fetch_oauth_metadata_from_url,
+        "https://mcp.slack.com/.well-known/oauth-protected-resource",
+        server_url: "https://mcp.slack.com/mcp",
+        configured_client_id: "1601185624273.8899143856786"
+      )
+    end
+
+    assert_equal "1601185624273.8899143856786", result.client_id
+    assert_not dcr_called, "DCR must not run when a client id is statically configured"
+  end
+
   # --- perform_dcr success/error tests ---
 
   test "perform_dcr returns response with client_id and client_secret on success" do
