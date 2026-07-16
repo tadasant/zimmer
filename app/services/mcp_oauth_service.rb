@@ -40,7 +40,7 @@ class McpOauthService
   # @param server_url [String] The MCP server URL
   # @param configured_client_id [String, nil] Statically-configured OAuth client
   #   id for this server (from the catalog `oauth` block). When present it is used
-  #   in place of Dynamic Client Registration and the `agent-orchestrator` fallback.
+  #   in place of Dynamic Client Registration and the `zimmer` fallback.
   # @param configured_client_secret [String, nil] Optional client secret paired
   #   with the configured client id (confidential clients only).
   # @return [OAuthRequirement] Result with :required, :metadata, and :error
@@ -103,7 +103,7 @@ class McpOauthService
 
     # Resolve the client_id. A statically-configured client id (from the server's
     # catalog `oauth` block) takes precedence over Dynamic Client Registration and
-    # over the `agent-orchestrator` fallback: servers like Slack require a
+    # over the `zimmer` fallback: servers like Slack require a
     # pre-registered client and expose no DCR endpoint we can use, so a
     # freshly-registered or placeholder client id would always be rejected.
     client_id = nil
@@ -127,7 +127,7 @@ class McpOauthService
     # Only use fallback client_id if neither a configured client nor DCR produced one.
     # If DCR was attempted but failed, return nil client_id so the caller can handle the error
     # Using a fake client_id when the server expects registered clients will always fail
-    client_id ||= "agent-orchestrator" unless dcr_attempted
+    client_id ||= "zimmer" unless dcr_attempted
 
     OAuthMetadata.new(
       authorization_endpoint: auth_server["authorization_endpoint"],
@@ -343,7 +343,7 @@ class McpOauthService
     resource = canonical_resource(protected_resource["resource"], server_url)
 
     # Resolve the client_id. A statically-configured client id takes precedence
-    # over DCR and the `agent-orchestrator` fallback (see {#fetch_oauth_metadata}).
+    # over DCR and the `zimmer` fallback (see {#fetch_oauth_metadata}).
     client_id = nil
     client_secret = nil
     dcr_attempted = false
@@ -364,7 +364,7 @@ class McpOauthService
 
     # Only use fallback client_id if neither a configured client nor DCR produced one.
     # If DCR was attempted but failed, return nil client_id so the caller can handle the error
-    client_id ||= "agent-orchestrator" unless dcr_attempted
+    client_id ||= "zimmer" unless dcr_attempted
 
     OAuthMetadata.new(
       authorization_endpoint: auth_server["authorization_endpoint"],

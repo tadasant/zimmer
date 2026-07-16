@@ -72,7 +72,7 @@ class McpOauthController < ApplicationController
       # Fall back to probing the server to discover OAuth metadata via RFC 8414/9728.
       # Pass through any statically-configured client id from the catalog `oauth`
       # block so servers that require a pre-registered client (e.g. Slack) use it
-      # instead of the `agent-orchestrator` placeholder.
+      # instead of the `zimmer` placeholder.
       catalog_server = ServersConfig.find(server_name)
       oauth_service = McpOauthService.new
       requirement = oauth_service.check_oauth_requirement(

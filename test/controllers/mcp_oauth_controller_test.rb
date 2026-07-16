@@ -98,7 +98,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
 
   # Slack-shaped server: discovery resolves its endpoints but the client must be
   # pre-registered. The authorize redirect must carry the catalog-configured
-  # client id, not the `agent-orchestrator` placeholder that Slack rejects.
+  # client id, not the `zimmer` placeholder that Slack rejects.
   test "initiate uses the catalog-configured client id in the authorize redirect" do
     configured_server = ServersConfig::Server.new("slack-reframe", {
       "type" => "streamable-http",
@@ -136,7 +136,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     location = URI(@response.headers["Location"])
     query = URI.decode_www_form(location.query).to_h
     assert_equal "1601185624273.8899143856786", query["client_id"]
-    assert_not_equal "agent-orchestrator", query["client_id"]
+    assert_not_equal "zimmer", query["client_id"]
 
     pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
     assert_equal "1601185624273.8899143856786", pending.client_id

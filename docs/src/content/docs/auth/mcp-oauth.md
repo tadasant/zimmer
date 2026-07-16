@@ -72,7 +72,7 @@ sequenceDiagram
             Z->>AS: POST (RFC 7591 Dynamic Client Registration)<br/>client_name: "Claude Code (Zimmer)"
             AS-->>Z: { client_id, client_secret? }
         else neither
-            Note over Z: client_id = "agent-orchestrator" literal
+            Note over Z: client_id = "zimmer" literal
         end
     end
     Z->>Z: McpOauthPendingFlow.create_for_session!<br/>state (32B) + PKCE code_verifier → S256 challenge<br/>expires in 24h
@@ -235,10 +235,10 @@ Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 `McpOauthService` resolves `client_id` in this order: (1) a **statically-configured** client id from
 the server's catalog `oauth` block (`oauth.clientId`, camelCase; `client_secret` optional) — used
 verbatim and, when present, DCR is skipped entirely; (2) **Dynamic Client Registration** (RFC 7591)
-when the auth server advertises a `registration_endpoint`; (3) the literal `"agent-orchestrator"`
+when the auth server advertises a `registration_endpoint`; (3) the literal `"zimmer"`
 fallback, used only when neither a configured client nor a DCR endpoint is available. The configured
 path exists for servers that require a pre-registered client and expose no usable DCR endpoint (e.g.
-Slack, whose `slack-reframe` catalog entry ships its `clientId`) — there, the `"agent-orchestrator"`
+Slack, whose `slack-reframe` catalog entry ships its `clientId`) — there, the `"zimmer"`
 literal is rejected outright (`invalid_client_id`). This is distinct from the fully-static
 `PreregisteredOauthConfig` (Rails credentials `mcp_oauth_clients`), which also supplies the
 authorization/token endpoints and bypasses discovery; the `oauth.clientId` path supplies only the
