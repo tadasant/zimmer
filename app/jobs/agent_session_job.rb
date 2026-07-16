@@ -256,6 +256,13 @@ class AgentSessionJob < ApplicationJob
 
     session = Session.find(session_id)
     clone_path = nil
+    # The directory the runtime CLI is spawned in — the clone root, or a
+    # subdirectory of it when the session has an agent root. Every path through
+    # #perform must assign it before the monitoring loop, which hands it to
+    # ProcessLifecycleManager#handle_exit for the recovery spawns (SIGTERM retry,
+    # context-length compaction, failed-resume recovery). A nil here disables all
+    # three: the adapter refuses to spawn without a working directory.
+    working_directory = nil
     process_pid = nil
     stderr_log_path = nil
     log_streaming_thread = nil
@@ -406,9 +413,13 @@ class AgentSessionJob < ApplicationJob
       # When resume_monitoring is true, we don't spawn a new process or send new prompts
       # We only reconnect to the existing Claude CLI process to continue monitoring
       if resume_monitoring
-        # Retrieve existing process info from metadata
+        # Retrieve existing process info from metadata. working_directory is
+        # rehydrated the same way the follow-up path does it (below): the recorded
+        # working directory, falling back to the clone root for rows that carry no
+        # working_directory key.
         process_pid = session.metadata&.dig("process_pid")
         clone_path = session.metadata&.dig("clone_path")
+        working_directory = session.metadata&.dig("working_directory") || clone_path
         stderr_log_path = File.join(clone_path, "claude_stderr.log") if clone_path
 
         unless process_pid && clone_path
@@ -495,7 +506,9 @@ class AgentSessionJob < ApplicationJob
 
       # Setup environment for new sessions or retrieve for follow-ups
       if resume_monitoring
-        # Already retrieved above, skip to monitoring
+        # clone_path, working_directory, process_pid and stderr_log_path were all
+        # rehydrated from metadata in the resume_monitoring block above; there is
+        # no clone to create and no process to spawn, so go straight to monitoring.
       elsif follow_up_prompt.present?
         # For follow-up prompts, verify we have the necessary data
         unless session.session_id.present?
