@@ -213,6 +213,7 @@ Rails.application.routes.draw do
     get "status/:session_id", action: :status, as: :mcp_oauth_status
     post "initiate", action: :initiate, as: :mcp_oauth_initiate
     get "callback", action: :callback, as: :mcp_oauth_callback
+    post "complete", action: :complete, as: :mcp_oauth_complete
   end
 
   # Catalog refresh

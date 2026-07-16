@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_14_120000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_15_010313) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -188,6 +188,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_14_120000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.string "resource"
+    t.boolean "manual", default: false, null: false
     t.index ["expires_at"], name: "index_mcp_oauth_pending_flows_on_expires_at"
     t.index ["session_id", "server_name"], name: "index_mcp_oauth_pending_flows_on_session_id_and_server_name", unique: true
     t.index ["session_id"], name: "index_mcp_oauth_pending_flows_on_session_id"

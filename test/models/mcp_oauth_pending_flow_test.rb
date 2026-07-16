@@ -288,6 +288,95 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
     assert_equal "consent", params["prompt"]
   end
 
+  # --- manual (paste-back) mode ---
+
+  test "create_for_session! persists the manual flag from oauth_metadata" do
+    session = sessions(:running)
+    flow = McpOauthPendingFlow.create_for_session!(
+      session: session,
+      server_name: "slack",
+      server_url: "https://mcp.slack.com/mcp",
+      oauth_metadata: {
+        authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+        token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+        client_id: "cid",
+        manual: true
+      },
+      redirect_uri: "http://localhost:3118/callback",
+      mcp_server_config: { type: "http", url: "https://mcp.slack.com/mcp" }
+    )
+
+    assert flow.manual?
+  end
+
+  test "create_for_session! defaults manual to false" do
+    session = sessions(:running)
+    flow = McpOauthPendingFlow.create_for_session!(
+      session: session,
+      server_name: "test-server",
+      server_url: "https://test.example.com/mcp",
+      oauth_metadata: {
+        authorization_endpoint: "https://example.com/auth",
+        token_endpoint: "https://example.com/token",
+        client_id: "test-client"
+      },
+      redirect_uri: "http://localhost:3000/callback",
+      mcp_server_config: { type: "http", url: "https://test.example.com/mcp" }
+    )
+
+    assert_not flow.manual?
+  end
+
+  # --- authorization_code_from_pasted (out-of-band completion) ---
+
+  test "authorization_code_from_pasted extracts code from a full redirect URL with matching state" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+    url = "http://localhost:3118/callback?code=the-code&state=#{flow.state}"
+
+    assert_equal "the-code", flow.authorization_code_from_pasted(url)
+  end
+
+  test "authorization_code_from_pasted accepts a bare authorization code" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+
+    assert_equal "bare-code-123", flow.authorization_code_from_pasted("bare-code-123")
+  end
+
+  test "authorization_code_from_pasted accepts a bare query string" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+
+    assert_equal "qcode", flow.authorization_code_from_pasted("code=qcode&state=#{flow.state}")
+  end
+
+  test "authorization_code_from_pasted rejects a URL whose state does not match" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+    url = "http://localhost:3118/callback?code=the-code&state=some-other-state"
+
+    assert_nil flow.authorization_code_from_pasted(url)
+  end
+
+  test "authorization_code_from_pasted accepts a URL that omits state" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+
+    assert_equal "c", flow.authorization_code_from_pasted("http://localhost:3118/callback?code=c")
+  end
+
+  test "authorization_code_from_pasted URL-decodes the code and drops fragments" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+    url = "http://localhost:3118/callback?state=#{flow.state}&code=a%2Bb%2Fc#_=_"
+
+    assert_equal "a+b/c", flow.authorization_code_from_pasted(url)
+  end
+
+  test "authorization_code_from_pasted returns nil for blank or code-less input" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+
+    assert_nil flow.authorization_code_from_pasted("")
+    assert_nil flow.authorization_code_from_pasted("   ")
+    assert_nil flow.authorization_code_from_pasted(nil)
+    assert_nil flow.authorization_code_from_pasted("http://localhost:3118/callback?state=#{flow.state}")
+  end
+
   test "credential_key computes key matching McpOauthCredential format" do
     flow = mcp_oauth_pending_flows(:pending_notion)
 
