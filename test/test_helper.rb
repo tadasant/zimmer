@@ -127,6 +127,29 @@ if defined?(GoodJob)
   GoodJob::Process.reflect_on_association(:locked_jobs)&.klass
 end
 
+# Force-load TranscriptFileLocator in the parent process, before parallelize()
+# forks workers — for the same reason as GoodJob::Job above.
+#
+# TranscriptFileLocator is a leaf utility that no test references directly at load
+# time; it is only reached deep inside service code (SigtermRetryService,
+# ApiErrorRetryService, ContextLengthRetryService, AuthRecoveryService,
+# ClaudeTranscriptSource, SessionsController#refresh_transcript, …), and several of
+# those call sites run inside a background Thread the session-monitoring code spawns.
+# Ruby's `autoload` fires exactly once: if the very first reference in a worker
+# happens from such a thread and the load is interrupted (e.g. the thread is killed
+# during test teardown), the one-shot autoload entry is consumed without the
+# constant ever being defined, and every later reference in that worker — even a
+# plain synchronous one — raises `NameError: uninitialized constant
+# TranscriptFileLocator`. Because it depends on which test touches the constant
+# first in each forked worker, it surfaces only under certain `--seed` orderings
+# (e.g. run 29525970639, seed 59501: 13 errors + 123 cascading assertion failures
+# across every TranscriptFileLocator-using test), which is why it can pass for many
+# commits and then go red on an unrelated PR that merely shifted the ordering.
+# Referencing the constant here defines it in the parent, so every forked worker
+# inherits it already loaded and no autoload can be consumed under a thread —
+# regardless of the eager_load setting.
+TranscriptFileLocator
+
 module ActiveSupport
   class TestCase
     # Run tests in parallel. CI sets PARALLEL_WORKERS to throttle system test jobs
