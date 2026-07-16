@@ -276,7 +276,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     assert_equal "shh-secret", result.client_secret
   end
 
-  test "fetch_oauth_metadata falls back to agent-orchestrator only without DCR or a configured client" do
+  test "fetch_oauth_metadata falls back to the zimmer literal only without DCR or a configured client" do
     # No registration_endpoint and no configured client id: the legacy public-client
     # fallback still applies so servers that accept any client id keep working.
     auth_server_json = {
@@ -300,7 +300,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
       @service.fetch_oauth_metadata("https://api.example.com/mcp")
     end
 
-    assert_equal "agent-orchestrator", result.client_id
+    assert_equal "zimmer", result.client_id
   end
 
   test "fetch_oauth_metadata_from_url uses a configured client id instead of performing DCR" do
