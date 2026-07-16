@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # Exercises the real OAuth callback wiring end-to-end: completing the token
 # exchange stores the credential and, once every blocking flow is done, the
@@ -140,5 +141,138 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
 
     pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
     assert_equal "1601185624273.8899143856786", pending.client_id
+  end
+
+  # --- Callback with a nested Slack user token (authed_user.access_token) ---
+
+  def slack_nested_token_response
+    response = Net::HTTPSuccess.new("1.1", "200", "OK")
+    response.define_singleton_method(:code) { "200" }
+    response.define_singleton_method(:body) do
+      { ok: true, authed_user: { id: "U1", access_token: "xoxp-user-tok", scope: "users:read" } }.to_json
+    end
+    response.define_singleton_method(:[]) { |_key| "application/json" }
+    response
+  end
+
+  test "callback stores a nested authed_user.access_token (Slack shape)" do
+    flow = pending_flow_for("server-a", CONFIG_A, state: "nested-a")
+    # server-b already authorized so completing server-a resumes.
+    McpOauthCredential.create!(
+      server_name: "server-b", server_url: CONFIG_B[:url], credential_key: @key_b,
+      client_id: "c", access_token: "b", token_endpoint: "https://b.example.com/oauth/token",
+      expires_at: 1.hour.from_now
+    )
+
+    Net::HTTP.stub(:post_form, ->(_uri, _params) { slack_nested_token_response }) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    credential = McpOauthCredential.for_credential_key(@key_a).active.first
+    assert credential, "credential stored from nested token"
+    assert_equal "xoxp-user-tok", credential.access_token
+  end
+
+  # --- Manual (paste-back) mode ---
+
+  def manual_client
+    PreregisteredOauthConfig::OAuthClient.new(
+      key: "slack",
+      client_id: "1601185624273.8899143856786",
+      authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+      token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+      scopes: "users:read",
+      redirect_uri: "http://localhost:3118/callback",
+      manual: true
+    )
+  end
+
+  test "initiate renders the paste-back page for a manual-mode pre-registered server" do
+    PreregisteredOauthConfig.stubs(:find_for_server).returns(manual_client)
+    ServersConfig.stubs(:credential_config).returns({ type: "http", url: "https://mcp.slack.com/mcp" })
+
+    post mcp_oauth_initiate_path, params: {
+      session_id: @session.id, server_name: "slack", server_url: "https://mcp.slack.com/mcp"
+    }
+
+    assert_response :success
+    assert_select "form[action=?]", mcp_oauth_complete_path
+    assert_select "textarea#redirect_response"
+
+    flow = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack")
+    assert flow, "pending flow created"
+    assert flow.manual?, "flow marked manual"
+    assert_equal "http://localhost:3118/callback", flow.redirect_uri
+  end
+
+  test "complete finishes the exchange from a pasted redirect URL and stores the token" do
+    flow = McpOauthPendingFlow.create!(
+      session: @session, server_name: "slack", server_url: "https://mcp.slack.com/mcp",
+      state: "slack-state", code_verifier: "v" * 43,
+      authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+      token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+      client_id: "cid", redirect_uri: "http://localhost:3118/callback", manual: true,
+      mcp_server_config: { "type" => "http", "url" => "https://mcp.slack.com/mcp", "headers" => {} },
+      expires_at: 1.hour.from_now
+    )
+
+    captured = nil
+    Net::HTTP.stub(:post_form, ->(_uri, params) { captured = params; slack_nested_token_response }) do
+      post mcp_oauth_complete_path, params: {
+        state: "slack-state",
+        redirect_response: "http://localhost:3118/callback?code=real-code&state=slack-state"
+      }
+    end
+
+    assert_response :redirect
+    assert_equal "real-code", captured[:code]
+    assert_equal "http://localhost:3118/callback", captured[:redirect_uri]
+    assert_equal "v" * 43, captured[:code_verifier]
+
+    credential = McpOauthCredential.for_credential_key(flow.credential_key).active.first
+    assert credential, "credential stored via paste-back"
+    assert_equal "xoxp-user-tok", credential.access_token
+    assert_not McpOauthPendingFlow.exists?(flow.id), "pending flow cleaned up"
+  end
+
+  test "complete re-renders the paste-back page when the pasted value has no code" do
+    flow = McpOauthPendingFlow.create!(
+      session: @session, server_name: "slack", server_url: "https://mcp.slack.com/mcp",
+      state: "slack-state-2", code_verifier: "v" * 43,
+      authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+      token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+      client_id: "cid", redirect_uri: "http://localhost:3118/callback", manual: true,
+      mcp_server_config: { "type" => "http", "url" => "https://mcp.slack.com/mcp", "headers" => {} },
+      expires_at: 1.hour.from_now
+    )
+
+    post mcp_oauth_complete_path, params: {
+      state: "slack-state-2",
+      redirect_response: "http://localhost:3118/callback?state=slack-state-2"
+    }
+
+    assert_response :bad_request
+    assert_select "textarea#redirect_response"
+    assert McpOauthPendingFlow.exists?(flow.id), "flow preserved for retry"
+  end
+
+  test "complete rejects a pasted URL whose state does not match the flow" do
+    McpOauthPendingFlow.create!(
+      session: @session, server_name: "slack", server_url: "https://mcp.slack.com/mcp",
+      state: "real-state", code_verifier: "v" * 43,
+      authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+      token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+      client_id: "cid", redirect_uri: "http://localhost:3118/callback", manual: true,
+      mcp_server_config: { "type" => "http", "url" => "https://mcp.slack.com/mcp", "headers" => {} },
+      expires_at: 1.hour.from_now
+    )
+
+    post mcp_oauth_complete_path, params: {
+      state: "real-state",
+      redirect_response: "http://localhost:3118/callback?code=x&state=forged-state"
+    }
+
+    assert_response :bad_request
+    assert_not McpOauthCredential.where(server_name: "slack").exists?
   end
 end

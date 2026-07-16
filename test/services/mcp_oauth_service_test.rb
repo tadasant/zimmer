@@ -528,6 +528,90 @@ class McpOauthServiceTest < ActiveSupport::TestCase
       @service.canonical_resource(nil, "https://mcp.example.com:8443/path?foo=bar")
   end
 
+  # --- Public client (no client_secret) token exchange ---
+
+  test "exchange_code_for_tokens omits client_secret when the flow has none" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+    flow.update_column(:client_secret, nil)
+    captured_params = nil
+
+    response = Net::HTTPSuccess.new("1.1", "200", "OK")
+    response.define_singleton_method(:code) { "200" }
+    response.define_singleton_method(:body) { { access_token: "tok-123" }.to_json }
+    response.define_singleton_method(:[]) { |_key| "application/json" }
+
+    Net::HTTP.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
+      @service.exchange_code_for_tokens(flow, "auth-code-abc")
+    end
+
+    assert_not captured_params.key?(:client_secret), "public client must not send client_secret"
+    assert_equal flow.code_verifier, captured_params[:code_verifier], "PKCE verifier proves possession"
+    assert_equal flow.client_id, captured_params[:client_id]
+  end
+
+  test "exchange_code_for_tokens includes client_secret when the flow has one" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+    flow.update_column(:client_secret, "shh-secret")
+    captured_params = nil
+
+    response = Net::HTTPSuccess.new("1.1", "200", "OK")
+    response.define_singleton_method(:code) { "200" }
+    response.define_singleton_method(:body) { { access_token: "tok-123" }.to_json }
+    response.define_singleton_method(:[]) { |_key| "application/json" }
+
+    Net::HTTP.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
+      @service.exchange_code_for_tokens(flow, "auth-code-abc")
+    end
+
+    assert_equal "shh-secret", captured_params[:client_secret]
+  end
+
+  # --- extract_tokens (nested Slack authed_user shape) ---
+
+  test "extract_tokens returns a top-level access token verbatim" do
+    tokens = @service.extract_tokens(
+      "access_token" => "xoxb-top", "refresh_token" => "r1", "scope" => "a b", "expires_in" => 3600
+    )
+    assert_equal "xoxb-top", tokens["access_token"]
+    assert_equal "r1", tokens["refresh_token"]
+    assert_equal "a b", tokens["scope"]
+    assert_equal 3600, tokens["expires_in"]
+  end
+
+  test "extract_tokens unwraps a nested authed_user.access_token (Slack user token)" do
+    # Slack oauth.v2.user.access nests the user token under authed_user.
+    tokens = @service.extract_tokens(
+      "ok" => true,
+      "authed_user" => {
+        "id" => "U123",
+        "access_token" => "xoxp-user",
+        "refresh_token" => "xoxe-refresh",
+        "scope" => "search:read users:read",
+        "expires_in" => 43200
+      }
+    )
+    assert_equal "xoxp-user", tokens["access_token"]
+    assert_equal "xoxe-refresh", tokens["refresh_token"]
+    assert_equal "search:read users:read", tokens["scope"]
+    assert_equal 43200, tokens["expires_in"]
+  end
+
+  test "extract_tokens prefers a top-level access token over the nested one" do
+    tokens = @service.extract_tokens(
+      "access_token" => "xoxb-bot",
+      "scope" => "bot:scope",
+      "authed_user" => { "access_token" => "xoxp-user", "scope" => "user:scope" }
+    )
+    assert_equal "xoxb-bot", tokens["access_token"]
+    assert_equal "bot:scope", tokens["scope"]
+  end
+
+  test "extract_tokens returns nil when no access token is present anywhere" do
+    assert_nil @service.extract_tokens("ok" => false, "error" => "invalid_grant")
+    assert_nil @service.extract_tokens("authed_user" => { "id" => "U1" })
+    assert_nil @service.extract_tokens(nil)
+  end
+
   private
 
   # Creates a mock HTTP object that captures the posted body and returns a success response

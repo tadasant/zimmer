@@ -262,6 +262,39 @@ class McpOauthService
     nil
   end
 
+  # Normalizes a raw token-endpoint response into the flat shape the credential store
+  # expects, transparently unwrapping providers that nest the token.
+  #
+  # Slack's `oauth.v2.user.access` (and `oauth.v2.access`) returns the *user* token
+  # under `authed_user.access_token` rather than at the top level — a top-level
+  # `access_token`, when present, is the bot token. We prefer a top-level access_token
+  # and fall back to the `authed_user` one, pulling refresh_token / scope / expires_in
+  # from whichever object carried the access_token's sibling fields.
+  #
+  # @param token_data [Hash, nil] The raw parsed token response
+  # @return [Hash, nil] { "access_token", "refresh_token", "scope", "expires_in" } or
+  #   nil when no usable access token is present.
+  def extract_tokens(token_data)
+    return nil unless token_data.is_a?(Hash)
+
+    authed_user = token_data["authed_user"]
+    authed_user = nil unless authed_user.is_a?(Hash)
+
+    access_token = token_data["access_token"].presence || authed_user&.dig("access_token").presence
+    return nil unless access_token.present?
+
+    # Read refresh/scope/expiry from the object that carried the token. When the token
+    # is nested (Slack user token), its refresh/scope/expiry are nested alongside it.
+    source = token_data["access_token"].present? ? token_data : authed_user
+
+    {
+      "access_token" => access_token,
+      "refresh_token" => source["refresh_token"].presence,
+      "scope" => source["scope"].presence,
+      "expires_in" => source["expires_in"]
+    }
+  end
+
   # Builds the redirect URI for OAuth callbacks.
   # Uses the configured application host or falls back to localhost for development.
   #
