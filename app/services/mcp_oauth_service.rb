@@ -38,16 +38,21 @@ class McpOauthService
   # Probes the server with a request and checks for 401 with OAuth metadata.
   #
   # @param server_url [String] The MCP server URL
+  # @param configured_client_id [String, nil] Statically-configured OAuth client
+  #   id for this server (from the catalog `oauth` block). When present it is used
+  #   in place of Dynamic Client Registration and the `zimmer` fallback.
+  # @param configured_client_secret [String, nil] Optional client secret paired
+  #   with the configured client id (confidential clients only).
   # @return [OAuthRequirement] Result with :required, :metadata, and :error
-  def check_oauth_requirement(server_url)
+  def check_oauth_requirement(server_url, configured_client_id: nil, configured_client_secret: nil)
     # First try to fetch protected resource metadata (RFC 9728)
-    metadata = fetch_oauth_metadata(server_url)
+    metadata = fetch_oauth_metadata(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret)
     if metadata
       return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
     end
 
     # Probe the server with a request to check for 401
-    probe_result = probe_server_for_oauth(server_url)
+    probe_result = probe_server_for_oauth(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret)
     probe_result
   rescue => e
     Rails.logger.error "[McpOauthService] Error checking OAuth requirement for #{server_url}: #{e.message}"
@@ -61,8 +66,11 @@ class McpOauthService
   # 2. RFC 9728: /.well-known/oauth-protected-resource (Protected Resource Metadata)
   #
   # @param server_url [String] The MCP server URL
+  # @param configured_client_id [String, nil] Statically-configured OAuth client
+  #   id (see {#check_oauth_requirement}).
+  # @param configured_client_secret [String, nil] Optional configured client secret.
   # @return [OAuthMetadata, nil] OAuth metadata if found, nil otherwise
-  def fetch_oauth_metadata(server_url)
+  def fetch_oauth_metadata(server_url, configured_client_id: nil, configured_client_secret: nil)
     uri = URI(server_url)
     base_url = "#{uri.scheme}://#{uri.host}#{uri.port != uri.default_port ? ":#{uri.port}" : ""}"
 
@@ -93,12 +101,19 @@ class McpOauthService
     # URL so the resource indicator is always present (RFC 8707).
     resource = canonical_resource(resource, server_url)
 
-    # Perform DCR if available to get client_id
+    # Resolve the client_id. A statically-configured client id (from the server's
+    # catalog `oauth` block) takes precedence over Dynamic Client Registration and
+    # over the `zimmer` fallback: servers like Slack require a
+    # pre-registered client and expose no DCR endpoint we can use, so a
+    # freshly-registered or placeholder client id would always be rejected.
     client_id = nil
     client_secret = nil
     dcr_attempted = false
 
-    if auth_server["registration_endpoint"]
+    if configured_client_id.present?
+      client_id = configured_client_id
+      client_secret = configured_client_secret
+    elsif auth_server["registration_endpoint"]
       dcr_attempted = true
       dcr_result = perform_dcr(auth_server["registration_endpoint"], server_url, auth_server_metadata: auth_server)
       if dcr_result
@@ -109,10 +124,10 @@ class McpOauthService
       end
     end
 
-    # Only use fallback client_id if DCR was NOT available (no registration endpoint)
+    # Only use fallback client_id if neither a configured client nor DCR produced one.
     # If DCR was attempted but failed, return nil client_id so the caller can handle the error
     # Using a fake client_id when the server expects registered clients will always fail
-    client_id ||= "agent-orchestrator" unless dcr_attempted
+    client_id ||= "zimmer" unless dcr_attempted
 
     OAuthMetadata.new(
       authorization_endpoint: auth_server["authorization_endpoint"],
@@ -260,7 +275,7 @@ class McpOauthService
   private
 
   # Probes a server for OAuth requirement by making a request and checking response
-  def probe_server_for_oauth(server_url)
+  def probe_server_for_oauth(server_url, configured_client_id: nil, configured_client_secret: nil)
     uri = URI(server_url)
 
     # Make a GET request to see if the server requires auth
@@ -284,14 +299,14 @@ class McpOauthService
         # Server requires OAuth - try to extract resource_metadata URL
         resource_metadata_url = extract_resource_metadata_url(www_auth)
         if resource_metadata_url
-          metadata = fetch_oauth_metadata_from_url(resource_metadata_url, server_url: server_url)
+          metadata = fetch_oauth_metadata_from_url(resource_metadata_url, server_url: server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret)
           if metadata
             return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
           end
         end
 
         # Fall back to standard discovery
-        metadata = fetch_oauth_metadata(server_url)
+        metadata = fetch_oauth_metadata(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret)
         return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
       end
     end
@@ -315,7 +330,7 @@ class McpOauthService
   end
 
   # Fetches OAuth metadata from a specific resource_metadata URL
-  def fetch_oauth_metadata_from_url(resource_metadata_url, server_url:)
+  def fetch_oauth_metadata_from_url(resource_metadata_url, server_url:, configured_client_id: nil, configured_client_secret: nil)
     protected_resource = fetch_json(resource_metadata_url)
     return nil unless protected_resource && protected_resource["authorization_servers"]&.any?
 
@@ -327,12 +342,16 @@ class McpOauthService
     # MCP-server-URL fallback) the same way the primary discovery path does.
     resource = canonical_resource(protected_resource["resource"], server_url)
 
-    # Perform DCR if available
+    # Resolve the client_id. A statically-configured client id takes precedence
+    # over DCR and the `zimmer` fallback (see {#fetch_oauth_metadata}).
     client_id = nil
     client_secret = nil
     dcr_attempted = false
 
-    if auth_server["registration_endpoint"]
+    if configured_client_id.present?
+      client_id = configured_client_id
+      client_secret = configured_client_secret
+    elsif auth_server["registration_endpoint"]
       dcr_attempted = true
       dcr_result = perform_dcr(auth_server["registration_endpoint"], resource_metadata_url, auth_server_metadata: auth_server)
       if dcr_result
@@ -343,9 +362,9 @@ class McpOauthService
       end
     end
 
-    # Only use fallback client_id if DCR was NOT available (no registration endpoint)
+    # Only use fallback client_id if neither a configured client nor DCR produced one.
     # If DCR was attempted but failed, return nil client_id so the caller can handle the error
-    client_id ||= "agent-orchestrator" unless dcr_attempted
+    client_id ||= "zimmer" unless dcr_attempted
 
     OAuthMetadata.new(
       authorization_endpoint: auth_server["authorization_endpoint"],

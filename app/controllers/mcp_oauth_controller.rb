@@ -69,9 +69,17 @@ class McpOauthController < ApplicationController
       }
       Rails.logger.info "[McpOauthController] Using pre-registered OAuth for #{server_name}"
     else
-      # Fall back to probing the server to discover OAuth metadata via RFC 8414/9728
+      # Fall back to probing the server to discover OAuth metadata via RFC 8414/9728.
+      # Pass through any statically-configured client id from the catalog `oauth`
+      # block so servers that require a pre-registered client (e.g. Slack) use it
+      # instead of the `zimmer` placeholder.
+      catalog_server = ServersConfig.find(server_name)
       oauth_service = McpOauthService.new
-      requirement = oauth_service.check_oauth_requirement(server_url)
+      requirement = oauth_service.check_oauth_requirement(
+        server_url,
+        configured_client_id: catalog_server&.oauth_client_id,
+        configured_client_secret: catalog_server&.oauth_client_secret
+      )
 
       unless requirement.required && requirement.metadata
         flash[:error] = "Could not determine OAuth requirements for #{server_name}"

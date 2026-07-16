@@ -66,9 +66,13 @@ sequenceDiagram
         Z->>AS: GET /.well-known/oauth-authorization-server (RFC 8414)
         Note over Z,AS: falls back to /.well-known/openid-configuration,<br/>then to a bare GET looking for<br/>401 + WWW-Authenticate: Bearer resource_metadata=…
         AS-->>Z: { authorization_endpoint, token_endpoint,<br/>registration_endpoint?, scopes_supported }
-        opt registration_endpoint advertised
+        alt catalog oauth.clientId configured
+            Note over Z: use the server's configured client_id<br/>(catalog oauth block) — DCR skipped
+        else registration_endpoint advertised
             Z->>AS: POST (RFC 7591 Dynamic Client Registration)<br/>client_name: "Claude Code (Zimmer)"
             AS-->>Z: { client_id, client_secret? }
+        else neither
+            Note over Z: client_id = "zimmer" literal
         end
     end
     Z->>Z: McpOauthPendingFlow.create_for_session!<br/>state (32B) + PKCE code_verifier → S256 challenge<br/>expires in 24h
@@ -227,10 +231,25 @@ single-use — `requires_reauth?` once it lapses, with no way to refresh.
 Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 :::
 
-:::note[The fallback client_id is a literal string]
-When a server advertises no DCR endpoint, `client_id` falls back to the literal `"agent-orchestrator"`.
-Whether any real server accepts that is unclear — it looks like it would only work against a server
-that ignores `client_id` entirely.
+:::note[client_id resolution order]
+`McpOauthService` resolves `client_id` in this order: (1) a **statically-configured** client id from
+the server's catalog `oauth` block (`oauth.clientId`, camelCase; `client_secret` optional) — used
+verbatim and, when present, DCR is skipped entirely; (2) **Dynamic Client Registration** (RFC 7591)
+when the auth server advertises a `registration_endpoint`; (3) the literal `"zimmer"`
+fallback, used only when neither a configured client nor a DCR endpoint is available. The configured
+path exists for servers that require a pre-registered client and expose no usable DCR endpoint (e.g.
+Slack, whose `slack-reframe` catalog entry ships its `clientId`) — there, the `"zimmer"`
+literal is rejected outright (`invalid_client_id`). This is distinct from the fully-static
+`PreregisteredOauthConfig` (Rails credentials `mcp_oauth_clients`), which also supplies the
+authorization/token endpoints and bypasses discovery; the `oauth.clientId` path supplies only the
+client id and still discovers endpoints via RFC 8414/9728.
+
+Only `oauth.clientId` (and, if present, a client secret) is read from the catalog `oauth` block. Any
+`oauth.redirectUri` there is **inert** — the flow always redirects to Zimmer's own
+`/mcp_oauth/callback` (`build_redirect_uri`), because the callback must return to Zimmer, not to the
+`localhost` URL a local dev config would name. A pre-registered client therefore has to have Zimmer's
+deployed callback URL registered against it at the provider, or the provider will reject the
+`redirect_uri` mismatch.
 :::
 
 :::caution[Re-authorizing a server does not reach an already-running session]
