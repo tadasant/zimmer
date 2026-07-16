@@ -89,8 +89,12 @@ The fixes all pull the seam in rather than patching the global:
   `expects(:warn)` rejected it as an unexpected invocation.
 - **`CleanupOrphanedSessionsJobTest`** scopes its no-enqueue assertion to the session under test rather
   than to a job class the cleanup sweep may legitimately enqueue for other orphans.
-- **`GoodJob::Job` autoload** is forced in `test/test_helper.rb` before `parallelize` forks, so no worker
-  thread races the lazy Zeitwerk load.
+- **The whole constant graph is eager-loaded** in `test/test_helper.rb` (`Rails.application.eager_load!`)
+  before `parallelize` forks, so no worker thread can race a lazy Zeitwerk autoload. This replaced a
+  brittle per-constant "resolve gate" that force-loaded `GoodJob::Job` and `TranscriptFileLocator` one
+  hand-added line at a time; leaving *any* leaf constant lazy meant an unlucky `--seed` could poison a
+  worker if a killed background thread consumed its one-shot autoload. Eager-loading up front leaves no
+  pending autoload for any constant, so new leaves never need a new line.
 
 The rule that prevents the next one: **do not stub, mock, or set expectations on a shared global
 (`File`, `Dir`, `Kernel`, `Rails.logger`) in this suite.** Inject a seam, point at a real temp file, or
