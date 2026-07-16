@@ -24,6 +24,28 @@ class ClaudeCliAdapter
 
   class ClaudeCliError < StandardError; end
 
+  # Refuse to spawn without a working directory. Process.spawn would otherwise
+  # reject a nil chdir deep inside the C call with "no implicit conversion of nil
+  # into String", which tells an operator nothing about which argument was nil.
+  #
+  # A nil working_dir is always a caller bug, and it has two possible causes: the
+  # session never established a clone (it died during its first spawn, before
+  # metadata was written), or a caller failed to load the established one from
+  # session metadata. The message names both — naming only the first sends an
+  # operator hunting for a missing clone that may be sitting intact on disk.
+  #
+  # A class method so the test double enforces the identical contract: a double
+  # that spawns happily with a nil working dir hides this class of bug from the
+  # suite.
+  def self.validate_working_dir!(working_dir)
+    return unless working_dir.nil? || (working_dir.is_a?(String) && working_dir.strip.empty?)
+
+    raise ClaudeCliError,
+      "Cannot spawn Claude CLI: working directory is missing (got #{working_dir.inspect}). " \
+      "Either the session never established a clone/working directory, or the caller did not " \
+      "load session.metadata[\"working_directory\"] before spawning."
+  end
+
   # Tools that Zimmer-spawned Claude Code sessions must never invoke.
   # Zimmer sessions run with --dangerously-skip-permissions, which bypasses
   # settings.json permission checks and makes PreToolUse hooks unreliable
@@ -366,17 +388,10 @@ class ClaudeCliAdapter
   # "no implicit conversion of nil into String" — a message that gives an
   # operator no idea which argument was nil or why.
   #
-  # A missing working_dir means the session never established its clone/working
-  # directory (e.g. it died during its first spawn before metadata was written,
-  # then was respawned). A nil element in the command means a required value
-  # (session_id, model, prompt, …) was nil. Fail fast naming the real cause.
+  # A nil element in the command means a required value (session_id, model,
+  # prompt, …) was nil. Fail fast naming the real cause.
   def validate_spawn_args!(command, working_dir)
-    if working_dir.nil? || (working_dir.is_a?(String) && working_dir.strip.empty?)
-      raise ClaudeCliError,
-        "Cannot spawn Claude CLI: working directory is missing (got #{working_dir.inspect}). " \
-        "The session has no established clone/working directory — it likely never completed " \
-        "its initial setup and should be started fresh rather than resumed."
-    end
+    self.class.validate_working_dir!(working_dir)
 
     nil_index = command.index(nil)
     unless nil_index.nil?
