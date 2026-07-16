@@ -125,6 +125,227 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/is not valid for runtime/, error.message)
   end
 
+  # --- Catalog list fields (skills / hooks / plugins) -----------------------
+
+  test "change_skills replaces the session's catalog skills" do
+    session = sessions(:needs_input)
+    session.update!(catalog_skills: [ "sync-docs" ])
+
+    result = @tool.call("action" => "change_skills", "session_id" => session.id, "skills" => [ "zimmer-run-tests" ])
+
+    assert_includes result, "## Skills Updated"
+    assert_includes result, "- **Skills:** zimmer-run-tests"
+    # Replace, not merge: sync-docs is gone.
+    assert_equal [ "zimmer-run-tests" ], session.reload.catalog_skills
+  end
+
+  test "change_skills rejects unknown skill IDs and lists valid options" do
+    session = sessions(:needs_input)
+    session.update!(catalog_skills: [ "sync-docs" ])
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_skills", "session_id" => session.id, "skills" => [ "zimmer-run-tests", "not-a-skill" ])
+    end
+
+    assert_match(/Invalid skills: not-a-skill/, error.message)
+    assert_match(/Valid skills:/, error.message)
+    assert_match(/sync-docs/, error.message)
+    # The invalid value must not have been persisted.
+    assert_equal [ "sync-docs" ], session.reload.catalog_skills
+  end
+
+  test "change_skills requires the skills parameter" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "change_skills", "session_id" => sessions(:needs_input).id) }
+    assert_match(/"skills" parameter is required/, error.message)
+  end
+
+  test "change_hooks replaces the session's catalog hooks" do
+    session = sessions(:needs_input)
+
+    result = @tool.call("action" => "change_hooks", "session_id" => session.id, "hooks" => [ "git-push-ci-reminder" ])
+
+    assert_includes result, "## Hooks Updated"
+    assert_equal [ "git-push-ci-reminder" ], session.reload.catalog_hooks
+  end
+
+  test "change_hooks rejects unknown hook IDs" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_hooks", "session_id" => sessions(:needs_input).id, "hooks" => [ "not-a-hook" ])
+    end
+    assert_match(/Invalid hooks: not-a-hook/, error.message)
+  end
+
+  test "change_hooks requires the hooks parameter" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "change_hooks", "session_id" => sessions(:needs_input).id) }
+    assert_match(/"hooks" parameter is required/, error.message)
+  end
+
+  test "change_plugins replaces the session's catalog plugins" do
+    session = sessions(:needs_input)
+
+    result = @tool.call("action" => "change_plugins", "session_id" => session.id, "plugins" => [ "ci-workflow" ])
+
+    assert_includes result, "## Plugins Updated"
+    assert_equal [ "ci-workflow" ], session.reload.catalog_plugins
+  end
+
+  test "change_plugins rejects unknown plugin IDs" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_plugins", "session_id" => sessions(:needs_input).id, "plugins" => [ "not-a-plugin" ])
+    end
+    assert_match(/Invalid plugins: not-a-plugin/, error.message)
+  end
+
+  test "change_plugins is refused on a restricted connection" do
+    restricted = Mcp::Tools::ActionSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "zimmer")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      restricted.call("action" => "change_plugins", "session_id" => sessions(:needs_input).id, "plugins" => [ "ci-workflow" ])
+    end
+    assert_match(/not allowed when this connection is restricted/, error.message)
+    assert_equal [], sessions(:needs_input).reload.catalog_plugins
+  end
+
+  test "change_skills is allowed on a restricted connection (skills are not locked)" do
+    restricted = Mcp::Tools::ActionSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "zimmer")
+    )
+    session = sessions(:needs_input)
+
+    result = restricted.call("action" => "change_skills", "session_id" => session.id, "skills" => [ "zimmer-run-tests" ])
+    assert_includes result, "## Skills Updated"
+    assert_equal [ "zimmer-run-tests" ], session.reload.catalog_skills
+  end
+
+  test "change_skills clears the list when given an empty array" do
+    session = sessions(:needs_input)
+    session.update!(catalog_skills: [ "sync-docs" ])
+
+    result = @tool.call("action" => "change_skills", "session_id" => session.id, "skills" => [])
+
+    assert_includes result, "- **Skills:** (none)"
+    assert_equal [], session.reload.catalog_skills
+  end
+
+  # --- goal / auto_compact_window / category / blocked / push ---------------
+
+  test "change_goal sets and clears the goal" do
+    session = sessions(:needs_input)
+
+    set_result = @tool.call("action" => "change_goal", "session_id" => session.id, "goal" => "Ship the PR")
+    assert_includes set_result, "## Goal Updated"
+    assert_includes set_result, "- **Goal:** Ship the PR"
+    assert_equal "Ship the PR", session.reload.goal
+
+    clear_result = @tool.call("action" => "change_goal", "session_id" => session.id, "goal" => "")
+    assert_includes clear_result, "- **Goal:** (none)"
+    assert_nil session.reload.goal
+  end
+
+  test "change_goal requires the goal parameter" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "change_goal", "session_id" => sessions(:needs_input).id) }
+    assert_match(/"goal" parameter is required/, error.message)
+  end
+
+  test "change_goal rejects an over-length goal" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_goal", "session_id" => sessions(:needs_input).id, "goal" => "x" * (Session::GOAL_MAX_LENGTH + 1))
+    end
+    assert_match(/Goal is too long/, error.message)
+  end
+
+  test "change_auto_compact_window updates the window and rejects invalid values" do
+    session = sessions(:needs_input)
+
+    result = @tool.call("action" => "change_auto_compact_window", "session_id" => session.id, "auto_compact_window" => 1_000_000)
+    assert_includes result, "## Context Window Updated"
+    assert_includes result, "- **Auto-compact Window:** 1000000 tokens"
+    assert_equal 1_000_000, session.reload.auto_compact_window
+
+    too_big = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_auto_compact_window", "session_id" => session.id, "auto_compact_window" => 9_999_999)
+    end
+    assert_match(/must be between 1 and/, too_big.message)
+
+    not_int = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_auto_compact_window", "session_id" => session.id, "auto_compact_window" => "lots")
+    end
+    assert_match(/must be a positive integer/, not_int.message)
+
+    # 0 fails the /\A\d+\z/-then-bounds path (it parses but is out of range).
+    zero = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_auto_compact_window", "session_id" => session.id, "auto_compact_window" => 0)
+    end
+    assert_match(/must be between 1 and/, zero.message)
+  end
+
+  test "change_category assigns and clears the organizational category" do
+    session = sessions(:needs_input)
+    category = Category.create!(name: "Infra")
+
+    assign = @tool.call("action" => "change_category", "session_id" => session.id, "category_id" => category.id)
+    assert_includes assign, "## Category Updated"
+    assert_includes assign, "- **Category:** Infra"
+    assert_equal category.id, session.reload.category_id
+
+    clear = @tool.call("action" => "change_category", "session_id" => session.id, "category_id" => nil)
+    assert_includes clear, "- **Category:** (uncategorized)"
+    assert_nil session.reload.category_id
+  end
+
+  test "change_category rejects an unknown category" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_category", "session_id" => sessions(:needs_input).id, "category_id" => 999_999)
+    end
+    assert_match(/Category #999999 not found/, error.message)
+  end
+
+  test "change_category requires the category_id key" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "change_category", "session_id" => sessions(:needs_input).id) }
+    assert_match(/"category_id" parameter is required/, error.message)
+  end
+
+  test "set_blocked sets and clears the blocked-by relationship" do
+    session = sessions(:needs_input)
+    blocker = sessions(:running)
+
+    blocked = @tool.call("action" => "set_blocked", "session_id" => session.id, "blocked_by_session_id" => blocker.id)
+    assert_includes blocked, "## Blocked-by Updated"
+    assert_includes blocked, "- **Blocked By:** ##{blocker.id}"
+    assert_equal blocker.id, session.reload.blocked_by_session_id
+
+    cleared = @tool.call("action" => "set_blocked", "session_id" => session.id, "blocked_by_session_id" => nil)
+    assert_includes cleared, "- **Blocked By:** (none)"
+    assert_nil session.reload.blocked_by_session_id
+  end
+
+  test "set_blocked refuses to block a session by itself" do
+    session = sessions(:needs_input)
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "set_blocked", "session_id" => session.id, "blocked_by_session_id" => session.id)
+    end
+    assert_match(/cannot be blocked by itself/, error.message)
+  end
+
+  test "set_blocked rejects a non-existent blocker session" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "set_blocked", "session_id" => sessions(:needs_input).id, "blocked_by_session_id" => 999_999)
+    end
+    assert_match(/Session #999999 not found/, error.message)
+  end
+
+  test "toggle_push_notifications flips the push flag" do
+    session = sessions(:needs_input)
+    session.update!(push_notifications_enabled: false)
+
+    result = @tool.call("action" => "toggle_push_notifications", "session_id" => session.id)
+
+    assert_includes result, "- **Push Notifications:** Enabled"
+    assert session.reload.push_notifications_enabled
+  end
+
   test "set_heartbeat toggles the heartbeat and sets the interval" do
     session = sessions(:needs_input)
 

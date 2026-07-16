@@ -89,9 +89,13 @@ group is dropped with a warning rather than failing the connection.
 carries `get_session`, `get_configs`, `send_push_notification`, `wake_me_up_later`,
 `wake_me_up_when_session_changes_state`, and a **restricted `action_session`** — the same tool name,
 but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`, and `archive`.
-A session can manage itself; it cannot restart, fork, or re-configure anything. (The *action* is
-narrowed, not the *target*: every tool takes a `session_id`, and a session is trusted to pass its own.
-See the caution above.)
+A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
+capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
+`change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
+`set_blocked`, `toggle_push_notifications` — are deliberately absent here: a session must not rewrite
+its own capabilities, goal, or organizational placement through the server injected into it. (The
+*action* is narrowed, not the *target*: every tool takes a `session_id`, and a session is trusted to
+pass its own. See the caution above.)
 
 ## Restricting what a connection may spawn: `allowed_agent_roots`
 
@@ -105,7 +109,8 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
   **exactly** match that root's `default_mcp_servers` — no additions, no removals.
 - `action_trigger` may only create, update, delete, or toggle triggers on an allowed root, and
   `search_triggers` only shows those.
-- `action_session`'s `change_mcp_servers` is refused outright.
+- `action_session`'s `change_mcp_servers` — and `change_plugins`, since plugins can bundle MCP
+  servers — are refused outright.
 - `wake_me_up_when_session_changes_state` refuses to watch a session outside the allowed roots. (A
   session waking *itself* is never restricted.)
 - `get_configs` hides the roots you may not use, so the model never sees them.
@@ -151,6 +156,16 @@ The action tools are verb-multiplexers: `action_session` takes an `action` enum 
 `pause`, `restart`, `archive`, `unarchive`, `fork`, `change_model`, …), `action_trigger` takes
 `create` / `update` / `delete` / `toggle`, and so on. `tools/list` carries the full schema for each —
 ask the server rather than trusting this table.
+
+`action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
+config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
+`change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`, `set_blocked`,
+`toggle_push_notifications` — mirror the inline editors on the session page. List-valued fields
+(`mcp_servers`, `skills`, `hooks`, `plugins`) use **replace, not merge** semantics, and every id is
+validated against its catalog, so an unknown skill/hook/plugin id is rejected with the valid options
+listed rather than persisted (a bad value would otherwise fail AIR prepare on the next unarchive).
+Like `change_mcp_servers`, these persist to the session and take effect the next time its runtime
+config is prepared — they do not hot-reconfigure a running process.
 
 The two wake-up tools are the ones worth knowing by name. `wake_me_up_later` sleeps the calling
 session and creates a one-time trigger that resumes it at a wall-clock time; `wake_me_up_when_session_changes_state`
