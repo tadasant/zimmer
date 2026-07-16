@@ -11,7 +11,7 @@ class ServersConfig
 
   # Server configuration object
   class Server
-    attr_reader :name, :title, :description, :type, :command, :args, :env, :url, :headers
+    attr_reader :name, :title, :description, :type, :command, :args, :env, :url, :headers, :oauth
 
     def initialize(name, config)
       @name = name
@@ -23,10 +23,26 @@ class ServersConfig
       @env = config["env"] || {}
       @url = config["url"]
       @headers = config["headers"] || {}
+      @oauth = config["oauth"] || {}
     end
 
     def remote?
       %w[sse streamable-http].include?(type)
+    end
+
+    # Statically-configured OAuth client id for this server, taken from the
+    # catalog `oauth` block. Present for servers that require a pre-registered
+    # OAuth client and expose no usable Dynamic Client Registration endpoint
+    # (e.g. Slack). The catalog schema uses camelCase (`clientId`); snake_case is
+    # accepted as a tolerant fallback.
+    def oauth_client_id
+      @oauth["clientId"] || @oauth["client_id"]
+    end
+
+    # Statically-configured OAuth client secret, when the pre-registered client
+    # is confidential. Public clients (like Slack's) configure only a client id.
+    def oauth_client_secret
+      @oauth["clientSecret"] || @oauth["client_secret"]
     end
 
     def stdio?

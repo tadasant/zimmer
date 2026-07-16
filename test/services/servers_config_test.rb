@@ -133,6 +133,38 @@ class ServersConfigTest < ActiveSupport::TestCase
     refute server.remote?
   end
 
+  # Test statically-configured OAuth client parsing. No local catalog server
+  # carries an `oauth` block (Slack lives in a downstream catalog), so exercise
+  # the Server value object directly with the catalog's camelCase shape.
+  test "server exposes a configured oauth client id from the catalog oauth block" do
+    server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http",
+      "url" => "https://mcp.slack.com/mcp",
+      "oauth" => { "clientId" => "1601185624273.8899143856786", "redirectUri" => "http://localhost:3118/callback" }
+    })
+
+    assert_equal "1601185624273.8899143856786", server.oauth_client_id
+    assert_nil server.oauth_client_secret
+  end
+
+  test "server accepts snake_case oauth client id and secret as a fallback" do
+    server = ServersConfig::Server.new("confidential", {
+      "type" => "streamable-http",
+      "url" => "https://example.com/mcp",
+      "oauth" => { "client_id" => "cid-123", "client_secret" => "shh-secret" }
+    })
+
+    assert_equal "cid-123", server.oauth_client_id
+    assert_equal "shh-secret", server.oauth_client_secret
+  end
+
+  test "server without an oauth block has no configured client id" do
+    server = ServersConfig.find("playwright-custom")
+
+    assert_nil server.oauth_client_id
+    assert_nil server.oauth_client_secret
+  end
+
   # Test environment variable detection. Zimmer's own MCP entries are remote
   # (streamable-http) and carry their API key in a header, so the interpolation
   # they exercise is header interpolation, not env.
