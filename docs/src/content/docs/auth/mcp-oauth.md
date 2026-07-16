@@ -166,7 +166,8 @@ mcp_oauth_clients:
 
 The key (`slack`) must match the MCP server name in the catalog, whose URL is `https://mcp.slack.com/mcp`.
 Slack returns the *user* token nested under `authed_user.access_token` (a top-level `access_token`, when
-present, is the bot token); Zimmer unwraps it. `resource: ""` is set because Slack's OAuth endpoints are
+present, is the bot token); Zimmer unwraps it on both the initial exchange and the cron token refresh, so
+a rotation-enabled credential survives past its first expiry. `resource: ""` is set because Slack's OAuth endpoints are
 not the RFC 8707 audience-binding kind — for a genuine MCP auth server, omit the key instead and the
 pre-registered path derives the resource indicator from the server URL automatically.
 
