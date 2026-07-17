@@ -100,13 +100,9 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
   # Slack-shaped server: discovery resolves its endpoints but the client must be
   # pre-registered. The authorize redirect must carry the catalog-configured
   # client id, not the `zimmer` placeholder that Slack rejects.
-  test "initiate uses the catalog-configured client id in the authorize redirect" do
-    configured_server = ServersConfig::Server.new("slack-reframe", {
-      "type" => "streamable-http",
-      "url" => "https://mcp.slack.com/mcp",
-      "oauth" => { "clientId" => "1601185624273.8899143856786" }
-    })
-
+  # Stubs RFC 8414 discovery so a catalog-configured server resolves its endpoints,
+  # then POSTs to initiate for it.
+  def initiate_catalog_server(server, server_name: "slack-reframe", server_url: "https://mcp.slack.com/mcp")
     auth_server_json = {
       "authorization_endpoint" => "https://slack.com/oauth/v2_user/authorize",
       "token_endpoint" => "https://slack.com/api/oauth.v2.access"
@@ -123,15 +119,23 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
       response
     end
 
-    ServersConfig.stub(:find, ->(name) { name == "slack-reframe" ? configured_server : nil }) do
+    ServersConfig.stub(:find, ->(name) { name == server_name ? server : nil }) do
       Net::HTTP.stub(:new, discovery_http) do
         post mcp_oauth_initiate_path, params: {
-          session_id: @session.id,
-          server_name: "slack-reframe",
-          server_url: "https://mcp.slack.com/mcp"
+          session_id: @session.id, server_name: server_name, server_url: server_url
         }
       end
     end
+  end
+
+  test "initiate uses the catalog-configured client id in the authorize redirect" do
+    configured_server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http",
+      "url" => "https://mcp.slack.com/mcp",
+      "oauth" => { "clientId" => "1601185624273.8899143856786" }
+    })
+
+    initiate_catalog_server(configured_server)
 
     assert_response :redirect
     location = URI(@response.headers["Location"])
@@ -141,6 +145,62 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
 
     pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
     assert_equal "1601185624273.8899143856786", pending.client_id
+
+    # No catalog redirectUri: the hosted callback still applies, and the flow still
+    # completes automatically rather than by paste-back.
+    assert_equal McpOauthService.new.build_redirect_uri, query["redirect_uri"]
+    assert_equal McpOauthService.new.build_redirect_uri, pending.redirect_uri
+    assert_not pending.manual?, "hosted-callback flow is not paste-back"
+  end
+
+  # Slack's public MCP client only permits its own localhost redirect; handing it
+  # Zimmer's hosted callback fails at the consent screen with "redirect_uri did not
+  # match any configured URIs". The catalog declares the redirect it accepts.
+  test "initiate honors a catalog-configured redirect uri and completes by paste-back" do
+    configured_server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http",
+      "url" => "https://mcp.slack.com/mcp",
+      "oauth" => {
+        "clientId" => "1601185624273.8899143856786",
+        "redirectUri" => "http://localhost:3118/callback"
+      }
+    })
+
+    initiate_catalog_server(configured_server)
+
+    # Nothing to redirect to: Zimmer never sees this callback, so it renders paste-back.
+    assert_response :success
+    assert_select "form[action=?]", mcp_oauth_complete_path
+    assert_select "textarea#redirect_response"
+
+    pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
+    assert pending.manual?, "flow marked manual"
+    assert_equal "http://localhost:3118/callback", pending.redirect_uri
+
+    # The authorize URL the user opens carries the catalog redirect, not the hosted one.
+    query = URI.decode_www_form(URI(pending.authorization_url).query).to_h
+    assert_equal "http://localhost:3118/callback", query["redirect_uri"]
+    assert_not_equal McpOauthService.new.build_redirect_uri, query["redirect_uri"]
+    assert_equal "1601185624273.8899143856786", query["client_id"]
+    assert_equal "S256", query["code_challenge_method"]
+  end
+
+  # Regression guard: the hosted callback must stay the default for ordinary servers.
+  test "initiate keeps the hosted callback for a server with no catalog oauth block" do
+    plain_server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http",
+      "url" => "https://mcp.slack.com/mcp"
+    })
+
+    initiate_catalog_server(plain_server)
+
+    assert_response :redirect
+    query = URI.decode_www_form(URI(@response.headers["Location"]).query).to_h
+    assert_equal McpOauthService.new.build_redirect_uri, query["redirect_uri"]
+
+    pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
+    assert_not pending.manual?
+    assert_equal McpOauthService.new.build_redirect_uri, pending.redirect_uri
   end
 
   # --- Callback with a nested Slack user token (authed_user.access_token) ---
