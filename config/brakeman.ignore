@@ -118,11 +118,11 @@
     {
       "warning_type": "Redirect",
       "warning_code": 18,
-      "fingerprint": "b31f8d1b02c6bcbd6fedea66fb60f84a1f7cca0881b23f511430de44859c448e",
+      "fingerprint": "4ca2e092658607459187563042441c367202d839343d88004e3a75ebb805d65d",
       "check_name": "Redirect",
       "message": "Possible unprotected redirect",
       "file": "app/controllers/mcp_oauth_controller.rb",
-      "line": 158,
+      "line": 166,
       "link": "https://brakemanscanner.org/docs/warning_types/redirect/",
       "code": "redirect_to(McpOauthPendingFlow.create_for_session!(...).authorization_url, :allow_other_host => true)",
       "render_path": null,
@@ -136,7 +136,7 @@
       "cwe_id": [
         601
       ],
-      "note": "Expected behavior: This is the OAuth flow initiation redirect. The authorization_url is constructed from OAuth metadata fetched from the server's well-known endpoints (RFC 9728/8414) or from pre-registered OAuth config in Rails credentials. The allow_other_host: true flag is intentionally used to redirect to the external OAuth provider's authorization endpoint."
+      "note": "Expected behavior: This is the OAuth flow initiation redirect. The authorization_url is constructed from OAuth metadata fetched from the server's well-known endpoints (RFC 9728/8414), from the server's catalog `oauth` block, or from pre-registered OAuth config in Rails credentials -- never from user params. The allow_other_host: true flag is intentionally used to redirect to the external OAuth provider's authorization endpoint."
     },
     {
       "warning_type": "Command Injection",

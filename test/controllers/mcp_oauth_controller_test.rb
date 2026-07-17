@@ -247,6 +247,54 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     )
   end
 
+  # A credentials entry naming a redirect Zimmer does not serve cannot be finished by
+  # the hosted callback, whether or not it also sets `manual: true` — before, such an
+  # entry redirected to a callback that could never come back.
+  test "initiate renders the paste-back page for a pre-registered redirect with no manual flag" do
+    client = PreregisteredOauthConfig::OAuthClient.new(
+      key: "slack", client_id: "cid",
+      authorization_endpoint: "https://slack.com/oauth/v2_user/authorize",
+      token_endpoint: "https://slack.com/api/oauth.v2.user.access",
+      redirect_uri: "http://localhost:3118/callback"
+    )
+    assert_not client.manual?, "fixture leaves the manual flag unset"
+
+    PreregisteredOauthConfig.stubs(:find_for_server).returns(client)
+    ServersConfig.stubs(:credential_config).returns({ type: "http", url: "https://mcp.slack.com/mcp" })
+
+    post mcp_oauth_initiate_path, params: {
+      session_id: @session.id, server_name: "slack", server_url: "https://mcp.slack.com/mcp"
+    }
+
+    assert_response :success
+    assert_select "form[action=?]", mcp_oauth_complete_path
+
+    flow = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack")
+    assert flow.manual?, "flow marked manual from its redirect alone"
+    assert_equal "http://localhost:3118/callback", flow.redirect_uri
+  end
+
+  # A credentials entry with no redirect at all keeps the hosted callback and the
+  # automatic flow — the ordinary pre-registered case (e.g. BigQuery).
+  test "initiate keeps the hosted callback for a pre-registered server with no redirect" do
+    client = PreregisteredOauthConfig::OAuthClient.new(
+      key: "bigquery-example", client_id: "cid", client_secret: "sec",
+      authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+      token_endpoint: "https://oauth2.googleapis.com/token"
+    )
+    PreregisteredOauthConfig.stubs(:find_for_server).returns(client)
+    ServersConfig.stubs(:credential_config).returns({ type: "http", url: "https://bq.example.com/mcp" })
+
+    post mcp_oauth_initiate_path, params: {
+      session_id: @session.id, server_name: "bigquery-example", server_url: "https://bq.example.com/mcp"
+    }
+
+    assert_response :redirect
+    flow = McpOauthPendingFlow.for_session(@session).find_by(server_name: "bigquery-example")
+    assert_not flow.manual?
+    assert_equal McpOauthService.new.build_redirect_uri, flow.redirect_uri
+  end
+
   test "initiate renders the paste-back page for a manual-mode pre-registered server" do
     PreregisteredOauthConfig.stubs(:find_for_server).returns(manual_client)
     ServersConfig.stubs(:credential_config).returns({ type: "http", url: "https://mcp.slack.com/mcp" })

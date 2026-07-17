@@ -59,7 +59,7 @@ sequenceDiagram
 
     U->>Z: POST /mcp_oauth/initiate (server_name, session_id)
     alt a PreregisteredOauthConfig exists
-        Note over Z: Rails credentials: mcp_oauth_clients.{name}<br/>client_id, endpoints, scopes — wins outright<br/>client_secret optional (public client); manual+redirect_uri opt in to paste-back
+        Note over Z: Rails credentials: mcp_oauth_clients.{name}<br/>client_id, endpoints, scopes — wins outright<br/>client_secret optional (public client); a non-hosted redirect_uri (or manual: true) means paste-back
     else discovery
         Z->>AS: GET /.well-known/oauth-protected-resource (RFC 9728)
         AS-->>Z: { resource, authorization_servers }
@@ -67,7 +67,7 @@ sequenceDiagram
         Note over Z,AS: falls back to /.well-known/openid-configuration,<br/>then to a bare GET looking for<br/>401 + WWW-Authenticate: Bearer resource_metadata=…
         AS-->>Z: { authorization_endpoint, token_endpoint,<br/>registration_endpoint?, scopes_supported }
         alt catalog oauth.clientId configured
-            Note over Z: use the server's configured client_id<br/>(catalog oauth block) — DCR skipped
+            Note over Z: use the server's configured client_id<br/>(catalog oauth block) — DCR skipped<br/>oauth.redirectUri, when set, wins over the hosted callback
         else registration_endpoint advertised
             Z->>AS: POST (RFC 7591 Dynamic Client Registration)<br/>client_name: "Claude Code (Zimmer)"
             AS-->>Z: { client_id, client_secret? }
@@ -77,6 +77,7 @@ sequenceDiagram
     end
     Z->>Z: McpOauthPendingFlow.create_for_session!<br/>state (32B) + PKCE code_verifier → S256 challenge<br/>expires in 24h
     Z-->>U: 302 to authorization_url<br/>plus resource per RFC 8707<br/>Google additionally gets access_type=offline and prompt=consent
+    Note over Z,U: this is the hosted-callback path — a flow whose redirect_uri<br/>is not Zimmer's own callback renders the paste-back page instead (below)
     U->>AS: authorize
     AS-->>Z: GET /mcp_oauth/callback?code=…&state=…
     Z->>Z: look up flow by state (THIS IS THE CSRF CHECK)
@@ -290,7 +291,7 @@ previous run rotated to, and the server reconnects.
 ## Known problems
 
 :::danger[Anyone who can reach the host can start an OAuth flow for any session]
-`McpOauthController` has `skip_forgery_protection only: [:callback, :initiate]` — and Zimmer has
+`McpOauthController` has `skip_forgery_protection only: [:callback, :initiate, :complete]` — and Zimmer has
 [no user authentication at all](/auth/overview/#1-human--zimmer-there-is-no-authentication).
 
 The `state` parameter is the *only* CSRF defense on the callback.
