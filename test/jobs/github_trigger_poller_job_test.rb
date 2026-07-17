@@ -692,6 +692,17 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
     assert_not_nil heartbeat, "one healthy condition is enough to prove the poller is alive"
   end
 
+  test "a tick with no GitHub triggers at all still records the heartbeat" do
+    # Otherwise the key rots while there is legitimately nothing to poll, and enabling a
+    # trigger flips the health check on against that stale value — paging for a poller
+    # that is working perfectly. Ordinary trigger admin must not cry wolf.
+    Trigger.with_github_conditions.destroy_all
+
+    GithubTriggerPollerJob.perform_now
+
+    assert_not_nil heartbeat, "a tick that correctly found nothing to do is still liveness"
+  end
+
   test "a tick skipped for a missing gh credential does not record the heartbeat" do
     # An unconfigured host never polls, so it must not look alive. (The health check
     # makes the same configured? check, so this gap never pages there.)

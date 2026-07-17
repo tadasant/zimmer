@@ -32,14 +32,33 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
 
   # ── Guards: an absent poller is not an incident ────────────────────────────
 
-  test "does nothing when gh is not authenticated" do
-    # Staging ships no gh credential, so the poller never runs there and never writes a
-    # heartbeat. That expected gap must not page every 5 minutes.
+  test "does not seed or alert on an unconfigured host that has never polled" do
+    # Staging ships no gh credential, so its poller never runs and never heartbeats. That
+    # expected gap must not page every 5 minutes — and must not be seeded either, or the
+    # seed would age into a page for a poller that was never supposed to be running.
     GithubSearchService.stubs(:configured?).returns(false)
     AlertService.expects(:raise_alert).never
 
-    write_heartbeat(2.hours.ago)
     assert_nothing_raised { GithubTriggerHealthCheckJob.perform_now }
+    assert_nil heartbeat, "an unconfigured host must not be given a baseline"
+  end
+
+  test "alerts on a stale heartbeat even when the gh preflight is failing" do
+    # Regression test for the trap this job is most likely to fall into. `configured?`
+    # shells out to `gh auth status`, a LIVE API call — so a GitHub REST outage makes it
+    # return false. Guarding the whole check on it would hand this job exactly the silence
+    # it exists to break: the poller stalls, the preflight fails, and nobody is told.
+    # A heartbeat that EXISTS proves this host polls GitHub, so a stale one is an incident
+    # whatever the preflight says — including when polling stopped because the credential
+    # was revoked.
+    GithubSearchService.stubs(:configured?).returns(false)
+    write_heartbeat(50.minutes.ago)
+
+    AlertService.expects(:raise_alert).once.with do |title, _opts|
+      title == "GitHub trigger polling stalled"
+    end
+
+    GithubTriggerHealthCheckJob.perform_now
   end
 
   test "does nothing when there are no enabled GitHub triggers to poll" do
