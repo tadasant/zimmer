@@ -335,6 +335,12 @@ class McpOauthService
   # user pastes the resulting URL into `POST /mcp_oauth/complete` instead. Derived
   # from the redirect URI rather than a per-server flag, so it stays config-driven.
   #
+  # The comparison is deliberately an exact match rather than a normalized one: the
+  # only way to be *automatic* is to be byte-for-byte the callback we serve, so the
+  # rule cannot wrongly send a flow to a callback we never receive. It errs the safe
+  # way — a redirect equal to the hosted callback modulo a trailing slash or host
+  # case is treated as manual, whose worst case is an unnecessary paste-back page.
+  #
   # @param redirect_uri [String, nil] the redirect URI the flow will use
   # @return [Boolean] true when the hosted callback cannot receive this flow
   def manual_completion_required?(redirect_uri)
