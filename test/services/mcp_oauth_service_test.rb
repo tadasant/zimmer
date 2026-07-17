@@ -367,6 +367,31 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     assert_equal "registered-client-secret", result["client_secret"]
   end
 
+  test "perform_dcr registers the hosted callback when no redirect is configured" do
+    posted_body = nil
+    mock_http = mock_http_success({ "client_id" => "test-id" }) { |body| posted_body = body }
+
+    stub_net_http(mock_http) do
+      @service.perform_dcr(@registration_endpoint, @server_url, auth_server_metadata: {})
+    end
+
+    assert_equal [ @service.build_redirect_uri ], posted_body["redirect_uris"]
+  end
+
+  # A configured redirect must be the one we register, or the client we just registered
+  # names a redirect the authorize request will not send.
+  test "perform_dcr registers a configured redirect uri instead of the hosted callback" do
+    posted_body = nil
+    mock_http = mock_http_success({ "client_id" => "test-id" }) { |body| posted_body = body }
+
+    stub_net_http(mock_http) do
+      @service.perform_dcr(@registration_endpoint, @server_url, auth_server_metadata: {},
+        configured_redirect_uri: "http://localhost:3118/callback")
+    end
+
+    assert_equal [ "http://localhost:3118/callback" ], posted_body["redirect_uris"]
+  end
+
   # --- RFC 8707 resource indicator tests ---
 
   test "exchange_code_for_tokens includes the RFC 8707 resource parameter" do
@@ -612,7 +637,56 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     assert_nil @service.extract_tokens(nil)
   end
 
+  # --- redirect URI resolution / paste-back detection ---
+
+  test "resolve_redirect_uri prefers a configured redirect over the hosted callback" do
+    assert_equal "http://localhost:3118/callback",
+      @service.resolve_redirect_uri("http://localhost:3118/callback")
+  end
+
+  test "resolve_redirect_uri falls back to the hosted callback when none is configured" do
+    hosted = @service.build_redirect_uri
+
+    assert_equal hosted, @service.resolve_redirect_uri(nil)
+    assert_equal hosted, @service.resolve_redirect_uri("")
+  end
+
+  test "manual_completion_required? is true for a redirect Zimmer does not host" do
+    assert @service.manual_completion_required?("http://localhost:3118/callback")
+    assert @service.manual_completion_required?("urn:ietf:wg:oauth:2.0:oob")
+  end
+
+  # The hosted callback is itself a localhost URL when APP_HOST is unset (dev/test), so
+  # paste-back must key off "is this our callback", not "does this look like localhost".
+  test "manual_completion_required? is false for the hosted callback even on localhost" do
+    with_app_host(nil) do
+      assert_equal "http://localhost:3000/mcp_oauth/callback", @service.build_redirect_uri
+      assert_not @service.manual_completion_required?(@service.build_redirect_uri)
+    end
+  end
+
+  test "manual_completion_required? is false for the hosted callback in production" do
+    with_app_host("zimmer.tadasant.com") do
+      assert_equal "https://zimmer.tadasant.com/mcp_oauth/callback", @service.build_redirect_uri
+      assert_not @service.manual_completion_required?(@service.build_redirect_uri)
+      assert @service.manual_completion_required?("http://localhost:3118/callback")
+    end
+  end
+
+  test "manual_completion_required? is false when no redirect uri is present" do
+    assert_not @service.manual_completion_required?(nil)
+    assert_not @service.manual_completion_required?("")
+  end
+
   private
+
+  def with_app_host(value)
+    original = ENV["APP_HOST"]
+    value.nil? ? ENV.delete("APP_HOST") : ENV["APP_HOST"] = value
+    yield
+  ensure
+    original.nil? ? ENV.delete("APP_HOST") : ENV["APP_HOST"] = original
+  end
 
   # Creates a mock HTTP object that captures the posted body and returns a success response
   def mock_http_success(response_body, &body_capture)

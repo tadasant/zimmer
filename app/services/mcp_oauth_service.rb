@@ -43,16 +43,19 @@ class McpOauthService
   #   in place of Dynamic Client Registration and the `zimmer` fallback.
   # @param configured_client_secret [String, nil] Optional client secret paired
   #   with the configured client id (confidential clients only).
+  # @param configured_redirect_uri [String, nil] Statically-configured redirect URI
+  #   for this server. Only reaches Dynamic Client Registration, so the client we
+  #   register names the same redirect the flow will actually use.
   # @return [OAuthRequirement] Result with :required, :metadata, and :error
-  def check_oauth_requirement(server_url, configured_client_id: nil, configured_client_secret: nil)
+  def check_oauth_requirement(server_url, configured_client_id: nil, configured_client_secret: nil, configured_redirect_uri: nil)
     # First try to fetch protected resource metadata (RFC 9728)
-    metadata = fetch_oauth_metadata(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret)
+    metadata = fetch_oauth_metadata(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret, configured_redirect_uri: configured_redirect_uri)
     if metadata
       return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
     end
 
     # Probe the server with a request to check for 401
-    probe_result = probe_server_for_oauth(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret)
+    probe_result = probe_server_for_oauth(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret, configured_redirect_uri: configured_redirect_uri)
     probe_result
   rescue => e
     Rails.logger.error "[McpOauthService] Error checking OAuth requirement for #{server_url}: #{e.message}"
@@ -69,8 +72,10 @@ class McpOauthService
   # @param configured_client_id [String, nil] Statically-configured OAuth client
   #   id (see {#check_oauth_requirement}).
   # @param configured_client_secret [String, nil] Optional configured client secret.
+  # @param configured_redirect_uri [String, nil] Optional configured redirect URI,
+  #   registered via DCR so it matches the redirect the flow will use.
   # @return [OAuthMetadata, nil] OAuth metadata if found, nil otherwise
-  def fetch_oauth_metadata(server_url, configured_client_id: nil, configured_client_secret: nil)
+  def fetch_oauth_metadata(server_url, configured_client_id: nil, configured_client_secret: nil, configured_redirect_uri: nil)
     uri = URI(server_url)
     base_url = "#{uri.scheme}://#{uri.host}#{uri.port != uri.default_port ? ":#{uri.port}" : ""}"
 
@@ -115,7 +120,7 @@ class McpOauthService
       client_secret = configured_client_secret
     elsif auth_server["registration_endpoint"]
       dcr_attempted = true
-      dcr_result = perform_dcr(auth_server["registration_endpoint"], server_url, auth_server_metadata: auth_server)
+      dcr_result = perform_dcr(auth_server["registration_endpoint"], server_url, auth_server_metadata: auth_server, configured_redirect_uri: configured_redirect_uri)
       if dcr_result
         client_id = dcr_result["client_id"]
         client_secret = dcr_result["client_secret"]
@@ -184,10 +189,14 @@ class McpOauthService
   # @param registration_endpoint [String] The DCR endpoint URL
   # @param server_url [String] The MCP server URL (for redirect URI)
   # @param auth_server_metadata [Hash] The authorization server metadata (from RFC 8414 discovery)
+  # @param configured_redirect_uri [String, nil] A statically-configured redirect URI to
+  #   register instead of the hosted callback, so the registration matches the redirect
+  #   the resulting flow sends to the authorization endpoint.
   # @return [Hash, nil] DCR response with client_id, or nil if failed
-  def perform_dcr(registration_endpoint, server_url, auth_server_metadata: {})
-    # Build redirect URI - use the app's OAuth callback endpoint
-    redirect_uri = build_redirect_uri
+  def perform_dcr(registration_endpoint, server_url, auth_server_metadata: {}, configured_redirect_uri: nil)
+    # Register the redirect the flow will actually use: the configured one when the
+    # server declares it, otherwise the app's own OAuth callback endpoint.
+    redirect_uri = resolve_redirect_uri(configured_redirect_uri)
 
     # Pick a token_endpoint_auth_method supported by the server.
     # Preference order: "none" (public client), "client_secret_post" (matches our token exchange
@@ -305,10 +314,43 @@ class McpOauthService
     "#{scheme}://#{host}/mcp_oauth/callback"
   end
 
+  # Resolves the redirect URI for a flow: a statically-configured one (from the
+  # server's catalog `oauth` block or a `mcp_oauth_clients` credentials entry) wins
+  # over Zimmer's hosted callback. Pre-registered clients accept only the redirect
+  # URIs registered against them at the provider, and for a public client we do not
+  # own (e.g. the official Slack MCP client) that is a fixed localhost URL — handing
+  # such a provider the hosted callback fails at the consent screen.
+  #
+  # @param configured_redirect_uri [String, nil] the configured redirect URI, if any
+  # @return [String] the redirect URI to use for the flow
+  def resolve_redirect_uri(configured_redirect_uri)
+    configured_redirect_uri.presence || build_redirect_uri
+  end
+
+  # Whether a flow using this redirect URI must complete out-of-band ("paste-back").
+  #
+  # Zimmer can only finish a flow automatically when the provider redirects back to
+  # the callback Zimmer itself serves. Any other redirect — a localhost URL owned by
+  # the third-party client, an `oob` URN — lands somewhere Zimmer never sees, so the
+  # user pastes the resulting URL into `POST /mcp_oauth/complete` instead. Derived
+  # from the redirect URI rather than a per-server flag, so it stays config-driven.
+  #
+  # The comparison is deliberately an exact match rather than a normalized one: the
+  # only way to be *automatic* is to be byte-for-byte the callback we serve, so the
+  # rule cannot wrongly send a flow to a callback we never receive. It errs the safe
+  # way — a redirect equal to the hosted callback modulo a trailing slash or host
+  # case is treated as manual, whose worst case is an unnecessary paste-back page.
+  #
+  # @param redirect_uri [String, nil] the redirect URI the flow will use
+  # @return [Boolean] true when the hosted callback cannot receive this flow
+  def manual_completion_required?(redirect_uri)
+    redirect_uri.present? && redirect_uri != build_redirect_uri
+  end
+
   private
 
   # Probes a server for OAuth requirement by making a request and checking response
-  def probe_server_for_oauth(server_url, configured_client_id: nil, configured_client_secret: nil)
+  def probe_server_for_oauth(server_url, configured_client_id: nil, configured_client_secret: nil, configured_redirect_uri: nil)
     uri = URI(server_url)
 
     # Make a GET request to see if the server requires auth
@@ -332,14 +374,14 @@ class McpOauthService
         # Server requires OAuth - try to extract resource_metadata URL
         resource_metadata_url = extract_resource_metadata_url(www_auth)
         if resource_metadata_url
-          metadata = fetch_oauth_metadata_from_url(resource_metadata_url, server_url: server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret)
+          metadata = fetch_oauth_metadata_from_url(resource_metadata_url, server_url: server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret, configured_redirect_uri: configured_redirect_uri)
           if metadata
             return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
           end
         end
 
         # Fall back to standard discovery
-        metadata = fetch_oauth_metadata(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret)
+        metadata = fetch_oauth_metadata(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret, configured_redirect_uri: configured_redirect_uri)
         return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
       end
     end
@@ -363,7 +405,7 @@ class McpOauthService
   end
 
   # Fetches OAuth metadata from a specific resource_metadata URL
-  def fetch_oauth_metadata_from_url(resource_metadata_url, server_url:, configured_client_id: nil, configured_client_secret: nil)
+  def fetch_oauth_metadata_from_url(resource_metadata_url, server_url:, configured_client_id: nil, configured_client_secret: nil, configured_redirect_uri: nil)
     protected_resource = fetch_json(resource_metadata_url)
     return nil unless protected_resource && protected_resource["authorization_servers"]&.any?
 
@@ -386,7 +428,7 @@ class McpOauthService
       client_secret = configured_client_secret
     elsif auth_server["registration_endpoint"]
       dcr_attempted = true
-      dcr_result = perform_dcr(auth_server["registration_endpoint"], resource_metadata_url, auth_server_metadata: auth_server)
+      dcr_result = perform_dcr(auth_server["registration_endpoint"], resource_metadata_url, auth_server_metadata: auth_server, configured_redirect_uri: configured_redirect_uri)
       if dcr_result
         client_id = dcr_result["client_id"]
         client_secret = dcr_result["client_secret"]

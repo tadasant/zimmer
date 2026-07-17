@@ -45,6 +45,17 @@ class ServersConfig
       @oauth["clientSecret"] || @oauth["client_secret"]
     end
 
+    # Statically-configured OAuth redirect URI for this server, taken from the
+    # catalog `oauth` block. Present for pre-registered clients that only permit a
+    # redirect Zimmer does not host — the official Slack MCP client, for instance,
+    # is a public client registered against `http://localhost:3118/callback` and
+    # rejects Zimmer's hosted callback with `redirect_uri did not match any
+    # configured URIs`. When set it wins over `McpOauthService#build_redirect_uri`
+    # and the flow completes by paste-back instead of the hosted callback.
+    def oauth_redirect_uri
+      @oauth["redirectUri"] || @oauth["redirect_uri"]
+    end
+
     def stdio?
       type == "stdio"
     end
