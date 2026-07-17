@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-
 # Thin wrapper over GitHub's issue/PR search API, used by GithubTriggerPollerJob.
 #
 # Shells out to the `gh` CLI, exactly as GithubCommentPollerJob does, so it reuses
@@ -32,6 +30,26 @@ class GithubSearchService
   # a truncated read would corrupt the poller's seen-set, so we raise instead.
   MAX_PAGES = 10
 
+  # Hard wall-clock ceiling on a single `gh` invocation. A healthy search API call
+  # returns in well under a second; this is generous headroom for a merely slow
+  # (degraded) API. Its real job is to bound a HANG: during a GitHub REST incident a
+  # request can stall with the TCP connection half-open — no response, no reset — and
+  # `Open3.capture3` would block the calling thread forever. Because the poller is a
+  # `total_limit: 1` singleton, one hung `gh` call holds the only slot and every
+  # subsequent minute's tick is a no-op: polling silently freezes with nothing raised
+  # and nothing alerted (the exact shape of the merge-gate stall this bound exists to
+  # prevent). BoundedSubprocess kills the whole process group on deadline and we turn
+  # that into a SearchError, so a hang becomes a normal, alerting failure the poller
+  # retries next tick rather than a silent wedge.
+  REQUEST_TIMEOUT = 15
+
+  # `gh auth status` validates the token against the API, so it too makes a network
+  # call that a GitHub outage can hang — on the very preflight the poller runs before
+  # it reaches any condition. Bound it as well so a stalled preflight can't wedge the
+  # singleton before polling even begins. Shorter than a search: it is a single cheap
+  # round-trip.
+  AUTH_STATUS_TIMEOUT = 10
+
   class << self
     # Whether the `gh` CLI can actually authenticate to GitHub from this process —
     # via a stored `gh auth login` credential OR a GH_TOKEN/GITHUB_TOKEN in the
@@ -47,9 +65,13 @@ class GithubSearchService
     # environment is not an incident (skip quietly), whereas a rate-limit or network
     # error on a configured host still raises out of search_issues and alerts.
     def configured?
-      _out, _err, status = Open3.capture3("gh", "auth", "status")
+      _out, _err, status = BoundedSubprocess.run([ "gh", "auth", "status" ], timeout: AUTH_STATUS_TIMEOUT)
       status.success?
     rescue => e
+      # A timeout (BoundedSubprocess::TimeoutError) lands here too: a preflight that
+      # hangs against a degraded API is treated as "not configured this tick" — the
+      # poller skips rather than wedging, and the liveness check catches the resulting
+      # gap in successful polls.
       Rails.logger.warn "[GithubSearchService] gh auth preflight failed: #{e.class}: #{e.message}"
       false
     end
@@ -122,7 +144,7 @@ class GithubSearchService
       command.push("--field", "sort=#{sort}") if sort.present?
       command.push("--field", "order=#{order}") if order.present?
 
-      stdout, stderr, status = Open3.capture3(*command)
+      stdout, stderr, status = BoundedSubprocess.run(command, timeout: REQUEST_TIMEOUT)
 
       unless status.success?
         detail = stderr.to_s.strip.presence || "exit status #{status.exitstatus}"
@@ -130,6 +152,11 @@ class GithubSearchService
       end
 
       JSON.parse(stdout)
+    rescue BoundedSubprocess::TimeoutError => e
+      # A hung request is a failure like any other network failure: surface it as a
+      # SearchError so the poller's per-condition rescue alerts and retries next tick,
+      # rather than letting the stall propagate as an unfamiliar error class.
+      raise SearchError, "gh api search/issues timed out: #{e.message}"
     rescue JSON::ParserError => e
       raise SearchError, "Could not parse GitHub search response: #{e.message}"
     end

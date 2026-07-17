@@ -88,6 +88,31 @@ class GithubTriggerPollerJob < ApplicationJob
   # enough that a real remove-then-re-add of the label still fires again promptly.
   REMOVAL_GRACE_TICKS = 3
 
+  # Liveness heartbeat. Each sweep that processes at least one condition successfully
+  # stamps this Rails.cache (Redis) key with the current time; GithubTriggerHealthCheckJob
+  # reads it and pages if it goes stale.
+  #
+  # The bar is "at least one condition came back clean", NOT "perform returned": the
+  # per-condition rescue below swallows errors so one bad condition cannot abort the
+  # sweep, which means perform returns normally even in a total outage where nothing was
+  # polled at all. Requiring a real success is what distinguishes a working poller (some
+  # condition succeeded — a failing one pages on its own) from a wedged/down one or a
+  # total GitHub outage — the silent-freeze class the per-tick error alert cannot catch,
+  # because no code runs to raise.
+  #
+  # Nearly every success implies a GitHub search actually returned; the one exception is a
+  # github_issue condition's first tick, which baselines its cursor without searching. That
+  # can stamp the heartbeat with no GitHub contact, but only for the single tick before the
+  # cursor is set, so it costs at most a minute of detection latency.
+  HEARTBEAT_CACHE_KEY = "github_trigger_poller:last_successful_poll_at"
+
+  # Generous TTL so the key survives a multi-hour poller outage holding its LAST-success
+  # timestamp — that stale value is exactly what the health check needs to read to know
+  # polling has stopped. If the key instead expired mid-outage the check would see an
+  # absence it can't date and stay quiet. Well beyond any outage we expect to page on;
+  # a healthy poller rewrites it every minute.
+  HEARTBEAT_TTL = 7.days
+
   def perform
     conditions = TriggerCondition.github
       .joins(:trigger)
@@ -96,7 +121,16 @@ class GithubTriggerPollerJob < ApplicationJob
 
     # Nothing to poll — don't spend a `gh auth status` subprocess every minute on the
     # (common) instance that has no GitHub triggers at all.
-    return unless conditions.exists?
+    unless conditions.exists?
+      # A tick that correctly found nothing to do is still liveness, and stamping it
+      # keeps the heartbeat fresh through a period with no GitHub triggers. Otherwise the
+      # key would rot while there was legitimately nothing to poll, and enabling a trigger
+      # would flip the health check on against that stale value and page for a poller that
+      # is working perfectly. This can never mask a real stall: the check reads the
+      # heartbeat only when there IS something to poll.
+      record_successful_poll
+      return
+    end
 
     # Degrade gracefully when the environment has no GitHub credential, exactly as
     # SlackTriggerPollerJob returns early on an unconfigured Slack. Without this, an
@@ -110,9 +144,11 @@ class GithubTriggerPollerJob < ApplicationJob
       return
     end
 
+    any_polled = false
     AlertBatcher.with_batch do
       conditions.find_each do |condition|
         process_condition(condition)
+        any_polled = true
       rescue => e
         Rails.logger.error "[GithubTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
         AlertService.raise_alert(
@@ -124,9 +160,22 @@ class GithubTriggerPollerJob < ApplicationJob
         )
       end
     end
+
+    # Record the heartbeat only when the poller actually did work — see the constant's
+    # comment for why a total-outage sweep (every condition rescued) must NOT count.
+    record_successful_poll if any_polled
   end
 
   private
+
+  def record_successful_poll
+    Rails.cache.write(HEARTBEAT_CACHE_KEY, Time.current.utc.iso8601, expires_in: HEARTBEAT_TTL)
+  rescue => e
+    # A cache write failure must never take down a poll that otherwise succeeded; the
+    # health check tolerates a missing/stale heartbeat (it seeds and skips) far better
+    # than the poll tolerates an exception here.
+    Rails.logger.warn "[GithubTriggerPollerJob] Failed to record poll heartbeat: #{e.message}"
+  end
 
   def process_condition(condition)
     case condition.condition_type
