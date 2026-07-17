@@ -102,10 +102,11 @@ not support DCR.
 
 ### Public clients (no client_secret)
 
-A `mcp_oauth_clients` entry may omit `client_secret` entirely. Such a client is a public client
-(RFC 6749 §2.1) that proves possession with PKCE alone (RFC 7636). The token exchange omits the
-`client_secret` parameter when the flow has no secret and relies on the persisted `code_verifier`;
-when a secret *is* configured, the previous `client_secret_post` behavior is preserved.
+A `mcp_oauth_clients` entry — or a catalog `oauth` block naming only a `clientId` — may omit the
+client secret entirely. Such a client is a public client (RFC 6749 §2.1) that proves possession with
+PKCE alone (RFC 7636). The token exchange omits the `client_secret` parameter when the flow has no
+secret and relies on the persisted `code_verifier`; when a secret *is* configured, the previous
+`client_secret_post` behavior is preserved.
 
 ### Manual (paste-back) completion
 
@@ -114,8 +115,9 @@ client that is `http://localhost:3118/callback`, the loopback redirect the Claud
 uses. Zimmer's hosted callback (`https://<host>/mcp_oauth/callback`) cannot be added to someone
 else's app, so those flows complete **out-of-band**:
 
-1. `redirect_uri` comes from the pre-registered config (the localhost/oob URI the client permits)
-   rather than the hosted callback.
+1. `redirect_uri` comes from the statically-configured redirect — the catalog `oauth.redirectUri`
+   or a `mcp_oauth_clients` entry, whichever configures the server — rather than the hosted
+   callback. Because Zimmer cannot receive that redirect, the flow is marked manual.
 2. `initiate` renders a **paste-back page** instead of redirecting: it shows the authorize link and
    an input for the redirect URL.
 3. You open the authorize link, consent in your own browser, and land on the localhost redirect
@@ -330,12 +332,29 @@ literal is rejected outright (`invalid_client_id`). This is distinct from the fu
 authorization/token endpoints and bypasses discovery; the `oauth.clientId` path supplies only the
 client id and still discovers endpoints via RFC 8414/9728.
 
-Only `oauth.clientId` (and, if present, a client secret) is read from the catalog `oauth` block. Any
-`oauth.redirectUri` there is **inert** — the flow always redirects to Zimmer's own
-`/mcp_oauth/callback` (`build_redirect_uri`), because the callback must return to Zimmer, not to the
-`localhost` URL a local dev config would name. A pre-registered client therefore has to have Zimmer's
-deployed callback URL registered against it at the provider, or the provider will reject the
-`redirect_uri` mismatch.
+The catalog `oauth` block also configures the **redirect URI** (`oauth.redirectUri`, camelCase;
+`redirect_uri` accepted). It is read on the same footing as the client id, by the same resolution
+the `PreregisteredOauthConfig` path uses: when set it wins over Zimmer's hosted
+`/mcp_oauth/callback`, and when absent the hosted callback stays the default — which is what every
+ordinary server uses. A pre-registered client only accepts the redirects registered against it at
+the provider, and for a public client Zimmer does not own that is a fixed URL it cannot change:
+Slack's `slack-reframe` entry declares `http://localhost:3118/callback`, and handing Slack the
+hosted callback instead fails at the consent screen with `redirect_uri did not match any configured
+URIs`.
+:::
+
+:::note[Paste-back is derived from the redirect URI, not a per-server flag]
+Zimmer can only finish a flow automatically when the provider redirects back to the callback Zimmer
+itself serves. So `McpOauthService#manual_completion_required?` marks a flow manual whenever its
+redirect URI is not `build_redirect_uri` — a third-party `localhost` URL or an `oob` URN lands
+somewhere Zimmer never sees, and the user completes it by pasting the resulting URL into
+`POST /mcp_oauth/complete` ([manual (paste-back) completion](#manual-paste-back-completion)).
+
+The test is "is this our callback", not "does this look like localhost": with `APP_HOST` unset the
+hosted callback is *itself* `http://localhost:3000/mcp_oauth/callback`, which must stay automatic.
+A `mcp_oauth_clients` credentials entry can still force paste-back with `manual: true` regardless of
+its redirect URI; catalog-configured servers need no flag, because the declared redirect already
+says whether Zimmer can receive the callback.
 :::
 
 :::caution[Re-authorizing a server does not reach an already-running session]

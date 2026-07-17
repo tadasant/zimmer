@@ -145,6 +145,7 @@ class ServersConfigTest < ActiveSupport::TestCase
 
     assert_equal "1601185624273.8899143856786", server.oauth_client_id
     assert_nil server.oauth_client_secret
+    assert_equal "http://localhost:3118/callback", server.oauth_redirect_uri
   end
 
   test "server accepts snake_case oauth client id and secret as a fallback" do
@@ -158,11 +159,32 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert_equal "shh-secret", server.oauth_client_secret
   end
 
+  test "server accepts a snake_case oauth redirect uri as a fallback" do
+    server = ServersConfig::Server.new("snake", {
+      "type" => "streamable-http",
+      "url" => "https://example.com/mcp",
+      "oauth" => { "client_id" => "cid-123", "redirect_uri" => "http://localhost:3118/callback" }
+    })
+
+    assert_equal "http://localhost:3118/callback", server.oauth_redirect_uri
+  end
+
+  test "server with an oauth block but no redirect uri has none configured" do
+    server = ServersConfig::Server.new("no-redirect", {
+      "type" => "streamable-http",
+      "url" => "https://example.com/mcp",
+      "oauth" => { "clientId" => "cid-123" }
+    })
+
+    assert_nil server.oauth_redirect_uri
+  end
+
   test "server without an oauth block has no configured client id" do
     server = ServersConfig.find("playwright-custom")
 
     assert_nil server.oauth_client_id
     assert_nil server.oauth_client_secret
+    assert_nil server.oauth_redirect_uri
   end
 
   # Test environment variable detection. Zimmer's own MCP entries are remote
