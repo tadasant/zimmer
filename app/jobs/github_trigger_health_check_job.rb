@@ -48,11 +48,8 @@ class GithubTriggerHealthCheckJob < ApplicationJob
   ALERT_DEDUP_KEY = "github_trigger_poller_stalled"
 
   def perform
-    # Mirror the poller's own guards. With no `gh` credential the poller can't run at
-    # all (e.g. staging), so a missing/stale heartbeat there is expected, not an
-    # incident. With no enabled GitHub triggers the poller returns early every tick and
-    # never writes a heartbeat, which must likewise not read as a stall.
-    return unless GithubSearchService.configured?
+    # With no enabled GitHub triggers the poller has nothing to poll, so its heartbeat
+    # says nothing and there is no stall to report.
     return unless enabled_github_conditions?
 
     raw = Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
@@ -64,6 +61,18 @@ class GithubTriggerHealthCheckJob < ApplicationJob
       # false alarm, so seed instead — the NEXT check then measures against a real point
       # in time. A genuine ongoing stall is still caught: the poller isn't rewriting the
       # key, so this seed itself ages past the threshold and the next check pages.
+      #
+      # The `gh` credential is checked HERE and nowhere else, and the placement is the
+      # whole point: a host with no credential (staging) legitimately never polls and so
+      # never heartbeats, and must not be seeded or paged about. But `configured?` shells
+      # out to `gh auth status` — a live API call that a GitHub outage makes fail. Testing
+      # it up front would hand this job the same silence it exists to break: during a REST
+      # incident the preflight fails, the check returns, and the stall it was watching for
+      # goes unreported. Once a heartbeat EXISTS, this host has demonstrably polled GitHub,
+      # so a stale one is an incident whatever the preflight now says — including the case
+      # where polling stopped BECAUSE the credential was revoked.
+      return unless GithubSearchService.configured?
+
       seed_heartbeat
       Rails.logger.info "[GithubTriggerHealthCheckJob] No usable poll heartbeat (#{raw.inspect}); " \
                         "seeded a baseline, not alerting."
@@ -94,12 +103,13 @@ class GithubTriggerHealthCheckJob < ApplicationJob
   # iso8601, so an unparseable value is belt-and-braces (a hand-edited or half-written
   # key) rather than an expected path — but it must degrade to "no baseline" instead of
   # crashing the check on every run. Time.iso8601 signals bad input with ArgumentError
-  # (Date::Error, which it may raise instead, subclasses it).
+  # (Date::Error, which it may raise instead, subclasses it) and a non-String with
+  # TypeError.
   def parse_heartbeat(raw)
     return nil if raw.blank?
 
     Time.iso8601(raw)
-  rescue ArgumentError
+  rescue ArgumentError, TypeError
     nil
   end
 

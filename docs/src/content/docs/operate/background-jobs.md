@@ -85,16 +85,30 @@ merge gate) quietly stop firing. Two mechanisms close that:
   group on deadline. A hang becomes a `SearchError` — an ordinary, alerting failure the next tick
   retries — instead of a wedge.
 - **A liveness check.** `GithubTriggerPollerJob` stamps a Redis heartbeat
-  (`HEARTBEAT_CACHE_KEY`) on every sweep that polls at least one condition successfully.
+  (`HEARTBEAT_CACHE_KEY`) on every sweep that processes at least one condition successfully.
   `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#eng-alerts` when it is older
   than `STALE_THRESHOLD` (15m), under one stable dedup key so a long outage notifies about once an
   hour rather than every run. This is the GitHub counterpart to `SlackTriggerHealthCheckJob`.
 
-The heartbeat's bar is *"at least one condition's search returned"*, not *"`perform` returned"*: the
+The heartbeat's bar is *"at least one condition came back clean"*, not *"`perform` returned"*: the
 per-condition `rescue` swallows errors so one bad condition can't abort the sweep, which means
 `perform` returns normally even in a total outage where nothing was polled. Requiring a real success
-is what separates a live poller (some search worked — a failing condition pages on its own) from a
+is what separates a live poller (some condition worked — a failing one pages on its own) from a
 wedged or downed one.
+
+Two placement details are load-bearing, and both are easy to get backwards:
+
+- **The health check tests the `gh` credential only when there is no heartbeat yet.**
+  `GithubSearchService.configured?` shells out to `gh auth status`, which is a *live API call*, so a
+  GitHub outage makes it return `false`. Guarding the whole check on it would reproduce the original
+  silence exactly: the poller stalls, the preflight fails, and nobody is paged. Once a heartbeat
+  exists the host has demonstrably polled GitHub, so a stale one is an incident whatever the
+  preflight now says — including when polling stopped *because* the credential was revoked. The
+  credential only decides whether a host with no baseline (staging) gets seeded.
+- **A tick that finds no GitHub triggers still heartbeats.** Otherwise the key rots while there is
+  legitimately nothing to poll, and enabling a trigger flips the health check on against that stale
+  value — paging for a healthy poller. A tick skipped for a *missing credential* must not stamp,
+  though, or an outage would keep the heartbeat artificially fresh.
 
 `GithubTriggerHealthCheckJob` runs on `default`, deliberately not `pollers`: a monitor must not run
 on the queue it watches, or the outage it exists to report would starve it into silence too.
