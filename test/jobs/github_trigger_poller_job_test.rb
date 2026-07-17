@@ -605,3 +605,111 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal "2026-07-12T10:00:00Z", @issue_condition.reload.github_last_issue_at
   end
 end
+
+# ── Liveness heartbeat ──────────────────────────────────────────────────────
+#
+# The poller's per-condition rescue only alerts when a search RAISES. It cannot catch a
+# poller that stops running at all (hung subprocess, downed worker, held concurrency
+# slot) — no code runs, so nothing raises, and polling freezes in silence. The heartbeat
+# is the signal GithubTriggerHealthCheckJob reads to notice that silence.
+#
+# Its own class rather than a block in the suite above: the production cache is
+# null_store in test, so these need a real store swapped in, and that swap should not
+# ride along on the 29 behavioural tests that have no use for it.
+class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
+  setup do
+    @label_condition = trigger_conditions(:github_label_condition)
+    GithubSearchService.stubs(:configured?).returns(true)
+
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    Rails.cache.delete(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+  end
+
+  teardown do
+    Rails.cache = @original_cache
+  end
+
+  def heartbeat
+    Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+  end
+
+  # An item shaped like the search-API fields the poller actually reads.
+  def item(number:, labels: [], repo: "tadasant/zimmer")
+    {
+      "number" => number,
+      "title" => "Item #{number}",
+      "html_url" => "https://github.com/#{repo}/pull/#{number}",
+      "repository_url" => "https://api.github.com/repos/#{repo}",
+      "user" => { "login" => "someone" },
+      "body" => "body of #{number}",
+      "labels" => labels.map { |name| { "name" => name } },
+      "created_at" => "2026-07-10T12:00:00Z",
+      "pull_request" => { "url" => "x" }
+    }
+  end
+
+  # Label queries start "is:open "; issue queries start "is:issue ". Dispatch on the
+  # query rather than call order, which fixture id hashing makes unreliable.
+  def stub_search(label: [], issue: [])
+    fake = ->(query, **_opts) { query.start_with?("is:issue ") ? issue : label }
+    GithubSearchService.stub(:search_issues, fake) { yield }
+  end
+
+  test "a successful poll records the heartbeat" do
+    stub_search(label: [ item(number: 1, labels: [ "ready to merge" ]) ]) do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    assert_not_nil heartbeat, "a poll that reached GitHub should stamp the heartbeat"
+    assert_in_delta Time.current.to_f, Time.iso8601(heartbeat).to_f, 5
+  end
+
+  test "a poll where every condition fails does NOT record the heartbeat" do
+    # The crux: the per-condition rescue lets perform RETURN normally even though
+    # nothing was actually polled. If "perform returned" counted as liveness, a total
+    # GitHub outage would keep the heartbeat fresh and the health check would sit
+    # silent through exactly the incident it exists to catch.
+    AlertService.stubs(:raise_alert)
+    GithubSearchService.stub(:search_issues, ->(*, **) { raise GithubSearchService::SearchError, "502" }) do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    assert_nil heartbeat, "a sweep in which no condition polled successfully is not liveness"
+  end
+
+  test "a poll where only some conditions fail still records the heartbeat" do
+    # A single broken condition pages on its own via the per-condition alert; it must
+    # not also trip the stall alarm, because the poller itself is demonstrably alive.
+    AlertService.stubs(:raise_alert)
+    fake = lambda do |query, **_opts|
+      raise GithubSearchService::SearchError, "502" if query.start_with?("is:issue ")
+      [ item(number: 1, labels: [ "ready to merge" ]) ]
+    end
+
+    GithubSearchService.stub(:search_issues, fake) { GithubTriggerPollerJob.perform_now }
+
+    assert_not_nil heartbeat, "one healthy condition is enough to prove the poller is alive"
+  end
+
+  test "a tick skipped for a missing gh credential does not record the heartbeat" do
+    # An unconfigured host never polls, so it must not look alive. (The health check
+    # makes the same configured? check, so this gap never pages there.)
+    GithubSearchService.stubs(:configured?).returns(false)
+
+    GithubTriggerPollerJob.perform_now
+
+    assert_nil heartbeat
+  end
+
+  test "a heartbeat write failure does not break an otherwise successful poll" do
+    Rails.cache.stubs(:write).raises(StandardError, "Redis connection refused")
+
+    stub_search(label: [ item(number: 1, labels: [ "ready to merge" ]) ]) do
+      assert_nothing_raised { GithubTriggerPollerJob.perform_now }
+    end
+
+    # The poll's real work still landed.
+    assert_equal [ "tadasant/zimmer#1:ready to merge" ], @label_condition.reload.github_seen_items
+  end
+end
