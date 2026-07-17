@@ -143,6 +143,11 @@ Rails.application.configure do
       class: "SlackTriggerHealthCheckJob",
       description: "Detect Slack trigger feeds that have silently stopped firing and alert"
     },
+    github_trigger_health_check: {
+      cron: "*/5 * * * *", # Every 5 minutes — catches a silent poller freeze within ~15-20 min
+      class: "GithubTriggerHealthCheckJob",
+      description: "Alert #eng-alerts when GitHub trigger polling has silently stopped succeeding"
+    },
     schedule_trigger: {
       cron: "* * * * *", # Every minute
       class: "ScheduleTriggerJob",

@@ -28,6 +28,7 @@ From `config.good_job.cron`:
 | 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
 | 2m | `GitHubMergeConflictPollerJob` | Detect merge conflicts on open PRs |
 | 2m | `CliStatusRefreshJob` | Refresh the `gh` / `claude` / `codex` version cache |
+| 5m | `GithubTriggerHealthCheckJob` | Alert when GitHub trigger polling has silently stopped succeeding |
 | 5m | `CleanupOrphanedSessionsJob` | Sessions marked `running` whose process is gone |
 | 5m | `RefreshRuntimeAuthTokensJob` | Refresh Anthropic/OpenAI OAuth tokens |
 | 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks |
@@ -66,6 +67,39 @@ Most jobs run on `default`. Two are deliberately isolated:
 `total_limit: 1` caps the blast radius, but it also means no Slack polling at all while you're
 throttled — and ticks are silently dropped.
 :::
+
+## Trigger-poll liveness
+
+Both trigger pollers alert `#eng-alerts` (via `AlertService`) from a per-condition `rescue` when a
+poll **raises**. That only covers failures noisy enough to throw. It does not cover a poller that
+stops running at all — and with `total_limit: 1`, one wedged tick is enough: while it holds the only
+slot, every subsequent minute's enqueue is a silent no-op.
+
+`GithubSearchService` shells out to `gh`, and during a GitHub REST incident a request can stall with
+the connection half-open — no response, no reset. An unbounded `Open3.capture3` blocks on that
+forever, so nothing raises, nothing alerts, and label/issue triggers (including the `ready to merge`
+merge gate) quietly stop firing. Two mechanisms close that:
+
+- **A bound on every `gh` call.** `GithubSearchService::REQUEST_TIMEOUT` (15s) and
+  `AUTH_STATUS_TIMEOUT` (10s) run each invocation under `BoundedSubprocess`, which kills the process
+  group on deadline. A hang becomes a `SearchError` — an ordinary, alerting failure the next tick
+  retries — instead of a wedge.
+- **A liveness check.** `GithubTriggerPollerJob` stamps a Redis heartbeat
+  (`HEARTBEAT_CACHE_KEY`) on every sweep that polls at least one condition successfully.
+  `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#eng-alerts` when it is older
+  than `STALE_THRESHOLD` (15m), under one stable dedup key so a long outage notifies about once an
+  hour rather than every run. This is the GitHub counterpart to `SlackTriggerHealthCheckJob`.
+
+The heartbeat's bar is *"at least one condition's search returned"*, not *"`perform` returned"*: the
+per-condition `rescue` swallows errors so one bad condition can't abort the sweep, which means
+`perform` returns normally even in a total outage where nothing was polled. Requiring a real success
+is what separates a live poller (some search worked — a failing condition pages on its own) from a
+wedged or downed one.
+
+`GithubTriggerHealthCheckJob` runs on `default`, deliberately not `pollers`: a monitor must not run
+on the queue it watches, or the outage it exists to report would starve it into silence too.
+`SystemHealthMonitorJob` documents the same rule inverted — it watches `default`, so it runs on
+`pollers`.
 
 ## Retry and recovery machinery
 

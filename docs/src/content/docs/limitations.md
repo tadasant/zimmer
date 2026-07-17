@@ -359,6 +359,20 @@ is most often imagined to cover. Running the alert job on `ubuntu-latest` protec
 *degraded* pool (jobs run, jobs fail, the alert goes out), not an absent one. Noticing that CI has
 gone quiet is still a human job.
 
+### The GitHub trigger-poll liveness alarm depends on Redis, and fails quiet
+
+`GithubTriggerHealthCheckJob` decides whether polling has stalled by reading a heartbeat the poller
+writes to `Rails.cache` (Redis). When the heartbeat is **missing** — a cache flush, a Redis outage,
+or a gap longer than `HEARTBEAT_TTL` (7 days) — the check cannot date the absence, so it seeds a
+fresh baseline and stays quiet rather than paging on something it can't distinguish from a first
+boot. A genuine stall is still caught one cycle later (the seed itself goes stale and the next check
+pages), but a Redis outage silences the alarm for as long as it lasts.
+
+This is the conservative trade: the alternative — paging on any missing key — turns every deploy and
+cache flush into a false page, and a liveness alarm nobody trusts is worse than one with a known
+hole. It fails quiet, not loud. The same Redis dependency already underlies `AlertService`'s dedup
+and `SystemHealthMonitorJob`'s streak, so a Redis outage degrades that whole family together.
+
 ---
 
 ## Security
