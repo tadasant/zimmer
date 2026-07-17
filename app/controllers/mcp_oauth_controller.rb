@@ -78,6 +78,10 @@ class McpOauthController < ApplicationController
         preregistered_oauth.resource.presence
       end
 
+      # A configured redirect_uri (e.g. the localhost redirect the third-party client
+      # permits) wins over Zimmer's hosted callback.
+      redirect_uri = oauth_service.resolve_redirect_uri(preregistered_oauth.redirect_uri)
+
       oauth_metadata = {
         authorization_endpoint: preregistered_oauth.authorization_endpoint,
         token_endpoint: preregistered_oauth.token_endpoint,
@@ -85,11 +89,8 @@ class McpOauthController < ApplicationController
         client_secret: preregistered_oauth.client_secret,
         scopes: preregistered_oauth.scopes,
         resource: resource,
-        manual: preregistered_oauth.manual?
+        manual: preregistered_oauth.manual? || oauth_service.manual_completion_required?(redirect_uri)
       }
-      # A configured redirect_uri (e.g. the localhost redirect the third-party client
-      # permits) wins over Zimmer's hosted callback.
-      redirect_uri = preregistered_oauth.redirect_uri.presence || oauth_service.build_redirect_uri
       Rails.logger.info "[McpOauthController] Using pre-registered OAuth for #{server_name}"
     else
       # Fall back to probing the server to discover OAuth metadata via RFC 8414/9728.
@@ -100,7 +101,8 @@ class McpOauthController < ApplicationController
       requirement = oauth_service.check_oauth_requirement(
         server_url,
         configured_client_id: catalog_server&.oauth_client_id,
-        configured_client_secret: catalog_server&.oauth_client_secret
+        configured_client_secret: catalog_server&.oauth_client_secret,
+        configured_redirect_uri: catalog_server&.oauth_redirect_uri
       )
 
       unless requirement.required && requirement.metadata
@@ -109,6 +111,12 @@ class McpOauthController < ApplicationController
         return
       end
 
+      # The catalog `oauth` block configures the redirect URI on the same footing as
+      # the client id above: a pre-registered client accepts only the redirects
+      # registered against it at the provider, whether its endpoints came from the
+      # catalog or from discovery. Servers without one keep the hosted callback.
+      redirect_uri = oauth_service.resolve_redirect_uri(catalog_server&.oauth_redirect_uri)
+
       oauth_metadata = {
         authorization_endpoint: requirement.metadata.authorization_endpoint,
         token_endpoint: requirement.metadata.token_endpoint,
@@ -116,9 +124,9 @@ class McpOauthController < ApplicationController
         client_id: requirement.metadata.client_id,
         client_secret: requirement.metadata.client_secret,
         scopes: requirement.metadata.scopes_supported&.join(" "),
-        resource: requirement.metadata.resource
+        resource: requirement.metadata.resource,
+        manual: oauth_service.manual_completion_required?(redirect_uri)
       }
-      redirect_uri = oauth_service.build_redirect_uri
     end
 
     unless oauth_metadata && oauth_metadata[:authorization_endpoint]

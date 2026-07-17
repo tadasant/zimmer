@@ -2510,15 +2510,18 @@ class SessionsController < ApplicationController
         next
       end
 
-      # Otherwise, probe the server to check if OAuth is required. Pass through any
-      # statically-configured client id (catalog `oauth` block) so the resolved
-      # metadata carries the pre-registered client rather than the fallback literal.
+      # Otherwise, probe the server to check if OAuth is required. Pass through the
+      # statically-configured client (catalog `oauth` block) so the resolved metadata
+      # carries the pre-registered client rather than the fallback literal, and the
+      # configured redirect so any registration this probe performs names the redirect
+      # the authorization flow will actually send.
       begin
         catalog_server = ServersConfig.find(server_name)
         requirement = oauth_service.check_oauth_requirement(
           server_url,
           configured_client_id: catalog_server&.oauth_client_id,
-          configured_client_secret: catalog_server&.oauth_client_secret
+          configured_client_secret: catalog_server&.oauth_client_secret,
+          configured_redirect_uri: catalog_server&.oauth_redirect_uri
         )
         if requirement.required
           result[:servers_needing_oauth] << {
