@@ -148,6 +148,11 @@ Rails.application.configure do
       class: "GithubTriggerPollerJob",
       description: "Poll GitHub for label-added and new-issue trigger conditions and create sessions"
     },
+    github_trigger_health_check: {
+      cron: "*/5 * * * *", # Every 5 minutes — catches a silent poller freeze within ~15-20 min
+      class: "GithubTriggerHealthCheckJob",
+      description: "Alert #eng-alerts when GitHub trigger polling has silently stopped succeeding"
+    },
     schedule_trigger: {
       cron: "* * * * *", # Every minute
       class: "ScheduleTriggerJob",
