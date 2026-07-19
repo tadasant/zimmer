@@ -66,7 +66,10 @@ class GithubSearchService
     # error on a configured host still raises out of search_issues and alerts.
     def configured?
       _out, _err, status = BoundedSubprocess.run([ "gh", "auth", "status" ], timeout: AUTH_STATUS_TIMEOUT)
-      status.success?
+      # `&.` for the same reason as `request` below: a nil status (child reaped before the
+      # waiter's waitpid) means the preflight produced no result, so treat this tick as
+      # unconfigured and skip rather than raising `nil.success?`.
+      status&.success? || false
     rescue => e
       # A timeout (BoundedSubprocess::TimeoutError) lands here too: a preflight that
       # hangs against a degraded API is treated as "not configured this tick" — the
@@ -146,8 +149,15 @@ class GithubSearchService
 
       stdout, stderr, status = BoundedSubprocess.run(command, timeout: REQUEST_TIMEOUT)
 
-      unless status.success?
-        detail = stderr.to_s.strip.presence || "exit status #{status.exitstatus}"
+      # A nil status is a failed gh call, not a success. BoundedSubprocess returns
+      # `wait_thr.value`, and Open3's wait_thr is a Process.detach thread whose #value is
+      # nil when the child was reaped elsewhere before the waiter's own waitpid ran (ECHILD)
+      # — a real race in the multi-threaded GoodJob worker. Guarding it with `&.` alongside a
+      # non-zero exit routes it through the same SearchError the poller's per-condition rescue
+      # already handles, instead of crashing the tick with `undefined method 'success?' for nil`.
+      unless status&.success?
+        detail = stderr.to_s.strip.presence ||
+          (status ? "exit status #{status.exitstatus}" : "gh exited without a status (child reaped without a result)")
         raise SearchError, "gh api search/issues failed: #{detail}"
       end
 
