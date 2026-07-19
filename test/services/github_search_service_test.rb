@@ -77,12 +77,18 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     assert_includes error.message, "without a status"
   end
 
-  test "configured? is false (not raising) when gh auth returns a nil status" do
-    # The same reaped-child race on the auth preflight: a nil status means no result, so
-    # the tick is treated as unconfigured (skip) rather than raising `nil.success?`.
+  test "configured? is false on a nil gh auth status, without traversing the rescue" do
+    # The same reaped-child race on the auth preflight. configured?'s broad `rescue => e`
+    # already downgraded the old `nil.success?` NoMethodError to false, so a bare
+    # `assert_not configured?` would pass against the unfixed code too. The observable delta
+    # the fix introduces is that a nil status is now handled inline (`status&.success? ||
+    # false`) instead of raising into the rescue and logging a misleading
+    # "gh auth preflight failed: NoMethodError" WARN — so pin that: no WARN is emitted.
     BoundedSubprocess.expects(:run)
       .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
       .returns([ "", "", nil ])
+    Rails.logger.expects(:warn).never
+
     assert_not GithubSearchService.configured?
   end
 
