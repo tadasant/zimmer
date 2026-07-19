@@ -83,7 +83,10 @@ merge gate) quietly stop firing. Two mechanisms close that:
 - **A bound on every `gh` call.** `GithubSearchService::REQUEST_TIMEOUT` (15s) and
   `AUTH_STATUS_TIMEOUT` (10s) run each invocation under `BoundedSubprocess`, which kills the process
   group on deadline. A hang becomes a `SearchError` — an ordinary, alerting failure the next tick
-  retries — instead of a wedge.
+  retries — instead of a wedge. Every non-success gh outcome is normalized the same way: a non-zero
+  exit, and a **nil `Process::Status`** (`BoundedSubprocess` returns Open3's `wait_thr.value`, which is
+  `nil` when the child was reaped elsewhere before its own `waitpid` — a race in the multi-threaded
+  worker) both raise `SearchError` rather than crashing the tick with `undefined method 'success?' for nil`.
 - **A liveness check.** `GithubTriggerPollerJob` stamps a Redis heartbeat
   (`HEARTBEAT_CACHE_KEY`) on every sweep that processes at least one condition successfully.
   `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#eng-alerts` when it is older

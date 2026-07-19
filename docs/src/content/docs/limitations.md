@@ -916,6 +916,20 @@ is quiet but easy to miss. Staging shipped without this credential, which is how
 
 Check with `gh auth status` in the worker container; fix by providing a token to that environment.
 
+### `BoundedSubprocess` can return a nil `Process::Status`, and only the `gh` search path guards it
+
+`BoundedSubprocess.run` returns Open3's `wait_thr.value`, which is a `Process.detach` thread whose
+`#value` is **`nil`** when the child pid was reaped elsewhere before the waiter's own `waitpid` ran
+(`ECHILD`) — a race that can happen in the multi-threaded worker. A caller that then calls
+`status.success?` on that nil crashes with `undefined method 'success?' for nil`. `GithubSearchService`
+(the `github_label`/`github_issue` poller's search and its `gh auth status` preflight) guards both call
+sites with `status&.success?`, turning a nil into an ordinary `SearchError` the poller already handles.
+The other three consumers — `GitCloneService` and the two `AirPrepareService` calls, all on the
+synchronous `waiting → running` launch path — do **not** yet guard it, so the same race would surface
+there as a `NoMethodError` that fails that one session's launch (not a per-minute alert storm). The
+durable fix is to make `BoundedSubprocess` never hand back a nil status; until then the exposure is
+noted rather than fixed at the source.
+
 ---
 
 ## API
