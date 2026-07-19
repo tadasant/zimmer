@@ -262,6 +262,35 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal before, @label_condition.reload.github_seen_items
   end
 
+  test "a nil gh status is surfaced as a SearchError alert, not a NoMethodError crash" do
+    # End-to-end reproduction of prod incident 2026-07-19 (condition 352): the real
+    # GithubSearchService.request path runs, but BoundedSubprocess returns a nil
+    # Process::Status (Open3's detach-thread #value is nil when the child was reaped
+    # before its own waitpid). Before the fix, `status.success?` raised
+    # `undefined method 'success?' for nil`; the per-condition rescue caught it but
+    # reported that scary NoMethodError. It must instead flow through the normal gh-failure
+    # path — a SearchError the rescue turns into one alert and a retry next tick — and never
+    # touch the condition's seen-set.
+    BoundedSubprocess.stubs(:run).returns([ "", "", nil ])
+
+    details = []
+    AlertService.stubs(:raise_alert).with do |*args, **kwargs|
+      opts = kwargs.empty? ? (args.last.is_a?(Hash) ? args.last : {}) : kwargs
+      details << opts[:details].to_s
+      true
+    end
+
+    before = @label_condition.github_seen_items
+    assert_nothing_raised { GithubTriggerPollerJob.perform_now }
+
+    assert details.any?, "expected the nil gh status to raise a per-condition alert"
+    assert details.all? { |d| d.include?("gh api search/issues failed") },
+           "alert should describe the gh failure, got: #{details.inspect}"
+    assert details.none? { |d| d.include?("undefined method") },
+           "a nil status must not escape as a NoMethodError, got: #{details.inspect}"
+    assert_equal before, @label_condition.reload.github_seen_items
+  end
+
   # ── Graceful degradation when gh is unauthenticated ───────────────────────
   #
   # An environment whose worker has no gh credential (observed on staging: every tick
