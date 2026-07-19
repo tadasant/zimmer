@@ -60,6 +60,38 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     assert_includes error.message, "API rate limit exceeded"
   end
 
+  test "search_issues raises SearchError (not NoMethodError) when gh returns a nil status" do
+    # Production incident 2026-07-19 (condition 352, the live "PR ready to merge → merge
+    # gate" poller): BoundedSubprocess handed back a nil Process::Status — Open3's wait_thr
+    # is a Process.detach thread whose #value is nil when the child was reaped elsewhere
+    # before its own waitpid (ECHILD), a race in the multi-threaded GoodJob worker. The
+    # unguarded `status.success?` then blew up with `undefined method 'success?' for nil`
+    # and crashed the poll tick. A nil status is a failed gh call and must surface as the
+    # same SearchError every other failure raises, so the poller's rescue handles it.
+    BoundedSubprocess.stubs(:run).returns([ "out", "", nil ])
+
+    error = assert_raises(GithubSearchService::SearchError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+    assert_includes error.message, "gh api search/issues failed"
+    assert_includes error.message, "without a status"
+  end
+
+  test "configured? is false on a nil gh auth status, without traversing the rescue" do
+    # The same reaped-child race on the auth preflight. configured?'s broad `rescue => e`
+    # already downgraded the old `nil.success?` NoMethodError to false, so a bare
+    # `assert_not configured?` would pass against the unfixed code too. The observable delta
+    # the fix introduces is that a nil status is now handled inline (`status&.success? ||
+    # false`) instead of raising into the rescue and logging a misleading
+    # "gh auth preflight failed: NoMethodError" WARN — so pin that: no WARN is emitted.
+    BoundedSubprocess.expects(:run)
+      .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
+      .returns([ "", "", nil ])
+    Rails.logger.expects(:warn).never
+
+    assert_not GithubSearchService.configured?
+  end
+
   test "repo_group ORs the repos" do
     assert_equal "(repo:owner/a OR repo:owner/b)",
                  GithubSearchService.repo_group(%w[owner/a owner/b])
