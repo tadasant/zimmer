@@ -195,9 +195,20 @@ The cleaned list is **persisted** to the session (`update_column`, so no validat
 cascade on the launch path). A session does not prepare once: `air prepare` re-runs on every
 resume — follow-up message, trigger fire, restart — so an in-memory-only scrub would re-detect the
 same stale id and re-alert forever, once per resume. Persisting is what makes the alert a one-time
-notice. The one exception is the empty-catalog guard: if the catalog itself failed to load (so
-every id would look stale), nothing is dropped *and* nothing is written — a bad prune persisted to
-the database would be permanent.
+notice.
+
+Two guards keep a persisted prune from being wrong. If the catalog failed to load entirely (so
+every id would look stale), nothing is dropped *and* nothing is written. If the catalog is
+*degraded* — `AirCatalogService` serving a last-known-good snapshot after a failed resolve — the id
+is still pruned in memory, because `air prepare` would hard-reject it either way, but the write is
+skipped: a skill added after that snapshot was taken looks stale against it, and a bad prune
+written to the database is permanent where an in-memory one self-corrects on the next healthy
+prepare. A failed write is logged and swallowed for the same reason — the heal must never become
+the thing that bricks the launch it exists to protect.
+
+For an operator sweep of already-stale rows, `bin/rails sessions:heal_stale_catalog_skills`
+(`DRY_RUN=true` to preview) applies the same logic across all non-archived sessions and refuses to
+run against an empty or degraded catalog.
 
 ## The AIR CLI is installed lazily, at runtime
 
