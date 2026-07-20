@@ -378,17 +378,51 @@ class AirPrepareService
     return requested if stale.empty?
 
     valid = requested - stale
-    # update_column: skip validations and callbacks. The stale id is precisely
-    # what the create-time validation would reject, and this runs synchronously
-    # on the session-launch path, where a broadcast/callback cascade is not worth
-    # the risk. Mirrors Trigger#heal_stale_catalog_skills!.
-    session.update_column(:catalog_skills, valid)
     Rails.logger.warn(
       "[AirPrepareService] Dropping stale skill(s) #{stale.inspect} not in the AIR catalog " \
       "before `air prepare` for session #{session.id}. Remaining skills: #{valid.inspect}"
     )
+    persist_healed_skills(valid)
     alert_stale_skills_dropped(stale, valid)
     valid
+  end
+
+  # Write the pruned list back to the session record.
+  #
+  # `update_column`: skips validations and callbacks. The stale id is precisely
+  # what the create-time validation would reject, and this runs synchronously on
+  # the session-launch path, where a broadcast/callback cascade is not worth the
+  # risk. Mirrors Trigger#heal_stale_catalog_skills!. The trade-off is that an
+  # open sessions index doesn't re-render until its next reload — the same
+  # trade-off the trigger heal already makes.
+  #
+  # Skipped when the catalog is DEGRADED — i.e. AirCatalogService is serving a
+  # last-known-good snapshot after a failed resolve. That snapshot is non-empty,
+  # so the empty-catalog guard above doesn't catch it, but a skill added since it
+  # was taken looks stale against it. Dropping such an id for this one run is
+  # recoverable (the next prepare on a healthy catalog keeps it); writing that
+  # drop to the database is not. The prune still happens in memory so `air
+  # prepare` can't be bricked either way — only the persist waits for a catalog
+  # we trust.
+  #
+  # A failed write must not brick the launch this whole method exists to protect,
+  # so DB errors are logged and swallowed: the session prepares with the pruned
+  # list and re-attempts the heal on its next resume.
+  def persist_healed_skills(valid)
+    if AirCatalogService.degraded?
+      Rails.logger.warn(
+        "[AirPrepareService] Not persisting the skill self-heal for session #{session.id}: " \
+        "the catalog is degraded (last-known-good snapshot), so an id absent from it may not be stale."
+      )
+      return
+    end
+
+    session.update_column(:catalog_skills, valid)
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.warn(
+      "[AirPrepareService] Failed to persist the skill self-heal for session #{session.id} " \
+      "(#{e.class}: #{e.message}); continuing with the in-memory prune."
+    )
   end
 
   # Surface a dropped stale skill the same way the trigger self-heal does: a
@@ -406,7 +440,8 @@ class AirPrepareService
                "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
                "The stale reference(s) have been removed from the session so `air prepare` " \
                "could proceed. The session started with the remaining skills, and the cleaned " \
-               "list is persisted — this alert fires at most once per session.\n\n" \
+               "list is persisted — so this fires once per stale-config event, not once per " \
+               "resume.\n\n" \
                "<#{AppUrl.base_url}/sessions/#{session.id}|View session in Zimmer>",
       source: "AirPrepareService#run_air_prepare!",
       dedup_key: "session_stale_skills_#{session.id}"

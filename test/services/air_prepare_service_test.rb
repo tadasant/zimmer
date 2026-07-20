@@ -309,6 +309,55 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       "the self-heal must be written back, not discarded"
   end
 
+  test "prepare! prunes but does NOT persist when the catalog is degraded" do
+    # A degraded catalog (AirCatalogService serving a last-known-good snapshot) is
+    # non-empty, so the empty-catalog guard doesn't catch it — but a skill added
+    # since the snapshot was taken looks stale against it. Dropping it for one run
+    # is recoverable; writing that drop to the DB is not.
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
+    AirCatalogService.stubs(:degraded?).returns(true)
+    AlertService.stubs(:raise_alert)
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      ).prepare!
+    end
+
+    refute_includes captured_cmd[1..], "renamed-away-skill",
+      "the in-memory prune must still happen — air prepare would hard-reject the id"
+    assert_equal [ "zimmer-run-tests", "renamed-away-skill" ], @session.reload.catalog_skills,
+      "a drop decided against a degraded catalog must not be written to the database"
+  end
+
+  test "prepare! survives a failed self-heal write and still prepares with the pruned list" do
+    # The heal exists to stop a stale id from bricking startup; a DB failure while
+    # persisting it must not become the brick.
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
+    AlertService.stubs(:raise_alert)
+    Session.any_instance.stubs(:update_column).raises(ActiveRecord::StatementInvalid, "boom")
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      ).prepare!
+    end
+
+    refute_includes captured_cmd[1..], "renamed-away-skill"
+  end
+
   test "prepare! alerts once across repeated prepares — a session prepares on every resume" do
     # The bug this guards (issue #218): `air prepare` re-runs on every resume, so
     # an in-memory-only scrub re-detected the same stale id and re-alerted forever.
