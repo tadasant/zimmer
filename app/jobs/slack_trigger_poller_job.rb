@@ -464,6 +464,16 @@ class SlackTriggerPollerJob < ApplicationJob
 
     session = trigger.create_session!(prompt: prompt)
 
+    # Burst control can suppress the spawn (see Trigger::BURST_WINDOW). The
+    # message is then DROPPED, not retried: the caller advances the condition's
+    # cursor to the newest message it fetched regardless of what each message
+    # produced, which is exactly what we want here — replaying a burst once it
+    # subsides would spawn the very sessions the cap exists to prevent.
+    if session.nil?
+      Rails.logger.info "[SlackTriggerPollerJob] Trigger #{trigger.id} spawned nothing for message #{message.ts} (burst-suppressed) — dropping it"
+      return
+    end
+
     # Update condition's last_triggered_at
     condition.update!(last_triggered_at: Time.current)
 
