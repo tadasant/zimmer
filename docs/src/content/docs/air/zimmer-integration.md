@@ -184,14 +184,20 @@ Requested **skill** ids get one more guard, *before* the invocation. A session's
 are validated against the catalog when the session is created, but the catalog moves on
 independently: a local skill renamed (`pr` → `open-pr`) or removed leaves a stale id in a
 long-lived session's stored config. `air prepare` hard-rejects an unknown skill id with exit 1
-(`Error: Unknown skill ID "pr". …`), which would brick startup. So `AirPrepareService#valid_catalog_skills`
-drops any id not in the live catalog, logs a warning, and raises a deduped "Session self-healed:
-stale catalog skill(s) removed" alert — then prepares with the survivors. This mirrors
-`Trigger#heal_stale_catalog_skills!` (which self-heals the *trigger* path) and gives an unknown
-*skill* the same non-fatal degradation an unknown *root* already gets. It does **not** persist the
-cleaned list — a session prepares once, so the scrub is in-memory only; if the catalog itself failed
-to load (so every id would look stale), the guard leaves the list untouched rather than stripping
-everything.
+(`Error: Unknown skill ID "pr". …`), which would brick startup. So
+`AirPrepareService#scrubbed_catalog_skills` drops any id not in the live catalog, logs a warning,
+and raises a deduped "Session self-healed: stale catalog skill(s) removed" alert — then prepares
+with the survivors. This mirrors `Trigger#heal_stale_catalog_skills!` (which self-heals the
+*trigger* path) and gives an unknown *skill* the same non-fatal degradation an unknown *root*
+already gets.
+
+The cleaned list is **persisted** to the session (`update_column`, so no validation or broadcast
+cascade on the launch path). A session does not prepare once: `air prepare` re-runs on every
+resume — follow-up message, trigger fire, restart — so an in-memory-only scrub would re-detect the
+same stale id and re-alert forever, once per resume. Persisting is what makes the alert a one-time
+notice. The one exception is the empty-catalog guard: if the catalog itself failed to load (so
+every id would look stale), nothing is dropped *and* nothing is written — a bad prune persisted to
+the database would be permanent.
 
 ## The AIR CLI is installed lazily, at runtime
 

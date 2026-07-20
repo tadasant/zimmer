@@ -287,6 +287,58 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes cmd_args, "zimmer-run-tests"
     assert_includes cmd_args, "renamed-away-skill",
       "with an unloadable catalog we must not strip anything; air prepare resolves it"
+    assert_equal [ "zimmer-run-tests", "renamed-away-skill" ], @session.reload.catalog_skills,
+      "the empty-catalog guard must also block the persist — a bad prune written to the DB is permanent"
+  end
+
+  test "prepare! persists the pruned skill list to the session record" do
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
+    AlertService.stubs(:raise_alert)
+
+    stub_air_subprocess(proc { |*args, **opts|
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      ).prepare!
+    end
+
+    assert_equal [ "zimmer-run-tests" ], @session.reload.catalog_skills,
+      "the self-heal must be written back, not discarded"
+  end
+
+  test "prepare! alerts once across repeated prepares — a session prepares on every resume" do
+    # The bug this guards (issue #218): `air prepare` re-runs on every resume, so
+    # an in-memory-only scrub re-detected the same stale id and re-alerted forever.
+    # AlertService's dedup window is 1 hour and keyed per session, so it does not
+    # cover a resume days later — persistence is what makes this one-shot.
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
+
+    AlertService.expects(:raise_alert).with(
+      "Session self-healed: stale catalog skill(s) removed",
+      has_entries(dedup_key: "session_stale_skills_#{@session.id}")
+    ).once
+
+    captured_cmds = []
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmds << args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      2.times do
+        AirPrepareService.new(
+          session: @session.reload,
+          working_directory: @working_dir,
+          file_system: @mock_fs
+        ).prepare!
+      end
+    end
+
+    assert_equal 2, captured_cmds.length, "both prepares should have invoked air"
+    captured_cmds.each do |cmd|
+      refute_includes cmd[1..], "renamed-away-skill"
+    end
   end
 
   test "prepare! sources the AIR adapter id from the session's runtime registry bundle" do
