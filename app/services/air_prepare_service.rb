@@ -351,9 +351,14 @@ class AirPrepareService
   # already guards the trigger path, and gives an unknown *skill* the same
   # non-fatal degradation an unknown *root* already gets (RootResolutionError).
   #
-  # Unlike the trigger heal, this does NOT persist the cleaned list: a session
-  # prepares once and AirPrepareService has no mandate to mutate the session
-  # record. Operational cleanup of the stored config is handled separately.
+  # Like the trigger heal, the cleaned list is PERSISTED (`update_column`, so no
+  # validation/callback/broadcast side effects on the launch path). A session does
+  # NOT prepare once: `air prepare` re-runs on every resume — follow-up message,
+  # trigger fire, restart — so an in-memory-only scrub re-detects the same stale
+  # id and re-fires the self-heal alert forever, once per resume. That is exactly
+  # what happened with the `pr` → `open-pr` rename (see issue #218: the same alert
+  # five times over four days across four sessions). Persisting makes the alert
+  # what it claims to be — a one-time notice that stored config was healed.
   #
   # Named for the transformation rather than as a bare query because it is
   # side-effecting on the drop path (WARN log + self-heal alert), matching the
@@ -373,6 +378,11 @@ class AirPrepareService
     return requested if stale.empty?
 
     valid = requested - stale
+    # update_column: skip validations and callbacks. The stale id is precisely
+    # what the create-time validation would reject, and this runs synchronously
+    # on the session-launch path, where a broadcast/callback cascade is not worth
+    # the risk. Mirrors Trigger#heal_stale_catalog_skills!.
+    session.update_column(:catalog_skills, valid)
     Rails.logger.warn(
       "[AirPrepareService] Dropping stale skill(s) #{stale.inspect} not in the AIR catalog " \
       "before `air prepare` for session #{session.id}. Remaining skills: #{valid.inspect}"
@@ -383,16 +393,20 @@ class AirPrepareService
 
   # Surface a dropped stale skill the same way the trigger self-heal does: a
   # deduped #eng-alerts notice so the stale stored config is still visible even
-  # though it's no longer fatal. Dedup is per-session so a retrying prepare
-  # doesn't spam the channel.
+  # though it's no longer fatal. The one-notice-per-session property comes from
+  # persisting the pruned list (a resume finds nothing stale left to drop); the
+  # per-session dedup key only covers retries inside the same hour, which is why
+  # it alone was never enough — AlertService::DEDUP_WINDOW is 1 hour, so a resume
+  # days later re-paged.
   def alert_stale_skills_dropped(stale, valid)
     AlertService.raise_alert(
       "Session self-healed: stale catalog skill(s) removed",
       details: "Session *#{session.id}* referenced catalog skill(s) that no longer exist in the catalog:\n" \
                "• Removed: #{stale.join(', ')}\n" \
                "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
-               "The stale reference(s) were dropped so `air prepare` could proceed. " \
-               "The session started with the remaining skills.\n\n" \
+               "The stale reference(s) have been removed from the session so `air prepare` " \
+               "could proceed. The session started with the remaining skills, and the cleaned " \
+               "list is persisted — this alert fires at most once per session.\n\n" \
                "<#{AppUrl.base_url}/sessions/#{session.id}|View session in Zimmer>",
       source: "AirPrepareService#run_air_prepare!",
       dedup_key: "session_stale_skills_#{session.id}"
