@@ -1101,4 +1101,92 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     condition.save!
     condition
   end
+
+  # --- Burst control -------------------------------------------------------
+  #
+  # The incident: a burst of messages landed in the alerts channel and this
+  # poller spawned one session per message. A single tick can carry many
+  # messages, so the cap has to bound spawns WITHIN a tick, not just across
+  # ticks.
+
+  def stub_slack_burst(messages)
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:get_messages_since).returns(messages)
+    SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
+    SlackService.stubs(:get_user_name).returns("Alertmanager")
+
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+  end
+
+  def alert_messages(count, start_ts: 1704067300)
+    Array.new(count) do |i|
+      OpenStruct.new(
+        ts: format("%d.000000", start_ts + i),
+        text: "ALERT #{i}: service is down",
+        bot_id: nil,
+        thread_ts: nil,
+        user: "U111"
+      )
+    end
+  end
+
+  test "a 20-message tick with a limit of 3 spawns exactly 3 sessions plus one burst notice" do
+    stub_slack_burst(alert_messages(20))
+    @trigger.update!(max_sessions_per_minute: 3)
+
+    job = SlackTriggerPollerJob.new
+
+    assert_difference("Session.count", 4) do
+      job.send(:process_condition, @condition)
+    end
+
+    sessions = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).to_a
+    notices = sessions.select { |s| s.metadata["burst_notice"] }
+    assert_equal 1, notices.size
+    assert_equal 3, (sessions - notices).size
+    assert @trigger.reload.bursting?
+
+    # The suppressed messages are dropped, not replayed: the cursor still advanced.
+    assert_equal "1704067319.000000", @condition.reload.last_message_ts
+  end
+
+  test "a continuing burst on the next tick spawns zero sessions and zero further notices" do
+    stub_slack_burst(alert_messages(20))
+    @trigger.update!(max_sessions_per_minute: 3)
+
+    job = SlackTriggerPollerJob.new
+    job.send(:process_condition, @condition)
+    assert_equal 4, Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).count
+
+    # Next tick, one minute later: the outage is still producing alerts.
+    travel 1.minute do
+      stub_slack_burst(alert_messages(20, start_ts: 1704067400))
+
+      assert_no_difference("Session.count") do
+        SlackTriggerPollerJob.new.send(:process_condition, @condition.reload)
+      end
+    end
+
+    sessions = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).to_a
+    assert_equal 4, sessions.size
+    assert_equal 1, sessions.count { |s| s.metadata["burst_notice"] }
+  end
+
+  test "a 20-message tick with no limit set spawns 20 sessions, exactly as before" do
+    stub_slack_burst(alert_messages(20))
+    assert_nil @trigger.max_sessions_per_minute
+
+    assert_difference("Session.count", 20) do
+      SlackTriggerPollerJob.new.send(:process_condition, @condition)
+    end
+
+    sessions = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).to_a
+    assert_empty sessions.select { |s| s.metadata["burst_notice"] }
+  end
 end

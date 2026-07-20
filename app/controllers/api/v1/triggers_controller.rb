@@ -55,6 +55,10 @@ class Api::V1::TriggersController < Api::BaseController
   #   - status: "enabled" or "disabled" (default: "enabled")
   #   - goal: Optional goal
   #   - reuse_session: Boolean (default: false)
+  #   - max_sessions_per_minute: Integer burst cap — the most NEW sessions this trigger
+  #     may spawn in one minute. Omit or send null for no limit (the default). When the
+  #     cap is exceeded the trigger spawns one burst-notice session and then suppresses
+  #     spawns until the burst subsides.
   #   - mcp_servers: Array of MCP server names
   #   - last_session_id: Existing session to target (requires reuse_session: true).
   #     When set on a trigger with a one-time schedule condition, the target
@@ -144,7 +148,7 @@ class Api::V1::TriggersController < Api::BaseController
     permitted = params.permit(
       :name, :status, :agent_root_name, :goal,
       :prompt_template, :reuse_session, :enqueue_messages, :resuscitate_archived,
-      :last_session_id,
+      :last_session_id, :max_sessions_per_minute,
       mcp_servers: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
@@ -166,6 +170,8 @@ class Api::V1::TriggersController < Api::BaseController
       reuse_session: trigger.reuse_session,
       enqueue_messages: trigger.enqueue_messages,
       resuscitate_archived: trigger.resuscitate_archived,
+      max_sessions_per_minute: trigger.max_sessions_per_minute,
+      bursting: trigger.bursting?,
       mcp_servers: trigger.mcp_servers,
       conditions: trigger.trigger_conditions.map { |c| condition_json(c) },
       last_session_id: trigger.last_session_id,

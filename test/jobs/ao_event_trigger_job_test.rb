@@ -913,4 +913,30 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
       job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
     end
   end
+
+  # --- Burst control -------------------------------------------------------
+
+  test "a burst-suppressed fire leaves the condition unfired rather than consuming it" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    @trigger.update!(max_sessions_per_minute: 1)
+    @trigger.update_columns(burst_active_until: 5.minutes.from_now)
+
+    session = Session.create!(
+      prompt: "Test session",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+
+    assert_no_difference("Session.count") do
+      AoEventTriggerJob.perform_now("session_needs_input", session.id)
+    end
+
+    assert_nil @condition.reload.last_triggered_at,
+      "a fire that delivered nothing must not spend the condition"
+    assert Trigger.exists?(@trigger.id)
+  end
 end

@@ -356,6 +356,11 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_15_010313) do
     t.jsonb "catalog_skills", default: [], null: false
     t.jsonb "catalog_hooks", default: [], null: false
     t.jsonb "catalog_plugins", default: [], null: false
+    t.integer "max_sessions_per_minute"
+    t.datetime "burst_window_started_at"
+    t.integer "burst_window_count", default: 0, null: false
+    t.jsonb "burst_window_session_ids", default: [], null: false
+    t.datetime "burst_active_until"
     t.index ["last_session_id"], name: "index_triggers_on_last_session_id"
     t.index ["status"], name: "index_triggers_on_status"
   end

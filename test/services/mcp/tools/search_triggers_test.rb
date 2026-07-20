@@ -18,6 +18,21 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     assert_includes output, "  - Slack: #eng-ci"
   end
 
+  test "surfaces the burst cap, and flags a trigger that is currently bursting" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    assert_includes @tool.call({}), "**Max Sessions/Minute:** (no limit)"
+
+    trigger.update!(max_sessions_per_minute: 3)
+    assert_includes @tool.call("id" => trigger.id), "- **Max Sessions/Minute:** 3"
+
+    # A bursting trigger spawns nothing at all — say so, or a caller wondering
+    # why it looks dead has no way to tell.
+    trigger.update!(burst_active_until: 2.minutes.from_now)
+    output = @tool.call("id" => trigger.id)
+    assert_includes output, "BURSTING"
+  end
+
   test "filters by condition type" do
     output = @tool.call("trigger_type" => "ao_event")
 

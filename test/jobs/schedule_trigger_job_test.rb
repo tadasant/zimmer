@@ -417,4 +417,53 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert Trigger.exists?(sibling_wake.id),
       "Sibling wake must be preserved when delivery was dropped — otherwise the requester loses all wakes"
   end
+
+  # --- Burst control -------------------------------------------------------
+  #
+  # A burst-suppressed fire delivered nothing. It must not be mistaken for a
+  # successful fire by the bookkeeping that consumes conditions and auto-deletes
+  # one-time triggers, or a burst on one condition silently destroys work
+  # scheduled on another.
+
+  test "a burst-suppressed one-time schedule is neither consumed nor auto-deleted" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    one_time_condition = trigger_conditions(:one_time_schedule_condition)
+    trigger = one_time_condition.trigger
+    trigger.update!(max_sessions_per_minute: 1)
+    one_time_condition.update!(last_triggered_at: nil)
+
+    # Put the trigger into an open burst.
+    trigger.update_columns(burst_active_until: 5.minutes.from_now)
+
+    travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
+      assert_no_difference("Session.count") do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+
+    assert Trigger.exists?(trigger.id), "a trigger that spawned nothing must not be auto-deleted"
+    assert_nil one_time_condition.reload.last_triggered_at,
+      "the schedule is still due — it fires for real once the burst ends"
+  end
+
+  test "a schedule fires normally once its burst has ended" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    @trigger.update!(max_sessions_per_minute: 3)
+    @trigger.update_columns(burst_active_until: 2.minutes.from_now)
+    @condition.update!(last_triggered_at: nil)
+
+    assert_no_difference("Session.count") do
+      ScheduleTriggerJob.perform_now
+    end
+
+    travel(3.minutes) do
+      assert_difference("Session.count", 1) do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+  end
 end

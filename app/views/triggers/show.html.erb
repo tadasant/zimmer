@@ -219,6 +219,19 @@
               <% end %>
             </dd>
           </div>
+          <div>
+            <dt class="text-sm font-medium text-gray-500">Max Sessions / Minute</dt>
+            <dd class="mt-1 flex items-center space-x-2">
+              <span class="text-sm text-gray-900">
+                <%= @trigger.max_sessions_per_minute.presence || "No limit" %>
+              </span>
+              <% if @trigger.bursting? %>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+                  Bursting — spawns suppressed
+                </span>
+              <% end %>
+            </dd>
+          </div>
           <% if @trigger.mcp_servers.present? %>
             <div class="sm:col-span-2">
               <dt class="text-sm font-medium text-gray-500">MCP Servers</dt>

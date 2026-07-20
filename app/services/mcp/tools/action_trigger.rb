@@ -32,6 +32,13 @@ module Mcp
         - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
         - **github_issue**: Triggered when a new issue is opened in a watched repo
 
+        **Burst control:**
+        - **max_sessions_per_minute**: caps how many sessions the trigger may spawn per minute.
+          Omit (or send null) for no limit — that is the default and how every trigger behaved
+          before this setting existed. When the cap is exceeded, the trigger spawns a single
+          burst-notice session linking the sessions it already spawned, then stops spawning
+          until the burst subsides. Events that arrive during the burst are dropped.
+
         **Schedule configuration:**
         - **Recurring**: `{"interval": 2, "unit": "hours", "timezone": "UTC"}` — fires every N units
         - **One-time**: `{"scheduled_at": "2026-04-15T14:30:00", "timezone": "America/New_York"}` — fires once at the specified datetime (ISO 8601), then auto-disables
@@ -70,6 +77,12 @@ module Mcp
           status: { type: "string", enum: STATUSES, description: "Trigger status." },
           goal: { type: "string", description: "Goal for triggered sessions." },
           reuse_session: { type: "boolean", description: "Whether to reuse existing sessions." },
+          max_sessions_per_minute: {
+            type: [ "number", "null" ],
+            minimum: 1,
+            description: "Cap on sessions this trigger may spawn per minute. Null (default) means no limit. " \
+                         "Exceeding it spawns one burst-notice session and suppresses further spawns for the burst."
+          },
           mcp_servers: {
             type: "array",
             items: { type: "string" },
@@ -112,6 +125,7 @@ module Mcp
           status: args["status"].presence || "enabled",
           goal: args["goal"],
           reuse_session: args.fetch("reuse_session", false),
+          max_sessions_per_minute: args["max_sessions_per_minute"].presence,
           mcp_servers: args["mcp_servers"] || [],
           trigger_conditions_attributes: [
             { condition_type: args["trigger_type"], configuration: args["configuration"] || {} }
@@ -127,6 +141,7 @@ module Mcp
           - **Conditions:** #{condition_types_summary(trigger)}
           - **Status:** #{trigger.status}
           - **Agent Root:** #{trigger.agent_root_name}
+          - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
         TEXT
       end
 
@@ -145,6 +160,8 @@ module Mcp
         attributes[:status] = args["status"] if args["status"].present?
         attributes[:goal] = args["goal"] if args.key?("goal")
         attributes[:reuse_session] = args["reuse_session"] if args.key?("reuse_session")
+        # An explicit null clears the cap (back to unbounded); an omitted key means "no opinion".
+        attributes[:max_sessions_per_minute] = args["max_sessions_per_minute"].presence if args.key?("max_sessions_per_minute")
         # Only assign artifact lists the caller actually sent: an omitted key means
         # "no opinion", never "clear the trigger's servers".
         attributes[:mcp_servers] = args["mcp_servers"] if args["mcp_servers"].is_a?(Array)
@@ -161,6 +178,7 @@ module Mcp
           - **ID:** #{trigger.id}
           - **Name:** #{trigger.name}
           - **Status:** #{trigger.status}
+          - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
         TEXT
       end
 

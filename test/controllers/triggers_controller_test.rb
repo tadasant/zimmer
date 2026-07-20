@@ -96,6 +96,36 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "should create trigger with a burst cap, and treat a blank cap as unbounded" do
+    post triggers_path, params: {
+      trigger: {
+        name: "Capped Alerts Trigger",
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: "New alert: {{link}}",
+        max_sessions_per_minute: "3",
+        mcp_servers: [],
+        trigger_conditions_attributes: [
+          { condition_type: "slack", configuration: { channel_id: "C123456", channel_name: "alerts", event_type: "new_message" } }
+        ]
+      }
+    }
+
+    trigger = Trigger.find_by!(name: "Capped Alerts Trigger")
+    assert_equal 3, trigger.max_sessions_per_minute
+
+    # Clearing the field means "no limit", not zero.
+    patch trigger_path(trigger), params: { trigger: { max_sessions_per_minute: "" } }
+    assert_nil trigger.reload.max_sessions_per_minute
+  end
+
+  test "should reject a non-positive burst cap" do
+    patch trigger_path(@trigger), params: { trigger: { max_sessions_per_minute: "0" } }
+
+    assert_response :unprocessable_entity
+    assert_nil @trigger.reload.max_sessions_per_minute
+  end
+
   test "should create slack trigger with bot_mention event type" do
     assert_difference("Trigger.count") do
       post triggers_path, params: {
