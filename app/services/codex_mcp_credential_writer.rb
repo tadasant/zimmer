@@ -101,6 +101,19 @@ class CodexMcpCredentialWriter
     write_credentials_to_file(codex_credentials)
   end
 
+  # No-op: Codex has no negative auth cache. Claude Code suppresses a server for
+  # every later connection once it records an auth failure (see
+  # ClaudeMcpCredentialWriter#needs_auth_cache_path), so a freshly-injected token
+  # there is invisible until the entry is cleared. Codex re-reads its credential
+  # store on every connection attempt, so writing the token is sufficient.
+  # (Claude's cache lives at ClaudeMcpCredentialWriter#needs_auth_cache_path.)
+  #
+  # @param server_names [Array<String>]
+  # @return [Array<String>] always empty — nothing to clear
+  def clear_needs_auth_cache(server_names)
+    []
+  end
+
   # Codex keys each MCP OAuth entry by "<server_name>|<hash>" where hash is the
   # first 16 hex chars of SHA256 over the compact JSON
   # {"type":"http","url":<url>,"headers":{}}. Unlike Claude's key (and the

@@ -74,7 +74,7 @@ class McpOauthResumeService
   end
 
   def authorized?(server_info)
-    key = credential_key_for(server_info)
+    key = McpOauthServerAuthorization.credential_key_for(server_info)
     if key.blank?
       # We can't derive a credential key for this recorded server (no key
       # persisted, not in the catalog, and no usable server_url — e.g. the
@@ -92,24 +92,6 @@ class McpOauthResumeService
     end
 
     McpOauthCredential.for_credential_key(key).active.exists?
-  end
-
-  # Resolves the credential key for a recorded server entry. Prefers the key
-  # persisted alongside the entry, but falls back to deriving it from the
-  # catalog config so entries recorded without a key (e.g. the post-spawn MCP
-  # failure path) still resolve to the stored credential.
-  def credential_key_for(server_info)
-    key = server_info["credential_key"] || server_info[:credential_key]
-    return key if key.present?
-
-    server_name = server_info["server_name"] || server_info[:server_name]
-    return nil if server_name.blank?
-
-    config = ServersConfig.credential_config(server_name)
-    config ||= { type: "http", url: server_info["server_url"] || server_info[:server_url] }
-    return nil if config[:url].blank?
-
-    McpOauthCredential.compute_credential_key(server_name, config)
   end
 
   def pending_flows

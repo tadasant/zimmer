@@ -1,4 +1,12 @@
-<% oauth_required_servers = agent_session.metadata&.dig("oauth_required_servers") || [] %>
+<%# Only surface servers that genuinely still need authorizing. A server Zimmer
+    already holds a valid credential for renders a dead Authorize button —
+    initiate short-circuits on the existing credential and redirects straight
+    back — so filtering it out here is what keeps the banner honest even when
+    stale oauth_required_servers metadata lingers (e.g. a recovery job cleared
+    failure_reason but left the list behind). %>
+<% oauth_required_servers = McpOauthServerAuthorization.still_needing_authorization(
+     agent_session.metadata&.dig("oauth_required_servers") || []
+   ) %>
 <% if agent_session.failed? && agent_session.metadata&.dig("failure_reason") == "oauth_required" && oauth_required_servers.any? %>
   <div class="flex flex-col gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
     <div class="flex items-center gap-2">
