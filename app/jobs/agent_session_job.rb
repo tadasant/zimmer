@@ -2155,8 +2155,33 @@ class AgentSessionJob < ApplicationJob
     # McpOauthCredentialInjector.oauth_capable_server? is the same predicate the
     # pre-spawn OAuth gate uses, so both paths agree on what an OAuth server is.
     auth_failures = failed_servers.select { |server| auth_error?(server["error"]) }
-    oauth_failures, static_credential_failures = auth_failures.partition do |server|
+    oauth_capable_failures, static_credential_failures = auth_failures.partition do |server|
       McpOauthCredentialInjector.oauth_capable_server?(server["name"])
+    end
+
+    # Of the OAuth-capable failures, separate the ones we ALREADY hold a valid
+    # credential for. Those did not fail for lack of authorization — the runtime
+    # never honored the token Zimmer injected (typically the host-global
+    # needs-auth cache short-circuited the connection). Routing them to
+    # oauth_required is a dead end: McpOauthController#initiate short-circuits on
+    # the existing credential, so the Authorize button can never resolve. Clear
+    # the runtime's needs-auth cache and let them ride the retry path instead, so
+    # the next spawn reconnects with the token we already have.
+    already_authorized, oauth_failures = oauth_capable_failures.partition do |server|
+      McpOauthServerAuthorization.authorized?(
+        "server_name" => server["name"],
+        "server_url" => ServersConfig.find(server["name"])&.url
+      )
+    end
+
+    if already_authorized.any?
+      names = already_authorized.map { |s| s["name"] }
+      log_buffer.add(
+        "MCP server(s) #{names.join(', ')} failed auth but a valid credential already exists — " \
+        "clearing the runtime needs-auth cache and retrying instead of requiring re-authorization.",
+        level: "warning"
+      )
+      clear_runtime_needs_auth_cache(session, names)
     end
 
     if oauth_failures.any?
@@ -2303,6 +2328,21 @@ class AgentSessionJob < ApplicationJob
   # @param session [Session] The current session
   # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
   # @param log_buffer [LogBuffer] Buffer for logging
+  # Drops the runtime's host-global needs-auth memo for the named servers so the
+  # next spawn reconnects with the token Zimmer already holds instead of skipping
+  # the connection. Best-effort — never lets a cache-clear failure derail the
+  # failure-handling path.
+  #
+  # @param session [Session]
+  # @param server_names [Array<String>]
+  def clear_runtime_needs_auth_cache(session, server_names)
+    working_directory = session.metadata&.dig("working_directory")
+    McpOauthCredentialInjector.new(session, working_directory: working_directory)
+      .clear_runtime_needs_auth_cache(server_names)
+  rescue => e
+    Rails.logger.warn "[AgentSessionJob] Error clearing runtime needs-auth cache: #{e.message}"
+  end
+
   def heal_partial_npx_cache(session, failed_servers, log_buffer)
     working_directory = session.metadata&.dig("working_directory")
     result = NpxCacheHealService.heal_from_failures(

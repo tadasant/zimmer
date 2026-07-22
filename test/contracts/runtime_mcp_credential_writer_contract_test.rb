@@ -29,6 +29,14 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
       assert_respond_to writer, :write!
       assert_respond_to writer, :credential_key_for
       assert_respond_to writer, :read_runtime_credentials
+      assert_respond_to writer, :clear_needs_auth_cache
+    end
+
+    test "#{klass}#clear_needs_auth_cache returns an Array when nothing is cached" do
+      # With no cache present the method must return an Array (the names cleared),
+      # not raise — a missing store means "nothing suppressing it".
+      result = klass.new.clear_needs_auth_cache([ "example" ])
+      assert_kind_of Array, result
     end
 
     test "#{klass}#read_runtime_credentials returns a Hash of RuntimeMcpTokenSnapshot" do

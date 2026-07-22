@@ -94,7 +94,7 @@ class CleanupOrphanedSessionsJob < ApplicationJob
       session.update!(
         running_job_id: nil,
         metadata: (session.metadata || {}).except(
-          "failure_reason", "exception_class", "exception_message"
+          "failure_reason", "oauth_required_servers", "exception_class", "exception_message"
         ).merge("paused_by" => "recovery")
       )
       if continue_recovered_session(session)

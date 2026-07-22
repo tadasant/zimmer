@@ -6161,6 +6161,70 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert error_logs.any? { |log| log.content.include?("context7") && log.content.include?("error") }
   end
 
+  test "check_and_handle_mcp_failure retries (not oauth_required) when a valid credential already exists" do
+    # An OAuth-capable server returned 401 but Zimmer already holds a valid token
+    # for it — the runtime just failed to honor the injected credential. This must
+    # NOT be parked as oauth_required (the Authorize button would be a dead end);
+    # it clears the needs-auth cache and retries instead.
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ { "name" => "reframe-secrets", "status" => "failed", "error" => "HTTP Connection failed: Unauthorized" } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: reframe-secrets"
+      }
+    )
+
+    McpOauthCredentialInjector.stubs(:oauth_capable_server?).with("reframe-secrets").returns(true)
+    McpOauthServerAuthorization.stubs(:authorized?).returns(true)
+    ServersConfig.stubs(:find).with("reframe-secrets").returns(Struct.new(:url).new("https://secrets.mcp.reframe.quest/mcp"))
+    # The cache-clear touches the host-global store; assert it fires without doing real IO.
+    McpOauthCredentialInjector.any_instance.expects(:clear_runtime_needs_auth_cache).with([ "reframe-secrets" ]).at_least_once.returns([ "reframe-secrets" ])
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    assert_equal true, result
+
+    @session.reload
+    assert_equal "needs_input", @session.status, "retries instead of parking oauth_required"
+    assert_equal "mcp_retry", @session.metadata["paused_by"]
+    assert_not_equal "oauth_required", @session.metadata["failure_reason"]
+    assert_nil @session.metadata["oauth_required_servers"]
+
+    log_buffer.flush
+    assert @session.logs.where(level: "warning").any? { |l| l.content.include?("valid credential already exists") }
+  end
+
+  test "check_and_handle_mcp_failure still parks oauth_required when NO credential exists" do
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ { "name" => "reframe-secrets", "status" => "failed", "error" => "HTTP Connection failed: Unauthorized" } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: reframe-secrets"
+      }
+    )
+
+    McpOauthCredentialInjector.stubs(:oauth_capable_server?).with("reframe-secrets").returns(true)
+    McpOauthServerAuthorization.stubs(:authorized?).returns(false)
+    ServersConfig.stubs(:find).with("reframe-secrets").returns(Struct.new(:url).new("https://secrets.mcp.reframe.quest/mcp"))
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+    assert_equal [ "reframe-secrets" ], @session.metadata["oauth_required_servers"].map { |s| s["server_name"] }
+  end
+
   test "check_and_handle_mcp_failure heals a partial _npx cache before retrying" do
     # Build a corrupt per-clone _npx cache tree under the real clones base dir so
     # NpxCacheHealService's path-safety guard accepts it.
