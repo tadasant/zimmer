@@ -2328,21 +2328,6 @@ class AgentSessionJob < ApplicationJob
   # @param session [Session] The current session
   # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
   # @param log_buffer [LogBuffer] Buffer for logging
-  # Drops the runtime's host-global needs-auth memo for the named servers so the
-  # next spawn reconnects with the token Zimmer already holds instead of skipping
-  # the connection. Best-effort — never lets a cache-clear failure derail the
-  # failure-handling path.
-  #
-  # @param session [Session]
-  # @param server_names [Array<String>]
-  def clear_runtime_needs_auth_cache(session, server_names)
-    working_directory = session.metadata&.dig("working_directory")
-    McpOauthCredentialInjector.new(session, working_directory: working_directory)
-      .clear_runtime_needs_auth_cache(server_names)
-  rescue => e
-    Rails.logger.warn "[AgentSessionJob] Error clearing runtime needs-auth cache: #{e.message}"
-  end
-
   def heal_partial_npx_cache(session, failed_servers, log_buffer)
     working_directory = session.metadata&.dig("working_directory")
     result = NpxCacheHealService.heal_from_failures(
@@ -2359,6 +2344,21 @@ class AgentSessionJob < ApplicationJob
     end
   rescue => e
     Rails.logger.error "[AgentSessionJob] Error healing partial npx cache: #{e.message}"
+  end
+
+  # Drops the runtime's host-global needs-auth memo for the named servers so the
+  # next spawn reconnects with the token Zimmer already holds instead of skipping
+  # the connection. Best-effort — never lets a cache-clear failure derail the
+  # failure-handling path.
+  #
+  # @param session [Session]
+  # @param server_names [Array<String>]
+  def clear_runtime_needs_auth_cache(session, server_names)
+    working_directory = session.metadata&.dig("working_directory")
+    McpOauthCredentialInjector.new(session, working_directory: working_directory)
+      .clear_runtime_needs_auth_cache(server_names)
+  rescue => e
+    Rails.logger.warn "[AgentSessionJob] Error clearing runtime needs-auth cache: #{e.message}"
   end
 
   # Schedule an MCP connection retry with exponential backoff.

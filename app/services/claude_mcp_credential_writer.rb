@@ -261,10 +261,8 @@ class ClaudeMcpCredentialWriter
 
   # Writes credentials to ~/.claude/.credentials.json, merging with existing credentials
   def write_credentials_to_file(credentials)
-    # Ensure the ~/.claude directory exists
-    claude_dir = File.dirname(CLAUDE_CREDENTIALS_PATH)
-    FileUtils.mkdir_p(claude_dir)
-
+    # The ~/.claude directory is created by with_credential_store_lock below.
+    #
     # The file is host-global and every concurrent session read-modify-writes it,
     # so the read and the write must be one critical section. Without the lock two
     # overlapping injections each merge their own subset into the snapshot they

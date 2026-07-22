@@ -337,7 +337,8 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
 
     with_credentials_path(@credentials_file) do
       cleared = @writer.clear_needs_auth_cache([ "reframe-secrets", "linear", "not-present" ])
-      assert_equal %w[reframe-secrets linear], cleared.sort
+      # Order follows the requested list (names & keys), and "not-present" is dropped.
+      assert_equal %w[reframe-secrets linear], cleared
     end
 
     remaining = JSON.parse(File.read(cache_path))
