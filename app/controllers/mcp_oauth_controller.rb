@@ -53,7 +53,22 @@ class McpOauthController < ApplicationController
     existing_credential = McpOauthCredential.for_credential_key(credential_key).active.first
 
     if existing_credential
-      flash[:notice] = "OAuth credentials already exist for #{server_name}"
+      # A valid credential already exists, so this was never "the user must
+      # authorize" — it is "the runtime never honored the token Zimmer already
+      # holds" (typically the host-global needs-auth cache short-circuited the
+      # connection). Clicking Authorize here used to only flash a notice and
+      # redirect, leaving the banner in place — which reads to the user as "the
+      # button does nothing". Re-inject the credential, clear the runtime's
+      # needs-auth cache so the CLI actually retries, and resume the session.
+      # Only promise a retry when the resume actually fired — if another required
+      # server still needs auth (:partial) or re-injection failed, the session
+      # stays parked and the message must not claim otherwise.
+      resumed = reinject_and_resume(@session, server_name) == :resumed
+      flash[:notice] = if resumed
+        "#{server_name} is already authorized — retrying the session."
+      else
+        "#{server_name} is already authorized."
+      end
       redirect_to session_path(@session)
       return
     end
@@ -269,6 +284,29 @@ class McpOauthController < ApplicationController
   end
 
   private
+
+  # Handles the "Authorize" click for a server Zimmer already holds a valid
+  # credential for: re-inject the token into the runtime store, clear the
+  # runtime's needs-auth cache so the CLI retries with it, then run the resume
+  # service (which clears the OAuth metadata and re-enqueues the original run
+  # once every required server is authorized). Best-effort — a failure here must
+  # not turn the click into a 500; the flash + redirect still happen.
+  #
+  # @return [Symbol, nil] the McpOauthResumeService result (:resumed, :partial,
+  #   :not_blocked), or nil when re-injection/resume raised.
+  def reinject_and_resume(session, server_name)
+    working_directory = session.metadata&.dig("working_directory")
+    injector = McpOauthCredentialInjector.new(session, working_directory: working_directory)
+    injector.inject_credentials!
+    injector.clear_runtime_needs_auth_cache([ server_name ])
+    McpOauthResumeService.new(session).call
+  rescue => e
+    Rails.logger.warn(
+      "[McpOauthController] reinject_and_resume failed for #{server_name} " \
+      "on session #{session.id}: #{e.class}: #{e.message}"
+    )
+    nil
+  end
 
   # Exchanges the authorization code for tokens, stores the credential, and resumes the
   # session if every blocking OAuth flow is now complete. Shared by the hosted callback

@@ -88,7 +88,28 @@ class McpOauthCredentialInjector
     credentials = collect_credentials
     return nil if credentials.empty?
 
-    credential_writer.write!(working_directory: working_directory, credentials: credentials)
+    path = credential_writer.write!(working_directory: working_directory, credentials: credentials)
+
+    # A token we just wrote stays invisible while the runtime's "needs auth" memo
+    # still names the server — Claude Code skips the connection outright rather
+    # than retrying with it. Invalidate that memo here so every injection path
+    # gets the behavior, rather than leaving each caller to remember.
+    clear_runtime_needs_auth_cache(credentials.map(&:server_name))
+
+    path
+  end
+
+  # Drops the runtime's "needs auth" memo for the given servers so a token Zimmer
+  # already holds is actually retried. Best-effort: a cache-invalidation failure
+  # must never block a spawn or an authorize click.
+  #
+  # @param server_names [Array<String>]
+  # @return [Array<String>] the names actually cleared
+  def clear_runtime_needs_auth_cache(server_names)
+    credential_writer.clear_needs_auth_cache(server_names)
+  rescue => e
+    Rails.logger.warn "[McpOauthCredentialInjector] Failed to clear needs-auth cache: #{e.message}"
+    []
   end
 
   # Checks if all required OAuth credentials are available for the session's MCP servers.

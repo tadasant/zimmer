@@ -26,6 +26,20 @@ class ClaudeMcpCredentialWriter
   CLAUDE_CREDENTIALS_PATH = File.expand_path("~/.claude/.credentials.json").freeze
   KEYCHAIN_SERVICE_NAME = "Claude Code-credentials".freeze
 
+  # Claude Code's negative auth cache filename. When a server's connection fails
+  # authorization, the CLI records the server here and every later attempt logs
+  # "Skipping connection (cached needs-auth)" and never reaches the network. The
+  # file is HOST-GLOBAL, so one session's auth failure suppresses that server for
+  # every subsequent session on the worker — including sessions that were handed
+  # a perfectly good token. A freshly-injected credential is invisible until the
+  # entry is removed, which is why #clear_needs_auth_cache is part of injecting.
+  #
+  # It lives alongside .credentials.json, and the lock file below guards the
+  # read-modify-write of both — all three derive from the credentials directory
+  # so a test that relocates CLAUDE_CREDENTIALS_PATH relocates the whole set.
+  NEEDS_AUTH_CACHE_FILENAME = "mcp-needs-auth-cache.json"
+  CREDENTIAL_STORE_LOCK_FILENAME = ".zimmer-credential-store.lock"
+
   # Persists the resolved credentials to Claude Code's credential stores.
   # On macOS, writes to both the Keychain (primary) and the file (fallback).
   # On Linux, writes to the file only. Credentials go to ~/.claude regardless of
@@ -44,6 +58,37 @@ class ClaudeMcpCredentialWriter
 
     write_credentials_to_keychain(claude_credentials) if macos?
     write_credentials_to_file(claude_credentials)
+  end
+
+  # Removes the named servers from Claude Code's host-global needs-auth cache so
+  # the CLI retries them with the token Zimmer just wrote instead of skipping the
+  # connection outright. Best-effort: a missing or unparseable cache means there
+  # is nothing suppressing the server, never an error.
+  #
+  # @param server_names [Array<String>]
+  # @return [Array<String>] the names actually removed from the cache
+  def clear_needs_auth_cache(server_names)
+    names = Array(server_names).compact.map(&:to_s).uniq
+    return [] if names.empty?
+    return [] unless File.exist?(needs_auth_cache_path)
+
+    cleared = []
+    with_credential_store_lock do
+      data = read_json_file(needs_auth_cache_path)
+      next unless data.is_a?(Hash)
+
+      cleared = names & data.keys
+      next if cleared.empty?
+
+      cleared.each { |name| data.delete(name) }
+      write_json_atomically(needs_auth_cache_path, data)
+    end
+
+    Rails.logger.info "[ClaudeMcpCredentialWriter] Cleared needs-auth cache for: #{cleared.join(', ')}" if cleared.any?
+    cleared
+  rescue => e
+    Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to clear needs-auth cache: #{e.message}"
+    []
   end
 
   # Claude Code keys mcpOAuth entries by "server_name|hash" where hash is the
@@ -95,6 +140,54 @@ class ClaudeMcpCredentialWriter
   rescue JSON::ParserError => e
     Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to parse existing credentials: #{e.message}"
     {}
+  end
+
+  # Parses a JSON file, or returns {} when it is absent or corrupt. A store we
+  # cannot read means "nothing recorded", never an error.
+  def read_json_file(path)
+    return {} unless File.exist?(path)
+
+    JSON.parse(File.read(path))
+  rescue JSON::ParserError => e
+    Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to parse #{path}: #{e.message}"
+    {}
+  end
+
+  # Writes JSON through a temp file + rename so a reader never observes a
+  # half-written store. The temp path is process-unique because the same
+  # host-global path is written by every session on the worker.
+  def write_json_atomically(path, data)
+    temp_path = "#{path}.#{Process.pid}.tmp"
+    File.write(temp_path, JSON.pretty_generate(data))
+    File.chmod(0o600, temp_path)
+    File.rename(temp_path, path)
+  end
+
+  # The ~/.claude directory that holds the credential file, the needs-auth cache,
+  # and the lock. Derived from CLAUDE_CREDENTIALS_PATH so relocating that one path
+  # (as tests do) relocates the whole set.
+  def claude_dir
+    File.dirname(CLAUDE_CREDENTIALS_PATH)
+  end
+
+  def needs_auth_cache_path
+    File.join(claude_dir, NEEDS_AUTH_CACHE_FILENAME)
+  end
+
+  def credential_store_lock_path
+    File.join(claude_dir, CREDENTIAL_STORE_LOCK_FILENAME)
+  end
+
+  # Serializes read-modify-write access to the host-global credential stores
+  # (~/.claude/.credentials.json and the needs-auth cache) across every session
+  # on the worker. A dedicated lock file is used so the lock is never the file
+  # being atomically replaced by rename.
+  def with_credential_store_lock
+    FileUtils.mkdir_p(claude_dir)
+    File.open(credential_store_lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+      lock.flock(File::LOCK_EX)
+      yield
+    end
   end
 
   # Converts Claude Code's millisecond-epoch expiresAt to a Time, or nil.
@@ -168,23 +261,24 @@ class ClaudeMcpCredentialWriter
 
   # Writes credentials to ~/.claude/.credentials.json, merging with existing credentials
   def write_credentials_to_file(credentials)
-    # Ensure the ~/.claude directory exists
-    claude_dir = File.dirname(CLAUDE_CREDENTIALS_PATH)
-    FileUtils.mkdir_p(claude_dir)
+    # The ~/.claude directory is created by with_credential_store_lock below.
+    #
+    # The file is host-global and every concurrent session read-modify-writes it,
+    # so the read and the write must be one critical section. Without the lock two
+    # overlapping injections each merge their own subset into the snapshot they
+    # read and the last writer wins — silently dropping the other's entry and
+    # stranding that session with no token for a server it just authorized.
+    with_credential_store_lock do
+      # Read existing credentials file if it exists
+      existing_data = read_credentials_from_file
 
-    # Read existing credentials file if it exists
-    existing_data = read_credentials_from_file
+      # Merge our MCP OAuth credentials with existing ones, preserving any fresher,
+      # still-valid token Claude Code wrote at runtime under the same key.
+      existing_data["mcpOAuth"] ||= {}
+      merge_preserving_fresher!(existing_data["mcpOAuth"], credentials)
 
-    # Merge our MCP OAuth credentials with existing ones, preserving any fresher,
-    # still-valid token Claude Code wrote at runtime under the same key.
-    existing_data["mcpOAuth"] ||= {}
-    merge_preserving_fresher!(existing_data["mcpOAuth"], credentials)
-
-    # Write back atomically
-    temp_path = "#{CLAUDE_CREDENTIALS_PATH}.tmp"
-    File.write(temp_path, JSON.pretty_generate(existing_data))
-    File.chmod(0o600, temp_path)
-    File.rename(temp_path, CLAUDE_CREDENTIALS_PATH)
+      write_json_atomically(CLAUDE_CREDENTIALS_PATH, existing_data)
+    end
 
     Rails.logger.info "[ClaudeMcpCredentialWriter] Wrote #{credentials.size} credentials to #{CLAUDE_CREDENTIALS_PATH}"
 

@@ -47,6 +47,22 @@ failure is recorded as `mcp_connection_failed` — surfacing the raw error and t
 to check — rather than a dead-end Authorize button. This is the single predicate shared with
 the pre-spawn gate above.
 
+There is a second dead-end the classifier avoids: a server Zimmer **already holds a valid
+credential for** that still returns `401`. That is not a missing authorization — it is the
+runtime failing to honor the token Zimmer injected, most often because Claude Code's
+host-global negative-auth cache (`~/.claude/mcp-needs-auth-cache.json`) short-circuited the
+connection (`Skipping connection (cached needs-auth)`) before it ever reached the network.
+Routing it to `oauth_required` is pointless: `McpOauthController#initiate` short-circuits on
+the existing credential, so the Authorize button can only redirect straight back — which reads
+to the user as "the button does nothing". So the classifier (and the OAuth banner, and the
+initiate controller) all consult `McpOauthServerAuthorization.authorized?`, and a failure for
+an already-authorized server instead **clears the runtime needs-auth cache and retries**, so
+the next spawn reconnects with the token already on hand. Injecting a credential
+(`McpOauthCredentialInjector#inject_credentials!`) always clears that cache entry for the same
+reason, and the OAuth banner filters `oauth_required_servers` through the same predicate so a
+stale entry (e.g. a recovery job cleared `failure_reason` but left the list behind) never
+renders an Authorize button that cannot resolve.
+
 ## The authorization flow
 
 ```mermaid
@@ -377,4 +393,17 @@ enough to create a log directory (e.g. an OAuth-blocked streamable-http server s
 launch) produces no key at all, and `McpStatusPersisting` merges rather than replaces, so it is simply
 absent — not `failed`, not `disconnected`. In the UI a broken server then looks unconfigured rather
 than broken. Tracked in [#196](https://github.com/tadasant/zimmer/issues/196).
+:::
+
+:::note[The runtime credential stores are host-global and shared across sessions]
+Claude Code reads `~/.claude/.credentials.json` and its negative-auth cache
+`~/.claude/mcp-needs-auth-cache.json`, both keyed by `HOME`, not by session — so every session on
+a worker shares them. Two consequences the credential writer handles: (1) a plain read-modify-write
+of `.credentials.json` races when two spawns overlap (last writer wins, silently dropping the
+other's freshly-authorized token), so `ClaudeMcpCredentialWriter` serializes the read and the write
+under a `flock` on a sibling lock file; (2) one session's auth failure poisons the needs-auth cache
+for *every* later session — the entry makes Claude Code skip the connection outright, so a
+freshly-injected token stays invisible until the entry is removed. Injecting credentials and
+completing an authorize both clear the relevant cache entries. Codex re-reads its store on every
+connection and keeps no such cache, so its writer's `clear_needs_auth_cache` is a no-op.
 :::
