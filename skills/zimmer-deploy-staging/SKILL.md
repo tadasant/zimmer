@@ -49,18 +49,105 @@ health-gated zero-downtime cutover, it does **not** rebuild the droplet.
   everyone and answers for nobody off the tailnet. You need the tailnet either way;
   the domain just gives you HTTPS and a stable `APP_HOST` for OAuth callbacks.
 
-## Dispatching a deploy
+## Before you dispatch: is staging in use? (stand down, don't clobber)
 
-An agent session **can** do this: `gh workflow run` is all it takes — the GitHub
-runner holds the DigitalOcean and Tailscale credentials, not your session.
+Staging is a **single, shared** droplet, and a deploy is a **container swap** — it
+replaces whatever is running for *everyone*, on any branch. Sessions have been
+clobbering each other: one deploys branch B and swaps the box out from under
+another session that was mid-test on branch A. So **before you dispatch, check
+whether staging is already in use, and if it is, stand down until it frees up**
+instead of deploying on top of it.
+
+Design the check around signals a deploy session actually has. A `zimmer`-root
+session has the `gh` CLI plus Zimmer's self-session tools (`wake_me_up_later`,
+self-notify) and its default MCP servers (a browser) — but **not** the `zimmer` /
+`zimmer-sessions` session-orchestration MCP, so you **cannot** query other sessions'
+state to ask "is someone testing right now." Two things *are* universally observable
+from `gh`:
+
+**1. Is a deploy or teardown in flight?** Both workflows share the
+`staging-lifecycle` concurrency group, so a queued/in-progress run means the box is
+mid-swap — never dispatch on top of that.
 
 ```bash
-gh workflow run deploy-staging.yml -f ref="$(git rev-parse --abbrev-ref HEAD)"
+# In-flight staging lifecycle runs (deploy OR teardown). Non-empty ⇒ stand down.
+# select != "completed" catches every non-terminal status (queued, in_progress,
+# requested, waiting, pending) — don't enumerate them and miss one.
+for wf in deploy-staging.yml teardown-staging.yml; do
+  gh run list --workflow="$wf" --json databaseId,status,headBranch \
+    --jq '.[] | select(.status != "completed")
+          | "IN FLIGHT: \(.headBranch) \(.status) run \(.databaseId)"'
+done
 ```
 
-Because the workflow is `workflow_dispatch`, GitHub reads the workflow
-*definition* from the default branch; the `ref` **input** is what selects the code
-to build and deploy. That is why a feature branch works without merging it.
+**2. What branch/SHA currently owns the box?** Read the most recent **successful**
+`Deploy staging` run's `headBranch`/`headSha`. When the deploy was dispatched with
+`--ref <branch>` (the form [recommended below](#dispatching-a-deploy)), this is
+authoritative: `headBranch` names the owning branch and its short `headSha` is the
+deployed `ghcr.io/tadasant/zimmer:staging-<short-sha>` image tag. (If it was
+dispatched with the `-f ref=` input instead, `headBranch` reads `main`; recover the
+deployed SHA from that run's image tag via `gh run view <id> --log`.) Compare it to
+what you are about to deploy:
+
+```bash
+gh run list --workflow=deploy-staging.yml --status success --limit 1 \
+  --json headBranch,headSha,createdAt \
+  --jq '"OWNS STAGING: \(.[0].headBranch) @ \(.[0].headSha[0:7]) (deployed \(.[0].createdAt))"'
+echo "you want to deploy: $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)"
+```
+
+- If the box already runs **your** SHA, you are not changing anything — proceed (or
+  skip the deploy entirely).
+- If it runs a **different, recent** branch/SHA, assume that session is still using
+  it. Do **not** clobber it.
+
+**If either check says staging is busy, stand down and re-check later — don't
+`sleep` in a blocking loop.** Use the self-session `wake_me_up_later` tool to put
+this session to sleep for a few minutes and resume it with a prompt to re-run both
+checks; only dispatch once staging is free. (A blocking `sleep` ties up the worker
+and dies on a deploy/teardown of *this* Zimmer instance; `wake_me_up_later` is a
+durable trigger that survives it.) Re-run both checks after every wake — the box's
+owner can change while you sleep — and give up gracefully (leave a note for the
+user) rather than looping forever if it never frees.
+
+**The honest limit of this check.** In-flight runs and the deployed ref are the
+*only* robust signals. Whether a human or agent is *actively exercising the
+already-deployed box right now* — clicking through a feature, watching a worker — is
+**not observable** from a session's tools; there is no lock file and no
+cross-session MCP. The deployed-ref comparison is a best-effort proxy (a recent
+foreign branch on the box probably means someone still cares about it). So also
+**announce your intent** before you take the box — say in your session which branch
+you're about to deploy and why — so a human watching can wave you off. Treat the
+checks as "don't clobber blindly," not "provably safe."
+
+## Dispatching a deploy
+
+Once the checks above say staging is free: an agent session **can** do this,
+`gh workflow run` is all it takes — the GitHub runner holds the DigitalOcean and
+Tailscale credentials, not your session.
+
+```bash
+gh workflow run deploy-staging.yml --ref "$(git rev-parse --abbrev-ref HEAD)"
+```
+
+Dispatch with **`--ref <branch>`**, not the `-f ref=` input — and prefer it
+precisely because it makes the run **self-describing** for the coordination check
+above. A `workflow_dispatch` deploys whatever ref you point it at without merging,
+so both forms build your unmerged branch. The difference is what the run *records*:
+
+- With **`--ref <branch>`**, `inputs.ref` is empty so `checkout` falls back to
+  `github.ref` = your branch, and the run's `headBranch`/`headSha` are your branch —
+  so "who owns the box" can name it. GitHub also reads the workflow *definition*
+  from that ref, which means a workflow change on your branch is exercised too.
+- With the older **`-f ref="$(git rev-parse --abbrev-ref HEAD)"`** input form (and a
+  default `--ref`), GitHub reads the workflow definition from `main` and the box
+  still gets your code via `inputs.ref` — but the run records `headBranch=main`, so
+  it no longer identifies which branch owns staging, and the ownership check can
+  only recover the deployed SHA from the `ghcr.io/tadasant/zimmer:staging-<sha>`
+  image tag in the run's log (`gh run view <id> --log`). Use this form only when you
+  deliberately need `main`'s workflow definition, or when the ref is a **bare SHA**:
+  `--ref` accepts only a branch or tag, so a SHA (e.g. a rollback — see
+  [Rolling back](#rolling-back)) must go through `-f ref=<sha>`.
 
 Watch the run:
 
@@ -96,9 +183,20 @@ workflow's own verification step is legitimate evidence: it health-checks `/up`
 which is the check that catches a worker crash-looping on a bad DB password. Cite
 the green run and link it.
 
-The deploy job runs in the `staging` GitHub environment and shares the
-`staging-lifecycle` concurrency group with the teardown workflow, so a deploy and
-a teardown can never race.
+The deploy job runs in the `staging` GitHub environment. Its `concurrency.group` is
+the constant string `staging-lifecycle`, and `teardown-staging.yml` uses the **same
+constant** — so GitHub serializes *every* run tagged with it: deploy-vs-teardown
+**and** deploy-vs-deploy alike. With `cancel-in-progress: false`, a second dispatch
+**queues behind** the first instead of cancelling it or racing it. So "one staging
+lifecycle run at a time" is already a mechanical guarantee — no workflow change is
+needed to enforce it, and none should weaken it (a templated, per-branch group
+would let two deploys run at once).
+
+That guarantee is about *workflow runs*, not the box. It stops two runs from
+swapping containers simultaneously; it does **nothing** to stop a run from clobbering
+an already-deployed box that another session is still *using* after its own deploy
+run finished. That gap is exactly what the [stand-down check](#before-you-dispatch-is-staging-in-use-stand-down-dont-clobber)
+above covers — the two are complementary, not redundant.
 
 ## Tearing it down
 
