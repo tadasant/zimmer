@@ -38,6 +38,15 @@
 #   (McpOauthRuntimeReconciler). Returns {} when the store is absent or
 #   unreadable — a missing store means "nothing to adopt", never an error.
 #
+# clear_needs_auth_cache(server_names) -> Array<String>
+#   Drop any runtime-side "this server needs auth" memo for the named servers, so
+#   the CLI actually retries them with the token #write! just stored. Claude Code
+#   keeps such a memo in a host-global file and skips the connection entirely
+#   while an entry is present, which makes a freshly-injected credential
+#   invisible; runtimes without that behavior implement this as a no-op returning
+#   []. Best-effort — a missing store means "nothing suppressing it", never an
+#   error. Returns the names actually cleared.
+#
 # The shared contract is exercised by
 # test/contracts/runtime_mcp_credential_writer_contract_test.rb against every
 # writer.

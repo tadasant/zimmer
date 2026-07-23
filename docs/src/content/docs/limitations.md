@@ -685,6 +685,17 @@ Used when a server advertises no DCR endpoint.
 
 Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 
+### An already-authorized server that the server itself rejects has no re-auth path
+
+To stop the dead "Authorize" button, a `401` from a server Zimmer already holds an `active` credential
+for is treated as "the runtime didn't honor the injected token" — it clears the needs-auth cache and
+retries rather than parking `oauth_required`. That is right for the common case (the host-global
+needs-auth cache short-circuited the connection). But if the token is genuinely rejected *server-side*
+— revoked, or its scopes changed — the DB copy still looks `active`, so it retries to the limit and
+lands in `mcp_connection_failed` (raw error surfaced) with **no** Authorize button offered. The
+credential must lapse or be deleted before re-authorization is presented again. The predicate is
+`McpOauthServerAuthorization.authorized?` (active credential exists), not "the server accepted it".
+
 ---
 
 ## AIR catalog

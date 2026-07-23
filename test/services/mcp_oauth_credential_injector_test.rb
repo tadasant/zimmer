@@ -601,6 +601,57 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     end
   end
 
+  test "inject_credentials! clears the runtime needs-auth cache for the injected servers" do
+    credential = mcp_oauth_credentials(:notion)
+
+    mock_session = Object.new
+    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
+
+    server_config = mock_server_config(name: "notion", type: "streamable-http", url: "https://mcp.notion.com/v1/mcp")
+
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? server_config : nil }) do
+      expected_key = McpOauthCredential.compute_credential_key("notion", { type: "streamable-http", url: "https://mcp.notion.com/v1/mcp", headers: {} })
+      credential.update_column(:credential_key, expected_key)
+
+      cleared = nil
+      fake_writer = Object.new
+      fake_writer.define_singleton_method(:credential_key_for) { |name, config| McpOauthCredential.compute_credential_key(name, config) }
+      fake_writer.define_singleton_method(:write!) { |working_directory:, credentials:| "/tmp/fake-credentials.json" }
+      fake_writer.define_singleton_method(:clear_needs_auth_cache) { |names| cleared = names; names }
+
+      injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
+      injector.stubs(:credential_writer).returns(fake_writer)
+
+      injector.inject_credentials!
+
+      assert_equal [ "notion" ], cleared, "injecting a token must clear its needs-auth cache entry so the CLI retries"
+    end
+  end
+
+  test "inject_credentials! is unaffected when clearing the needs-auth cache raises" do
+    credential = mcp_oauth_credentials(:notion)
+
+    mock_session = Object.new
+    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
+
+    server_config = mock_server_config(name: "notion", type: "streamable-http", url: "https://mcp.notion.com/v1/mcp")
+
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? server_config : nil }) do
+      expected_key = McpOauthCredential.compute_credential_key("notion", { type: "streamable-http", url: "https://mcp.notion.com/v1/mcp", headers: {} })
+      credential.update_column(:credential_key, expected_key)
+
+      fake_writer = Object.new
+      fake_writer.define_singleton_method(:credential_key_for) { |name, config| McpOauthCredential.compute_credential_key(name, config) }
+      fake_writer.define_singleton_method(:write!) { |working_directory:, credentials:| "/tmp/fake-credentials.json" }
+      fake_writer.define_singleton_method(:clear_needs_auth_cache) { |_names| raise "cache boom" }
+
+      injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
+      injector.stubs(:credential_writer).returns(fake_writer)
+
+      assert_equal "/tmp/fake-credentials.json", injector.inject_credentials!
+    end
+  end
+
   # --- .oauth_capable_server? -------------------------------------------------
   #
   # The single source of truth for "can this server actually be authorized via OAuth?",

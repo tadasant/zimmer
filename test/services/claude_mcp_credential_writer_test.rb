@@ -327,6 +327,51 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     assert_equal expires_at.to_i, snapshot.expires_at.to_i
   end
 
+  test "clear_needs_auth_cache removes only the named servers from the host-global cache" do
+    cache_path = File.join(@working_directory, "mcp-needs-auth-cache.json")
+    File.write(cache_path, {
+      "reframe-secrets" => { "timestamp" => 1 },
+      "github-rufus" => { "timestamp" => 2 },
+      "linear" => { "timestamp" => 3 }
+    }.to_json)
+
+    with_credentials_path(@credentials_file) do
+      cleared = @writer.clear_needs_auth_cache([ "reframe-secrets", "linear", "not-present" ])
+      # Order follows the requested list (names & keys), and "not-present" is dropped.
+      assert_equal %w[reframe-secrets linear], cleared
+    end
+
+    remaining = JSON.parse(File.read(cache_path))
+    assert_equal %w[github-rufus], remaining.keys
+  end
+
+  test "clear_needs_auth_cache is a no-op when the cache file is absent" do
+    with_credentials_path(@credentials_file) do
+      assert_equal [], @writer.clear_needs_auth_cache([ "reframe-secrets" ])
+    end
+  end
+
+  test "clear_needs_auth_cache is a no-op for an empty server list" do
+    cache_path = File.join(@working_directory, "mcp-needs-auth-cache.json")
+    File.write(cache_path, { "reframe-secrets" => { "timestamp" => 1 } }.to_json)
+
+    with_credentials_path(@credentials_file) do
+      assert_equal [], @writer.clear_needs_auth_cache([])
+    end
+
+    # Untouched.
+    assert_equal %w[reframe-secrets], JSON.parse(File.read(cache_path)).keys
+  end
+
+  test "clear_needs_auth_cache tolerates a corrupt cache file without raising" do
+    cache_path = File.join(@working_directory, "mcp-needs-auth-cache.json")
+    File.write(cache_path, "{not valid json")
+
+    with_credentials_path(@credentials_file) do
+      assert_equal [], @writer.clear_needs_auth_cache([ "reframe-secrets" ])
+    end
+  end
+
   private
 
   def resolved_credential(**overrides)

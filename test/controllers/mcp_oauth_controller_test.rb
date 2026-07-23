@@ -97,6 +97,58 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ "server-b" ], @session.metadata["oauth_required_servers"].map { |s| s["server_name"] }
   end
 
+  test "initiate re-injects and resumes when a valid credential already exists (no dead-end)" do
+    # Both servers already authorized in the DB — the classic false-positive
+    # banner: Zimmer holds valid tokens, yet the session was parked oauth_required.
+    McpOauthCredential.create!(
+      server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
+      client_id: "c", access_token: "a", token_endpoint: "https://a.example.com/oauth/token",
+      expires_at: 1.hour.from_now
+    )
+    McpOauthCredential.create!(
+      server_name: "server-b", server_url: CONFIG_B[:url], credential_key: @key_b,
+      client_id: "c", access_token: "b", token_endpoint: "https://b.example.com/oauth/token",
+      expires_at: 1.hour.from_now
+    )
+
+    # The injector's filesystem work is covered by its own tests; here we assert
+    # the controller stops dead-ending and actually drives re-injection + resume.
+    reinject = sequence("reinject")
+    McpOauthCredentialInjector.any_instance.expects(:inject_credentials!).once.in_sequence(reinject)
+    McpOauthCredentialInjector.any_instance
+      .expects(:clear_runtime_needs_auth_cache).with([ "server-a" ]).once.in_sequence(reinject)
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ @session.id ]) do
+      post mcp_oauth_initiate_path, params: {
+        session_id: @session.id, server_name: "server-a", server_url: CONFIG_A[:url]
+      }
+    end
+
+    assert_redirected_to session_path(@session)
+    assert_match(/already authorized/i, flash[:notice])
+
+    @session.reload
+    assert @session.waiting?, "session resumed into waiting instead of staying parked behind a dead button"
+    assert_nil @session.metadata["failure_reason"]
+    assert_nil @session.metadata["oauth_required_servers"]
+  end
+
+  test "initiate re-injecting survives an injector failure and still redirects" do
+    McpOauthCredential.create!(
+      server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
+      client_id: "c", access_token: "a", token_endpoint: "https://a.example.com/oauth/token",
+      expires_at: 1.hour.from_now
+    )
+    McpOauthCredentialInjector.any_instance.stubs(:inject_credentials!).raises(RuntimeError, "boom")
+
+    post mcp_oauth_initiate_path, params: {
+      session_id: @session.id, server_name: "server-a", server_url: CONFIG_A[:url]
+    }
+
+    assert_redirected_to session_path(@session)
+    assert_match(/already authorized/i, flash[:notice])
+  end
+
   # Slack-shaped server: discovery resolves its endpoints but the client must be
   # pre-registered. The authorize redirect must carry the catalog-configured
   # client id, not the `zimmer` placeholder that Slack rejects.
