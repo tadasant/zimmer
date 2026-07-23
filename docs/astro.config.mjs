@@ -107,6 +107,7 @@ export default defineConfig({
             { label: "Adding an agent harness", slug: "extend/agent-harness" },
             { label: "Extensions", slug: "extend/extensions" },
             { label: "Transcript hooks", slug: "extend/transcript-hooks" },
+            { label: "MCP Apps in the session UI (spike)", slug: "extend/mcp-apps-spike" },
           ],
         },
         {

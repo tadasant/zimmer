@@ -1130,6 +1130,14 @@ engages for that session. No warning.
 
 Tracked in [#89](https://github.com/tadasant/zimmer/issues/89).
 
+### MCP Apps rendering is a flag-gated spike
+
+The [MCP Apps spike](/extend/mcp-apps-spike/) renders a `ui://` fragment in the session detail page,
+but only behind `ENV["ZIMMER_MCP_APPS_POC"]`, only by having Zimmer call the tool itself (not by
+observing the headless agent's tool calls), fetched **synchronously** during `SessionsController#show`,
+and into a single same-document sandboxed iframe rather than the spec's separate-origin sandbox proxy.
+It proves feasibility; it is not production-ready.
+
 ---
 
 ## Open questions
