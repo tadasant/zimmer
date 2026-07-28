@@ -117,6 +117,7 @@
           header below. Surface the failure/exception detail on mobile too, so phone
           users can read the actual error instead of a hidden, desktop-only block. %>
       <div class="md:hidden">
+        <%= render "sessions/auth_outage_banner", agent_session: @session %>
         <%= render "sessions/failure_details", agent_session: @session %>
       </div>
 

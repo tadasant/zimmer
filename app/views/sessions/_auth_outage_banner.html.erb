@@ -1,0 +1,32 @@
+<%# Shown while a session is parked by AuthOutageParkService — the runtime's
+    login pool had nothing usable, so the session is dormant with a scheduled
+    retry. Without this the only user-visible artifact is the runtime's own
+    "Not logged in · Please run /login" text, which explains neither the cause
+    nor that the session will come back on its own. %>
+<% outage_reason = agent_session.metadata&.dig("auth_outage_reason") %>
+<% if outage_reason.present? %>
+  <% retry_at = agent_session.metadata&.dig("auth_outage_retry_at") %>
+  <% retry_time = (Time.iso8601(retry_at) rescue nil) if retry_at.present? %>
+  <div class="flex flex-col gap-1 p-3 mt-2 bg-amber-50 border border-amber-200 rounded-lg">
+    <div class="flex items-center gap-2">
+      <svg class="h-5 w-5 text-amber-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+      </svg>
+      <span class="font-medium text-amber-800">
+        <%= outage_reason == AuthOutageParkService::QUOTA_EXHAUSTED ? "Quota exceeded across all accounts" : "No usable login available" %>
+      </span>
+    </div>
+    <p class="text-sm text-amber-700">
+      <% if outage_reason == AuthOutageParkService::QUOTA_EXHAUSTED %>
+        Every <%= RuntimeRegistry.label_for(agent_session.agent_runtime) %> account is over its quota, so there is nothing to rotate into.
+      <% else %>
+        The runtime reported "Not logged in" and re-injecting credentials did not fix it.
+      <% end %>
+      This session is parked and will resume automatically
+      <% if retry_time %>
+        at <%= retry_time.utc.strftime("%b %-d, %H:%M") %> UTC<%= " (#{time_ago_in_words(retry_time)} from now)" if retry_time.future? %>,
+      <% end %>
+      or sooner if the account pool recovers first.
+    </p>
+  </div>
+<% end %>

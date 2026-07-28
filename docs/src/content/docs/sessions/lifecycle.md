@@ -75,8 +75,8 @@ transition, and it does five things beyond changing status:
 2. `fire_ao_event_triggers("session_needs_input")` — wakes anything watching this session.
 3. `enqueue_debounced_needs_input_push_notification` — see below.
 4. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
-5. `execute_pending_sleep` — if the agent called "wake me up later" *while running*, the sleep
-   was deferred to here; now it fires.
+5. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
+   sleep was deferred to here; now it fires.
 
 The debounce is worth understanding. Sessions sometimes flap `running → needs_input →
 running` between turns, and without debouncing every flap would push a notification. So the
@@ -97,8 +97,13 @@ Tracked in [#107](https://github.com/tadasant/zimmer/issues/107).
 ### `sleep` — `needs_input → waiting`
 
 The "wake me up later" path. The session goes dormant and a one-time schedule trigger will
-resume it. If the agent calls this while *running*, `metadata["pending_sleep"] = true` is set
-and the actual transition happens on the next `pause`.
+resume it. If the wake-up is scheduled while the session is *running*,
+`metadata["pending_sleep"] = true` is set and the actual transition happens on the next `pause`.
+
+Agents reach this through the `wake_me_up_later` MCP tool, but Zimmer also uses it on its own
+behalf: `AuthOutageParkService` parks a session here when the login pool runs dry, which is what
+keeps a quota-blocked session out of the heartbeat sweep's reach. See
+[Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
 
 ### `block_on_elicitation` / `unblock_from_elicitation` — `running ⇄ needs_input`
 
