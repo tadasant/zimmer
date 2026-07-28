@@ -2364,6 +2364,7 @@ class AgentSessionJob < ApplicationJob
   # strictly newer token pair and would adopt the dead tokens back on the next
   # spawn — re-activating the row and re-shadowing the Authorize button.
   #
+  # @param session [Session] the failing session, for the runtime store cleanup
   # @param server [Hash] a failed-server entry shaped { "name" =>, "error" => }
   # @param log_buffer [LogBuffer]
   # @return [Boolean] false only when the invalidation itself failed, in which
@@ -2383,7 +2384,14 @@ class AgentSessionJob < ApplicationJob
     )
     true
   rescue => e
-    Rails.logger.error "[AgentSessionJob] Error invalidating dead OAuth credential for #{server['name']}: #{e.message}"
+    # .warn, not .error: the caller falls back to the retry path, so this is a
+    # self-healing intermediate failure — the terminal orphan ERROR below is the
+    # one MCP-connect signal that should page on-call.
+    Rails.logger.warn "[AgentSessionJob] Error invalidating dead OAuth credential for #{server['name']}: #{e.message}"
+    log_buffer.add(
+      "Could not retire the rejected credential for MCP server '#{server['name']}' (#{e.message}) — retrying instead.",
+      level: "warning"
+    )
     false
   end
 

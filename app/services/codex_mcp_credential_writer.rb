@@ -119,13 +119,17 @@ class CodexMcpCredentialWriter
     return [] unless data.is_a?(Hash)
 
     deleted = keys & data.keys
-    return [] if deleted.empty?
+    if deleted.any?
+      deleted.each { |key| data.delete(key) }
+      write_json_to_file(data)
+    end
 
-    deleted.each { |key| data.delete(key) }
-    write_json_to_file(data)
-    delete_credentials_from_keychain(deleted) if macos?
+    # Every requested key, not just the ones the file held: on macOS Codex reads
+    # the Keychain first, so an item with no file counterpart would otherwise keep
+    # presenting a revoked token.
+    delete_credentials_from_keychain(keys) if macos?
 
-    Rails.logger.info "[CodexMcpCredentialWriter] Deleted credentials: #{deleted.join(', ')}"
+    Rails.logger.info "[CodexMcpCredentialWriter] Deleted credentials: #{deleted.join(', ')}" if deleted.any?
     deleted
   rescue => e
     Rails.logger.warn "[CodexMcpCredentialWriter] Failed to delete credentials: #{e.message}"
@@ -270,9 +274,6 @@ class CodexMcpCredentialWriter
   # Writes credentials to ~/.codex/.credentials.json, merging with any existing
   # entries (atomic rename, 0600 perms).
   def write_credentials_to_file(credentials)
-    codex_dir = File.dirname(CODEX_CREDENTIALS_PATH)
-    FileUtils.mkdir_p(codex_dir)
-
     existing_data = read_credentials_from_file
 
     # The Codex file is a flat map of "<name>|<hash>" => entry (no envelope key).
@@ -287,11 +288,14 @@ class CodexMcpCredentialWriter
   end
 
   # Replaces the credential file with `data`, through a temp file + rename so a
-  # reader never observes a half-written store.
+  # reader never observes a half-written store. The temp path is process-unique
+  # because the same host-global path is written by every session on the worker —
+  # a shared temp name lets one writer truncate another's file mid-write and
+  # rename a partial store into place.
   def write_json_to_file(data)
     FileUtils.mkdir_p(File.dirname(CODEX_CREDENTIALS_PATH))
 
-    temp_path = "#{CODEX_CREDENTIALS_PATH}.tmp"
+    temp_path = "#{CODEX_CREDENTIALS_PATH}.#{Process.pid}.tmp"
     File.write(temp_path, JSON.pretty_generate(data))
     File.chmod(0o600, temp_path)
     File.rename(temp_path, CODEX_CREDENTIALS_PATH)
