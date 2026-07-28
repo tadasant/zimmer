@@ -38,6 +38,17 @@
 #   (McpOauthRuntimeReconciler). Returns {} when the store is absent or
 #   unreadable — a missing store means "nothing to adopt", never an error.
 #
+# delete_credentials(credential_keys) -> Array<String>
+#   The destructive mirror of #write!: drop the named entries from the runtime's
+#   credential store entirely. Zimmer calls this when a provider has revoked a
+#   credential, so that force-expiring the DB row actually sticks — the runtime's
+#   copy is a *newer-looking* token pair (its recorded expiry is still in the
+#   future), and McpOauthRuntimeReconciler would otherwise adopt the dead pair
+#   back into the DB on the next spawn and quietly re-shadow the Authorize button.
+#   Keys are the same ones #write! stored the entries under (#credential_key_for).
+#   Best-effort — a missing store means "nothing to delete", never an error.
+#   Returns the keys actually removed.
+#
 # clear_needs_auth_cache(server_names) -> Array<String>
 #   Drop any runtime-side "this server needs auth" memo for the named servers, so
 #   the CLI actually retries them with the token #write! just stored. Claude Code

@@ -101,6 +101,37 @@ class CodexMcpCredentialWriter
     write_credentials_to_file(codex_credentials)
   end
 
+  # Removes the named entries from Codex's credential store — the flat file map
+  # and, on macOS, the per-server Keychain items.
+  #
+  # Called when a provider has revoked a credential, so that force-expiring the DB
+  # row sticks: an on-disk entry still carrying a future `expires_at` reads to
+  # McpOauthRuntimeReconciler as a newer token pair worth adopting, which would
+  # re-activate the dead credential on the next spawn.
+  #
+  # @param credential_keys [Array<String>] keys as written by #write!
+  # @return [Array<String>] the keys actually removed from the file store
+  def delete_credentials(credential_keys)
+    keys = Array(credential_keys).compact.map(&:to_s).uniq
+    return [] if keys.empty?
+
+    data = read_credentials_from_file
+    return [] unless data.is_a?(Hash)
+
+    deleted = keys & data.keys
+    return [] if deleted.empty?
+
+    deleted.each { |key| data.delete(key) }
+    write_json_to_file(data)
+    delete_credentials_from_keychain(deleted) if macos?
+
+    Rails.logger.info "[CodexMcpCredentialWriter] Deleted credentials: #{deleted.join(', ')}"
+    deleted
+  rescue => e
+    Rails.logger.warn "[CodexMcpCredentialWriter] Failed to delete credentials: #{e.message}"
+    []
+  end
+
   # No-op: Codex has no negative auth cache. Claude Code suppresses a server for
   # every later connection once it records an auth failure (see
   # ClaudeMcpCredentialWriter#needs_auth_cache_path), so a freshly-injected token
@@ -248,14 +279,35 @@ class CodexMcpCredentialWriter
     existing_data = {} unless existing_data.is_a?(Hash)
     existing_data.merge!(credentials)
 
-    temp_path = "#{CODEX_CREDENTIALS_PATH}.tmp"
-    File.write(temp_path, JSON.pretty_generate(existing_data))
-    File.chmod(0o600, temp_path)
-    File.rename(temp_path, CODEX_CREDENTIALS_PATH)
+    write_json_to_file(existing_data)
 
     Rails.logger.info "[CodexMcpCredentialWriter] Wrote #{credentials.size} credentials to #{CODEX_CREDENTIALS_PATH}"
 
     CODEX_CREDENTIALS_PATH
+  end
+
+  # Replaces the credential file with `data`, through a temp file + rename so a
+  # reader never observes a half-written store.
+  def write_json_to_file(data)
+    FileUtils.mkdir_p(File.dirname(CODEX_CREDENTIALS_PATH))
+
+    temp_path = "#{CODEX_CREDENTIALS_PATH}.tmp"
+    File.write(temp_path, JSON.pretty_generate(data))
+    File.chmod(0o600, temp_path)
+    File.rename(temp_path, CODEX_CREDENTIALS_PATH)
+
+    CODEX_CREDENTIALS_PATH
+  end
+
+  # Removes the per-server Keychain items on macOS. Best-effort and rescued: the
+  # file store is authoritative on Zimmer's Linux workers, and an item that was
+  # never written there is not an error.
+  def delete_credentials_from_keychain(keys)
+    keys.each do |key|
+      Open3.capture3("security", "delete-generic-password", "-a", key, "-s", KEYCHAIN_SERVICE_NAME)
+    end
+  rescue => e
+    Rails.logger.warn "[CodexMcpCredentialWriter] Keychain delete error: #{e.message}"
   end
 
   # Writes one Keychain item per server on macOS, where Codex's default "auto"
