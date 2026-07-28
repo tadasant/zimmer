@@ -2159,20 +2159,40 @@ class AgentSessionJob < ApplicationJob
       McpOauthCredentialInjector.oauth_capable_server?(server["name"])
     end
 
-    # Of the OAuth-capable failures, separate the ones we ALREADY hold a valid
-    # credential for. Those did not fail for lack of authorization — the runtime
-    # never honored the token Zimmer injected (typically the host-global
+    # First, split off the OAuth-capable failures whose error says the PROVIDER
+    # rejected the refresh grant ("Token refresh failed with invalid_grant:
+    # Invalid refresh token"). Those credentials are permanently dead even though
+    # the local row is still present and unexpired — which is exactly why the
+    # existence check below would misfile them as "already authorized" and send
+    # them around the retry ladder until the session orphans (GitHub issue #222).
+    # Force-expire the row so both McpOauthServerAuthorization.authorized? and
+    # McpOauthController#initiate's short-circuit stop reporting the dead
+    # credential as valid, and route the server to oauth_required so the
+    # Authorize button can actually mint a new token.
+    dead_credential_failures, recoverable_failures = oauth_capable_failures.partition do |server|
+      McpOauthServerAuthorization.refresh_token_rejected?(server["error"])
+    end
+
+    dead_credential_failures.each do |server|
+      invalidate_dead_oauth_credential(server, log_buffer)
+    end
+
+    # Of the remaining OAuth-capable failures, separate the ones we ALREADY hold
+    # a valid credential for. Those did not fail for lack of authorization — the
+    # runtime never honored the token Zimmer injected (typically the host-global
     # needs-auth cache short-circuited the connection). Routing them to
     # oauth_required is a dead end: McpOauthController#initiate short-circuits on
     # the existing credential, so the Authorize button can never resolve. Clear
     # the runtime's needs-auth cache and let them ride the retry path instead, so
     # the next spawn reconnects with the token we already have.
-    already_authorized, oauth_failures = oauth_capable_failures.partition do |server|
+    already_authorized, unauthorized_failures = recoverable_failures.partition do |server|
       McpOauthServerAuthorization.authorized?(
         "server_name" => server["name"],
         "server_url" => ServersConfig.find(server["name"])&.url
       )
     end
+
+    oauth_failures = dead_credential_failures + unauthorized_failures
 
     if already_authorized.any?
       names = already_authorized.map { |s| s["name"] }
@@ -2307,17 +2327,48 @@ class AgentSessionJob < ApplicationJob
 
   # Error-text patterns that indicate an MCP server rejected our credentials:
   # "Unauthorized"/"401" (standard auth errors), "Supported scopes" (servers like Tally
-  # that report OAuth scopes in the error), "oauth"/"invalid_token" (explicit auth errors).
+  # that report OAuth scopes in the error), "oauth"/"invalid_token" (explicit auth errors),
+  # and the OAuth grant errors a failed token refresh reports
+  # (McpOauthServerAuthorization::REFRESH_TOKEN_REJECTED_PATTERN) — a runtime that could
+  # not refresh its token has authenticated with nothing, whether or not it went on to
+  # name the resulting 401.
   #
   # This says only "authentication failed" — NOT "OAuth is required". Deciding whether
   # OAuth can fix it requires knowing how the server authenticates; see
   # McpOauthCredentialInjector.oauth_capable_server?.
-  AUTH_ERROR_PATTERN = /unauthorized|401|supported scopes|oauth|invalid_token/i
+  AUTH_ERROR_PATTERN = Regexp.union(
+    /unauthorized|401|supported scopes|oauth|invalid_token/i,
+    McpOauthServerAuthorization::REFRESH_TOKEN_REJECTED_PATTERN
+  )
 
   # @param error [String, nil] the raw error text reported for a failed MCP server
   # @return [Boolean] true when the error looks like an authentication rejection
   def auth_error?(error)
     error.to_s.match?(AUTH_ERROR_PATTERN)
+  end
+
+  # Force-expires the stored credential for an OAuth server whose refresh token the
+  # provider rejected, so the re-authorization it is about to be routed to can
+  # actually resolve (McpOauthController#initiate short-circuits while an active
+  # credential exists). Best-effort — a DB hiccup here must not derail failure
+  # handling; the server is still reported as needing authorization either way.
+  #
+  # @param server [Hash] a failed-server entry shaped { "name" =>, "error" => }
+  # @param log_buffer [LogBuffer]
+  def invalidate_dead_oauth_credential(server, log_buffer)
+    invalidated = McpOauthServerAuthorization.invalidate!(
+      "server_name" => server["name"],
+      "server_url" => ServersConfig.find(server["name"])&.url
+    )
+
+    log_buffer.add(
+      "MCP server '#{server['name']}' failed with a rejected refresh token (#{server['error']}). " \
+      "The stored credential is permanently dead#{invalidated ? ' and has been invalidated' : ''} — " \
+      "requiring re-authorization instead of retrying.",
+      level: "warning"
+    )
+  rescue => e
+    Rails.logger.warn "[AgentSessionJob] Error invalidating dead OAuth credential for #{server['name']}: #{e.message}"
   end
 
   # Remove any partially-populated `_npx/<hash>` cache tree that a failed MCP

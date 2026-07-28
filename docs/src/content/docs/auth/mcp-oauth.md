@@ -63,6 +63,21 @@ reason, and the OAuth banner filters `oauth_required_servers` through the same p
 stale entry (e.g. a recovery job cleared `failure_reason` but left the list behind) never
 renders an Authorize button that cannot resolve.
 
+That "we already hold a credential" check asks whether a row exists and is unexpired — which
+is not the same question as "the provider still honors it". So one class of failure is carved
+out ahead of it: when the error says the **provider rejected the refresh grant** — Claude Code
+reports `Token refresh failed with invalid_grant: Invalid refresh token`, and
+`McpOauthServerAuthorization::REFRESH_TOKEN_REJECTED_PATTERN` also matches `invalid_client` and
+`unauthorized_client` — the stored credential is permanently dead no matter how unexpired the
+row looks. Retrying can never revive it; without the carve-out the server was filed as "already
+authorized" and rode the retry ladder into a terminal `mcp_connection_failed`, orphaning the
+session with no Authorize button ([#222](https://github.com/tadasant/zimmer/issues/222)). Instead
+`McpOauthServerAuthorization.invalidate!` force-expires the row (dropping both tokens, since the
+runtime already tried the access token and got a 401) and the server is routed to
+`oauth_required` — which now resolves, because the short-circuit in `initiate` no longer sees an
+active credential. Only cache- and transport-shaped auth failures keep the clear-cache-and-retry
+path.
+
 ## The authorization flow
 
 ```mermaid

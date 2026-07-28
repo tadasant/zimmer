@@ -685,15 +685,21 @@ Used when a server advertises no DCR endpoint.
 
 Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 
-### An already-authorized server that the server itself rejects has no re-auth path
+### A silently-rejected credential still has no re-auth path
 
 To stop the dead "Authorize" button, a `401` from a server Zimmer already holds an `active` credential
 for is treated as "the runtime didn't honor the injected token" — it clears the needs-auth cache and
 retries rather than parking `oauth_required`. That is right for the common case (the host-global
-needs-auth cache short-circuited the connection). But if the token is genuinely rejected *server-side*
-— revoked, or its scopes changed — the DB copy still looks `active`, so it retries to the limit and
-lands in `mcp_connection_failed` (raw error surfaced) with **no** Authorize button offered. The
-credential must lapse or be deleted before re-authorization is presented again. The predicate is
+needs-auth cache short-circuited the connection), and a provider that *says* the credential is dead
+is now carved out: an error matching `REFRESH_TOKEN_REJECTED_PATTERN` (`invalid_grant`,
+`invalid_client`, `unauthorized_client`, `Invalid refresh token`) force-expires the row and parks
+`oauth_required`.
+
+What remains is the silent case: the server rejects the access token — revoked, or its scopes changed
+— and reports only a bare `401` with no grant error, while the DB copy still looks `active` and the
+runtime never attempts a refresh that would name the failure. That retries to the limit and lands in
+`mcp_connection_failed` (raw error surfaced) with **no** Authorize button offered; the credential must
+lapse or be deleted before re-authorization is presented again. The predicate is still
 `McpOauthServerAuthorization.authorized?` (active credential exists), not "the server accepted it".
 
 ---
