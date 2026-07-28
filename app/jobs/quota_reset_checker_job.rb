@@ -12,6 +12,13 @@
 # Claude's API uses sliding windows, so utilization can drop below 100%
 # before the reset timestamp arrives. Relying solely on reset times causes
 # accounts to stay stuck in quota_exceeded status long after usage has dropped.
+#
+# Restoring accounts is only half the job: sessions parked by
+# AuthOutageParkService because the pool had nothing usable are dormant in
+# `waiting`, and each carries a timer-based wake-up trigger as a backstop.
+# Once the pool is healthy again there is no reason to make them wait out that
+# timer, so this job resumes them directly — the accounts and the sessions that
+# were blocked on them recover together.
 class QuotaResetCheckerJob < ApplicationJob
   # Restore accounts when utilization drops below 100%.
   # The previous 80% threshold was too conservative — it blocked restoration
@@ -38,6 +45,9 @@ class QuotaResetCheckerJob < ApplicationJob
           reset_7d: snapshot.reset_7d&.iso8601)
       end
     end
+
+    resumed = AuthOutageParkService.wake_parked_sessions!(logger: logger)
+    logger.info("Resumed sessions parked for auth outage", count: resumed) if resumed.positive?
   end
 
   # Check if both quota windows are clear based on reset times and utilization.

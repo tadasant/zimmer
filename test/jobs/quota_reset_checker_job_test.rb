@@ -295,4 +295,61 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     # Should still restore from stale snapshot since reset times are past
     assert account.reload.active?
   end
+
+  # ===========================================================================
+  # Parked-session resumption
+  #
+  # Restoring accounts was only ever half the job: a session parked by
+  # AuthOutageParkService because the pool was empty stayed dormant until its
+  # timer-based backstop fired, even though the thing it was waiting for had
+  # just happened. The accounts and the sessions blocked on them recover together.
+  # ===========================================================================
+
+  test "resumes sessions parked for an auth outage once accounts are restored" do
+    parked = create_parked_session
+
+    QuotaResetCheckerJob.perform_now
+
+    parked.reload
+    assert_equal "running", parked.status
+    assert_nil parked.metadata["auth_outage_reason"]
+  end
+
+  test "leaves parked sessions asleep when nothing could be restored" do
+    # A pool with exactly one account, still inside its window: nothing to
+    # restore, so nothing to wake into.
+    ClaudeAccountQuotaSnapshot.delete_all
+    ClaudeAccount.delete_all
+    account = ClaudeAccount.create!(
+      email: "exhausted@example.com",
+      status: :quota_exceeded,
+      runtime: "claude_code",
+      oauth_config: { "credentials_json" => { "claudeAiOauth" => {} } }
+    )
+    account.quota_snapshots.create!(
+      reset_5h: 2.hours.from_now, reset_7d: 2.hours.from_now,
+      utilization_5h: 1.0, utilization_7d: 1.0
+    )
+    parked = create_parked_session
+
+    QuotaResetCheckerJob.perform_now
+
+    assert_equal "waiting", parked.reload.status
+  end
+
+  def create_parked_session
+    session = Session.create!(
+      prompt: "Parked by quota exhaustion",
+      agent_runtime: "claude_code",
+      status: :needs_input,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: SecureRandom.uuid,
+      metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" }
+    )
+    AuthOutageParkService.new(session).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+    assert_equal "waiting", session.reload.status
+    session
+  end
 end

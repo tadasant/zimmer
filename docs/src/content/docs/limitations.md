@@ -492,8 +492,8 @@ Tracked in [#50](https://github.com/tadasant/zimmer/issues/50).
 
 | What | Pattern | File |
 | --- | --- | --- |
-| Quota exhausted → rotate accounts | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb:116` |
-| Auth lost → re-inject and respawn | `/not logged in\|please run\s*\/login/i` | `auth_recovery_service.rb:79` |
+| Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb:116` |
+| Auth lost → re-inject and respawn, then park | `/not logged in\|please run\s*\/login/i` | `auth_recovery_service.rb` |
 | Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb:44` |
 | Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb:75` |
 
@@ -503,6 +503,25 @@ account, and failed, with no log line saying rotation should have happened. The 
 by construction.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
+
+### A parked session retries forever, once an hour
+
+🟡 When the login pool runs dry, `AuthOutageParkService` parks the session and schedules a wake-up
+(see [Agent harness auth](/auth/harness/#when-the-pool-runs-dry)). If the outage has *not* cleared by
+then, the woken session hits the same wall and parks again. There is no cap on park cycles, so a
+genuinely dead account pool produces one wake → fail → re-park cycle per hour indefinitely, each with
+its own push notification.
+
+That is deliberate — the alternative is a terminal `failed` that no longer recovers when a human
+finally re-authenticates — but it means a long outage is noisy rather than silent. The signal that
+someone must intervene is the repetition itself, not a distinct state.
+
+Two related sharp edges:
+
+- The retry time is only derived from real reset data for a **quota** outage, and only for Claude:
+  it reads `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d`. An auth outage (a rejected identity)
+  has no published reset clock at all, so it falls back to a blind `DEFAULT_RETRY_DELAY` of one hour.
+- Codex has no quota API, so a parked Codex session always gets that same blind hour.
 
 ### `CodexRetryStrategy` classifies almost nothing
 
