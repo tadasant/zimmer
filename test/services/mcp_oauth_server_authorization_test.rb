@@ -76,6 +76,42 @@ class McpOauthServerAuthorizationTest < ActiveSupport::TestCase
     assert_nil McpOauthServerAuthorization.credential_key_for({})
   end
 
+  test "refresh_token_rejected? matches the grant errors a dead refresh token reports" do
+    assert McpOauthServerAuthorization.refresh_token_rejected?(
+      "Token refresh failed with invalid_grant: Invalid refresh token\n" \
+      "HTTP Connection failed after 759ms: Unauthorized"
+    )
+    assert McpOauthServerAuthorization.refresh_token_rejected?("invalid_client")
+    assert McpOauthServerAuthorization.refresh_token_rejected?("unauthorized_client")
+  end
+
+  test "refresh_token_rejected? ignores transport and non-grant auth failures" do
+    assert_not McpOauthServerAuthorization.refresh_token_rejected?("HTTP Connection failed: Unauthorized")
+    assert_not McpOauthServerAuthorization.refresh_token_rejected?("Connection timed out after 30000ms")
+    assert_not McpOauthServerAuthorization.refresh_token_rejected?(nil)
+  end
+
+  test "invalidate! force-expires the credential so authorized? flips to false" do
+    server_info = { "server_name" => "authorized-server", "credential_key" => KEY }
+    assert McpOauthServerAuthorization.authorized?(server_info)
+
+    assert McpOauthServerAuthorization.invalidate!(server_info)
+
+    @active.reload
+    assert_nil @active.refresh_token
+    assert @active.expires_at <= Time.current
+    assert_not McpOauthServerAuthorization.authorized?(server_info)
+  end
+
+  test "invalidate! is a no-op when there is nothing active to invalidate" do
+    assert_not McpOauthServerAuthorization.invalidate!(
+      "server_name" => "unknown", "credential_key" => "unknown|0000000000000000"
+    )
+
+    ServersConfig.stubs(:credential_config).with("no-url").returns(nil)
+    assert_not McpOauthServerAuthorization.invalidate!("server_name" => "no-url")
+  end
+
   test "still_needing_authorization drops entries that already have an active credential" do
     entries = [
       { "server_name" => "authorized-server", "credential_key" => KEY },

@@ -6199,6 +6199,97 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert @session.logs.where(level: "warning").any? { |l| l.content.include?("valid credential already exists") }
   end
 
+  # GitHub issue #222: production session 298 ("Daily Meeting Capture") failed with
+  # "Token refresh failed with invalid_grant: Invalid refresh token" from
+  # notion-t3s-marketing. The credential ROW was still present and unexpired, so the
+  # classifier called it "already authorized", retried 3x, orphaned the session, and
+  # paged on-call — every morning, since the trigger re-runs daily. A refresh token the
+  # provider revoked can never be revived locally: it must surface as oauth_required.
+  test "check_and_handle_mcp_failure parks oauth_required when the provider rejected the refresh token" do
+    credential = create_dead_refresh_token_credential
+
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ {
+          "name" => "notion-t3s-marketing",
+          "status" => "failed",
+          "error" => "Token refresh failed with invalid_grant: Invalid refresh token\n" \
+                     "HTTP Connection failed after 759ms: Unauthorized"
+        } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion-t3s-marketing"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    end
+
+    @session.reload
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+    assert_equal [ "notion-t3s-marketing" ], @session.metadata["oauth_required_servers"].map { |s| s["server_name"] }
+    assert_nil @session.metadata["mcp_retry_count"], "a dead refresh token must not ride the retry ladder"
+
+    # The dead credential must be force-expired, or McpOauthController#initiate
+    # short-circuits on it and the Authorize button can never resolve.
+    credential.reload
+    assert_nil credential.refresh_token
+    assert_not credential.active?
+    assert_not McpOauthServerAuthorization.authorized?(
+      "server_name" => "notion-t3s-marketing", "credential_key" => credential.credential_key
+    )
+
+    log_buffer.flush
+    warnings = @session.logs.where(level: "warning").pluck(:content)
+    assert warnings.any? { |c| c.include?("rejected refresh token") }
+    assert_not warnings.any? { |c| c.include?("valid credential already exists") },
+      "must not claim the dead credential is still valid"
+  end
+
+  test "check_and_handle_mcp_failure never orphans on a rejected refresh token, even at the retry ceiling" do
+    create_dead_refresh_token_credential
+
+    @session.update!(
+      status: :running,
+      metadata: (@session.metadata || {}).merge(
+        "mcp_retry_count" => AgentSessionJob::MAX_MCP_CONNECTION_RETRIES
+      ),
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ {
+          "name" => "notion-t3s-marketing",
+          "status" => "failed",
+          "error" => "Token refresh failed with invalid_grant: Invalid refresh token"
+        } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion-t3s-marketing"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    rails_errors = []
+    Rails.logger.stub(:error, ->(msg) { rails_errors << msg }) do
+      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    end
+
+    @session.reload
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+
+    # The terminal orphan ERROR is the authoritative prod-ERROR / on-call page. It must
+    # keep firing for genuine orphaning — a permanent auth failure must never reach it.
+    assert_not rails_errors.any? { |m| m.to_s.include?("session orphaned after") },
+      "a re-authorizable failure must not page on-call; got: #{rails_errors.inspect}"
+  end
+
   test "check_and_handle_mcp_failure still parks oauth_required when NO credential exists" do
     @session.update!(
       status: :running,
@@ -8213,6 +8304,26 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   private
+
+  # An OAuth-capable catalog server with a stored, still-unexpired credential whose
+  # refresh token the provider has revoked — the exact shape of GitHub issue #222.
+  def create_dead_refresh_token_credential
+    config = { type: "http", url: "https://mcp.notion.com/mcp" }
+    ServersConfig.stubs(:credential_config).with("notion-t3s-marketing").returns(config)
+    ServersConfig.stubs(:find).with("notion-t3s-marketing").returns(Struct.new(:url).new(config[:url]))
+    McpOauthCredentialInjector.stubs(:oauth_capable_server?).with("notion-t3s-marketing").returns(true)
+
+    McpOauthCredential.create!(
+      server_name: "notion-t3s-marketing",
+      server_url: config[:url],
+      credential_key: McpOauthCredential.compute_credential_key("notion-t3s-marketing", config),
+      client_id: "client-222",
+      access_token: "dead-access-token",
+      refresh_token: "revoked-refresh-token",
+      token_endpoint: "https://mcp.notion.com/token",
+      expires_at: 1.hour.from_now
+    )
+  end
 
   # A job wired with mocks for the resume_monitoring path: an existing clone, a
   # live process, and a process exit that drives the monitoring loop into

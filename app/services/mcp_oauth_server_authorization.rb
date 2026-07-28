@@ -12,11 +12,67 @@
 # nothing". A 401 from a server we hold a valid token for is not a missing
 # authorization; it is the runtime failing to honor the token we injected.
 #
+# The converse matters just as much: **a credential the provider has revoked is
+# not a valid credential**, even though its row is still present and unexpired.
+# When a connect failure carries `invalid_grant` / "Invalid refresh token", the
+# refresh token is dead at the provider and no local retry can revive it — so
+# #invalidate! force-expires the row and the server routes to re-authorization
+# instead of riding the retry ladder into an orphaned session (GitHub issue #222).
+#
 # The post-spawn failure classifier (AgentSessionJob#check_and_handle_mcp_failure),
 # the resume service, and the OAuth banner all consult this so they agree on what
 # "still needs authorization" means.
 module McpOauthServerAuthorization
+  # Error text from an MCP server's connect failure that means the *provider*
+  # rejected the refresh grant: the refresh token was revoked, expired, or
+  # already rotated away. Claude Code surfaces this verbatim, e.g.
+  # "Token refresh failed with invalid_grant: Invalid refresh token".
+  #
+  # These are the same permanent grant errors McpOauthCredential classifies when
+  # Zimmer refreshes a token itself (PERMANENT_REFRESH_ERRORS), plus the
+  # human-readable phrasing providers pair them with. Nothing local can revive
+  # such a credential — only the user re-authorizing can.
+  REFRESH_TOKEN_REJECTED_PATTERN = Regexp.union(
+    /invalid_grant/i,
+    /invalid_client/i,
+    /unauthorized_client/i,
+    /invalid refresh token/i
+  )
+
   module_function
+
+  # True when a connect error says the provider rejected the refresh grant, so
+  # the stored credential is permanently dead and only re-authorization helps.
+  #
+  # @param error [String, nil] the raw error text reported for a failed server
+  # @return [Boolean]
+  def refresh_token_rejected?(error)
+    error.to_s.match?(REFRESH_TOKEN_REJECTED_PATTERN)
+  end
+
+  # Force-expires the stored credential for a server whose refresh token the
+  # provider rejected, so every "is this authorized?" check — this module's
+  # #authorized? and McpOauthController#initiate's short-circuit alike — agrees
+  # that the user must re-authorize.
+  #
+  # Both tokens go: the access token is dropped (force-expired) rather than left
+  # to run out its TTL because this is only called after the runtime already
+  # tried it and got a 401, and the refresh token is nulled because the provider
+  # just told us it is dead. Contrast McpOauthCredential#invalidate_refresh_token!,
+  # which preserves a still-usable access token when only the *refresh* failed.
+  #
+  # @param server_info [Hash] an `oauth_required_servers`-shaped entry
+  # @return [Boolean] true when a credential row was invalidated.
+  def invalidate!(server_info)
+    key = credential_key_for(server_info)
+    return false if key.blank?
+
+    credentials = McpOauthCredential.for_credential_key(key).active.to_a
+    return false if credentials.empty?
+
+    credentials.each { |credential| credential.update!(refresh_token: nil, expires_at: 1.second.ago) }
+    true
+  end
 
   # @param server_info [Hash] an `oauth_required_servers` entry — string- or
   #   symbol-keyed — carrying at least a server_name, and optionally a
