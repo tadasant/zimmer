@@ -2063,6 +2063,30 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_match(/Quota exceeded across all/, @session.logs.pluck(:content).join("\n"))
   end
 
+  # A parked exit must always reach pause! — that is where pending_sleep is
+  # consumed and the session actually goes dormant. Handing off to a queued
+  # message instead would keep it running and re-spawn it into the same wall,
+  # which is why AgentSessionJob reads the park marker rather than sniffing the
+  # error string (an exhausted auth park says nothing about "quota").
+  test "a parked exit records the park marker AgentSessionJob gates the handoff on" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_auth_error("Not logged in · Please run /login")
+    stub_auth_provider_returning(fake_account("rotated@example.com"))
+    @session.update!(metadata: @session.metadata.merge("auth_recovery_count" => AuthRecoveryService::MAX_RECOVERY_ATTEMPTS))
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action
+    assert_not_includes decision.error_message, "Account quota limit",
+      "This park is not a quota park — a string sniff would miss it"
+    assert @session.reload.metadata["auth_outage_reason"].present?,
+      "The marker must be set before AgentSessionJob inspects it"
+  end
+
   # The quota signature ApiErrorRetryService classifies as :quota_exceeded.
   def setup_transcript_with_quota_error
     transcript_dir = calculate_test_transcript_dir

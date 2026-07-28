@@ -509,8 +509,10 @@ Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 🟡 When the login pool runs dry, `AuthOutageParkService` parks the session and schedules a wake-up
 (see [Agent harness auth](/auth/harness/#when-the-pool-runs-dry)). If the outage has *not* cleared by
 then, the woken session hits the same wall and parks again. There is no cap on park cycles, so a
-genuinely dead account pool produces one wake → fail → re-park cycle per hour indefinitely, each with
-its own push notification.
+genuinely dead account pool produces a wake → fail → re-park cycle indefinitely, each with its own
+push notification and a fresh `Trigger` row (reaped an hour after its scheduled time by
+`CleanupStaleTriggersJob`). The cycle is hourly for an auth outage; for a quota outage it is however
+long the derived reset says, floored at five minutes.
 
 That is deliberate — the alternative is a terminal `failed` that no longer recovers when a human
 finally re-authenticates — but it means a long outage is noisy rather than silent. The signal that

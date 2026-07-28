@@ -166,6 +166,14 @@ class Session < ApplicationRecord
   # ARE cleared (fresh budget on resume) but auth_error_last_checked_line is NOT —
   # it is the AuthRecoveryService scan position and must survive restarts so an
   # already-handled "Not logged in" entry isn't re-detected.
+  #
+  # The auth_outage_* keys (AuthOutageParkService) describe a session that is
+  # dormant awaiting a scheduled retry. Any resume — the retry firing, a user
+  # follow-up, deployment recovery — ends that state, so they are cleared here
+  # rather than by the one path that knows about them. Leaving them behind would
+  # render an outage banner promising a retry that already happened, and would
+  # keep matching AuthOutageParkService.parked_sessions, so a later ordinary
+  # sleep could be force-resumed as if it were still parked.
   STALE_RETRY_METADATA_KEYS = %w[
     sigterm_retry_count
     sigterm_retry_timestamps
@@ -189,6 +197,9 @@ class Session < ApplicationRecord
     last_quota_limit_message
     auth_recovery_count
     last_auth_recovery_at
+    auth_outage_reason
+    auth_outage_parked_at
+    auth_outage_retry_at
     mcp_retry_count
     mcp_last_retry_at
     broadcast_message_count

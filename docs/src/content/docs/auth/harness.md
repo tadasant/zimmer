@@ -187,9 +187,16 @@ two future resets and the pool frees up at the earliest such account; `RESET_BUF
 added, and the result is clamped between `MIN_RETRY_DELAY` (5 min) and `MAX_RETRY_DELAY` (12 h). An
 auth outage has no published reset clock, so it uses `DEFAULT_RETRY_DELAY` (1 h).
 
-The trigger is only the backstop. In the common case `QuotaResetCheckerJob` restores the accounts
-first and wakes every parked session in the same sweep — but only for a runtime that actually has an
-available account again, so a session is never woken into the same empty pool.
+For a **quota** park the trigger is only the backstop: `QuotaResetCheckerJob` usually restores the
+accounts first and wakes those sessions in the same sweep, and only for a runtime that has an
+available account again, so a session is never woken into the pool that was still empty.
+
+An **auth** park gets no such fast path, and the asymmetry is deliberate. "An account is available"
+is evidence for a quota park — the pool was empty and now is not. It is no evidence at all for an
+auth park, which is reached precisely when an account *was* available and the runtime rejected its
+credentials anyway. Waking on it would resume the session into the identical failure every 15
+minutes. Those sessions wait for their scheduled retry, which gives `RefreshRuntimeAuthTokensJob`
+time to actually repair the identity.
 
 ## Logging in from the UI
 
