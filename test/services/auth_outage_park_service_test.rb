@@ -210,4 +210,81 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal 0, AuthOutageParkService.wake_parked_sessions!
     assert_equal "needs_input", @session.reload.status
   end
+
+  # An auth park is reached precisely when an account WAS available and the
+  # runtime rejected its credentials anyway, so "an account is available" is not
+  # evidence the outage cleared. Waking on it would resume into the identical
+  # failure every 15 minutes — the same loop this whole change exists to stop.
+  test "an auth-outage park is not woken merely because an account exists" do
+    create_account(email: "present@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "waiting", @session.reload.status,
+      "Auth parks wait for their scheduled retry, not for the quota sweep"
+  end
+
+  test "waking is idempotent under a repeated sweep" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!,
+      "An already-resumed session no longer matches the parked scope"
+  end
+
+  # ===========================================================================
+  # Metadata lifecycle
+  # ===========================================================================
+
+  # Cleared centrally rather than by the one path that knows about them: a timer
+  # -fired retry, a user follow-up, and deployment recovery all end the parked
+  # state, and a leftover marker would render a banner promising a retry that
+  # already happened — and would keep matching #parked_sessions, so a later
+  # ordinary sleep could be force-resumed as if it were still parked.
+  test "outage metadata is stale on resume so no other resume path strands it" do
+    AuthOutageParkService::OUTAGE_METADATA_KEYS.each do |key|
+      assert_includes Session::STALE_RETRY_METADATA_KEYS, key
+    end
+  end
+
+  test "any resume clears the outage metadata, not just the quota sweep" do
+    @session.update!(status: :needs_input)
+    park!
+    assert_equal "waiting", @session.reload.status
+
+    # Stand in for a user follow-up / trigger fire: the shared clear-then-resume
+    # shape every caller uses.
+    @session.update!(metadata: @session.metadata.except(*Session::STALE_RETRY_METADATA_KEYS))
+    @session.resume!
+
+    AuthOutageParkService::OUTAGE_METADATA_KEYS.each do |key|
+      assert_nil @session.reload.metadata[key]
+    end
+    assert_equal 0, AuthOutageParkService.parked_sessions.count
+  end
+
+  # The metadata renders "will resume automatically at HH:MM", so recording it
+  # before the trigger exists would promise a retry nothing can keep.
+  test "a failed wake-up schedule leaves no retry promise behind" do
+    Trigger.stubs(:create!).raises(ActiveRecord::RecordInvalid.new(Trigger.new))
+
+    assert_nil park!
+    @session.reload
+    AuthOutageParkService::OUTAGE_METADATA_KEYS.each do |key|
+      assert_nil @session.metadata[key], "#{key} must not outlive a failed schedule"
+    end
+  end
+
+  # Codex has no quota API and therefore no snapshots to derive a reset from.
+  test "a runtime without quota snapshots parks on the default delay" do
+    @session.update!(agent_runtime: "codex")
+
+    retry_at = park!
+
+    assert_in_delta AuthOutageParkService::DEFAULT_RETRY_DELAY.from_now.to_i, retry_at.to_i, 60
+    assert_match(/Codex/, @session.logs.where(level: "error").last.content)
+  end
 end

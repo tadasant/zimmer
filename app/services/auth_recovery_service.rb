@@ -40,18 +40,20 @@ require "automated_prompts"
 #
 # == Why the bound is time-based and not success-based ==
 #
-# The counter used to reset to zero whenever a re-spawned process was still alive
-# after SUCCESS_THRESHOLD seconds. That is not a success signal: a Claude Code
-# process spends its first 10-15 seconds connecting MCP servers before it makes
-# the API call that reports "Not logged in", so it clears a 5-second liveness bar
-# every single time — including when the injected credentials are dead. The
-# counter therefore oscillated 0 → 1 → 0 and MAX_RECOVERY_ATTEMPTS could never be
-# reached. Production session 684 logged "retrying 1/3" 115 times over 35 minutes,
-# re-spawning the CLI into the same auth wall roughly every 18 seconds.
+# A re-spawned process staying alive is NOT evidence that recovery worked. A
+# Claude Code process spends its first 10-15 seconds connecting MCP servers
+# before it makes the API call that reports "Not logged in", so it clears any
+# short liveness bar every single time — including when the injected credentials
+# are dead. Resetting the attempt counter on that signal makes it oscillate
+# 0 → 1 → 0, putting MAX_RECOVERY_ATTEMPTS permanently out of reach: production
+# session 684 logged "retrying 1/3" 115 times over 35 minutes, re-spawning the
+# CLI into the same auth wall roughly every 18 seconds.
 #
-# Liveness still gates whether monitoring continues (a process that dies instantly
-# is retried sooner), but only the elapsed time since the last attempt decides
-# whether this is a fresh incident or the same one looping.
+# So liveness only gates whether monitoring continues (a process that dies
+# instantly is retried sooner); the elapsed time since the last attempt is what
+# decides whether this is a fresh incident or the same one looping. The counter
+# is cleared by a genuinely completed turn, in SessionStateMachine's pause
+# callback — the one place that knows the process got past the wall.
 #
 # This mirrors ApiErrorRetryService's structure (transcript detection + bounded
 # retry + spawn/verify + line-marker tracking) deliberately: the auth error is

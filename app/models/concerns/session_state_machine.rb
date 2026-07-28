@@ -67,6 +67,7 @@ module SessionStateMachine
         after do
           log_state_change("Session paused, waiting for input")
           cleanup_running_job
+          clear_auth_recovery_budget
           fire_ao_event_triggers("session_needs_input")
           enqueue_debounced_needs_input_push_notification
           enqueue_session_inference_if_needed
@@ -366,6 +367,23 @@ module SessionStateMachine
     Rails.logger.info "[SessionStateMachine] Cleared stale MCP failure metadata for session #{id}: #{keys_to_clear.join(', ')}"
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to clear MCP failure metadata: #{e.message}"
+  end
+
+  # A completed turn is the only unambiguous evidence that auth recovery worked:
+  # the process got past the "Not logged in" wall and ran to a normal exit. The
+  # re-spawned process merely staying alive is not — it spends its first seconds
+  # connecting MCP servers before it makes the API call that fails — which is why
+  # AuthRecoveryService cannot clear its own budget and does it from here.
+  #
+  # Without this, a long-running session that survives several genuine account
+  # rotations inside AuthRecoveryService::CONSECUTIVE_WINDOW would exhaust a
+  # budget every one of those recoveries had actually earned back.
+  def clear_auth_recovery_budget
+    return unless metadata&.key?("auth_recovery_count")
+
+    update_column(:metadata, metadata.except("auth_recovery_count", "last_auth_recovery_at"))
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to clear auth recovery budget: #{e.message}"
   end
 
   # Execute a deferred sleep if the session was flagged for pending sleep.

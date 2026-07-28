@@ -469,4 +469,46 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
   test "auth_recovery_count is cleared on resume (stale) to give a fresh budget" do
     assert_includes Session::STALE_RETRY_METADATA_KEYS, "auth_recovery_count"
   end
+
+  # The counter can't be cleared on a liveness check (that's the bug), so the
+  # real success signal lives where it is unambiguous: a turn that ran to a
+  # normal exit got past the auth wall. Without this, a long-running session
+  # surviving several GENUINE rotations inside CONSECUTIVE_WINDOW would be
+  # parked despite every recovery having worked.
+  test "a completed turn clears the recovery budget" do
+    @session.update!(metadata: @session.metadata.merge(
+      "auth_recovery_count" => 2,
+      "last_auth_recovery_at" => 1.minute.ago.iso8601
+    ))
+
+    @session.pause!
+
+    @session.reload
+    assert_nil @session.metadata["auth_recovery_count"]
+    assert_nil @session.metadata["last_auth_recovery_at"]
+  end
+
+  test "three genuine rotations spread across completed turns never exhaust" do
+    setup_transcript_with_auth_error
+
+    3.times do
+      # Each rotation appends its own auth error, as the real CLI does.
+      @mock_file_system.write(
+        @transcript_file,
+        @mock_file_system.read(@transcript_file) + auth_error_json + "\n"
+      )
+      @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+      @mock_process_manager.running_hook = ->(_pid) { true }
+
+      service = create_service
+      service.define_singleton_method(:sleep) { |_| }
+      assert_equal :success, service.attempt_recovery("/tmp/test-clone")
+
+      # The recovered process finishes its turn normally.
+      @session.reload.pause!
+      @session.resume!
+    end
+
+    assert_nil @session.reload.metadata["auth_recovery_count"]
+  end
 end

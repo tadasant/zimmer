@@ -6,7 +6,7 @@ require "automated_prompts"
 # nothing usable left, and schedules it to wake up and try again once the outage
 # plausibly clears.
 #
-# == The failure this replaces ==
+# == When this fires ==
 #
 # Two exit decisions in ProcessLifecycleManager mean "we are out of runway":
 #
@@ -18,11 +18,10 @@ require "automated_prompts"
 #      fix it (either no account is available at all, or the injected identity is
 #      rejected again on every attempt).
 #
-# Both used to land the session in a bare `needs_input` (or, for exhausted auth
-# recovery, a terminal `failed`) whose only visible artifact was the CLI's own
-# "Not logged in · Please run /login" text. Nothing said *why*, nothing notified
-# the user, and nothing brought the session back when the condition cleared — so
-# the work simply stopped, often hours before anyone noticed.
+# Neither is a state a bare `needs_input` communicates. The only visible artifact
+# would be the CLI's own "Not logged in · Please run /login" text, which says
+# nothing about the cause, notifies nobody, and leaves the session stopped even
+# after the condition clears.
 #
 # == What parking does ==
 #
@@ -94,11 +93,16 @@ class AuthOutageParkService
 
     retry_at = compute_retry_at(reason)
 
+    # Schedule the retry BEFORE recording it. The metadata is what renders the
+    # banner promising "will resume automatically at HH:MM", so writing it first
+    # and then failing to create the trigger would leave the user with a promise
+    # nothing can keep.
+    trigger = schedule_wake!(reason, retry_at)
+
     add_log(park_message(reason, retry_at, detail), level: "error")
     log_buffer&.flush
 
     record_outage!(reason, retry_at)
-    trigger = schedule_wake!(reason, retry_at)
     notify!(reason, retry_at)
 
     @logger.warn("Session parked for auth outage",
@@ -116,19 +120,26 @@ class AuthOutageParkService
     nil
   end
 
-  # Resume every session parked for an auth outage whose runtime now has a
-  # usable account again. Called by QuotaResetCheckerJob right after it restores
-  # quota_exceeded accounts to active.
+  # Resume every quota-parked session whose runtime has a usable account again.
+  # Called by QuotaResetCheckerJob right after it restores quota_exceeded
+  # accounts to active, so the accounts and the sessions blocked on them recover
+  # together instead of the sessions waiting out a timer for a condition that
+  # has already cleared.
   #
-  # Sessions are only woken when their runtime actually has an available
-  # account — waking into the same empty pool would just re-park them.
+  # Scoped to QUOTA_EXHAUSTED deliberately. "An account is available again" is
+  # evidence for a quota park — the pool was empty and now is not — but it is no
+  # evidence at all for an AUTH_UNRECOVERABLE park, which is reached precisely
+  # when an account WAS available and the runtime rejected its credentials
+  # anyway. Waking those here would resume them into the identical failure every
+  # 15 minutes forever. They wait for their scheduled retry, which gives the
+  # token-refresh cron time to actually fix the identity.
   #
   # @return [Integer] number of sessions resumed
   def self.wake_parked_sessions!(logger: nil)
     logger ||= StructuredLogger.new({ service: "AuthOutageParkService" })
     resumed = 0
 
-    parked_sessions.find_each do |session|
+    parked_sessions(reason: QUOTA_EXHAUSTED).find_each do |session|
       next unless runtime_has_available_account?(session.agent_runtime)
 
       if resume_parked!(session, logger)
@@ -140,8 +151,11 @@ class AuthOutageParkService
   end
 
   # Sessions currently dormant because of an auth outage.
-  def self.parked_sessions
-    Session.where(status: :waiting).where("metadata->>'auth_outage_reason' IS NOT NULL")
+  def self.parked_sessions(reason: nil)
+    scope = Session.where(status: :waiting).where("metadata->>'auth_outage_reason' IS NOT NULL")
+    return scope unless reason
+
+    scope.where("metadata->>'auth_outage_reason' = ?", reason)
   end
 
   def self.runtime_has_available_account?(runtime)
@@ -151,19 +165,42 @@ class AuthOutageParkService
     false
   end
 
-  # Resume one parked session. `resume!` clears the outage's pending wake-up
-  # trigger for us (SessionStateMachine#cancel_pending_one_time_wake_triggers),
-  # so the timer backstop can't fire a second time on an already-running session.
+  # Resume one parked session, taking the same shape as every other automated
+  # resume in the app: a row lock, a re-check under it, and one transaction that
+  # clears the stale retry metadata and running_job_id before transitioning.
+  #
+  # The lock matters because two overlapping sweeps (or a sweep racing a user
+  # follow-up) would otherwise both pass the guard and enqueue a job each. The
+  # transaction matters because a failure part-way must not leave the session
+  # dormant with its outage metadata already cleared — it would no longer render
+  # a banner, and no longer match #parked_sessions, so nothing would ever pick it
+  # up again.
+  #
+  # `resume!` consumes the outage's pending wake-up trigger
+  # (SessionStateMachine#cancel_pending_one_time_wake_triggers), so the timer
+  # backstop can't fire a second time on an already-running session.
   def self.resume_parked!(session, logger)
-    reason = session.metadata&.dig("auth_outage_reason")
+    reason = nil
 
-    session.update!(metadata: (session.metadata || {}).except(*OUTAGE_METADATA_KEYS))
-    return false unless session.may_resume?
+    ActiveRecord::Base.transaction do
+      session.lock!
+      raise ActiveRecord::Rollback unless session.waiting? && session.may_resume?
 
-    session.resume!
+      reason = session.metadata&.dig("auth_outage_reason")
+      raise ActiveRecord::Rollback if reason.blank?
+
+      session.update!(
+        running_job_id: nil,
+        metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+      )
+      session.resume!
+    end
+
+    return false if reason.blank? || !session.reload.running?
+
     session.logs.create!(
       level: "warning",
-      content: "Login pool recovered (#{reason.to_s.tr('_', ' ')}) — resuming this session automatically."
+      content: "Login pool recovered (#{reason.tr('_', ' ')}) — resuming this session automatically."
     )
     AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
     logger.info("Resumed session parked for auth outage", session_id: session.id, reason: reason)
@@ -198,7 +235,10 @@ class AuthOutageParkService
       snapshot = account.latest_snapshot
       next unless snapshot
 
-      [ snapshot.reset_5h, snapshot.reset_7d ].compact.select { |t| t > Time.current }.max
+      # An account whose resets are both in the past is the one the next
+      # QuotaResetCheckerJob tick will restore, so it clears at "now" — dropping
+      # it would compute the retry from some other account hours out.
+      [ snapshot.reset_5h, snapshot.reset_7d ].compact.select { |t| t > Time.current }.max || Time.current
     end
 
     per_account.min
@@ -209,6 +249,11 @@ class AuthOutageParkService
 
   def record_outage!(reason, retry_at)
     with_db_retry do
+      # Reload first: schedule_wake! ran Trigger's auto-sleep callback, which
+      # wrote pending_sleep straight to the row. Merging into the in-memory copy
+      # would clobber it — and pending_sleep is the whole mechanism by which a
+      # parked session actually goes dormant.
+      session.reload
       session.update!(
         metadata: (session.metadata || {}).merge(
           "auth_outage_reason" => reason,
