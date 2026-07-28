@@ -2169,13 +2169,19 @@ class AgentSessionJob < ApplicationJob
     # McpOauthController#initiate's short-circuit stop reporting the dead
     # credential as valid, and route the server to oauth_required so the
     # Authorize button can actually mint a new token.
-    dead_credential_failures, recoverable_failures = oauth_capable_failures.partition do |server|
+    revoked_candidates, recoverable_failures = oauth_capable_failures.partition do |server|
       McpOauthServerAuthorization.refresh_token_rejected?(server["error"])
     end
 
-    dead_credential_failures.each do |server|
-      invalidate_dead_oauth_credential(server, log_buffer)
+    # Only treat a server as dead once the invalidation actually took. If it did
+    # not (a DB failure), routing it to oauth_required would park it behind the
+    # very short-circuit this branch exists to clear — a dead Authorize button.
+    # Hand those back to the recoverable path, which is where they were before
+    # this carve-out existed.
+    dead_credential_failures, uninvalidated = revoked_candidates.partition do |server|
+      invalidate_dead_oauth_credential(session, server, log_buffer)
     end
+    recoverable_failures += uninvalidated
 
     # Of the remaining OAuth-capable failures, separate the ones we ALREADY hold
     # a valid credential for. Those did not fail for lack of authorization — the
@@ -2347,28 +2353,53 @@ class AgentSessionJob < ApplicationJob
     error.to_s.match?(AUTH_ERROR_PATTERN)
   end
 
-  # Force-expires the stored credential for an OAuth server whose refresh token the
+  # Retires the stored credential for an OAuth server whose refresh token the
   # provider rejected, so the re-authorization it is about to be routed to can
   # actually resolve (McpOauthController#initiate short-circuits while an active
-  # credential exists). Best-effort — a DB hiccup here must not derail failure
-  # handling; the server is still reported as needing authorization either way.
+  # credential exists).
+  #
+  # Two stores have to agree, or the retirement does not stick: the DB row is
+  # force-expired, and the runtime's own copy is deleted. The runtime copy still
+  # carries its original future expiry, so McpOauthRuntimeReconciler reads it as a
+  # strictly newer token pair and would adopt the dead tokens back on the next
+  # spawn — re-activating the row and re-shadowing the Authorize button.
   #
   # @param server [Hash] a failed-server entry shaped { "name" =>, "error" => }
   # @param log_buffer [LogBuffer]
-  def invalidate_dead_oauth_credential(server, log_buffer)
+  # @return [Boolean] false only when the invalidation itself failed, in which
+  #   case the caller must not route the server to oauth_required.
+  def invalidate_dead_oauth_credential(session, server, log_buffer)
     invalidated = McpOauthServerAuthorization.invalidate!(
       "server_name" => server["name"],
       "server_url" => ServersConfig.find(server["name"])&.url
     )
+    delete_runtime_credentials(session, [ server["name"] ]) if invalidated
 
     log_buffer.add(
       "MCP server '#{server['name']}' failed with a rejected refresh token (#{server['error']}). " \
-      "The stored credential is permanently dead#{invalidated ? ' and has been invalidated' : ''} — " \
+      "#{invalidated ? 'The stored credential is permanently dead and has been retired' : 'No stored credential to retire'} — " \
       "requiring re-authorization instead of retrying.",
       level: "warning"
     )
+    true
   rescue => e
-    Rails.logger.warn "[AgentSessionJob] Error invalidating dead OAuth credential for #{server['name']}: #{e.message}"
+    Rails.logger.error "[AgentSessionJob] Error invalidating dead OAuth credential for #{server['name']}: #{e.message}"
+    false
+  end
+
+  # Removes the named servers' entries from the runtime's credential store.
+  # Best-effort — a delete failure must never derail failure handling; the worst
+  # case is the reconciler re-adopting the dead pair on a later spawn, which the
+  # classifier then retires again.
+  #
+  # @param session [Session]
+  # @param server_names [Array<String>]
+  def delete_runtime_credentials(session, server_names)
+    working_directory = session.metadata&.dig("working_directory")
+    McpOauthCredentialInjector.new(session, working_directory: working_directory)
+      .delete_runtime_credentials(server_names)
+  rescue => e
+    Rails.logger.warn "[AgentSessionJob] Error deleting runtime credentials: #{e.message}"
   end
 
   # Remove any partially-populated `_npx/<hash>` cache tree that a failed MCP

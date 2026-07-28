@@ -6252,6 +6252,71 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "must not claim the dead credential is still valid"
   end
 
+  # Force-expiring the DB row is only half the retirement. The runtime's own copy
+  # still carries its original future expiry, so McpOauthRuntimeReconciler reads it
+  # as a strictly newer pair and adopts the dead tokens back on the next spawn —
+  # re-activating the credential and re-shadowing the Authorize button.
+  test "check_and_handle_mcp_failure also deletes the runtime's copy of a revoked credential" do
+    create_dead_refresh_token_credential(expect_runtime_delete: true)
+
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ {
+          "name" => "notion-t3s-marketing",
+          "status" => "failed",
+          "error" => "Token refresh failed with invalid_grant: Invalid refresh token"
+        } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion-t3s-marketing"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+  end
+
+  # If the retirement itself fails, routing to oauth_required would park the
+  # session behind the very short-circuit the retirement exists to clear — a dead
+  # Authorize button. Fall back to the pre-carve-out treatment instead.
+  test "check_and_handle_mcp_failure falls back to the retry path when a revoked credential cannot be retired" do
+    create_dead_refresh_token_credential
+    McpOauthServerAuthorization.stubs(:invalidate!).raises(ActiveRecord::StatementInvalid.new("connection lost"))
+    McpOauthCredentialInjector.any_instance.stubs(:clear_runtime_needs_auth_cache).returns([ "notion-t3s-marketing" ])
+
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ {
+          "name" => "notion-t3s-marketing",
+          "status" => "failed",
+          "error" => "Token refresh failed with invalid_grant: Invalid refresh token"
+        } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion-t3s-marketing"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_not_equal "oauth_required", @session.metadata["failure_reason"],
+      "must not offer an Authorize button that cannot resolve"
+    assert_equal "mcp_retry", @session.metadata["paused_by"]
+  end
+
   test "check_and_handle_mcp_failure never orphans on a rejected refresh token, even at the retry ceiling" do
     create_dead_refresh_token_credential
 
@@ -8307,11 +8372,21 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
   # An OAuth-capable catalog server with a stored, still-unexpired credential whose
   # refresh token the provider has revoked — the exact shape of GitHub issue #222.
-  def create_dead_refresh_token_credential
+  def create_dead_refresh_token_credential(expect_runtime_delete: false)
     config = { type: "http", url: "https://mcp.notion.com/mcp" }
     ServersConfig.stubs(:credential_config).with("notion-t3s-marketing").returns(config)
     ServersConfig.stubs(:find).with("notion-t3s-marketing").returns(Struct.new(:url).new(config[:url]))
     McpOauthCredentialInjector.stubs(:oauth_capable_server?).with("notion-t3s-marketing").returns(true)
+
+    # Deleting the runtime's copy touches a host-global credential store, so it is
+    # always stubbed here; the test that asserts it turns the stub into an expectation.
+    if expect_runtime_delete
+      McpOauthCredentialInjector.any_instance
+        .expects(:delete_runtime_credentials).with([ "notion-t3s-marketing" ])
+        .at_least_once.returns([ "notion-t3s-marketing|deadbeef" ])
+    else
+      McpOauthCredentialInjector.any_instance.stubs(:delete_runtime_credentials).returns([])
+    end
 
     McpOauthCredential.create!(
       server_name: "notion-t3s-marketing",

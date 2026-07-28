@@ -65,18 +65,32 @@ renders an Authorize button that cannot resolve.
 
 That "we already hold a credential" check asks whether a row exists and is unexpired — which
 is not the same question as "the provider still honors it". So one class of failure is carved
-out ahead of it: when the error says the **provider rejected the refresh grant** — Claude Code
-reports `Token refresh failed with invalid_grant: Invalid refresh token`, and
-`McpOauthServerAuthorization::REFRESH_TOKEN_REJECTED_PATTERN` also matches `invalid_client` and
-`unauthorized_client` — the stored credential is permanently dead no matter how unexpired the
-row looks. Retrying can never revive it; without the carve-out the server was filed as "already
-authorized" and rode the retry ladder into a terminal `mcp_connection_failed`, orphaning the
-session with no Authorize button ([#222](https://github.com/tadasant/zimmer/issues/222)). Instead
-`McpOauthServerAuthorization.invalidate!` force-expires the row (dropping both tokens, since the
-runtime already tried the access token and got a 401) and the server is routed to
-`oauth_required` — which now resolves, because the short-circuit in `initiate` no longer sees an
-active credential. Only cache- and transport-shaped auth failures keep the clear-cache-and-retry
-path.
+out ahead of it: when the error says the **provider rejected Zimmer's refresh grant** — Claude
+Code reports `Token refresh failed with invalid_grant: Invalid refresh token` — the stored
+credential is permanently dead no matter how unexpired the row looks. Retrying can never revive
+it; without the carve-out the server was filed as "already authorized" and rode the retry ladder
+into a terminal `mcp_connection_failed`, orphaning the session with no Authorize button
+([#222](https://github.com/tadasant/zimmer/issues/222)). Instead the credential is **retired** and
+the server is routed to `oauth_required` — which now resolves, because the short-circuit in
+`initiate` no longer sees an active credential. Only cache- and transport-shaped auth failures
+keep the clear-cache-and-retry path.
+
+Retiring takes two stores, not one. `McpOauthServerAuthorization.invalidate!` drops the revoked
+refresh token and force-expires the DB row — force-expiring the access token too, deliberately:
+a runtime refreshes ahead of expiry, so the paired access token may have minutes of TTL left, and
+those minutes buy nothing once the credential is terminal while leaving the row `active` is
+exactly what re-shadows the Authorize button. But the **runtime's** copy still carries its
+original future expiry, so [`McpOauthRuntimeReconciler`](#capturing-the-token-the-runtime-rotates-write-back)
+would read it as a strictly newer pair and adopt the dead tokens back into the DB on the next
+spawn. So the classifier also calls `delete_credentials` on the runtime credential writer, leaving
+nothing to adopt.
+
+`REFRESH_TOKEN_REJECTED_PATTERN` keys on the refresh-failure phrasing (`Token refresh failed
+with <grant error>`, or `Invalid refresh token`) rather than on a bare `invalid_grant` anywhere in
+the text. A server that brokers a downstream OAuth of its own can report *its* provider's
+`invalid_grant` while Zimmer's credential for that server is healthy, and retiring it there would
+force a re-auth that cannot fix anything. An unrecognized phrasing costs nothing — it falls
+through to the retry path.
 
 ## The authorization flow
 

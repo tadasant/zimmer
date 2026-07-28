@@ -24,19 +24,23 @@
 # "still needs authorization" means.
 module McpOauthServerAuthorization
   # Error text from an MCP server's connect failure that means the *provider*
-  # rejected the refresh grant: the refresh token was revoked, expired, or
-  # already rotated away. Claude Code surfaces this verbatim, e.g.
-  # "Token refresh failed with invalid_grant: Invalid refresh token".
+  # rejected **Zimmer's own** refresh grant: the refresh token was revoked,
+  # expired, or already rotated away. Claude Code surfaces this verbatim, e.g.
+  # "Token refresh failed with invalid_grant: Invalid refresh token" — the grant
+  # errors are the same ones McpOauthCredential::PERMANENT_REFRESH_ERRORS
+  # classifies when Zimmer refreshes a token itself. Nothing local can revive
+  # such a credential; only the user re-authorizing can.
   #
-  # These are the same permanent grant errors McpOauthCredential classifies when
-  # Zimmer refreshes a token itself (PERMANENT_REFRESH_ERRORS), plus the
-  # human-readable phrasing providers pair them with. Nothing local can revive
-  # such a credential — only the user re-authorizing can.
+  # Deliberately keyed on the *refresh-failure phrasing*, not on a bare
+  # `invalid_grant` anywhere in the text. A server that brokers a downstream
+  # OAuth of its own can report the downstream provider's `invalid_grant` while
+  # Zimmer's credential for that server is perfectly healthy, and force-expiring
+  # it there would push the user into a re-auth loop that cannot fix anything —
+  # the exact dead end this module exists to prevent. An unrecognized phrasing
+  # costs nothing: it falls through to the pre-existing retry path.
   REFRESH_TOKEN_REJECTED_PATTERN = Regexp.union(
-    /invalid_grant/i,
-    /invalid_client/i,
-    /unauthorized_client/i,
-    /invalid refresh token/i
+    /token refresh failed[^\n]*\b(?:invalid_grant|invalid_client|unauthorized_client)\b/i,
+    /\binvalid refresh token\b/i
   )
 
   module_function
@@ -55,11 +59,19 @@ module McpOauthServerAuthorization
   # #authorized? and McpOauthController#initiate's short-circuit alike — agrees
   # that the user must re-authorize.
   #
-  # Both tokens go: the access token is dropped (force-expired) rather than left
-  # to run out its TTL because this is only called after the runtime already
-  # tried it and got a 401, and the refresh token is nulled because the provider
-  # just told us it is dead. Contrast McpOauthCredential#invalidate_refresh_token!,
-  # which preserves a still-usable access token when only the *refresh* failed.
+  # Both tokens go. The refresh token is nulled because the provider just told us
+  # it is dead. The access token is force-expired too, and that is a deliberate
+  # trade-off rather than a certainty that it was already rejected: a runtime
+  # refreshes ahead of expiry, so the paired access token may have minutes of TTL
+  # left. Those minutes buy nothing — the credential is terminal the moment they
+  # lapse — while leaving the row `active` keeps #authorized? true, which is
+  # exactly what re-shadows the Authorize button. Contrast
+  # McpOauthCredential#invalidate_refresh_token!, which preserves a still-valid
+  # access token because there a *later* refresh may still succeed.
+  #
+  # Scoped to the row, not to `active`: an already-expired row is if anything
+  # more urgent, since it keeps `can_refresh?` true and the cron would go on
+  # presenting a refresh token the provider has revoked.
   #
   # @param server_info [Hash] an `oauth_required_servers`-shaped entry
   # @return [Boolean] true when a credential row was invalidated.
@@ -67,10 +79,14 @@ module McpOauthServerAuthorization
     key = credential_key_for(server_info)
     return false if key.blank?
 
-    credentials = McpOauthCredential.for_credential_key(key).active.to_a
-    return false if credentials.empty?
+    # credential_key is uniquely indexed, so this is the one row for the server.
+    credential = McpOauthCredential.find_by(credential_key: key)
+    return false if credential.nil?
 
-    credentials.each { |credential| credential.update!(refresh_token: nil, expires_at: 1.second.ago) }
+    credential.update!(
+      refresh_token: nil,
+      expires_at: credential.active? ? 1.second.ago : credential.expires_at
+    )
     true
   end
 
