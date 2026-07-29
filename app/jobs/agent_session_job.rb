@@ -1364,8 +1364,14 @@ class AgentSessionJob < ApplicationJob
               # Continue the loop with the new process
               next
             when :needs_input
-              quota_limited = exit_decision.error_message&.include?("Account quota limit")
-              if quota_limited
+              # A parked exit (AuthOutageParkService) is not a completed turn. It
+              # must reach pause!, because that is where the park's pending_sleep
+              # is consumed and the session actually goes dormant — and handing
+              # off to a queued message instead would re-spawn straight into the
+              # same quota or auth wall. Read the park marker rather than sniffing
+              # the error string, so every park routes the same way.
+              parked = session.reload.metadata&.dig("auth_outage_reason").present?
+              if parked
                 log_buffer.add(
                   "Session paused: #{exit_decision.error_message}",
                   level: "warning"
@@ -1386,8 +1392,8 @@ class AgentSessionJob < ApplicationJob
               # takes over. This avoids a transient running → needs_input → running
               # flap that fires ao_event watchers (e.g., session_needs_input wakes)
               # and other one-shot subscribers spuriously.
-              # Skip if quota-limited — sending another message would just fail again.
-              if !quota_limited && process_next_enqueued_message_if_available(session, log_buffer)
+              # Skip if parked — sending another message would just fail again.
+              if !parked && process_next_enqueued_message_if_available(session, log_buffer)
                 # A new job was enqueued to process the message, exit this job
                 log_buffer.add(
                   "Enqueued message being processed, exiting current job (handoff path — no pause flap)",

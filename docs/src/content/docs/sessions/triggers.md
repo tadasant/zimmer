@@ -320,7 +320,9 @@ Neither auto-deletes a one-time trigger on a suppressed fire.
 ## Wake-up semantics
 
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"
-and "wake me up when that other session changes state." Two mechanisms make this reliable:
+and "wake me up when that other session changes state." Zimmer schedules the same one-time
+triggers on its own behalf — `AuthOutageParkService` uses one to retry a session parked because
+the login pool ran dry. Two mechanisms make this reliable:
 
 **Auto-sleep.** `Trigger#sleep_target_session_if_applicable` runs on trigger creation. If the
 target session is `needs_input`, it sleeps immediately (`needs_input → waiting`). If it's

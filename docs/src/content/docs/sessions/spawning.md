@@ -129,9 +129,12 @@ flowchart TD
     N -->|no| C{"context_length_error?<br/>(stderr)"}
     C -->|yes| CR["ContextLengthRetryService<br/>compact + retry (MAX_RETRIES = 2)"]
     C -->|no| A{"auth_recovery_needed?<br/>(transcript)"}
-    A -->|yes| AR["AuthRecoveryService<br/>re-inject credentials, re-spawn"]
+    A -->|yes| AR["AuthRecoveryService<br/>re-inject credentials, re-spawn<br/>(3 attempts / 15 min)"]
+    AR -->|exhausted or<br/>no account| PARK["AuthOutageParkService<br/>warn + notify + wake-up trigger<br/>→ waiting"]
     A -->|no| Q{"api_error_for_retry?<br/>(transcript)"}
-    Q -->|quota| RO["rotate_for_quota!<br/>next Claude account"]
+    Q -->|quota| RO{"rotate_for_quota!<br/>next Claude account"}
+    RO -->|rotated| P
+    RO -->|no_available_accounts| PARK
     Q -->|transient| RT["retry with backoff"]
     Q -->|no| F{"failed_resume_recovery_needed?"}
     F -->|yes| FR["restart from scratch"]
@@ -140,10 +143,17 @@ flowchart TD
     SD -->|no| FAIL["fail! → failed"]
     CR --> P
     AR --> P
-    RO --> P
     RT --> P
     SDR --> P
 ```
+
+When the login pool has nothing usable left — every account `quota_exceeded`, or an identity the
+runtime keeps rejecting — the session is **parked** rather than looped or failed:
+`AuthOutageParkService` explains the outage in the session log and the session-page banner, sends a
+push notification, and schedules a one-time wake-up trigger keyed off the real quota reset time.
+Creating that trigger sleeps the session, so it sits in `waiting` where the heartbeat sweep cannot
+nudge it. `QuotaResetCheckerJob` usually wakes it earlier, as soon as the accounts come back. Full
+detail in [Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
 
 A non-SIGTERM signaled exit — most commonly a cgroup **OOM kill** (SIGKILL) of a
 long-running, large-transcript session — is treated as recoverable rather than
