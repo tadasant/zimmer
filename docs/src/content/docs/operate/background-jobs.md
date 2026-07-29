@@ -35,7 +35,7 @@ From `config.good_job.cron`:
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
-| 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts |
+| 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts, then resume the sessions parked on them |
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions |

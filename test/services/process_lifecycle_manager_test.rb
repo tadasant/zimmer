@@ -1840,9 +1840,17 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_match(/no valid account available/, decision.error_message)
     assert_equal 0, @mock_cli_adapter.resumed_sessions.length,
       "Must not re-spawn when there is no account to recover to"
+
+    # The bare needs_input is not enough on its own — the session must be parked
+    # with an explanation and a scheduled retry.
+    @session.reload
+    assert_equal AuthOutageParkService::AUTH_UNRECOVERABLE, @session.metadata["auth_outage_reason"]
+    assert_not_nil @session.metadata["auth_outage_retry_at"]
+    assert_not_nil Trigger.find_by(last_session_id: @session.id),
+      "A wake-up trigger must be scheduled so the session retries on its own"
   end
 
-  test "handle_exit returns failed when auth recovery is exhausted" do
+  test "handle_exit parks the session for retry when auth recovery is exhausted" do
     @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 
     setup_transcript_with_auth_error("Not logged in · Please run /login")
@@ -1857,8 +1865,16 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     status = MockProcessManager::MockStatus.new(2)
     decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
 
-    assert_equal :failed, decision.action
+    # A hard `failed` used to be the outcome here. The cause is usually a
+    # transient token rejection that heals on its own, so the session is parked
+    # for an automatic retry instead of needing a human to notice and restart it.
+    assert_equal :needs_input, decision.action
     assert_match(/Auth recovery retry limit exhausted/, decision.error_message)
+
+    @session.reload
+    assert_equal AuthOutageParkService::AUTH_UNRECOVERABLE, @session.metadata["auth_outage_reason"]
+    assert_equal true, @session.metadata["pending_sleep"],
+      "Parking must make the session dormant so the heartbeat sweep cannot re-nudge it"
   end
 
   test "handle_exit prioritizes auth recovery when auth error is the most recent API error" do
@@ -2015,5 +2031,70 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_match(/Failed to continue after account rotation/i, decision.error_message)
     refute_empty @mock_cli_adapter.resumed_sessions,
       "resume must actually be attempted when the clone dir is present"
+  end
+
+  # ===========================================================================
+  # Pool exhaustion — quota hit with nothing left to rotate into
+  # ===========================================================================
+
+  test "quota exhaustion with no rotation target parks the session with a scheduled retry" do
+    provider = Object.new
+    provider.define_singleton_method(:rotate_for_quota!) do |triggered_by: nil|
+      { success: false, reason: "no_available_accounts" }
+    end
+    RuntimeAuthProvider.stubs(:for).returns(provider)
+
+    setup_transcript_with_quota_error
+    manager = create_manager
+
+    decision = manager.send(:handle_retryable_api_error, "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action
+    assert_match(/no other accounts available/, decision.error_message)
+    assert_empty @mock_cli_adapter.resumed_sessions,
+      "There is nothing to rotate into — re-spawning would hit the same wall"
+
+    @session.reload
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.metadata["auth_outage_reason"]
+    assert_not_nil @session.metadata["auth_outage_retry_at"]
+    assert_equal true, @session.metadata["pending_sleep"]
+
+    @log_buffer.flush
+    assert_match(/Quota exceeded across all/, @session.logs.pluck(:content).join("\n"))
+  end
+
+  # A parked exit must always reach pause! — that is where pending_sleep is
+  # consumed and the session actually goes dormant. Handing off to a queued
+  # message instead would keep it running and re-spawn it into the same wall,
+  # which is why AgentSessionJob reads the park marker rather than sniffing the
+  # error string (an exhausted auth park says nothing about "quota").
+  test "a parked exit records the park marker AgentSessionJob gates the handoff on" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_auth_error("Not logged in · Please run /login")
+    stub_auth_provider_returning(fake_account("rotated@example.com"))
+    @session.update!(metadata: @session.metadata.merge("auth_recovery_count" => AuthRecoveryService::MAX_RECOVERY_ATTEMPTS))
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action
+    assert_not_includes decision.error_message, "Account quota limit",
+      "This park is not a quota park — a string sniff would miss it"
+    assert @session.reload.metadata["auth_outage_reason"].present?,
+      "The marker must be set before AgentSessionJob inspects it"
+  end
+
+  # The quota signature ApiErrorRetryService classifies as :quota_exceeded.
+  def setup_transcript_with_quota_error
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    transcript_content = <<~JSONL
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_server_error_json("You've hit your 5-hour limit. Your limit resets at 3pm.")}
+    JSONL
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), transcript_content)
   end
 end

@@ -677,7 +677,10 @@
       <% end %>
     </div>
   <% end %>
-  <% if agent_session.needs_input? && agent_session.metadata&.dig("last_quota_limit_at").present? %>
+  <%# The outage banner below carries the parked case, including its retry time.
+      This line is the narrower one: a quota limit that did NOT exhaust the pool,
+      where rotation or a retry handled it and the session simply paused. %>
+  <% if agent_session.needs_input? && agent_session.metadata&.dig("last_quota_limit_at").present? && agent_session.metadata&.dig("auth_outage_reason").blank? %>
     <div class="flex items-center gap-1.5 mt-1">
       <svg class="h-4 w-4 text-amber-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
         <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
@@ -687,6 +690,7 @@
       </span>
     </div>
   <% end %>
+  <%= render "sessions/auth_outage_banner", agent_session: agent_session %>
   <% if agent_session.failed? && agent_session.metadata&.dig("failure_reason") == "oauth_required" %>
     <div class="mt-2">
       <%= render "sessions/mcp_oauth_required_banner", agent_session: agent_session %>

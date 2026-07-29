@@ -125,7 +125,9 @@ When an account hits its rate limit, Zimmer rotates to the next one by priority:
 6. Record an `AccountRotationEvent`.
 
 `QuotaResetCheckerJob` (every 15 min, **Claude only**) restores `quota_exceeded` accounts when either
-window's reset time has passed, or utilization drops below 100%.
+window's reset time has passed, or utilization drops below 100%. It then calls
+`AuthOutageParkService.wake_parked_sessions!` so the sessions that were blocked on those accounts
+resume in the same sweep — see [When the pool runs dry](#when-the-pool-runs-dry).
 
 :::danger[Rotation is triggered by matching an English error string]
 `ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN`:
@@ -150,7 +152,51 @@ Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
 `AuthRecoveryService` watches the transcript for `"Not logged in · Please run /login"` (matched by
 `/not logged in|please run\s*\/login/i`), re-injects credentials to disk, and re-spawns the process.
-Bounded by `MAX_RECOVERY_ATTEMPTS`; returns `:unrecoverable` if no account is available.
+Bounded by `MAX_RECOVERY_ATTEMPTS` attempts within `CONSECUTIVE_WINDOW` (15 minutes); returns
+`:unrecoverable` if no account is available.
+
+The bound is **time-based, not success-based**, and that distinction is the whole reason the service
+terminates. A re-spawned Claude Code process spends its first 10–15 seconds connecting MCP servers
+before it makes the API call that reports "Not logged in", so it clears any short liveness check
+even when the credentials on disk are dead. Treating that liveness as recovery success — and
+resetting the attempt counter on it — made the counter oscillate `0 → 1 → 0`, so
+`MAX_RECOVERY_ATTEMPTS` could never be reached. Production session 684 logged
+`retrying 1/3` **115 times over 35 minutes**, re-spawning the CLI into the same auth wall roughly
+every 18 seconds, and surfaced nothing to the user but a wall of `Not logged in · Please run /login`.
+Attempts now accumulate and are only forgiven by elapsed time, so an unrecoverable identity costs
+three re-spawns instead of an unbounded loop.
+
+## When the pool runs dry
+
+Two exits mean Zimmer has no runway left: a quota hit with no rotation target
+(`AccountRotationService#rotate!` → `{ success: false, reason: "no_available_accounts" }`), and auth
+recovery that cannot succeed. Both route to `AuthOutageParkService`, which:
+
+1. Writes a session log naming the outage and the retry time.
+2. Sends a push notification.
+3. Records `auth_outage_reason` / `auth_outage_parked_at` / `auth_outage_retry_at` on the session,
+   which renders the amber outage banner on the session page.
+4. Creates a one-time wake-up trigger — the same `reuse_session` + `last_session_id` shape the
+   `wake_me_up_later` MCP tool uses. Creating the trigger is what puts the session to sleep, so the
+   session lands in `waiting` rather than `needs_input`, and the heartbeat sweep anchors its cadence
+   instead of nudging it back into the same wall.
+
+The retry time is derived from the quota snapshots rather than a blind timer. `QuotaResetCheckerJob`
+clears an account only when **both** windows are clear, so an account frees up at the later of its
+two future resets and the pool frees up at the earliest such account; `RESET_BUFFER` (2 min) is
+added, and the result is clamped between `MIN_RETRY_DELAY` (5 min) and `MAX_RETRY_DELAY` (12 h). An
+auth outage has no published reset clock, so it uses `DEFAULT_RETRY_DELAY` (1 h).
+
+For a **quota** park the trigger is only the backstop: `QuotaResetCheckerJob` usually restores the
+accounts first and wakes those sessions in the same sweep, and only for a runtime that has an
+available account again, so a session is never woken into the pool that was still empty.
+
+An **auth** park gets no such fast path, and the asymmetry is deliberate. "An account is available"
+is evidence for a quota park — the pool was empty and now is not. It is no evidence at all for an
+auth park, which is reached precisely when an account *was* available and the runtime rejected its
+credentials anyway. Waking on it would resume the session into the identical failure every 15
+minutes. Those sessions wait for their scheduled retry, which gives `RefreshRuntimeAuthTokensJob`
+time to actually repair the identity.
 
 ## Logging in from the UI
 

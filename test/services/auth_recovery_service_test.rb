@@ -229,8 +229,11 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     @session.reload
     assert_equal 4242, @session.metadata["process_pid"]
 
-    # Counter reset to 0 on success so future independent rotations get a fresh budget.
-    assert_equal 0, @session.metadata["auth_recovery_count"]
+    # The attempt is COUNTED even though the re-spawned process is still alive:
+    # surviving SUCCESS_THRESHOLD only means the process started, not that the
+    # auth error is gone. Aging the counter out by CONSECUTIVE_WINDOW (rather
+    # than resetting it here) is what bounds a re-spawn loop.
+    assert_equal 1, @session.metadata["auth_recovery_count"]
     assert_not_nil @session.metadata["last_auth_recovery_at"]
     assert @session.metadata["auth_error_last_checked_line"].to_i > 0,
       "Should advance the auth line marker so the same entry isn't re-detected"
@@ -346,7 +349,8 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     assert_equal :success, result
     assert_equal 2, spawn_count
     @session.reload
-    assert_equal 0, @session.metadata["auth_recovery_count"], "Counter reset to 0 on eventual success"
+    assert_equal 2, @session.metadata["auth_recovery_count"],
+      "Both attempts count toward the budget — only elapsed time clears it"
   end
 
   test "returns :aborted when session state changes during the settle delay" do
@@ -371,6 +375,90 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     assert_equal 3, AuthRecoveryService::MAX_RECOVERY_ATTEMPTS
     assert_equal 5, AuthRecoveryService::SUCCESS_THRESHOLD
     assert_equal 2, AuthRecoveryService::RETRY_DELAY
+    assert_equal 15.minutes, AuthRecoveryService::CONSECUTIVE_WINDOW
+  end
+
+  # ===========================================================================
+  # Re-spawn loop bound (regression: production session 684)
+  # ===========================================================================
+
+  # The exact shape of the incident: every re-spawned process clears the
+  # 5-second liveness bar (a real Claude Code process spends its first 10-15
+  # seconds connecting MCP servers), then reports the same auth error and exits.
+  # The old code read that liveness as recovery success and reset
+  # auth_recovery_count to 0, so the counter oscillated 0 → 1 → 0 and the cap was
+  # unreachable — the CLI was re-spawned 115 times over 35 minutes, all logged as
+  # "retrying 1/3".
+  test "consecutive re-spawns that stay alive still exhaust the attempt budget" do
+    setup_transcript_with_auth_error
+
+    spawn_count = 0
+    @mock_cli_adapter.resume_hook = ->(_opts) do
+      spawn_count += 1
+      { pid: 7000 + spawn_count, stderr_log_path: "/tmp/stderr.log" }
+    end
+    # Every spawned process stays alive past SUCCESS_THRESHOLD, exactly as the
+    # real CLI does while its MCP servers connect.
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    # Drive the loop the way ProcessLifecycleManager does: each :success means
+    # "monitoring continues", the re-spawned process appends a FRESH auth error
+    # to the transcript, and the next exit routes straight back here.
+    results = []
+    4.times do
+      @mock_file_system.write(
+        @transcript_file,
+        @mock_file_system.read(@transcript_file) + auth_error_json + "\n"
+      )
+      service = create_service
+      service.define_singleton_method(:sleep) { |_| }
+      results << service.attempt_recovery("/tmp/test-clone")
+      break if results.last == :exhausted
+    end
+
+    assert_equal [ :success, :success, :success, :exhausted ], results,
+      "The 4th consecutive attempt must exhaust rather than loop forever"
+    assert_equal AuthRecoveryService::MAX_RECOVERY_ATTEMPTS, spawn_count,
+      "No spawn happens once the budget is exhausted"
+
+    @session.reload
+    assert_equal AuthRecoveryService::MAX_RECOVERY_ATTEMPTS, @session.metadata["auth_recovery_count"],
+      "The counter must accumulate across consecutive attempts, never reset to 0"
+  end
+
+  test "an attempt older than CONSECUTIVE_WINDOW starts a fresh budget" do
+    setup_transcript_with_auth_error
+
+    @session.update!(metadata: @session.metadata.merge(
+      "auth_recovery_count" => AuthRecoveryService::MAX_RECOVERY_ATTEMPTS,
+      "last_auth_recovery_at" => (AuthRecoveryService::CONSECUTIVE_WINDOW + 1.minute).ago.iso8601
+    ))
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :success, service.attempt_recovery("/tmp/test-clone"),
+      "A rotation long after the last one is a new incident, not a continuing loop"
+    @session.reload
+    assert_equal 1, @session.metadata["auth_recovery_count"]
+  end
+
+  test "an attempt inside CONSECUTIVE_WINDOW continues the existing budget" do
+    setup_transcript_with_auth_error
+
+    @session.update!(metadata: @session.metadata.merge(
+      "auth_recovery_count" => AuthRecoveryService::MAX_RECOVERY_ATTEMPTS,
+      "last_auth_recovery_at" => 1.minute.ago.iso8601
+    ))
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :exhausted, service.attempt_recovery("/tmp/test-clone")
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.length
   end
 
   test "auth_error_last_checked_line is preserved across resume (not stale)" do
@@ -380,5 +468,47 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
 
   test "auth_recovery_count is cleared on resume (stale) to give a fresh budget" do
     assert_includes Session::STALE_RETRY_METADATA_KEYS, "auth_recovery_count"
+  end
+
+  # The counter can't be cleared on a liveness check (that's the bug), so the
+  # real success signal lives where it is unambiguous: a turn that ran to a
+  # normal exit got past the auth wall. Without this, a long-running session
+  # surviving several GENUINE rotations inside CONSECUTIVE_WINDOW would be
+  # parked despite every recovery having worked.
+  test "a completed turn clears the recovery budget" do
+    @session.update!(metadata: @session.metadata.merge(
+      "auth_recovery_count" => 2,
+      "last_auth_recovery_at" => 1.minute.ago.iso8601
+    ))
+
+    @session.pause!
+
+    @session.reload
+    assert_nil @session.metadata["auth_recovery_count"]
+    assert_nil @session.metadata["last_auth_recovery_at"]
+  end
+
+  test "three genuine rotations spread across completed turns never exhaust" do
+    setup_transcript_with_auth_error
+
+    3.times do
+      # Each rotation appends its own auth error, as the real CLI does.
+      @mock_file_system.write(
+        @transcript_file,
+        @mock_file_system.read(@transcript_file) + auth_error_json + "\n"
+      )
+      @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+      @mock_process_manager.running_hook = ->(_pid) { true }
+
+      service = create_service
+      service.define_singleton_method(:sleep) { |_| }
+      assert_equal :success, service.attempt_recovery("/tmp/test-clone")
+
+      # The recovered process finishes its turn normally.
+      @session.reload.pause!
+      @session.resume!
+    end
+
+    assert_nil @session.reload.metadata["auth_recovery_count"]
   end
 end

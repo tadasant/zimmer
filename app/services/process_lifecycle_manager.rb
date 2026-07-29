@@ -970,8 +970,13 @@ class ProcessLifecycleManager
       rotation_result = attempt_account_rotation(working_dir)
       return rotation_result if rotation_result
 
+      # Nothing left to rotate into. Park the session with an explicit warning
+      # and a scheduled retry instead of dropping it into a bare needs_input
+      # whose only visible artifact is the runtime's own error text.
+      park_for_auth_outage(AuthOutageParkService::QUOTA_EXHAUSTED)
+
       @mutex.synchronize { @state = :idle }
-      ExitDecision.new(action: :needs_input, error_message: "Account quota limit reached and no other accounts available — retry skipped (resets at time shown in error)")
+      ExitDecision.new(action: :needs_input, error_message: "Account quota limit reached and no other accounts available — session parked until quota resets")
     when :aborted
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :aborted)
@@ -1016,11 +1021,19 @@ class ProcessLifecycleManager
       end
       ExitDecision.new(action: :continue)
     when :exhausted
+      # Re-injecting credentials did not clear the error within the attempt
+      # budget. The cause is usually transient on Anthropic's side (a rejected
+      # token that a later refresh fixes), so park with a scheduled retry rather
+      # than declaring a terminal failure a human has to notice and restart.
+      park_for_auth_outage(AuthOutageParkService::AUTH_UNRECOVERABLE)
+
       @mutex.synchronize { @state = :idle }
-      ExitDecision.new(action: :failed, error_message: "Auth recovery retry limit exhausted")
+      ExitDecision.new(action: :needs_input, error_message: "Auth recovery retry limit exhausted — session parked for automatic retry")
     when :unrecoverable
       # No valid account available to recover to — surface to the user (re-auth
       # needed) rather than failing silently or looping.
+      park_for_auth_outage(AuthOutageParkService::AUTH_UNRECOVERABLE)
+
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :needs_input, error_message: "Not logged in and no valid account available to recover — re-authenticate an account to restore service")
     when :aborted
@@ -1031,6 +1044,20 @@ class ProcessLifecycleManager
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: "Auth recovery failed")
     end
+  end
+
+  # Park the session for an auth/quota outage: explain it in the session log,
+  # notify the user, and schedule the wake-up that resumes the work once the
+  # outage plausibly clears. See AuthOutageParkService.
+  #
+  # Creating the wake-up trigger sets pending_sleep on this still-running
+  # session, so the needs_input the caller returns is immediately followed by a
+  # transition to waiting — which is also what stops the heartbeat sweep from
+  # nudging the session straight back into the same wall.
+  def park_for_auth_outage(reason)
+    return unless @session
+
+    AuthOutageParkService.new(@session, log_buffer: @log_buffer, logger: @logger).park!(reason: reason)
   end
 
   # Attempt to rotate to a different account for the session's runtime after a

@@ -33,10 +33,27 @@ require "automated_prompts"
 #    looping rather than re-spawning into the same error forever.
 # 3. Re-spawn the session via resume and verify the new process stays running.
 #
-# Bounded by MAX_RECOVERY_ATTEMPTS consecutive failures. The counter is reset to
-# zero on a verified success so a long-running session that legitimately survives
-# many account rotations over its lifetime is never killed by a lifetime cap —
-# only a tight loop of back-to-back failed recoveries is.
+# Bounded by MAX_RECOVERY_ATTEMPTS attempts within CONSECUTIVE_WINDOW, so a
+# long-running session that legitimately survives many account rotations over its
+# lifetime is never killed by a lifetime cap — only a tight loop of back-to-back
+# failed recoveries is.
+#
+# == Why the bound is time-based and not success-based ==
+#
+# A re-spawned process staying alive is NOT evidence that recovery worked. A
+# Claude Code process spends its first 10-15 seconds connecting MCP servers
+# before it makes the API call that reports "Not logged in", so it clears any
+# short liveness bar every single time — including when the injected credentials
+# are dead. Resetting the attempt counter on that signal makes it oscillate
+# 0 → 1 → 0, putting MAX_RECOVERY_ATTEMPTS permanently out of reach: production
+# session 684 logged "retrying 1/3" 115 times over 35 minutes, re-spawning the
+# CLI into the same auth wall roughly every 18 seconds.
+#
+# So liveness only gates whether monitoring continues (a process that dies
+# instantly is retried sooner); the elapsed time since the last attempt is what
+# decides whether this is a fresh incident or the same one looping. The counter
+# is cleared by a genuinely completed turn, in SessionStateMachine's pause
+# callback — the one place that knows the process got past the wall.
 #
 # This mirrors ApiErrorRetryService's structure (transcript detection + bounded
 # retry + spawn/verify + line-marker tracking) deliberately: the auth error is
@@ -57,10 +74,15 @@ require "automated_prompts"
 class AuthRecoveryService
   include DatabaseRetry
 
-  # Maximum consecutive recovery attempts before giving up. Reset to zero on a
-  # verified success (see class docs) so the cap bounds tight failure loops, not
-  # a session's lifetime count of legitimate rotations.
+  # Maximum recovery attempts within CONSECUTIVE_WINDOW before giving up.
   MAX_RECOVERY_ATTEMPTS = 3
+
+  # Attempts further apart than this are treated as separate incidents and the
+  # counter starts over. Sized well above a single recovery cycle (a couple of
+  # seconds of settle plus however long the re-spawned process survives) so a
+  # tight loop always accumulates, while a session that hits an unrelated
+  # rotation an hour later gets a fresh budget.
+  CONSECUTIVE_WINDOW = 15.minutes
 
   # Short settle delay (seconds) before re-spawning. Unlike API/rate-limit
   # backoff, the corrective action (re-writing credentials) is already complete
@@ -175,7 +197,7 @@ class AuthRecoveryService
   # @param working_directory [String] The working directory
   # @return [Symbol] :success, :exhausted, :unrecoverable, :aborted
   def execute_recovery(working_directory)
-    current_count = session.reload.metadata&.dig("auth_recovery_count") || 0
+    current_count = consecutive_recovery_count
 
     if current_count >= MAX_RECOVERY_ATTEMPTS
       add_log("Auth recovery limit reached (#{MAX_RECOVERY_ATTEMPTS} attempts) — failing", level: "warning")
@@ -230,6 +252,30 @@ class AuthRecoveryService
     spawn_and_verify_recovery(working_directory, retry_attempt)
   end
 
+  # The number of recovery attempts that belong to the CURRENT incident: the
+  # stored counter if the last attempt was recent, zero otherwise. Reading the
+  # timestamp rather than resetting the counter on a liveness check is what keeps
+  # a genuinely stuck session from looping forever (see class docs).
+  def consecutive_recovery_count
+    metadata = session.reload.metadata || {}
+    count = metadata["auth_recovery_count"].to_i
+    return 0 if count.zero?
+
+    last_attempt = parse_time(metadata["last_auth_recovery_at"])
+    return count if last_attempt.nil?
+    return 0 if last_attempt < CONSECUTIVE_WINDOW.ago
+
+    count
+  end
+
+  def parse_time(value)
+    return nil if value.blank?
+
+    Time.iso8601(value.to_s)
+  rescue ArgumentError
+    nil
+  end
+
   # Re-write the active account's credentials to disk via the runtime auth
   # provider. Returns the account on success, nil if none is available.
   def refresh_identity!(working_directory)
@@ -279,19 +325,19 @@ class AuthRecoveryService
     end
 
     if verify_process_running(new_pid, retry_attempt)
+      # Deliberately NOT a "recovery succeeded" signal, and deliberately NOT a
+      # reason to reset auth_recovery_count: the process surviving
+      # SUCCESS_THRESHOLD seconds only means it got as far as starting up. It
+      # may still be about to report the identical auth error on its first API
+      # call. The counter is aged out by CONSECUTIVE_WINDOW instead, so a
+      # re-spawn that fails the same way is the NEXT attempt, not a fresh first
+      # one. Returning :success here means only "monitoring can continue".
       add_log(
-        "Auth recovery #{retry_attempt} successful — process #{new_pid} verified running for #{SUCCESS_THRESHOLD}s",
+        "Auth recovery #{retry_attempt} re-spawned — process #{new_pid} running after #{SUCCESS_THRESHOLD}s, resuming monitoring",
         level: "info"
       )
-      # Reset the consecutive-failure counter so future independent rotations over
-      # this session's lifetime each get a fresh recovery budget.
-      with_db_retry do
-        session.update!(
-          metadata: (session.metadata || {}).merge("auth_recovery_count" => 0)
-        )
-      end
       log_buffer.flush
-      @logger.info("Auth recovery successful", retry_attempt: retry_attempt, new_pid: new_pid)
+      @logger.info("Auth recovery re-spawn verified running", retry_attempt: retry_attempt, new_pid: new_pid)
       return :success
     end
 
