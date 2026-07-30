@@ -1182,19 +1182,26 @@ Tracked in [#89](https://github.com/tadasant/zimmer/issues/89).
 provisioning runbook for the credential it needs. **None of it has run against real GCP.**
 
 No agent in this deployment could run it: there is no `gcloud` on the box, no GCP MCP server in
-the catalog, and CI holds no IAM-admin credential. Creating `zimmer-secrets-prod`, minting
-`zimmer-secrets-resolver`, granting its three roles, and delivering the key through Kamal are all
-human steps, and the last of them lives in `tadasant-internal`'s `zimmer/` root rather than here.
+the catalog, and CI holds no IAM-admin credential. The GCP half has since been provisioned by a
+human — project, service account, its three roles, audited, and a canary parameter proven to
+`:render` — but no *agent* verified any of it, and no Zimmer process has yet made the call.
 
-What *is* verified: the chain and its precedence, the degraded state when no credential is
+The Kamal delivery of `ZIMMER_PARAMS_*` is wired here now (`.kamal/secrets.production`,
+`config/deploy.production.yml`), and the env-file round trip is verified for real. What remains is
+one human step in `tadasant-internal`: setting
+`PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` and exporting it into the deploy job.
+
+What *is* verified here: the chain and its precedence, the degraded state when no credential is
 configured, the miss-vs-outage distinction, the snapshot cache semantics, the envelope round-trip
-(the page's copy-paste `gcloud` block writes exactly what the client reads back), and the fact that
-a secret value never lands in a Parameter Manager payload. All of it against
-`test/support/fake_parameter_store.rb`, an in-memory fake of the two Google APIs behind the HTTP
-seam — the production client is what runs, only the network is faked.
+(the page's copy-paste `gcloud` block writes exactly what the client reads back), the fact that
+a secret value never lands in a Parameter Manager payload, and that a base64 credential survives
+Kamal's escaping into a container while pretty-printed key JSON does not. The Google half is
+`test/support/fake_parameter_store.rb`, an in-memory fake of the two APIs behind the HTTP seam —
+the production client is what runs, only the network is faked.
 
-So: the code is ready the moment a credential appears, and until one does Zimmer resolves every
-`${VAR}` from encrypted credentials exactly as before. The first live `:render` is still ahead of us.
+So: the code is ready the moment the secret is set, and until it is Zimmer resolves every
+`${VAR}` from encrypted credentials exactly as before. The first live `:render` from Zimmer itself
+is still ahead of us.
 
 ---
 

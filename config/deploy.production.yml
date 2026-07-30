@@ -68,6 +68,14 @@ env:
     DATABASE_USERNAME: doadmin
     DATABASE_SSLMODE: require
     REDIS_URL: redis://zimmer-redis:6379
+    # The Google Parameter Store the ${VAR} resolution chain reads FIRST. These two
+    # are the store's ADDRESS, not a credential -- only the service-account key below
+    # is secret -- and they are deliberately in the clear so a misconfiguration is
+    # diagnosable: the Connectors page can name the project it failed to reach, and
+    # `kamal app exec 'env | grep ZIMMER_PARAMS_PROJECT_ID'` answers "is it even set?"
+    # without touching a secret. Absent, the chain is just credentials -> ENV.
+    ZIMMER_PARAMS_PROJECT_ID: zimmer-secrets-prod
+    ZIMMER_PARAMS_LOCATION: global
   secret:
     - SECRET_KEY_BASE
     - RAILS_MASTER_KEY
@@ -82,6 +90,10 @@ env:
     # ~/.ssh/zimmer_operator_ed25519 so agent sessions (and the ssh-* MCP servers they
     # attach) have an SSH identity; without it they have none. See .kamal/secrets.production.
     - ZIMMER_OPERATOR_SSH_KEY
+    # Base64 of the Parameter Store resolver's service-account key JSON -- base64 for
+    # the same env-file reason as the SSH key above, spelled out in
+    # .kamal/secrets.production. Its two non-secret companions are in env.clear.
+    - ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
     - SENTRY_DSN_BACKEND
     - OTEL_LOGS_EXPORTER_ENDPOINT
     - OTEL_LOGS_EXPORTER_BEARER_TOKEN
