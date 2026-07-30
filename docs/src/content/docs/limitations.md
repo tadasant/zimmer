@@ -1188,8 +1188,10 @@ credential.
 
 The Kamal delivery of `ZIMMER_PARAMS_*` is wired here now (`.kamal/secrets.production`,
 `config/deploy.production.yml`), and the env-file round trip is verified for real. What remains is
-one human step in `tadasant-internal`: setting
-`PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` and exporting it into the deploy job.
+two human steps in `tadasant-internal`: setting
+`PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`, and naming it in **both** places
+`zimmer-deploy-prod.yml` enumerates secrets. Miss the second and the Kamal mapping resolves to
+blank with no error — a deploy that looks healthy while the store never turns on.
 
 What *is* verified here: the chain and its precedence, the degraded state when no credential is
 configured, the miss-vs-outage distinction, the snapshot cache semantics, the envelope round-trip
