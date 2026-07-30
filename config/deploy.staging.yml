@@ -82,6 +82,13 @@ env:
     # ~/.ssh/zimmer_operator_ed25519 so agent sessions (and the ssh-* MCP servers they
     # attach) have an SSH identity; without it they have none. See .kamal/secrets.staging.
     - ZIMMER_OPERATOR_SSH_KEY
+    # GitHub token for the `gh` CLI, for a NON-PRIMARY account (tadasant-test). `gh`
+    # reads GH_TOKEN from the environment, authenticating both GithubTriggerPollerJob's
+    # `gh api search/issues` and git's `gh auth git-credential` clone helper. Injected on
+    # every deploy, so it survives staging's rebuild-from-scratch (unlike `gh auth login`).
+    # Optional: unset/blank leaves gh unauthenticated and the poller skips gracefully.
+    # See .kamal/secrets.staging for scope guidance and the runbook link.
+    - GH_TOKEN
     # The API key the injected self-session MCP server uses to call this instance's
     # own REST API. It lives in process ENV rather than mcp_secrets (SecretsInterpolator
     # falls back to ENV), because the deploy workflow derives it from API_KEYS -- which
