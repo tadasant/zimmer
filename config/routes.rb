@@ -198,8 +198,20 @@ Rails.application.routes.draw do
   # API documentation page
   get "api_docs", to: "api_docs#show", as: :api_docs
 
-  # OAuth Status page (view and manage OAuth credentials)
-  resources :mcp_oauth_credentials, only: [ :index, :destroy ], path: "oauth_status", as: :oauth_status
+  # Connectors page: every catalog MCP server with its auth status. Each row's
+  # status is fetched individually by a lazy Turbo Frame hitting #show, so the
+  # list renders before any probe resolves.
+  resources :connectors, only: [ :index, :show ], param: :name, constraints: { name: /[^\/]+/ } do
+    collection do
+      # Which secret store is wired up, and what it can do. Its own lazy frame:
+      # answering means an IAM probe against Google, which must never sit in
+      # front of the page.
+      get :secret_store, path: "secret-store"
+    end
+  end
+
+  # Deleting a stored OAuth credential (the "Disconnect" button on Connectors).
+  resources :mcp_oauth_credentials, only: [ :destroy ], path: "connector_credentials"
 
   # MCP elicitation response routes
   resources :elicitations, only: [] do

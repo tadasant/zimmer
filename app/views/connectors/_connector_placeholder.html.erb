@@ -1,0 +1,14 @@
+<%# What a connector row looks like before its probe resolves. Rendered as the
+    lazy frame's initial content, so the page is complete and readable on first
+    paint. Local: server (ServersConfig::Server) %>
+<div class="px-4 py-4 flex items-start justify-between gap-4">
+  <%= render "connectors/server_identity", server: server %>
+  <span class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500"
+        data-connector-state="checking">
+    <svg class="h-3 w-3 animate-spin text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+    </svg>
+    Checking…
+  </span>
+</div>

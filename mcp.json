@@ -59,7 +59,7 @@
   },
   "zimmer": {
     "title": "Zimmer",
-    "description": "Zimmer's native MCP server — the full tool surface (sessions, notifications, triggers, health) of the Zimmer instance running the session.",
+    "description": "Zimmer's native MCP server \u2014 the full tool surface (sessions, notifications, triggers, health) of the Zimmer instance running the session.",
     "type": "streamable-http",
     "url": "https://zimmer.example.com/mcp",
     "headers": {
@@ -77,7 +77,7 @@
   },
   "zimmer-self-session": {
     "title": "Zimmer Self-Session",
-    "description": "Zimmer's native MCP server, scoped to self-management (own notes/title/heartbeat/archive, push notifications, wake-ups). Auto-injected into every session — list it explicitly only to pin it.",
+    "description": "Zimmer's native MCP server, scoped to self-management (own notes/title/heartbeat/archive, push notifications, wake-ups). Auto-injected into every session \u2014 list it explicitly only to pin it.",
     "type": "streamable-http",
     "url": "https://zimmer.example.com/mcp?tool_groups=self_session",
     "headers": {
@@ -138,5 +138,14 @@
     "description": "Notion MCP server (hosted, streamable-http). OAuth via browser flow.",
     "type": "streamable-http",
     "url": "https://mcp.notion.com/mcp"
+  },
+  "secrets-service-account": {
+    "title": "Secrets Service Account",
+    "description": "Strad-hosted secrets MCP server \u2014 read Zimmer's own parameter/secret inventory through strad.",
+    "type": "streamable-http",
+    "url": "https://strad.tadasant.com/mcp?servers=secrets",
+    "headers": {
+      "Authorization": "Bearer ${STRAD_API_KEY}"
+    }
   }
 }

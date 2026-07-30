@@ -17,6 +17,25 @@ class XOauthTokenVendor
   # variants (e.g. X_OAUTH_ACCESS_TOKEN_JULIE).
   ENV_VAR_PREFIX = "X_OAUTH_ACCESS_TOKEN"
 
+  # True when this vendor owns the variable AND holds a credential row for it —
+  # answered WITHOUT minting or refreshing a token.
+  #
+  # Read-only status surfaces (the Connectors page) need to know whether a
+  # `${VAR}` would resolve, and must not trigger a token refresh as a side effect
+  # of rendering. #resolve cannot answer that question cheaply because reading
+  # `current_access_token` is what refreshes.
+  #
+  # @param var_name [String]
+  # @return [Boolean]
+  def self.configured?(var_name)
+    return false unless var_name.is_a?(String) && var_name.start_with?(ENV_VAR_PREFIX)
+
+    XOauthCredential.exists?(access_token_env_var: var_name)
+  rescue => e
+    Rails.logger.warn "[XOauthTokenVendor] Failed to check #{var_name}: #{e.class}: #{e.message}"
+    false
+  end
+
   # Resolve an env var name to a fresh X access token, or nil if this vendor does
   # not own the variable (or has no credential / token for it).
   #

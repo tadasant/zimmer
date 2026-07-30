@@ -1,0 +1,105 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-8">
+      <div class="flex items-center mb-4">
+        <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Connectors</h1>
+      </div>
+      <p class="text-sm text-gray-600">
+        Every MCP server in Zimmer's catalog, and whether a session could use it right now.
+        Each status is checked on its own — the list renders first and the badges fill in.
+      </p>
+    </div>
+
+    <%# Where a missing secret has to go. The store's absence is a normal state,
+        not a fault, so it is reported plainly rather than as a warning. %>
+    <%= turbo_frame_tag "secret_store_status", src: secret_store_connectors_path, loading: :lazy do %>
+      <div class="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3">
+        <p class="text-sm text-gray-500">Checking the secret store…</p>
+      </div>
+    <% end %>
+
+    <% if @servers.any? %>
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden">
+        <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Catalog servers</h2>
+          <p class="mt-1 text-sm text-gray-500"><%= pluralize(@servers.size, "server") %> in the catalog</p>
+        </div>
+        <div class="divide-y divide-gray-200">
+          <% @servers.each do |server| %>
+            <%= turbo_frame_tag connector_frame_id(server.name), src: connector_path(server.name), loading: :lazy do %>
+              <%= render "connectors/connector_placeholder", server: server %>
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+    <% else %>
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200 px-4 py-12 text-center">
+        <h3 class="text-sm font-medium text-gray-900">No MCP servers in the catalog</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          The AIR catalog resolved no MCP entries. Check <code class="font-mono">mcp.json</code> and the app logs for a catalog resolve failure.
+        </p>
+      </div>
+    <% end %>
+
+    <% if @unclaimed_credentials.any? %>
+      <!-- Credentials no catalog server claims: the entry was removed, renamed, or
+           its config changed so the credential key no longer matches. -->
+      <div class="mt-6 bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden">
+        <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Unclaimed credentials</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            Stored OAuth credentials that no catalog server matches. Zimmer will not inject these —
+            the server was removed or renamed, or its URL/headers changed so the credential key no longer matches.
+          </p>
+        </div>
+        <div class="divide-y divide-gray-200">
+          <% @unclaimed_credentials.each do |credential| %>
+            <div id="<%= dom_id(credential) %>" class="px-4 py-4 flex items-center justify-between gap-4">
+              <div class="min-w-0">
+                <p class="text-sm font-medium text-gray-900 truncate"><%= credential.server_name %></p>
+                <p class="text-xs text-gray-500 font-mono truncate" title="<%= credential.server_url %>"><%= credential.server_url %></p>
+                <p class="mt-1 text-xs text-gray-400">Stored <%= time_ago_in_words(credential.created_at) %> ago</p>
+              </div>
+              <%= button_to mcp_oauth_credential_path(credential),
+                    method: :delete,
+                    form: { data: { turbo_confirm: "Delete the stored OAuth credential for #{credential.server_name}?" } },
+                    class: "shrink-0 inline-flex items-center px-2.5 py-1 border border-red-300 text-xs font-medium rounded-md text-red-700 bg-white hover:bg-red-50" do %>
+                Delete
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
+
+    <!-- Info Section -->
+    <div class="mt-6 bg-blue-50 border border-blue-200 rounded-lg px-4 py-4">
+      <div class="flex">
+        <div class="flex-shrink-0">
+          <svg class="h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+          </svg>
+        </div>
+        <div class="ml-3">
+          <h3 class="text-sm font-medium text-blue-800">How these statuses are determined</h3>
+          <div class="mt-2 text-sm text-blue-700">
+            <ul class="list-disc list-inside space-y-1">
+              <li>Statuses read the same inputs a spawn reads: the server's <code class="font-mono">${VAR}</code> values, whether an OAuth flow applies, and the stored credential. No request is made to the server itself, so a Ready badge means "Zimmer has what it needs", not "the remote host answered".</li>
+              <li><strong>Ready</strong> — OAuth is complete and saved, or every required variable resolves.</li>
+              <li><strong>Missing configuration</strong> — a required <code class="font-mono">${VAR}</code> has no value. The row says where to put it.</li>
+              <li><strong>Needs authorization</strong> — an OAuth server with no stored credential. Authorize it from the banner on a session that uses it.</li>
+              <li><strong>Token expired</strong> resolves itself via the refresh job; <strong>Needs re-auth</strong> does not, because no refresh token was issued.</li>
+              <li>Secret values are never shown here — only whether they are set.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
