@@ -72,6 +72,25 @@ class SecretsLocationTest < ActiveSupport::TestCase
     assert_match SecretsLocation::PLACEHOLDER, snippet
   end
 
+  test "the store snippet grants the PARAMETER access to the secret it points at" do
+    # Without this grant `:render` returns 400 SECRET_REFERENCE_ERROR for every
+    # resolution, because it dereferences the __REF__ as the parameter's own
+    # principal rather than as Zimmer's credential. The store banner stays green
+    # throughout (it probes the RESOLVER), so an omission here is invisible until
+    # a variable silently fails to resolve.
+    snippet = SecretsLocation.instructions("STRAD_API_KEY", chain: chain_with_store)[:snippet]
+    id = ParameterStore::Namespace.parameter_id(ParameterStore::Namespace.parameter_path("STRAD_API_KEY"))
+
+    assert_match "policyMember.iamPolicyUidPrincipal", snippet
+    assert_match "gcloud secrets add-iam-policy-binding #{id}", snippet
+    assert_match "--role=roles/secretmanager.secretAccessor", snippet
+
+    # The grant has to land before the value is ever read back.
+    assert_operator snippet.index("add-iam-policy-binding"), :<,
+      snippet.index("parameters versions create"),
+      "grant the parameter access before creating the version that needs it"
+  end
+
   test "the envelope the snippet writes is exactly what the client reads back" do
     # If these drift, a human follows the instructions to the letter and Zimmer
     # still reports the secret as missing.

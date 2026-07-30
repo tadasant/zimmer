@@ -140,10 +140,17 @@ gcloud iam service-accounts create "$SA" \
   --display-name "Zimmer secrets (runtime resolver: reads parameter + secret VALUES, writes nothing)" \
   --project "$PROJECT"
 
-# List parameters, read versions, and :render one.
+# List parameters and their versions.
 gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "$MEMBER" \
   --role roles/parametermanager.parameterViewer \
+  --condition=None
+
+# Actually :render a version. parameterViewer grants the LISTS but NOT render —
+# verified the hard way during provisioning, where render 403'd with viewer alone.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "$MEMBER" \
+  --role roles/parametermanager.parameterAccessor \
   --condition=None
 
 # The other half of a :render — dereference the __REF__ the envelope carries.
@@ -155,8 +162,9 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 
 | Role | Why |
 | --- | --- |
-| `roles/parametermanager.parameterViewer` | List the namespace, read versions, and `:render` one. Rendering a *secret* parameter dereferences the `__REF__`, which is authorized separately below. |
-| `roles/secretmanager.secretAccessor` | Grants `secretmanager.versions.access`: the other half of that `:render`, and nothing else. No create, no update, no destroy, no policy read. |
+| `roles/parametermanager.parameterViewer` | `parameters.list` + `parameterVersions.list` — the two calls `GcpClient#resolve` makes before it renders anything. |
+| `roles/parametermanager.parameterAccessor` | `parameterVersions.render`. **`parameterViewer` does not grant this** — with viewer alone the lists succeed and every render 403s, which looks like a working credential right up until nothing resolves. |
+| `roles/secretmanager.secretAccessor` | `secretmanager.versions.access`, so the resolver can read a rendered secret value. No create, no update, no destroy, no policy read. |
 
 Deliberately **not** granted:
 
@@ -199,23 +207,33 @@ The second proves the **capability**, which is stronger — it accounts for
 anything inherited from a folder or the organisation that a project-level
 `get-iam-policy` does not show:
 
+There is **no `gcloud projects test-iam-permissions` subcommand** — call Cloud Resource Manager's REST endpoint directly. This is also exactly what `ParameterStore::Capabilities` calls at runtime, so the audit and the banner are asking Google the same question:
+
 ```bash
 gcloud auth activate-service-account --key-file /tmp/zimmer-secrets-resolver.json
 
-gcloud projects test-iam-permissions "$PROJECT" --format="value(permissions)" \
-  --permissions=parametermanager.parameterVersions.render,\
-secretmanager.versions.access,\
-parametermanager.parameters.create,\
-parametermanager.parameterVersions.create,\
-secretmanager.secrets.create,\
-secretmanager.versions.add | sort
+curl -s -X POST \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  "https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions" \
+  -d '{"permissions":[
+        "parametermanager.parameters.list",
+        "parametermanager.parameterVersions.list",
+        "parametermanager.parameterVersions.render",
+        "secretmanager.versions.access",
+        "parametermanager.parameters.create",
+        "parametermanager.parameterVersions.create",
+        "secretmanager.secrets.create",
+        "secretmanager.versions.add"]}' | jq -r '.permissions[]' | sort
 
-# EXPECTED — exactly these two lines and no others:
+# EXPECTED — exactly these four and no others:
+#   parametermanager.parameterVersions.list
 #   parametermanager.parameterVersions.render
+#   parametermanager.parameters.list
 #   secretmanager.versions.access
 #
 # The four write permissions MUST be absent. Their absence is the "reads values,
-# writes nothing" claim, checked rather than asserted. If all six come back
+# writes nothing" claim, checked rather than asserted. If the list comes back
 # empty, the SA has no project access at all and something above failed.
 
 gcloud config set account <your-own-account>   # switch back off the SA
@@ -317,7 +335,14 @@ gcloud parametermanager parameters create "$ID" \
   --project "$PROJECT" --location global \
   --parameter-format json --labels managed-by=zimmer,secret=true
 
-# 3. The envelope version pointing one at the other.
+# 3. Let the PARAMETER read the secret. THIS STEP IS NOT OPTIONAL — see below.
+PRINCIPAL=$(gcloud parametermanager parameters describe "$ID" \
+  --project "$PROJECT" --location global \
+  --format='value(policyMember.iamPolicyUidPrincipal)')
+gcloud secrets add-iam-policy-binding "$ID" --project "$PROJECT" \
+  --member="$PRINCIPAL" --role=roles/secretmanager.secretAccessor
+
+# 4. The envelope version pointing one at the other.
 cat > /tmp/$ID.json <<'JSON'
 {"path":"/zimmer/production/mcp/static/STRAD_API_KEY","secret":true,"value":"__REF__(\"//secretmanager.googleapis.com/projects/zimmer-secrets-prod/secrets/zimmer-production-mcp-static-strad-api-key/versions/latest\")"}
 JSON
@@ -327,10 +352,20 @@ gcloud parametermanager parameters versions create v1 \
 rm -f /tmp/$ID.json
 ```
 
+**Why step 3 exists, and why omitting it is so hard to diagnose.** `:render`
+dereferences the `__REF__` as the **parameter's own** principal
+(`policyMember.iamPolicyUidPrincipal`), *not* as the caller's credential. That
+principal needs `secretmanager.secretAccessor` on the secret. Without it, every
+resolution of that variable fails with `400 SECRET_REFERENCE_ERROR` — while the
+Connectors store banner still reports a perfectly healthy credential, because the
+banner reflects a `testIamPermissions` probe of the **resolver**, a different
+principal. Green banner, nothing resolving. Grant it per secret at creation time.
+
 You do not have to assemble that by hand. **The Connectors page renders exactly
 these commands, with the path, id and envelope already filled in**, on any
-connector whose `${VAR}` is missing. A test asserts the envelope the page emits
-is the one the client reads back, so the two cannot drift.
+connector whose `${VAR}` is missing. Tests assert both that the envelope the page
+emits is the one the client reads back, and that the grant in step 3 is present
+and ordered before the version that needs it — so neither can drift.
 
 To rotate, add a Secret Manager version — the `__REF__` already points at
 `versions/latest`, so no new parameter version is needed:
@@ -379,6 +414,15 @@ These live in `tadasant-internal`'s `zimmer/` root and need a human:
    store-backed secret sits outside both, so the "proof it landed" story needs an
    analogue. The Connectors page is the interim answer: it reports presence per
    variable, without values.
+
+## When it does not resolve
+
+| Symptom | Cause |
+| --- | --- |
+| `400 SECRET_REFERENCE_ERROR` on `:render` | The parameter's own principal lacks `secretmanager.secretAccessor` on the secret — step 3 of the seeding flow was skipped. The store banner will still be green; it probes the resolver, not the parameter. |
+| `403` on `:render`, lists succeed | The resolver holds `parameterViewer` but not `parameterAccessor`. |
+| Banner says "could not confirm what this credential may do" | `cloudresourcemanager.googleapis.com` is not enabled on the project. |
+| Every variable reads `Unresolved`, no error | The namespace is empty, or the parameters lack the `managed-by=zimmer` label, or their envelope `path` falls outside `/zimmer/{env}/mcp/static/`. |
 
 ## Testing without GCP
 
