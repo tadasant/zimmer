@@ -81,11 +81,18 @@ class SecretsLocation
       })
     end
 
-    # The three commands that put one secret in the store: the value into Secret
-    # Manager, the parameter that indexes it, and the envelope version that
-    # points one at the other.
+    # The commands that put one secret in the store.
     #
-    # Zimmer's own resolver credential cannot run these — it holds no write
+    # Step 3 is the one that is easy to leave out and impossible to debug from
+    # the outside: Parameter Manager's `:render` dereferences the `__REF__` as
+    # the PARAMETER's own principal, not as the caller's credential. That
+    # principal therefore needs `secretmanager.secretAccessor` ON THE SECRET, and
+    # without it every resolution of this variable fails with a 400
+    # SECRET_REFERENCE_ERROR — while the Connectors store banner still reports a
+    # healthy credential, because that banner reflects a testIamPermissions probe
+    # of the RESOLVER, which is a different principal entirely.
+    #
+    # Zimmer's own resolver credential cannot run any of these — it holds no write
     # permission by design — so they are run by a human with the admin identity.
     def gcloud_snippet(variable_name, project_id, location, env: Rails.env)
       path = ParameterStore::Namespace.parameter_path(variable_name, env)
@@ -102,7 +109,16 @@ class SecretsLocation
           --project #{project_id} --location #{location} \\
           --parameter-format json --labels managed-by=zimmer,secret=true
 
-        # 3. The envelope version pointing one at the other.
+        # 3. Let the PARAMETER read the secret. `:render` dereferences the
+        #    __REF__ as the parameter's own principal, not as Zimmer's
+        #    credential; skip this and every resolution 400s.
+        PRINCIPAL=$(gcloud parametermanager parameters describe #{id} \\
+          --project #{project_id} --location #{location} \\
+          --format='value(policyMember.iamPolicyUidPrincipal)')
+        gcloud secrets add-iam-policy-binding #{id} --project #{project_id} \\
+          --member="$PRINCIPAL" --role=roles/secretmanager.secretAccessor
+
+        # 4. The envelope version pointing one at the other.
         cat > /tmp/#{id}.json <<'JSON'
         #{envelope_json(variable_name, project_id, env: env)}
         JSON
