@@ -1183,7 +1183,7 @@ provisioning runbook for the credential it needs. **None of it has run against r
 
 No agent in this deployment could run it: there is no `gcloud` on the box, no GCP MCP server in
 the catalog, and CI holds no IAM-admin credential. Creating `zimmer-secrets-prod`, minting
-`zimmer-secrets-resolver`, granting its two roles, and delivering the key through Kamal are all
+`zimmer-secrets-resolver`, granting its three roles, and delivering the key through Kamal are all
 human steps, and the last of them lives in `tadasant-internal`'s `zimmer/` root rather than here.
 
 What *is* verified: the chain and its precedence, the degraded state when no credential is
