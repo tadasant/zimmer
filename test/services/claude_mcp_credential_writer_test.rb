@@ -372,6 +372,65 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     end
   end
 
+  # GitHub issue #222: force-expiring a revoked credential in the DB only sticks
+  # if the runtime's copy goes too. The on-disk entry keeps its original future
+  # expiry, so McpOauthRuntimeReconciler reads it as a strictly newer pair and
+  # adopts the dead tokens back on the next spawn.
+  test "delete_credentials removes the entry so there is nothing left to adopt" do
+    revoked = resolved_credential(credential_key: "notion|abc123", server_name: "notion")
+    keeper = resolved_credential(credential_key: "linear|def456", server_name: "linear")
+
+    with_credentials_path(@credentials_file) do
+      @writer.write!(working_directory: @working_directory, credentials: [ revoked, keeper ])
+
+      assert_equal [ "notion|abc123" ], @writer.delete_credentials([ "notion|abc123" ])
+
+      remaining = @writer.read_runtime_credentials
+      assert_nil remaining["notion|abc123"], "a deleted entry must not be readable by the reconciler"
+      assert remaining.key?("linear|def456"), "must not disturb another server's credential"
+    end
+
+    data = JSON.parse(File.read(@credentials_file))
+    assert_equal [ "linear|def456" ], data["mcpOAuth"].keys
+  end
+
+  test "delete_credentials preserves non-mcpOAuth keys in the credential store" do
+    File.write(@credentials_file, JSON.generate(
+      "claudeAiOauth" => { "accessToken" => "account-token" },
+      "mcpOAuth" => { "notion|abc123" => { "accessToken" => "dead" } }
+    ))
+
+    with_credentials_path(@credentials_file) do
+      assert_equal [ "notion|abc123" ], @writer.delete_credentials([ "notion|abc123" ])
+    end
+
+    data = JSON.parse(File.read(@credentials_file))
+    assert_equal({ "accessToken" => "account-token" }, data["claudeAiOauth"])
+    assert_empty data["mcpOAuth"]
+  end
+
+  test "delete_credentials is a no-op for a missing store, unknown key, or empty list" do
+    with_credentials_path(File.join(@working_directory, "does-not-exist.json")) do
+      assert_equal [], @writer.delete_credentials([ "notion|abc123" ])
+    end
+
+    with_credentials_path(@credentials_file) do
+      @writer.write!(working_directory: @working_directory, credentials: [ resolved_credential(credential_key: "notion|abc123") ])
+
+      assert_equal [], @writer.delete_credentials([ "unknown|000" ])
+      assert_equal [], @writer.delete_credentials([])
+      assert @writer.read_runtime_credentials.key?("notion|abc123")
+    end
+  end
+
+  test "delete_credentials tolerates a corrupt credential store without raising" do
+    File.write(@credentials_file, "{not valid json")
+
+    with_credentials_path(@credentials_file) do
+      assert_equal [], @writer.delete_credentials([ "notion|abc123" ])
+    end
+  end
+
   private
 
   def resolved_credential(**overrides)

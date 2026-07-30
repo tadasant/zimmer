@@ -699,7 +699,64 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     refute McpOauthCredentialInjector.static_credential_header?(headers: nil)
   end
 
+  # GitHub issue #222: retiring a revoked credential has to leave the runtime
+  # stores with nothing for McpOauthRuntimeReconciler to adopt back into the DB.
+  #
+  # This asserts the part that is easy to get silently wrong: each runtime's entry
+  # must be looked up under the key THAT runtime's writer computes. Codex hashes
+  # its key with a literal type "http" and empty headers, so it differs from
+  # Claude's (and from McpOauthCredential.compute_credential_key) by construction —
+  # a shared key would leave the Codex copy behind and every test would still pass.
+  test "delete_runtime_credentials removes the entry from every runtime's store, under that runtime's own key" do
+    server_config = { type: "sse", url: "https://mcp.notion.com/sse", headers: { "X-Trace" => "1" } }
+    ServersConfig.stubs(:credential_config).with("notion").returns(server_config)
+
+    claude_key = ClaudeMcpCredentialWriter.new.credential_key_for("notion", server_config)
+    codex_key = CodexMcpCredentialWriter.new.credential_key_for("notion", server_config)
+    assert_not_equal claude_key, codex_key, "the two runtimes must key this config differently for the test to bite"
+
+    with_claude_runtime_store(claude_key => { "accessToken" => "a", "refreshToken" => "r", "expiresAt" => 1 }) do
+      with_codex_runtime_store(codex_key => { "access_token" => "a", "refresh_token" => "r", "expires_at" => 1 }) do
+        injector = McpOauthCredentialInjector.new(@session, working_directory: @working_directory)
+
+        removed = injector.delete_runtime_credentials([ "notion" ])
+
+        assert_includes removed, claude_key
+        assert_includes removed, codex_key
+        assert_empty ClaudeMcpCredentialWriter.new.read_runtime_credentials
+        assert_empty CodexMcpCredentialWriter.new.read_runtime_credentials
+      end
+    end
+  end
+
+  test "delete_runtime_credentials is a no-op for blank names and off-catalog servers" do
+    ServersConfig.stubs(:credential_config).with("off-catalog").returns(nil)
+    injector = McpOauthCredentialInjector.new(@session, working_directory: @working_directory)
+
+    assert_equal [], injector.delete_runtime_credentials([])
+    assert_equal [], injector.delete_runtime_credentials([ "off-catalog" ])
+  end
+
   private
+
+  # Points CodexMcpCredentialWriter's credential-store constant at a temp file
+  # holding the given flat-map entries for the duration of the block.
+  def with_codex_runtime_store(entries)
+    CodexMcpCredentialWriter.any_instance.stubs(:macos?).returns(false)
+    dir = Dir.mktmpdir("codex-runtime-store")
+    path = File.join(dir, ".credentials.json")
+    File.write(path, JSON.generate(entries))
+
+    klass = CodexMcpCredentialWriter
+    original = klass::CODEX_CREDENTIALS_PATH
+    klass.send(:remove_const, :CODEX_CREDENTIALS_PATH)
+    klass.const_set(:CODEX_CREDENTIALS_PATH, path)
+    yield
+  ensure
+    klass.send(:remove_const, :CODEX_CREDENTIALS_PATH)
+    klass.const_set(:CODEX_CREDENTIALS_PATH, original)
+    FileUtils.rm_rf(dir) if dir
+  end
 
   test "check_credentials_status captures a runtime-rotated refresh token back into the DB" do
     credential = mcp_oauth_credentials(:notion)

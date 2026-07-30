@@ -112,6 +112,42 @@ class McpOauthCredentialInjector
     []
   end
 
+  # Drops the named servers' entries from every runtime's credential store.
+  #
+  # The counterpart to force-expiring a revoked credential in the DB: a runtime
+  # still holding the dead token pair holds it under its original future expiry,
+  # which McpOauthRuntimeReconciler reads as a strictly newer pair and adopts back
+  # into the DB on the next spawn — re-activating the credential and re-shadowing
+  # the Authorize button. Removing the entry leaves nothing to adopt.
+  #
+  # Every runtime, not just this session's: the credential row is runtime-agnostic
+  # and the stores are host-global, so a copy left in the other runtime's store
+  # resurrects the row the next time a session spawns there. Each runtime's key is
+  # asked of its own writer — Codex hashes its key differently from Claude (and
+  # from the DB's), so a shared key would silently miss.
+  #
+  # @param server_names [Array<String>]
+  # @return [Array<String>] the runtime keys actually removed, across all runtimes
+  def delete_runtime_credentials(server_names)
+    names = Array(server_names).compact
+    return [] if names.empty?
+
+    server_configs = names.filter_map do |name|
+      config = get_mcp_server_config(name)
+      [ name, config ] if config
+    end
+    return [] if server_configs.empty?
+
+    RuntimeRegistry.mcp_credential_writer_classes.flat_map do |writer_class|
+      writer = writer_class.new
+      keys = server_configs.map { |name, config| writer.credential_key_for(name, config) }
+      writer.delete_credentials(keys)
+    end
+  rescue => e
+    Rails.logger.warn "[McpOauthCredentialInjector] Failed to delete runtime credentials: #{e.message}"
+    []
+  end
+
   # Checks if all required OAuth credentials are available for the session's MCP servers.
   #
   # This method attempts to refresh expired tokens before reporting them as invalid.

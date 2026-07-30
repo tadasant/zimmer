@@ -165,4 +165,19 @@ module RuntimeRegistry
   def registered_runtimes
     BUNDLES.keys
   end
+
+  # Every registered runtime's MCP credential writer class, deduplicated.
+  #
+  # An McpOauthCredential row is runtime-agnostic — one row per server config —
+  # but each runtime keeps its own host-global copy of the tokens on disk. So
+  # retiring a credential the provider revoked has to clear *every* runtime's
+  # store, not just the one the failing session happened to run on: a copy left
+  # behind in another runtime's store still carries its original future expiry,
+  # and McpOauthRuntimeReconciler adopts it back into the DB on the next spawn
+  # there. See McpOauthCredentialInjector#delete_runtime_credentials.
+  #
+  # @return [Array<Class>]
+  def mcp_credential_writer_classes
+    BUNDLES.values.map(&:mcp_credential_writer_class).uniq
+  end
 end
