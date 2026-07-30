@@ -60,6 +60,44 @@ class ClaudeMcpCredentialWriter
     write_credentials_to_file(claude_credentials)
   end
 
+  # Removes the named entries from Claude Code's credential store outright, on
+  # both the file and (on macOS) the Keychain.
+  #
+  # Zimmer calls this when a provider has revoked a credential. Force-expiring the
+  # DB row is not enough on its own: the on-disk entry still carries its original
+  # future `expiresAt`, so McpOauthRuntimeReconciler reads it as a strictly newer
+  # token pair and adopts the dead tokens back into the DB on the next spawn —
+  # re-activating the row and re-shadowing the Authorize button. Deleting the
+  # entry leaves nothing to adopt.
+  #
+  # @param credential_keys [Array<String>] keys as written by #write!
+  # @return [Array<String>] the keys actually removed from the file store
+  def delete_credentials(credential_keys)
+    keys = Array(credential_keys).compact.map(&:to_s).uniq
+    return [] if keys.empty?
+
+    deleted = []
+    with_credential_store_lock do
+      data = read_credentials_from_file
+      entries = data["mcpOAuth"]
+      next unless entries.is_a?(Hash)
+
+      deleted = keys & entries.keys
+      next if deleted.empty?
+
+      deleted.each { |key| entries.delete(key) }
+      write_json_atomically(CLAUDE_CREDENTIALS_PATH, data)
+    end
+
+    delete_credentials_from_keychain(keys) if macos?
+
+    Rails.logger.info "[ClaudeMcpCredentialWriter] Deleted credentials: #{deleted.join(', ')}" if deleted.any?
+    deleted
+  rescue => e
+    Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to delete credentials: #{e.message}"
+    []
+  end
+
   # Removes the named servers from Claude Code's host-global needs-auth cache so
   # the CLI retries them with the token Zimmer just wrote instead of skipping the
   # connection outright. Best-effort: a missing or unparseable cache means there
@@ -314,6 +352,30 @@ class ClaudeMcpCredentialWriter
     end
   rescue => e
     Rails.logger.warn "[ClaudeMcpCredentialWriter] Keychain write error: #{e.message}"
+  end
+
+  # Drops the named mcpOAuth entries from the Keychain blob on macOS. Best-effort
+  # and rescued: the file store is authoritative on Zimmer's Linux workers, and a
+  # Keychain that cannot be read or rewritten must never fail the delete.
+  def delete_credentials_from_keychain(keys)
+    username = keychain_username
+    existing_data = read_keychain_data(username)
+    entries = existing_data.is_a?(Hash) ? existing_data["mcpOAuth"] : nil
+    return unless entries.is_a?(Hash)
+    return if (keys & entries.keys).empty?
+
+    keys.each { |key| entries.delete(key) }
+
+    json_data = JSON.generate(existing_data)
+    hex_data = json_data.bytes.map { |b| b.to_s(16).rjust(2, "0") }.join
+    stdin_command = "add-generic-password -U -a \"#{username}\" -s \"#{KEYCHAIN_SERVICE_NAME}\" -X \"#{hex_data}\"\n"
+    result = Open3.capture3("security", "-i", stdin_data: stdin_command)
+
+    unless result[2].success?
+      Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to delete credentials from macOS Keychain: #{result[1]}"
+    end
+  rescue => e
+    Rails.logger.warn "[ClaudeMcpCredentialWriter] Keychain delete error: #{e.message}"
   end
 
   # Reads existing credential data from macOS Keychain

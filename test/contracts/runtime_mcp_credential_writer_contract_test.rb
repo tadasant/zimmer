@@ -30,6 +30,14 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
       assert_respond_to writer, :credential_key_for
       assert_respond_to writer, :read_runtime_credentials
       assert_respond_to writer, :clear_needs_auth_cache
+      assert_respond_to writer, :delete_credentials
+    end
+
+    test "#{klass}#delete_credentials returns an Array when nothing is stored" do
+      # With no credential store present the delete must return an Array (the keys
+      # removed), not raise — a missing store means "nothing to delete".
+      result = klass.new.delete_credentials([ "example|0000000000000000" ])
+      assert_kind_of Array, result
     end
 
     test "#{klass}#clear_needs_auth_cache returns an Array when nothing is cached" do

@@ -198,6 +198,38 @@ class CodexMcpCredentialWriterTest < ActiveSupport::TestCase
     assert_empty(with_credentials_path(@credentials_file) { @writer.read_runtime_credentials })
   end
 
+  test "delete_credentials removes only the named entries from the flat file map" do
+    revoked = resolved_credential(credential_key: "notion|abc123", server_name: "notion")
+    keeper = resolved_credential(credential_key: "linear|def456", server_name: "linear")
+
+    with_credentials_path(@credentials_file) do
+      @writer.write!(working_directory: @working_directory, credentials: [ revoked, keeper ])
+
+      assert_equal [ "notion|abc123" ], @writer.delete_credentials([ "notion|abc123" ])
+
+      remaining = @writer.read_runtime_credentials
+      assert_nil remaining["notion|abc123"]
+      assert remaining.key?("linear|def456")
+    end
+  end
+
+  test "delete_credentials is a no-op for a missing store, unknown key, or corrupt file" do
+    with_credentials_path(File.join(@working_directory, "does-not-exist.json")) do
+      assert_equal [], @writer.delete_credentials([ "notion|abc123" ])
+    end
+
+    File.write(@credentials_file, "{ not json")
+    with_credentials_path(@credentials_file) do
+      assert_equal [], @writer.delete_credentials([ "notion|abc123" ])
+    end
+
+    with_credentials_path(@credentials_file) do
+      @writer.write!(working_directory: @working_directory, credentials: [ resolved_credential ])
+      assert_equal [], @writer.delete_credentials([ "unknown|000" ])
+      assert_equal [], @writer.delete_credentials([])
+    end
+  end
+
   private
 
   def resolved_credential(**overrides)
