@@ -36,7 +36,11 @@ module SecretProviders
   #
   # @return [SecretProviders::Chain]
   def chain
-    @chain ||= build
+    # Puma serves concurrently, and the Parameter Store link owns a snapshot
+    # cache and an access token worth sharing, so two threads racing to build
+    # their own would each pay for a separate namespace read.
+    @chain_mutex ||= Mutex.new
+    @chain || @chain_mutex.synchronize { @chain ||= build }
   end
 
   # Drop the memoized chain (and any cached values inside it). Used by tests and

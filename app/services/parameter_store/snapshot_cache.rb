@@ -66,11 +66,18 @@ module ParameterStore
       end
     end
 
-    # Force a load, honouring single-flight and the failure backoff.
-    def refresh(key)
+    # Load `key`, honouring single-flight and the failure backoff.
+    #
+    # `force:` is what the negative-TTL miss path needs. That path fires when the
+    # snapshot is FRESH but does not hold the name asked for — so a staleness
+    # check here would decline to reload every time, and a newly-added secret
+    # would stay invisible for a full TTL instead of the negative TTL. The
+    # staleness double-check is still right for the ordinary path, where it stops
+    # a queue of threads from each re-reading what the first one just fetched.
+    def refresh(key, force: false)
       lock(key).synchronize do
         # Another thread may have refreshed while this one waited on the lock.
-        return unless stale?(key)
+        return if !force && !stale?(key)
 
         existing = entry(key)
         if existing&.last_failure_at && held?(key) &&
