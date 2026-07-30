@@ -325,4 +325,25 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert_includes self_session.url, "tool_groups=self_session"
     assert_equal "${ZIMMER_PROD_API_KEY}", self_session.headers["X-API-Key"]
   end
+  test "required_variables spans env, headers, url and args" do
+    server = ServersConfig::Server.new("composite", {
+      "type" => "streamable-http",
+      "url" => "https://example.com/${TENANT}/mcp",
+      "headers" => { "Authorization" => "Bearer ${API_KEY}" },
+      "args" => [ "--profile", "${PROFILE}" ],
+      "env" => { "MODE" => "${MODE:-headless}", "REGION" => "${REGION}" }
+    })
+
+    assert_equal %w[API_KEY MODE PROFILE REGION TENANT].sort - [ "MODE" ], server.required_variables.sort
+    assert_equal [ "MODE" ], server.optional_variables
+  end
+
+  test "required_variables is empty for an entry with no interpolations" do
+    server = ServersConfig::Server.new("plain", {
+      "type" => "stdio", "command" => "npx", "args" => [ "-y", "context7@latest" ]
+    })
+
+    assert_empty server.required_variables
+    assert_empty server.optional_variables
+  end
 end

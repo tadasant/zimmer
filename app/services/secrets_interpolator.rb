@@ -70,22 +70,83 @@ class SecretsInterpolator
     end
   end
 
+  # Where a variable stands, WITHOUT minting, refreshing, or reading its value.
+  #
+  # Status surfaces (the Connectors page) need presence, not the secret. Calling
+  # #get_env_value for that would hand the caller a live secret it has no use
+  # for, and for X token vars it would refresh a token as a side effect of
+  # rendering a page.
+  #
+  # Three outcomes, kept distinct on purpose. "Not set" and "I could not reach
+  # the store to find out" are different things to put in front of a person, and
+  # reporting the second as the first sends someone off to set a secret that is
+  # already there.
+  Resolution = Struct.new(:state, :source, :error, keyword_init: true) do
+    def found? = state == :found
+    def absent? = state == :absent
+    def unavailable? = state == :unavailable
+
+    # Human name of the provider holding it, e.g. "Zimmer's Google Parameter Store".
+    def source_label = source.respond_to?(:label) ? source.label : source.to_s
+
+    # Short, fixed badge naming the provider that ACTUALLY resolved the value —
+    # not what configuration declares. The three provider strings are shared with
+    # strad's Secrets Console so the two lists can be compared by eye.
+    def source_badge
+      return source.badge if source.respond_to?(:badge)
+      return "Unknown" if unavailable?
+
+      "Unresolved"
+    end
+
+    def source_badge_title
+      return source.badge_title if source.respond_to?(:badge_title)
+      return "The secret store did not answer, so this could not be determined" if unavailable?
+
+      "No provider holds this variable"
+    end
+  end
+
+  # @param var_name [String]
+  # @return [Resolution]
+  def resolution(var_name)
+    return Resolution.new(state: :found, source: X_OAUTH_SOURCE) if XOauthTokenVendor.configured?(var_name)
+
+    provider = SecretProviders.chain.provider_for(var_name)
+    return Resolution.new(state: :found, source: provider) if provider
+
+    Resolution.new(state: :absent)
+  rescue ParameterStore::StoreError, ParameterStore::AuthError => e
+    Resolution.new(state: :unavailable, error: e)
+  end
+
+  # True when a variable has a value in any source.
+  # @param var_name [String]
+  # @return [Boolean]
+  def resolvable?(var_name)
+    resolution(var_name).found?
+  end
+
   # Look up a variable, in priority order:
   #   1. XOauthTokenVendor — a runtime-writable, self-refreshing token store for
   #      X (Twitter) access tokens. Consulted first because these tokens rotate
   #      at runtime and must reflect the freshest minted value, not a static
   #      git-committed one. The vendor cheaply returns nil for any non-X var.
-  #   2. SecretsLoader — Rails encrypted credentials (mcp_secrets).
-  #   3. process ENV.
+  #   2. SecretProviders.chain — the Parameter Store (when configured), then
+  #      Rails encrypted credentials, then process ENV. See SecretProviders for
+  #      why the store goes first and why a store outage raises rather than
+  #      falling through.
   # Returns nil when no source defines it.
   def get_env_value(var_name)
     dynamic = XOauthTokenVendor.resolve(var_name)
     return dynamic if dynamic.present?
 
-    if SecretsLoader.exists?(var_name)
-      SecretsLoader.get(var_name)
-    elsif ENV.key?(var_name)
-      ENV[var_name]
-    end
+    SecretProviders.chain.get(var_name)
   end
+
+  # The one source that is not a chain provider. Given the same badge surface as
+  # the providers so callers never special-case it.
+  X_OAUTH_SOURCE = Struct.new(:label, :badge, :badge_title).new(
+    "Zimmer's X OAuth token store", "X OAuth", "Minted by Zimmer's X OAuth token store"
+  ).freeze
 end
