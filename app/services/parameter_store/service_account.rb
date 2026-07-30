@@ -24,20 +24,39 @@ module ParameterStore
 
     # Parse key JSON into an account, reporting failures by SHAPE only.
     #
+    # Accepts the JSON itself, or BASE64 of it. The base64 form is what a
+    # deployed Zimmer actually receives, and the reason is the env-file:
+    #
+    #   Kamal hands env vars to Docker through an env-file, which is one line
+    #   per variable. Kamal escapes a real newline to the two characters `\n`
+    #   (Ruby's String#dump) and Docker's --env-file parser unescapes NOTHING,
+    #   so those two characters arrive literally. The key JSON that `gcloud iam
+    #   service-accounts keys create` writes is PRETTY-PRINTED — structural
+    #   newlines between its fields — so it lands in the container with `\n`
+    #   between the fields and JSON.parse rejects it outright.
+    #
+    # Base64 has no byte that the escaping touches, so it survives unchanged.
+    # It is the same treatment ZIMMER_OPERATOR_SSH_KEY gets, for the same
+    # reason. Raw JSON stays valid input: minified JSON does survive the trip,
+    # and a console setting ENV[...] directly has no env-file in the path.
+    #
     # The reason strings never quote the input: a malformed key is still a key,
     # and this reason ends up in logs and on the Connectors page.
     #
-    # @param raw [String, nil] the service-account key JSON
+    # @param raw [String, nil] the service-account key JSON, or base64 of it
     # @param token_url [String, nil] override for the token endpoint (test seam)
     # @return [Array(ServiceAccount, nil), Array(nil, String)] [account, reason]
     def self.parse(raw, token_url: nil)
+      # An env var arrives as bytes TAGGED UTF-8, and nothing guarantees they are:
+      # a truncated or binary paste is tagged exactly the same way. String#blank?
+      # RAISES ArgumentError on such a string, and this runs while the resolution
+      # chain is being built, so an unchecked one turns a mangled credential into a
+      # crash instead of the degraded state this whole module is built around.
+      return [ nil, "is not valid UTF-8" ] if raw.is_a?(String) && !raw.valid_encoding?
       return [ nil, "no key JSON provided" ] if raw.blank?
 
-      parsed = begin
-        JSON.parse(raw)
-      rescue JSON::ParserError
-        return [ nil, "is not valid JSON" ]
-      end
+      parsed = parse_json(raw) || parse_json(decode_base64(raw))
+      return [ nil, "is not valid JSON, nor base64 of valid JSON" ] if parsed.nil?
 
       email = parsed["client_email"]
       key = parsed["private_key"]
@@ -45,6 +64,30 @@ module ParameterStore
 
       [ new(client_email: email, private_key: key, token_url: token_url.presence || TOKEN_URL), nil ]
     end
+
+    # @return [Hash, nil] nil for anything that is not a JSON object, so that a
+    #   bare `123` or `"a string"` is a shape failure rather than a NoMethodError
+    #   two lines later.
+    def self.parse_json(raw)
+      return nil if raw.nil?
+
+      parsed = JSON.parse(raw)
+      parsed.is_a?(Hash) ? parsed : nil
+    rescue JSON::ParserError
+      nil
+    end
+    private_class_method :parse_json
+
+    # Whitespace-tolerant, because `base64` without `-w0` wraps at 76 columns and
+    # someone will paste that. Strict beyond that: decode64 silently discards
+    # anything it does not recognise, which would turn a truncated credential
+    # into a confusing JSON error instead of a base64 one.
+    def self.decode_base64(raw)
+      Base64.strict_decode64(raw.gsub(/\s+/, ""))
+    rescue ArgumentError
+      nil
+    end
+    private_class_method :decode_base64
 
     def initialize(client_email:, private_key:, token_url: TOKEN_URL, http: nil)
       @client_email = client_email

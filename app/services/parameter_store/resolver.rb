@@ -35,6 +35,15 @@ module ParameterStore
     # @return [Configuration] `client` is nil when the store is not wired up, and
     #   `reason` then says why in one human sentence.
     def from_env(env = ENV)
+      # Environment values are bytes TAGGED UTF-8, and nothing guarantees they are:
+      # a truncated or binary paste is tagged exactly the same way. String#presence
+      # goes through blank?, which RAISES ArgumentError on those bytes -- so without
+      # this guard a mangled credential takes down every caller of
+      # SecretProviders.build rather than leaving the store switched off, which is
+      # the one thing this module promises never to do.
+      mangled = ENV_KEYS.values.find { |name| (v = env[name]).is_a?(String) && !v.valid_encoding? }
+      return Configuration.new(client: nil, reason: "#{mangled} is not valid UTF-8") if mangled
+
       project_id = env[ENV_KEYS[:project_id]].presence
       key_json = env[ENV_KEYS[:key_json]].presence
 

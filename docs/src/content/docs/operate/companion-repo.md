@@ -323,6 +323,12 @@ jobs:
    at two layers — it is absent from `admin_authorized_keys.pub`, *and* the production catalog's
    `air.json` carries an `exclude` for the SSH MCP server that points at it, so a session cannot even
    attach one. See [who is authorized where](/operate/ssh-access/#who-is-authorized-where).
+8. If the service resolves secrets from the Google Parameter Store, set
+   `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` as a GitHub Actions secret here and
+   export it in the deploy job. **Base64 of the key JSON, not the JSON** — a Docker env-file
+   carries no newline, and the key file `gcloud` writes is pretty-printed. Getting it wrong is
+   quiet: the store just never turns on. See [deliver the key to
+   Zimmer](/operate/secrets-parameter-store/#base64-and-why-it-is-not-optional).
 
 Keep the shape identical across services. The consistency is what lets one deploy workflow —
 and one mental model — cover everything you run.
