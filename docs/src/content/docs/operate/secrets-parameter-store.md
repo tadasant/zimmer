@@ -129,7 +129,7 @@ Connectors page shows calls `projects:testIamPermissions` on it. Without it the
 page reports "could not confirm what this credential may do" rather than a
 capability.
 
-### 2. The resolver identity, and exactly two roles
+### 2. The resolver identity, and exactly three roles
 
 ```bash
 PROJECT=zimmer-secrets-prod
@@ -198,7 +198,7 @@ diff <(gcloud projects get-iam-policy "$PROJECT" \
          --flatten="bindings[].members" \
          --filter="bindings.members:${MEMBER}" \
          --format="value(bindings.role)" | sort) \
-     <(printf 'roles/parametermanager.parameterViewer\nroles/secretmanager.secretAccessor\n') \
+     <(printf 'roles/parametermanager.parameterAccessor\nroles/parametermanager.parameterViewer\nroles/secretmanager.secretAccessor\n') \
   && echo "OK: the resolver holds exactly the intended roles" \
   || echo "DRIFT: the resolver's bindings are not the intended set (see the diff above)"
 ```
