@@ -1175,6 +1175,41 @@ Tracked in [#89](https://github.com/tadasant/zimmer/issues/89).
 
 ---
 
+## The Parameter Store resolver has never talked to Google
+
+`SecretProviders` puts a Google Parameter Manager + Secret Manager link at the front of the
+`${VAR}` resolution chain, and `docs/operate/secrets-parameter-store.md` gives the exact
+provisioning runbook for the credential it needs. **None of it has run against real GCP.**
+
+No agent in this deployment could run it: there is no `gcloud` on the box, no GCP MCP server in
+the catalog, and CI holds no IAM-admin credential. Creating `zimmer-secrets-prod`, minting
+`zimmer-secrets-resolver`, granting its two roles, and delivering the key through Kamal are all
+human steps, and the last of them lives in `tadasant-internal`'s `zimmer/` root rather than here.
+
+What *is* verified: the chain and its precedence, the degraded state when no credential is
+configured, the miss-vs-outage distinction, the snapshot cache semantics, the envelope round-trip
+(the page's copy-paste `gcloud` block writes exactly what the client reads back), and the fact that
+a secret value never lands in a Parameter Manager payload. All of it against
+`test/support/fake_parameter_store.rb`, an in-memory fake of the two Google APIs behind the HTTP
+seam — the production client is what runs, only the network is faked.
+
+So: the code is ready the moment a credential appears, and until one does Zimmer resolves every
+`${VAR}` from encrypted credentials exactly as before. The first live `:render` is still ahead of us.
+
+---
+
+## Connector status is configuration, not reachability
+
+The Connectors page reads the same inputs a session spawn reads — a server's `${VAR}` values,
+whether an OAuth flow applies, and the stored credential. It never contacts the MCP server itself.
+
+A **Ready** badge therefore means "Zimmer has what it needs to connect", not "the remote host
+answered". A server whose token is valid but whose host is down still reads Ready. Adding a real
+reachability probe would mean an outbound request per server on every page view, against
+third-party endpoints, on a page that exists to be glanced at.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
