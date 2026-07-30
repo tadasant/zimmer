@@ -395,6 +395,17 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_nil env["SENTRY_DSN_BACKEND"]
   end
 
+  # Same denylist, same reason as the Claude adapter: this credential reads every
+  # production secret VALUE, and Codex sessions run in the same worker container.
+  test "spawn unsets the Parameter Store resolver key so sessions can't read production secrets" do
+    @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
+
+    env = @mock_process_manager.spawned_processes.last[:env]
+    assert env.key?("ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON"),
+      "the resolver key should be present (set to nil to unset)"
+    assert_nil env["ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON"]
+  end
+
   test "spawn lets a clone's .env set its own SENTRY_DSN_BACKEND" do
     @mock_file_system.write(File.join(@test_dir, ".env"), "SENTRY_DSN_BACKEND=https://public@glitchtip.example.test/9\n")
 

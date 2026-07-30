@@ -303,11 +303,22 @@ base64 of valid JSON`).
 
 #### Set the secret
 
-The value goes in as a GitHub Actions secret named
-`PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` on the private production
-repo (`tadasant-internal`), and its deploy job must export it into the Kamal step
-— `.kamal/secrets.production` maps that name straight through. Nothing else is
-needed; the next deploy carries it.
+Two steps, both in the private production repo (`tadasant-internal`), and the
+second is a code change rather than a setting:
+
+1. Add the GitHub Actions secret `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`.
+2. Name it in **both** places `zimmer-deploy-prod.yml` enumerates secrets — the
+   `Kamal deploy (production)` step's `env:` block, *and* the `-e` passthrough list
+   in the `kamal()` docker wrapper. Consider adding it to that step's
+   `: "${…:?}"` assert block too, alongside `PROD_OPERATOR_SSH_KEY`.
+
+The second step is the one that gets skipped, and skipping it is invisible. That
+workflow's own comment says why: a var missing from the `env:` block *"would just
+arrive empty, and Kamal's `FOO=$FOO` mapping in `.kamal/secrets.production` would
+resolve to blank with no error."* Combined with this module's
+degrade-rather-than-crash design, the result is a deploy that looks completely
+healthy while the store never turns on — the same silent failure as a wrong paste
+format, reached by a different route. The Connectors page is where you check.
 
 Then:
 
@@ -460,10 +471,14 @@ body *is* the secret).
 
 These live in `tadasant-internal`'s `zimmer/` root and need a human:
 
-1. **The GitHub Actions secret** — `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`
-   (base64, [above](#base64-and-why-it-is-not-optional)), plus exporting it into the
-   deploy workflow's Kamal step. This is the last link: the Kamal mapping and the
-   `env.secret` / `env.clear` entries are all in *this* repo now.
+1. **The GitHub Actions secret, and the deploy workflow edit** —
+   `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (base64,
+   [above](#base64-and-why-it-is-not-optional)), then naming it in **both** of the
+   places `zimmer-deploy-prod.yml` lists secrets: the Kamal step's `env:` block and
+   the `kamal()` wrapper's `-e` passthrough. See
+   [set the secret](#set-the-secret) — the second edit is easy to miss and fails
+   silently. These are the last links; the Kamal mapping and the `env.secret` /
+   `env.clear` entries are all in *this* repo now.
 2. `zimmer/DEPLOY.md` — a row in the "One-time secrets" table for that secret.
 3. `zimmer/CREDENTIALS.md` — the four-row mechanism table at the top gains a
    fifth mechanism, and §1's "SecretsLoader reads from exactly one place" needs

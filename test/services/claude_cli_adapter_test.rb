@@ -2037,6 +2037,43 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     original.nil? ? ENV.delete("ZIMMER_OPERATOR_SSH_KEY") : ENV["ZIMMER_OPERATOR_SSH_KEY"] = original
   end
 
+  # Sessions run inside the production worker container, as plain children of the
+  # GoodJob process, and the spawn env is a denylist overlay -- so anything the app
+  # holds is one `env` away unless it is named here. This credential reads every
+  # production secret VALUE; the session needs the resolved results, never the key.
+  test "spawn_process unsets the Parameter Store resolver key so sessions can't read production secrets" do
+    original = ENV["ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON"]
+    ENV["ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON"] = "eyJjbGllbnRfZW1haWwiOiJhQGIuY29tIn0="
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert env_vars.key?("ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON"),
+      "expected the var to be explicitly unset in the child"
+    assert_nil env_vars["ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON"]
+  ensure
+    if original.nil?
+      ENV.delete("ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON")
+    else
+      ENV["ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON"] = original
+    end
+  end
+
+  # The store's ADDRESS is not a credential, and a session that shells out to
+  # diagnose a resolution failure should still be able to see which project it is.
+  test "spawn_process leaves the non-secret Parameter Store address alone" do
+    original = ENV["ZIMMER_PARAMS_PROJECT_ID"]
+    ENV["ZIMMER_PARAMS_PROJECT_ID"] = "zimmer-secrets-prod"
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_not env_vars.key?("ZIMMER_PARAMS_PROJECT_ID"),
+      "ZIMMER_PARAMS_PROJECT_ID must not be unset -- it is an address, not a credential."
+  ensure
+    original.nil? ? ENV.delete("ZIMMER_PARAMS_PROJECT_ID") : ENV["ZIMMER_PARAMS_PROJECT_ID"] = original
+  end
+
   test "spawn_process respects an explicit SSH_PRIVATE_KEY_PATH from the session .env" do
     File.write(File.join(@test_dir, ".env"), "SSH_PRIVATE_KEY_PATH=/custom/key\n")
     OperatorSshKeyProvisioner.expects(:ensure!).never

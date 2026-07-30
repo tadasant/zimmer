@@ -120,6 +120,17 @@ module CliSpawnEnv
   #   file (SSH_PRIVATE_KEY_PATH, set in apply_operator_ssh_key below). Leaving the
   #   material in the child's environment would put a root-on-every-host private key
   #   one `env` away from a transcript.
+  # - ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: the Google Parameter Store
+  #   resolver credential (base64 key JSON). It reads secret VALUES — that is the
+  #   whole point of it, and why it is a separate GCP project from strad's. The Rails
+  #   process resolves `${VAR}` with it and injects the RESULTS a session's own MCP
+  #   servers need; the session itself never needs the key. Sessions run inside the
+  #   production worker container, so inheriting it would hand every agent a
+  #   credential for every production secret, one `env` away. That is the same
+  #   argument .kamal/secrets.staging makes for refusing staging this credential —
+  #   and it applies with more force here, because these sessions run ON production.
+  #   Its two non-secret companions (ZIMMER_PARAMS_PROJECT_ID / _LOCATION) are
+  #   deliberately left alone: an address is not a credential.
   #
   # Production telemetry cleared (issue #176):
   # - SENTRY_DSN_BACKEND: the write DSN of the *production* GlitchTip project, the
@@ -195,6 +206,7 @@ module CliSpawnEnv
       RUBYOPT
       RUBYGEMS_GEMDEPS
       ZIMMER_OPERATOR_SSH_KEY
+      ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
       SENTRY_DSN_BACKEND
     ]
 
