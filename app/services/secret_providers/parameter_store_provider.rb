@@ -47,7 +47,9 @@ module SecretProviders
       return nil unless refresh_for_miss?
 
       @last_miss_refresh_at = Time.current
-      @cache.refresh(namespace)
+      # Forced: the snapshot is fresh by definition here (see refresh_for_miss?),
+      # it just does not hold this name yet.
+      @cache.refresh(namespace, force: true)
       @cache.peek(namespace)&.[](variable)
     end
 

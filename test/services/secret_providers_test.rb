@@ -162,4 +162,33 @@ class SecretProvidersTest < ActiveSupport::TestCase
 
     assert_raises(ParameterStore::StoreError) { @fake.provider.get("STRAD_API_KEY") }
   end
+
+  test "a name added after the snapshot was taken appears within the negative TTL" do
+    # Regression: the miss path fires while the snapshot is FRESH, so a refresh
+    # that short-circuits on staleness would hide a newly-added secret for a full
+    # TTL (60s) instead of the negative TTL (10s).
+    @fake.seed_secret("FIRST", "1")
+    provider = @fake.provider
+    assert_equal "1", provider.get("FIRST")
+    assert_nil provider.get("SECOND")
+
+    @fake.seed_secret("SECOND", "2")
+
+    travel 11.seconds do
+      assert_equal "2", provider.get("SECOND"),
+        "a newly added name must not wait for the full snapshot TTL"
+    end
+  end
+
+  test "a miss for a name that genuinely does not exist is rate limited" do
+    @fake.seed_secret("FIRST", "1")
+    provider = @fake.provider
+    provider.get("FIRST")
+    reads = @fake.requests.size
+
+    5.times { assert_nil provider.get("NEVER_EXISTS") }
+
+    assert_operator @fake.requests.size - reads, :<=, 4,
+      "repeated lookups of an absent name must not become a store round trip each"
+  end
 end

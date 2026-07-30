@@ -70,12 +70,13 @@ class SecretsInterpolator
     end
   end
 
-  # Where a variable stands, WITHOUT minting, refreshing, or reading its value.
+  # Where a variable stands, without handing the caller its value.
   #
-  # Status surfaces (the Connectors page) need presence, not the secret. Calling
-  # #get_env_value for that would hand the caller a live secret it has no use
-  # for, and for X token vars it would refresh a token as a side effect of
-  # rendering a page.
+  # Precisely what this avoids: it never RETURNS a secret, and it never MINTS or
+  # refreshes an X access token as a side effect of rendering a page. It does not
+  # promise that no value is read anywhere — the Parameter Store link resolves a
+  # whole namespace into its snapshot, because that is the grain the store reads
+  # at. What it guarantees is that the value stops at the provider.
   #
   # Three outcomes, kept distinct on purpose. "Not set" and "I could not reach
   # the store to find out" are different things to put in front of a person, and
