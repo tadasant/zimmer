@@ -124,4 +124,35 @@ class SecretsInterpolatorTest < ActiveSupport::TestCase
       end
     end
   end
+  test "resolvable? reports presence from encrypted credentials without exposing the value" do
+    SecretsLoader.stub(:exists?, ->(name) { name == "STRAD_API_KEY" }) do
+      assert @interpolator.resolvable?("STRAD_API_KEY")
+      assert_not @interpolator.resolvable?("NOT_SET_ANYWHERE")
+    end
+  end
+
+  test "resolvable? falls through to process ENV, treating a blank value as unset" do
+    SecretsLoader.stub(:exists?, ->(_) { false }) do
+      ENV["CONNECTOR_PROBE_TEST_VAR"] = "value"
+      assert @interpolator.resolvable?("CONNECTOR_PROBE_TEST_VAR")
+
+      ENV["CONNECTOR_PROBE_TEST_VAR"] = ""
+      assert_not @interpolator.resolvable?("CONNECTOR_PROBE_TEST_VAR")
+    end
+  ensure
+    ENV.delete("CONNECTOR_PROBE_TEST_VAR")
+  end
+
+  test "resolvable? sees an X token var without minting a token" do
+    XOauthCredential.create!(
+      account_key: "tadasayy", access_token_env_var: "X_OAUTH_ACCESS_TOKEN",
+      access_token: "t", refresh_token: "r", expires_at: 1.hour.ago,
+      token_endpoint: XOauthCredential::DEFAULT_TOKEN_ENDPOINT
+    )
+    # An expired token would be refreshed over the network by #current_access_token.
+    # A status check must never trigger that.
+    XOauthCredential.any_instance.expects(:current_access_token).never
+
+    assert @interpolator.resolvable?("X_OAUTH_ACCESS_TOKEN")
+  end
 end

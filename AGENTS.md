@@ -35,6 +35,8 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `RuntimeRegistry`, a new runtime | `extend/agent-harness.md` |
 | `app/extensions/**` | `extend/extensions.md` |
 | OAuth, `ClaudeAccount`, `McpOauthCredential` | `auth/*.md` |
+| `ConnectorsController`, `ConnectorStatusProbe` | `auth/mcp-oauth.md` |
+| `SecretProviders`, `ParameterStore::*`, `SecretsLocation` | `operate/secrets-parameter-store.md` |
 | `infra/`, `.github/workflows/**`, `Dockerfile*` | `operate/deploying.md`, `operate/provisioning.md` |
 | sshd, the firewall, `admin_ssh_pubkeys`, Tailscale SSH | `operate/ssh-access.md` |
 | `config/goals.json` | `sessions/goals.md` |

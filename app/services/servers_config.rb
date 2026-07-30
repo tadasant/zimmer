@@ -80,6 +80,25 @@ class ServersConfig
       headers_from_interpolation(with_defaults: true)
     end
 
+    # Every `${VAR}` without a default across the whole entry — env, headers,
+    # url and args. These are the variables that must resolve for this server to
+    # start at all; SecretsInterpolator raises MissingVariableError on any one of
+    # them that has no value. `required_env_vars` / `required_headers` cover only
+    # their own slice, so anything asking "is this server configured?" wants this.
+    #
+    # @return [Array<String>]
+    def required_variables
+      interpolated_variables(with_defaults: false)
+    end
+
+    # Every `${VAR:-default}` across the whole entry. These fall back to their
+    # default rather than failing, so an unset one is not a misconfiguration.
+    #
+    # @return [Array<String>]
+    def optional_variables
+      interpolated_variables(with_defaults: true)
+    end
+
     def to_h
       result = {
         name: name,
@@ -103,6 +122,14 @@ class ServersConfig
     end
 
     private
+
+    # Scan every string the entry carries — env values, header values, url, args
+    # — for interpolations of the requested kind.
+    def interpolated_variables(with_defaults:)
+      strings = env.values + headers.values + args + [ url ]
+
+      strings.flat_map { |value| extract_interpolations(value, with_defaults: with_defaults) }.uniq
+    end
 
     def env_vars_from_interpolation(with_defaults:)
       vars = []

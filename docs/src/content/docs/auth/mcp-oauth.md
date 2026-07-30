@@ -304,6 +304,37 @@ tools reporting `No such tool available`. The restart didn't break the token —
 reconnect that exposed an already-stale one. With the reconciler, the relaunch injects the token the
 previous run rotated to, and the server reconnects.
 
+## Seeing where every connector stands
+
+`/connectors` — **Connectors** in the left-hand nav — lists every MCP server in the
+catalog with its current auth status, one lazily-loaded Turbo Frame per server so
+the list renders before any status resolves. It replaced the older "OAuth Status"
+page, which could only show servers that already had a credential row and so was
+silent about precisely the servers that needed attention.
+
+`ConnectorStatusProbe` reads the same three inputs a spawn reads, in the same
+order, so a connector reported **Ready** is one that will actually connect:
+
+| State | Meaning |
+| --- | --- |
+| **Ready** | OAuth is complete and the credential saved, or every required `${VAR}` resolves |
+| **Needs authorization** | An OAuth-capable server with no stored credential |
+| **Token expired** | Expired, but has a refresh token — `RefreshMcpOauthTokensJob` will renew it |
+| **Needs re-auth** | Expired with no refresh token; the credential has to be replaced |
+| **Missing configuration** | A required `${VAR}` has no value. The row renders the exact commands to set it |
+| **Secret store unreachable** | The store did not answer. Deliberately *not* "missing" — see [Secrets in the Parameter Store](/operate/secrets-parameter-store/) |
+| **No credential required** | The catalog entry configures no credential at all |
+| **Probe failed** | Anything unexpected, isolated to that one row |
+
+A credential filed under a *different* credential key than the catalog currently
+computes is deliberately not matched — the injector would not find it either, so
+counting it would report Ready for a server that cannot connect. Those show up
+instead under "Unclaimed credentials" at the bottom of the page, where they can
+be deleted.
+
+The page never contacts the MCP server itself and never displays a secret value;
+it reports presence and where to set what is absent.
+
 ## Known problems
 
 :::danger[Anyone who can reach the host can start an OAuth flow for any session]
