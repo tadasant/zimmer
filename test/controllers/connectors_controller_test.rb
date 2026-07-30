@@ -169,6 +169,28 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_match ParameterStore::Capabilities::WRITE_SECRET_VALUE, response.body
   end
 
+  # The narrowing this banner suggests is advice an operator will follow literally,
+  # so it has to name all three roles the runbook grants. Naming only viewer +
+  # secretAccessor drops `parameterVersions.render` and turns a working credential
+  # into one where nothing resolves from the store.
+  test "secret_store's over-privileged banner suggests all three read roles, not a narrowing that breaks render" do
+    fake = FakeParameterStore.new
+    fake.held_permissions = [ ParameterStore::Capabilities::READ_SECRET_VALUE,
+                              ParameterStore::Capabilities::RENDER_PARAMETER,
+                              ParameterStore::Capabilities::WRITE_SECRET_VALUE ]
+    stub_chain_with(fake)
+
+    get secret_store_connectors_path
+
+    assert_response :success
+    assert_select "[data-store-capabilities=over_privileged]" do |elements|
+      copy = elements.first.text
+      assert_match "roles/parametermanager.parameterViewer", copy
+      assert_match "roles/parametermanager.parameterAccessor", copy
+      assert_match "roles/secretmanager.secretAccessor", copy
+    end
+  end
+
   test "secret_store says it could not find out rather than guessing" do
     fake = FakeParameterStore.new
     fake.fail_with!(403)
