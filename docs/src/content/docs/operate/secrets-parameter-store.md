@@ -299,7 +299,7 @@ got wrong.
 absence is a designed state, so Zimmer boots, resolves every `${VAR}` from
 encrypted credentials exactly as before, and the store simply never turns on. The
 Connectors page is where it shows — it names the reason (`… is not valid JSON, nor
-base64 of valid JSON`, or `… is not valid UTF-8` for a paste truncated mid-byte).
+base64 of valid JSON`).
 
 #### Set the secret
 
@@ -493,8 +493,10 @@ namespace fence and pagination all stay covered. `parameter_payloads` exposes
 every payload ever written, which is what the "the secret never touches a
 Parameter Manager payload" canary asserts against.
 
-**The real GCP path has not been exercised.** This deployment has no `gcloud`
-and no GCP credential, so no agent here could run it. What is proven is the
-chain, its precedence, the degraded-state fallback, the cache semantics, the
-envelope round-trip, and the help text. The first live run happens when a human
-completes the provisioning above.
+**No Zimmer process has yet resolved a real secret.** This deployment has no
+`gcloud` and no GCP credential, so no agent here could exercise the live path.
+What is proven is the chain, its precedence, the degraded-state fallback, the
+cache semantics, the envelope round-trip, the help text, and — through a real
+`docker run --env-file` — that a base64 credential survives Kamal's escaping into
+the container while pretty-printed key JSON does not. The provisioning above is
+done; the first live run happens when the GitHub Actions secret is set.

@@ -24,8 +24,12 @@ module ParameterStore
   class ServiceAccountTest < ActiveSupport::TestCase
     EMAIL = "zimmer-secrets-resolver@zimmer-secrets-prod.iam.gserviceaccount.com"
 
+    # Generating a 2048-bit key is the slowest thing in this file and most of these
+    # tests never sign anything, so it happens once rather than per test.
+    PEM = OpenSSL::PKey::RSA.new(2048).to_pem
+
     setup do
-      @pem = OpenSSL::PKey::RSA.new(2048).to_pem
+      @pem = PEM
       @key = {
         "type" => "service_account",
         "project_id" => "zimmer-secrets-prod",
@@ -145,6 +149,22 @@ module ParameterStore
       assert_equal "is not valid UTF-8", reason
     end
 
+    # The outer string being valid base64 says nothing about what is inside it, and
+    # base64 decodes to ASCII-8BIT — JSON.parse reads invalid UTF-8 out of that without
+    # complaint, and the String it returns raises from blank? one line later. Checking
+    # only the input, as the first cut of this did, leaves the crash reachable through
+    # the very path base64 delivery makes the common one.
+    test "base64 of JSON carrying invalid UTF-8 is a reason, not an ArgumentError" do
+      payload = %({"type":"service_account","client_email":"a\xFF\xFEb@x.com","private_key":"k"})
+      raw = Base64.strict_encode64(payload.dup.force_encoding("ASCII-8BIT"))
+      assert raw.valid_encoding?, "Sanity: the base64 itself is clean; only its payload is not."
+
+      account, reason = ServiceAccount.parse(raw)
+
+      assert_nil account
+      assert_equal "is not valid JSON, nor base64 of valid JSON", reason
+    end
+
     test "a chain built on a mangled credential degrades instead of raising" do
       env = {
         Resolver::ENV_KEYS[:project_id] => "zimmer-secrets-prod",
@@ -153,6 +173,18 @@ module ParameterStore
 
       assert_equal %w[rails_credentials env], SecretProviders.build(env: env).providers.map(&:name)
       assert_match "is not valid UTF-8", SecretProviders.parameter_store_configuration(env: env).reason
+    end
+
+    # The resolver's guard scans every variable it reads, not just the credential —
+    # `presence` is called on the project id too.
+    test "invalid UTF-8 in any variable the resolver reads is named, not raised" do
+      Resolver::ENV_KEYS.each_value do |name|
+        env = { name => "\xC3\x28".dup.force_encoding("UTF-8") }
+
+        assert_equal "#{name} is not valid UTF-8",
+          SecretProviders.parameter_store_configuration(env: env).reason
+        assert_equal %w[rails_credentials env], SecretProviders.build(env: env).providers.map(&:name)
+      end
     end
 
     test "no key at all is not an error string about parsing" do

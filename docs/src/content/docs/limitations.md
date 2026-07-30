@@ -1179,12 +1179,12 @@ Tracked in [#89](https://github.com/tadasant/zimmer/issues/89).
 
 `SecretProviders` puts a Google Parameter Manager + Secret Manager link at the front of the
 `${VAR}` resolution chain, and `docs/operate/secrets-parameter-store.md` gives the exact
-provisioning runbook for the credential it needs. **None of it has run against real GCP.**
+provisioning runbook for the credential it needs. **No Zimmer process has ever made the call.**
 
-No agent in this deployment could run it: there is no `gcloud` on the box, no GCP MCP server in
-the catalog, and CI holds no IAM-admin credential. The GCP half has since been provisioned by a
-human — project, service account, its three roles, audited, and a canary parameter proven to
-`:render` — but no *agent* verified any of it, and no Zimmer process has yet made the call.
+The GCP half is provisioned — project, service account, its three roles, audited, and a canary
+parameter proven to `:render` — but a human did all of it, and no agent in this deployment could
+have: there is no `gcloud` on the box, no GCP MCP server in the catalog, and CI holds no IAM-admin
+credential.
 
 The Kamal delivery of `ZIMMER_PARAMS_*` is wired here now (`.kamal/secrets.production`,
 `config/deploy.production.yml`), and the env-file round trip is verified for real. What remains is

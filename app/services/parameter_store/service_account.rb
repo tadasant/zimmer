@@ -82,8 +82,15 @@ module ParameterStore
     # someone will paste that. Strict beyond that: decode64 silently discards
     # anything it does not recognise, which would turn a truncated credential
     # into a confusing JSON error instead of a base64 one.
+    #
+    # The decoded bytes get the SAME encoding check the raw input gets, and for the
+    # same reason: base64 decodes to ASCII-8BIT, JSON.parse will happily read invalid
+    # UTF-8 out of it, and the String it hands back then raises ArgumentError from
+    # blank? one line later. The outer string being valid base64 says nothing about
+    # what is inside it.
     def self.decode_base64(raw)
-      Base64.strict_decode64(raw.gsub(/\s+/, ""))
+      decoded = Base64.strict_decode64(raw.gsub(/\s+/, "")).force_encoding(Encoding::UTF_8)
+      decoded.valid_encoding? ? decoded : nil
     rescue ArgumentError
       nil
     end
