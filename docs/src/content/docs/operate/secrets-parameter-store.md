@@ -252,23 +252,92 @@ Zimmer reads three environment variables:
 | --- | --- | --- |
 | `ZIMMER_PARAMS_PROJECT_ID` | `zimmer-secrets-prod` | No — the store's address is not a credential |
 | `ZIMMER_PARAMS_LOCATION` | `global` (the default) | No |
-| `ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | the key JSON | **Yes** |
+| `ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | **base64** of the key JSON | **Yes** |
 
 The key is read from `ENV`, deliberately **not** from Zimmer's encrypted
 credentials: it is the key to the store meant to supersede that file, and
 keeping it there would make rotating it require re-encrypting the very thing it
 replaces.
 
-Delivering it to the running container is an **upstream change** in
-`tadasant-internal`'s `zimmer/` root (Kamal env / Terraform), not something this
-repo can do. That is the same constraint the still-unautomated `API_KEYS` env var
-has. See "What has to change outside this repo", below.
+All three are wired in this repo — `config/deploy.production.yml` puts the two
+address variables in `env.clear` and the credential in `env.secret`, and
+`.kamal/secrets.production` maps it from the deploy environment. The only step
+left outside this repo is **setting the GitHub Actions secret**.
 
-Finally:
+#### Base64, and why it is not optional
+
+Encode the key before pasting it:
+
+```bash
+base64 -w0 < /tmp/zimmer-secrets-resolver.json
+```
+
+Kamal hands env vars to Docker through an **env-file**, which is one line per
+variable. Kamal escapes each value with Ruby's `String#dump`, so a real newline
+becomes the two characters `\n` — and Docker's `--env-file` parser unescapes
+**nothing**, so those two characters arrive literally.
+
+`gcloud iam service-accounts keys create` writes **pretty-printed** JSON. Pasted
+raw, it reaches the container with `\n` between its fields and `JSON.parse`
+rejects it outright. It is the same constraint that makes `ZIMMER_OPERATOR_SSH_KEY`
+base64.
+
+Measured end to end through a real `docker run --env-file`, for one 2048-bit key:
+
+| Pasted as | In the container | Result |
+| --- | --- | --- |
+| pretty-printed JSON (2367 B, 13 lines) | 2407 B, **1 line** — newlines became `\n` | **rejected**, not valid JSON |
+| minified JSON, `jq -c` (2321 B) | 2348 B — only the `\n` escapes doubled | works |
+| base64 (3096 B) | 3096 B, unchanged | works |
+
+`ParameterStore::ServiceAccount.parse` accepts base64 **or** raw JSON, so a
+minified paste is not a corruption trap and a local `ENV[...]=` in a console still
+works. Base64 is what the runbook says because it is the one form that cannot be
+got wrong.
+
+**Getting this wrong is quiet.** A credential that will not parse is not a crash:
+absence is a designed state, so Zimmer boots, resolves every `${VAR}` from
+encrypted credentials exactly as before, and the store simply never turns on. The
+Connectors page is where it shows — it names the reason (`… is not valid JSON, nor
+base64 of valid JSON`).
+
+#### Set the secret
+
+Two steps, both in the private production repo (`tadasant-internal`), and the
+second is a code change rather than a setting:
+
+1. Add the GitHub Actions secret `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`.
+2. Name it in **both** places `zimmer-deploy-prod.yml` enumerates secrets — the
+   `Kamal deploy (production)` step's `env:` block, *and* the `-e` passthrough list
+   in the `kamal()` docker wrapper. Consider adding it to that step's
+   `: "${…:?}"` assert block too, alongside `PROD_OPERATOR_SSH_KEY`.
+
+The second step is the one that gets skipped, and skipping it is invisible. That
+workflow's own comment says why: a var missing from the `env:` block *"would just
+arrive empty, and Kamal's `FOO=$FOO` mapping in `.kamal/secrets.production` would
+resolve to blank with no error."* Combined with this module's
+degrade-rather-than-crash design, the result is a deploy that looks completely
+healthy while the store never turns on — the same silent failure as a wrong paste
+format, reached by a different route. The Connectors page is where you check.
+
+Then:
 
 ```bash
 shred -u /tmp/zimmer-secrets-resolver.json
 ```
+
+#### Staging has none of this, on purpose
+
+There is no staging Parameter Store project, and staging is **not** getting
+production's. `.kamal/secrets.staging` leaves all three variables unset, and says
+so where someone adding a secret will read it.
+
+Absence is a designed state rather than a gap: with no credential
+`SecretProviders.build` composes `[rails_credentials, env]`, nothing raises, and
+staging resolves every `${VAR}` from the committed `staging.yml.enc` exactly as it
+always has. The alternative — pointing staging at `zimmer-secrets-prod` — would
+hand a throwaway box that agent sessions have root on a credential that reads
+production secret *values*. If staging ever needs a store, it gets its own project.
 
 ### If any CI or deploy step handles this key
 
@@ -402,13 +471,18 @@ body *is* the secret).
 
 These live in `tadasant-internal`'s `zimmer/` root and need a human:
 
-1. `zimmer/DEPLOY.md` — a row in the "One-time secrets" table for however the
-   resolver key is delivered.
-2. `zimmer/CREDENTIALS.md` — the four-row mechanism table at the top gains a
+1. **The GitHub Actions secret, and the deploy workflow edit** —
+   `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (base64,
+   [above](#base64-and-why-it-is-not-optional)), then naming it in **both** of the
+   places `zimmer-deploy-prod.yml` lists secrets: the Kamal step's `env:` block and
+   the `kamal()` wrapper's `-e` passthrough. See
+   [set the secret](#set-the-secret) — the second edit is easy to miss and fails
+   silently. These are the last links; the Kamal mapping and the `env.secret` /
+   `env.clear` entries are all in *this* repo now.
+2. `zimmer/DEPLOY.md` — a row in the "One-time secrets" table for that secret.
+3. `zimmer/CREDENTIALS.md` — the four-row mechanism table at the top gains a
    fifth mechanism, and §1's "SecretsLoader reads from exactly one place" needs
    rewriting now that a chain sits in front of it.
-3. **Container env delivery** — `ZIMMER_PARAMS_*` has to reach the running
-   container through Kamal config. Zimmer has no strad-style render-spec.
 4. **Rotation tooling** — `zimmer/scripts/prod-secrets.sh` and
    `fingerprint-mcp-secrets.rb` operate on the encrypted credentials file; a
    store-backed secret sits outside both, so the "proof it landed" story needs an
@@ -434,8 +508,10 @@ namespace fence and pagination all stay covered. `parameter_payloads` exposes
 every payload ever written, which is what the "the secret never touches a
 Parameter Manager payload" canary asserts against.
 
-**The real GCP path has not been exercised.** This deployment has no `gcloud`
-and no GCP credential, so no agent here could run it. What is proven is the
-chain, its precedence, the degraded-state fallback, the cache semantics, the
-envelope round-trip, and the help text. The first live run happens when a human
-completes the provisioning above.
+**No Zimmer process has yet resolved a real secret.** This deployment has no
+`gcloud` and no GCP credential, so no agent here could exercise the live path.
+What is proven is the chain, its precedence, the degraded-state fallback, the
+cache semantics, the envelope round-trip, the help text, and — through a real
+`docker run --env-file` — that a base64 credential survives Kamal's escaping into
+the container while pretty-printed key JSON does not. The provisioning above is
+done; the first live run happens when the GitHub Actions secret is set.
