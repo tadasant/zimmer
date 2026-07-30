@@ -54,7 +54,8 @@ class SecretProvidersTest < ActiveSupport::TestCase
     }
 
     assert_equal %w[rails_credentials env], SecretProviders.build(env: env).providers.map(&:name)
-    assert_match "is not valid JSON", SecretProviders.parameter_store_configuration(env: env).reason
+    assert_match "is not valid JSON, nor base64 of valid JSON",
+      SecretProviders.parameter_store_configuration(env: env).reason
   end
 
   test "a well-formed key JSON puts the store first in the chain" do
