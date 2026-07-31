@@ -779,6 +779,58 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_select "turbo-stream[target=?]", "account_card_#{account.id}"
   end
 
+  # Regression for the production hang: the Authenticate panel sat on "Finishing
+  # sign-in and capturing credentials…" indefinitely. The attempt was left in
+  # `completing` by a RuntimeLoginJob whose worker died without running Ruby, so
+  # no ensure/rescue ever marked the row terminal — and with its verification
+  # window still open, neither the reaper nor login_status's window check would
+  # touch it. The poller therefore re-rendered the same spinner forever.
+  #
+  # A stale heartbeat is the signal that nothing is driving the login any more,
+  # and it must resolve the attempt on the very next poll.
+  test "login_status fails an attempt stuck in completing whose worker stopped heartbeating" do
+    account = claude_accounts(:unconfigured)
+    attempt = account.runtime_login_attempts.create!(
+      runtime: account.runtime, status: "completing",
+      expires_at: 10.minutes.from_now, pasted_code: "secret-auth-code",
+      heartbeat_at: (RuntimeLoginAttempt::HEARTBEAT_TIMEOUT + 1.minute).ago
+    )
+
+    get login_status_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    attempt.reload
+    assert_equal "failed", attempt.status, "a stranded attempt must reach a terminal state"
+    assert_match(/stopped responding/, attempt.error_message)
+    assert_nil attempt.pasted_code
+
+    # And the panel must now carry the reason instead of the spinner, with no
+    # poller left running.
+    assert_select "turbo-stream[target=?]", "login_panel_#{account.id}" do
+      assert_select "div[data-controller=?]", "quotas-login-poller", count: 0
+      assert_no_match(/Finishing sign-in/, response.body)
+      assert_match(/stopped responding/, response.body)
+    end
+  end
+
+  test "login_status answers a poll for an attempt whose row is gone instead of 404ing" do
+    # #241: deleting an account cascades its login attempts away. A 404 here reads
+    # to the Stimulus poller as a transient network error, so it silently gives up
+    # a few ticks later and freezes the panel on its last frame.
+    account = claude_accounts(:unconfigured)
+    attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "completing")
+    attempt_id = attempt.id
+    attempt.destroy!
+
+    get login_status_quotas_path(attempt_id), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_select "turbo-stream[target=?]", "login_attempt_#{attempt_id}" do
+      assert_select "div[data-controller=?]", "quotas-login-poller", count: 0
+      assert_match(/no longer being tracked/, response.body)
+    end
+  end
+
   test "login_status lazily expires an attempt past its window" do
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_user")

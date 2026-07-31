@@ -89,4 +89,116 @@ class RuntimeLoginAttemptTest < ActiveSupport::TestCase
       account.destroy
     end
   end
+
+  # ── heartbeat / orphan detection ──
+
+  test "an attempt whose job stopped stamping its heartbeat is stalled" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "completing", expires_at: 10.minutes.from_now,
+      heartbeat_at: (RuntimeLoginAttempt::HEARTBEAT_TIMEOUT + 30.seconds).ago
+    )
+
+    assert_predicate attempt, :stalled?
+    assert_predicate attempt, :orphaned?
+  end
+
+  test "a fresh heartbeat is not stalled" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "completing", expires_at: 10.minutes.from_now,
+      heartbeat_at: 5.seconds.ago
+    )
+
+    assert_not attempt.stalled?
+    assert_not attempt.orphaned?
+  end
+
+  test "a nil heartbeat is not stalled — the job simply has not dequeued yet" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "starting", expires_at: 10.minutes.from_now, heartbeat_at: nil
+    )
+
+    assert_not attempt.stalled?, "a queued-but-unstarted attempt must not be reaped as a dead worker"
+    assert_not attempt.orphaned?
+  end
+
+  test "a terminal attempt is never stalled or orphaned" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "succeeded", expires_at: 1.hour.ago, heartbeat_at: 1.hour.ago
+    )
+
+    assert_not attempt.stalled?
+    assert_not attempt.orphaned?
+  end
+
+  test "fail_orphaned! fails a stalled attempt, names the cause, and drops the pasted code" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "completing", expires_at: 10.minutes.from_now,
+      heartbeat_at: 5.minutes.ago, pasted_code: "secret-auth-code"
+    )
+
+    assert attempt.fail_orphaned!
+
+    attempt.reload
+    assert_equal "failed", attempt.status
+    assert_match(/stopped responding/, attempt.error_message)
+    assert_nil attempt.pasted_code
+  end
+
+  test "fail_orphaned! expires an attempt past its verification window" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "awaiting_user", heartbeat_at: 2.seconds.ago
+    )
+    attempt.update_column(:expires_at, 1.minute.ago)
+
+    assert attempt.fail_orphaned!
+
+    attempt.reload
+    assert_equal "expired", attempt.status
+    assert_match(/window expired/, attempt.error_message)
+  end
+
+  test "fail_orphaned! leaves a healthy in-flight attempt alone" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "completing", expires_at: 10.minutes.from_now,
+      heartbeat_at: 1.second.ago
+    )
+
+    assert_not attempt.fail_orphaned!
+    assert_equal "completing", attempt.reload.status
+  end
+
+  test "bus_state reads the UI side of the message bus, and nil once the row is gone" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "awaiting_code", pasted_code: "pasted-123"
+    )
+
+    assert_equal [ "awaiting_code", "pasted-123" ], RuntimeLoginAttempt.bus_state(attempt.id)
+
+    attempt.destroy!
+    assert_nil RuntimeLoginAttempt.bus_state(attempt.id)
+  end
+
+  # The reason bus_state owns the uncached block: RuntimeLoginJob polls this row
+  # from a query-cache scope with identical SQL every tick. A cached read would
+  # be answered from the first result forever and never observe the code the web
+  # container wrote — the login would hang at awaiting_code. Assert bus_state
+  # really hits the database on a repeat read, where a plain read does not.
+  test "bus_state bypasses the query cache so cross-process writes are visible" do
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "awaiting_code"
+    )
+
+    RuntimeLoginAttempt.cache do
+      # Prime the cache with the exact SELECT each path issues.
+      RuntimeLoginAttempt.where(id: attempt.id).pick(:status, :pasted_code)
+      RuntimeLoginAttempt.bus_state(attempt.id)
+
+      assert_queries_count(0) do
+        RuntimeLoginAttempt.where(id: attempt.id).pick(:status, :pasted_code)
+      end
+      assert_queries_count(1) do
+        RuntimeLoginAttempt.bus_state(attempt.id)
+      end
+    end
+  end
 end

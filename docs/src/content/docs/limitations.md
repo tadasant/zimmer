@@ -1087,7 +1087,12 @@ Also:
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 - Push notifications don't work on anything without the Push API (iOS Safari outside standalone PWA).
 - The OAuth login poller gives up after N consecutive failed polls — a transient blip abandons the
-  flow. ([#101](https://github.com/tadasant/zimmer/issues/101))
+  flow. It now says so in the panel instead of freezing on its last frame, but the flow is still
+  abandoned and you have to start over. ([#101](https://github.com/tadasant/zimmer/issues/101))
+- A UI login stranded by a worker that died before its first heartbeat (killed within ~15s of
+  spawning the CLI) has no liveness signal to go stale, so it waits out the full 14-minute
+  `expires_at` window before the panel reports anything. Attempts created before the `heartbeat_at`
+  column shipped behave the same way.
 - Alerts inside a 1-hour dedup window are swallowed, even genuinely new ones.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 

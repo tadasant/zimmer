@@ -6,6 +6,7 @@
      data-controller="quotas-login-poller"
      data-quotas-login-poller-url-value="<%= login_status_quotas_path(attempt.id) %>"
      data-quotas-login-poller-interval-value="2000"
+     data-quotas-login-poller-deadline-value="<%= ((attempt.expires_at + 1.minute).to_f * 1000).round %>"
      data-login-status="<%= attempt.status %>">
   <div class="flex items-center justify-between mb-2">
     <span class="text-xs font-semibold text-indigo-800">
