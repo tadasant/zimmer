@@ -21,10 +21,30 @@ class McpOauthCredentialInjector
   # processes authenticated by env vars — there is no OAuth flow to run against them.
   REMOTE_TYPES = %w[http streamable-http sse].freeze
 
-  # Header names that carry a static credential: `Authorization` for bearer-token
-  # servers, `X-API-Key` for API-key servers — including Zimmer's own native MCP
-  # server, which authenticates with the same API key as the rest of its API.
-  CREDENTIAL_HEADERS = %w[authorization x-api-key].freeze
+  # A header name carries a static credential when one of these words appears in
+  # it as a whole `-`/`_`-delimited part: `Authorization`, `X-API-Key`,
+  # `X-Goog-Api-Key`, `X-Figma-Token`, `PRIVATE-TOKEN`, `X-Client-Secret`.
+  #
+  # Matching a word list rather than an exact name list is the point. Every
+  # vendor spells its key header differently and the spelling says nothing about
+  # whether an OAuth flow exists — an allow-list of the two names Zimmer's own
+  # catalog happened to use sent every other vendor's key header down the OAuth
+  # path, where the page offered an Authorize button no consent screen could
+  # satisfy.
+  #
+  # The word list stays deliberately narrow in the other direction, because the
+  # opposite mistake is worse: reading a routine header as a credential hides the
+  # Authorize button on a server that genuinely needs one, leaving no way to
+  # authorize it at all. So `key` counts only as part of `api-key`/`apikey` —
+  # `Idempotency-Key` is not a credential — and `auth` must be a whole part, so
+  # `X-Author` is not one either. A vendor header this misses (Azure's
+  # `X-Subscription-Key`, say) is a word away from being covered; add it here
+  # rather than special-casing a server.
+  CREDENTIAL_HEADER_PATTERN = /
+    (?:\A|[-_])
+    (?: authorization | auth | api[-_]?key | apikey | token | secret | password | credentials? )
+    (?:\z|[-_])
+  /xi
 
   # True when Claude Code could actually complete an OAuth flow against this server.
   #
@@ -38,13 +58,16 @@ class McpOauthCredentialInjector
   #      resolve.
   #   2. It uses a remote transport — stdio servers have no OAuth flow.
   #   3. It does NOT configure a static credential header — that header IS the
-  #      credential, so no OAuth flow is needed (or possible).
+  #      credential, so no OAuth flow is needed (or possible). Whatever the vendor
+  #      named it: `X-API-Key`, `X-Goog-Api-Key` and `Authorization` are the same
+  #      answer to "how does this server authenticate?".
   #
   # Servers failing (3) — e.g. Zimmer's own native `zimmer*` entries, which authenticate
   # with `X-API-Key: ${ZIMMER_PROD_API_KEY}` — return 401 when their token is invalid or
   # under-scoped. That 401 is NOT an OAuth problem: completing an OAuth flow cannot mint a
   # valid API token, so routing it to the OAuth banner strands the user in an unresolvable
-  # loop.
+  # loop. The Connectors page shows the same distinction one step earlier, before any 401:
+  # a static-header server with its `${VAR}` set is Ready, not "Needs authorization".
   #
   # @param server_name [String] the MCP server name
   # @return [Boolean]
@@ -57,16 +80,17 @@ class McpOauthCredentialInjector
   end
 
   # True when the server config has a non-empty credential header (see
-  # CREDENTIAL_HEADERS). HTTP header names are case-insensitive (RFC 7230) so we
-  # match in any case. The value may still contain `${VAR}` placeholders at this
-  # stage — those are resolved later by AirPrepareService. We treat the presence of
-  # such a header as the operator's intent to use a static header credential.
+  # CREDENTIAL_HEADER_PATTERN). HTTP header names are case-insensitive (RFC 7230)
+  # so we match in any case. The value may still contain `${VAR}` placeholders at
+  # this stage — those are resolved later by AirPrepareService. We treat the
+  # presence of such a header as the operator's intent to use a static header
+  # credential.
   def self.static_credential_header?(server_config)
     headers = server_config[:headers]
     return false if headers.blank?
 
     headers.any? do |key, value|
-      CREDENTIAL_HEADERS.include?(key.to_s.downcase) && value.to_s.strip.present?
+      CREDENTIAL_HEADER_PATTERN.match?(key.to_s) && value.to_s.strip.present?
     end
   end
 

@@ -699,6 +699,34 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     refute McpOauthCredentialInjector.static_credential_header?(headers: nil)
   end
 
+  # Vendors spell their API-key header however they like, and the spelling has no
+  # bearing on whether an OAuth flow exists. Recognising only `X-API-Key` sent
+  # every other vendor's key header down the OAuth path, where the answer is an
+  # Authorize button no consent screen can satisfy.
+  test "static_credential_header? recognises a vendor-spelled API-key header" do
+    assert McpOauthCredentialInjector.static_credential_header?(
+      headers: { "X-Goog-Api-Key" => "${GOOGLE_MAPS_API_KEY}" }
+    ), "Google's key header is a credential just as much as X-API-Key is"
+
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "apikey" => "abc" })
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "X-Figma-Token" => "abc" })
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "PRIVATE-TOKEN" => "abc" })
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "X-Auth-Email" => "a@b.c" })
+    assert McpOauthCredentialInjector.static_credential_header?(headers: { "X-Client-Secret" => "abc" })
+  end
+
+  # The rule has to stay narrow in the other direction. Reading a non-credential
+  # header as static auth hides the Authorize button on a server that genuinely
+  # needs one — the worse of the two failures, because there is then no way to
+  # authorize it at all.
+  test "static_credential_header? does not read routine headers as credentials" do
+    refute McpOauthCredentialInjector.static_credential_header?(headers: { "Idempotency-Key" => "abc" })
+    refute McpOauthCredentialInjector.static_credential_header?(headers: { "Content-Type" => "application/json" })
+    refute McpOauthCredentialInjector.static_credential_header?(headers: { "User-Agent" => "zimmer" })
+    refute McpOauthCredentialInjector.static_credential_header?(headers: { "X-Author" => "zimmer" })
+    refute McpOauthCredentialInjector.static_credential_header?(headers: { "Accept" => "text/event-stream" })
+  end
+
   # GitHub issue #222: retiring a revoked credential has to leave the runtime
   # stores with nothing for McpOauthRuntimeReconciler to adopt back into the DB.
   #
