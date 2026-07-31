@@ -25,6 +25,11 @@ require "open3"
 # When a whitelisted user (tadasant, macoughl) makes a new comment,
 # a follow-up prompt is automatically enqueued for the session.
 #
+# Two classes of comment are deliberately skipped even though their author is
+# whitelisted: Zimmer's own automation reports (see AUTOMATION_REPORT_HEADINGS) and
+# bot commands (see BLACKLISTED_PATTERNS). Skipped comments are still recorded in
+# custom_metadata; they just don't wake the session, and they get no 👀 reaction.
+#
 class GithubCommentPollerJob < ApplicationJob
   include DatabaseRetry
 
@@ -49,6 +54,25 @@ class GithubCommentPollerJob < ApplicationJob
   BLACKLISTED_PATTERNS = [
     /\A\/deploy staging\z/i  # Exact match for "/deploy staging" command
   ].freeze
+
+  # Reports posted by Zimmer's own PR automation, matched by the heading they open with.
+  #
+  # These are published with `gh` authenticated as a human account -- the pr-merge-gate
+  # rating comes from `tadasant` -- and carry no AGENT_COMMENT_MARKER, so neither the
+  # author whitelist nor the attribution check keeps them out. Recognizing them here, in
+  # Zimmer, is deliberate: an automation should not have to remember to opt in with a
+  # marker for the session it reports on to stay asleep.
+  #
+  # Add the heading of any new automation report to this list. Compared after
+  # downcasing and squishing, so heading level and leading emoji don't matter.
+  AUTOMATION_REPORT_HEADINGS = [
+    "merge gate"  # pr-merge-gate's rating: "## 🚀 Merge gate"
+  ].freeze
+
+  # A leading Markdown heading, with any emoji or other decoration before the text
+  # discarded: "## 🚀 Merge gate", "### Merge gate" and "# 🚦 merge gate" all yield
+  # "Merge gate".
+  AUTOMATION_HEADING_PATTERN = /\A[#]{1,6}\s*\P{Alnum}*\s*(?<title>.+?)\s*\z/
 
   # Maximum comments to fetch per API call (GitHub's default is 30, max is 100)
   MAX_COMMENTS_PER_PAGE = 100
@@ -107,11 +131,12 @@ class GithubCommentPollerJob < ApplicationJob
           comment_data = build_pr_comment_data(comment, pr_url, pr_number)
           updated_comments[pr_key]["pr_comments"] << comment_data
 
-          # Check if this is a new user comment from a whitelisted user (excluding blacklisted patterns)
+          # Check if this is a new user comment from a whitelisted user (excluding bot
+          # commands and Zimmer's own automation reports)
           # Also check that the comment was created after we started tracking this PR
           if comment_data["attribution"] != "self" &&
              WHITELISTED_USERS.include?(comment_data["author"].downcase) &&
-             !blacklisted_comment?(comment_data["body"]) &&
+             !ignored_comment?(comment_data["body"]) &&
              comment_created_after_tracking_started?(comment_data, tracking_started_at)
             new_user_comments << { type: "pr", data: comment_data, pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number }
           end
@@ -127,11 +152,12 @@ class GithubCommentPollerJob < ApplicationJob
           comment_data = build_review_comment_data(comment, pr_url, pr_number)
           updated_comments[pr_key]["review_comments"] << comment_data
 
-          # Check if this is a new user comment from a whitelisted user (excluding blacklisted patterns)
+          # Check if this is a new user comment from a whitelisted user (excluding bot
+          # commands and Zimmer's own automation reports)
           # Also check that the comment was created after we started tracking this PR
           if comment_data["attribution"] != "self" &&
              WHITELISTED_USERS.include?(comment_data["author"].downcase) &&
-             !blacklisted_comment?(comment_data["body"]) &&
+             !ignored_comment?(comment_data["body"]) &&
              comment_created_after_tracking_started?(comment_data, tracking_started_at)
             new_user_comments << { type: "review", data: comment_data, pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number }
           end
@@ -237,11 +263,28 @@ class GithubCommentPollerJob < ApplicationJob
   end
 
   # Check if a comment body matches any blacklisted pattern
-  # Used to filter out bot commands and automated messages
+  # Used to filter out bot commands
   def blacklisted_comment?(body)
     return false if body.blank?
 
     BLACKLISTED_PATTERNS.any? { |pattern| body.match?(pattern) }
+  end
+
+  # Check if a comment is a report from Zimmer's own PR automation, by the heading it
+  # opens with. Only the first line is considered, so a human quoting a report -- or
+  # writing about it -- is left alone.
+  def automated_comment?(body)
+    return false if body.blank?
+
+    match = AUTOMATION_HEADING_PATTERN.match(body.lines.first.to_s.strip)
+    return false unless match
+
+    AUTOMATION_REPORT_HEADINGS.include?(match[:title].downcase.squish)
+  end
+
+  # Comments that must never trigger a follow-up prompt, whoever authored them
+  def ignored_comment?(body)
+    blacklisted_comment?(body) || automated_comment?(body)
   end
 
   # Check if a comment was created after tracking started for this PR
@@ -272,6 +315,10 @@ class GithubCommentPollerJob < ApplicationJob
 
   # Add eyes emoji reaction to a GitHub comment to indicate we're processing it
   # Uses the GitHub API to create a reaction on the comment
+  #
+  # Only called once a follow-up is known to be going out: the reaction is a promise to
+  # respond, so it must not be posted on a comment Zimmer has decided not to action.
+  #
   # This is best-effort and won't block the enqueue if it fails
   def add_eyes_reaction(comment_info)
     owner = comment_info[:owner]
@@ -307,15 +354,26 @@ class GithubCommentPollerJob < ApplicationJob
   end
 
   def enqueue_follow_up_prompt(session, comment_info)
-    # Add eyes emoji reaction to indicate we're processing the comment
-    add_eyes_reaction(comment_info)
-
-    prompt = GithubCommentPromptBuilder.new(
+    builder = GithubCommentPromptBuilder.new(
       session: session,
       comment_info: comment_info
-    ).build
+    )
+
+    # Decide whether the comment will be actioned before reacting to it. On a public repo
+    # owned by someone we don't control, the agent isn't allowed to reply, commit, or
+    # react without human approval -- so there is nothing to hand it, and a 👀 there is a
+    # promise Zimmer is designed not to keep.
+    unless builder.actionable?
+      Rails.logger.info "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: public repository outside our control"
+      return
+    end
+
+    prompt = builder.build
 
     return unless prompt.present?
+
+    # Only now, with a follow-up actually going out, mark the comment as seen
+    add_eyes_reaction(comment_info)
 
     with_db_retry do
       # Use transaction with row-level locking to prevent race conditions
