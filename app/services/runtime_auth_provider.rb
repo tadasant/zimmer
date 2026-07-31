@@ -77,11 +77,13 @@
 #
 # == Quota-rotation hook (called by ProcessLifecycleManager) ==
 #
-# rotate_for_quota!(triggered_by:) -> Hash
-#   Rotate away from the current account after it hit a usage quota, activating
-#   the next available account in the pool. Returns { success:, account: } on
-#   success or { success: false, reason: } when no account is available. Defaults
-#   to a no-op result for runtimes that don't pool quota-limited accounts.
+# rotate_for_quota!(triggered_by:, reason:) -> Hash
+#   Rotate away from the current account, activating the next available account
+#   in the pool. Returns { success:, account: } on success or
+#   { success: false, reason: } when no account is available. `reason` is
+#   recorded on the AccountRotationEvent so a quota rotation and an
+#   auth-recovery rotation are distinguishable after the fact. Defaults to a
+#   no-op result for runtimes that don't pool quota-limited accounts.
 class RuntimeAuthProvider
   # Outcome of a token refresh attempt.
   #   ok    - true when the refresh succeeded
@@ -186,12 +188,18 @@ class RuntimeAuthProvider
     []
   end
 
-  # Quota-rotation hook: rotate away from the current account after it hit a
-  # usage quota. Defaults to a no-op result for runtimes that don't pool
+  # Quota-rotation hook: rotate away from the current account, activating the
+  # next available one. Defaults to a no-op result for runtimes that don't pool
   # quota-limited accounts.
   #
+  # @param reason [String] recorded on the AccountRotationEvent. "quota_exceeded"
+  #   for the quota path, "auth_recovery" when the runtime rejected the current
+  #   identity outright.
+  # @param expected_current_email [String, nil] the identity the caller was running
+  #   as. Lets a rotation that another session already performed collapse instead
+  #   of burning a second account — see AccountRotationService#rotate!.
   # @return [Hash] { success:, account: } or { success: false, reason: }
-  def rotate_for_quota!(triggered_by: nil)
+  def rotate_for_quota!(triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil)
     { success: false, reason: "rotation_not_supported" }
   end
 end

@@ -92,10 +92,28 @@ class ClaudeAuthProviderTest < ActiveSupport::TestCase
     expected = { success: true, account: claude_accounts(:secondary) }
     AccountRotationService.any_instance
       .expects(:rotate!)
-      .with(reason: "quota_exceeded", triggered_by: "session:42")
+      .with(reason: "quota_exceeded", triggered_by: "session:42", expected_current_email: nil)
       .returns(expected)
 
     assert_equal expected, @provider.rotate_for_quota!(triggered_by: "session:42")
+  end
+
+  # The auth-recovery path shares this seam rather than adding a parallel
+  # rotation mechanism; `reason` is what separates the two in the event log, and
+  # `expected_current_email` is what lets a racer collapse onto a rotation that
+  # already happened.
+  test "rotate_for_quota! forwards the auth-recovery reason and the expected current identity" do
+    expected = { success: true, account: claude_accounts(:secondary) }
+    AccountRotationService.any_instance
+      .expects(:rotate!)
+      .with(reason: "auth_recovery", triggered_by: "session:42", expected_current_email: "stale@example.com")
+      .returns(expected)
+
+    assert_equal expected, @provider.rotate_for_quota!(
+      triggered_by: "session:42",
+      reason: "auth_recovery",
+      expected_current_email: "stale@example.com"
+    )
   end
 
   test "recover_needs_reauth returns false for an account that is not in needs_reauth" do

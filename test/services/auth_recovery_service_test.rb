@@ -5,30 +5,31 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
   # Minimal fake account — the service only reads #email for logging.
   FakeAccount = Struct.new(:email)
 
-  # Fake auth provider standing in for RuntimeAuthProvider.for(runtime). Records
-  # the inject_for_session! calls so tests can assert the identity refresh ran
-  # with the right arguments, and returns a configurable account (or nil to model
-  # "no valid account available").
-  class FakeAuthProvider
+  # Fake coordinator standing in for AuthRecoveryCoordinator. The coordinator's
+  # own decision tree (adopt / rotate / wait / park) is exercised against a real
+  # account pool in AuthRecoveryCoordinatorTest; here it is stubbed so these tests
+  # stay about what AuthRecoveryService owns — the attempt budget, the log line,
+  # the re-spawn, and the mapping from plan to return value.
+  class FakeCoordinator
     attr_reader :calls
 
-    def initialize(account:)
-      @account = account
+    def initialize(plan)
+      @plan = plan
       @calls = []
     end
 
-    def inject_for_session!(session, working_directory = nil)
-      @calls << { session: session, working_directory: working_directory }
-      @account
+    def resolve!(working_directory)
+      @calls << working_directory
+      @plan
     end
   end
 
-  # Auth provider whose inject_for_session! raises, modeling a provider-level
-  # failure (e.g. filesystem write error) during identity refresh.
-  class RaisingAuthProvider
-    def inject_for_session!(_session, _working_directory = nil)
-      raise StandardError, "identity refresh boom"
-    end
+  def plan(outcome, email: "rotated@example.com", detail: "rotated from old@example.com to #{email}")
+    AuthRecoveryCoordinator::Plan.new(
+      outcome: outcome,
+      account: email ? FakeAccount.new(email) : nil,
+      detail: detail
+    )
   end
 
   setup do
@@ -50,14 +51,14 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     @account = FakeAccount.new("rotated@example.com")
   end
 
-  def create_service(auth_provider: nil)
+  def create_service(coordinator: nil)
     AuthRecoveryService.new(
       @session,
       cli_adapter: @mock_cli_adapter,
       process_manager: @mock_process_manager,
       log_buffer: @log_buffer,
       file_system: @mock_file_system,
-      auth_provider: auth_provider || FakeAuthProvider.new(account: @account)
+      coordinator: coordinator || FakeCoordinator.new(plan(:rotated))
     )
   end
 
@@ -205,24 +206,22 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     assert_equal :not_applicable, service.attempt_recovery("/tmp/test-clone")
   end
 
-  test "refreshes identity then resumes and returns :success when process stays running" do
+  test "resolves the identity against the pool then resumes and returns :success when process stays running" do
     setup_transcript_with_auth_error
 
     @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
     @mock_process_manager.running_hook = ->(_pid) { true }
 
-    provider = FakeAuthProvider.new(account: @account)
-    service = create_service(auth_provider: provider)
+    coordinator = FakeCoordinator.new(plan(:rotated))
+    service = create_service(coordinator: coordinator)
     service.define_singleton_method(:sleep) { |_| }
 
     result = service.attempt_recovery("/tmp/test-clone")
 
     assert_equal :success, result
 
-    # Identity was refreshed with this session and its working directory BEFORE re-spawn.
-    assert_equal 1, provider.calls.size
-    assert_equal @session, provider.calls.first[:session]
-    assert_equal "/tmp/test-clone", provider.calls.first[:working_directory]
+    # The pool was consulted for this working directory BEFORE re-spawn.
+    assert_equal [ "/tmp/test-clone" ], coordinator.calls
 
     # The session was re-spawned and the new PID recorded.
     assert_equal 1, @mock_cli_adapter.resumed_sessions.length
@@ -259,20 +258,19 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     assert_includes captured[:append_system_prompt], "Session ID: #{@session.id}"
   end
 
-  # The core negative case from the task: NO valid account available means
-  # inject_for_session! returns nil. The service must fail cleanly WITHOUT
-  # re-spawning and WITHOUT looping.
-  test "returns :unrecoverable without spawning when no valid account is available" do
+  # No account in the pool has usable credentials — no reset will fix that, only
+  # a human. Fail cleanly WITHOUT re-spawning and WITHOUT looping.
+  test "returns :unrecoverable without spawning when the pool has no usable credentials" do
     setup_transcript_with_auth_error
 
-    provider = FakeAuthProvider.new(account: nil)
-    service = create_service(auth_provider: provider)
+    coordinator = FakeCoordinator.new(plan(:unusable, email: nil, detail: "no usable credentials"))
+    service = create_service(coordinator: coordinator)
     service.define_singleton_method(:sleep) { |_| }
 
     result = service.attempt_recovery("/tmp/test-clone")
 
     assert_equal :unrecoverable, result
-    assert_equal 1, provider.calls.size, "Should attempt identity refresh exactly once"
+    assert_equal 1, coordinator.calls.size, "Should consult the pool exactly once"
     assert_equal 0, @mock_cli_adapter.resumed_sessions.length,
       "Must NOT spawn a process when there is no account to recover to"
 
@@ -283,16 +281,30 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     assert_nil @session.metadata["auth_recovery_count"]
   end
 
-  test "returns :unrecoverable when identity refresh raises" do
+  # Branch 3 of the fix: when the pool is drained by quota, the FIRST "Not logged
+  # in" goes straight to the over-quota failure mode. Before this the session
+  # re-spawned into the same wall three times and then parked with
+  # AUTH_UNRECOVERABLE, telling the user to re-authenticate when the actual fix
+  # was to wait.
+  test "returns :pool_quota_exhausted on the first failure when every account is over quota" do
     setup_transcript_with_auth_error
 
-    service = create_service(auth_provider: RaisingAuthProvider.new)
+    coordinator = FakeCoordinator.new(plan(:quota_exhausted, email: nil, detail: "all over quota"))
+    service = create_service(coordinator: coordinator)
     service.define_singleton_method(:sleep) { |_| }
 
     result = service.attempt_recovery("/tmp/test-clone")
 
-    assert_equal :unrecoverable, result
-    assert_equal 0, @mock_cli_adapter.resumed_sessions.length
+    assert_equal :pool_quota_exhausted, result
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.length,
+      "Must not re-spawn into a wall that only a quota reset can clear"
+
+    @session.reload
+    assert @session.metadata["auth_error_last_checked_line"].to_i > 0
+    assert_nil @session.metadata["auth_recovery_count"],
+      "Parking on a drained pool is not a retry and must not spend budget"
+
+    assert_includes @session.logs.pluck(:content).join(" "), "over its quota"
   end
 
   test "returns :exhausted when recovery count already at maximum" do
@@ -373,9 +385,105 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
 
   test "uses correct constants" do
     assert_equal 3, AuthRecoveryService::MAX_RECOVERY_ATTEMPTS
+    assert_equal 3, AuthRecoveryService::MAX_FREE_ADOPTIONS
     assert_equal 5, AuthRecoveryService::SUCCESS_THRESHOLD
     assert_equal 2, AuthRecoveryService::RETRY_DELAY
     assert_equal 15.minutes, AuthRecoveryService::CONSECUTIVE_WINDOW
+  end
+
+  # ===========================================================================
+  # Adoption budget — waiting on someone else's rotation is free
+  # ===========================================================================
+
+  test "adopting another session's rotation does not spend the recovery budget" do
+    setup_transcript_with_auth_error
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service(coordinator: FakeCoordinator.new(
+      plan(:adopted, email: "someone-elses-rotation@example.com", detail: "pool already rotated")
+    ))
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :success, service.attempt_recovery("/tmp/test-clone")
+
+    @session.reload
+    assert_nil @session.metadata["auth_recovery_count"],
+      "An adoption is another session's rotation doing this one a favour — not an attempt it made"
+    assert_equal 1, @session.metadata["auth_recovery_adoptions"]
+    assert_includes @session.logs.pluck(:content).join(" "), "no attempt charged"
+  end
+
+  test "adoptions beyond MAX_FREE_ADOPTIONS start spending the recovery budget" do
+    setup_transcript_with_auth_error
+
+    @session.update!(metadata: @session.metadata.merge(
+      "auth_recovery_adoptions" => AuthRecoveryService::MAX_FREE_ADOPTIONS,
+      "last_auth_adoption_at" => 1.minute.ago.iso8601
+    ))
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service(coordinator: FakeCoordinator.new(plan(:adopted)))
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :success, service.attempt_recovery("/tmp/test-clone")
+
+    @session.reload
+    assert_equal 1, @session.metadata["auth_recovery_count"],
+      "Free adoptions that never converge must stop being free, or the loop is unbounded"
+  end
+
+  test "an adoption older than CONSECUTIVE_WINDOW starts a fresh free-adoption budget" do
+    setup_transcript_with_auth_error
+
+    @session.update!(metadata: @session.metadata.merge(
+      "auth_recovery_adoptions" => AuthRecoveryService::MAX_FREE_ADOPTIONS,
+      "last_auth_adoption_at" => (AuthRecoveryService::CONSECUTIVE_WINDOW + 1.minute).ago.iso8601
+    ))
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service(coordinator: FakeCoordinator.new(plan(:adopted)))
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :success, service.attempt_recovery("/tmp/test-clone")
+
+    @session.reload
+    assert_nil @session.metadata["auth_recovery_count"]
+    assert_equal 1, @session.metadata["auth_recovery_adoptions"]
+  end
+
+  # A rotation in flight belongs to another process. Starting a second one would
+  # burn the account that rotation is activating, so the session waits — but the
+  # wait IS charged, because unlike an adoption nothing has been shown to change.
+  test "waiting on a rotation in flight spends the budget" do
+    setup_transcript_with_auth_error
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service(coordinator: FakeCoordinator.new(
+      plan(:rotation_in_flight, email: nil, detail: "another rotation is running")
+    ))
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :success, service.attempt_recovery("/tmp/test-clone")
+
+    @session.reload
+    assert_equal 1, @session.metadata["auth_recovery_count"]
+    assert_includes @session.logs.pluck(:content).join(" "), "still in flight"
+  end
+
+  test "the adoption budget is cleared on resume alongside the retry budget" do
+    assert_includes Session::STALE_RETRY_METADATA_KEYS, "auth_recovery_adoptions"
+    assert_includes Session::STALE_RETRY_METADATA_KEYS, "last_auth_adoption_at"
+  end
+
+  test "auth_identity_email survives resume so an adoption stays distinguishable" do
+    assert_not_includes Session::STALE_RETRY_METADATA_KEYS, AuthRecoveryCoordinator::IDENTITY_KEY,
+      "Clearing the spawn identity would make every recovery look like a rotation"
   end
 
   # ===========================================================================

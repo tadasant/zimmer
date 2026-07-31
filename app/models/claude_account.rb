@@ -71,6 +71,94 @@ class ClaudeAccount < ApplicationRecord
   scope :available, -> { active.where.not(oauth_config: {}).order(:priority) }
   scope :for_runtime, ->(runtime) { where(runtime: runtime) }
 
+  # Postgres advisory lock namespace for serializing mutations of one runtime's
+  # account pool (rotation, activation). Distinct from
+  # Session::SESSION_ADVISORY_LOCK_NAMESPACE so the two subsystems can never
+  # collide in the shared bigint key space. Fixed value — changing it would let
+  # an old and a new deployment hold "the same" lock independently.
+  POOL_ADVISORY_LOCK_NAMESPACE = 0x415F_4143 # "A_AC" ASCII — Account pool lock
+
+  # How long a caller waits for another process's in-flight pool mutation before
+  # giving up. A rotation is a handful of DB writes, two small filesystem writes
+  # and at most one token refresh over HTTP, so it completes in seconds; a wait
+  # this long means the holder is wedged, and the caller is better off reporting
+  # "a rotation is in flight" than blocking its monitoring thread indefinitely.
+  POOL_LOCK_WAIT = 45.seconds
+
+  # Poll interval while waiting for the pool lock. pg_try_advisory_lock has no
+  # blocking-with-timeout form, so the wait is a bounded poll.
+  POOL_LOCK_POLL_INTERVAL = 0.25
+
+  # Serialize a block against every other pool mutation for the same runtime,
+  # across every process in the deployment.
+  #
+  # All sessions on a worker share ONE on-disk identity per runtime, so two
+  # sessions that hit an auth wall at the same moment must not each rotate: the
+  # second rotation would burn a perfectly good account the first had just
+  # activated, and repeated across a fleet it drains the pool in seconds. This
+  # lock is what makes "is a rotation already in flight?" answerable — a caller
+  # that has to wait for it knows someone else is mid-rotation, and a caller
+  # that gets it immediately knows nobody is.
+  #
+  # A session-level (not transaction-level) lock deliberately: rotation performs
+  # an HTTP token refresh and filesystem writes, and wrapping those in a Postgres
+  # transaction would hold it open across the network call — idle-in-transaction,
+  # with the MVCC snapshot it pins. The connection is held either way; it is the
+  # long-open transaction the session-level lock avoids.
+  #
+  # Nesting is safe: with_connection hands back the connection the thread already
+  # has, so an inner acquire lands on the same backend, and Postgres counts
+  # advisory locks per session — the inner unlock decrements, the outer releases.
+  #
+  # @param runtime [String] the runtime whose pool is being mutated
+  # @param wait [ActiveSupport::Duration, Numeric] how long to wait for the lock
+  # @return [Object, nil] the block's return value, or nil if the lock could not
+  #   be acquired within `wait` (i.e. another process is mid-rotation and slow)
+  def self.with_pool_lock(runtime, wait: POOL_LOCK_WAIT)
+    key = pool_lock_key(runtime)
+    deadline = Time.current + wait
+
+    connection_pool.with_connection do |conn|
+      acquired = try_pool_lock(conn, key)
+      until acquired || Time.current >= deadline
+        sleep(POOL_LOCK_POLL_INTERVAL)
+        acquired = try_pool_lock(conn, key)
+      end
+
+      return nil unless acquired
+
+      begin
+        yield
+      ensure
+        # Swallow: if the connection died inside the block, raising here would
+        # replace the real error with a confusing one — and a dead connection has
+        # already released the lock.
+        begin
+          conn.execute(
+            sanitize_sql_array([ "SELECT pg_advisory_unlock(?, ?)", POOL_ADVISORY_LOCK_NAMESPACE, key ])
+          )
+        rescue => e
+          Rails.logger.warn "[ClaudeAccount] Could not release the pool lock: #{e.message}"
+        end
+      end
+    end
+  end
+
+  # Stable 31-bit lock key for a runtime. Both pg_advisory_lock(int4, int4) args
+  # must fit in a signed int4, so the digest is masked rather than truncated.
+  def self.pool_lock_key(runtime)
+    Digest::MD5.hexdigest(runtime.to_s).to_i(16) & 0x7FFF_FFFF
+  end
+
+  def self.try_pool_lock(conn, key)
+    ActiveModel::Type::Boolean.new.cast(
+      conn.select_value(
+        sanitize_sql_array([ "SELECT pg_try_advisory_lock(?, ?)", POOL_ADVISORY_LOCK_NAMESPACE, key ])
+      )
+    )
+  end
+  private_class_method :try_pool_lock
+
   # Returns the DB-authoritative current account.
   #
   # The DB is the single source of truth for which account is active.
@@ -271,7 +359,7 @@ class ClaudeAccount < ApplicationRecord
     if codex?
       codex_refresh_token.present?
     else
-      oauth_config&.dig("credentials_json", "claudeAiOauth", "refreshToken").present?
+      claude_refresh_token.present?
     end
   end
 
@@ -288,17 +376,125 @@ class ClaudeAccount < ApplicationRecord
   #   account first transitioned to needs_reauth, and a known-dead token fails every
   #   cycle until a human re-authenticates.
   def refresh_token!(recovery_probe: false)
-    return refresh_codex_token!(recovery_probe: recovery_probe) if codex?
+    # API-key Codex accounts authenticate statically — nothing to rotate, nothing
+    # to race, so they skip the lock entirely.
+    return true if codex? && codex_api_key_account?
 
-    # The Claude CLI refreshes tokens independently during sessions, and Anthropic's
-    # OAuth endpoint rotates refresh_token for security. When that happens, the CLI
-    # writes the new pair to ~/.claude/.credentials.json but Zimmer's DB copy stays
-    # stale — using it would fail with invalid_grant. Sync from filesystem first.
-    # sync_tokens_from_filesystem! is a no-op when ~/.claude.json's identity does
-    # not match this account or when ~/.claude.json is missing entirely.
-    sync_tokens_from_filesystem!
+    # Both vendors issue SINGLE-USE refresh tokens: a successful refresh returns a
+    # new pair and invalidates the old one. Two callers presenting the same token
+    # means the second is told the token is invalid (`invalid_grant` from Anthropic,
+    # `refresh_token_reused` from OpenAI) — indistinguishable, from the response
+    # alone, from a genuinely dead credential — and the account is marked
+    # needs_reauth. That is how a healthy pool drains itself one account at a
+    # time (#242): four different accounts died that way in ten days.
+    #
+    # Callers reach this from the quotas page, the quota-reset checker, the refresh
+    # sweep, rotation, activation and needs_reauth recovery, so the serialization
+    # lives HERE rather than at each of them: a row lock held across the whole
+    # read-refresh-persist sequence, which is the only scope that can promise the
+    # token we present is the token we hold. Bounded by the HTTP timeouts each
+    # runtime's refresh sets (5s open, 10s read), and re-entrant with the outer
+    # with_lock that ClaudeAuthProvider#recover_needs_reauth and
+    # RefreshRuntimeAuthTokensJob already take.
+    #
+    # Captured before with_lock, which reloads the row — so the comparison inside
+    # tells "the token moved while I queued" from "the token is what I saw".
+    token_before_lock = current_refresh_token
+    refreshed = false
 
-    refresh_tok = oauth_config&.dig("credentials_json", "claudeAiOauth", "refreshToken")
+    with_lock do
+      # Whoever held the lock before us may have already done this work. Their new
+      # pair is on the row we just re-read, so refreshing again would consume a
+      # token nobody has used yet. Their refresh is our refresh.
+      #
+      # The token moving is necessary evidence but not sufficient: a plain
+      # filesystem sync also rewrites it, and a caller whose HTTP refresh then
+      # failed leaves a moved token behind without having refreshed anything. So
+      # also require the access token to be good — otherwise we would report
+      # success to callers (rotation, the quotas page) that asked precisely so
+      # they could avoid writing stale credentials to disk.
+      if token_before_lock.present? && current_refresh_token.present? &&
+          current_refresh_token != token_before_lock && !token_expiring_soon?
+        Rails.logger.info "[ClaudeAccount] Refresh for #{email} already performed by a concurrent caller, skipping"
+        refreshed = true
+        next
+      end
+
+      refreshed = if codex?
+        refresh_codex_token!(recovery_probe: recovery_probe)
+      else
+        # The Claude CLI refreshes tokens independently during sessions, and Anthropic's
+        # OAuth endpoint rotates refresh_token for security. When that happens, the CLI
+        # writes the new pair to ~/.claude/.credentials.json but Zimmer's DB copy stays
+        # stale — using it would fail with invalid_grant. Sync from filesystem first.
+        # sync_tokens_from_filesystem! is a no-op when ~/.claude.json's identity does
+        # not match this account or when ~/.claude.json is missing entirely.
+        sync_tokens_from_filesystem!
+        perform_claude_refresh!(recovery_probe: recovery_probe, presented: claude_refresh_token)
+      end
+    end
+
+    refreshed
+  rescue StandardError => e
+    # with_lock sits outside the per-runtime refresh bodies' own rescues, so a
+    # lock timeout or deadlock would otherwise escape from a method every caller
+    # treats as returning a boolean — 500ing the quotas page and aborting a
+    # rotation mid-flight. Preserve the "returns false, never raises" contract.
+    Rails.logger.error "[ClaudeAccount] Token refresh could not acquire or hold the account lock for #{email}: #{e.message}"
+    false
+  end
+
+  # The refresh token currently stored on this row, whichever runtime owns it.
+  def current_refresh_token
+    codex? ? codex_refresh_token : claude_refresh_token
+  end
+
+  # The refresh token currently stored on this row.
+  def claude_refresh_token
+    oauth_config&.dig("credentials_json", "claudeAiOauth", "refreshToken")
+  end
+
+  # True when the token we just presented is no longer the token of record —
+  # someone rotated it while our request was in flight, so the `invalid_grant` we
+  # got back says "already spent", not "dead".
+  #
+  # Re-syncs from the filesystem first: the row lock in #refresh_token! excludes
+  # other Zimmer callers, so the only racer left is the agent CLI writing the
+  # shared credentials file mid-session, and that lands on disk rather than in the
+  # DB.
+  #
+  # When it cannot tell — no token to compare, or the sync raising — it answers
+  # "not a race", which condemns the account. That is the deliberate direction:
+  # a wrongly-condemned account is picked back up by
+  # RuntimeAuthProvider#recover_needs_reauth, which probes needs_reauth accounts
+  # and restores the ones that work, whereas an account wrongly spared is never
+  # marked and so never surfaces to the human who has to re-authenticate it. The
+  # recoverable mistake is the one to make.
+  def lost_refresh_race?(presented)
+    return false if presented.blank?
+
+    codex? ? sync_codex_tokens_from_filesystem! : sync_tokens_from_filesystem!
+    reload
+    current_token = current_refresh_token
+
+    current_token.present? && current_token != presented
+  rescue => e
+    Rails.logger.warn "[ClaudeAccount] Could not check for a lost refresh race on #{email}: #{e.message}"
+    false
+  end
+  private :lost_refresh_race?
+
+  # The read-refresh-persist body of #refresh_token!, run with the row lock held.
+  #
+  # Private, and `presented:` is required with no fallback: called without it, the
+  # method would send one token and then compare a nil against it, which reads as
+  # "not a race" and condemns the account — reintroducing #242 through the back
+  # door. A missing argument must be a load error, not a production needs_reauth.
+  #
+  # @param presented [String] the refresh token being sent to Anthropic, so a
+  #   failure can tell whether the token moved underneath the attempt.
+  def perform_claude_refresh!(presented:, recovery_probe: false)
+    refresh_tok = presented
     raise "Cannot refresh: missing refresh token for #{email}" unless refresh_tok.present?
 
     uri = URI(ClaudeAuthProvider::TOKEN_ENDPOINT)
@@ -337,13 +533,30 @@ class ClaudeAccount < ApplicationRecord
       Rails.logger.info "[ClaudeAccount] Recovery probe for #{email} still failing (#{response.code}); awaiting re-auth"
       false
     elsif permanent_refresh_failure?(response)
-      # A known-permanent failure (e.g. 400 invalid_grant, 401, 404): the account
-      # is gracefully marked needs_reauth and rotated out of the active pool, so
-      # this is expected and handled. Log at .warn — not .error — so it does not
-      # page on a recoverable, non-alerting condition (the human re-auths to recover).
-      Rails.logger.warn "[ClaudeAccount] Refresh token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
-      update!(status: :needs_reauth)
-      false
+      if lost_refresh_race?(presented)
+        # `invalid_grant` has two meanings and the response cannot tell them apart:
+        # "this credential is dead" and "someone already spent this single-use
+        # token". Reading it only as the first is what drained the pool — a healthy
+        # account condemned for losing a race, and re-authenticating did not stick
+        # because the next race killed it again within minutes.
+        #
+        # The row lock above rules out another Zimmer caller, but not the Claude
+        # CLI, which rotates the shared credentials file on its own during a
+        # session. So: re-sync from disk and see whether the token we presented is
+        # still the token of record. If it moved, we lost a race and the account is
+        # fine.
+        Rails.logger.warn "[ClaudeAccount] Refresh for #{email} lost a race with a concurrent token rotation; " \
+          "the stored token has moved on, so the account is healthy and is NOT being marked needs_reauth"
+        false
+      else
+        # A known-permanent failure (e.g. 400 invalid_grant, 401, 404): the account
+        # is gracefully marked needs_reauth and rotated out of the active pool, so
+        # this is expected and handled. Log at .warn — not .error — so it does not
+        # page on a recoverable, non-alerting condition (the human re-auths to recover).
+        Rails.logger.warn "[ClaudeAccount] Refresh token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
+        update!(status: :needs_reauth)
+        false
+      end
     else
       # An unexpected non-2xx response — neither a known permanent OAuth error nor
       # a retried transient exception — means the refresh path is genuinely broken.
@@ -363,6 +576,7 @@ class ClaudeAccount < ApplicationRecord
     end
     false
   end
+  private :perform_claude_refresh!
 
   # Reads the current shared filesystem credentials and updates this account's
   # oauth_config. Captures any tokens the Claude Code CLI rotated on its own
@@ -673,13 +887,23 @@ class ClaudeAccount < ApplicationRecord
       Rails.logger.info "[ClaudeAccount] Codex recovery probe for #{email} still failing (#{response.code}); awaiting re-auth"
       false
     elsif codex_permanent_refresh_failure?(response)
-      # A known-permanent failure (e.g. 401, refresh_token_expired/reused/invalidated):
-      # the account is gracefully marked needs_reauth and rotated out of the active
-      # pool, so this is expected and handled. Log at .warn — not .error — so it does
-      # not page on a recoverable, non-alerting condition (the human re-auths to recover).
-      Rails.logger.warn "[ClaudeAccount] Codex refresh token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
-      update!(status: :needs_reauth)
-      false
+      if lost_refresh_race?(refresh_tok)
+        # `refresh_token_reused` is OpenAI's way of saying exactly what it sounds
+        # like, and "someone else already spent this single-use token" is a much
+        # more common cause than a dead credential. Same reasoning as the Claude
+        # branch: the stored token having moved on is proof the account is healthy.
+        Rails.logger.warn "[ClaudeAccount] Codex refresh for #{email} lost a race with a concurrent token rotation; " \
+          "the stored token has moved on, so the account is healthy and is NOT being marked needs_reauth"
+        false
+      else
+        # A known-permanent failure (e.g. 401, refresh_token_expired/reused/invalidated):
+        # the account is gracefully marked needs_reauth and rotated out of the active
+        # pool, so this is expected and handled. Log at .warn — not .error — so it does
+        # not page on a recoverable, non-alerting condition (the human re-auths to recover).
+        Rails.logger.warn "[ClaudeAccount] Codex refresh token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
+        update!(status: :needs_reauth)
+        false
+      end
     else
       # An unexpected non-2xx response — neither a known permanent OAuth error nor
       # a retried transient exception — means the refresh path is genuinely broken.
