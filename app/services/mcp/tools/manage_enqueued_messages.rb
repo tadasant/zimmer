@@ -29,6 +29,8 @@ module Mcp
 
         Use "send_now" when you need the agent to act on something urgently. Use "create" when the message can wait until the session is idle.
 
+        **Which one to reach for.** Default to "send_now" when the message would change what the agent is doing — a correction, a constraint it does not know about, information that makes its current approach wrong. A queued message is not seen until the current turn ends, so an agent working down a bad path keeps going until it finishes and your message lands after the work is already wasted. "send_now" ends the in-flight turn (an uncommitted tool call is lost, files already written stay written) and the agent resumes from the same conversation with your message as the next turn, so redirecting early is cheaper than letting a wrong turn run out. Keep "create" for messages that only add to what the agent is already doing.
+
         **All actions:**
         - **send_now**: Interrupt the session and deliver a message immediately (requires "content"). The session is paused, the message is sent, and the session resumes with this message. Works regardless of session state.
         - **create**: Add a new message to the end of the queue for later delivery (requires "content"). The message waits until the session becomes idle.
@@ -50,7 +52,7 @@ module Mcp
           action: {
             type: "string",
             enum: ACTIONS,
-            description: 'Action to perform. Use "send_now" to interrupt and deliver immediately. Use "create" to queue for later.'
+            description: 'Action to perform. Use "send_now" to interrupt and deliver immediately — prefer it when the message would redirect the agent, since a queued message is not seen until the current turn ends. Use "create" to queue for later.'
           },
           message_id: {
             type: "number",
