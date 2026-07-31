@@ -9,7 +9,7 @@
 # NULLs as distinct, so it constrains in-session flows exactly as before and
 # imposes nothing on session-less ones (McpOauthController deletes the previous
 # session-less flow for a server before starting another).
-class AllowSessionLessMcpOauthPendingFlows < ActiveRecord::Migration[8.0]
+class AllowSessionLessMcpOauthPendingFlows < ActiveRecord::Migration[8.1]
   def change
     change_column_null :mcp_oauth_pending_flows, :session_id, true
   end

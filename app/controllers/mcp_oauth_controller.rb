@@ -18,7 +18,7 @@
 #
 # The same endpoints also serve the Connectors page, where a `session_id` is
 # simply absent: authorizing a connector is a thing the user does to Zimmer, not
-# to one session, and requiring a throwaway session to do it was pure friction.
+# to one session, so it costs no session to do.
 # A session-less flow differs in exactly two places — it returns to /connectors
 # instead of to a session, and it resumes nothing, because there is nothing
 # parked. Everything in between (discovery, PKCE, the callback, the manual
@@ -35,10 +35,12 @@ class McpOauthController < ApplicationController
   # authorization page can sit open while the user consents in another tab), so we skip
   # them there too.
   # Security is maintained via: OAuth state parameter protection, and — on initiate — a
-  # server the request is not free to invent. An in-session initiate must name a session
-  # that exists; a session-less one (the Connectors page) must name a catalog server, and
-  # its URL is read from the catalog rather than taken from the request, so a forged POST
-  # cannot steer Zimmer at a host of its choosing.
+  # target the request is not free to invent. Whenever the catalog knows the server, its
+  # URL is read from there rather than taken from the request, so a forged POST cannot
+  # steer discovery at a host of its choosing. A session-less initiate (the Connectors
+  # page) goes further and refuses a server the catalog does not have at all; an
+  # in-session one still falls back to the submitted URL for a server outside the
+  # catalog, which is the one remaining way to point it somewhere arbitrary.
   skip_forgery_protection only: [ :callback, :initiate, :complete ]
 
   # GET /mcp_oauth/status/:session_id
@@ -58,25 +60,24 @@ class McpOauthController < ApplicationController
   def initiate
     @session = params[:session_id].present? ? Session.find(params[:session_id]) : nil
     server_name = params[:server_name]
+    mcp_server_config = get_mcp_server_config(server_name)
 
-    if @session
-      server_url = params[:server_url]
-    else
-      # Session-less (Connectors page): the server must be one the catalog knows
-      # and one an OAuth flow can even apply to, and its URL comes from the
-      # catalog. Nothing about the target is taken from the request.
-      catalog_config = get_mcp_server_config(server_name)
-      unless catalog_config && McpOauthCredentialInjector.oauth_capable_server?(server_name)
-        flash[:error] = "#{server_name.presence || 'That server'} is not an OAuth connector in the catalog."
-        redirect_to connectors_path
-        return
-      end
-
-      server_url = catalog_config[:url]
+    # A session-less initiate (the Connectors page) only ever authorizes a catalog
+    # connector: the server must be one the catalog knows, and one an OAuth flow can
+    # apply to at all. There is no session behind the request to bound what it names.
+    if @session.nil? && !(mcp_server_config && McpOauthCredentialInjector.oauth_capable_server?(server_name))
+      flash[:error] = "#{server_name.presence || 'That server'} is not an OAuth connector in the catalog."
+      redirect_to connectors_path
+      return
     end
 
+    # The catalog is authoritative about where a server lives — the credential key is
+    # computed from it either way — so the submitted URL is only a fallback for a
+    # server the catalog does not carry.
+    server_url = mcp_server_config&.dig(:url).presence || params[:server_url]
+
     # Check if we already have valid credentials
-    credential_key = compute_credential_key(server_name, server_url)
+    credential_key = compute_credential_key(server_name, mcp_server_config, server_url)
     existing_credential = McpOauthCredential.for_credential_key(credential_key).active.first
 
     if existing_credential && @session.nil?
@@ -107,9 +108,6 @@ class McpOauthController < ApplicationController
       redirect_to oauth_return_path(@session)
       return
     end
-
-    # Get the MCP server config for credential key computation
-    mcp_server_config = get_mcp_server_config(server_name)
 
     oauth_service = McpOauthService.new
 
@@ -197,6 +195,10 @@ class McpOauthController < ApplicationController
     # re-click replaces its own previous flow and leaves in-session ones alone.
     existing_pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: server_name)
     existing_pending&.destroy
+
+    # Session-less flows have no session to be reaped with, so this is where the
+    # abandoned ones go.
+    McpOauthPendingFlow.sweep_expired_session_less!
 
     # Create pending flow
     pending_flow = McpOauthPendingFlow.start!(
@@ -442,9 +444,10 @@ class McpOauthController < ApplicationController
     ServersConfig.credential_config(server_name)
   end
 
-  # Computes credential key for a server
-  def compute_credential_key(server_name, server_url)
-    config = get_mcp_server_config(server_name)
+  # Computes credential key for a server. `config` is the catalog entry when there is
+  # one; a server outside the catalog is keyed on the URL the request supplied, which
+  # is the only thing known about it.
+  def compute_credential_key(server_name, config, server_url)
     config ||= { type: "http", url: server_url }
     McpOauthCredential.compute_credential_key(server_name, config)
   end

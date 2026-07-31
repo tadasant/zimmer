@@ -74,6 +74,8 @@ class McpOauthPendingFlowDashboard < Administrate::BaseDashboard
   COLLECTION_FILTERS = {}.freeze
 
   def display_resource(mcp_oauth_pending_flow)
+    return mcp_oauth_pending_flow.server_name if mcp_oauth_pending_flow.session_less?
+
     "#{mcp_oauth_pending_flow.server_name} (Session ##{mcp_oauth_pending_flow.session_id})"
   end
 end

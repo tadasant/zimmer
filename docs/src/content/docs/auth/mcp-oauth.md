@@ -375,7 +375,8 @@ not to one session, and it used to cost you a throwaway session to do it.
 A session-less flow differs from an in-session one in exactly two places:
 
 - **It returns to `/connectors`** rather than to a session — through the callback,
-  through paste-back, and through every error exit.
+  through paste-back, and through every `initiate` error exit. (A callback that fails
+  outright renders the shared OAuth error page, as an in-session one does.)
 - **It resumes nothing**, because nothing is parked on it. `McpOauthResumeService`
   is skipped rather than called with no session.
 
@@ -391,9 +392,15 @@ its credential is a `${VAR}` secret and no OAuth provider will ever set it.
 
 The button offers only catalog servers, and the session-less `initiate` enforces
 that server-side: the server must be in the catalog and pass
-`McpOauthCredentialInjector.oauth_capable_server?`, and its URL is read from the
-catalog rather than from the request. A `server_url` submitted alongside a
-session-less `initiate` is ignored.
+`McpOauthCredentialInjector.oauth_capable_server?`. Both paths now read the server
+URL from the catalog whenever the catalog has the server, so a `server_url`
+submitted alongside a session-less `initiate` is ignored outright.
+
+A session-less flow has no session to be reaped with (`Session has_many
+:mcp_oauth_pending_flows, dependent: :destroy` is what collects the in-session ones),
+so `initiate` calls `McpOauthPendingFlow.sweep_expired_session_less!` each time it
+starts a flow. An abandoned Connectors-page flow would otherwise sit indefinitely
+holding a PKCE `code_verifier` and a client secret.
 
 ## Known problems
 
@@ -402,9 +409,11 @@ session-less `initiate` is ignored.
 [no user authentication at all](/auth/overview/#1-human--zimmer-there-is-no-authentication).
 
 The `state` parameter is the *only* CSRF defense on the callback. On `initiate`, the
-defense is that the request cannot invent its target: an in-session `initiate` must
-name a session that exists, and a session-less one must name a catalog server whose
-URL is then read from the catalog rather than from the request.
+defense is that the request cannot freely invent its target: whenever the catalog has
+the server, its URL is read from there rather than from the request, and a session-less
+`initiate` additionally refuses a server the catalog does not have at all. The gap that
+remains is an **in-session** `initiate` naming a server *outside* the catalog — that one
+still falls back to the submitted `server_url`, and discovery will fetch it.
 :::
 
 :::caution[The loopback check is a substring match]

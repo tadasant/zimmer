@@ -8,7 +8,9 @@
 # - Created by McpOauthController#initiate when user starts OAuth flow
 # - Used by McpOauthController#callback to exchange code for tokens
 # - Deleted after successful token exchange
-# - Cleaned up by CleanupExpiredMcpOauthFlowsJob after 24 hours
+# - An abandoned one is reaped when its session is destroyed (dependent: :destroy).
+#   A session-less flow has no such parent, so McpOauthController#initiate sweeps
+#   the expired ones (`sweep_expired_session_less!`) each time it starts a flow.
 #
 # The `state` parameter serves dual purposes:
 # 1. CSRF protection in the OAuth flow
@@ -91,6 +93,17 @@ class McpOauthPendingFlow < ApplicationRecord
   # user to /connectors.
   def session_less?
     session_id.nil?
+  end
+
+  # Deletes expired session-less flows. A flow belonging to a session is reaped
+  # with it (`dependent: :destroy`); one started from the Connectors page has no
+  # such parent, so an abandoned one would otherwise sit forever holding a
+  # `code_verifier` and a `client_secret`. Called whenever a flow is started,
+  # which is the only moment any of them can accumulate.
+  #
+  # @return [Integer] rows deleted
+  def self.sweep_expired_session_less!
+    for_session(nil).expired.delete_all
   end
 
   # Extracts the authorization code from a value the user pastes back after consenting
