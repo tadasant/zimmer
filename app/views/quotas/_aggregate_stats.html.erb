@@ -7,12 +7,18 @@
       exceeded_count = accounts.quota_exceeded.count
       reauth_count = accounts.needs_reauth.count
 
+      weekly_spent_count = 0
+
       accounts.each do |account|
         if (snap = snapshots[account.id])
-          eff_5h = effective_utilization(snap.utilization_5h, snap.reset_5h)
+          # The 5-hour figure counts weekly-blocked accounts as fully utilized:
+          # their 5-hour headroom cannot be served. The 7-day figure needs no
+          # such correction — a spent weekly window already reads as 100% there.
+          pool_5h = pool_utilization_5h(snap)
           eff_7d = effective_utilization(snap.utilization_7d, snap.reset_7d)
-          all_utilizations_5h << eff_5h if eff_5h
+          all_utilizations_5h << pool_5h if pool_5h
           all_utilizations_7d << eff_7d if eff_7d
+          weekly_spent_count += 1 if seven_day_window_spent?(snap)
         end
       end
 
@@ -51,7 +57,7 @@
           <div class="space-y-4">
             <div>
               <div class="flex items-center justify-between mb-1">
-                <span class="text-sm font-medium text-gray-700">Avg 5-Hour Utilization</span>
+                <span class="text-sm font-medium text-gray-700">Avg 5-Hour Utilization (effective)</span>
                 <span class="text-sm font-semibold text-gray-900"><%= avg_5h ? utilization_percentage_text(avg_5h) : "N/A" %></span>
               </div>
               <div class="w-full bg-gray-200 rounded-full h-2.5">
@@ -60,6 +66,12 @@
               </div>
               <% if max_5h %>
                 <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_5h) %></p>
+              <% end %>
+              <% if avg_5h %>
+                <p class="mt-1 text-xs text-gray-500">
+                  Accounts whose 7-day window is spent count as 100% here: their 5-hour headroom can't be served.
+                  <%= weekly_spent_count > 0 ? "#{pluralize(weekly_spent_count, 'account')} counted that way now." : "None right now." %>
+                </p>
               <% end %>
             </div>
 
