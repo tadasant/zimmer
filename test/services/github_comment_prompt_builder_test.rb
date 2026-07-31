@@ -432,6 +432,26 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     end
   end
 
+  test "visibility_lookup_failed? distinguishes an assumed-public repo from an observed one" do
+    comment_info = build_comment_info(
+      type: "pr",
+      body: "Test",
+      author: "tadasant"
+    )
+
+    observed = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
+    Open3.stub(:capture3, [ "false\n", "", mock_success_status ]) do
+      refute observed.actionable?
+      refute observed.visibility_lookup_failed?
+    end
+
+    assumed = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
+    Open3.stub(:capture3, [ "", "HTTP 502", mock_failure_status ]) do
+      refute assumed.actionable?
+      assert assumed.visibility_lookup_failed?
+    end
+  end
+
   test "actionable? is true for tadasant-owned repos without an API call" do
     comment_info = build_comment_info_with_owner(
       type: "pr",

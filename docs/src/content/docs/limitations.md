@@ -895,6 +895,21 @@ Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 
 ## Triggers
 
+### A failed repo visibility lookup drops the comment
+
+`GithubCommentPollerJob` only enqueues a follow-up when `GithubCommentPromptBuilder#actionable?`
+says the agent is allowed to act on the repo publicly, and `actionable?` fails closed: if the
+`gh api repos/OWNER/REPO` visibility call errors — rate limit, network blip, a repo that was
+renamed — the repo is assumed public and the comment is skipped, with no prompt and no 👀. The
+comment is still recorded in `custom_metadata`, so the poller's id-dedup means it is not
+re-evaluated on the next tick: a real comment can be dropped permanently by one bad lookup.
+
+Failing closed is the deliberate choice — acting publicly on a repo we couldn't check is worse
+than missing a comment — and the blast radius is small, since `TRUSTED_OWNERS` short-circuits the
+lookup entirely for `tadasant/*` (no API call, always actionable). The exposed case is a repo
+owned by someone else that is actually private. The drop logs at `warn` naming the comment and
+repo, which is the only signal you get.
+
 ### A failed one-time wake is gone forever
 
 `ScheduleTriggerJob` advances `last_triggered_at` on error (to avoid an infinite retry loop) and

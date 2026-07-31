@@ -63,8 +63,10 @@ class GithubCommentPollerJob < ApplicationJob
   # Zimmer, is deliberate: an automation should not have to remember to opt in with a
   # marker for the session it reports on to stay asleep.
   #
-  # Add the heading of any new automation report to this list. Compared after
-  # downcasing and squishing, so heading level and leading emoji don't matter.
+  # Add the heading of any new automation report to this list. The match is on the whole
+  # heading text, exactly, after downcasing and squishing -- heading level, leading emoji
+  # and a closing "#" run are stripped, but nothing else is. A report that grew a suffix
+  # ("## 🚀 Merge gate: AUTO-MERGE") no longer matches and needs its own entry.
   AUTOMATION_REPORT_HEADINGS = [
     "merge gate"  # pr-merge-gate's rating: "## 🚀 Merge gate"
   ].freeze
@@ -136,7 +138,7 @@ class GithubCommentPollerJob < ApplicationJob
           # Also check that the comment was created after we started tracking this PR
           if comment_data["attribution"] != "self" &&
              WHITELISTED_USERS.include?(comment_data["author"].downcase) &&
-             !ignored_comment?(comment_data["body"]) &&
+             !ignored_comment?(comment_data) &&
              comment_created_after_tracking_started?(comment_data, tracking_started_at)
             new_user_comments << { type: "pr", data: comment_data, pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number }
           end
@@ -157,7 +159,7 @@ class GithubCommentPollerJob < ApplicationJob
           # Also check that the comment was created after we started tracking this PR
           if comment_data["attribution"] != "self" &&
              WHITELISTED_USERS.include?(comment_data["author"].downcase) &&
-             !ignored_comment?(comment_data["body"]) &&
+             !ignored_comment?(comment_data) &&
              comment_created_after_tracking_started?(comment_data, tracking_started_at)
             new_user_comments << { type: "review", data: comment_data, pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number }
           end
@@ -282,9 +284,20 @@ class GithubCommentPollerJob < ApplicationJob
     AUTOMATION_REPORT_HEADINGS.include?(match[:title].downcase.squish)
   end
 
-  # Comments that must never trigger a follow-up prompt, whoever authored them
-  def ignored_comment?(body)
-    blacklisted_comment?(body) || automated_comment?(body)
+  # Comments that must never trigger a follow-up prompt, whoever authored them.
+  # Logged, because a filtered comment leaves no other trace: no reaction, no reply, no
+  # session log -- and a heading that matched something a human wrote should be findable.
+  def ignored_comment?(comment_data)
+    body = comment_data["body"]
+    reason = if blacklisted_comment?(body)
+      "bot command"
+    elsif automated_comment?(body)
+      "automation report"
+    end
+    return false unless reason
+
+    Rails.logger.info "[GithubCommentPollerJob] Ignoring comment #{comment_data['id']} by #{comment_data['author']} (#{comment_data['url']}): #{reason}"
+    true
   end
 
   # Check if a comment was created after tracking started for this PR
@@ -364,7 +377,13 @@ class GithubCommentPollerJob < ApplicationJob
     # react without human approval -- so there is nothing to hand it, and a 👀 there is a
     # promise Zimmer is designed not to keep.
     unless builder.actionable?
-      Rails.logger.info "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: public repository outside our control"
+      if builder.visibility_lookup_failed?
+        # A real comment is dropped here, so say so at warn: the repo may well have been
+        # private, and we skipped it only because `gh` couldn't tell us.
+        Rails.logger.warn "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: repo visibility lookup failed, assuming public"
+      else
+        Rails.logger.info "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: public repository outside our control"
+      end
       return
     end
 
