@@ -250,7 +250,7 @@ Zimmer reads three environment variables:
 
 | Variable | Value | Sensitive? |
 | --- | --- | --- |
-| `ZIMMER_PARAMS_PROJECT_ID` | `zimmer-secrets-prod` | No — the store's address is not a credential |
+| `ZIMMER_PARAMS_PROJECT_ID` | `zimmer-secrets-prod` (staging: `zimmer-secrets-staging`) | No — the store's address is not a credential |
 | `ZIMMER_PARAMS_LOCATION` | `global` (the default) | No |
 | `ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | **base64** of the key JSON | **Yes** |
 
@@ -340,30 +340,46 @@ secret *values*. The two projects also mean two namespaces:
 `Namespace.static_namespace` folds in `Rails.env`, so staging reads
 `/zimmer/staging/mcp/static/` and cannot see production's.
 
-The wiring is the same three links, and unlike production's, all three live in
-**this** repo:
+The wiring is four links. Three are files in **this** repo; the fourth is a
+repository setting a human adds:
 
-| Link | Where |
-| --- | --- |
-| GitHub Actions secret `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | this repo's settings |
-| The step's `env:` allowlist | `.github/workflows/deploy-staging.yml`, the `Kamal deploy (staging)` step |
-| The Kamal mapping | `.kamal/secrets.staging` |
-| The `env.secret` list, plus the address in `env.clear` | `config/deploy.staging.yml` |
+| Link | Where | Asserted by a test? |
+| --- | --- | --- |
+| The step's `env:` allowlist | `.github/workflows/deploy-staging.yml`, the `Kamal deploy (staging)` step | yes |
+| The Kamal mapping | `.kamal/secrets.staging` | yes |
+| The `env.secret` list, plus the address in `env.clear` | `config/deploy.staging.yml` | yes |
+| GitHub Actions secret `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | this repo's settings | no — nothing in a repo can see its own secrets |
 
-`test/config/parameter_store_env_delivery_test.rb` asserts every one of them,
-including the `env:` allowlist — the link the production runbook calls out as "the
+`test/config/parameter_store_env_delivery_test.rb` asserts all three file-level
+links, including the `env:` allowlist — the one the production runbook calls "the
 one that gets skipped, and skipping it is invisible". Production's workflow lives
 in `tadasant-internal`, so there it can only be written down; staging's is here,
 so there it is a test.
+
+:::caution[A second workflow deploys staging too]
+`tadasant-internal`'s staging cutover workflow runs its own `kamal deploy` against
+this same box, through its own explicit `env:` allowlist. It needs the same
+passthrough, and it is not covered by anything in this repo — no test here can see
+it. Wiring only one of the two leaves a deploy path that resolves the credential
+to blank and reports success.
+:::
 
 **The credential stays optional, deliberately** — no `:?` assertion anywhere in the
 chain. Unset means the store link is simply absent: `SecretProviders.build`
 composes `[rails_credentials, env]`, nothing raises, and staging resolves every
 `${VAR}` from the committed `staging.yml.enc` exactly as it always has, with the
 Connectors page saying the store is not configured rather than reporting a
-failure. That fallback is what makes turning the store on a no-op for every
-credential already in use, and it is why the address can be wired in `env.clear`
-before the secret itself exists. The deploy prints which state it is in:
+failure. That is what makes *landing* this wiring a no-op for every credential
+already in use, and it is why the address can be wired in `env.clear` before the
+secret itself exists.
+
+Be precise about what it does not cover, because the difference bites after the
+secret is seeded: the fallback is for an **unconfigured** store, not a broken one.
+Once a credential is present, a cold store failure re-raises and the chain does not
+rescue it — see [caching and failure behaviour](#caching-and-failure-behaviour).
+Unset is a no-op; configured-but-unreachable is a hard failure, by design.
+
+The deploy prints which state it is in:
 
 ```
 ✅ Parameter Store ON (resolver key set; reads /zimmer/staging/mcp/static/ in zimmer-secrets-staging)
@@ -506,10 +522,11 @@ body *is* the secret).
 
 ## What has to change outside this repo
 
-Staging's chain is entirely in this repo — except the GitHub Actions secret
-itself, which is a repository *setting* and needs a human to add it. Until it is
-added, staging deploys with the address wired and the credential blank, which is
-the designed degraded state and is what the deploy's preflight line reports.
+Staging needs two things from outside this repo's files: the GitHub Actions secret
+`STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (a repository *setting*),
+and the same `env:` passthrough in `tadasant-internal`'s staging cutover workflow.
+Until both exist, staging deploys with the address wired and the credential blank —
+the designed degraded state, and what the deploy's preflight line reports.
 
 The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
 
