@@ -16,9 +16,12 @@ export default class extends Controller {
   static values = {
     url: String,
     interval: { type: Number, default: 2000 },
-    // Epoch milliseconds past which this attempt cannot succeed (the server's
-    // expires_at, plus slack for the reaper). 0 disables the client deadline.
-    deadline: { type: Number, default: 0 }
+    // Milliseconds left before this attempt cannot succeed (the server's
+    // expires_at, plus slack for the reaper), measured at render time. A
+    // *duration* rather than an absolute instant on purpose: comparing a
+    // server-rendered epoch against Date.now() would abandon a perfectly healthy
+    // login on any browser whose clock runs fast. 0 disables the deadline.
+    remaining: { type: Number, default: 0 }
   }
 
   // Give up after this many consecutive failed polls (network error or non-2xx)
@@ -28,6 +31,9 @@ export default class extends Controller {
   connect() {
     this.stopped = false
     this.errorCount = 0
+    // Anchored to this browser's own clock, so only elapsed time matters. Each
+    // poll re-renders the panel and re-anchors it against a fresh server value.
+    this.deadline = this.remainingValue ? Date.now() + this.remainingValue : 0
     this.timer = setInterval(() => this.poll(), this.intervalValue)
   }
 
@@ -46,7 +52,7 @@ export default class extends Controller {
     // (RuntimeLoginAttempt#fail_orphaned!, applied lazily on this very endpoint),
     // so reaching this deadline means we are not getting truthful answers at all
     // — the panel must still stop lying rather than spin on.
-    if (this.deadlineValue && Date.now() > this.deadlineValue) {
+    if (this.deadline && Date.now() > this.deadline) {
       this.giveUp(
         "This login didn't finish in time and has been abandoned. Reload the page and authenticate again."
       )

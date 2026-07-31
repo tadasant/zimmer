@@ -246,8 +246,8 @@ again. Three independent deadlines cover it, in order of how fast they fire:
 | Signal | Fires after | Enforced by |
 | --- | --- | --- |
 | `heartbeat_at` goes stale | `HEARTBEAT_TIMEOUT` (90s) | `login_status` on the next 2s poll; `CleanupRuntimeLoginAttemptsJob` every 5 min |
-| `expires_at` elapses | `DEFAULT_TTL` (14 min from creation) | same two |
 | the CLI's own lifetime | `MAX_DURATION` (12 min from spawn) | `RuntimeLoginJob`'s loop |
+| `expires_at` elapses | `DEFAULT_TTL` (14 min from creation) | `login_status` and the cleanup job |
 
 `RuntimeLoginJob` stamps `heartbeat_at` every 15 seconds while it holds the CLI open;
 `RuntimeLoginAttempt#fail_orphaned!` is the single place that converts a missed deadline into a
