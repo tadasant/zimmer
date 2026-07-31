@@ -72,6 +72,24 @@ bot_mention_all_channels_trigger:
   sessions_created_count: 0
   reuse_session: false
 
+passive_listen_all_channels_trigger:
+  name: Passive Listener
+  status: enabled
+  agent_root_name: zimmer
+  mcp_servers:
+    - slack-workspace
+  goal: PR is merged
+  prompt_template: |
+    A message landed in a conversation you are part of, in #{{channel}}.
+
+    Message: {{text}}
+    Author: {{author}}
+    Link: {{link}}
+
+    Decide whether it is for you. If it isn't, stay silent.
+  sessions_created_count: 0
+  reuse_session: false
+
 enabled_schedule_trigger:
   name: Daily Status Check
   status: enabled

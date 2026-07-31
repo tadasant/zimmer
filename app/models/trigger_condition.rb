@@ -5,7 +5,10 @@
 # if ANY condition fires, the trigger's session template executes.
 #
 # Condition types:
-# - "slack": Fires when a new message is posted in a Slack channel
+# - "slack": Fires when a new message is posted in a Slack channel. `event_type`
+#     picks the flavour: "new_message" (everything in one channel), "bot_mention"
+#     (@mentions + DMs), or "passive_listen" (replies in threads Zimmer is already
+#     part of, plus top-level messages in channels it was recently active in).
 # - "schedule": Fires on a time-based schedule (recurring or one-time)
 #     Recurring: { "unit" => "hours", "interval" => 2, "timezone" => "UTC" }
 #     One-time:  { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "America/New_York" }
@@ -20,7 +23,12 @@
 # state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
   CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
-  EVENT_TYPES = %w[new_message bot_mention].freeze
+  EVENT_TYPES = %w[new_message bot_mention passive_listen].freeze
+
+  # Slack event types that monitor a whole workspace rather than one channel, so
+  # channel_id is optional for them and their cursors live per-source inside
+  # `configuration` instead of in last_message_ts.
+  ALL_CHANNEL_EVENT_TYPES = %w[bot_mention passive_listen].freeze
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
   AO_EVENT_NAMES = %w[session_needs_input session_failed session_archived].freeze
@@ -80,7 +88,15 @@ class TriggerCondition < ApplicationRecord
     condition_type == "slack" && thread_ts.present?
   end
 
-  # The deployment-wide allow-list for bot_mention conditions: a comma-separated
+  # True when this is a Slack condition that listens passively — firing on replies
+  # in threads Zimmer has already spoken in, and on top-level messages in channels
+  # it was recently active in, with no @mention required. See
+  # SlackTriggerPollerJob#process_passive_listen_condition for the exact rules.
+  def passive_listen?
+    condition_type == "slack" && event_type == "passive_listen"
+  end
+
+  # The deployment-wide allow-list for bot_mention and passive_listen conditions: a comma-separated
   # list of Slack user IDs in SLACK_BOT_MENTION_ALLOWED_USER_IDS, resolved from
   # encrypted credentials first and process ENV second (the same order
   # SlackService#slack_bot_token and AlertService#channel_id use).
@@ -96,7 +112,7 @@ class TriggerCondition < ApplicationRecord
     raw.to_s.split(",").filter_map { |id| id.strip.presence }
   end
 
-  # Allowed user IDs for bot_mention conditions: this condition's own explicit
+  # Allowed user IDs for bot_mention and passive_listen conditions: this condition's own explicit
   # list if it has one (set from the UI/API), else the deployment-wide default.
   # Empty means unrestricted -- ask allow_all_users? rather than reading this as
   # "nobody", and see the DM caveat there.
@@ -141,7 +157,8 @@ class TriggerCondition < ApplicationRecord
     update!(configuration: new_config)
   end
 
-  # Get the per-channel timestamps for bot_mention conditions (all-channel monitoring).
+  # Get the per-channel timestamps for bot_mention / passive_listen conditions
+  # (all-channel monitoring).
   # Returns a hash of channel_id => last_message_ts
   def channel_timestamps
     configuration["channel_timestamps"] || {}
@@ -153,10 +170,23 @@ class TriggerCondition < ApplicationRecord
     update!(configuration: new_config)
   end
 
-  # Get per-thread "last reply checked" timestamps for bot_mention conditions.
+  # Get per-thread "last reply checked" timestamps for bot_mention / passive_listen
+  # conditions.
   # Returns a hash of "channel_id:thread_ts" => last_reply_ts
   def thread_timestamps
     configuration["thread_timestamps"] || {}
+  end
+
+  # Get per-channel "when did Zimmer last speak here" timestamps for passive_listen
+  # conditions. Returns a hash of channel_id => ts.
+  #
+  # This is the channel-engagement signal, and it is a cursor like the two above
+  # rather than a second source of truth: the poller learns Zimmer's activity from
+  # the same history and thread fetches it already makes, and remembers the newest
+  # it has seen so a channel stays "engaged" through polls where nothing in the
+  # thread it spoke in has moved. See SlackTriggerPollerJob::CHANNEL_ENGAGEMENT_WINDOW.
+  def bot_activity_timestamps
+    configuration["bot_activity_timestamps"] || {}
   end
 
   # Schedule configuration accessors
@@ -336,8 +366,11 @@ class TriggerCondition < ApplicationRecord
   def description
     case condition_type
     when "slack"
-      if event_type == "bot_mention"
+      case event_type
+      when "bot_mention"
         channel_name.present? ? "Slack: @mention in ##{channel_name} + DMs" : "Slack: @mention in all channels + DMs"
+      when "passive_listen"
+        channel_name.present? ? "Slack: passive listening in ##{channel_name}" : "Slack: passive listening in all channels"
       else
         channel_name.present? ? "Slack: ##{channel_name}" : "Slack trigger"
       end
@@ -542,8 +575,10 @@ class TriggerCondition < ApplicationRecord
   end
 
   def validate_slack_configuration
-    # channel_id is required for new_message, optional for bot_mention (which also monitors DMs)
-    if configuration["channel_id"].blank? && event_type != "bot_mention"
+    # channel_id is required for new_message, optional for the all-channel event
+    # types (bot_mention also monitors DMs; passive_listen sweeps every channel
+    # the bot is in).
+    if configuration["channel_id"].blank? && !ALL_CHANNEL_EVENT_TYPES.include?(event_type)
       errors.add(:configuration, "must include channel_id for Slack conditions")
     end
 
@@ -552,14 +587,15 @@ class TriggerCondition < ApplicationRecord
     end
 
     # thread_ts scopes a new_message condition to a single thread's replies. It
-    # requires a channel_id (which thread to read), and is meaningless for
-    # bot_mention conditions (those handle threads via their own @mention scan).
+    # requires a channel_id (which thread to read), and is meaningless for the
+    # all-channel event types — those walk threads themselves, filtering by
+    # @mention (bot_mention) or by prior participation (passive_listen).
     if configuration["thread_ts"].present?
       if configuration["channel_id"].blank?
         errors.add(:configuration, "thread_ts requires a channel_id")
       end
-      if event_type == "bot_mention"
-        errors.add(:configuration, "thread_ts is not supported for bot_mention conditions")
+      if ALL_CHANNEL_EVENT_TYPES.include?(event_type)
+        errors.add(:configuration, "thread_ts is not supported for #{event_type} conditions")
       end
     end
   end
