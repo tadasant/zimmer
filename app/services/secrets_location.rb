@@ -17,7 +17,57 @@
 class SecretsLocation
   PLACEHOLDER = "<the-secret-value>"
 
+  # The Secrets Console: the human UI over a Google Parameter Manager project,
+  # with a reveal/rotate flow behind Workspace SSO. Far better to point someone
+  # at than a page of `gcloud`.
+  #
+  # It is stored NEXT TO the project it administers, and that pairing is the
+  # whole point. **One console administers exactly one GCP project.** The console
+  # below is strad's, over `strad-secrets-prod`; Zimmer's own store is
+  # deliberately a *different* project (see docs/operate/secrets-parameter-store,
+  # "Why a separate GCP project" — Zimmer's resolver must read secret *values*,
+  # which is precisely the permission strad's viewer identity is defined by not
+  # holding). So the console is the right destination only when the store Zimmer
+  # actually resolves from IS the project this console administers.
+  #
+  # Getting that wrong is not a cosmetic error. A value typed into a console for
+  # another project is accepted, saved, and never read by Zimmer — the variable
+  # goes on reporting Missing configuration with no indication of why. That is
+  # the failure this pairing exists to make impossible to render.
+  #
+  # Both are overridable so that the day a Zimmer-scoped console ships (strad can
+  # front a second store with a second bundle — strad/MULTI_STORE.md), pointing
+  # at it is configuration rather than a deploy of new copy.
+  CONSOLE_URL = "https://strad.tadasant.com/ui/secrets"
+  CONSOLE_PROJECT_ID = "strad-secrets-prod"
+
   class << self
+    # --- The Secrets Console -------------------------------------------------
+
+    # @return [String]
+    def console_url = ENV["ZIMMER_SECRETS_CONSOLE_URL"].presence || CONSOLE_URL
+
+    # @return [String] the one GCP project {.console_url} administers.
+    def console_project_id = ENV["ZIMMER_SECRETS_CONSOLE_PROJECT_ID"].presence || CONSOLE_PROJECT_ID
+
+    # @return [String, nil] host of the console, which is also the host of the
+    #   gateway whose servers it holds credentials for.
+    def console_host
+      URI.parse(console_url).host
+    rescue URI::InvalidURIError
+      nil
+    end
+
+    # Does the console administer the project this variable resolves from?
+    #
+    # @param project_id [String, nil] nil when no Parameter Store is configured,
+    #   in which case the answer is no: the console does not hold Zimmer's
+    #   encrypted credentials either.
+    # @return [Boolean]
+    def console_administers?(project_id)
+      project_id.present? && project_id.to_s == console_project_id
+    end
+
     # Everything the UI needs to tell a user how to set one variable.
     #
     # @param variable_name [String]
@@ -81,52 +131,51 @@ class SecretsLocation
       })
     end
 
-    # The commands that put one secret in the store.
+    # What a human does in the Secrets Console to create one parameter. Only
+    # correct when the console administers the store Zimmer resolves from — see
+    # {.console_administers?}.
     #
-    # Step 3 is the one that is easy to leave out and impossible to debug from
-    # the outside: Parameter Manager's `:render` dereferences the `__REF__` as
-    # the PARAMETER's own principal, not as the caller's credential. That
-    # principal therefore needs `secretmanager.secretAccessor` ON THE SECRET, and
-    # without it every resolution of this variable fails with a 400
-    # SECRET_REFERENCE_ERROR — while the Connectors store banner still reports a
-    # healthy credential, because that banner reflects a testIamPermissions probe
-    # of the RESOLVER, which is a different principal entirely.
+    # @return [Array<String>]
+    def console_steps(path)
+      [
+        "Sign in to the Secrets Console with the Workspace account that holds the admin identity.",
+        "Create a managed parameter at exactly #{path}. The path is the lookup key — Zimmer compares " \
+        "it against the one it asked for and ignores a parameter whose path does not match, so a " \
+        "missing segment reads as \"still not set\" rather than as a typo.",
+        "Mark it secret, so the bytes land in Secret Manager and the parameter only points at them.",
+        "Paste the value and save. The console writes the envelope and the IAM binding that lets the " \
+        "parameter dereference its own secret."
+      ]
+    end
+
+    # What a human does when the console administers a DIFFERENT project than the
+    # one Zimmer resolves from — which is the case today, and is by design.
     #
-    # Zimmer's own resolver credential cannot run any of these — it holds no write
-    # permission by design — so they are run by a human with the admin identity.
-    def gcloud_snippet(variable_name, project_id, location, env: Rails.env)
-      path = ParameterStore::Namespace.parameter_path(variable_name, env)
-      id = ParameterStore::Namespace.parameter_id(path)
-
-      <<~SHELL.strip
-        # 1. The value itself, in Secret Manager.
-        printf %s '#{PLACEHOLDER}' | gcloud secrets create #{id} \\
-          --project #{project_id} --replication-policy automatic \\
-          --labels managed-by=zimmer --data-file=-
-
-        # 2. The parameter that indexes it.
-        gcloud parametermanager parameters create #{id} \\
-          --project #{project_id} --location #{location} \\
-          --parameter-format json --labels managed-by=zimmer,secret=true
-
-        # 3. Let the PARAMETER read the secret. `:render` dereferences the
-        #    __REF__ as the parameter's own principal, not as Zimmer's
-        #    credential; skip this and every resolution 400s.
-        PRINCIPAL=$(gcloud parametermanager parameters describe #{id} \\
-          --project #{project_id} --location #{location} \\
-          --format='value(policyMember.iamPolicyUidPrincipal)')
-        gcloud secrets add-iam-policy-binding #{id} --project #{project_id} \\
-          --member="$PRINCIPAL" --role=roles/secretmanager.secretAccessor
-
-        # 4. The envelope version pointing one at the other.
-        cat > /tmp/#{id}.json <<'JSON'
-        #{envelope_json(variable_name, project_id, env: env)}
-        JSON
-        gcloud parametermanager parameters versions create v1 \\
-          --parameter #{id} --project #{project_id} --location #{location} \\
-          --payload-data-from-file /tmp/#{id}.json
-        rm -f /tmp/#{id}.json
-      SHELL
+    # The third step is the one that is easy to leave out and impossible to debug
+    # from the outside: Parameter Manager's `:render` dereferences the `__REF__`
+    # as the PARAMETER's own principal, not as the caller's credential. That
+    # principal needs `secretmanager.secretAccessor` ON THE SECRET, and without it
+    # every resolution of this variable fails with a 400 SECRET_REFERENCE_ERROR —
+    # while the Connectors store banner still reports a healthy credential,
+    # because that banner reflects a testIamPermissions probe of the RESOLVER,
+    # which is a different principal entirely.
+    #
+    # @return [Array<String>]
+    def admin_steps(store, path)
+      [
+        "The Secrets Console administers #{console_project_id}. This variable resolves from " \
+        "#{store.project_id} — a separate Google Cloud project, deliberately, because Zimmer's " \
+        "resolver reads secret values and that console's identity is defined by not doing so. " \
+        "A value saved in the console will be accepted and will never reach this variable.",
+        "So this one is created with the admin identity on #{store.project_id}: a Secret Manager " \
+        "secret holding the value, a Parameter Manager parameter of the same id, an IAM binding " \
+        "letting that parameter read that secret, and the envelope version below joining them.",
+        "The IAM binding is the step that fails silently if skipped: :render dereferences the " \
+        "__REF__ as the parameter's own principal, not as Zimmer's, so the parameter itself needs " \
+        "roles/secretmanager.secretAccessor on the secret. Without it every read 400s while the " \
+        "store banner above stays green.",
+        "docs/operate/secrets-parameter-store has the four commands in full."
+      ]
     end
 
     private
@@ -136,20 +185,27 @@ class SecretsLocation
     end
 
     def parameter_store_instructions(variable_name, store)
+      path = store.path_for(variable_name)
+      administered = console_administers?(store.project_id)
+
       {
         variable: variable_name,
         store_name: parameter_store_name,
-        headline: "#{variable_name} is not set. It belongs at #{store.path_for(variable_name)} " \
+        headline: "#{variable_name} is not set. It belongs at #{path} " \
                   "in Google Cloud project #{store.project_id} (#{store.location}).",
-        path: store.path_for(variable_name),
+        path: path,
         project_id: store.project_id,
         location: store.location,
-        command: "gcloud parametermanager parameters describe " \
-                 "#{ParameterStore::Namespace.parameter_id(store.path_for(variable_name))} " \
-                 "--project #{store.project_id} --location #{store.location}",
-        command_caption: "Check whether it is already there:",
-        snippet: gcloud_snippet(variable_name, store.project_id, store.location),
-        snippet_caption: "Create it (needs the admin identity — Zimmer's own credential cannot write):",
+        console_url: console_url,
+        console_administers: administered,
+        console_caption: administered ?
+          "Set it in the Secrets Console — it administers #{store.project_id}:" :
+          "The Secrets Console does not administer this variable's project:",
+        steps: administered ? console_steps(path) : admin_steps(store, path),
+        snippet: administered ? nil : envelope_json(variable_name, store.project_id),
+        snippet_caption: administered ? nil :
+          "The envelope the parameter version carries — generated, because the path field has to be " \
+          "exactly this and the id below it is a lossy fold of that path:",
         followup: "Zimmer picks a new value up within a minute; no redeploy. " \
                   "Until a secret is migrated it can also live under `mcp_secrets:` in " \
                   "#{credentials_path} — the store is consulted first, so whichever holds it wins in that order."
@@ -164,6 +220,21 @@ class SecretsLocation
         path: credentials_path,
         project_id: nil,
         location: nil,
+        console_url: console_url,
+        # No Parameter Store is configured, so nothing on this page resolves from
+        # a console-administered project. Saying so is the point: the console is
+        # the obvious place to go looking, and it holds none of this.
+        console_administers: false,
+        console_caption: "The Secrets Console holds none of Zimmer's variables right now:",
+        steps: [
+          "Zimmer has no Parameter Store resolver configured, so every ${VAR} on this page comes from " \
+          "the encrypted credentials file below and then from the process environment. The Secrets " \
+          "Console administers #{console_project_id}, which Zimmer is not reading — a value set there " \
+          "will not reach this variable.",
+          "Open the encrypted file with the command below and add the entry under `mcp_secrets:`.",
+          "Wire the store up (docs/operate/secrets-parameter-store) and this variable moves to a " \
+          "console-shaped flow; until then the encrypted file is the supported home, not a workaround."
+        ],
         command: edit_command,
         command_caption: "Open the encrypted file from the repo root:",
         snippet: yaml_snippet(variable_name),

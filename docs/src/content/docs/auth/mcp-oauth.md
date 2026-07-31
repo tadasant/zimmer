@@ -351,7 +351,7 @@ order, so a connector reported **Ready** is one that will actually connect:
 | **Needs authorization** | An OAuth-capable server with no stored credential. The row carries an **Authorize** button |
 | **Token expired** | Expired, but has a refresh token — `RefreshMcpOauthTokensJob` will renew it |
 | **Needs re-auth** | Expired with no refresh token; the row carries a **Re-authorize** button that replaces the credential in place |
-| **Missing configuration** | A required `${VAR}` has no value. The row renders the exact commands to set it |
+| **Missing configuration** | A required `${VAR}` has no value. The row says where it goes — see [The Secrets Console](/operate/secrets-parameter-store/#the-secrets-console-and-which-project-it-administers) |
 | **Secret store unreachable** | The store did not answer. Deliberately *not* "missing" — see [Secrets in the Parameter Store](/operate/secrets-parameter-store/) |
 | **No credential required** | The catalog entry configures no credential at all |
 | **Probe failed** | Anything unexpected, isolated to that one row |
@@ -364,6 +364,40 @@ be deleted.
 
 The page never contacts the MCP server itself and never displays a secret value;
 it reports presence and where to set what is absent.
+
+### How the list fills in, and why it re-orders itself
+
+The rows ship as `loading="lazy"` frames and `connector_list_controller` then
+promotes them to `eager` — six at a time, releasing a slot as each frame loads,
+errors, or hits a 15-second watchdog.
+
+Each half of that is load-bearing:
+
+- **Lazy in the markup** is the floor. With JavaScript off, or before the
+  controller connects, the frames still work — they just wait for the viewport,
+  which is what they did before.
+- **Promoting them** is the fix. Turbo's `lazy` defers a frame until it scrolls
+  into view, so on a ~100-server catalog every badge below the fold stayed blank
+  until you went looking for it.
+- **Six at a time** is what keeps the fix from being a regression. Un-gating all
+  ~100 frames at once fires ~100 requests at a Puma pool of a handful of threads,
+  and the queueing makes the *first* badge slower than it was before.
+
+Ordering follows from the same design. A server's state is computed **inside its
+own frame**, so `ConnectorsController` does not know at index-render time which
+servers have problems; sorting server-side would mean probing all ~100 up front
+and holding the whole page on the slowest one — exactly what the frames exist to
+avoid. So the sort happens in the browser, once, after the frames settle: rows
+are alphabetical while they load, then re-order by severity with the problems
+first and a `N need attention, listed first` count in the header. Sorting *during*
+the load was rejected deliberately — it moves content under the reader for the
+whole load.
+
+Severity itself is not decided in JavaScript. `ConnectorsHelper::SEVERITY_RANKS`
+maps each probe state to a rank, the resolved row carries it as
+`data-connector-rank`, and the controller only compares numbers. A test asserts
+the rank table covers `ConnectorStatusProbe::STATES` exactly, so a new state
+cannot quietly default into the healthy group.
 
 ### Authorizing from the Connectors page
 

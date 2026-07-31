@@ -38,15 +38,48 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", text: "Notion", count: 1
   end
 
-  test "index defers every probe to a lazy turbo frame" do
+  test "index defers every probe to its own frame, and hands the frames to the loader" do
     get connectors_path
 
     assert_response :success
     CATALOG.each_key do |name|
-      assert_select "turbo-frame##{frame_id(name)}[loading=lazy][src=?]", connector_path(name)
+      # `lazy` is the no-JavaScript floor, not the behaviour: the frame keeps
+      # working on scroll if the controller never connects. With it connected,
+      # connector_list_controller promotes these to eager in a bounded window, so
+      # nothing waits on the viewport. Both halves have to be here — drop the
+      # target and every badge below the fold goes back to needing a scroll.
+      assert_select "turbo-frame##{frame_id(name)}[loading=lazy][src=?][data-connector-list-target=frame]",
+        connector_path(name)
     end
+    assert_select "[data-controller=connector-list]"
+    assert_select "[data-connector-list-target=list]"
     # The unresolved rows are readable before any probe runs.
     assert_select "[data-connector-state=checking]", count: CATALOG.size
+  end
+
+  test "a resolved row carries the severity rank the browser sorts on" do
+    # The rank is the contract between ConnectorsHelper and the sort controller.
+    # Without it in the markup the sort silently degrades to "leave everything
+    # where it is", which looks exactly like a page that was never sorted.
+    get connector_path("secrets-service-account")
+
+    assert_response :success
+    assert_select "[data-connector-rank=?]",
+      ConnectorsHelper::SEVERITY_RANKS.fetch(:missing_configuration).to_s
+
+    get connector_path("notion")
+
+    assert_response :success
+    assert_select "[data-connector-rank=?]",
+      ConnectorsHelper::SEVERITY_RANKS.fetch(:needs_authorization).to_s
+  end
+
+  test "every state the probe can report has a rank, so nothing sorts by accident" do
+    # A state with no rank falls back to "ready", which quietly buries a problem
+    # row among the healthy ones. The probe is free to add a state; this is what
+    # makes forgetting the rank a failing test rather than a silent regression.
+    assert_equal ConnectorStatusProbe::STATES.sort,
+      ConnectorsHelper::SEVERITY_RANKS.keys.sort
   end
 
   test "index renders even when a probe would fail" do
@@ -71,6 +104,51 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_match SecretsLocation.edit_command, response.body
     assert_match "mcp_secrets:", response.body
     assert_match SecretsLocation.credentials_path, response.body
+  end
+
+  test "the missing-configuration help points at the Secrets Console and says whose it is" do
+    get connector_path("secrets-service-account")
+
+    assert_response :success
+    assert_select "[data-secret-console=elsewhere]" do
+      assert_select "a[data-secret-console-link][href=?]", SecretsLocation.console_url
+    end
+    # No Parameter Store is configured here, so the console administers nothing
+    # Zimmer reads. Saying that is the point of the block: the console is the
+    # obvious place to go looking, and a value set there is accepted and ignored.
+    assert_select "[data-secret-console=administers]", count: 0
+    assert_match SecretsLocation.console_project_id, response.body
+  end
+
+  test "the help distinguishes Zimmer's own ${VAR} from the credential the gateway presents" do
+    # A gateway-hosted server has two credentials in two places. The console owns
+    # the second and never the first, and fixing the wrong one leaves the row
+    # exactly as it was — so the row has to name which is which.
+    ENV["ZIMMER_SECRETS_CONSOLE_URL"] = "https://strad.example.com/ui/secrets"
+
+    get connector_path("secrets-service-account")
+
+    assert_response :success
+    assert_select "[data-gateway-console=secrets]" do |elements|
+      copy = elements.first.text
+      assert_match "/strad/prod/mcp/secrets/static/", copy
+      assert_match "STRAD_API_KEY", copy
+      # The console administers that path, but the gateway still resolves its
+      # credentials at deploy time — so a value saved there is registered and not
+      # delivered. Saying "the console owns this one" without saying that is the
+      # documented way to send someone off to make a change that silently does
+      # nothing.
+      assert_match "registry rather than a delivery path", copy
+    end
+  ensure
+    ENV.delete("ZIMMER_SECRETS_CONSOLE_URL")
+  end
+
+  test "a server Zimmer reaches directly gets no gateway-credential note" do
+    get connector_path("notion")
+
+    assert_response :success
+    assert_select "[data-gateway-console]", count: 0
   end
 
   test "show renders the ready state for a server with a stored credential" do
@@ -126,11 +204,14 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
 
   # --- the secret-store banner -----------------------------------------------
 
-  test "index defers the secret store banner to its own lazy frame" do
+  test "index loads the secret store banner without waiting for a scroll" do
     get connectors_path
 
     assert_response :success
-    assert_select "turbo-frame#secret_store_status[loading=lazy][src=?]", secret_store_connectors_path
+    # One request, at the top of the page, that nobody should have to scroll to
+    # trigger — so it is plain eager rather than a member of the throttled queue.
+    assert_select "turbo-frame#secret_store_status[src=?]", secret_store_connectors_path
+    assert_select "turbo-frame#secret_store_status[loading=lazy]", count: 0
   end
 
   test "secret_store reports the encrypted credentials when no resolver is configured" do

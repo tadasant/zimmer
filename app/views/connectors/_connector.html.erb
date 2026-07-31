@@ -1,7 +1,10 @@
 <%# One connector's resolved status. Rendered into the row's lazy Turbo Frame.
     Local: status (ConnectorStatusProbe::Status) %>
 <%= turbo_frame_tag connector_frame_id(status.server_name) do %>
-  <div class="px-4 py-4" data-connector="<%= status.server_name %>" data-connector-state="<%= status.state %>">
+  <div class="px-4 py-4"
+       data-connector="<%= status.server_name %>"
+       data-connector-state="<%= status.state %>"
+       data-connector-rank="<%= connector_severity_rank(status.state) %>">
     <div class="flex items-start justify-between gap-4">
       <%= render "connectors/server_identity", server: status.server %>
       <span class="shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <%= connector_badge_classes(status.state) %>">
@@ -30,39 +33,87 @@
     <% if status.missing_configuration? %>
       <div class="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-3">
         <h4 class="text-xs font-semibold uppercase tracking-wide text-red-800">Where to set <%= status.missing_variables.one? ? "this" : "these" %></h4>
+        <% gateway = connector_gateway_console(status.server) %>
         <% status.instructions.each do |instruction| %>
           <div class="mt-2 text-sm text-red-900">
             <p><%= instruction[:headline] %></p>
-            <p class="mt-2 text-xs text-red-800"><%= instruction[:command_caption] %></p>
-            <div class="relative mt-1" data-controller="clipboard">
-              <div class="bg-gray-900 rounded-md p-3 font-mono text-xs text-gray-100 overflow-x-auto">
-                <code><%= instruction[:command] %></code>
+
+            <%# The Secrets Console, and — the part that matters — whether it is
+                THIS variable's console. When it is not, saying so is the whole
+                value of the block: a value typed into a console for another GCP
+                project is accepted and silently never read. %>
+            <div class="mt-2 rounded-md border px-3 py-2 <%= instruction[:console_administers] ? "border-green-300 bg-green-50" : "border-amber-300 bg-amber-50" %>"
+                 data-secret-console="<%= instruction[:console_administers] ? "administers" : "elsewhere" %>">
+              <p class="text-xs font-medium <%= instruction[:console_administers] ? "text-green-900" : "text-amber-900" %>">
+                <%= instruction[:console_caption] %>
+              </p>
+              <p class="mt-1">
+                <%= link_to instruction[:console_url], instruction[:console_url],
+                      target: "_blank", rel: "noopener",
+                      data: { secret_console_link: true },
+                      class: "text-xs font-mono underline #{instruction[:console_administers] ? 'text-green-800 hover:text-green-900' : 'text-amber-800 hover:text-amber-900'}" %>
+              </p>
+              <ol class="mt-2 list-decimal list-outside pl-4 space-y-1 text-xs <%= instruction[:console_administers] ? "text-green-900" : "text-amber-900" %>">
+                <% instruction[:steps].each do |step| %>
+                  <li><%= step %></li>
+                <% end %>
+              </ol>
+            </div>
+
+            <%# A gateway-hosted server has a SECOND credential, in the console's
+                own project under its slug. That one the console really does own,
+                and confusing it with the ${VAR} above is the mistake this says
+                out loud. %>
+            <% if gateway %>
+              <p class="mt-2 text-xs text-red-800" data-gateway-console="<%= gateway[:slug] %>">
+                This server is reached through <%= gateway[:host] %>, so it has a second credential:
+                the one the gateway presents upstream, at
+                <code class="font-mono">/strad/prod/mcp/<%= gateway[:slug] || "&lt;slug&gt;".html_safe %>/static/</code>
+                in the Secrets Console. That one the console does administer — but it is not
+                <code class="font-mono"><%= instruction[:variable] %></code>, which is Zimmer's own
+                token for reaching the gateway. Fixing the wrong one leaves this row exactly as it is.
+                And that store is a registry rather than a delivery path today: the gateway still
+                resolves its credentials at deploy time, so a value saved there is recorded, not
+                shipped, until the gateway is switched to runtime resolution.
+              </p>
+            <% end %>
+
+            <% if instruction[:command].present? %>
+              <p class="mt-2 text-xs text-red-800"><%= instruction[:command_caption] %></p>
+              <div class="relative mt-1" data-controller="clipboard">
+                <div class="bg-gray-900 rounded-md p-3 font-mono text-xs text-gray-100 overflow-x-auto">
+                  <code><%= instruction[:command] %></code>
+                </div>
+                <button type="button"
+                        data-action="click->clipboard#copy"
+                        data-clipboard-value="<%= instruction[:command] %>"
+                        class="absolute top-1.5 right-1.5 p-1 rounded text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+                        title="Copy command">
+                  <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                </button>
+                <span data-clipboard-target="feedback" class="hidden absolute top-1.5 right-9 text-xs text-green-400">Copied!</span>
               </div>
-              <button type="button"
-                      data-action="click->clipboard#copy"
-                      data-clipboard-value="<%= instruction[:command] %>"
-                      class="absolute top-1.5 right-1.5 p-1 rounded text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
-                      title="Copy command">
-                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-              </button>
-              <span data-clipboard-target="feedback" class="hidden absolute top-1.5 right-9 text-xs text-green-400">Copied!</span>
-            </div>
-            <p class="mt-2 text-xs text-red-800"><%= instruction[:snippet_caption] %></p>
-            <div class="relative mt-1" data-controller="clipboard">
-              <pre class="bg-gray-900 rounded-md p-3 font-mono text-xs text-gray-100 overflow-x-auto"><%= instruction[:snippet] %></pre>
-              <button type="button"
-                      data-action="click->clipboard#copy"
-                      data-clipboard-value="<%= instruction[:snippet] %>"
-                      class="absolute top-1.5 right-1.5 p-1 rounded text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
-                      title="Copy snippet">
-                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-              </button>
-              <span data-clipboard-target="feedback" class="hidden absolute top-1.5 right-9 text-xs text-green-400">Copied!</span>
-            </div>
+            <% end %>
+
+            <% if instruction[:snippet].present? %>
+              <p class="mt-2 text-xs text-red-800"><%= instruction[:snippet_caption] %></p>
+              <div class="relative mt-1" data-controller="clipboard">
+                <pre class="bg-gray-900 rounded-md p-3 font-mono text-xs text-gray-100 overflow-x-auto"><%= instruction[:snippet] %></pre>
+                <button type="button"
+                        data-action="click->clipboard#copy"
+                        data-clipboard-value="<%= instruction[:snippet] %>"
+                        class="absolute top-1.5 right-1.5 p-1 rounded text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+                        title="Copy snippet">
+                  <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                </button>
+                <span data-clipboard-target="feedback" class="hidden absolute top-1.5 right-9 text-xs text-green-400">Copied!</span>
+              </div>
+            <% end %>
+
             <p class="mt-2 text-xs text-red-700"><%= instruction[:followup] %></p>
           </div>
         <% end %>
