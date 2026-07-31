@@ -92,7 +92,13 @@ channel the bot is a member of — and keeps the same cursors: per-channel in `c
 per-thread in `thread_timestamps` (`"channel_id:thread_ts" => last_reply_ts`), advanced for
 everything it fetched whether or not it fired, so a quiet spell never replays as a burst. Aged-out
 threads are re-visited under the same `MAX_TRACKED_THREAD_RECHECKS` (20 per channel per poll) and
-`RECHECK_HORIZON` (45 days) caps. What changes is the filter: participation instead of mention.
+`RECHECK_HORIZON` (45 days) caps, reading only the tail since each thread's cursor. What changes is
+the filter: participation instead of mention.
+
+Participation is answered without ever re-reading a thread's history. The first time a thread is
+seen there is no cursor, so the read returns the whole thread — that read decides participation.
+After that, every reply Zimmer has not already inspected is in the tail, and a thread it has spoken
+in is remembered in `participating_threads`, so the tail alone is enough from then on.
 
 Two sources fire:
 
@@ -108,8 +114,20 @@ message months ago would make Zimmer a permanent listener on every message in th
 
 Channel engagement is learned from what the poll already fetches: Zimmer's own posts in the last 50
 top-level messages, and Zimmer's own messages in the threads walked that tick. The newest of those
-is remembered per channel in `bot_activity_timestamps`, so a channel stays engaged for the full
-window even through polls where nothing has moved.
+is remembered per channel in `bot_activity_timestamps` and only ever moves forward, so a channel
+stays engaged for the full window even through polls where nothing has moved, and a tick that
+happens to observe *older* activity can't wind it back and disengage early.
+
+The alert channel (`ENG_ALERTS_SLACK_CHANNEL_ID`) is excluded from that signal. `AlertService` posts
+there with the same token and therefore the same user ID, so one automated alert would otherwise
+mark the channel engaged and turn the next 24 hours of it into a session per message — in the one
+channel guaranteed to be noisy when things are going wrong. Threads there are unaffected: if Zimmer
+actually replied in one, that is a conversation and passive listening still follows it.
+
+A thread seen for the first time has no cursor of its own and falls back to the channel's, which
+tracks *top-level* messages — in a channel whose conversation lives in threads that can be weeks
+old. It is clamped to the engagement window, so meeting a thread late costs at most a day of
+catch-up rather than the entire backlog.
 
 Passive listening never fires on:
 
@@ -117,8 +135,10 @@ Passive listening never fires on:
 - **Any other app's messages.** `bot_mention` accepts them because an @mention is an explicit
   request; a passive listener firing on every CI notification that lands in a thread it once
   replied to is exactly the noise it must not make.
-- **Channel events with a `subtype`** — joins, leaves, topic changes, edits. "Sam has joined the
-  channel" is not a conversation continuing.
+- **Channel-event subtypes** — joins, leaves, topic/purpose/name changes, huddles, pins, edits
+  (`PASSIVE_IGNORED_SUBTYPES`). "Sam has joined the channel" is not a conversation continuing.
+  Subtypes that *are* somebody talking — `file_share`, `me_message`, `thread_broadcast` — still
+  fire.
 - **DMs.** Every DM to the bot is already directed at it, and a `bot_mention` condition covers DMs
   unconditionally; firing passively there would double-spawn.
 
