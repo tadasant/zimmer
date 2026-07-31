@@ -1039,9 +1039,31 @@ Tracked in [#77](https://github.com/tadasant/zimmer/issues/77).
 
 ### `thread_ts` is not supported for bot mentions
 
-You can watch a thread for new messages, but not for bot mentions.
+You can watch a thread for new messages, but not for bot mentions, and not for passive listening
+either.
 
 Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
+
+### Passive listening decides restraint in the prompt, not in the poller
+
+`passive_listen` fires on every new reply in a thread Zimmer has spoken in, and — while the channel
+is inside `CHANNEL_ENGAGEMENT_WINDOW` (24 hours) — on every new top-level message from an allowed
+human. The poller cannot tell "any update on that PR?" from "thanks, that worked": both continue a
+conversation Zimmer is in, so both spawn a session. Whether the session then *says* anything is
+decided entirely by its prompt template, and a template that isn't written for silence turns
+passive listening into a session per message.
+
+Two bounds worth knowing:
+
+- **Channel engagement is detected from what the poll already fetched** — Zimmer's own posts among
+  the last `RECENT_HISTORY_LIMIT` (50) top-level messages, plus its messages in the threads walked
+  that tick, remembered per channel in `bot_activity_timestamps`. In a channel busy enough that
+  Zimmer's last post falls outside that window before it is ever observed, top-level passive
+  listening simply doesn't engage. Thread listening is unaffected.
+- **Passive thread walking reads the whole thread**, not just the tail since the cursor, because
+  "has Zimmer spoken here" is a property of the thread's history. That is one `conversations.replies`
+  call per thread with new replies, the same as the @mention scan, but it paginates on threads
+  longer than 100 replies.
 
 ### Everything is polled; there are no webhooks
 

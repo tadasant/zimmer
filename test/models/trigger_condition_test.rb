@@ -68,7 +68,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "slack condition validates event_type if present" do
     @slack_condition.configuration["event_type"] = "invalid_event"
     assert_not @slack_condition.valid?
-    assert_includes @slack_condition.errors[:configuration], "event_type must be one of: new_message, bot_mention"
+    assert_includes @slack_condition.errors[:configuration], "event_type must be one of: new_message, bot_mention, passive_listen"
   end
 
   # thread_ts (thread-scoped new_message) tests
@@ -95,6 +95,13 @@ class TriggerConditionTest < ActiveSupport::TestCase
     @slack_condition.configuration["thread_ts"] = "1704000000.000000"
     assert_not @slack_condition.valid?
     assert_includes @slack_condition.errors[:configuration], "thread_ts is not supported for bot_mention conditions"
+  end
+
+  test "thread_ts is rejected for passive_listen conditions" do
+    @slack_condition.configuration["event_type"] = "passive_listen"
+    @slack_condition.configuration["thread_ts"] = "1704000000.000000"
+    assert_not @slack_condition.valid?
+    assert_includes @slack_condition.errors[:configuration], "thread_ts is not supported for passive_listen conditions"
   end
 
   test "blank thread_ts does not make a condition thread-scoped" do
@@ -604,6 +611,42 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "bot_mention condition accepts bot_mention event_type" do
     @slack_condition.configuration["event_type"] = "bot_mention"
     assert @slack_condition.valid?
+  end
+
+  # Passive listening condition tests
+  test "passive_listen condition is valid without channel_id" do
+    condition = trigger_conditions(:passive_listen_all_channels_condition)
+    assert condition.valid?
+    assert_equal "passive_listen", condition.event_type
+    assert condition.passive_listen?
+  end
+
+  test "passive_listen condition is valid with channel_id" do
+    condition = trigger_conditions(:passive_listen_all_channels_condition)
+    condition.configuration["channel_id"] = "C_GENERAL"
+    condition.configuration["channel_name"] = "general"
+    assert condition.valid?
+  end
+
+  test "passive_listen? is false for other event types" do
+    assert_not @slack_condition.passive_listen?
+    assert_not trigger_conditions(:bot_mention_slack_condition).passive_listen?
+  end
+
+  test "description for passive_listen condition with and without channel" do
+    condition = trigger_conditions(:passive_listen_all_channels_condition)
+    assert_equal "Slack: passive listening in all channels", condition.description
+
+    condition.configuration["channel_name"] = "general"
+    assert_equal "Slack: passive listening in #general", condition.description
+  end
+
+  test "bot_activity_timestamps returns empty hash by default and stored values when set" do
+    condition = trigger_conditions(:passive_listen_all_channels_condition)
+    assert_equal({}, condition.bot_activity_timestamps)
+
+    condition.configuration["bot_activity_timestamps"] = { "C123" => "1234.000" }
+    assert_equal({ "C123" => "1234.000" }, condition.bot_activity_timestamps)
   end
 
   test "new_message condition requires channel_id" do

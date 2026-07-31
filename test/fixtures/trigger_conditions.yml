@@ -47,6 +47,14 @@ bot_mention_all_channels_condition:
     event_type: bot_mention
   last_message_ts:
 
+# Conditions for passive_listen_all_channels_trigger (no specific channel — monitors all)
+passive_listen_all_channels_condition:
+  trigger: passive_listen_all_channels_trigger
+  condition_type: slack
+  configuration:
+    event_type: passive_listen
+  last_message_ts:
+
 # Conditions for enabled_schedule_trigger
 enabled_schedule_condition:
   trigger: enabled_schedule_trigger
