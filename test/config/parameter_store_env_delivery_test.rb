@@ -104,11 +104,12 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
     assert SecretProviders.parameter_store_configuration(env: env).configured?
   end
 
-  # --- staging: the same three links, its own project -----------------------
+  # --- staging: its own project, and one link production cannot assert ------
 
   # Staging is where the store path gets rehearsed before production, so it reads a
-  # store of its own. Every link is asserted the same way production's is, because the
-  # failure mode is the same: a break is silent.
+  # store of its own. The links production also has are asserted the same way, because
+  # the failure mode is the same: a break is silent. The `env:` allowlist is the extra
+  # one -- staging's deploy workflow is in this repo, production's is not.
 
   test "Kamal maps the resolver key from the STAGING_ deploy secret" do
     assert_match(/^#{KEY_JSON}=\$STAGING_#{KEY_JSON}$/, STAGING_SECRETS.read,
@@ -130,22 +131,31 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
   test "the staging deploy workflow passes the deploy-side secret through its env allowlist" do
     step = kamal_deploy_step
 
-    assert_equal "${{ secrets.STAGING_#{KEY_JSON} }}", step.dig("env", "STAGING_#{KEY_JSON}"),
+    # Matched rather than compared: `${{secrets.X}}` is equally valid Actions syntax,
+    # and a correct config written that way must not fail here.
+    assert_match(/\A\$\{\{\s*secrets\.STAGING_#{KEY_JSON}\s*\}\}\z/,
+      step.dig("env", "STAGING_#{KEY_JSON}").to_s,
       "#{DEPLOY_WORKFLOW}'s Kamal deploy step must name STAGING_#{KEY_JSON} in its env: " \
       "block. Without it the var arrives empty, .kamal/secrets.staging resolves to blank, " \
-      "and the deploy looks healthy while the store never turns on."
+      "and the deploy looks healthy while the store never turns on.")
   end
 
   # The step's preflight is the only place a deploy says out loud which state it is in,
-  # and secrets-parameter-store.md quotes its ON line verbatim. Assert the line so
-  # editing the echo cannot silently stale the docs.
+  # and secrets-parameter-store.md quotes the ON line VERBATIM. Assert the whole line,
+  # not its prefix: renaming the project or the namespace in the echo would otherwise
+  # stale the docs with the test still green.
   test "the staging deploy reports whether the store turned on" do
     run = kamal_deploy_step["run"].to_s
+    on = "✅ Parameter Store ON (resolver key set; reads " \
+      "#{ParameterStore::Namespace.static_namespace('staging')} in " \
+      "#{staging_env_clear[PROJECT_ID]})"
 
-    assert_includes run, "✅ Parameter Store ON",
-      "#{DEPLOY_WORKFLOW}'s Kamal deploy step must print whether the resolver credential " \
-      "arrived. Absence is survivable and therefore invisible -- this line is the symptom."
-    assert_match(/::warning::Parameter Store is OFF/, run)
+    assert_includes run, on,
+      "#{DEPLOY_WORKFLOW}'s Kamal deploy step must print this line verbatim -- " \
+      "secrets-parameter-store.md quotes it, and an absent credential is otherwise " \
+      "invisible: the deploy succeeds and only the store stays off."
+    assert_includes run, "::warning::Parameter Store is OFF",
+      "#{DEPLOY_WORKFLOW} must also say so when the credential did NOT arrive."
   end
 
   test "every secret the staging deploy injects has a mapping in .kamal/secrets.staging" do
@@ -225,8 +235,8 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
   end
 
   # The workflow is plain YAML (no ERB), so parse it rather than pattern-matching text:
-  # `${{secrets.X}}` is equally valid Actions syntax, and a regex tuned to one spelling
-  # would fail a correct config.
+  # a regex over the raw file has to reconstruct the step's boundaries from indentation,
+  # and cannot tell an `env:` key from a `with:` one.
   def kamal_deploy_step
     steps = YAML.safe_load(DEPLOY_WORKFLOW.read, aliases: true).dig("jobs", "deploy", "steps")
     step = Array(steps).find { |s| s["name"] == "Kamal deploy (staging)" }

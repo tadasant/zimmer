@@ -1194,9 +1194,12 @@ human steps that no test can stand in for. For production, two of them, both in
 `tadasant-internal`: setting `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`, and naming it
 in **both** places `zimmer-deploy-prod.yml` enumerates secrets. Miss the second and the Kamal
 mapping resolves to blank with no error — a deploy that looks healthy while the store never turns
-on. For staging, one: adding `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` to this
-repo's Actions secrets. Staging's `zimmer-secrets-staging` project is provisioned and audited, and
-the deploy prints whether the credential arrived.
+on. For staging, two, gating different deploy paths rather than stacking: adding
+`STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` to this repo's Actions secrets, which is
+what `deploy-staging.yml` needs; and giving `tadasant-internal`'s staging cutover workflow its own
+`env:` passthrough and its own copy of the secret, which nothing here can see or assert. Staging's
+`zimmer-secrets-staging` project is provisioned and audited, and `deploy-staging.yml` prints
+whether the credential arrived.
 
 What *is* verified here: the chain and its precedence, the degraded state when no credential is
 configured, the miss-vs-outage distinction, the snapshot cache semantics, the envelope round-trip
