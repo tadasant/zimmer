@@ -4955,7 +4955,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post refresh_session_url(session)
 
-    assert_response :redirect
+    assert_redirected_to session_path(session)
     assert_equal "waiting", session.reload.status
   end
 
@@ -4974,7 +4974,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post refresh_session_url(session)
 
-    assert_response :redirect
+    assert_redirected_to session_path(session)
     assert_equal "waiting", session.reload.status
   end
 
@@ -5059,9 +5059,24 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     [ waiting, needs_input, failed ].each do |session|
-      assert_select "form[action=?]", refresh_session_path(session), { count: 1 },
+      # Scoped to the session's own card, so this also proves the button lands on the
+      # right card rather than merely somewhere on the page.
+      assert_select "##{ActionView::RecordIdentifier.dom_id(session)} form[action=?]",
+        refresh_session_path(session), { count: 1 },
         "expected an inline refresh button for the #{session.status} session"
+      # button_to puts data-* on the submit button, and Turbo reads the frame target
+      # from the submitter — this is what breaks the redirect out of the card's frame
+      # instead of swapping a full page into it.
+      assert_select "##{ActionView::RecordIdentifier.dom_id(session)} form[action=?] button[data-turbo-frame=?]",
+        refresh_session_path(session), "_top", { count: 1 },
+        "the refresh button must target _top so the redirect is not swapped into the card frame"
     end
+
+    # Prove the running card is on the page BEFORE asserting its button is absent —
+    # otherwise a scoping/pagination change that drops running cards entirely would
+    # keep this green while the feature is broken.
+    assert_select "[data-block-picker-card-id=?]", running.id.to_s, { count: 1 },
+      "the running session's card must be rendered for the absence assertion below to mean anything"
     assert_select "form[action=?]", refresh_session_path(running), { count: 0 },
       "a running session must not get an inline refresh button"
   end
