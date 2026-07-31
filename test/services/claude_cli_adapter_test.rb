@@ -1488,7 +1488,6 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       "CLAUDE_CODE_DISABLE_CRON" => "1",
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY" => "1",
       "CLAUDE_CODE_AUTO_COMPACT_WINDOW" => "1000000",
-      "ELICITATION_ENABLED" => "true",
       "ELICITATION_REQUEST_URL" => "#{AppUrl.base_url}/api/v1/elicitations"
     }, non_nil_vars)
   end

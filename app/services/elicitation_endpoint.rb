@@ -48,17 +48,21 @@ class ElicitationEndpoint
     # it starts. Session-less callers get the URL but no session tag; the API logs
     # a warning when a request arrives without one.
     #
-    # ELICITATION_POLL_URL is deliberately not set: the create response carries
-    # `_meta["com.pulsemcp/poll-url"]`, which Rails builds from the request it just
+    # Two variables it deliberately does NOT set:
+    #
+    # ELICITATION_POLL_URL — the create response carries
+    # `_meta["com.pulsemcp/poll-url"]`, built by Rails from the request it just
     # received, so the poll URL follows the request URL automatically.
+    #
+    # ELICITATION_ENABLED — whether a server gates a given action stays that server's
+    # decision. Session #867's server was already attempting the POST without it, so
+    # the defect was the address, not the enablement; forcing it on would newly block
+    # sessions on approvals across every server at once, which is a rollout, not a fix.
     #
     # @param session_id [Integer, String, nil]
     # @return [Hash{String=>String}]
     def spawn_env(session_id: nil)
-      env = {
-        "ELICITATION_ENABLED" => "true",
-        "ELICITATION_REQUEST_URL" => url
-      }
+      env = { "ELICITATION_REQUEST_URL" => url }
       env["ELICITATION_SESSION_ID"] = session_id.to_s if session_id.present?
       env
     end
@@ -87,6 +91,8 @@ class ElicitationEndpoint
     end
 
     # Persist a probe result. Never raises — a Redis hiccup must not fail the job.
+    # Always returns a hash, so a caller reading stored["reachable"] cannot trip over
+    # a nil from a failure that happened before the hash was even built.
     def record(result, now: Time.current)
       stored = {
         "reachable" => result.reachable,
@@ -98,7 +104,7 @@ class ElicitationEndpoint
       stored
     rescue StandardError => e
       Rails.logger.warn "[ElicitationEndpoint] Failed to cache probe result: #{e.message}"
-      stored
+      stored || { "reachable" => result.reachable, "detail" => result.detail, "url" => result.url }
     end
 
     # The last recorded probe result, or nil when none has run.
