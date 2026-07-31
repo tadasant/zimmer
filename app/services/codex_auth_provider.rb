@@ -177,15 +177,43 @@ class CodexAuthProvider < RuntimeAuthProvider
     false
   end
 
-  # Rotate to the next available account after the current one hit its quota.
+  # Rotate to the next available account after the current one stopped working.
+  # Serialized and collapsed on the Codex pool exactly as AccountRotationService#rotate!
+  # is on the Claude pool — the single-use-refresh-token race that drains a pool
+  # under a stampede is not Claude-specific.
   # @return [Hash] { success:, account: } or { success: false, reason: }
-  def rotate_for_quota!(triggered_by: nil)
+  def rotate_for_quota!(triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil)
+    result = ClaudeAccount.with_pool_lock(RUNTIME) do
+      [ rotate_under_lock(triggered_by, reason, expected_current_email) ]
+    end
+
+    return result.first if result
+
+    @logger.warn("Could not acquire the codex account pool lock — another rotation is still running")
+    { success: false, reason: "rotation_in_flight" }
+  end
+
+  # The body of #rotate_for_quota!, run with the pool lock held.
+  private def rotate_under_lock(triggered_by, reason, expected_current_email)
     current = current_account
+
+    if expected_current_email.present? && current && current.email != expected_current_email
+      @logger.info("Codex rotation already performed by another session, collapsing",
+        expected: expected_current_email, current: current.email)
+      return { success: true, account: current, collapsed: true }
+    end
 
     if current
       sync_current_tokens(current)
-      current.mark_quota_exceeded!
-      @logger.info("Marked codex account as quota_exceeded", email: current.email)
+      # Mirrors AccountRotationService#rotate!: never relabel an account already
+      # diagnosed as needs_reauth, so the pool's shape still says whether waiting
+      # can help.
+      if current.needs_reauth?
+        @logger.info("Rotating away from codex account already marked needs_reauth", email: current.email)
+      else
+        current.mark_quota_exceeded!
+        @logger.info("Marked codex account as quota_exceeded", email: current.email)
+      end
     end
 
     result = activate_next_account(exclude_ids: [ current&.id ].compact)
@@ -194,7 +222,7 @@ class CodexAuthProvider < RuntimeAuthProvider
       event = AccountRotationEvent.create(
         rotated_from: current,
         rotated_to: result[:account],
-        reason: "quota_exceeded",
+        reason: reason,
         source: "automatic",
         triggered_by: triggered_by
       )

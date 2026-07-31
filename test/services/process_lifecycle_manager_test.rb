@@ -1877,6 +1877,79 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "Parking must make the session dormant so the heartbeat sweep cannot re-nudge it"
   end
 
+  # The user-visible half of the fix. Before this, a "Not logged in" caused by an
+  # exhausted account pool re-spawned three times (showing the runtime's error
+  # each time) and then parked with AUTH_UNRECOVERABLE — "re-authenticate an
+  # account" — when the actual remedy was to wait for the quota window. Now the
+  # FIRST failure lands on QUOTA_EXHAUSTED, whose banner says "wait for reset"
+  # and whose retry is derived from the pool's reset times.
+  test "handle_exit parks with QUOTA_EXHAUSTED on the first not-logged-in when the pool is drained by quota" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_auth_error("Not logged in · Please run /login")
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    stub_auth_provider_returning(fake_account("dead@example.com"), rotate_to: nil)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    status = MockProcessManager::MockStatus.new(0)
+    decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action
+    assert_match(/quota/i, decision.error_message)
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.length,
+      "Re-spawning into a wall only a quota reset can clear is the bug being fixed"
+
+    @session.reload
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.metadata["auth_outage_reason"],
+      "AUTH_UNRECOVERABLE tells the user to re-authenticate — wrong instruction for a quota outage"
+    assert_nil @session.metadata["auth_recovery_count"],
+      "Parking on a drained pool is not a retry attempt"
+  end
+
+  # Same correction, reached the other way: the budget runs out while the pool is
+  # drained by quota. The park reason follows the pool, not the counter.
+  test "handle_exit parks an exhausted auth budget with QUOTA_EXHAUSTED when the pool is drained by quota" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_auth_error("Not logged in · Please run /login")
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    stub_auth_provider_returning(fake_account("dead@example.com"), rotate_to: nil)
+    @session.update!(metadata: @session.metadata.merge("auth_recovery_count" => AuthRecoveryService::MAX_RECOVERY_ATTEMPTS))
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action
+    assert_match(/quota/i, decision.error_message)
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.reload.metadata["auth_outage_reason"]
+  end
+
+  test "auth recovery rotates rather than re-injecting the account that just failed" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 54321, stderr_log_path: "/tmp/stderr2.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    setup_transcript_with_auth_error("Not logged in · Please run /login")
+    failed = fake_account("failed@example.com")
+    provider = stub_auth_provider_returning(fake_account("fresh@example.com"), current: failed)
+    @session.update!(metadata: @session.metadata.merge(
+      AuthRecoveryCoordinator::IDENTITY_KEY => failed.email
+    ))
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_equal [ "auth_recovery" ], provider.rotation_reasons,
+      "The pool must be moved, and the move must be labelled as auth recovery rather than quota"
+  end
+
   test "handle_exit prioritizes auth recovery when auth error is the most recent API error" do
     @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 
@@ -1937,13 +2010,43 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     Struct.new(:email).new(email)
   end
 
-  # Stub RuntimeAuthProvider.for so the AuthRecoveryService built inside
-  # handle_auth_recovery resolves a fake provider whose inject_for_session!
-  # returns the given account (or nil to model "no valid account available").
-  def stub_auth_provider_returning(account)
-    provider = Object.new
-    provider.define_singleton_method(:inject_for_session!) { |_session, _working_directory = nil| account }
+  # Fake runtime auth provider satisfying the seam AuthRecoveryCoordinator drives.
+  # #accounts is the REAL fixture pool so the coordinator's park-reason read
+  # (available? / quota_exceeded?) is truthful; the filesystem writes are not.
+  class FakePoolProvider
+    attr_reader :rotation_reasons
+
+    def initialize(current:, rotate_to:, inject:)
+      @current = current
+      @rotate_to = rotate_to
+      @inject = inject
+      @rotation_reasons = []
+    end
+
+    def accounts = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME)
+    def current_account = @current
+    def refresh!(_account) = RuntimeAuthProvider::Result.new(ok: true, error: nil)
+    def inject_for_session!(_session = nil, _working_directory = nil) = @inject
+
+    def rotate_for_quota!(triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil)
+      @rotation_reasons << reason
+      return { success: false, reason: "no_available_accounts" } unless @rotate_to
+
+      { success: true, account: @rotate_to }
+    end
+  end
+
+  # Stub RuntimeAuthProvider.for so the AuthRecoveryCoordinator built inside
+  # handle_auth_recovery resolves a fake pool. `account` is what the coordinator
+  # ends up with (nil models "nothing usable to recover to").
+  def stub_auth_provider_returning(account, current: nil, rotate_to: :same)
+    provider = FakePoolProvider.new(
+      current: current || account,
+      rotate_to: rotate_to == :same ? account : rotate_to,
+      inject: account
+    )
     RuntimeAuthProvider.stubs(:for).returns(provider)
+    provider
   end
 
   # Helper to create API server error JSON entry
@@ -1987,7 +2090,9 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # provider whose rotate_for_quota! reports a successful rotation to `account`.
   def stub_quota_rotation_returning(account)
     provider = Object.new
-    provider.define_singleton_method(:rotate_for_quota!) { |triggered_by: nil| { success: true, account: account } }
+    provider.define_singleton_method(:rotate_for_quota!) do |triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil|
+      { success: true, account: account }
+    end
     RuntimeAuthProvider.stubs(:for).returns(provider)
   end
 
@@ -2039,7 +2144,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
   test "quota exhaustion with no rotation target parks the session with a scheduled retry" do
     provider = Object.new
-    provider.define_singleton_method(:rotate_for_quota!) do |triggered_by: nil|
+    provider.define_singleton_method(:rotate_for_quota!) do |triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil|
       { success: false, reason: "no_available_accounts" }
     end
     RuntimeAuthProvider.stubs(:for).returns(provider)

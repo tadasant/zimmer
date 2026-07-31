@@ -1021,8 +1021,13 @@ class AgentSessionJob < ApplicationJob
           clone_path: clone_path
         )
 
-        # Ensure the runtime's login credentials are active on disk before spawning
-        RuntimeAuthProvider.for(session.agent_runtime).inject_for_session!(session, working_directory)
+        # Ensure the runtime's login credentials are active on disk before spawning,
+        # and record WHICH identity this process is being started with. A later
+        # "Not logged in" needs that to tell "the pool rotated out from under me"
+        # (adopt the new account) from "the identity I hold is the one that failed"
+        # (rotate). See AuthRecoveryCoordinator.
+        spawn_identity = RuntimeAuthProvider.for(session.agent_runtime).inject_for_session!(session, working_directory)
+        AuthRecoveryCoordinator.record_identity!(session, spawn_identity)
 
         # Use ProcessLifecycleManager to spawn the process
         # Images are passed for follow-up prompts with attachments

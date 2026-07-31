@@ -162,10 +162,14 @@ class Session < ApplicationRecord
   # The retry COUNTS (api_error_retry_count, last_api_error_retry_at) are cleared
   # to give fresh retry budget, but the scan position is preserved.
   #
-  # The same split applies to auth recovery: auth_recovery_count / last_auth_recovery_at
-  # ARE cleared (fresh budget on resume) but auth_error_last_checked_line is NOT —
-  # it is the AuthRecoveryService scan position and must survive restarts so an
-  # already-handled "Not logged in" entry isn't re-detected.
+  # The same split applies to auth recovery: the budget counters
+  # (auth_recovery_count / last_auth_recovery_at and the adoption pair
+  # auth_recovery_adoptions / last_auth_adoption_at) ARE cleared (fresh budget on
+  # resume) but auth_error_last_checked_line is NOT — it is the AuthRecoveryService
+  # scan position and must survive restarts so an already-handled "Not logged in"
+  # entry isn't re-detected. auth_identity_email is likewise NOT cleared: it names
+  # the login identity the process was spawned with, and AuthRecoveryCoordinator
+  # needs it to tell an adoption from a rotation.
   #
   # The auth_outage_* keys (AuthOutageParkService) describe a session that is
   # dormant awaiting a scheduled retry. Any resume — the retry firing, a user
@@ -197,6 +201,8 @@ class Session < ApplicationRecord
     last_quota_limit_message
     auth_recovery_count
     last_auth_recovery_at
+    auth_recovery_adoptions
+    last_auth_adoption_at
     auth_outage_reason
     auth_outage_parked_at
     auth_outage_retry_at

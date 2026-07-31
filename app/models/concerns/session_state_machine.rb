@@ -379,9 +379,10 @@ module SessionStateMachine
   # rotations inside AuthRecoveryService::CONSECUTIVE_WINDOW would exhaust a
   # budget every one of those recoveries had actually earned back.
   def clear_auth_recovery_budget
-    return unless metadata&.key?("auth_recovery_count")
+    keys = %w[auth_recovery_count last_auth_recovery_at auth_recovery_adoptions last_auth_adoption_at]
+    return unless keys.any? { |key| metadata&.key?(key) }
 
-    update_column(:metadata, metadata.except("auth_recovery_count", "last_auth_recovery_at"))
+    update_column(:metadata, metadata.except(*keys))
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to clear auth recovery budget: #{e.message}"
   end

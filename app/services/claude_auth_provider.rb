@@ -151,9 +151,13 @@ class ClaudeAuthProvider < RuntimeAuthProvider
     false
   end
 
-  # Rotate to the next available account after the current one hit its quota.
+  # Rotate to the next available account after the current one stopped working.
   # @return [Hash] { success:, account: } or { success: false, reason: }
-  def rotate_for_quota!(triggered_by: nil)
-    AccountRotationService.new.rotate!(reason: "quota_exceeded", triggered_by: triggered_by)
+  def rotate_for_quota!(triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil)
+    AccountRotationService.new.rotate!(
+      reason: reason,
+      triggered_by: triggered_by,
+      expected_current_email: expected_current_email
+    )
   end
 end

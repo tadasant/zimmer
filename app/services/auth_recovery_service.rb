@@ -26,17 +26,25 @@ require "automated_prompts"
 #
 # 1. Detect the "Not logged in / Please run /login" signature as the most recent
 #    API-error entry in the transcript (auth_error_detected?).
-# 2. Reconcile the worker's on-disk identity to the current active account via
-#    RuntimeAuthProvider#inject_for_session! — the same seam AuthWarmupService
-#    uses before every spawn. If that returns nil, NO valid account is available;
-#    this is genuinely unrecoverable, so we fail cleanly (:unrecoverable) without
-#    looping rather than re-spawning into the same error forever.
+# 2. Ask AuthRecoveryCoordinator what to do about it. Recovery used to mean
+#    "re-inject the current active account" unconditionally, which re-spawned
+#    into the identical wall whenever that account was itself the problem. The
+#    coordinator instead decides, under a pool-wide lock, between adopting a
+#    rotation someone else already ran, rotating the pool itself, waiting out a
+#    rotation in flight, and giving up with the park reason the pool's shape
+#    justifies. Its class docs carry the full decision tree.
 # 3. Re-spawn the session via resume and verify the new process stays running.
 #
 # Bounded by MAX_RECOVERY_ATTEMPTS attempts within CONSECUTIVE_WINDOW, so a
 # long-running session that legitimately survives many account rotations over its
 # lifetime is never killed by a lifetime cap — only a tight loop of back-to-back
 # failed recoveries is.
+#
+# An adoption is exempt from that budget: it is another session's rotation doing
+# this one a favour, not an attempt this session made, and charging for it would
+# park a healthy long-running session for the fleet's activity. Adoptions are
+# separately capped at MAX_FREE_ADOPTIONS per window so a pool churning under a
+# session can't buy it unlimited free re-spawns.
 #
 # == Why the bound is time-based and not success-based ==
 #
@@ -70,12 +78,19 @@ require "automated_prompts"
 #     file_system: RealFileSystemAdapter.new
 #   )
 #   result = service.attempt_recovery(working_directory)
-#   # Returns :success, :exhausted, :unrecoverable, :aborted, or :not_applicable
+#   # Returns :success, :exhausted, :unrecoverable, :pool_quota_exhausted,
+#   #         :aborted, or :not_applicable
 class AuthRecoveryService
   include DatabaseRetry
 
   # Maximum recovery attempts within CONSECUTIVE_WINDOW before giving up.
   MAX_RECOVERY_ATTEMPTS = 3
+
+  # Maximum budget-free adoptions (see class docs) within CONSECUTIVE_WINDOW.
+  # Beyond this an adoption starts costing budget: a session adopting this often
+  # means the pool is churning under it, and a free retry that never converges is
+  # the exact shape of the loop MAX_RECOVERY_ATTEMPTS exists to stop.
+  MAX_FREE_ADOPTIONS = 3
 
   # Attempts further apart than this are treated as separate incidents and the
   # counter starts over. Sized well above a single recovery cycle (a couple of
@@ -102,13 +117,14 @@ class AuthRecoveryService
 
   attr_reader :session, :cli_adapter, :process_manager, :log_buffer, :file_system
 
-  def initialize(session, cli_adapter:, process_manager:, log_buffer:, file_system: nil, auth_provider: nil)
+  def initialize(session, cli_adapter:, process_manager:, log_buffer:, file_system: nil, auth_provider: nil, coordinator: nil)
     @session = session
     @cli_adapter = cli_adapter
     @process_manager = process_manager
     @log_buffer = log_buffer
     @file_system = file_system || RealFileSystemAdapter.new
     @auth_provider = auth_provider
+    @coordinator = coordinator
     @logger = StructuredLogger.new({ session_id: session.id, service: "AuthRecoveryService" })
   end
 
@@ -117,7 +133,9 @@ class AuthRecoveryService
   # @param working_directory [String] The working directory for the session
   # @return [Symbol] :success if the re-spawn was verified running,
   #                  :exhausted if MAX_RECOVERY_ATTEMPTS consecutive tries failed,
-  #                  :unrecoverable if no valid account is available to recover to,
+  #                  :unrecoverable if the pool has no usable credentials at all,
+  #                  :pool_quota_exhausted if the pool is drained but recoverable
+  #                    on a quota reset,
   #                  :aborted if the session state changed mid-recovery,
   #                  :not_applicable if no auth error is present in the transcript
   def attempt_recovery(working_directory)
@@ -186,16 +204,15 @@ class AuthRecoveryService
 
   private
 
-  # The auth provider for this session's runtime. Lazily resolved so tests can
-  # inject a fake; production resolves the real provider for the runtime.
-  def auth_provider
-    @auth_provider ||= RuntimeAuthProvider.for(session.agent_runtime)
-  end
-
-  # Shared recovery logic: check count, refresh identity, wait briefly, then spawn.
+  # Shared recovery logic: check budget, resolve the identity against the pool,
+  # wait briefly, then spawn.
+  #
+  # The budget is checked BEFORE the coordinator runs, so an out-of-budget
+  # session parks without first burning an account on a rotation it has no
+  # remaining attempts to use.
   #
   # @param working_directory [String] The working directory
-  # @return [Symbol] :success, :exhausted, :unrecoverable, :aborted
+  # @return [Symbol] :success, :exhausted, :unrecoverable, :pool_quota_exhausted, :aborted
   def execute_recovery(working_directory)
     current_count = consecutive_recovery_count
 
@@ -206,13 +223,20 @@ class AuthRecoveryService
       return :exhausted
     end
 
-    retry_attempt = current_count + 1
+    plan = coordinator.resolve!(working_directory)
 
-    # Reconcile the worker's on-disk identity to the current active account. nil
-    # means no valid account is available — genuinely unrecoverable, so fail
-    # cleanly WITHOUT re-spawning into the same error.
-    account = refresh_identity!(working_directory)
-    unless account
+    case plan.outcome
+    when :quota_exhausted
+      add_log(
+        "Not logged in, and every account in the pool is over its quota — nothing to rotate into. " \
+          "Parking until the quota window resets rather than retrying into the same wall.",
+        level: "warning"
+      )
+      log_buffer.flush
+      @logger.warn("Auth recovery: pool drained by quota")
+      advance_checked_line(working_directory)
+      return :pool_quota_exhausted
+    when :unusable
       add_log(
         "Not logged in and no valid account available to recover — failing cleanly " \
           "(re-authenticate an account to restore service). No retry attempted.",
@@ -226,30 +250,61 @@ class AuthRecoveryService
       return :unrecoverable
     end
 
-    add_log(
-      "Not logged in detected (active account likely rotated mid-session) — " \
-        "refreshed on-disk identity to #{account.email}, retrying #{retry_attempt}/#{MAX_RECOVERY_ATTEMPTS}",
-      level: "warning"
-    )
+    charge_budget = plan.consumes_budget? || free_adoptions_spent?
+    retry_attempt = charge_budget ? current_count + 1 : current_count
+
+    add_log(recovery_message(plan, retry_attempt, charge_budget), level: "warning")
     log_buffer.flush
-    @logger.info("Auth recovery: identity refreshed, retrying", retry_attempt: retry_attempt, account: account.email)
+    @logger.info("Auth recovery: identity resolved, retrying",
+      outcome: plan.outcome, retry_attempt: retry_attempt, account: plan.account&.email)
 
     abort_result = wait_with_status_checks(RETRY_DELAY)
     return :aborted if abort_result == :aborted
 
     # Record the attempt and advance the line marker so this auth entry isn't
     # re-detected after the re-spawn.
-    with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "auth_recovery_count" => retry_attempt,
-          "last_auth_recovery_at" => Time.current.iso8601,
-          "auth_error_last_checked_line" => get_transcript_line_count(working_directory)
-        )
-      )
-    end
+    record_attempt!(working_directory, retry_attempt, charge_budget)
 
     spawn_and_verify_recovery(working_directory, retry_attempt)
+  end
+
+  # The user-facing line. Naming which of the three branches fired is the whole
+  # point of the fix — "refreshed on-disk identity to X" read identically whether
+  # X was a new account or the same dead one.
+  def recovery_message(plan, retry_attempt, charge_budget)
+    budget = charge_budget ? "retrying #{retry_attempt}/#{MAX_RECOVERY_ATTEMPTS}" : "retrying (no attempt charged)"
+
+    case plan.outcome
+    when :adopted
+      "Not logged in — the account pool already rotated to #{plan.account.email} while this session was " \
+        "running. Adopted it and #{budget}."
+    when :rotated
+      "Not logged in — the runtime rejected the active account, so Zimmer #{plan.detail} rather than " \
+        "re-injecting credentials that just failed. #{budget.capitalize}."
+    else
+      "Not logged in — another session's account rotation is still in flight. Waiting for it rather than " \
+        "starting a second one, #{budget}."
+    end
+  end
+
+  # The two clocks are deliberately independent: a run of free adoptions must not
+  # keep an old auth_recovery_count alive past CONSECUTIVE_WINDOW (that would let
+  # other sessions' rotations park this one), and a run of charged attempts must
+  # not keep the adoption cap alive either.
+  def record_attempt!(working_directory, retry_attempt, charge_budget)
+    updates = { "auth_error_last_checked_line" => get_transcript_line_count(working_directory) }
+
+    if charge_budget
+      updates["auth_recovery_count"] = retry_attempt
+      updates["last_auth_recovery_at"] = Time.current.iso8601
+    else
+      updates["auth_recovery_adoptions"] = consecutive_adoption_count + 1
+      updates["last_auth_adoption_at"] = Time.current.iso8601
+    end
+
+    with_db_retry do
+      session.update!(metadata: (session.metadata || {}).merge(updates))
+    end
   end
 
   # The number of recovery attempts that belong to the CURRENT incident: the
@@ -276,14 +331,28 @@ class AuthRecoveryService
     nil
   end
 
-  # Re-write the active account's credentials to disk via the runtime auth
-  # provider. Returns the account on success, nil if none is available.
-  def refresh_identity!(working_directory)
-    auth_provider.inject_for_session!(session, working_directory)
-  rescue => e
-    @logger.error("Auth recovery: identity refresh raised", error: e.message)
-    add_log("Failed to refresh login identity during auth recovery: #{e.message}", level: "warning")
-    nil
+  # Decides adopt / rotate / wait / park for this session's dead on-disk
+  # identity. Injectable so tests can drive each branch without a real pool.
+  def coordinator
+    @coordinator ||= AuthRecoveryCoordinator.new(session, auth_provider: @auth_provider, logger: @logger)
+  end
+
+  # Adoptions that belong to the CURRENT incident, aged out on the same window as
+  # the charged attempts.
+  def consecutive_adoption_count
+    metadata = session.reload.metadata || {}
+    count = metadata["auth_recovery_adoptions"].to_i
+    return 0 if count.zero?
+
+    last = parse_time(metadata["last_auth_adoption_at"])
+    return count if last.nil?
+    return 0 if last < CONSECUTIVE_WINDOW.ago
+
+    count
+  end
+
+  def free_adoptions_spent?
+    consecutive_adoption_count >= MAX_FREE_ADOPTIONS
   end
 
   # Spawn a new process and verify it stays running.

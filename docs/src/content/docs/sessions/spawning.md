@@ -137,8 +137,11 @@ flowchart TD
     N -->|no| C{"context_length_error?<br/>(stderr)"}
     C -->|yes| CR["ContextLengthRetryService<br/>compact + retry (MAX_RETRIES = 2)"]
     C -->|no| A{"auth_recovery_needed?<br/>(transcript)"}
-    A -->|yes| AR["AuthRecoveryService<br/>re-inject credentials, re-spawn<br/>(3 attempts / 15 min)"]
-    AR -->|exhausted or<br/>no account| PARK["AuthOutageParkService<br/>warn + notify + wake-up trigger<br/>→ waiting"]
+    A -->|yes| AC["AuthRecoveryCoordinator<br/>under the pool lock:<br/>adopt / rotate / wait"]
+    AC -->|resolved| AR["AuthRecoveryService<br/>re-spawn (3 attempts / 15 min)"]
+    AC -->|"pool drained<br/>by quota"| PARK["AuthOutageParkService<br/>warn + notify + wake-up trigger<br/>→ waiting"]
+    AC -->|"pool has no<br/>usable credentials"| PARK
+    AR -->|exhausted| PARK
     A -->|no| Q{"api_error_for_retry?<br/>(transcript)"}
     Q -->|quota| RO{"rotate_for_quota!<br/>next Claude account"}
     RO -->|rotated| P
@@ -155,13 +158,25 @@ flowchart TD
     SDR --> P
 ```
 
+The auth branch does not re-inject blindly. `AuthRecoveryCoordinator` takes a per-runtime advisory
+lock on the account pool and picks one of three answers: **adopt** the account the pool already
+rotated to while this session was running (free — it is another session's rotation), **rotate** away
+from the identity the runtime just rejected (re-injecting it would reproduce the wall), or **wait**
+for a rotation another process has in flight rather than starting a competing one. Which identity
+the session was spawned with is recorded in `metadata["auth_identity_email"]` at injection time;
+comparing it against the pool's current account is what tells those apart. Decision tree in
+[Agent harness auth](/auth/harness/#the-recovery-decision-tree).
+
 When the login pool has nothing usable left — every account `quota_exceeded`, or an identity the
 runtime keeps rejecting — the session is **parked** rather than looped or failed:
 `AuthOutageParkService` explains the outage in the session log and the session-page banner, sends a
 push notification, and schedules a one-time wake-up trigger keyed off the real quota reset time.
 Creating that trigger sleeps the session, so it sits in `waiting` where the heartbeat sweep cannot
-nudge it. `QuotaResetCheckerJob` usually wakes it earlier, as soon as the accounts come back. Full
-detail in [Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
+nudge it. `QuotaResetCheckerJob` usually wakes it earlier, as soon as the accounts come back. Which
+of the two park reasons it gets follows the pool's shape rather than the code path that arrived
+there — `QUOTA_EXHAUSTED` ("wait for reset") when something is merely throttled,
+`AUTH_UNRECOVERABLE` ("re-authenticate") when nothing is. Full detail in
+[Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
 
 A non-SIGTERM signaled exit — most commonly a cgroup **OOM kill** (SIGKILL) of a
 long-running, large-transcript session — is treated as recoverable rather than

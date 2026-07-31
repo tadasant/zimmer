@@ -71,6 +71,81 @@ class ClaudeAccount < ApplicationRecord
   scope :available, -> { active.where.not(oauth_config: {}).order(:priority) }
   scope :for_runtime, ->(runtime) { where(runtime: runtime) }
 
+  # Postgres advisory lock namespace for serializing mutations of one runtime's
+  # account pool (rotation, activation). Distinct from
+  # Session::SESSION_ADVISORY_LOCK_NAMESPACE so the two subsystems can never
+  # collide in the shared bigint key space. Fixed value — changing it would let
+  # an old and a new deployment hold "the same" lock independently.
+  POOL_ADVISORY_LOCK_NAMESPACE = 0x415F_4143 # "A_AC" ASCII — Account pool lock
+
+  # How long a caller waits for another process's in-flight pool mutation before
+  # giving up. A rotation is a handful of DB writes, two small filesystem writes
+  # and at most one token refresh over HTTP, so it completes in seconds; a wait
+  # this long means the holder is wedged, and the caller is better off reporting
+  # "a rotation is in flight" than blocking its monitoring thread indefinitely.
+  POOL_LOCK_WAIT = 45.seconds
+
+  # Poll interval while waiting for the pool lock. pg_try_advisory_lock has no
+  # blocking-with-timeout form, so the wait is a bounded poll.
+  POOL_LOCK_POLL_INTERVAL = 0.25
+
+  # Serialize a block against every other pool mutation for the same runtime,
+  # across every process in the deployment.
+  #
+  # All sessions on a worker share ONE on-disk identity per runtime, so two
+  # sessions that hit an auth wall at the same moment must not each rotate: the
+  # second rotation would burn a perfectly good account the first had just
+  # activated, and repeated across a fleet it drains the pool in seconds. This
+  # lock is what makes "is a rotation already in flight?" answerable — a caller
+  # that has to wait for it knows someone else is mid-rotation, and a caller
+  # that gets it immediately knows nobody is.
+  #
+  # A session-level (not transaction-level) lock deliberately: rotation performs
+  # an HTTP token refresh and filesystem writes, and holding a Postgres
+  # transaction open across those would pin a connection for the duration.
+  #
+  # @param runtime [String] the runtime whose pool is being mutated
+  # @param wait [ActiveSupport::Duration, Numeric] how long to wait for the lock
+  # @return [Object, nil] the block's return value, or nil if the lock could not
+  #   be acquired within `wait` (i.e. another process is mid-rotation and slow)
+  def self.with_pool_lock(runtime, wait: POOL_LOCK_WAIT)
+    key = pool_lock_key(runtime)
+    deadline = Time.current + wait
+
+    connection_pool.with_connection do |conn|
+      acquired = try_pool_lock(conn, key)
+      until acquired || Time.current >= deadline
+        sleep(POOL_LOCK_POLL_INTERVAL)
+        acquired = try_pool_lock(conn, key)
+      end
+
+      return nil unless acquired
+
+      begin
+        yield
+      ensure
+        conn.execute(
+          sanitize_sql_array([ "SELECT pg_advisory_unlock(?, ?)", POOL_ADVISORY_LOCK_NAMESPACE, key ])
+        )
+      end
+    end
+  end
+
+  # Stable 31-bit lock key for a runtime. Both pg_advisory_lock(int4, int4) args
+  # must fit in a signed int4, so the digest is masked rather than truncated.
+  def self.pool_lock_key(runtime)
+    Digest::MD5.hexdigest(runtime.to_s).to_i(16) & 0x7FFF_FFFF
+  end
+
+  def self.try_pool_lock(conn, key)
+    ActiveModel::Type::Boolean.new.cast(
+      conn.select_value(
+        sanitize_sql_array([ "SELECT pg_try_advisory_lock(?, ?)", POOL_ADVISORY_LOCK_NAMESPACE, key ])
+      )
+    )
+  end
+  private_class_method :try_pool_lock
+
   # Returns the DB-authoritative current account.
   #
   # The DB is the single source of truth for which account is active.
