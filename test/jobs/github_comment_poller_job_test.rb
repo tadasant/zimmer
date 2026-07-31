@@ -866,6 +866,9 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert job.send(:automated_comment?, merge_gate_body)
     assert job.send(:automated_comment?, "## Merge gate\n\nVerdict: HOLD")
     assert job.send(:automated_comment?, "### 🚦 merge gate")
+    assert job.send(:automated_comment?, "## Merge gate ##")            # closing hashes
+    assert job.send(:automated_comment?, "\n\n## 🚀 Merge gate\n")       # leading blank lines
+    assert job.send(:automated_comment?, "## 🚀 Merge gate\r\n\r\nVerdict")  # CRLF
   end
 
   test "automated_comment? leaves human comments alone" do
@@ -875,6 +878,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_not job.send(:automated_comment?, "The merge gate rated this small — do you agree?")
     assert_not job.send(:automated_comment?, "## Merge gate thoughts\n\nI think it over-rated this")
     assert_not job.send(:automated_comment?, "## Summary\n\nThis PR does X")
+    assert_not job.send(:automated_comment?, "> ## 🚀 Merge gate\n\nabout this bit:")  # quoted
+    assert_not job.send(:automated_comment?, "Thoughts on the gate:\n\n## 🚀 Merge gate")  # not the first line
     assert_not job.send(:automated_comment?, "")
     assert_not job.send(:automated_comment?, nil)
   end
