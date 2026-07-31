@@ -80,6 +80,82 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "Accounts"
   end
 
+  # ── aggregate 5-hour figure reflects availability, not the raw counter ──
+
+  test "show counts a 7d-blocked account as fully utilized in the 5-hour aggregate" do
+    # The shape that motivated this: plenty of 5-hour headroom on paper, but the
+    # 7-day window turns every request away. Averaging the raw 29% would report
+    # pool headroom that cannot be served.
+    seed_aggregate_snapshots(
+      { utilization_5h: 0.29, status_5h: "allowed", reset_5h: 72.minutes.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: 1.day.from_now },
+      { utilization_5h: 0.20, status_5h: "allowed", reset_5h: 2.hours.from_now,
+        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    stats = aggregate_stats_text
+    # (100% + 20%) / 2, not the raw (29% + 20%) / 2 = 24.5%.
+    assert_match(/Avg 5-Hour Utilization \(effective\) 60\.0% Worst: 100\.0%/, stats)
+    assert_match(/1 account counted that way now/, stats)
+    assert_match(/Avg 7-Day Utilization 65\.0%/, stats)
+  end
+
+  test "show averages the raw 5-hour counters when both windows are healthy" do
+    seed_aggregate_snapshots(
+      { utilization_5h: 0.45, status_5h: "allowed", reset_5h: 3.hours.from_now,
+        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now },
+      { utilization_5h: 0.25, status_5h: "allowed", reset_5h: 2.hours.from_now,
+        utilization_7d: 0.10, status_7d: "allowed", reset_7d: 4.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    stats = aggregate_stats_text
+    assert_match(/Avg 5-Hour Utilization \(effective\) 35\.0%/, stats)
+    assert_match(/None right now/, stats)
+  end
+
+  test "show leaves the 7-day aggregate untouched when the 5-hour window is spent" do
+    # The correction is one-directional: a spent 5-hour window says nothing
+    # about the week, so the 7-day average must not inherit it.
+    seed_aggregate_snapshots(
+      { utilization_5h: 1.0, status_5h: "rejected", reset_5h: 1.hour.from_now,
+        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now },
+      { utilization_5h: 1.0, status_5h: "rejected", reset_5h: 2.hours.from_now,
+        utilization_7d: 0.10, status_7d: "allowed", reset_7d: 4.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    stats = aggregate_stats_text
+    assert_match(/Avg 5-Hour Utilization \(effective\) 100\.0%/, stats)
+    assert_match(/Avg 7-Day Utilization 20\.0%/, stats)
+  end
+
+  test "show flags a 7d-blocked account's unusable 5-hour headroom on its card" do
+    accounts = seed_aggregate_snapshots(
+      { utilization_5h: 0.29, status_5h: "allowed", reset_5h: 72.minutes.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: 1.day.from_now },
+      { utilization_5h: 0.20, status_5h: "allowed", reset_5h: 2.hours.from_now,
+        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    assert_select "#account_card_#{accounts.first.id}" do
+      assert_select "p", text: /Unavailable anyway — the 7-day window is spent/
+    end
+    assert_select "#account_card_#{accounts.second.id}" do
+      assert_select "p", text: /Unavailable anyway/, count: 0
+    end
+  end
+
   test "show has back link to sessions index" do
     get quotas_url
 
@@ -868,5 +944,26 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       { method: :get, path: "/quotas/login/5" },
       { controller: "quotas", action: "login_status", attempt_id: "5" }
     )
+  end
+
+  private
+
+  # Give the pool exactly two accounts with quota data, so the aggregate
+  # averages are arithmetic the test can state exactly. Returns the accounts in
+  # the order their snapshots were given.
+  def seed_aggregate_snapshots(*snapshot_attributes)
+    ClaudeAccountQuotaSnapshot.delete_all
+
+    accounts = [ claude_accounts(:primary), claude_accounts(:secondary) ]
+    accounts.zip(snapshot_attributes).each do |account, attributes|
+      ClaudeAccountQuotaSnapshot.create!(
+        claude_account: account, trigger: "page_view", **attributes
+      )
+    end
+    accounts
+  end
+
+  def aggregate_stats_text
+    css_select("#aggregate_stats").first.text.squish
   end
 end

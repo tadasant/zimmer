@@ -52,6 +52,52 @@ module QuotasHelper
     utilization
   end
 
+  # True when an account's weekly allowance is gone: the API is rejecting on the
+  # 7-day window, or its counter has reached the cap. Either way the account
+  # cannot serve a request until that window resets.
+  #
+  # A status, like a number, is only meaningful until its reset time passes —
+  # after that the sliding window has cleared, which is the same rule
+  # #effective_utilization applies.
+  def seven_day_window_spent?(snapshot)
+    return false if snapshot.nil?
+
+    rejecting = snapshot.status_7d.present? && snapshot.status_7d != "allowed"
+    return false if rejecting && snapshot.reset_7d && snapshot.reset_7d <= Time.current
+    return true if rejecting
+
+    eff_7d = effective_utilization(snapshot.utilization_7d, snapshot.reset_7d)
+    eff_7d.present? && eff_7d >= 1.0
+  end
+
+  # The 5-hour utilization an account contributes to the pool view.
+  #
+  # An account whose weekly allowance is spent cannot serve a request no matter
+  # how much 5-hour headroom its counter reports, so that headroom is fictional
+  # and the account counts as fully utilized. Anywhere else this is the raw
+  # 5-hour figure, so the number keeps a single, statable meaning: 5-hour
+  # utilization, with weekly-blocked accounts counted as 100%.
+  #
+  # The correction runs one way only. The 7-day window subsumes the 5-hour one,
+  # not the reverse: an account at its 5-hour cap is idle for minutes and then
+  # serves again, so it must never be reported as having burned its week.
+  def pool_utilization_5h(snapshot)
+    return nil if snapshot.nil?
+    return 1.0 if seven_day_window_spent?(snapshot)
+
+    effective_utilization(snapshot.utilization_5h, snapshot.reset_5h)
+  end
+
+  # True when an account's 5-hour counter reads as headroom the account cannot
+  # actually spend, because its weekly allowance is gone. This is the case the
+  # pool 5-hour figure corrects for.
+  def five_hour_headroom_unusable?(snapshot)
+    return false unless seven_day_window_spent?(snapshot)
+
+    eff_5h = effective_utilization(snapshot&.utilization_5h, snapshot&.reset_5h)
+    eff_5h.nil? || eff_5h < 1.0
+  end
+
   def time_until_reset(reset_time)
     return "N/A" if reset_time.nil?
 

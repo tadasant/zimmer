@@ -129,6 +129,27 @@ window's reset time has passed, or utilization drops below 100%. It then calls
 `AuthOutageParkService.wake_parked_sessions!` so the sessions that were blocked on those accounts
 resume in the same sweep — see [When the pool runs dry](#when-the-pool-runs-dry).
 
+### What `/quotas` reports for the pool
+
+Anthropic meters two windows per account, 5-hour and 7-day, and the page shows both — per account,
+and averaged across the pool.
+
+The pool's 5-hour average is labelled **"Avg 5-Hour Utilization (effective)"** because it is not a
+plain average of the 5-hour counters. An account whose 7-day window is spent — rejecting, or at its
+cap — cannot serve a request no matter how much 5-hour headroom it reports, so it counts as 100% in
+that average, and its card says *"Unavailable anyway — the 7-day window is spent"* under the 5-hour
+bar. Without the correction, an account at 29% on 5 hours and 100% on the week pulled the headline
+number down and advertised pool headroom that nothing could spend.
+
+The correction runs one way only. The 7-day average takes the 7-day counters as they are: the weekly
+window subsumes the 5-hour one, not the reverse, and an account at its 5-hour cap is idle for minutes
+and then serves again. A window whose reset time has passed reads as 0% on both axes — the sliding
+window has cleared, so the last number Zimmer recorded for it is stale.
+
+The figures are display-only. Rotation never reads them: `activate_next_account` picks from
+`ClaudeAccount.available` (status `active`), and a quota-blocked account has already been moved to
+`quota_exceeded`, so it is out of the pool regardless of what the page shows.
+
 :::danger[Rotation is triggered by matching an English error string]
 `ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN`:
 

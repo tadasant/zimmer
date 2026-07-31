@@ -86,6 +86,12 @@
               <p class="mt-0.5 text-xs text-gray-400">Resets in <%= time_until_reset(snapshot.reset_5h) %></p>
             <% end %>
           <% end %>
+          <%# The 5-hour bar reads as headroom the account cannot spend once its
+              weekly allowance is gone. Say so here, the same way the pool's
+              5-hour figure counts this account as fully utilized. %>
+          <% if five_hour_headroom_unusable?(snapshot) %>
+            <p class="mt-0.5 text-xs text-red-500">Unavailable anyway — the 7-day window is spent</p>
+          <% end %>
         </div>
 
         <!-- 7d window -->
