@@ -901,7 +901,36 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 1, tracked.size
   end
 
+  test "poll_comments_for_session ignores a merge gate review comment" do
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
+
+    Open3.expects(:capture3).never
+
+    job = TestJobWithMergeGateReviewComment.new
+    job.send(:poll_comments_for_session, @session_with_pr)
+
+    @session_with_pr.reload
+
+    assert_equal 0, @session_with_pr.enqueued_messages.count
+  end
+
   # === The 👀 reaction is only a promise Zimmer can keep ===
+
+  test "poll_comments_for_session neither reacts nor enqueues when the visibility lookup fails" do
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
+
+    # A failed `gh api repos/...` is the only capture3 call we expect: no reaction follows
+    failure_status = mock
+    failure_status.stubs(:success?).returns(false)
+    Open3.expects(:capture3).with("gh", "api", "repos/otherowner/repo", "--jq", ".private").returns([ "", "HTTP 502", failure_status ])
+
+    job = TestJobWithWhitelistedComment.new
+    job.send(:poll_comments_for_session, @session_with_pr)
+
+    @session_with_pr.reload
+
+    assert_equal 0, @session_with_pr.enqueued_messages.count
+  end
 
   test "poll_comments_for_session neither reacts nor enqueues on an untrusted public repo" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
@@ -957,6 +986,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   test "enqueue_follow_up_prompt does not react when the comment is not actionable" do
     mock_builder = mock
     mock_builder.stubs(:actionable?).returns(false)
+    mock_builder.stubs(:visibility_lookup_failed?).returns(false)
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     reacted_to = []
@@ -1022,6 +1052,30 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     def fetch_review_comments(_owner, _repo, _pr_number)
       []
+    end
+  end
+
+  # Test subclass that returns the merge gate's rating as an inline review comment, to
+  # cover the review-comment call site of the filter as well as the PR-comment one
+  class TestJobWithMergeGateReviewComment < GithubCommentPollerJob
+    def fetch_pr_comments(_owner, _repo, _pr_number)
+      []
+    end
+
+    def fetch_review_comments(_owner, _repo, _pr_number)
+      [
+        {
+          "id" => 2002,
+          "user" => { "login" => "tadasant" },
+          "body" => "## 🚀 Merge gate\n\n**Verdict: HOLD**",
+          "html_url" => "https://github.com/owner/repo/pull/123#discussion_r2002",
+          "path" => "src/main.rb",
+          "line" => 12,
+          "diff_hunk" => "@@ -10,3 +10,5 @@ code here",
+          "in_reply_to_id" => nil,
+          "created_at" => "2025-01-01T12:00:00Z"
+        }
+      ]
     end
   end
 

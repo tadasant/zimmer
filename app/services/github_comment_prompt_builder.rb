@@ -34,6 +34,15 @@ class GithubCommentPromptBuilder
     !public_repo?
   end
 
+  # True when the visibility lookup itself failed, so "public" was assumed rather than
+  # observed. The comment is skipped either way -- better to leave one alone than to act
+  # publicly on a repo we couldn't check -- but this case is a `gh` problem rather than a
+  # policy one, and the poller says so when it logs the skip. Only meaningful after
+  # #actionable? or #public_repo? has run.
+  def visibility_lookup_failed?
+    @visibility_lookup_failed.present?
+  end
+
   def build
     comment_data = comment_info[:data]
     comment_type = comment_info[:type]
@@ -243,12 +252,15 @@ class GithubCommentPromptBuilder
       !is_private
     else
       Rails.logger.warn "[GithubCommentPromptBuilder] Failed to check repo visibility for #{owner}/#{repo}: #{stderr}"
-      # Default to true (treat as public) if API fails - better to require approval than risk public changes
+      # Default to true (treat as public) if API fails - better to skip a comment than to
+      # act publicly on a repo we couldn't check. See #visibility_lookup_failed?
+      @visibility_lookup_failed = true
       @repo_visibility_cache[cache_key] = true
       true
     end
   rescue StandardError => e
     Rails.logger.error "[GithubCommentPromptBuilder] Exception checking repo visibility: #{e.class} - #{e.message}"
+    @visibility_lookup_failed = true
     # Cache the result for consistency (cache_key may not be defined if error occurs early)
     if defined?(cache_key) && cache_key
       @repo_visibility_cache ||= {}
