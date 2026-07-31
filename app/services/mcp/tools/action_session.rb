@@ -18,7 +18,7 @@ module Mcp
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
       ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
-      FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Not used for other actions.'
+      FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends only the in-flight turn; the conversation is preserved and the agent resumes with full context plus your prompt. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
       MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session (replaces the existing set — this is not a merge).'
       MODEL_DESC = 'Required for "change_model" action. The model identifier to use (e.g., "opus", "sonnet").'
       SKILLS_DESC = 'Required for "change_skills" action. Array of catalog skill IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected. Call get_configs / the skills catalog for valid IDs.'
@@ -89,7 +89,7 @@ module Mcp
         Perform an action on an agent session.
 
         **Actions:**
-        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Alternative: use manage_enqueued_messages "send_now" for one-step immediate delivery with goal support.
+        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Alternative: use manage_enqueued_messages "send_now" for one-step immediate delivery with goal support.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
         - **restart**: Restart an idle or failed session without providing new input
         - **archive**: Archive a session (marks as completed)
@@ -112,6 +112,8 @@ module Mcp
         - **update_title**: Update the title of a session (requires "title")
         - **toggle_favorite**: Toggle favorite status on a session
         - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed)
+
+        **Interrupting vs queuing a follow_up.** Interrupting stays opt-in so the choice is explicit, but it is the right posture more often than callers assume. If the prompt would redirect the agent — a correction, a constraint it does not know about, information that makes its current approach wrong — send it with "force_immediate": true. An agent twenty minutes into the wrong approach cannot see a queued message until it finishes, so the message that would have saved the work arrives after the work is wasted. The cost of interrupting is bounded: the in-flight turn is terminated (an uncommitted tool call is lost, files already written stay written) and the agent picks up from the same conversation with your prompt as the next turn. Queue when the prompt only adds to what the agent is already doing.
 
         List-valued fields (mcp_servers, skills, hooks, plugins) use replace semantics: the array you pass becomes the whole set, it is not merged with the existing one. These changes persist to the session and take effect the next time the session's runtime config is prepared (e.g. on the next turn or unarchive), matching how change_mcp_servers behaves — they do not hot-reconfigure a currently running process.
 
