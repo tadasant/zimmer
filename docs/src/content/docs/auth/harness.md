@@ -231,10 +231,40 @@ sequenceDiagram
 ```
 
 `RuntimeLoginAttempt` is being used as a cross-container message bus: the web process writes
-`pasted_code`, the worker process reads it. That's why `poll_state` must use
-`RuntimeLoginAttempt.uncached` — ActiveRecord's per-request query cache would otherwise hide the
-write. It's documented at length in the code, and it's a landmine.
-Tracked in [#111](https://github.com/tadasant/zimmer/issues/111).
+`pasted_code`, the worker process reads it. That read must bypass ActiveRecord's per-request query
+cache, which would otherwise hide the write — so exactly one method owns it,
+`RuntimeLoginAttempt.bus_state`, and every reader goes through that. It is still a table doing a
+message bus's job. Tracked in [#111](https://github.com/tadasant/zimmer/issues/111).
+
+### Every attempt reaches a terminal state
+
+The panel polls until the attempt is terminal, so an attempt that stops moving is a spinner that
+never stops. A worker killed hard enough to skip Ruby — deploy `SIGKILL`, crash, container
+replacement — runs no `ensure` and no `rescue`, so nothing in the job will ever write that row
+again. Three independent deadlines cover it, in order of how fast they fire:
+
+| Signal | Fires after | Enforced by |
+| --- | --- | --- |
+| `heartbeat_at` goes stale | `HEARTBEAT_TIMEOUT` (90s) | `login_status` on the next 2s poll; `CleanupRuntimeLoginAttemptsJob` every 5 min |
+| `expires_at` elapses | `DEFAULT_TTL` (14 min from creation) | same two |
+| the CLI's own lifetime | `MAX_DURATION` (12 min from spawn) | `RuntimeLoginJob`'s loop |
+
+`RuntimeLoginJob` stamps `heartbeat_at` every 15 seconds while it holds the CLI open;
+`RuntimeLoginAttempt#fail_orphaned!` is the single place that converts a missed deadline into a
+terminal status and a message naming what was missed. An elapsed window is `expired`; a dead worker
+is `failed`.
+
+The heartbeat is the only one of these that survives a container restart intact. A recorded `pid` is
+meaningless once PIDs have been renumbered in a fresh container — it may be absent (reaping a live
+login) or reused by an unrelated process (never reaping a dead one).
+
+Two client-side backstops close the loop, because a server that resolves an attempt correctly still
+leaves a frozen panel if the browser never hears about it. The poller repaints the panel with an
+explanation when it gives up after 10 consecutive failed polls, or when it passes the attempt's
+`expires_at`; it never merely stops its timer, which would leave the last frame it rendered on
+screen looking like work still in progress. And `login_status` answers a poll for a row that no
+longer exists (pruned after its retention window, or cascaded away with a deleted account) with a
+terminal panel rather than a `404` — a `404` reads to the poller as a network blip.
 
 :::caution[The login flow is screen-scraping a TUI]
 The command string (`claude auth login --claudeai`), the authorize-URL host regex, and the literal

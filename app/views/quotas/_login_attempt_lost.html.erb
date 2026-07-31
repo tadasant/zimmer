@@ -1,0 +1,10 @@
+<%# Terminal replacement for a login attempt whose row is gone (pruned, or
+    cascaded away with a deleted account). Deliberately carries no
+    quotas-login-poller controller, so swapping this in stops the poll. %>
+<div class="rounded-md bg-amber-50 border border-amber-200 p-3">
+  <p class="text-xs text-amber-800">
+    This login is no longer being tracked — its record was removed while it was in
+    flight. Reload the page to see the account's current state, then authenticate
+    again if it still needs credentials.
+  </p>
+</div>

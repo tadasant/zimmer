@@ -236,14 +236,23 @@ class QuotasController < ApplicationController
   # GET: Poll an in-flight login. Returns a Turbo Stream — the whole account card
   # on success (so Switch becomes available), otherwise just the login panel.
   def login_status
-    attempt = RuntimeLoginAttempt.find(params[:attempt_id])
+    attempt = RuntimeLoginAttempt.find_by(id: params[:attempt_id])
+
+    # The row is gone — pruned after its retention window, or cascaded away with a
+    # deleted account. Raising RecordNotFound here would 404 the poller, which
+    # counts it as a transient network error and silently gives up a few ticks
+    # later, freezing the panel on whatever it last rendered. Answer with a
+    # terminal panel instead so the user is told what happened.
+    return render_lost_attempt(params[:attempt_id]) if attempt.nil?
+
     account = attempt.claude_account
 
-    # Lazily expire a stale attempt so a closed browser tab doesn't leave it
-    # "awaiting_user" forever.
-    if !attempt.terminal? && attempt.expired_window?
-      attempt.update!(status: "expired", error_message: "Login window expired.")
-    end
+    # Lazily drive an orphaned attempt terminal so the panel resolves on the very
+    # next poll rather than waiting on CleanupRuntimeLoginAttemptsJob's 5-minute
+    # cron. Covers both an elapsed verification window (a closed browser tab that
+    # never came back) and a worker that died mid-login without running Ruby, in
+    # which case nothing else will ever touch this row.
+    attempt.fail_orphaned!
 
     if attempt.succeeded?
       @current_account = ClaudeAccount.current_account(account.runtime)
@@ -282,6 +291,17 @@ class QuotasController < ApplicationController
   end
 
   private
+
+  # Answer a poll for an attempt row that no longer exists. We can't name the
+  # account (that link died with the row), so target the login-attempt element the
+  # poller itself lives on. The replacement carries no Stimulus controller, so
+  # polling stops — with a message on screen instead of a frozen spinner.
+  def render_lost_attempt(attempt_id)
+    render turbo_stream: turbo_stream.replace(
+      "login_attempt_#{attempt_id.to_i}",
+      partial: "quotas/login_attempt_lost"
+    )
+  end
 
   # Renders the login panel Turbo Stream for an account, optionally flashing an
   # alert. Shared by the login actions so they all return a consistent response.

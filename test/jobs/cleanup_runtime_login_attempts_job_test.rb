@@ -10,6 +10,10 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     )
   end
 
+  # An elapsed verification window is "expired", not "failed" — the same verdict
+  # QuotasController#login_status reaches for the same condition. Both now route
+  # through RuntimeLoginAttempt#fail_orphaned!, so whichever notices first, the
+  # user is told the same thing.
   test "reaps a non-terminal attempt whose verification window has elapsed" do
     attempt = @account.runtime_login_attempts.create!(runtime: "codex", status: "awaiting_user")
     attempt.update_column(:expires_at, 1.minute.ago)
@@ -17,8 +21,8 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     CleanupRuntimeLoginAttemptsJob.perform_now
 
     attempt.reload
-    assert_equal "failed", attempt.status
-    assert_match(/did not complete/, attempt.error_message)
+    assert_equal "expired", attempt.status
+    assert_match(/window expired/, attempt.error_message)
   end
 
   test "reaps a non-terminal attempt whose recorded PID is dead and nulls the pasted code" do
@@ -33,6 +37,62 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     attempt.reload
     assert_equal "failed", attempt.status
     assert_nil attempt.pasted_code, "credential-adjacent pasted code must be dropped when reaped"
+  end
+
+  # The production scenario the PID check cannot catch: the worker was replaced,
+  # so the recorded PID is meaningless — here it belongs to a live, unrelated
+  # process — and the verification window is still open. Only the heartbeat shows
+  # that nothing is driving this login any more.
+  test "reaps an attempt whose worker stopped heartbeating even with a live PID and an open window" do
+    stray = spawn("/bin/sh", "-c", "sleep 30", out: File::NULL, err: File::NULL)
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "completing", pid: stray,
+      pasted_code: "secret-auth-code", expires_at: 10.minutes.from_now,
+      heartbeat_at: (RuntimeLoginAttempt::HEARTBEAT_TIMEOUT + 1.minute).ago
+    )
+
+    CleanupRuntimeLoginAttemptsJob.perform_now
+
+    attempt.reload
+    assert_equal "failed", attempt.status
+    assert_match(/stopped responding/, attempt.error_message)
+    assert_nil attempt.pasted_code
+    assert_not process_alive?(stray), "the orphaned login CLI must be killed too"
+  ensure
+    kill_and_reap(stray)
+  end
+
+  test "leaves an in-flight attempt with a fresh heartbeat untouched" do
+    live = spawn("/bin/sh", "-c", "sleep 30", out: File::NULL, err: File::NULL)
+    attempt = @account.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "completing", pid: live,
+      expires_at: 10.minutes.from_now, heartbeat_at: 2.seconds.ago
+    )
+
+    CleanupRuntimeLoginAttemptsJob.perform_now
+
+    assert_equal "completing", attempt.reload.status
+    assert process_alive?(live), "a healthy login's CLI must be left running"
+  ensure
+    kill_and_reap(live)
+  end
+
+  def process_alive?(pid)
+    # A TERMed child stays a zombie until reaped, and signal 0 succeeds against a
+    # zombie — so reap first, then ask.
+    Process.wait(pid, Process::WNOHANG)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH, Errno::EPERM, Errno::ECHILD
+    false
+  end
+
+  def kill_and_reap(pid)
+    return unless pid
+    Process.kill("KILL", pid)
+    Process.wait(pid)
+  rescue Errno::ESRCH, Errno::ECHILD
+    # Already gone.
   end
 
   test "leaves a healthy in-flight attempt untouched" do
