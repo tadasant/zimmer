@@ -699,6 +699,27 @@ remote servers.
 
 Tracked in [#103](https://github.com/tadasant/zimmer/issues/103).
 
+### "Is this a credential header?" is a word list
+
+🟡 `McpOauthCredentialInjector::CREDENTIAL_HEADER_PATTERN` decides whether a remote server
+authenticates with a static header by looking at the header's *name*: `authorization`, `auth`,
+`api-key`/`apikey`, `token`, `secret`, `password`, `credential(s)`, as whole `-`/`_`-delimited
+parts. A vendor header spelled with none of those words — Azure's `X-Subscription-Key`, say —
+is not recognized, and the server is classified OAuth-capable: the Connectors page offers an
+Authorize button that no consent screen can satisfy, and the post-spawn classifier files its
+401 as `oauth_required`. Adding the word is a one-line fix; the point is that nothing detects
+the miss for you.
+
+The list is deliberately narrow, because the opposite error is worse: a routine header read as
+a credential (`Idempotency-Key`, had `key` counted on its own) hides the Authorize button on a
+server that genuinely needs one, leaving no way to authorize it at all. There is no signal in
+the catalog schema that would settle this outright — an explicit `auth` block per entry would,
+and does not exist.
+
+An exact two-name list (`Authorization`, `X-API-Key`) is what shipped before, and it is why the
+`google-maps` entry's `X-Goog-Api-Key` rendered "Needs authorization" beside the very key that
+authenticates it.
+
 ### The fallback `client_id` is the literal string `"agent-orchestrator"`
 
 Used when a server advertises no DCR endpoint.
