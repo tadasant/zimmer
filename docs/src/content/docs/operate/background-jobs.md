@@ -32,6 +32,7 @@ From `config.good_job.cron`:
 | 5m | `CleanupOrphanedSessionsJob` | Sessions marked `running` whose process is gone |
 | 5m | `RefreshRuntimeAuthTokensJob` | Refresh Anthropic/OpenAI OAuth tokens |
 | 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks |
+| 5m | `ElicitationEndpointHealthCheckJob` | Alert when MCP servers cannot reach the approval endpoint |
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
@@ -58,11 +59,45 @@ when all of these hold:
 
 - the author is in `WHITELISTED_USERS` (`tadasant`, `macoughl`);
 - the body carries no `[CC Says]` marker — that's how the agent's own comments are attributed;
+- **no Zimmer session is on record as having posted it** (see below);
 - the body is not a bot command (`BLACKLISTED_PATTERNS`, currently just `/deploy staging`);
 - the body is not a Zimmer automation report (`AUTOMATION_REPORT_HEADINGS`, currently the
   pr-merge-gate rating, recognized by its `## 🚀 Merge gate` heading);
 - the comment was created after this session started tracking the PR — sessions predating
-  `github_pr_tracking_started_at` have no such timestamp, and for those every comment qualifies.
+  `github_pr_tracking_started_at` have no such timestamp, and for those every comment qualifies;
+- the comment is at least `ATTRIBUTION_GRACE_SECONDS` (60s) old, so authorship has had time to
+  settle.
+
+Every comment carries the outcome in its `dispatch_state` field in `custom_metadata`:
+`dispatched`, `deferred` (too new to attribute; re-examined next poll), or `skipped:<reason>`
+(terminal). A comment that never woke a session says why it didn't.
+
+### How Zimmer knows which comments its own agents posted
+
+`gh` inside every session authenticates as the human, so an agent's comment carries
+`user.login: tadasant` exactly like a real one. Author-based filtering cannot separate them, and
+the `[CC Says]` convention only works when the agent remembers it. When it didn't, the poller
+dispatched an agent's comment as a "GitHub Comment Response Required" turn — and because routing is
+by tracked PR URL rather than by authorship, it went to *every* session tracking that PR, not just
+the one that wrote it. Each reply would be another comment by `tadasant`, so the cycle has no
+natural end.
+
+What GitHub can't answer, Zimmer can: it watched the tool call.
+`TranscriptHooks::GithubCommentAuthorshipHook` scans each transcript for shell commands that post a
+comment (`gh pr comment`, `gh issue comment`, `gh pr review`, and `gh api` writes to a comments
+endpoint), reads the comment id out of the permalink those commands print
+(`#issuecomment-<id>` / `#discussion_r<id>`), and records an `AgentPostedGithubComment` row. The
+table is keyed by comment, not by session, so one session's post is suppressed for every session
+polling that PR.
+
+Only the output of *posting* commands is scanned. An agent that merely reads a comment
+(`gh api repos/…/issues/comments/<id>`) gets that comment's own `html_url` back, and treating that
+as a post would suppress a human comment the agent just looked at.
+
+The hook runs when the posting session's transcript is next polled — a second or two, not
+instantly. `ATTRIBUTION_GRACE_SECONDS` covers that window: a comment younger than 60 seconds is
+marked `deferred` and re-examined on the next poll instead of being dispatched on the strength of
+an authorship record that may not exist yet.
 
 The automation filter lives in Zimmer rather than in the automations themselves because the merge
 gate posts through `gh` as `tadasant` and carries no marker — to the poller it looks exactly like

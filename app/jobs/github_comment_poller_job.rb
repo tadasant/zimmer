@@ -8,11 +8,11 @@ require "open3"
 #   "github_comments" => {
 #     "https://github.com/owner/repo/pull/123" => {
 #       "pr_comments" => [
-#         { "id" => 123, "author" => "user", "attribution" => "user", "body" => "...", "url" => "...", "created_at" => "..." },
-#         { "id" => 456, "author" => "agent-user", "attribution" => "self", "body" => "[CC Says]...", "url" => "...", "created_at" => "..." }
+#         { "id" => 123, "author" => "user", "attribution" => "user", "body" => "...", "url" => "...", "created_at" => "...", "dispatch_state" => "dispatched" },
+#         { "id" => 456, "author" => "agent-user", "attribution" => "self", "body" => "[CC Says]...", "url" => "...", "created_at" => "...", "dispatch_state" => "skipped:self_marker" }
 #       ],
 #       "review_comments" => [
-#         { "id" => 789, "author" => "user", "attribution" => "user", "body" => "...", "url" => "...", "path" => "...", "line" => 42, "diff_hunk" => "...", "created_at" => "..." }
+#         { "id" => 789, "author" => "user", "attribution" => "user", "body" => "...", "url" => "...", "path" => "...", "line" => 42, "diff_hunk" => "...", "created_at" => "...", "dispatch_state" => "dispatched" }
 #       ]
 #     }
 #   }
@@ -25,10 +25,26 @@ require "open3"
 # When a whitelisted user (tadasant, macoughl) makes a new comment,
 # a follow-up prompt is automatically enqueued for the session.
 #
-# Two classes of comment are deliberately skipped even though their author is
-# whitelisted: Zimmer's own automation reports (see AUTOMATION_REPORT_HEADINGS) and
-# bot commands (see BLACKLISTED_PATTERNS). Skipped comments are still recorded in
-# custom_metadata; they just don't wake the session, and they get no 👀 reaction.
+# `dispatch_state` records what the poller decided about each comment, so a comment
+# that never woke a session leaves a trace. It is one of:
+#   "dispatched"       — a follow-up prompt went out
+#   "dispatching"      — handed over, outcome not yet recorded (see DISPATCH_DISPATCHING)
+#   "deferred"         — not decidable yet; re-examined on the next poll
+#   "skipped:<reason>" — terminal; never reconsidered
+#
+# Three classes of comment are deliberately skipped even though their author is
+# whitelisted: comments a Zimmer session posted itself (see agent_posted_comment,
+# skipped:agent_posted), Zimmer's own automation reports (see
+# AUTOMATION_REPORT_HEADINGS) and bot commands (see BLACKLISTED_PATTERNS). Skipped
+# comments are still recorded in custom_metadata; they just don't wake the session,
+# and they get no 👀 reaction.
+#
+# Why agent-posted comments need their own check: every session's `gh` authenticates
+# as the human, so authorship cannot separate them. AgentPostedGithubComment carries
+# what GitHub can't — the comment ids Zimmer watched its own sessions post. The check
+# is global rather than per-session because the loop it closes is: routing is by
+# tracked PR URL, so session A's comment was dispatched to session B, which had no
+# way to recognize it as an agent's.
 #
 class GithubCommentPollerJob < ApplicationJob
   include DatabaseRetry
@@ -79,6 +95,30 @@ class GithubCommentPollerJob < ApplicationJob
   # Maximum comments to fetch per API call (GitHub's default is 30, max is 100)
   MAX_COMMENTS_PER_PAGE = 100
 
+  # Values of a comment's "dispatch_state" (see the class comment).
+  DISPATCH_DISPATCHED = "dispatched"
+  DISPATCH_DEFERRED = "deferred"
+  # Written before the follow-up is handed over and replaced with the outcome after.
+  # Terminal if the process dies in between: better a comment that says it was being
+  # dispatched than one that is dispatched afresh on every poll.
+  DISPATCH_DISPATCHING = "dispatching"
+
+  # How long a comment must exist before the poller will act on it.
+  #
+  # Authorship is settled by TranscriptHooks::GithubCommentAuthorshipHook, which runs
+  # when the posting session's transcript is next polled — a second or two while the
+  # session is running, but not instantaneous. Without a hold-down, a poll that lands
+  # in that window sees an agent's comment with no AgentPostedGithubComment row yet and
+  # dispatches it, which is the whole bug. 60 seconds is far longer than the observed
+  # hook latency and costs a human's comment at most one extra minute before it wakes
+  # a session — on top of the poller's own 30-second cadence.
+  ATTRIBUTION_GRACE_SECONDS = 60
+
+  # How long to keep retrying a repo-visibility lookup that keeps failing before
+  # giving up on the comment. Bounded so a permanently unanswerable repo (renamed,
+  # deleted, access revoked) stops costing a `gh api` call every poll forever.
+  VISIBILITY_RETRY_WINDOW_SECONDS = 1.hour.to_i
+
   # Per-session backoff key + base cadence; see PollBackoff for the curve.
   POLL_BACKOFF_KEY = "github_comment_poller".freeze
   BASE_POLL_INTERVAL_SECONDS = 30
@@ -120,67 +160,174 @@ class GithubCommentPollerJob < ApplicationJob
       tracking_started_at = tracking_timestamps[pr_key]
 
       # Initialize structure for this PR if needed
-      updated_comments[pr_key] ||= { "pr_comments" => [], "review_comments" => [] }
-      existing_pr_comments = updated_comments[pr_key]["pr_comments"] || []
-      existing_review_comments = updated_comments[pr_key]["review_comments"] || []
+      updated_comments[pr_key] ||= {}
+      updated_comments[pr_key]["pr_comments"] ||= []
+      updated_comments[pr_key]["review_comments"] ||= []
 
       # Fetch PR-level comments (issue comments on the PR)
       pr_comments = fetch_pr_comments(owner, repo, pr_number)
       if pr_comments
-        pr_comments.each do |comment|
-          next if existing_pr_comments.any? { |c| c["id"] == comment["id"] }
-
-          comment_data = build_pr_comment_data(comment, pr_url, pr_number)
-          updated_comments[pr_key]["pr_comments"] << comment_data
-
-          # Check if this is a new user comment from a whitelisted user (excluding bot
-          # commands and Zimmer's own automation reports)
-          # Also check that the comment was created after we started tracking this PR
-          if comment_data["attribution"] != "self" &&
-             WHITELISTED_USERS.include?(comment_data["author"].downcase) &&
-             !ignored_comment?(comment_data) &&
-             comment_created_after_tracking_started?(comment_data, tracking_started_at)
-            new_user_comments << { type: "pr", data: comment_data, pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number }
-          end
-        end
+        new_user_comments.concat(
+          evaluate_comments(
+            type: "pr",
+            fetched: pr_comments,
+            stored: updated_comments[pr_key]["pr_comments"],
+            tracking_started_at: tracking_started_at,
+            pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number
+          )
+        )
       end
 
       # Fetch review comments (inline comments on diffs)
       review_comments = fetch_review_comments(owner, repo, pr_number)
       if review_comments
-        review_comments.each do |comment|
-          next if existing_review_comments.any? { |c| c["id"] == comment["id"] }
-
-          comment_data = build_review_comment_data(comment, pr_url, pr_number)
-          updated_comments[pr_key]["review_comments"] << comment_data
-
-          # Check if this is a new user comment from a whitelisted user (excluding bot
-          # commands and Zimmer's own automation reports)
-          # Also check that the comment was created after we started tracking this PR
-          if comment_data["attribution"] != "self" &&
-             WHITELISTED_USERS.include?(comment_data["author"].downcase) &&
-             !ignored_comment?(comment_data) &&
-             comment_created_after_tracking_started?(comment_data, tracking_started_at)
-            new_user_comments << { type: "review", data: comment_data, pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number }
-          end
-        end
-      end
-    end
-
-    # Update session if comments changed
-    if updated_comments != current_comments
-      with_db_retry do
-        session.update!(
-          custom_metadata: (session.custom_metadata || {}).merge("github_comments" => updated_comments)
+        new_user_comments.concat(
+          evaluate_comments(
+            type: "review",
+            fetched: review_comments,
+            stored: updated_comments[pr_key]["review_comments"],
+            tracking_started_at: tracking_started_at,
+            pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number
+          )
         )
       end
-      Rails.logger.info "[GithubCommentPollerJob] Updated comments for session #{session.id}"
     end
 
-    # Enqueue follow-up prompts for new user comments
+    # Persist before dispatching, so a comment cannot be handed to the session
+    # repeatedly if the write later fails; the state recorded here is "dispatching",
+    # which is terminal. A process killed mid-dispatch therefore leaves a comment that
+    # says what happened to it rather than one that silently never arrives.
+    persisted = persist_comments!(session, updated_comments, current_comments)
+
+    # Each call records its own outcome on the (shared, mutable) comment hash, so the
+    # second write persists the decision that was actually made. enqueue_follow_up_prompt
+    # rescues its own errors, so this cannot skip that write.
     new_user_comments.each do |comment_info|
-      enqueue_follow_up_prompt(session, comment_info)
+      comment_info[:data]["dispatch_state"] = enqueue_follow_up_prompt(session, comment_info)
     end
+
+    persist_comments!(session, updated_comments, persisted)
+  end
+
+  # Write the comment blob when it differs from what is already stored.
+  #
+  # @param previous [Hash] the blob as last persisted
+  # @return [Hash] the blob now persisted (a snapshot, since updated_comments mutates)
+  def persist_comments!(session, updated_comments, previous)
+    return previous if updated_comments == previous
+
+    with_db_retry do
+      session.update!(
+        custom_metadata: (session.custom_metadata || {}).merge("github_comments" => updated_comments)
+      )
+    end
+    Rails.logger.info "[GithubCommentPollerJob] Updated comments for session #{session.id}"
+
+    updated_comments.deep_dup
+  end
+
+  # Decide what to do with every comment of one kind on one PR, recording the
+  # decision on each comment hash.
+  #
+  # Comments already stored are skipped unless they are "deferred" — those are the
+  # ones whose authorship could not be settled yet, and they are re-examined until
+  # they resolve. Everything else has a terminal state and is left alone.
+  #
+  # @return [Array<Hash>] comment_info hashes for the comments to dispatch
+  def evaluate_comments(type:, fetched:, stored:, tracking_started_at:, pr_url:, owner:, repo:, pr_number:)
+    to_dispatch = []
+
+    fetched.each do |comment|
+      existing = stored.find { |c| c["id"] == comment["id"] }
+
+      if existing
+        next unless existing["dispatch_state"] == DISPATCH_DEFERRED
+
+        comment_data = existing
+      else
+        comment_data = if type == "review"
+          build_review_comment_data(comment, pr_url, pr_number)
+        else
+          build_pr_comment_data(comment, pr_url, pr_number)
+        end
+        stored << comment_data
+      end
+
+      state = dispatch_state_for(comment_data, type: type, tracking_started_at: tracking_started_at)
+      comment_data["dispatch_state"] = state
+      next unless state == DISPATCH_DISPATCHING
+
+      to_dispatch << { type: type, data: comment_data, pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number }
+    end
+
+    to_dispatch
+  end
+
+  # Whether a comment should wake the session, and if not, why not.
+  #
+  # Returns DISPATCH_DISPATCHING (enqueue_follow_up_prompt has the final say),
+  # DISPATCH_DEFERRED, or "skipped:<reason>".
+  def dispatch_state_for(comment_data, type:, tracking_started_at:)
+    return "skipped:self_marker" if comment_data["attribution"] == "self"
+    return "skipped:author_not_whitelisted" unless WHITELISTED_USERS.include?(comment_data["author"].to_s.downcase)
+
+    ignored = ignored_reason(comment_data)
+    return "skipped:#{ignored}" if ignored
+    return "skipped:before_tracking" unless comment_created_after_tracking_started?(comment_data, tracking_started_at)
+
+    posted = agent_posted_comment(comment_data, type: type)
+    if posted
+      Rails.logger.info "[GithubCommentPollerJob] Ignoring comment #{comment_data['id']} (#{comment_data['url']}): posted by session #{posted.session_id || 'unknown'}, not by a human"
+      return "skipped:agent_posted"
+    end
+
+    return DISPATCH_DEFERRED unless attribution_settled?(comment_data)
+
+    DISPATCH_DISPATCHING
+  end
+
+  # The record of a Zimmer session having posted this comment, or nil.
+  #
+  # This is the check the author name cannot make: `gh` in every session
+  # authenticates as the human, so an agent's comment and a human's comment are the
+  # same `user.login`. TranscriptHooks::GithubCommentAuthorshipHook writes the row
+  # when it sees the posting tool call; the lookup is global, so a comment posted by
+  # one session is suppressed for every session tracking the PR.
+  def agent_posted_comment(comment_data, type:)
+    AgentPostedGithubComment.posted_by_agent(comment_type: type, comment_id: comment_data["id"])
+  rescue StandardError => e
+    # Fail open rather than swallow the human's comment: a DB hiccup here must not
+    # silence GitHub, and the duplicate-dispatch it risks is the pre-existing bug,
+    # not a new one.
+    Rails.logger.error "[GithubCommentPollerJob] Agent-authorship lookup failed for comment #{comment_data['id']}: #{e.class} - #{e.message}"
+    nil
+  end
+
+  # Whether enough time has passed since the comment was created for the authorship
+  # hook to have claimed it (see ATTRIBUTION_GRACE_SECONDS). A comment with no
+  # parseable created_at cannot be held down, so it is treated as settled.
+  def attribution_settled?(comment_data)
+    created_at = comment_data["created_at"]
+    return true if created_at.blank?
+
+    deferred = Time.parse(created_at) > ATTRIBUTION_GRACE_SECONDS.seconds.ago
+    if deferred
+      Rails.logger.info "[GithubCommentPollerJob] Deferring comment #{comment_data['id']} (#{comment_data['url']}): younger than the #{ATTRIBUTION_GRACE_SECONDS}s authorship grace period"
+    end
+    !deferred
+  rescue ArgumentError
+    true
+  end
+
+  # Whether a comment is still young enough to be worth another visibility lookup.
+  # A comment with no parseable created_at cannot be aged out, so it is not retried.
+  def visibility_retry_window_open?(comment_info)
+    created_at = comment_info.dig(:data, "created_at")
+    return false if created_at.blank?
+
+    Time.parse(created_at) > VISIBILITY_RETRY_WINDOW_SECONDS.seconds.ago
+  rescue ArgumentError
+    false
   end
 
   def fetch_pr_comments(owner, repo, pr_number)
@@ -284,20 +431,22 @@ class GithubCommentPollerJob < ApplicationJob
     AUTOMATION_REPORT_HEADINGS.include?(match[:title].downcase.squish)
   end
 
-  # Comments that must never trigger a follow-up prompt, whoever authored them.
+  # Why a comment must never trigger a follow-up prompt, whoever authored it, or nil
+  # when neither filter catches it.
+  #
   # Logged, because a filtered comment leaves no other trace: no reaction, no reply, no
   # session log -- and a heading that matched something a human wrote should be findable.
-  def ignored_comment?(comment_data)
+  def ignored_reason(comment_data)
     body = comment_data["body"]
     reason = if blacklisted_comment?(body)
-      "bot command"
+      "bot_command"
     elsif automated_comment?(body)
-      "automation report"
+      "automation_report"
     end
-    return false unless reason
+    return nil unless reason
 
     Rails.logger.info "[GithubCommentPollerJob] Ignoring comment #{comment_data['id']} by #{comment_data['author']} (#{comment_data['url']}): #{reason}"
-    true
+    reason
   end
 
   # Check if a comment was created after tracking started for this PR
@@ -366,6 +515,10 @@ class GithubCommentPollerJob < ApplicationJob
     Rails.logger.warn "[GithubCommentPollerJob] Exception adding eyes reaction to comment #{safe_comment_id}: #{e.class} - #{e.message}"
   end
 
+  # Hand a comment to the session, and report what happened so the caller can record
+  # it on the comment.
+  #
+  # @return [String] the comment's final dispatch_state
   def enqueue_follow_up_prompt(session, comment_info)
     builder = GithubCommentPromptBuilder.new(
       session: session,
@@ -377,19 +530,28 @@ class GithubCommentPollerJob < ApplicationJob
     # react without human approval -- so there is nothing to hand it, and a 👀 there is a
     # promise Zimmer is designed not to keep.
     unless builder.actionable?
-      if builder.visibility_lookup_failed?
-        # A real comment is dropped here, so say so at warn: the repo may well have been
-        # private, and we skipped it only because `gh` couldn't tell us.
-        Rails.logger.warn "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: repo visibility lookup failed, assuming public"
-      else
+      unless builder.visibility_lookup_failed?
         Rails.logger.info "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: public repository outside our control"
+        return "skipped:not_actionable"
       end
-      return
+
+      # `gh` couldn't tell us whether the repo is private, so "public" here is an
+      # assumption, not an observation. Failing closed is still right -- acting
+      # publicly on a repo we couldn't check is worse than answering late -- but a
+      # transient rate limit or network blip must not drop a real comment forever, so
+      # retry on later polls until the lookup answers or the comment ages out.
+      if visibility_retry_window_open?(comment_info)
+        Rails.logger.warn "[GithubCommentPollerJob] Deferring comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: repo visibility lookup failed, will retry"
+        return DISPATCH_DEFERRED
+      end
+
+      Rails.logger.warn "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: repo visibility lookup still failing after #{VISIBILITY_RETRY_WINDOW_SECONDS}s, assuming public"
+      return "skipped:visibility_unknown"
     end
 
     prompt = builder.build
 
-    return unless prompt.present?
+    return "skipped:empty_prompt" if prompt.blank?
 
     # Only now, with a follow-up actually going out, mark the comment as seen
     add_eyes_reaction(comment_info)
@@ -410,8 +572,14 @@ class GithubCommentPollerJob < ApplicationJob
         end
       end
     end
+
+    DISPATCH_DISPATCHED
   rescue => e
     Rails.logger.error "[GithubCommentPollerJob] Failed to process follow-up prompt for session #{session.id}: #{e.message}"
+    # The 👀 may already be posted and the prompt may or may not have landed, so
+    # neither "dispatched" nor "deferred" is honest. Terminal, and named for what it
+    # was: an error, findable in custom_metadata.
+    "skipped:dispatch_error"
   end
 
   # Send prompt directly to the session, transitioning it to running

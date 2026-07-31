@@ -1,6 +1,10 @@
 Rails.application.routes.draw do
   namespace :supervisor do
     resources :account_rotation_events
+    # Read-only plus destroy: rows are written by TranscriptHooks::GithubCommentAuthorshipHook
+    # from what a session actually did, so there is nothing to hand-author — but a row
+    # recorded in error must be removable, since it suppresses a comment fleet-wide.
+    resources :agent_posted_github_comments, only: [ :index, :show, :destroy ]
     resources :app_settings
     resources :catalog_pins
     resources :categories

@@ -24,7 +24,7 @@ sequenceDiagram
     participant S as Session
     participant U as You (browser)
 
-    Note over P,M: spawn: ELICITATION_SESSION_ID={session.id}<br/>injected by ClaudeSpawnEnv
+    Note over P,M: spawn: ELICITATION_REQUEST_URL + ELICITATION_SESSION_ID<br/>injected by CliSpawnEnv (both runtimes)
     P->>M: tool call
     M->>Z: POST /api/v1/elicitations (UNAUTHENTICATED)<br/>_meta["com.pulsemcp/request-id"] + message
     Z->>S: create Elicitation (pending, expires in 10 min)
@@ -105,13 +105,45 @@ The old `docs/ELICITATION_FLOW.md` claimed the opposite — that both endpoints 
 and showed `X-API-Key` in its request samples. That was wrong.
 :::
 
-:::danger[Elicitations silently do nothing on Codex]
-`ELICITATION_SESSION_ID` is injected only by `ClaudeSpawnEnv#configure_elicitation_env`.
-`CodexRuntimeAdapter` and `CliSpawnEnv` never set it.
+## Where the request goes, and what happens when it can't get there
 
-A Codex session's MCP servers therefore have no session id to send, the controller logs a warning
-about the blank session-id, and the elicitation is dropped. There is no user-visible error — the
-agent hangs until its MCP call times out.
+`CliSpawnEnv#apply_elicitation_env` puts two variables in the agent's environment, which its
+stdio MCP servers inherit:
+
+| Variable | Value |
+| --- | --- |
+| `ELICITATION_REQUEST_URL` | `<AppUrl.base_url>/api/v1/elicitations` |
+| `ELICITATION_SESSION_ID` | the Zimmer session id |
+
+A value already present in the session's `.env` wins, so an operator can point a server at a
+different Zimmer.
+
+Two variables are deliberately *not* set. The poll URL, because the create response carries
+`_meta["com.pulsemcp/poll-url"]`, which Rails builds from the request it just received — so the poll
+URL follows the request URL automatically. And `ELICITATION_ENABLED`, because whether a server gates
+a given action is that server's decision: the reported failure was the address, not the enablement,
+and forcing it on would newly block sessions on approvals across every server at once.
+
+Naming the request URL is not cosmetic. With only `ELICITATION_SESSION_ID` set — which is all Zimmer
+used to set, and only for Claude — the `@pulsemcp/mcp-elicitation` client fell back to its built-in
+default, `http://zimmer/api/v1/elicitations`. That is a Tailscale MagicDNS name: it resolves on the
+host, and not in the container agents run in. Every POST failed at connect, the client fell back to
+"not approved", and the server returned `[REDACTED]`. From the agent's side that is indistinguishable
+from a denial — a gate that fails closed *and* fails silently, which is how one session ended up
+reading the secret it needed through the service account instead.
+
+`ElicitationEndpointHealthCheckJob` probes the endpoint every 5 minutes from the host agents run on
+(any HTTP response counts — a 404 for the probe id proves the request reached Rails; only a transport
+failure is a broken gate) and records the result. When it is unreachable, the job warns on every tick
+and pages once per incident, and `OrchestratorSystemPromptBuilder` puts the failure in the system prompt of every session
+spawned while it is down: *the gate is broken, a redaction means nothing about policy, report it rather than
+routing around it.* Sessions with MCP servers always get the healthy-case counterpart — a redacted
+value **is** the gate's answer — so a redaction is never ambiguous.
+
+:::caution[The probe checks the host, not the server]
+It proves Zimmer's endpoint is reachable from where agents run. It cannot prove a given MCP server
+reads these variables, or that it was launched with them — a server started before this change, or
+one hard-coding its own URL, still fails the same way.
 :::
 
 :::note[The web and API respond endpoints key on different things]

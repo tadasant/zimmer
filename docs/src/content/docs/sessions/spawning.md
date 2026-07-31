@@ -84,6 +84,9 @@ Shared scrubbing (`CliSpawnEnv`):
   worker, so anything else in Zimmer's environment is inherited verbatim — a new secret in
   `env.secret` is one `env` away from a transcript until it is named here.
 - Sets `AO_SESSION_SCRATCH_DIR` — a durable per-session scratch directory.
+- Sets `ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` — where an MCP
+  server sends an [approval request](/sessions/elicitation/#where-the-request-goes-and-what-happens-when-it-cant-get-there),
+  and who is asking. A value in the clone's `.env` wins.
 - Sets `SSH_PRIVATE_KEY_PATH` — the [operator SSH key](/operate/provisioning/#the-ssh-identity-an-agent-session-holds)
   the session authenticates with, when one is configured. The key file is written by
   `OperatorSshKeyProvisioner`; this exports its path, because an `ssh-*` MCP server looks for
@@ -94,17 +97,17 @@ Shared scrubbing (`CliSpawnEnv`):
 Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH=false` (baseline; the `mcp_tool_search`
 extension flips it), `CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default 1,000,000), and when MCP is on: `MCP_TIMEOUT=180000`,
-a clone-local `NPM_CONFIG_CACHE`, and `ELICITATION_SESSION_ID`.
+and a clone-local `NPM_CONFIG_CACHE`.
 
 Codex adds `RUST_LOG=warn,rmcp=info` and `CODEX_HOME`.
 
-:::caution[Two spawn-env asymmetries]
-`ELICITATION_SESSION_ID` is injected only by `ClaudeSpawnEnv`. Codex sessions never get it,
-so [elicitations silently no-op for Codex](/limitations/#elicitations-silently-do-nothing-on-codex).
-
-Likewise, `Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` —
+:::caution[A spawn-env asymmetry]
+`Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` —
 `CodexRuntimeAdapter#spawn_process` never consults it, so extension env contributions are
 unreachable for Codex, despite the hook receiving a `runtime` context that implies otherwise.
+
+The elicitation variables used to be the other half of this pair. They now come from `CliSpawnEnv`,
+which both runtimes include.
 :::
 
 ## The monitor loop

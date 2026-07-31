@@ -107,11 +107,47 @@ class OrchestratorSystemPromptBuilder
       end
     end
 
-    <<~SECTION.strip
-      ## MCP Servers
+    [
+      <<~SECTION.strip,
+        ## MCP Servers
 
-      This session has the following MCP servers available: #{server_names.join(', ')}
-    SECTION
+        This session has the following MCP servers available: #{server_names.join(', ')}
+      SECTION
+      approval_gate_paragraph
+    ].compact.join("\n\n")
+  end
+
+  # What a redacted value from a gated MCP tool means — and, when the approval
+  # endpoint is known to be down, that it means nothing about policy at all.
+  #
+  # Some MCP servers gate a sensitive read behind a human approval (elicitation).
+  # When the endpoint is unreachable the server cannot ask, so it returns a redacted
+  # value that looks exactly like a denial. An agent reading that as "I'm not allowed"
+  # will look for another way to get the value, which is the opposite of what the gate
+  # is for. Both branches are stated plainly, so a redaction always has a meaning.
+  #
+  # ElicitationEndpointHealthCheckJob supplies the status. "Never probed" is treated as
+  # working: warning about a gate that is fine would teach agents to distrust it.
+  def approval_gate_paragraph
+    if ElicitationEndpoint.unreachable?
+      status = ElicitationEndpoint.status || {}
+      <<~SECTION.strip
+        **⚠️ The MCP approval gate is currently broken.** Zimmer's approval endpoint
+        (#{status['url'] || ElicitationEndpoint.url}) is unreachable from this host
+        (#{status['detail']}, checked #{status['checked_at']}). Any MCP tool that gates a
+        sensitive read behind human approval cannot ask, and will return a redacted or
+        empty value **regardless of whether you would have been allowed to see it**. If
+        that happens: treat it as a broken gate, not a denial. Do NOT obtain the value by
+        another route to work around it — report the failure to the user and stop.
+      SECTION
+    else
+      <<~SECTION.strip
+        Some MCP tools gate a sensitive read behind human approval: the server asks Zimmer,
+        you appear in the user's queue, and the answer comes back. If such a tool returns a
+        redacted or empty value, that is the gate's answer — a denial or a timeout — and not
+        a bug to route around. Report it rather than obtaining the value another way.
+      SECTION
+    end
   end
 
   def operating_principles_section

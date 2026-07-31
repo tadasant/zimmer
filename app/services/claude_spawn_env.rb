@@ -82,6 +82,9 @@ module ClaudeSpawnEnv
     # Point the ssh-* MCP servers (and the plain ssh/git CLIs) at the operator SSH key.
     apply_operator_ssh_key(env_vars)
 
+    # Tell MCP servers where to send approval requests (and who is asking).
+    apply_elicitation_env(env_vars)
+
     env_vars
   end
 
@@ -98,24 +101,6 @@ module ClaudeSpawnEnv
     FileUtils.mkdir_p(npm_cache_dir)
     env_vars["NPM_CONFIG_CACHE"] = npm_cache_dir
     @logger.info "Isolating npm cache to #{npm_cache_dir}"
-
-    configure_elicitation_env(env_vars)
-  end
-
-  # Set the session ID for MCP server elicitation callbacks.
-  #
-  # The @pulsemcp/mcp-elicitation library reads ELICITATION_SESSION_ID from
-  # the environment and auto-includes it as com.pulsemcp/session-id in the
-  # _meta of HTTP fallback POST requests. This lets the elicitation service
-  # (Zimmer) associate each request with the correct session.
-  #
-  # Other elicitation env vars (ELICITATION_ENABLED, ELICITATION_REQUEST_URL,
-  # ELICITATION_POLL_URL) are configured per-server in config/mcp.json.
-  def configure_elicitation_env(env_vars)
-    if @zimmer_session_id.present?
-      env_vars["ELICITATION_SESSION_ID"] = @zimmer_session_id.to_s
-      @logger.info "Set ELICITATION_SESSION_ID=#{@zimmer_session_id} for elicitation callbacks"
-    end
   end
 
   # When ANTHROPIC_BASE_URL is set (e.g., pointing to a mock API for testing),

@@ -14,18 +14,11 @@
 # repo to surface in the session header.
 #
 # Runtime support: both Claude Code and OpenAI Codex sessions are handled. The two
-# runtimes write very different transcript shapes, so the shape-dependent parsing
-# (locating `gh pr create` invocations, their results, and whether a result failed)
-# is dispatched on the session's agent_runtime:
-#   - Claude Code: tool_use/tool_result blocks; `gh pr create` lives in a Bash
-#     tool_use `input.command`; a result's failure is its own `is_error` flag.
-#   - Codex: response_item function_call/local_shell_call (shell argv) and
-#     function_call_output (result text); a shell's exit code lives on a separate
-#     `exec_command_end` event_msg line, correlated by call_id. The OpenTranscripts
-#     normalizer intentionally drops those UI-side event_msg lines, so the hook
-#     reads exit codes straight from the rollout rather than from normalized events.
-# If more hooks need cross-runtime tool correlation, the codex_*/claude_* helpers
-# below are the natural extraction point for a shared runtime-aware parser.
+# runtimes write very different transcript shapes, so locating `gh pr create`
+# invocations, their results, and whether a result failed is dispatched on the
+# session's agent_runtime. That shape handling lives in
+# TranscriptHooks::ToolCallParser, which this hook shares with
+# GithubCommentAuthorshipHook.
 #
 # This hook is registered by default via the transcript hooks initializer.
 #
@@ -93,7 +86,7 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
       # don't want to attribute those PRs to this session. Same-repo matching is
       # still allowed since git_root is a strong signal. For Claude the failure
       # flag is the result's own is_error; for Codex it is derived from the
-      # shell's exit code (see codex_tool_results).
+      # shell's exit code (see TranscriptHooks::CodexToolCallParser).
       is_pr_create_result = pr_create_tool_use_ids.include?(result[:id]) && !result[:is_error]
 
       next if result[:text].blank?
@@ -118,11 +111,10 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     matching_urls
   end
 
-  # True when the session ran on the OpenAI Codex runtime, selecting the Codex
-  # transcript-shape parsers below. Any other value (including a blank/unknown
-  # runtime) falls back to the Claude Code parsers, preserving prior behavior.
-  def codex_runtime?
-    session.agent_runtime == "codex"
+  # The runtime-aware view of this transcript's tool calls and results. The
+  # Claude and Codex shapes both live in TranscriptHooks::ToolCallParser.
+  def parser
+    @parser ||= TranscriptHooks::ToolCallParser.for(session: session, parsed_transcript: parsed_transcript)
   end
 
   # Collect the tool-call ids for any invocation whose command contains `gh pr
@@ -131,190 +123,14 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   #
   # @return [Array<String>] tool-call ids (Claude tool_use ids / Codex call_ids)
   def collect_pr_create_tool_use_ids
-    codex_runtime? ? codex_pr_create_tool_use_ids : claude_pr_create_tool_use_ids
+    parser.tool_call_ids_matching(GH_PR_CREATE_PATTERN)
   end
 
-  # Flatten the transcript into a uniform list of tool results so extract_pr_urls
-  # can stay runtime-agnostic.
+  # Every tool result in the transcript, so extract_pr_urls stays runtime-agnostic.
   #
   # @return [Array<Hash>] each { id: String, text: String, is_error: Boolean }
   def tool_results
-    codex_runtime? ? codex_tool_results : claude_tool_results
-  end
-
-  # --- Claude Code transcript shape ------------------------------------------
-
-  # Walk the transcript and collect tool_use ids for any Bash invocation whose
-  # command contains `gh pr create`.
-  def claude_pr_create_tool_use_ids
-    ids = []
-
-    parsed_transcript.each do |message|
-      message_data = message["message"] || message
-      content = message_data["content"]
-      next unless content.is_a?(Array)
-
-      content.each do |block|
-        next unless block["type"] == "tool_use"
-        next unless block["name"] == "Bash"
-
-        command = block.dig("input", "command")
-        next unless command.is_a?(String)
-        next unless command.match?(GH_PR_CREATE_PATTERN)
-
-        ids << block["id"] if block["id"]
-      end
-    end
-
-    ids
-  end
-
-  # Tool results are user-message content blocks of type "tool_result", matched
-  # back to their invocation via tool_use_id.
-  def claude_tool_results
-    results = []
-
-    parsed_transcript.each do |message|
-      message_data = message["message"] || message
-      content = message_data["content"]
-      next unless content.is_a?(Array)
-
-      content.each do |block|
-        next unless block["type"] == "tool_result"
-
-        result_content = block["content"]
-        next unless result_content.is_a?(String)
-
-        results << { id: block["tool_use_id"], text: result_content, is_error: !!block["is_error"] }
-      end
-    end
-
-    results
-  end
-
-  # --- Codex rollout transcript shape ----------------------------------------
-
-  # Codex shell calls are response_item payloads of type "function_call" (name
-  # "shell", JSON-encoded `arguments` with a `command` argv array) or
-  # "local_shell_call" (argv under `action.command`). Collect the call_ids whose
-  # command runs `gh pr create`.
-  def codex_pr_create_tool_use_ids
-    ids = []
-
-    codex_response_items.each do |payload|
-      command = codex_shell_command(payload)
-      next if command.blank?
-      next unless command.match?(GH_PR_CREATE_PATTERN)
-
-      call_id = payload["call_id"]
-      ids << call_id if call_id
-    end
-
-    ids
-  end
-
-  # Codex tool results are response_item payloads of type "function_call_output"
-  # / "custom_tool_call_output". A shell's failure is not on the output payload
-  # itself — it lives on the matching `exec_command_end` event_msg line — so we
-  # correlate the exit code by call_id and mark the result as an error when the
-  # exit code is present and non-zero.
-  def codex_tool_results
-    exit_codes = codex_exit_codes_by_call_id
-    results = []
-
-    codex_response_items.each do |payload|
-      next unless %w[function_call_output custom_tool_call_output].include?(payload["type"])
-
-      call_id = payload["call_id"]
-      text = codex_output_text(payload["output"])
-      next if text.blank?
-
-      exit_code = exit_codes[call_id]
-      results << { id: call_id, text: text, is_error: exit_code.present? && exit_code != 0 }
-    end
-
-    results
-  end
-
-  # Map call_id -> exit_code from `exec_command_end` event_msg lines. These
-  # UI-side lines are the only place Codex records a shell's exit status, so the
-  # failed-`gh pr create` guard reads them directly from the rollout.
-  def codex_exit_codes_by_call_id
-    map = {}
-
-    parsed_transcript.each do |line|
-      next unless line["type"] == "event_msg"
-
-      payload = line["payload"]
-      next unless payload.is_a?(Hash) && payload["type"] == "exec_command_end"
-
-      call_id = payload["call_id"]
-      next if call_id.nil?
-
-      map[call_id] = payload["exit_code"]
-    end
-
-    map
-  end
-
-  # Every response_item payload hash in the rollout.
-  def codex_response_items
-    parsed_transcript.filter_map do |line|
-      next unless line["type"] == "response_item"
-
-      payload = line["payload"]
-      payload if payload.is_a?(Hash)
-    end
-  end
-
-  # Extract the shell command string from a Codex tool-call payload, or nil if
-  # the payload is not a shell invocation. The argv array is joined into a single
-  # string so GH_PR_CREATE_PATTERN can match across tokens.
-  def codex_shell_command(payload)
-    case payload["type"]
-    when "function_call"
-      return nil unless payload["name"] == "shell"
-
-      args = parse_codex_arguments(payload["arguments"])
-      codex_command_to_string(args["command"])
-    when "local_shell_call"
-      action = payload["action"]
-      return nil unless action.is_a?(Hash)
-
-      codex_command_to_string(action["command"])
-    end
-  end
-
-  def codex_command_to_string(command)
-    case command
-    when String then command
-    when Array then command.join(" ")
-    end
-  end
-
-  # The Codex `function_call` arguments field is a JSON-encoded String. Parse it
-  # into a Hash; return an empty Hash when it is absent or not a JSON object.
-  def parse_codex_arguments(arguments)
-    return {} if arguments.blank?
-    return arguments if arguments.is_a?(Hash)
-
-    parsed = JSON.parse(arguments)
-    parsed.is_a?(Hash) ? parsed : {}
-  rescue JSON::ParserError
-    {}
-  end
-
-  # Codex serializes a tool output as either a bare String or an array of content
-  # items ({ "type", "text" }). Fold into a single String for URL scanning.
-  def codex_output_text(output)
-    case output
-    when String
-      output
-    when Array
-      output.filter_map { |item| item["text"] if item.is_a?(Hash) }.join("\n")
-    else
-      ""
-    end
+    parser.tool_results
   end
 
   # Extract owner/repo from the session's git_root URL

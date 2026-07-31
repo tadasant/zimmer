@@ -48,7 +48,9 @@ Three properties worth knowing:
 2. They run after the transcript is saved, so a hook can rely on `session.transcript` being current.
 3. They're sequential and error-isolated. One hook raising doesn't stop the others.
 
-## The one that ships
+## The ones that ship
+
+### `GithubPrUrlHook`
 
 `GithubPrUrlHook` scrapes `https://github.com/{owner}/{repo}/pull/{n}` out of the transcript and
 writes it to `session.custom_metadata["github_pull_request_url"]`.
@@ -67,6 +69,23 @@ In practice that means the URL has to come back from a tool call, which it does 
 or that mentions the URL only in its own prose, leaves the field empty, and the GitHub pollers never
 engage. There's no warning when this happens.
 :::
+
+### `GithubCommentAuthorshipHook`
+
+Records the GitHub comments *this session posted*, so `GithubCommentPollerJob` never hands one back
+to an agent as if the human had written it.
+
+It exists because `gh` inside every session authenticates as the human, which makes an agent's
+comment indistinguishable by author from a real one — see
+[what the PR comment poller acts on](/operate/background-jobs/#how-zimmer-knows-which-comments-its-own-agents-posted).
+The hook correlates a comment-posting command (`gh pr comment`, `gh issue comment`, `gh pr review`,
+a `gh api` write to a comments endpoint) with the permalink that command printed, and writes an
+`AgentPostedGithubComment` row keyed by comment rather than by session.
+
+Like `GithubPrUrlHook` it reads tool results only, and it reads only the results of commands it
+recognizes as posting — an agent that *reads* a comment gets that comment's own `html_url` back, and
+recording that would suppress a human comment.
+
 
 ## Writing one
 
