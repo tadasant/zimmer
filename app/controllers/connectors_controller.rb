@@ -16,8 +16,10 @@ class ConnectorsController < ApplicationController
   # Which store a missing secret belongs in, and — when the Parameter Store is
   # wired up — whether its credential is the least-privilege shape it should be.
   #
-  # Lazily loaded like the connector rows: the IAM probe behind it is a network
-  # call to Google, and the page must not wait on it.
+  # Its own frame, like the connector rows: the IAM probe behind it is a network
+  # call to Google, and the page must not wait on it. Unlike the rows it is
+  # plain eager — one request, at the top of the page, that nobody should have to
+  # scroll to trigger.
   def secret_store
     store = SecretProviders.chain.providers.find { |p| p.is_a?(SecretProviders::ParameterStoreProvider) }
 

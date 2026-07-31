@@ -1203,7 +1203,7 @@ whether the credential arrived.
 
 What *is* verified here: the chain and its precedence, the degraded state when no credential is
 configured, the miss-vs-outage distinction, the snapshot cache semantics, the envelope round-trip
-(the page's copy-paste `gcloud` block writes exactly what the client reads back), the fact that
+(the envelope the Connectors page hands you is exactly what the client reads back), the fact that
 a secret value never lands in a Parameter Manager payload, and that a base64 credential survives
 Kamal's escaping into a container while pretty-printed key JSON does not. The Google half is
 `test/support/fake_parameter_store.rb`, an in-memory fake of the two APIs behind the HTTP seam —
@@ -1221,8 +1221,9 @@ shows, in either environment.
 **Unfixed, and known.** No issue is filed yet — it is recorded here so it is not rediscovered from
 a production symptom.
 
-`SecretsLocation#envelope_json` — the copy-paste `gcloud` block the Connectors page renders, and
-the same shape written down in [the runbook](/operate/secrets-parameter-store/#adding-a-secret) —
+`SecretsLocation#envelope_json` — the envelope the Connectors page hands you when the Secrets
+Console does not administer Zimmer's project, and the same shape written down in
+[the runbook](/operate/secrets-parameter-store/#adding-a-secret) —
 creates the parameter with `--parameter-format json` and puts the `__REF__` pointer inside a **JSON
 string**:
 

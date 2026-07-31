@@ -351,7 +351,7 @@ order, so a connector reported **Ready** is one that will actually connect:
 | **Needs authorization** | An OAuth-capable server with no stored credential. The row carries an **Authorize** button |
 | **Token expired** | Expired, but has a refresh token — `RefreshMcpOauthTokensJob` will renew it |
 | **Needs re-auth** | Expired with no refresh token; the row carries a **Re-authorize** button that replaces the credential in place |
-| **Missing configuration** | A required `${VAR}` has no value. The row renders the exact commands to set it |
+| **Missing configuration** | A required `${VAR}` has no value. The row says where it goes — see [The Secrets Console](/operate/secrets-parameter-store/#the-secrets-console-and-which-project-it-administers) |
 | **Secret store unreachable** | The store did not answer. Deliberately *not* "missing" — see [Secrets in the Parameter Store](/operate/secrets-parameter-store/) |
 | **No credential required** | The catalog entry configures no credential at all |
 | **Probe failed** | Anything unexpected, isolated to that one row |
@@ -364,6 +364,56 @@ be deleted.
 
 The page never contacts the MCP server itself and never displays a secret value;
 it reports presence and where to set what is absent.
+
+### How the list fills in, and why it re-orders itself
+
+The rows ship as `loading="lazy"` frames and `connector_list_controller` then
+promotes them to `eager` — six at a time, releasing a slot as each frame loads
+(`turbo:frame-load`), comes back without a matching frame (`turbo:frame-missing`,
+which is what a 404 or an error page produces), fails at the network level, or
+hits a 15-second watchdog. All four matter: a row whose probe 404s never fires
+`turbo:frame-load`, so without the second listener it would hold its slot for the
+full watchdog and the sort would wait on it.
+
+Each half of that is load-bearing:
+
+- **Lazy in the markup** is the floor. Before the controller connects — and if it
+  throws, or its bundle fails to load — the frames still resolve on appearance,
+  which is what they did before. It is a floor, not a no-JavaScript fallback:
+  Turbo's lazy loading is itself JavaScript, so with none the rows never resolve
+  either way.
+- **Promoting them** is the fix. Turbo's `lazy` defers a frame until it scrolls
+  into view, so on a ~100-server catalog every badge below the fold stayed blank
+  until you went looking for it.
+- **Six at a time** is what keeps the fix from being a regression. Un-gating all
+  ~100 frames at once fires ~100 requests at a Puma pool of a handful of threads,
+  and the queueing makes the *first* badge slower than it was before.
+
+Ordering follows from the same design. A server's state is computed **inside its
+own frame**, so `ConnectorsController` does not know at index-render time which
+servers have problems; sorting server-side would mean probing all ~100 up front
+and holding the whole page on the slowest one — exactly what the frames exist to
+avoid. So the sort happens in the browser, once, after the frames settle: rows
+are alphabetical while they load, then re-order by severity with the problems
+first and a `N need attention, listed first` count in the header. Sorting *during*
+the load was rejected deliberately — it moves content under the reader for the
+whole load.
+
+Severity itself is not decided in JavaScript. `ConnectorsHelper::SEVERITY_RANKS`
+maps each probe state to a rank, the resolved row carries it as
+`data-connector-rank`, the attention threshold is passed in as a value, and the
+controller only compares numbers. A test asserts the rank table covers
+`ConnectorStatusProbe::STATES` exactly, so a new state cannot quietly default
+into the healthy group.
+
+Two edges are handled where they would otherwise be invisible. Turbo Drive's page
+cache restores this list *as the controller left it* — resolved bodies, and the
+`eager` the controller itself wrote — so on a back-navigation onto a half-loaded
+page the controller pre-settles anything already carrying content and counts only
+frames it started; otherwise the in-flight count goes negative, the window blows
+open, and the list never sorts. And a reorder moves DOM nodes, which drops
+keyboard focus, so the sort stands down while focus is inside the list and
+retries once it leaves.
 
 ### Authorizing from the Connectors page
 

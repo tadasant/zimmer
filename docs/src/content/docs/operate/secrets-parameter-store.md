@@ -490,11 +490,11 @@ Connectors store banner still reports a perfectly healthy credential, because th
 banner reflects a `testIamPermissions` probe of the **resolver**, a different
 principal. Green banner, nothing resolving. Grant it per secret at creation time.
 
-You do not have to assemble that by hand. **The Connectors page renders exactly
-these commands, with the path, id and envelope already filled in**, on any
-connector whose `${VAR}` is missing. Tests assert both that the envelope the page
-emits is the one the client reads back, and that the grant in step 3 is present
-and ordered before the version that needs it — so neither can drift.
+You do not have to assemble the envelope by hand. **The Connectors page renders
+it, with the path and id already filled in**, on any connector whose `${VAR}` is
+missing — see [the Secrets Console](#the-secrets-console-and-which-project-it-administers)
+below for what else that block says. A test asserts that the envelope the page
+emits is the one the client reads back, so the two cannot drift.
 
 To rotate, add a Secret Manager version — the `__REF__` already points at
 `versions/latest`, so no new parameter version is needed:
@@ -505,6 +505,67 @@ printf %s '<the-new-value>' | gcloud secrets versions add "$ID" --project "$PROJ
 
 Zimmer picks a rotation up within the 60-second snapshot TTL, and a newly added
 name within the 10-second negative TTL. No redeploy.
+
+## The Secrets Console, and which project it administers
+
+A Parameter Manager project can have a **Secrets Console** in front of it — a
+web UI with create, reveal and rotate, behind Workspace SSO. It is a far better
+thing to point a person at than the four commands above, and the Connectors page
+points at one.
+
+**One console administers exactly one GCP project, in one location, and that is
+the whole subtlety.** `SecretsLocation::CONSOLE_URL`, `CONSOLE_PROJECT_ID` and
+`CONSOLE_LOCATION` are stored as a triple for that reason, and the Connectors
+page compares the last two against the store its resolver is actually reading
+(location as well as project — a parameter is addressed by both, so the right
+project in the wrong location is the same silent failure one field further down):
+
+| Console administers | What the row says |
+| --- | --- |
+| the project Zimmer resolves from | "Set it in the Secrets Console" — four UI steps, no shell at all |
+| a different project | the link, plus a plain statement that a value saved there **will never reach this variable**, and the envelope for creating it with the admin identity |
+| nothing (no resolver configured) | the link, plus "the console holds none of Zimmer's variables right now" and the `mcp_secrets` path |
+
+**Today the second row is the live one.** The console at
+`https://strad.tadasant.com/ui/secrets` administers `strad-secrets-prod`;
+Zimmer's store is `zimmer-secrets-prod`, deliberately a separate project (see
+[Why a separate GCP project](#why-a-separate-gcp-project)). A value typed into
+that console for a Zimmer `${VAR}` is accepted, saved, and never read — the
+variable goes on reporting **Missing configuration** with nothing to explain why.
+That silent failure is what the comparison exists to prevent, and it is why the
+page must never flatten this to "set your secrets in the console".
+
+All three are overridable — `ZIMMER_SECRETS_CONSOLE_URL`,
+`ZIMMER_SECRETS_CONSOLE_PROJECT_ID`, `ZIMMER_SECRETS_CONSOLE_LOCATION` — so that
+pointing at a Zimmer-scoped console, if one is ever stood up over
+`zimmer-secrets-prod`, is configuration rather than a deploy of new copy. They are
+read as **one unit**, and a partial override is ignored rather than merged: setting
+the project without the URL would otherwise render the green "set it here" box
+pointing at a console that administers something else, which is the exact failure
+the pairing exists to prevent. The failure mode of a half-finished override is
+"no console claimed", never a wrong one.
+
+### The other credential, on a gateway-hosted server
+
+A server Zimmer reaches through a gateway has **two** credentials in two places,
+and a row for one of them says so:
+
+- the `${VAR}` on the row — Zimmer's own bearer token for the gateway, in Zimmer's
+  store;
+- the credential the gateway presents upstream, under the server's own slug in the
+  console's project.
+
+The console administers the second and never the first, so fixing the one that is
+easier to reach leaves the row exactly as it was. The row names both. It also
+notes that the gateway's own store is a **registry rather than a delivery path**
+today — the gateway still resolves its credentials at deploy time, so a value
+saved there is recorded, not shipped.
+
+"Is this server behind the gateway" is keyed on `SecretsLocation::GATEWAY_HOST`,
+**not** on the console's own host, even though they are the same host today. The
+console URL is overridable precisely so it can be replaced; deriving the gateway
+from it would make this note silently disappear from every row that still has a
+second credential the moment someone did.
 
 ## Caching and failure behaviour
 
