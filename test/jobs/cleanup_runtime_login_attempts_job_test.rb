@@ -11,7 +11,7 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
   end
 
   # An elapsed verification window is "expired", not "failed" — the same verdict
-  # QuotasController#login_status reaches for the same condition. Both now route
+  # QuotasController#login_status reaches for the same condition. Both route
   # through RuntimeLoginAttempt#fail_orphaned!, so whichever notices first, the
   # user is told the same thing.
   test "reaps a non-terminal attempt whose verification window has elapsed" do

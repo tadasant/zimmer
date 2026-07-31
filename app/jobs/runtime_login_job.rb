@@ -201,13 +201,37 @@ class RuntimeLoginJob < ApplicationJob
   # "did not produce credentials".
   def complete(attempt, account, driver, config_dir, pid, raw = nil)
     driver.capture!(config_dir, account)
-    attempt.update!(status: "succeeded", error_message: nil)
+    settle(attempt, "succeeded", nil)
     Rails.logger.info "[RuntimeLoginJob] attempt=#{attempt.id} runtime=#{attempt.runtime} succeeded"
   rescue => e
-    clear_pasted_code(attempt)
     message = enrich_error(e.message, driver, raw)
-    attempt.update!(status: "failed", error_message: truncate_error(message))
+    settle(attempt, "failed", truncate_error(message))
     Rails.logger.warn "[RuntimeLoginJob] attempt=#{attempt.id} capture failed: #{e.class} - #{message}"
+  end
+
+  # Write this job's verdict, but only onto a row nobody else has settled.
+  #
+  # The loop's terminal-status guard runs at the top of an iteration; the capture
+  # that follows it — including all of driver.capture! — is a window in which the
+  # user can hit Cancel or the reaper can decide this attempt is orphaned. An
+  # unconditional write would overwrite the outcome they were shown, so the status
+  # filter goes in the UPDATE itself, where it is atomic. Losing the race is
+  # normal, not an error: the row already says something true.
+  #
+  # Always drops the pasted authorization code. It is single-use and
+  # credential-adjacent, and a double-submitted code can land in the row after the
+  # loop consumed the first one, so no terminal path may leave it behind.
+  def settle(attempt, status, message)
+    updated = RuntimeLoginAttempt
+      .where(id: attempt.id)
+      .where.not(status: RuntimeLoginAttempt::TERMINAL_STATUSES)
+      .update_all(status: status, error_message: message, pasted_code: nil, updated_at: Time.current)
+
+    if updated.zero?
+      clear_pasted_code(attempt)
+      Rails.logger.info "[RuntimeLoginJob] attempt=#{attempt.id} settled elsewhere; not writing #{status}"
+    end
+    updated.positive?
   end
 
   # Append the CLI's own failure line to the capture error when one is present in
@@ -219,8 +243,7 @@ class RuntimeLoginJob < ApplicationJob
 
   def finish(attempt, pid, status, message)
     terminate(pid)
-    clear_pasted_code(attempt)
-    attempt.update!(status: status, error_message: truncate_error(message))
+    settle(attempt, status, truncate_error(message))
   end
 
   # The attempt was settled by someone else while we were driving it (user

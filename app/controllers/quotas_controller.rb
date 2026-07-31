@@ -225,7 +225,9 @@ class QuotasController < ApplicationController
     # on the account so two near-simultaneous Authenticate clicks can't each cancel
     # the other's not-yet-created row and both end up live.
     attempt = account.with_lock do
-      account.runtime_login_attempts.active.update_all(status: "canceled", updated_at: Time.current)
+      account.runtime_login_attempts.active.update_all(
+        status: "canceled", pasted_code: nil, updated_at: Time.current
+      )
       account.runtime_login_attempts.create!(runtime: account.runtime)
     end
     RuntimeLoginJob.perform_later(attempt.id)
@@ -282,10 +284,12 @@ class QuotasController < ApplicationController
   end
 
   # POST: Cancel an in-flight login. The job sees the status change and stops the
-  # CLI subprocess.
+  # CLI subprocess. The pasted authorization code is dropped here rather than left
+  # for the job to clear: the job may not be running at all, which is the whole
+  # premise of the orphan handling above.
   def cancel_login
     attempt = RuntimeLoginAttempt.find(params[:attempt_id])
-    attempt.update!(status: "canceled") unless attempt.terminal?
+    attempt.update!(status: "canceled", pasted_code: nil) unless attempt.terminal?
 
     render_login_panel(attempt.claude_account)
   end

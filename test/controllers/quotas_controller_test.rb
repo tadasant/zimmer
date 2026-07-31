@@ -831,6 +831,37 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The pasted code is single-use and credential-adjacent. It used to be left for
+  # RuntimeLoginJob to clear, but the whole premise of the orphan handling is that
+  # the job may not be running, so every terminal write drops it itself.
+  test "cancel_login drops the pasted authorization code" do
+    account = claude_accounts(:unconfigured)
+    attempt = account.runtime_login_attempts.create!(
+      runtime: account.runtime, status: "awaiting_code", pasted_code: "secret-auth-code"
+    )
+
+    post cancel_login_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    attempt.reload
+    assert_equal "canceled", attempt.status
+    assert_nil attempt.pasted_code
+  end
+
+  test "start_login drops the pasted code of the attempt it supersedes" do
+    account = claude_accounts(:unconfigured)
+    stale = account.runtime_login_attempts.create!(
+      runtime: account.runtime, status: "awaiting_code", pasted_code: "secret-auth-code"
+    )
+    RuntimeLoginJob.expects(:perform_later).once
+
+    post start_login_quotas_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    stale.reload
+    assert_equal "canceled", stale.status
+    assert_nil stale.pasted_code
+  end
+
   test "login_status lazily expires an attempt past its window" do
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_user")

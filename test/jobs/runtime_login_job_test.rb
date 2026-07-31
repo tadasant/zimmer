@@ -408,6 +408,46 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     end
   end
 
+  # The loop's terminal-status guard runs at the top of an iteration, but the
+  # capture that follows it — driver.capture! and all — is a window in which the
+  # user can hit Cancel. Writing "succeeded" over that would show the user an
+  # outcome they had already been told was something else, so the status filter
+  # lives in the UPDATE itself.
+  test "a capture that lands after the attempt was settled does not overwrite the outcome" do
+    claude = ClaudeAccount.create!(
+      email: "runtime-login-job-late-capture@example.com", runtime: "claude_code",
+      status: :needs_reauth, is_current: false, priority: 66, oauth_config: {}
+    )
+    attempt = claude.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "canceled", pasted_code: "secret-auth-code"
+    )
+
+    assert_not RuntimeLoginJob.new.send(:settle, attempt, "succeeded", nil),
+      "settle must report that it lost the race"
+
+    attempt.reload
+    assert_equal "canceled", attempt.status
+    assert_nil attempt.pasted_code, "the single-use code must be dropped even when the write loses"
+  end
+
+  test "settle drops the pasted code on the success path" do
+    claude = ClaudeAccount.create!(
+      email: "runtime-login-job-success-code@example.com", runtime: "claude_code",
+      status: :needs_reauth, is_current: false, priority: 67, oauth_config: {}
+    )
+    # A double-submitted code can land in the row after the loop consumed the
+    # first one, so the success path cannot assume it is already nil.
+    attempt = claude.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "completing", pasted_code: "resubmitted-code"
+    )
+
+    assert RuntimeLoginJob.new.send(:settle, attempt, "succeeded", nil)
+
+    attempt.reload
+    assert_equal "succeeded", attempt.status
+    assert_nil attempt.pasted_code
+  end
+
   def process_alive?(pid)
     Process.kill(0, pid)
     true
