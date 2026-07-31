@@ -295,6 +295,7 @@ Rails.application.routes.draw do
       post :bulk_archive
       post :refresh_all
       post :refresh_category
+      post :refresh_starred
       post :quick_prompt
       post :chat_bubble
       post :upload_images, as: :upload_images_new_session
