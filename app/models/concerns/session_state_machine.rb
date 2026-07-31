@@ -216,6 +216,43 @@ module SessionStateMachine
     metadata&.dig("blocked_on_elicitation") == true
   end
 
+  # Whether a one-time wake-up targeting this session is registered and has not
+  # fired yet — i.e. the session is deliberately asleep, waiting for its
+  # `wake_me_up_later` / `wake_me_up_when_session_changes_state` trigger.
+  #
+  # This is the same set of conditions `cancel_pending_one_time_wake_triggers`
+  # consumes on resume, asked as a question instead of consumed. A manual
+  # refresh uses it to tell a deliberately-sleeping `waiting` session apart from
+  # one that is merely stalled, so refreshing does not wake a session early.
+  def awaiting_scheduled_wake?
+    pending_one_time_wake_conditions.any? do |condition|
+      condition.one_time_schedule? || condition.session_scoped_ao_event?
+    end
+  rescue => e
+    Rails.logger.error(
+      "[SessionStateMachine] Failed to check pending wake-up triggers for session #{id}: #{e.message}"
+    )
+    # Fail safe: treat an unreadable trigger table as "asleep on purpose" so a
+    # refresh never wakes a sleeping session on the strength of a DB error.
+    true
+  end
+
+  # Whether a manual refresh of this session should send the automated continue
+  # nudge (AutomatedPrompts::SYSTEM_RECOVERY) instead of only re-syncing its
+  # transcript. Applies to `waiting` sessions that have a conversation to resume
+  # and are not deliberately asleep:
+  #
+  # - a session with no `session_id` has never started, so there is nothing to
+  #   continue — the spawn pipeline still owns it;
+  # - a session with an unfired one-time wake trigger is sleeping on purpose,
+  #   and nudging it would fire the work early.
+  def continue_nudge_on_refresh?
+    return false unless waiting?
+    return false if session_id.blank?
+
+    !awaiting_scheduled_wake?
+  end
+
   # Reconcile the session's status with its active (pending, unexpired)
   # elicitations. Called from Elicitation lifecycle callbacks on every path that
   # creates, resolves, or expires an elicitation.
@@ -415,12 +452,7 @@ module SessionStateMachine
   # (watched_session_id present). Recurring schedules and broadcast ao_events
   # are left alone.
   def cancel_pending_one_time_wake_triggers
-    conditions = TriggerCondition
-      .joins(:trigger)
-      .where(condition_type: %w[schedule ao_event], last_triggered_at: nil)
-      .where(triggers: { last_session_id: id, reuse_session: true, status: "enabled" })
-
-    conditions.find_each do |condition|
+    pending_one_time_wake_conditions.find_each do |condition|
       next unless condition.one_time_schedule? || condition.session_scoped_ao_event?
       condition.update!(last_triggered_at: Time.current)
       Rails.logger.info(
@@ -433,6 +465,18 @@ module SessionStateMachine
       "[SessionStateMachine] Failed to cancel pending wake-up triggers for session #{id}: #{e.message}"
     )
     # Don't raise — trigger cleanup failures shouldn't block the resume
+  end
+
+  # Unfired trigger conditions that could still wake this session: conditions on
+  # triggers where this session is the reuse target, that haven't fired yet.
+  # Callers still filter to the one-time shapes (one-time schedule or
+  # session-scoped ao_event) — recurring schedules and broadcast ao_events are
+  # not per-session wake-ups and are left alone.
+  def pending_one_time_wake_conditions
+    TriggerCondition
+      .joins(:trigger)
+      .where(condition_type: %w[schedule ao_event], last_triggered_at: nil)
+      .where(triggers: { last_session_id: id, reuse_session: true, status: "enabled" })
   end
 
   # Clear any pending_sleep flag when the session is resumed. The flag is set

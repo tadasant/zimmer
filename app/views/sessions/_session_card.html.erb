@@ -37,25 +37,46 @@
   <div class="px-4 py-5 sm:p-6 flex flex-col flex-grow">
     <!-- Status Badge and ID -->
     <div class="flex items-center justify-between mb-3">
-      <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium <%= status_badge_classes(agent_session) %>"
-            <%= 'data-running-badge' if agent_session.status == 'running' %>>
-        <% if agent_session.status == 'running' %>
-          <div class="relative inline-flex items-center">
-            <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <% if agent_session.last_timeline_entry_at.present? %>
-              <span class="absolute inset-0 flex items-center justify-center text-[8px] font-bold"
-                    data-controller="time-since"
-                    data-time-since-update-badge-color-value="true"
-                    data-timestamp="<%= agent_session.last_timeline_entry_at.iso8601 %>">
-              </span>
-            <% end %>
-          </div>
+      <div class="flex items-center gap-1 min-w-0">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium <%= status_badge_classes(agent_session) %>"
+              <%= 'data-running-badge' if agent_session.status == 'running' %>>
+          <% if agent_session.status == 'running' %>
+            <div class="relative inline-flex items-center">
+              <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <% if agent_session.last_timeline_entry_at.present? %>
+                <span class="absolute inset-0 flex items-center justify-center text-[8px] font-bold"
+                      data-controller="time-since"
+                      data-time-since-update-badge-color-value="true"
+                      data-timestamp="<%= agent_session.last_timeline_entry_at.iso8601 %>">
+                </span>
+              <% end %>
+            </div>
+          <% end %>
+          <%= agent_session.archived? ? "Trashed" : agent_session.status.titleize %>
+        </span>
+      <%# Per-session refresh, inline with the status badge. Hidden for a running
+          session: it is already live, so there is nothing a refresh would tell the
+          user that the streaming card does not. For every other status this runs the
+          single-session refresh — restarting a failed session, and sending the
+          automated continue nudge to a stalled waiting one (see
+          SessionsController#refresh). turbo: false makes it a plain form post so the
+          redirect reloads the dashboard rather than swapping just this card's frame. %>
+      <% unless agent_session.running? %>
+        <%= button_to refresh_session_path(agent_session),
+              method: :post,
+              class: "shrink-0 text-gray-300 hover:text-indigo-600 p-1 rounded",
+              title: "Refresh this session",
+              "aria-label": "Refresh session #{agent_session.id}",
+              form: { data: { turbo: false } } do %>
+          <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+          </svg>
         <% end %>
-        <%= agent_session.archived? ? "Trashed" : agent_session.status.titleize %>
-      </span>
+      <% end %>
+      </div>
       <div class="flex items-center gap-2 mr-14">
         <span class="text-xs text-gray-400 font-mono">#<%= agent_session.id %></span>
         <span class="text-xs text-gray-500" data-timestamp="<%= agent_session.created_at.iso8601 %>" data-controller="timestamp-updater">

@@ -6,13 +6,30 @@
     favorite from here rebuilds this group. A starred session appears only here, not in
     its category section. The section is omitted entirely when no sessions are starred. %>
 <section class="mb-8" id="pinned_section">
-  <div class="flex items-center gap-2 min-w-0 mb-3">
-    <span class="text-yellow-500 shrink-0" aria-hidden="true">
-      <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.957a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.287 3.957c.3.922-.755 1.688-1.54 1.118l-3.366-2.446a1 1 0 00-1.175 0l-3.367 2.446c-.784.57-1.838-.197-1.539-1.118l1.286-3.957a1 1 0 00-.363-1.118L2.98 9.384c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.951-.69l1.286-3.957z" />
-      </svg>
-    </span>
-    <h2 class="text-lg font-semibold text-gray-800 truncate">Starred</h2>
+  <div class="flex items-center justify-between mb-3">
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="text-yellow-500 shrink-0" aria-hidden="true">
+        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.957a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.287 3.957c.3.922-.755 1.688-1.54 1.118l-3.366-2.446a1 1 0 00-1.175 0l-3.367 2.446c-.784.57-1.838-.197-1.539-1.118l1.286-3.957a1 1 0 00-.363-1.118L2.98 9.384c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.951-.69l1.286-3.957z" />
+        </svg>
+      </span>
+      <h2 class="text-lg font-semibold text-gray-800 truncate">Starred</h2>
+    </div>
+    <%# Refresh: runs the same restart/continue/transcript-refresh as the global
+        "Refresh all", scoped to the non-archived starred sessions — i.e. exactly the
+        cards in this group. Mirrors the per-category refresh button. %>
+    <div class="flex items-center gap-1 shrink-0">
+      <%= button_to refresh_starred_sessions_path,
+            method: :post,
+            class: "text-gray-400 hover:text-indigo-600 p-1",
+            title: "Refresh starred sessions",
+            "aria-label": "Refresh starred sessions",
+            form: { data: { turbo: false } } do %>
+        <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+        </svg>
+      <% end %>
+    </div>
   </div>
   <div class="grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center">
     <% sessions.each do |session| %>

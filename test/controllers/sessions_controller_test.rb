@@ -4823,6 +4823,260 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       "the dashboard View link must set data-turbo-prefetch='false' to avoid drawer cache poisoning"
   end
 
+  # ---------------------------------------------------------------------------
+  # Starred-scoped refresh-all (#refresh_starred)
+  # ---------------------------------------------------------------------------
+
+  # The Starred group's Refresh button acts on favorited sessions and nothing else —
+  # the core scoping guarantee of the control.
+  test "refresh_starred only restarts favorited sessions" do
+    Session.where.not(status: :archived).update_all(status: :archived)
+
+    starred_failed = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Starred failed",
+      status: :failed,
+      session_id: SecureRandom.uuid,
+      favorited: true,
+      metadata: { "working_directory" => "/tmp/starred" }
+    )
+    unstarred_failed = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Unstarred failed",
+      status: :failed,
+      session_id: SecureRandom.uuid,
+      favorited: false,
+      metadata: { "working_directory" => "/tmp/unstarred" }
+    )
+
+    Dir.stubs(:exist?).returns(true)
+
+    post refresh_starred_sessions_url
+
+    assert_redirected_to root_path
+    assert_match(/Restarted 1 failed session/, flash[:notice])
+    assert_equal "running", starred_failed.reload.status
+    assert_equal "failed", unstarred_failed.reload.status
+  end
+
+  # Unlike refresh_all, refresh_starred does not skip frozen categories: the Starred
+  # group renders every favorited session regardless of category, so the button must
+  # act on exactly the cards under it.
+  test "refresh_starred includes a starred session in a frozen category" do
+    Session.where.not(status: :archived).update_all(status: :archived)
+
+    frozen_cat = Category.create!(name: "frozen cat", is_frozen: true)
+    starred_frozen = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Starred in frozen category",
+      status: :failed,
+      session_id: SecureRandom.uuid,
+      favorited: true,
+      category: frozen_cat,
+      metadata: { "working_directory" => "/tmp/starred-frozen" }
+    )
+
+    Dir.stubs(:exist?).returns(true)
+
+    post refresh_starred_sessions_url
+
+    assert_redirected_to root_path
+    assert_match(/Restarted 1 failed session/, flash[:notice])
+    assert_equal "running", starred_frozen.reload.status
+  end
+
+  test "refresh_starred with no starred sessions reports nothing to do" do
+    Session.update_all(favorited: false)
+
+    post refresh_starred_sessions_url
+
+    assert_redirected_to root_path
+    assert_match(/No non-archived starred sessions to refresh/, flash[:notice])
+  end
+
+  test "should route to refresh_starred" do
+    assert_routing(
+      { method: :post, path: "/sessions/refresh_starred" },
+      { controller: "sessions", action: "refresh_starred" }
+    )
+  end
+
+  # ---------------------------------------------------------------------------
+  # Refreshing a waiting session sends the continue nudge
+  # ---------------------------------------------------------------------------
+
+  test "refresh of a stalled waiting session sends the continue nudge" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Waiting session",
+      status: :waiting,
+      session_id: SecureRandom.uuid,
+      metadata: { "working_directory" => "/tmp/waiting" }
+    )
+
+    Dir.stubs(:exist?).returns(true)
+    AgentSessionJob.expects(:enqueue_with_prompt).with(session.id, AutomatedPrompts::SYSTEM_RECOVERY).once
+
+    post refresh_session_url(session)
+
+    assert_redirected_to session_path(session)
+    assert_match(/Continuing waiting session/, flash[:notice])
+    assert_equal "running", session.reload.status
+  end
+
+  # A waiting session with an unfired one-time wake-up is asleep on purpose. Refreshing
+  # it must not fire its work early — it falls through to the plain transcript refresh.
+  test "refresh of a waiting session with a pending wake trigger does not nudge it" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Sleeping session",
+      status: :needs_input,
+      session_id: SecureRandom.uuid,
+      metadata: { "working_directory" => "/tmp/sleeping" }
+    )
+
+    # Creating a per-session one-time wake trigger sleeps the session (needs_input -> waiting).
+    Trigger.create!(
+      name: "Wake session ##{session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    assert_equal "waiting", session.reload.status
+    assert session.awaiting_scheduled_wake?, "expected the session to be asleep on a pending wake-up"
+    assert_not session.continue_nudge_on_refresh?
+
+    AgentSessionJob.expects(:enqueue_with_prompt).never
+
+    post refresh_session_url(session)
+
+    assert_response :redirect
+    assert_equal "waiting", session.reload.status
+  end
+
+  # A waiting session that never started has no conversation to continue — the spawn
+  # pipeline still owns it, so a nudge would be meaningless.
+  test "refresh of a never-started waiting session does not nudge it" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Never started",
+      status: :waiting
+    )
+    assert_nil session.session_id
+    assert_not session.continue_nudge_on_refresh?
+
+    AgentSessionJob.expects(:enqueue_with_prompt).never
+
+    post refresh_session_url(session)
+
+    assert_response :redirect
+    assert_equal "waiting", session.reload.status
+  end
+
+  # The same per-session rule applies to every bulk control, so "refresh all starred"
+  # over a mix of statuses does the right thing per session.
+  test "refresh_starred continues a stalled waiting session and skips a sleeping one" do
+    Session.where.not(status: :archived).update_all(status: :archived)
+
+    stalled = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Starred stalled waiting",
+      status: :waiting,
+      session_id: SecureRandom.uuid,
+      favorited: true,
+      metadata: { "working_directory" => "/tmp/stalled" }
+    )
+    sleeping = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Starred sleeping",
+      status: :needs_input,
+      session_id: SecureRandom.uuid,
+      favorited: true,
+      metadata: { "working_directory" => "/tmp/sleeping-bulk", "paused_by" => "user" }
+    )
+    Trigger.create!(
+      name: "Wake session ##{sleeping.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: sleeping.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    assert_equal "waiting", sleeping.reload.status
+
+    Dir.stubs(:exist?).returns(true)
+    AgentSessionJob.expects(:enqueue_with_prompt).with(stalled.id, AutomatedPrompts::SYSTEM_RECOVERY).once
+
+    post refresh_starred_sessions_url
+
+    assert_redirected_to root_path
+    assert_match(/Continued 1 waiting session/, flash[:notice])
+    assert_equal "running", stalled.reload.status
+    assert_equal "waiting", sleeping.reload.status
+  end
+
+  # ---------------------------------------------------------------------------
+  # Per-session refresh icon on the dashboard cards
+  # ---------------------------------------------------------------------------
+
+  # Clicking the inline icon comes from the dashboard, so the redirect goes back there
+  # rather than yanking the user onto the session detail page.
+  test "refresh from the dashboard redirects back to the dashboard" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Waiting session",
+      status: :waiting,
+      session_id: SecureRandom.uuid,
+      metadata: { "working_directory" => "/tmp/waiting-redirect" }
+    )
+
+    Dir.stubs(:exist?).returns(true)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    post refresh_session_url(session), headers: { "HTTP_REFERER" => root_url }
+
+    assert_redirected_to root_path
+  end
+
+  test "dashboard renders a per-session refresh button for non-running sessions" do
+    Session.where.not(status: :archived).update_all(status: :archived)
+    Session.update_all(favorited: false)
+
+    waiting = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Waiting card", status: :waiting)
+    needs_input = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Needs input card", status: :needs_input)
+    failed = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Failed card", status: :failed)
+    running = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Running card", status: :running)
+
+    get root_url
+    assert_response :success
+
+    [ waiting, needs_input, failed ].each do |session|
+      assert_select "form[action=?]", refresh_session_path(session), { count: 1 },
+        "expected an inline refresh button for the #{session.status} session"
+    end
+    assert_select "form[action=?]", refresh_session_path(running), { count: 0 },
+      "a running session must not get an inline refresh button"
+  end
+
+  test "starred group renders its own refresh-all control" do
+    Session.where.not(status: :archived).update_all(status: :archived)
+    Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Starred card", status: :waiting, favorited: true)
+
+    get root_url
+    assert_response :success
+
+    assert_select "#pinned_section form[action=?]", refresh_starred_sessions_path, { count: 1 },
+      "the Starred group needs its own refresh-all button"
+  end
+
   private
 
   # Vary is a comma-separated list of header names; normalize to a token array so

@@ -186,3 +186,52 @@ The state machine is not the only actor:
   ladder (`MAX_RETRIES = 3`); an abnormal signal death (SIGKILL from an OOM kill, SIGSEGV, …)
   is instead resumed by `ProcessLifecycleManager#handle_signal_death`
   (`MAX_SIGNAL_DEATH_RETRIES = 3`) — see [Spawning](/sessions/spawning/#when-the-process-exits).
+
+## Manual refresh
+
+The dashboard's refresh controls are the human counterpart to those background actors. There
+are four of them, and they all end up in `SessionsController`:
+
+| Control | Action | Scope |
+| --- | --- | --- |
+| The per-card icon next to a session's status badge | `#refresh` | that one session |
+| "Refresh all" in the header | `#refresh_all` | every non-archived session outside a frozen category |
+| The icon in a category section header | `#refresh_category` | that category's non-archived sessions |
+| The icon in the **Starred** group header | `#refresh_starred` | every non-archived favorited session |
+
+`#refresh_starred` deliberately does *not* skip frozen categories the way `#refresh_all` does.
+The Starred group renders every favorited session regardless of its category, so the button acts
+on exactly the cards sitting under it — starring is a per-session opt-in that outranks the
+category's parked flag.
+
+The per-card icon is hidden for a `running` session. A running session is already streaming into
+its card; there is nothing a refresh would tell you that the card does not.
+
+What a refresh *does* depends on the session's state:
+
+- `failed` → restart it (`#resume_failed_session`, or `restart_with_continue_prompt` in bulk).
+- `needs_input` → in bulk, continue it, unless the user paused it by hand (`paused_by: "user"`).
+- `waiting` → send the automated continue nudge (`AutomatedPrompts::SYSTEM_RECOVERY`), the same
+  prompt every recovery path uses. See below.
+- `running`, and any `waiting` session excluded below → re-read the transcript from disk.
+
+### Refreshing a `waiting` session nudges it
+
+A `waiting` session has no live process, so re-reading its transcript tells the user nothing.
+What they want from "refresh" is for the session to get moving again, so `Session#continue_nudge_on_refresh?`
+routes it through `restart_with_continue_prompt` instead.
+
+Two kinds of `waiting` session are excluded, because for them a nudge would be wrong rather than
+merely useless:
+
+- **Never started** (`session_id` blank). There is no conversation to continue — the session is
+  still queued and the spawn pipeline owns it.
+- **Deliberately asleep** (`Session#awaiting_scheduled_wake?`). An unfired one-time wake-up
+  targeting this session — from `wake_me_up_later` or `wake_me_up_when_session_changes_state` —
+  means the agent chose to sleep until a specific moment. Nudging it would fire the work early
+  and destroy the point of the wake-up. If the trigger table can't be read, the session is
+  treated as asleep, so a database error never wakes a sleeper.
+
+Both excluded kinds fall through to the plain transcript refresh. The rule is identical for the
+single-session icon and for all three bulk controls, so "refresh all starred" over a mix of
+statuses does the right per-session thing.
