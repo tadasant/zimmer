@@ -69,6 +69,19 @@
       </div>
     <% end %>
 
+    <%# Start the OAuth flow right here. The flow carries no session — it returns
+        to /connectors and resumes nothing — so authorizing a connector costs the
+        user no session at all. Turbo is off because initiate redirects off-site
+        to the provider's consent screen. %>
+    <% if status.authorizable? %>
+      <%= form_with url: mcp_oauth_initiate_path, method: :post, data: { turbo: false }, class: "mt-3" do |f| %>
+        <%= f.hidden_field :server_name, value: status.server_name %>
+        <%= f.submit status.state == :needs_reauth ? "Re-authorize" : "Authorize",
+              data: { connector_authorize: status.server_name },
+              class: "inline-flex items-center px-2.5 py-1 border border-amber-600 text-xs font-medium rounded-md text-amber-700 bg-white hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 cursor-pointer" %>
+      <% end %>
+    <% end %>
+
     <% if status.credential.present? %>
       <div class="mt-3 flex items-center justify-between gap-3">
         <p class="text-xs text-gray-500">

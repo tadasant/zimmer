@@ -1219,6 +1219,20 @@ third-party endpoints, on a page that exists to be glanced at.
 
 ---
 
+## Authorizing from the Connectors page does not release a session parked on that server
+
+The **Authorize** button on a connector row starts an OAuth flow with no session behind it. That
+is the point — you no longer have to spin up a throwaway session to authorize a connector — but it
+also means there is no session to resume, so `McpOauthResumeService` never runs for that flow.
+
+If a session is sitting `failed` with `failure_reason: oauth_required` on the very server you just
+authorized from `/connectors`, the credential is stored and every future spawn inherits it, but
+that session stays parked. Releasing it still takes a click on its own OAuth banner, which takes
+the already-have-a-credential branch: re-inject the token, clear the runtime's needs-auth cache,
+and resume.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

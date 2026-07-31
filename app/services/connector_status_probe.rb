@@ -81,6 +81,16 @@ class ConnectorStatusProbe
          probe_failed].include?(state)
     end
 
+    # True when starting an OAuth flow from the Connectors page is the thing
+    # that fixes this row: the server is OAuth-based and Zimmer holds no usable
+    # credential for it. :token_expired is deliberately excluded — that one has
+    # a refresh token and RefreshMcpOauthTokensJob resolves it without the user.
+    # A :missing_configuration row is not OAuth at all; its credential is a
+    # `${VAR}` secret and no consent screen will set it.
+    def authorizable?
+      %i[needs_authorization needs_reauth].include?(state)
+    end
+
     # Short badge text.
     def label
       case state
@@ -102,11 +112,11 @@ class ConnectorStatusProbe
       when :no_credential_required
         "The catalog entry for this server configures no credential, so there is nothing to set up."
       when :needs_authorization
-        "No OAuth credential is stored yet. Start a session that uses this server and click Authorize on the OAuth banner."
+        "No OAuth credential is stored yet. Authorize it here — you don't need a session."
       when :token_expired
         "The stored access token has expired. It has a refresh token, so RefreshMcpOauthTokensJob will renew it automatically."
       when :needs_reauth
-        "The stored access token has expired and carries no refresh token. Disconnect it and authorize again from a session."
+        "The stored access token has expired and carries no refresh token. Authorize it again to replace it."
       when :missing_configuration
         "#{'Variable'.pluralize(missing_variables.size)} #{missing_variables.to_sentence} #{missing_variables.one? ? 'has' : 'have'} no value, so this server cannot start."
       when :store_unavailable

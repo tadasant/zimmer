@@ -53,7 +53,8 @@
       <div class="mt-4 flex items-center gap-3">
         <%= f.submit "Complete authorization",
               class: "inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-amber-600 hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 cursor-pointer" %>
-        <%= link_to "Cancel", session_path(@pending_flow.session),
+        <%= link_to "Cancel",
+              @pending_flow.session_less? ? connectors_path : session_path(@pending_flow.session),
               class: "text-sm text-gray-500 hover:text-gray-700" %>
       </div>
     <% end %>
