@@ -513,10 +513,12 @@ web UI with create, reveal and rotate, behind Workspace SSO. It is a far better
 thing to point a person at than the four commands above, and the Connectors page
 points at one.
 
-**One console administers exactly one GCP project, and that is the whole
-subtlety.** `SecretsLocation::CONSOLE_URL` and `SecretsLocation::CONSOLE_PROJECT_ID`
-are stored as a pair for that reason, and the Connectors page compares the second
-against the project its resolver is actually reading:
+**One console administers exactly one GCP project, in one location, and that is
+the whole subtlety.** `SecretsLocation::CONSOLE_URL`, `CONSOLE_PROJECT_ID` and
+`CONSOLE_LOCATION` are stored as a triple for that reason, and the Connectors
+page compares the last two against the store its resolver is actually reading
+(location as well as project — a parameter is addressed by both, so the right
+project in the wrong location is the same silent failure one field further down):
 
 | Console administers | What the row says |
 | --- | --- |
@@ -533,11 +535,15 @@ variable goes on reporting **Missing configuration** with nothing to explain why
 That silent failure is what the comparison exists to prevent, and it is why the
 page must never flatten this to "set your secrets in the console".
 
-Both constants are overridable — `ZIMMER_SECRETS_CONSOLE_URL` and
-`ZIMMER_SECRETS_CONSOLE_PROJECT_ID` — so that pointing at a Zimmer-scoped console,
-if one is ever stood up over `zimmer-secrets-prod`, is configuration rather than a
-deploy of new copy. Override them **together**: overriding only the URL is how you
-get a page confidently sending people to the wrong project.
+All three are overridable — `ZIMMER_SECRETS_CONSOLE_URL`,
+`ZIMMER_SECRETS_CONSOLE_PROJECT_ID`, `ZIMMER_SECRETS_CONSOLE_LOCATION` — so that
+pointing at a Zimmer-scoped console, if one is ever stood up over
+`zimmer-secrets-prod`, is configuration rather than a deploy of new copy. They are
+read as **one unit**, and a partial override is ignored rather than merged: setting
+the project without the URL would otherwise render the green "set it here" box
+pointing at a console that administers something else, which is the exact failure
+the pairing exists to prevent. The failure mode of a half-finished override is
+"no console claimed", never a wrong one.
 
 ### The other credential, on a gateway-hosted server
 
@@ -554,6 +560,12 @@ easier to reach leaves the row exactly as it was. The row names both. It also
 notes that the gateway's own store is a **registry rather than a delivery path**
 today — the gateway still resolves its credentials at deploy time, so a value
 saved there is recorded, not shipped.
+
+"Is this server behind the gateway" is keyed on `SecretsLocation::GATEWAY_HOST`,
+**not** on the console's own host, even though they are the same host today. The
+console URL is overridable precisely so it can be replaced; deriving the gateway
+from it would make this note silently disappear from every row that still has a
+second credential the moment someone did.
 
 ## Caching and failure behaviour
 

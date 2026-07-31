@@ -368,14 +368,20 @@ it reports presence and where to set what is absent.
 ### How the list fills in, and why it re-orders itself
 
 The rows ship as `loading="lazy"` frames and `connector_list_controller` then
-promotes them to `eager` — six at a time, releasing a slot as each frame loads,
-errors, or hits a 15-second watchdog.
+promotes them to `eager` — six at a time, releasing a slot as each frame loads
+(`turbo:frame-load`), comes back without a matching frame (`turbo:frame-missing`,
+which is what a 404 or an error page produces), fails at the network level, or
+hits a 15-second watchdog. All four matter: a row whose probe 404s never fires
+`turbo:frame-load`, so without the second listener it would hold its slot for the
+full watchdog and the sort would wait on it.
 
 Each half of that is load-bearing:
 
-- **Lazy in the markup** is the floor. With JavaScript off, or before the
-  controller connects, the frames still work — they just wait for the viewport,
-  which is what they did before.
+- **Lazy in the markup** is the floor. Before the controller connects — and if it
+  throws, or its bundle fails to load — the frames still resolve on appearance,
+  which is what they did before. It is a floor, not a no-JavaScript fallback:
+  Turbo's lazy loading is itself JavaScript, so with none the rows never resolve
+  either way.
 - **Promoting them** is the fix. Turbo's `lazy` defers a frame until it scrolls
   into view, so on a ~100-server catalog every badge below the fold stayed blank
   until you went looking for it.
@@ -395,9 +401,19 @@ whole load.
 
 Severity itself is not decided in JavaScript. `ConnectorsHelper::SEVERITY_RANKS`
 maps each probe state to a rank, the resolved row carries it as
-`data-connector-rank`, and the controller only compares numbers. A test asserts
-the rank table covers `ConnectorStatusProbe::STATES` exactly, so a new state
-cannot quietly default into the healthy group.
+`data-connector-rank`, the attention threshold is passed in as a value, and the
+controller only compares numbers. A test asserts the rank table covers
+`ConnectorStatusProbe::STATES` exactly, so a new state cannot quietly default
+into the healthy group.
+
+Two edges are handled where they would otherwise be invisible. Turbo Drive's page
+cache restores this list *as the controller left it* — resolved bodies, and the
+`eager` the controller itself wrote — so on a back-navigation onto a half-loaded
+page the controller pre-settles anything already carrying content and counts only
+frames it started; otherwise the in-flight count goes negative, the window blows
+open, and the list never sorts. And a reorder moves DOM nodes, which drops
+keyboard focus, so the sort stands down while focus is inside the list and
+retries once it leaves.
 
 ### Authorizing from the Connectors page
 

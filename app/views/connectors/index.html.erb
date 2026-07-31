@@ -26,19 +26,22 @@
     <% end %>
 
     <% if @servers.any? %>
-      <%# The rows ship as lazy frames so the page works with JavaScript off, and
-          connector_list_controller then promotes them to eager in a small
-          window: no scrolling required, and no ~100-request stampede either. It
-          also does the severity sort, because which rows are problems is only
-          known once their frames have answered. %>
+      <%# The rows ship as lazy frames — the floor, for before the controller
+          connects and for a controller that throws — and connector_list_controller
+          then promotes them to eager in a small window: no scrolling required,
+          and no ~100-request stampede either. It also does the severity sort,
+          because which rows are problems is only known once their frames have
+          answered. The attention threshold is passed in rather than duplicated
+          in JavaScript. %>
       <div class="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden"
            data-controller="connector-list"
-           data-connector-list-concurrency-value="6">
+           data-connector-list-concurrency-value="6"
+           data-connector-list-unresolved-rank-value="<%= ConnectorsHelper::ATTENTION_RANK_CEILING %>">
         <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
           <h2 class="text-lg font-medium text-gray-900">Catalog servers</h2>
           <p class="mt-1 text-sm text-gray-500">
             <%= pluralize(@servers.size, "server") %> in the catalog ·
-            <span data-connector-list-target="attention" class="text-gray-400">checking…</span>
+            <span data-connector-list-target="attention" aria-live="polite" class="text-gray-400">checking…</span>
           </p>
         </div>
         <div class="divide-y divide-gray-200" data-connector-list-target="list">

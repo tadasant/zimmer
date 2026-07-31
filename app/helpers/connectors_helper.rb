@@ -28,7 +28,7 @@ module ConnectorsHelper
   #
   # The rank is computed server-side even though the sort happens in the browser,
   # so "which states are problems" has exactly one definition. The view emits it
-  # as `data-connector-rank`; connectors_sort_controller reads it and never
+  # as `data-connector-rank`; connector_list_controller reads it and never
   # decides severity for itself.
   SEVERITY_RANKS = {
     missing_configuration: 0,
@@ -50,11 +50,6 @@ module ConnectorsHelper
     SEVERITY_RANKS.fetch(state.to_sym, ATTENTION_RANK_CEILING)
   end
 
-  # @param state [Symbol, String]
-  # @return [Boolean] true when this row is one the page should surface first.
-  def connector_needs_attention?(state)
-    connector_severity_rank(state) < ATTENTION_RANK_CEILING
-  end
 
   # Secret-source badges. The label strings themselves are fixed by the
   # providers (SecretProviders::*::BADGE) because strad's Secrets Console ships
@@ -100,21 +95,30 @@ module ConnectorsHelper
   # first, and someone debugging a broken connector wants to know which one they
   # are looking at.
   #
+  # Deliberately keyed on the GATEWAY's host rather than on the console's: those
+  # are the same host today, but the console URL is overridable precisely so a
+  # Zimmer-scoped console can replace it — and deriving this from that would make
+  # the note silently vanish from every row that still has a second credential.
+  #
   # @param server [ServersConfig::Server]
-  # @return [Hash, nil] nil when this server is not reached through the console's
-  #   gateway, which is when there is no second credential to talk about.
+  # @return [Hash, nil] nil when this server is not reached through the gateway,
+  #   which is when there is no second credential to talk about.
   def connector_gateway_console(server)
-    host = SecretsLocation.console_host
-    return nil if host.blank? || server.url.blank?
+    return nil if server.url.blank?
 
     uri = begin
       URI.parse(server.url)
     rescue URI::InvalidURIError
       nil
     end
-    return nil unless uri&.host == host
+    return nil unless uri&.host == SecretsLocation.gateway_host
 
     slug = CGI.parse(uri.query.to_s)["servers"].first.presence
-    { url: SecretsLocation.console_url, slug: slug, host: host }
+    {
+      url: SecretsLocation.console_url,
+      slug: slug,
+      host: SecretsLocation.gateway_host,
+      namespace: SecretsLocation.gateway_namespace(slug || "<slug>")
+    }
   end
 end

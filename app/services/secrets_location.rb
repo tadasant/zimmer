@@ -35,37 +35,75 @@ class SecretsLocation
   # goes on reporting Missing configuration with no indication of why. That is
   # the failure this pairing exists to make impossible to render.
   #
-  # Both are overridable so that the day a Zimmer-scoped console ships (strad can
-  # front a second store with a second bundle — strad/MULTI_STORE.md), pointing
-  # at it is configuration rather than a deploy of new copy.
+  # The whole triple is overridable so that the day a Zimmer-scoped console ships
+  # (strad can front a second store with a second bundle — strad/MULTI_STORE.md),
+  # pointing at it is configuration rather than a deploy of new copy. It is
+  # resolved as ONE unit, in {.console}: a half-override — the project set and
+  # the URL not — would otherwise render the green "set it here" box pointing at
+  # a console that administers something else, which is the exact failure this
+  # pairing exists to prevent. An incomplete override is ignored, so the failure
+  # mode of a misconfiguration is "no console claimed", never a wrong one.
   CONSOLE_URL = "https://strad.tadasant.com/ui/secrets"
   CONSOLE_PROJECT_ID = "strad-secrets-prod"
+  CONSOLE_LOCATION = "global"
+
+  ENV_CONSOLE_URL = "ZIMMER_SECRETS_CONSOLE_URL"
+  ENV_CONSOLE_PROJECT_ID = "ZIMMER_SECRETS_CONSOLE_PROJECT_ID"
+  ENV_CONSOLE_LOCATION = "ZIMMER_SECRETS_CONSOLE_LOCATION"
+
+  # The gateway whose upstream credentials the console holds, and the namespace
+  # it holds them under. Separate from the console's own URL on purpose: a
+  # Zimmer-scoped console would change {.console_url} while these stay put, and
+  # deriving one from the other would make the gateway note silently disappear
+  # from the rows that still have a second credential.
+  GATEWAY_HOST = "strad.tadasant.com"
+  GATEWAY_NAMESPACE = "/strad/prod/mcp"
 
   class << self
     # --- The Secrets Console -------------------------------------------------
 
-    # @return [String]
-    def console_url = ENV["ZIMMER_SECRETS_CONSOLE_URL"].presence || CONSOLE_URL
+    # The console's address and the one project (in one location) it administers,
+    # resolved together. See CONSOLE_URL's comment for why "together" is the
+    # whole point.
+    #
+    # @return [Hash]
+    def console
+      overrides = [ ENV_CONSOLE_URL, ENV_CONSOLE_PROJECT_ID, ENV_CONSOLE_LOCATION ].map { |key| env_value(key) }
 
-    # @return [String] the one GCP project {.console_url} administers.
-    def console_project_id = ENV["ZIMMER_SECRETS_CONSOLE_PROJECT_ID"].presence || CONSOLE_PROJECT_ID
+      return { url: CONSOLE_URL, project_id: CONSOLE_PROJECT_ID, location: CONSOLE_LOCATION } if overrides.any?(&:nil?)
 
-    # @return [String, nil] host of the console, which is also the host of the
-    #   gateway whose servers it holds credentials for.
-    def console_host
-      URI.parse(console_url).host
-    rescue URI::InvalidURIError
-      nil
+      { url: overrides[0], project_id: overrides[1], location: overrides[2] }
     end
 
-    # Does the console administer the project this variable resolves from?
+    # @return [String]
+    def console_url = console[:url]
+
+    # @return [String] the one GCP project {.console_url} administers.
+    def console_project_id = console[:project_id]
+
+    # @return [String] host of the gateway whose upstream credentials the console
+    #   holds. Not derived from {.console_url} — see GATEWAY_HOST.
+    def gateway_host = GATEWAY_HOST
+
+    # @return [String] the console path prefix a gateway server's own credentials
+    #   sit under, for `<slug>`.
+    def gateway_namespace(slug) = "#{GATEWAY_NAMESPACE}/#{slug}/static/"
+
+    # Does the console administer the store this variable resolves from?
     #
-    # @param project_id [String, nil] nil when no Parameter Store is configured,
-    #   in which case the answer is no: the console does not hold Zimmer's
-    #   encrypted credentials either.
+    # Location is compared as well as project: a parameter is addressed by both,
+    # so a console pointed at the right project in the wrong location would send
+    # someone to create a parameter Zimmer never reads — the same silent failure
+    # as the wrong project, one field further down.
+    #
+    # @param store [SecretProviders::ParameterStoreProvider, nil] nil when no
+    #   Parameter Store is configured, in which case the answer is no: the
+    #   console does not hold Zimmer's encrypted credentials either.
     # @return [Boolean]
-    def console_administers?(project_id)
-      project_id.present? && project_id.to_s == console_project_id
+    def console_administers?(store)
+      return false if store.nil?
+
+      store.project_id.to_s == console[:project_id] && store.location.to_s == console[:location]
     end
 
     # Everything the UI needs to tell a user how to set one variable.
@@ -161,7 +199,7 @@ class SecretsLocation
     # which is a different principal entirely.
     #
     # @return [Array<String>]
-    def admin_steps(store, path)
+    def admin_steps(store)
       [
         "The Secrets Console administers #{console_project_id}. This variable resolves from " \
         "#{store.project_id} — a separate Google Cloud project, deliberately, because Zimmer's " \
@@ -180,13 +218,26 @@ class SecretsLocation
 
     private
 
+    # ENV values are bytes TAGGED UTF-8 and nothing guarantees they are — a
+    # truncated paste is tagged identically — and `presence` goes through
+    # `blank?`, which RAISES on those bytes. Without this guard a mangled console
+    # override would take down the render of every connector row rather than
+    # leaving the default console in place. Same hazard, same treatment, as
+    # ParameterStore::Resolver.from_env.
+    def env_value(key)
+      value = ENV[key]
+      return nil unless value.is_a?(String) && value.valid_encoding?
+
+      value.presence
+    end
+
     def parameter_store_provider(chain)
       chain.providers.find { |provider| provider.is_a?(SecretProviders::ParameterStoreProvider) }
     end
 
     def parameter_store_instructions(variable_name, store)
       path = store.path_for(variable_name)
-      administered = console_administers?(store.project_id)
+      administered = console_administers?(store)
 
       {
         variable: variable_name,
@@ -201,7 +252,7 @@ class SecretsLocation
         console_caption: administered ?
           "Set it in the Secrets Console — it administers #{store.project_id}:" :
           "The Secrets Console does not administer this variable's project:",
-        steps: administered ? console_steps(path) : admin_steps(store, path),
+        steps: administered ? console_steps(path) : admin_steps(store),
         snippet: administered ? nil : envelope_json(variable_name, store.project_id),
         snippet_caption: administered ? nil :
           "The envelope the parameter version carries — generated, because the path field has to be " \

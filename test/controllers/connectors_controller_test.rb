@@ -10,7 +10,7 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
       "title" => "Secrets Service Account",
       "description" => "Strad-hosted secrets MCP server.",
       "type" => "streamable-http",
-      "url" => "https://strad.example.com/mcp?servers=secrets",
+      "url" => "https://strad.tadasant.com/mcp?servers=secrets",
       "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" }
     },
     "notion" => {
@@ -124,8 +124,6 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     # A gateway-hosted server has two credentials in two places. The console owns
     # the second and never the first, and fixing the wrong one leaves the row
     # exactly as it was — so the row has to name which is which.
-    ENV["ZIMMER_SECRETS_CONSOLE_URL"] = "https://strad.example.com/ui/secrets"
-
     get connector_path("secrets-service-account")
 
     assert_response :success
@@ -140,8 +138,24 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
       # nothing.
       assert_match "registry rather than a delivery path", copy
     end
+  end
+
+  test "the gateway note survives the console being pointed somewhere else" do
+    # The whole reason the console URL is overridable is that a Zimmer-scoped
+    # console may replace it. If "is this behind the gateway" were derived from
+    # the console URL, this note would silently vanish from every row that still
+    # has a second credential the moment that happened.
+    ENV[SecretsLocation::ENV_CONSOLE_URL] = "https://console.example.test/ui/secrets"
+    ENV[SecretsLocation::ENV_CONSOLE_PROJECT_ID] = "zimmer-secrets-prod"
+    ENV[SecretsLocation::ENV_CONSOLE_LOCATION] = "global"
+
+    get connector_path("secrets-service-account")
+
+    assert_response :success
+    assert_select "[data-gateway-console=secrets]"
   ensure
-    ENV.delete("ZIMMER_SECRETS_CONSOLE_URL")
+    [ SecretsLocation::ENV_CONSOLE_URL, SecretsLocation::ENV_CONSOLE_PROJECT_ID,
+      SecretsLocation::ENV_CONSOLE_LOCATION ].each { |key| ENV.delete(key) }
   end
 
   test "a server Zimmer reaches directly gets no gateway-credential note" do

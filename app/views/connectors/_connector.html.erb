@@ -49,7 +49,7 @@
               </p>
               <p class="mt-1">
                 <%= link_to instruction[:console_url], instruction[:console_url],
-                      target: "_blank", rel: "noopener",
+                      target: "_blank", rel: "noopener noreferrer",
                       data: { secret_console_link: true },
                       class: "text-xs font-mono underline #{instruction[:console_administers] ? 'text-green-800 hover:text-green-900' : 'text-amber-800 hover:text-amber-900'}" %>
               </p>
@@ -68,7 +68,7 @@
               <p class="mt-2 text-xs text-red-800" data-gateway-console="<%= gateway[:slug] %>">
                 This server is reached through <%= gateway[:host] %>, so it has a second credential:
                 the one the gateway presents upstream, at
-                <code class="font-mono">/strad/prod/mcp/<%= gateway[:slug] || "&lt;slug&gt;".html_safe %>/static/</code>
+                <code class="font-mono"><%= gateway[:namespace] %></code>
                 in the Secrets Console. That one the console does administer — but it is not
                 <code class="font-mono"><%= instruction[:variable] %></code>, which is Zimmer's own
                 token for reaching the gateway. Fixing the wrong one leaves this row exactly as it is.
