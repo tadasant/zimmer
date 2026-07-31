@@ -15,7 +15,13 @@ import { Controller } from "@hotwired/stimulus"
 export default class extends Controller {
   static values = {
     url: String,
-    interval: { type: Number, default: 2000 }
+    interval: { type: Number, default: 2000 },
+    // Milliseconds left before this attempt cannot succeed (the server's
+    // expires_at, plus slack for the reaper), measured at render time. A
+    // *duration* rather than an absolute instant on purpose: comparing a
+    // server-rendered epoch against Date.now() would abandon a perfectly healthy
+    // login on any browser whose clock runs fast. 0 disables the deadline.
+    remaining: { type: Number, default: 0 }
   }
 
   // Give up after this many consecutive failed polls (network error or non-2xx)
@@ -25,6 +31,9 @@ export default class extends Controller {
   connect() {
     this.stopped = false
     this.errorCount = 0
+    // Anchored to this browser's own clock, so only elapsed time matters. Each
+    // poll re-renders the panel and re-anchors it against a fresh server value.
+    this.deadline = this.remainingValue ? Date.now() + this.remainingValue : 0
     this.timer = setInterval(() => this.poll(), this.intervalValue)
   }
 
@@ -38,6 +47,18 @@ export default class extends Controller {
 
   async poll() {
     if (this.stopped || this.polling) return
+
+    // Client-side backstop. The server drives every attempt to a terminal state
+    // (RuntimeLoginAttempt#fail_orphaned!, applied lazily on this very endpoint),
+    // so reaching this deadline means we are not getting truthful answers at all
+    // — the panel must still stop lying rather than spin on.
+    if (this.deadline && Date.now() > this.deadline) {
+      this.giveUp(
+        "This login didn't finish in time and has been abandoned. Reload the page and authenticate again."
+      )
+      return
+    }
+
     this.polling = true
     try {
       const response = await fetch(this.urlValue, {
@@ -106,7 +127,34 @@ export default class extends Controller {
   recordError() {
     this.errorCount += 1
     if (this.errorCount >= this.constructor.MAX_CONSECUTIVE_ERRORS) {
-      this.disconnect()
+      this.giveUp(
+        "Lost contact with the server while finishing sign-in, so this login's outcome is unknown. " +
+        "Reload the page to see the account's current state."
+      )
     }
+  }
+
+  // Stop polling AND say so on screen.
+  //
+  // Stopping the timer alone is what made this panel hang: the last frame the
+  // poller rendered — typically "Finishing sign-in and capturing credentials…" —
+  // stayed on screen verbatim, with nothing left running to ever replace it. A
+  // spinner that has stopped spinning toward anything is indistinguishable from
+  // one that is still working, so the user waits forever on a dead panel. Every
+  // give-up path must repaint the element with what went wrong.
+  giveUp(message) {
+    this.disconnect()
+
+    const notice = document.createElement("div")
+    notice.className = "rounded-md bg-amber-50 border border-amber-200 p-3"
+    const text = document.createElement("p")
+    text.className = "text-xs text-amber-800"
+    text.textContent = message
+    notice.appendChild(text)
+
+    this.element.replaceChildren(notice)
+    // Drop the status marker so a later poll response (or a Turbo cache restore)
+    // can't mistake this for a live attempt still sitting in its old state.
+    delete this.element.dataset.loginStatus
   }
 }

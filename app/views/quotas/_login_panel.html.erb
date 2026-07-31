@@ -10,7 +10,9 @@
     <% if last && last.status == "failed" && last.error_message.present? %>
       <p class="text-xs text-red-600 mb-2">Last login failed: <%= last.error_message %></p>
     <% elsif last && last.status == "expired" %>
-      <p class="text-xs text-amber-600 mb-2">Last login expired before completion.</p>
+      <p class="text-xs text-amber-600 mb-2">
+        <%= last.error_message.presence || "Last login expired before completion." %>
+      </p>
     <% end %>
     <div class="flex items-center justify-between">
       <span class="text-xs text-gray-500">

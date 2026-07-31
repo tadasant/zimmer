@@ -28,20 +28,31 @@ class CleanupRuntimeLoginAttemptsJob < ApplicationJob
 
   private
 
-  # A non-terminal attempt is orphaned once its verification window has elapsed or
-  # the login CLI it was driving is gone. Force it to failed so the UI stops
-  # polling, kill any lingering PID, and drop the pasted authorization code.
+  # A non-terminal attempt is orphaned once its verification window has elapsed,
+  # the job driving it stopped stamping its heartbeat, or the login CLI it was
+  # driving is gone. Force it terminal so the UI stops polling, kill any lingering
+  # PID, and drop the pasted authorization code.
+  #
+  # The heartbeat is what catches a worker killed hard enough to skip Ruby (deploy
+  # SIGKILL, crash, container replacement): no ensure block runs, so the row would
+  # otherwise sit non-terminal until its 14-minute window elapsed. It is also the
+  # only one of the three signals that survives a container restart intact — a
+  # recorded PID means nothing once PIDs have been renumbered in a fresh
+  # container, where it may be absent (reaping a live login) or reused by an
+  # unrelated process (never reaping a dead one).
   def reap_orphaned
     reaped = 0
 
     RuntimeLoginAttempt.active.find_each do |attempt|
-      next unless attempt.expired_window? || process_dead?(attempt)
+      next unless attempt.orphaned? || process_dead?(attempt)
 
       kill_if_alive(attempt.pid)
       with_db_retry do
-        attempt.update!(
+        # fail_orphaned! names which deadline was missed and returns false for a
+        # row that is only process_dead?, which gets the generic reason instead.
+        attempt.fail_orphaned! || attempt.update!(
           status: "failed",
-          error_message: "Login did not complete (worker stopped or verification window expired).",
+          error_message: "The login CLI is no longer running, so this login cannot complete. Start a new login.",
           pasted_code: nil
         )
       end
@@ -65,8 +76,9 @@ class CleanupRuntimeLoginAttemptsJob < ApplicationJob
   end
 
   # An attempt still in "starting" hasn't spawned its CLI yet (no PID), so absence
-  # of a PID is not death — only a recorded-but-gone PID counts. The expired_window
-  # check is what eventually reaps a never-spawned attempt.
+  # of a PID is not death — only a recorded-but-gone PID counts. A never-spawned
+  # attempt (queued job, no heartbeat yet) is reaped by the expired_window check
+  # inside orphaned? instead.
   def process_dead?(attempt)
     attempt.pid.present? && !process_alive?(attempt.pid)
   end

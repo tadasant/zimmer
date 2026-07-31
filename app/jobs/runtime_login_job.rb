@@ -31,6 +31,16 @@ class RuntimeLoginJob < ApplicationJob
   # pumping CLI output.
   POLL_INTERVAL = 1.0
 
+  # How often we stamp attempt.heartbeat_at while the loop is running. This is
+  # the liveness signal CleanupRuntimeLoginAttemptsJob and QuotasController#
+  # login_status use to notice that the worker driving a login has gone away —
+  # a hard kill (deploy SIGKILL, crash, container replacement) skips Ruby
+  # entirely, so no ensure block and no rescue will ever mark the row terminal.
+  # Throttled well below POLL_INTERVAL so a 12-minute login costs ~48 writes
+  # rather than ~720. Must stay comfortably under
+  # RuntimeLoginAttempt::HEARTBEAT_TIMEOUT.
+  HEARTBEAT_INTERVAL = 15.seconds
+
   def perform(attempt_id)
     attempt = RuntimeLoginAttempt.find_by(id: attempt_id)
     return unless attempt
@@ -49,7 +59,8 @@ class RuntimeLoginJob < ApplicationJob
 
   def run(attempt, account, driver, config_dir)
     reader, writer, pid = PTY.spawn(driver.env(config_dir), *driver.resolved_command)
-    attempt.update!(pid: pid, status: "starting")
+    attempt.update!(pid: pid, status: "starting", heartbeat_at: Time.current)
+    @last_beat_at = Time.current
 
     raw = +""
     surfaced_url = false
@@ -59,13 +70,23 @@ class RuntimeLoginJob < ApplicationJob
     loop do
       # Stop conditions driven by the UI side of the bus.
       state = poll_state(attempt)
-      break finish_canceled(attempt, pid) if state.nil? || state[0] == "canceled"
+
+      # Stop the moment the row is gone or already terminal — not just on
+      # "canceled". Something else (the user cancelling, the reaper deciding this
+      # attempt was orphaned, an account deletion cascading the row away) has
+      # already decided the outcome. Carrying on would let a late capture
+      # resurrect a terminal row to "succeeded", overwriting the outcome the user
+      # was shown with a contradictory one.
+      break finish_settled(attempt, pid, state&.first) if state.nil? || RuntimeLoginAttempt::TERMINAL_STATUSES.include?(state[0])
+
+      beat(attempt)
 
       # Hard cap on subprocess lifetime, independent of the attempt's wall-clock
       # verification window (CleanupRuntimeLoginAttemptsJob enforces that). Keeps a
       # wedged CLI from pinning a worker thread until the worker recycles.
       if monotonic_now > deadline
-        break finish(attempt, pid, "expired", "Login timed out before completion.")
+        break finish(attempt, pid, "expired",
+          "The login CLI ran for #{MAX_DURATION.inspect} without completing and was stopped. Start a new login.")
       end
 
       # The :paste login CLI (Claude) keeps its interactive TUI open after a
@@ -145,23 +166,28 @@ class RuntimeLoginJob < ApplicationJob
     close_io(reader, writer)
   end
 
-  # Read the UI side of the message bus (pasted code + cancellation). MUST bypass
-  # the ActiveRecord query cache.
-  #
-  # This job runs inside ActiveJob's query-cache scope, where the cache is
-  # pool-level (Rails 7.1+). The loop polls the same row with identical SQL every
-  # tick, so the first read caches pasted_code=nil and every subsequent read is
-  # served from that cache. The user's code is written by the *controller* — a
-  # separate web process with its own connection pool — whose write never
-  # invalidates this worker pool's cache. Without uncached, the worker would never
-  # observe the pasted code and the login would hang at awaiting_code until it
-  # timed out. (The loop's own writes bust its cache, but they happen on stale
-  # data and don't help.) uncached forces a fresh DB hit so cross-process writes
-  # are seen.
+  # Read the UI side of the message bus (pasted code + cancellation). The
+  # `uncached` block this requires is owned by RuntimeLoginAttempt.bus_state so
+  # no call site can forget it — see that method for why it is mandatory.
   def poll_state(attempt)
-    RuntimeLoginAttempt.uncached do
-      RuntimeLoginAttempt.where(id: attempt.id).pick(:status, :pasted_code)
-    end
+    RuntimeLoginAttempt.bus_state(attempt.id)
+  end
+
+  # Stamp the liveness signal the reaper and the Quotas poller read. Throttled to
+  # HEARTBEAT_INTERVAL, and issued straight to the DB (update_all) so it neither
+  # disturbs the in-memory row nor depends on its dirty state.
+  #
+  # Best-effort: a transient DB hiccup here must not abort a login that is
+  # otherwise fine. Missing a beat only risks an early reap, and the reaper's
+  # timeout leaves several beats of slack.
+  def beat(attempt)
+    now = Time.current
+    return if @last_beat_at && now - @last_beat_at < HEARTBEAT_INTERVAL
+
+    RuntimeLoginAttempt.where(id: attempt.id).update_all(heartbeat_at: now)
+    @last_beat_at = now
+  rescue => e
+    Rails.logger.warn "[RuntimeLoginJob] attempt=#{attempt.id} heartbeat failed: #{e.class} - #{e.message}"
   end
 
   # Capture the credentials the CLI wrote into the scratch config dir. Reached
@@ -175,13 +201,37 @@ class RuntimeLoginJob < ApplicationJob
   # "did not produce credentials".
   def complete(attempt, account, driver, config_dir, pid, raw = nil)
     driver.capture!(config_dir, account)
-    attempt.update!(status: "succeeded", error_message: nil)
+    settle(attempt, "succeeded", nil)
     Rails.logger.info "[RuntimeLoginJob] attempt=#{attempt.id} runtime=#{attempt.runtime} succeeded"
   rescue => e
-    clear_pasted_code(attempt)
     message = enrich_error(e.message, driver, raw)
-    attempt.update!(status: "failed", error_message: truncate_error(message))
+    settle(attempt, "failed", truncate_error(message))
     Rails.logger.warn "[RuntimeLoginJob] attempt=#{attempt.id} capture failed: #{e.class} - #{message}"
+  end
+
+  # Write this job's verdict, but only onto a row nobody else has settled.
+  #
+  # The loop's terminal-status guard runs at the top of an iteration; the capture
+  # that follows it — including all of driver.capture! — is a window in which the
+  # user can hit Cancel or the reaper can decide this attempt is orphaned. An
+  # unconditional write would overwrite the outcome they were shown, so the status
+  # filter goes in the UPDATE itself, where it is atomic. Losing the race is
+  # normal, not an error: the row already says something true.
+  #
+  # Always drops the pasted authorization code. It is single-use and
+  # credential-adjacent, and a double-submitted code can land in the row after the
+  # loop consumed the first one, so no terminal path may leave it behind.
+  def settle(attempt, status, message)
+    updated = RuntimeLoginAttempt
+      .where(id: attempt.id)
+      .where.not(status: RuntimeLoginAttempt::TERMINAL_STATUSES)
+      .update_all(status: status, error_message: message, pasted_code: nil, updated_at: Time.current)
+
+    if updated.zero?
+      clear_pasted_code(attempt)
+      Rails.logger.info "[RuntimeLoginJob] attempt=#{attempt.id} settled elsewhere; not writing #{status}"
+    end
+    updated.positive?
   end
 
   # Append the CLI's own failure line to the capture error when one is present in
@@ -193,16 +243,17 @@ class RuntimeLoginJob < ApplicationJob
 
   def finish(attempt, pid, status, message)
     terminate(pid)
-    clear_pasted_code(attempt)
-    attempt.update!(status: status, error_message: truncate_error(message))
+    settle(attempt, status, truncate_error(message))
   end
 
-  def finish_canceled(attempt, pid)
+  # The attempt was settled by someone else while we were driving it (user
+  # cancel, reaper, or the row cascading away with a deleted account). The
+  # terminal status and its error_message are already written, so don't touch
+  # them — just stop the CLI and drop any authorization code the user pasted.
+  def finish_settled(attempt, pid, status)
     terminate(pid)
-    # Status already "canceled" from the controller; just stop the process and
-    # drop any authorization code the user pasted before cancelling.
     clear_pasted_code(attempt)
-    Rails.logger.info "[RuntimeLoginJob] attempt=#{attempt.id} canceled by user"
+    Rails.logger.info "[RuntimeLoginJob] attempt=#{attempt.id} already settled (#{status || "row deleted"}); stopping"
   end
 
   # Null the Claude authorization code on any terminal path so a failed/canceled

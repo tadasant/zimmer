@@ -13,6 +13,7 @@ class RuntimeLoginAttemptDashboard < Administrate::BaseDashboard
     verification_code: Field::String,
     error_message: Field::Text,
     expires_at: Field::DateTime,
+    heartbeat_at: Field::DateTime,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
   }.freeze
@@ -35,6 +36,7 @@ class RuntimeLoginAttemptDashboard < Administrate::BaseDashboard
     verification_code
     error_message
     expires_at
+    heartbeat_at
     created_at
     updated_at
   ].freeze
