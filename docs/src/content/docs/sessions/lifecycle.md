@@ -226,12 +226,35 @@ merely useless:
 
 - **Never started** (`session_id` blank). There is no conversation to continue — the session is
   still queued and the spawn pipeline owns it.
-- **Deliberately asleep** (`Session#awaiting_scheduled_wake?`). An unfired one-time wake-up
-  targeting this session — from `wake_me_up_later` or `wake_me_up_when_session_changes_state` —
-  means the agent chose to sleep until a specific moment. Nudging it would fire the work early
-  and destroy the point of the wake-up. If the trigger table can't be read, the session is
-  treated as asleep, so a database error never wakes a sleeper.
+- **Deliberately asleep** (`Session#awaiting_scheduled_wake?`). A one-time wake-up targeting this
+  session that is still *ahead* of it — from `wake_me_up_later` or
+  `wake_me_up_when_session_changes_state` — means the agent chose to sleep until a specific
+  moment. Nudging it would fire the work early, and worse: `restart_with_continue_prompt` resumes
+  the session, and `resume`'s `cancel_pending_one_time_wake_triggers` callback *consumes* the
+  pending condition, so a premature refresh would delete the wake-up it was waiting on. If the
+  trigger table can't be read, the session is treated as asleep, so a database error never wakes
+  a sleeper.
 
 Both excluded kinds fall through to the plain transcript refresh. The rule is identical for the
 single-session icon and for all three bulk controls, so "refresh all starred" over a mix of
 statuses does the right per-session thing.
+
+:::note[An overdue wake-up is a stall, not sleep]
+"Still ahead of it" is doing real work in that second bullet, and it is deliberately *narrower*
+than what `cancel_pending_one_time_wake_triggers` consumes on resume.
+
+A one-time schedule whose moment has already passed without firing — a stopped scheduler, a
+GoodJob backlog, a crashed trigger job — describes a session that is **stuck**, which is exactly
+the session refresh exists to rescue. Treating it as "asleep" would make refresh a no-op on the
+one case that most needs it. So sleeping means *the scheduler has yet to reach it*, read through
+the same `TriggerCondition#schedule_due?` the firing path uses. A session-scoped `ao_event` wake
+has no time component — it fires whenever the watched session transitions — so an unfired one is
+always still ahead.
+
+The cancel-on-resume path keeps the broader reading, and should: once a session is resumed by
+hand, an overdue wake-up firing later would land on an already-active session.
+:::
+
+Bulk refresh asks this about a whole set of candidates at once via
+`Session.ids_awaiting_scheduled_wake`, which answers in one query rather than one per waiting
+session.
