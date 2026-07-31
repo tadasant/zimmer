@@ -45,6 +45,18 @@ class SecretsLocationTest < ActiveSupport::TestCase
 
   # --- the Google Parameter Store branch -------------------------------------
 
+  # Point the console at a given project/location for the duration of a block.
+  # Always sets all three vars, because a partial set is deliberately ignored.
+  def with_console(url: "https://console.example.test/ui/secrets", project_id:, location:)
+    ENV[SecretsLocation::ENV_CONSOLE_URL] = url
+    ENV[SecretsLocation::ENV_CONSOLE_PROJECT_ID] = project_id
+    ENV[SecretsLocation::ENV_CONSOLE_LOCATION] = location
+    yield
+  ensure
+    [ SecretsLocation::ENV_CONSOLE_URL, SecretsLocation::ENV_CONSOLE_PROJECT_ID,
+      SecretsLocation::ENV_CONSOLE_LOCATION ].each { |key| ENV.delete(key) }
+  end
+
   def chain_with_store
     fake = FakeParameterStore.new
     SecretProviders::Chain.new([ fake.provider, SecretProviders::RailsCredentials.new ])
@@ -61,34 +73,117 @@ class SecretsLocationTest < ActiveSupport::TestCase
     assert_match FakeParameterStore::PROJECT, instructions[:headline]
   end
 
-  test "the store snippet creates the secret, the parameter and the envelope that joins them" do
-    snippet = SecretsLocation.instructions("STRAD_API_KEY", chain: chain_with_store)[:snippet]
-    id = ParameterStore::Namespace.parameter_id(ParameterStore::Namespace.parameter_path("STRAD_API_KEY"))
+  # --- the Secrets Console ---------------------------------------------------
 
-    assert_match "gcloud secrets create #{id}", snippet
-    assert_match "gcloud parametermanager parameters create #{id}", snippet
-    assert_match "gcloud parametermanager parameters versions create v1", snippet
-    assert_match "managed-by=zimmer", snippet
-    assert_match SecretsLocation::PLACEHOLDER, snippet
+  test "a store the console does NOT administer is called out, not papered over" do
+    # This is the live case and the whole reason the console pointer is
+    # conditional. Zimmer's store is deliberately its own GCP project, so a value
+    # typed into strad's console is accepted, saved, and never read by Zimmer.
+    # If this ever silently flips to `true`, the page starts telling people to do
+    # something that fails without telling them.
+    instructions = SecretsLocation.instructions("STRAD_API_KEY", chain: chain_with_store)
+
+    refute_equal SecretsLocation.console_project_id, FakeParameterStore::PROJECT,
+      "this test is only meaningful while the fake store is a different project than the console's"
+    refute instructions[:console_administers]
+    assert_equal SecretsLocation.console_url, instructions[:console_url]
+
+    steps = instructions[:steps].join(" ")
+    assert_match SecretsLocation.console_project_id, steps
+    assert_match FakeParameterStore::PROJECT, steps
+    assert_match "will never reach this variable", steps
   end
 
-  test "the store snippet grants the PARAMETER access to the secret it points at" do
-    # Without this grant `:render` returns 400 SECRET_REFERENCE_ERROR for every
-    # resolution, because it dereferences the __REF__ as the parameter's own
-    # principal rather than as Zimmer's credential. The store banner stays green
-    # throughout (it probes the RESOLVER), so an omission here is invisible until
-    # a variable silently fails to resolve.
-    snippet = SecretsLocation.instructions("STRAD_API_KEY", chain: chain_with_store)[:snippet]
-    id = ParameterStore::Namespace.parameter_id(ParameterStore::Namespace.parameter_path("STRAD_API_KEY"))
+  test "a store the console DOES administer gets console steps and no shell at all" do
+    fake = FakeParameterStore.new
+    chain = SecretProviders::Chain.new([ fake.provider, SecretProviders::RailsCredentials.new ])
+    with_console(project_id: FakeParameterStore::PROJECT, location: FakeParameterStore::LOCATION) do
+      instructions = SecretsLocation.instructions("STRAD_API_KEY", chain: chain)
 
-    assert_match "policyMember.iamPolicyUidPrincipal", snippet
-    assert_match "gcloud secrets add-iam-policy-binding #{id}", snippet
-    assert_match "--role=roles/secretmanager.secretAccessor", snippet
+      assert instructions[:console_administers]
+      assert_nil instructions[:command], "the console flow is the UI, not a command line"
+      assert_nil instructions[:snippet]
+      assert_match ParameterStore::Namespace.parameter_path("STRAD_API_KEY"), instructions[:steps].join(" ")
+    end
+  end
 
-    # The grant has to land before the value is ever read back.
-    assert_operator snippet.index("add-iam-policy-binding"), :<,
-      snippet.index("parameters versions create"),
-      "grant the parameter access before creating the version that needs it"
+  test "the console's address, project and location are overridable as one unit" do
+    # So that pointing at a Zimmer-scoped console is configuration rather than a
+    # deploy of new copy.
+    with_console(url: "https://example.test/ui/secrets",
+      project_id: FakeParameterStore::PROJECT, location: FakeParameterStore::LOCATION) do
+      assert_equal "https://example.test/ui/secrets", SecretsLocation.console_url
+      assert SecretsLocation.console_administers?(FakeParameterStore.new.provider)
+    end
+  end
+
+  test "a HALF override is ignored rather than merged" do
+    # Setting the project without the URL is the plausible half-migration, and
+    # merging it would render "set it in the Secrets Console — it administers
+    # zimmer-secrets-prod" above a link to a console that administers something
+    # else. That is the precise failure the triple exists to prevent, so an
+    # incomplete override must fail safe to "no console claimed".
+    [ SecretsLocation::ENV_CONSOLE_PROJECT_ID, SecretsLocation::ENV_CONSOLE_URL,
+      SecretsLocation::ENV_CONSOLE_LOCATION ].each do |only|
+      ENV[only] = only == SecretsLocation::ENV_CONSOLE_URL ? "https://example.test/ui/secrets" : FakeParameterStore::PROJECT
+
+      assert_equal SecretsLocation::CONSOLE_URL, SecretsLocation.console_url,
+        "#{only} alone must not move the console"
+      refute SecretsLocation.console_administers?(FakeParameterStore.new.provider),
+        "#{only} alone must not make the console claim a project it cannot administer"
+    ensure
+      ENV.delete(only)
+    end
+  end
+
+  test "the right project in the wrong location is not administered either" do
+    # A parameter is addressed by project AND location. Comparing only the
+    # project sends someone to create a parameter Zimmer never reads — the same
+    # silent failure as the wrong project, one field down.
+    with_console(project_id: FakeParameterStore::PROJECT, location: "europe-west4") do
+      refute SecretsLocation.console_administers?(FakeParameterStore.new.provider)
+    end
+  end
+
+  test "the console never claims to administer the encrypted-credentials fallback" do
+    chain = SecretProviders::Chain.new([ SecretProviders::RailsCredentials.new ])
+    instructions = SecretsLocation.instructions("STRAD_API_KEY", chain: chain)
+
+    refute instructions[:console_administers]
+    refute SecretsLocation.console_administers?(nil)
+    assert_match "will not reach this variable", instructions[:steps].join(" ")
+  end
+
+  test "the gateway is identified by its own host, not by whatever the console URL says" do
+    # The console URL is overridable so it can be replaced by a Zimmer-scoped
+    # one. Deriving the gateway from it would make the second-credential note
+    # vanish from every row that still has a second credential the moment
+    # someone did that.
+    with_console(url: "https://console.example.test/ui/secrets",
+      project_id: FakeParameterStore::PROJECT, location: FakeParameterStore::LOCATION) do
+      assert_equal SecretsLocation::GATEWAY_HOST, SecretsLocation.gateway_host
+      assert_equal "/strad/prod/mcp/slack/static/", SecretsLocation.gateway_namespace("slack")
+    end
+  end
+
+  test "a console override that is not valid UTF-8 leaves the default standing" do
+    # ENV values are bytes tagged UTF-8; `presence` raises on ones that are not.
+    # Unguarded, a mangled override takes down the render of every connector row.
+    ENV[SecretsLocation::ENV_CONSOLE_URL] = (+"https://ex\xC3.test").force_encoding("UTF-8")
+
+    assert_equal SecretsLocation::CONSOLE_URL, SecretsLocation.console_url
+  ensure
+    ENV.delete(SecretsLocation::ENV_CONSOLE_URL)
+  end
+
+  test "the un-administered branch still hands over the envelope, which cannot be typed by hand" do
+    # The path field guards against Namespace.parameter_id's lossy fold, so it
+    # has to be exactly right. Dropping the gcloud wall must not drop this.
+    instructions = SecretsLocation.instructions("STRAD_API_KEY", chain: chain_with_store)
+
+    assert_equal ParameterStore::Namespace.parameter_path("STRAD_API_KEY"),
+      JSON.parse(instructions[:snippet]).fetch("path")
+    assert_match "secretAccessor", instructions[:steps].join(" ")
   end
 
   test "the envelope the snippet writes is exactly what the client reads back" do

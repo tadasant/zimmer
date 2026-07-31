@@ -12,27 +12,44 @@
       </div>
       <p class="text-sm text-gray-600">
         Every MCP server in Zimmer's catalog, and whether a session could use it right now.
-        Each status is checked on its own — the list renders first and the badges fill in.
+        Each status is checked on its own — the list renders first, the badges fill in without
+        scrolling, and once they have, anything that needs attention moves to the top.
       </p>
     </div>
 
     <%# Where a missing secret has to go. The store's absence is a normal state,
         not a fault, so it is reported plainly rather than as a warning. %>
-    <%= turbo_frame_tag "secret_store_status", src: secret_store_connectors_path, loading: :lazy do %>
+    <%= turbo_frame_tag "secret_store_status", src: secret_store_connectors_path do %>
       <div class="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3">
         <p class="text-sm text-gray-500">Checking the secret store…</p>
       </div>
     <% end %>
 
     <% if @servers.any? %>
-      <div class="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden">
+      <%# The rows ship as lazy frames — the floor, for before the controller
+          connects and for a controller that throws — and connector_list_controller
+          then promotes them to eager in a small window: no scrolling required,
+          and no ~100-request stampede either. It also does the severity sort,
+          because which rows are problems is only known once their frames have
+          answered. The attention threshold is passed in rather than duplicated
+          in JavaScript. %>
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden"
+           data-controller="connector-list"
+           data-connector-list-concurrency-value="6"
+           data-connector-list-unresolved-rank-value="<%= ConnectorsHelper::ATTENTION_RANK_CEILING %>">
         <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
           <h2 class="text-lg font-medium text-gray-900">Catalog servers</h2>
-          <p class="mt-1 text-sm text-gray-500"><%= pluralize(@servers.size, "server") %> in the catalog</p>
+          <p class="mt-1 text-sm text-gray-500">
+            <%= pluralize(@servers.size, "server") %> in the catalog ·
+            <span data-connector-list-target="attention" aria-live="polite" class="text-gray-400">checking…</span>
+          </p>
         </div>
-        <div class="divide-y divide-gray-200">
+        <div class="divide-y divide-gray-200" data-connector-list-target="list">
           <% @servers.each do |server| %>
-            <%= turbo_frame_tag connector_frame_id(server.name), src: connector_path(server.name), loading: :lazy do %>
+            <%= turbo_frame_tag connector_frame_id(server.name),
+                  src: connector_path(server.name),
+                  loading: :lazy,
+                  data: { connector_list_target: "frame" } do %>
               <%= render "connectors/connector_placeholder", server: server %>
             <% end %>
           <% end %>
@@ -96,6 +113,8 @@
               <li><strong>Needs authorization</strong> — an OAuth server with no stored credential. Click Authorize on the row to run the OAuth flow; no session required.</li>
               <li><strong>Token expired</strong> resolves itself via the refresh job; <strong>Needs re-auth</strong> does not, because no refresh token was issued — use Re-authorize on the row.</li>
               <li>Secret values are never shown here — only whether they are set.</li>
+              <li>Rows are alphabetical while they load and re-order by severity once every probe has answered. The order can only be settled then: a server's state is computed inside its own frame, so sorting before they resolve would mean probing all <%= @servers.size %> up front and holding the whole page on the slowest one.</li>
+              <li><strong>Where to set this</strong> names the Secrets Console when the console administers the project Zimmer reads, and says plainly when it does not — a value saved in a console for another project is accepted and then never read.</li>
             </ul>
           </div>
         </div>
