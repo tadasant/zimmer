@@ -1104,6 +1104,19 @@ class ProcessLifecycleManager
       expected_current_email: @session&.metadata&.dig(AuthRecoveryCoordinator::IDENTITY_KEY)
     )
 
+    # Losing the lock race is not an exhausted pool. Another process is mid-rotation
+    # and its credential write is already in progress, so resume against what it
+    # lands rather than parking a session whose pool is fine.
+    if result[:reason] == "rotation_in_flight"
+      add_log("Account quota hit — another session's rotation is still running, resuming after it", level: "warning")
+      @log_buffer&.flush
+      return spawn_continuation(
+        working_dir: working_dir,
+        prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+        reason: "account rotation in flight"
+      )
+    end
+
     return nil unless result[:success]
 
     AuthRecoveryCoordinator.record_identity!(@session, result[:account])

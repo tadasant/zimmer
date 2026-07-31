@@ -101,8 +101,14 @@ class ClaudeAccount < ApplicationRecord
   # that gets it immediately knows nobody is.
   #
   # A session-level (not transaction-level) lock deliberately: rotation performs
-  # an HTTP token refresh and filesystem writes, and holding a Postgres
-  # transaction open across those would pin a connection for the duration.
+  # an HTTP token refresh and filesystem writes, and wrapping those in a Postgres
+  # transaction would hold it open across the network call — idle-in-transaction,
+  # with the MVCC snapshot it pins. The connection is held either way; it is the
+  # long-open transaction the session-level lock avoids.
+  #
+  # Nesting is safe: with_connection hands back the connection the thread already
+  # has, so an inner acquire lands on the same backend, and Postgres counts
+  # advisory locks per session — the inner unlock decrements, the outer releases.
   #
   # @param runtime [String] the runtime whose pool is being mutated
   # @param wait [ActiveSupport::Duration, Numeric] how long to wait for the lock
@@ -124,9 +130,16 @@ class ClaudeAccount < ApplicationRecord
       begin
         yield
       ensure
-        conn.execute(
-          sanitize_sql_array([ "SELECT pg_advisory_unlock(?, ?)", POOL_ADVISORY_LOCK_NAMESPACE, key ])
-        )
+        # Swallow: if the connection died inside the block, raising here would
+        # replace the real error with a confusing one — and a dead connection has
+        # already released the lock.
+        begin
+          conn.execute(
+            sanitize_sql_array([ "SELECT pg_advisory_unlock(?, ?)", POOL_ADVISORY_LOCK_NAMESPACE, key ])
+          )
+        rescue => e
+          Rails.logger.warn "[ClaudeAccount] Could not release the pool lock: #{e.message}"
+        end
       end
     end
   end

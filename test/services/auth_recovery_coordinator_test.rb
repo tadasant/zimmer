@@ -276,9 +276,11 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
       "One runtime's rotation must not block another runtime's pool"
   end
 
-  # The end-to-end concurrency case: two sessions hit the wall on the same
-  # account. The first rotates; the second, arriving after it, finds the pool
-  # already moved and adopts rather than rotating again.
+  # Two sessions hit the wall on the same account. The first rotates; the second,
+  # arriving after it, finds the pool already moved and adopts rather than
+  # rotating again. Sequential by construction — the mutual exclusion itself is
+  # covered by the cross-backend lock tests above; this covers what the second
+  # racer decides once it gets in.
   test "two sessions on the same failed account produce exactly one rotation" do
     second_session = Session.create!(
       prompt: "Second", agent_runtime: "claude_code", status: :running,
@@ -335,9 +337,29 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
     )
 
     assert result[:success]
-    assert_not result[:collapsed]
+    assert_nil result[:collapsed]
     assert_equal "quota_exceeded", @primary.reload.status
     assert_equal 1, AccountRotationEvent.count
+  end
+
+  # The collapse must be gated on recency, not just on inequality. A caller's
+  # recorded identity goes stale whenever the pool moves without telling it, so a
+  # long-running session that has since been using account B would otherwise
+  # collapse on its own genuine complaint about B and be re-spawned onto it.
+  test "a rotation onto the current account long ago does not collapse a later genuine complaint" do
+    @secondary.mark_current!
+    @secondary.update!(last_rotated_to_at: (AccountRotationService::COLLAPSE_WINDOW + 5.minutes).ago)
+
+    result = AccountRotationService.new.rotate!(
+      reason: "quota_exceeded",
+      triggered_by: "session:1",
+      expected_current_email: @primary.email
+    )
+
+    assert result[:success]
+    assert_nil result[:collapsed], "A rotation this old is the account the caller has been using, not a stampede"
+    assert_equal "quota_exceeded", @secondary.reload.status,
+      "The genuine complaint must actually move the pool"
   end
 
   test "rotate! reports rotation_in_flight rather than racing a rotation another process holds" do
@@ -349,6 +371,34 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
     assert_equal "rotation_in_flight", result[:reason]
     assert_equal "active", @primary.reload.status,
       "A rotation that never ran must not have marked anything"
+  end
+
+  # A lost lock race means the holder is mid-rotation and about to write good
+  # credentials. Parking the loser as quota-exhausted would be wrong twice over:
+  # the pool is fine, and the retry would be scheduled off a quota reset.
+  test "a rotation that loses the lock race resolves as rotation_in_flight, not a park" do
+    spawned_as!(@primary.email)
+    AccountRotationService.any_instance.stubs(:rotate!)
+      .returns({ success: false, reason: "rotation_in_flight" })
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :rotation_in_flight, plan.outcome
+    assert_not plan.park?, "The pool is healthy — this session must not be parked"
+  end
+
+  # inject swallows filesystem/IO failures into nil. When the pool is healthy,
+  # that is a disk problem, and the park detail must not read as "your accounts
+  # are dead" — the whole point of this PR is that the message matches the cause.
+  test "an injection failure over a healthy pool parks with a detail naming the real cause" do
+    @secondary.mark_current!
+    spawned_as!(@primary.email)
+    AccountRotationService.any_instance.stubs(:ensure_active_account!).raises(Errno::EACCES, "disk")
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :unusable, plan.outcome
+    assert_match(/could not be written to disk/, plan.detail)
   end
 
   # The coordinator holds the pool lock and then calls through to rotate!, which

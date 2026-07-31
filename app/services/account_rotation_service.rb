@@ -16,6 +16,12 @@ class AccountRotationService
   # The canonical credential file paths live in ClaudeAuthProvider, the single
   # source of truth for Claude's auth lifecycle.
 
+  # How recently another session must have rotated onto an account for a caller
+  # to ride that rotation instead of performing its own. Sized to a stampede —
+  # the racers arrive within seconds of each other — and deliberately far below
+  # the time a session would spend actually working on the new account.
+  COLLAPSE_WINDOW = 60.seconds
+
   def initialize
     @logger = StructuredLogger.new({ service: "AccountRotationService" })
   end
@@ -52,13 +58,36 @@ class AccountRotationService
     { success: false, reason: "rotation_in_flight" }
   end
 
+  # A rotation this caller can ride instead of performing its own.
+  #
+  # Two conditions, and the second one matters more than it looks. "The pool is
+  # not on the account I expected" is NOT sufficient: a caller's recorded
+  # identity goes stale whenever the pool moves without telling it (another
+  # session's rotation, an operator's manual switch), so a long-running session
+  # that has since been happily using account B would pass expected=A, see
+  # current=B, and collapse — getting re-spawned straight back onto the account
+  # whose quota it just hit.
+  #
+  # So the rotation must also be RECENT. A stampede is N sessions arriving within
+  # seconds of each other; a pool that moved onto this account minutes ago is one
+  # the caller has been living with, and its complaint is about that account.
+  def collapse_onto?(current, expected_current_email)
+    return false if expected_current_email.blank?
+    return false if current.nil?
+    return false if current.email == expected_current_email
+
+    rotated_at = current.last_rotated_to_at
+    rotated_at.present? && rotated_at > COLLAPSE_WINDOW.ago
+  end
+  private :collapse_onto?
+
   # The body of #rotate!, run with the pool lock held.
   private def rotate_under_lock(reason, triggered_by, expected_current_email)
     # Re-read under the lock: a racer that queued behind another rotation must
     # see the pool as it is now, not as it was when it decided to rotate.
     current = ClaudeAccount.current_account
 
-    if expected_current_email.present? && current && current.email != expected_current_email
+    if collapse_onto?(current, expected_current_email)
       @logger.info("Rotation already performed by another session, collapsing",
         expected: expected_current_email, current: current.email)
       return { success: true, account: current, collapsed: true }
