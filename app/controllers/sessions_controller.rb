@@ -1008,11 +1008,15 @@ class SessionsController < ApplicationController
       .where("metadata->>'paused_by' IS NULL OR metadata->>'paused_by' != 'user'")
 
     # Waiting sessions that are stalled rather than deliberately asleep get the same
-    # continue nudge as a single-session #refresh — see the rationale there.
-    # Session#continue_nudge_on_refresh? filters out never-started sessions (no
-    # session_id) and any session sleeping on an unfired wake-up trigger; those fall
-    # through to the plain transcript refresh below, exactly as before.
-    nudgeable_waiting = sessions.where(status: :waiting).select(&:continue_nudge_on_refresh?)
+    # continue nudge as a single-session #refresh — see the rationale there. A session
+    # with no session_id has never started (the spawn pipeline still owns it), and
+    # Session.ids_awaiting_scheduled_wake names the ones sleeping on a wake-up that has
+    # not come due. Both fall through to the plain transcript refresh below, exactly as
+    # the single-session predicate decides. The batch form costs two queries for the
+    # whole set rather than one per waiting session.
+    waiting_candidates = sessions.where(status: :waiting).where.not(session_id: [ nil, "" ]).to_a
+    sleeping_ids = Session.ids_awaiting_scheduled_wake(waiting_candidates.map(&:id))
+    nudgeable_waiting = waiting_candidates.reject { |session| sleeping_ids.include?(session.id) }
 
     # Track totals to warn if limit is exceeded
     total_failed_count = sessions.where(status: :failed).count
@@ -1024,19 +1028,32 @@ class SessionsController < ApplicationController
     # Use .load to force loading, then .size to avoid extra COUNT query
     failed_sessions = sessions.where(status: :failed).limit(BULK_RESTART_LIMIT).load
     remaining_limit = [ BULK_RESTART_LIMIT - failed_sessions.size, 0 ].max
-    needs_input_sessions = auto_continuable_needs_input.limit(remaining_limit)
-    waiting_limit = [ remaining_limit - [ total_needs_input_count, remaining_limit ].min, 0 ].max
+    needs_input_sessions = auto_continuable_needs_input.limit(remaining_limit).load
+    waiting_limit = [ remaining_limit - needs_input_sessions.size, 0 ].max
     waiting_sessions = nudgeable_waiting.first(waiting_limit)
+
+    # Ids of everything the three restart/continue loops below will touch. They are
+    # captured BEFORE those loops run because each one flips its session to :running —
+    # and non_restartable_sessions is a lazy relation iterated afterwards, so without
+    # this exclusion a just-restarted session would no longer match
+    # `where.not(status: [:failed, :needs_input])`, fall into the transcript pass, and
+    # be counted twice while overwriting a transcript its new job is about to rewrite.
+    restarted_ids = (failed_sessions + needs_input_sessions + waiting_sessions).map(&:id)
 
     # Everything not restarted/continued above still gets a transcript refresh — the
     # running sessions, plus any waiting session the nudge deliberately skipped or the
     # bulk limit pushed past.
-    non_restartable_sessions = sessions.where.not(status: [ :failed, :needs_input ])
-    non_restartable_sessions = non_restartable_sessions.where.not(id: waiting_sessions.map(&:id)) if waiting_sessions.any?
+    non_restartable_sessions = sessions
+      .where.not(status: [ :failed, :needs_input ])
+      .where.not(id: restarted_ids)
 
     # Restart failed sessions
-    failed_sessions.find_each do |session|
+    failed_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
+      # with_db_retry redirects when it exhausts its retries; keep going and we would
+      # double-render at the summary redirect below.
+      return if performed?
+
       if success
         restarted_count += 1
       else
@@ -1046,8 +1063,10 @@ class SessionsController < ApplicationController
     end
 
     # Continue needs_input sessions (e.g., after deployment killed their processes)
-    needs_input_sessions.find_each do |session|
+    needs_input_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
+      return if performed?
+
       if success
         continued_count += 1
       else
@@ -1059,6 +1078,8 @@ class SessionsController < ApplicationController
     # Continue stalled waiting sessions with the automated nudge
     waiting_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
+      return if performed?
+
       if success
         continued_waiting_count += 1
       else
@@ -2968,8 +2989,15 @@ class SessionsController < ApplicationController
   # page after clicking a small inline icon would be jarring — send them back to the
   # dashboard (which re-renders with the new status) instead. Refreshing from the
   # session's own page still lands on that page.
+  #
+  # The referer is used verbatim rather than a bare root_path so the dashboard's own
+  # state survives the round trip: the flat "Sort By Last Touched" / "Sort By Created
+  # Time" views and every per-category page live in the query string, and dropping it
+  # would bounce the user to an unfiltered categories view on page 1.
+  # referrer_is_sessions_index? has already checked that the referer is this host's
+  # index path, so it is not an open redirect.
   def refresh_redirect_target(session)
-    referrer_is_sessions_index? ? root_path : session_path(session)
+    referrer_is_sessions_index? ? request.referer : session_path(session)
   end
 
   # Check if the HTTP referer is the sessions index (home) page
