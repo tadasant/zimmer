@@ -4,13 +4,18 @@ require "test_helper"
 require "erb"
 require "yaml"
 
-# Delivering the Parameter Store resolver credential is a three-link chain -- a GitHub
-# Actions secret, the Kamal mapping, the env.secret list -- and it fails SILENTLY when a
-# link breaks. `ParameterStore::Resolver.from_env` treats a missing credential as a
-# normal degraded state (by design: absence must never take Zimmer down), so a broken
-# link shows up only as a store that quietly never turns on and every `${VAR}` still
-# coming from encrypted credentials. These tests assert the chain in both environments,
-# each against its OWN project, and assert that the degraded state stays clean.
+# Delivering the Parameter Store resolver credential is a chain -- a GitHub Actions
+# secret, the deploy workflow's `env:` allowlist, the Kamal mapping, the env.secret list
+# -- and it fails SILENTLY when any link breaks. `ParameterStore::Resolver.from_env`
+# treats a missing credential as a normal degraded state (by design: absence must never
+# take Zimmer down), so a broken link shows up only as a store that quietly never turns
+# on and every `${VAR}` still coming from encrypted credentials.
+#
+# These tests assert every link that is a FILE in this repo, for both environments, each
+# against its OWN project, and assert that the degraded state stays clean. The Actions
+# secret itself is a repository setting and cannot be asserted from here; production's
+# workflow lives in tadasant-internal and cannot either, which is why only staging gets
+# the `env:` allowlist test.
 class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
   PROD_SECRETS = Rails.root.join(".kamal/secrets.production")
   PROD_DEPLOY = Rails.root.join("config/deploy.production.yml")
@@ -76,8 +81,10 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
 
   test "the credential is NOT in the clear" do
     assert_not_includes prod_env_clear.keys, KEY_JSON,
-      "#{KEY_JSON} in env.clear would put the resolver's private key in `docker inspect` " \
-      "and in the deploy log. It belongs in env.secret."
+      "#{KEY_JSON} in env.clear would put the resolver's private key on the `docker run` " \
+      "COMMAND LINE -- Kamal argumentizes env.clear into --env flags, while env.secret goes " \
+      "through an env-file -- so it would land in `ps` and in the printed deploy command. " \
+      "It belongs in env.secret."
   end
 
   # --- what the production env actually composes ----------------------------
@@ -97,11 +104,12 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
     assert SecretProviders.parameter_store_configuration(env: env).configured?
   end
 
-  # --- staging: the same three links, its own project -----------------------
+  # --- staging: its own project, and one link production cannot assert ------
 
   # Staging is where the store path gets rehearsed before production, so it reads a
-  # store of its own. Every link is asserted the same way production's is, because the
-  # failure mode is the same: a break is silent.
+  # store of its own. The links production also has are asserted the same way, because
+  # the failure mode is the same: a break is silent. The `env:` allowlist is the extra
+  # one -- staging's deploy workflow is in this repo, production's is not.
 
   test "Kamal maps the resolver key from the STAGING_ deploy secret" do
     assert_match(/^#{KEY_JSON}=\$STAGING_#{KEY_JSON}$/, STAGING_SECRETS.read,
@@ -115,19 +123,39 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
       ".kamal/secrets.staging alone does nothing -- Kamal only injects what env.secret names."
   end
 
-  # The third link, and the one the production docs single out as "the one that gets
-  # skipped, and skipping it is invisible". Staging's deploy workflow lives in THIS
-  # repo, so unlike production's it can be asserted rather than only written down: a
-  # var missing from the step's `env:` block arrives empty, and Kamal's FOO=$FOO
-  # mapping then resolves to blank with no error at all.
+  # The link the production docs single out as "the one that gets skipped, and skipping
+  # it is invisible". Staging's deploy workflow lives in THIS repo, so unlike
+  # production's it can be asserted rather than only written down: a var missing from
+  # the step's `env:` block arrives empty, and Kamal's FOO=$FOO mapping then resolves to
+  # blank with no error at all.
   test "the staging deploy workflow passes the deploy-side secret through its env allowlist" do
-    step = deploy_staging_workflow[/^(\s+)- name: Kamal deploy \(staging\).*?(?=^\1- name: )/m]
+    step = kamal_deploy_step
 
-    assert step, "the 'Kamal deploy (staging)' step must exist in #{DEPLOY_WORKFLOW}"
-    assert_match(/^\s+STAGING_#{KEY_JSON}: \$\{\{ secrets\.STAGING_#{KEY_JSON} \}\}$/, step,
+    # Matched rather than compared: `${{secrets.X}}` is equally valid Actions syntax,
+    # and a correct config written that way must not fail here.
+    assert_match(/\A\$\{\{\s*secrets\.STAGING_#{KEY_JSON}\s*\}\}\z/,
+      step.dig("env", "STAGING_#{KEY_JSON}").to_s,
       "#{DEPLOY_WORKFLOW}'s Kamal deploy step must name STAGING_#{KEY_JSON} in its env: " \
       "block. Without it the var arrives empty, .kamal/secrets.staging resolves to blank, " \
       "and the deploy looks healthy while the store never turns on.")
+  end
+
+  # The step's preflight is the only place a deploy says out loud which state it is in,
+  # and secrets-parameter-store.md quotes the ON line VERBATIM. Assert the whole line,
+  # not its prefix: renaming the project or the namespace in the echo would otherwise
+  # stale the docs with the test still green.
+  test "the staging deploy reports whether the store turned on" do
+    run = kamal_deploy_step["run"].to_s
+    on = "✅ Parameter Store ON (resolver key set; reads " \
+      "#{ParameterStore::Namespace.static_namespace('staging')} in " \
+      "#{staging_env_clear[PROJECT_ID]})"
+
+    assert_includes run, on,
+      "#{DEPLOY_WORKFLOW}'s Kamal deploy step must print this line verbatim -- " \
+      "secrets-parameter-store.md quotes it, and an absent credential is otherwise " \
+      "invisible: the deploy succeeds and only the store stays off."
+    assert_includes run, "::warning::Parameter Store is OFF",
+      "#{DEPLOY_WORKFLOW} must also say so when the credential did NOT arrive."
   end
 
   test "every secret the staging deploy injects has a mapping in .kamal/secrets.staging" do
@@ -147,8 +175,10 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
 
   test "the staging credential is NOT in the clear" do
     assert_not_includes staging_env_clear.keys, KEY_JSON,
-      "#{KEY_JSON} in env.clear would put the resolver's private key in `docker inspect` " \
-      "and in the deploy log. It belongs in env.secret."
+      "#{KEY_JSON} in env.clear would put the resolver's private key on the `docker run` " \
+      "COMMAND LINE -- Kamal argumentizes env.clear into --env flags, while env.secret goes " \
+      "through an env-file -- so it would land in `ps` and in the printed deploy command. " \
+      "It belongs in env.secret."
   end
 
   # The one substitution that must never happen. Agent sessions have root on the staging
@@ -204,7 +234,16 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
     YAML.safe_load(ERB.new(path.read).result, aliases: true)
   end
 
-  def deploy_staging_workflow = DEPLOY_WORKFLOW.read
+  # The workflow is plain YAML (no ERB), so parse it rather than pattern-matching text:
+  # a regex over the raw file has to reconstruct the step's boundaries from indentation,
+  # and cannot tell an `env:` key from a `with:` one.
+  def kamal_deploy_step
+    steps = YAML.safe_load(DEPLOY_WORKFLOW.read, aliases: true).dig("jobs", "deploy", "steps")
+    step = Array(steps).find { |s| s["name"] == "Kamal deploy (staging)" }
+
+    assert step, "#{DEPLOY_WORKFLOW} must have a 'Kamal deploy (staging)' step"
+    step
+  end
 
   def prod_env_secrets = render(PROD_DEPLOY).dig("env", "secret") || []
   def prod_env_clear = render(PROD_DEPLOY).dig("env", "clear") || {}
