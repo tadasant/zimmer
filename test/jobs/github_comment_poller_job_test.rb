@@ -141,6 +141,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # Mock the prompt builder
     mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
@@ -244,6 +245,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # Mock the prompt builder
     mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
     mock_builder.stubs(:build).returns("Test prompt for immediate send")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
@@ -278,6 +280,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # Mock the prompt builder
     mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
     mock_builder.stubs(:build).returns("Test prompt for queue")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
@@ -304,6 +307,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # Mock the prompt builder
     mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
     mock_builder.stubs(:build).returns("Test prompt for waiting queue")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
@@ -427,6 +431,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # Mock the prompt builder
     mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
@@ -713,6 +718,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # Mock the prompt builder
     mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
@@ -733,6 +739,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # Mock the prompt builder
     mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
@@ -815,6 +822,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # Mock the prompt builder
     mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
     mock_builder.stubs(:build).returns("Test review prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
@@ -850,6 +858,227 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     end
   end
 
+  # === Automated comments ===
+
+  test "automated_comment? recognizes a Zimmer automation report heading" do
+    job = GithubCommentPollerJob.new
+
+    assert job.send(:automated_comment?, merge_gate_body)
+    assert job.send(:automated_comment?, "## Merge gate\n\nVerdict: HOLD")
+    assert job.send(:automated_comment?, "### 🚦 merge gate")
+    assert job.send(:automated_comment?, "## Merge gate ##")            # closing hashes
+    assert job.send(:automated_comment?, "\n\n## 🚀 Merge gate\n")       # leading blank lines
+    assert job.send(:automated_comment?, "## 🚀 Merge gate\r\n\r\nVerdict")  # CRLF
+  end
+
+  test "automated_comment? leaves human comments alone" do
+    job = GithubCommentPollerJob.new
+
+    assert_not job.send(:automated_comment?, "Please fix this bug")
+    assert_not job.send(:automated_comment?, "The merge gate rated this small — do you agree?")
+    assert_not job.send(:automated_comment?, "## Merge gate thoughts\n\nI think it over-rated this")
+    assert_not job.send(:automated_comment?, "## Summary\n\nThis PR does X")
+    assert_not job.send(:automated_comment?, "> ## 🚀 Merge gate\n\nabout this bit:")  # quoted
+    assert_not job.send(:automated_comment?, "Thoughts on the gate:\n\n## 🚀 Merge gate")  # not the first line
+    assert_not job.send(:automated_comment?, "")
+    assert_not job.send(:automated_comment?, nil)
+  end
+
+  test "poll_comments_for_session ignores a merge gate comment authored by a whitelisted user" do
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
+
+    # No follow-up means no GitHub API traffic at all — in particular, no 👀 reaction
+    Open3.expects(:capture3).never
+
+    job = TestJobWithMergeGateComment.new
+    job.send(:poll_comments_for_session, @session_with_pr)
+
+    @session_with_pr.reload
+
+    assert_equal 0, @session_with_pr.enqueued_messages.count
+    # The comment is still tracked in metadata; it just doesn't wake the session
+    tracked = @session_with_pr.custom_metadata.dig("github_comments", "https://github.com/owner/repo/pull/123", "pr_comments")
+    assert_equal 1, tracked.size
+  end
+
+  test "poll_comments_for_session ignores a merge gate review comment" do
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
+
+    Open3.expects(:capture3).never
+
+    job = TestJobWithMergeGateReviewComment.new
+    job.send(:poll_comments_for_session, @session_with_pr)
+
+    @session_with_pr.reload
+
+    assert_equal 0, @session_with_pr.enqueued_messages.count
+  end
+
+  # === The 👀 reaction is only a promise Zimmer can keep ===
+
+  test "poll_comments_for_session neither reacts nor enqueues when the visibility lookup fails" do
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
+
+    # A failed `gh api repos/...` is the only capture3 call we expect: no reaction follows
+    failure_status = mock
+    failure_status.stubs(:success?).returns(false)
+    Open3.expects(:capture3).with("gh", "api", "repos/otherowner/repo", "--jq", ".private").returns([ "", "HTTP 502", failure_status ])
+
+    job = TestJobWithWhitelistedComment.new
+    job.send(:poll_comments_for_session, @session_with_pr)
+
+    @session_with_pr.reload
+
+    assert_equal 0, @session_with_pr.enqueued_messages.count
+  end
+
+  test "poll_comments_for_session neither reacts nor enqueues on an untrusted public repo" do
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
+
+    GithubCommentPromptBuilder.any_instance.stubs(:public_repo?).returns(true)
+    Open3.expects(:capture3).never
+
+    job = TestJobWithWhitelistedComment.new
+    job.send(:poll_comments_for_session, @session_with_pr)
+
+    @session_with_pr.reload
+
+    assert_equal 0, @session_with_pr.enqueued_messages.count
+  end
+
+  test "poll_comments_for_session reacts and enqueues for a human comment on a trusted repo" do
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/tadasant/zimmer/pull/123" ] })
+
+    mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
+    mock_builder.stubs(:build).returns("Test prompt content")
+    GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
+
+    reacted_to = []
+    job = TestJobWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |info| reacted_to << info.dig(:data, "id") }
+
+    job.send(:poll_comments_for_session, @session_with_pr)
+
+    @session_with_pr.reload
+
+    assert_equal [ 333 ], reacted_to
+    assert_equal 1, @session_with_pr.enqueued_messages.count
+    assert_equal "Test prompt content", @session_with_pr.enqueued_messages.first.content
+  end
+
+  test "enqueue_follow_up_prompt does not react when the builder returns no prompt" do
+    mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
+    mock_builder.stubs(:build).returns(nil)
+    GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
+
+    reacted_to = []
+    job = GithubCommentPollerJob.new
+    job.define_singleton_method(:add_eyes_reaction) { |info| reacted_to << info.dig(:data, "id") }
+
+    job.send(:enqueue_follow_up_prompt, @session_with_pr, human_comment_info)
+
+    assert_empty reacted_to
+    assert_equal 0, @session_with_pr.reload.enqueued_messages.count
+  end
+
+  test "enqueue_follow_up_prompt does not react when the comment is not actionable" do
+    mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(false)
+    mock_builder.stubs(:visibility_lookup_failed?).returns(false)
+    GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
+
+    reacted_to = []
+    job = GithubCommentPollerJob.new
+    job.define_singleton_method(:add_eyes_reaction) { |info| reacted_to << info.dig(:data, "id") }
+
+    job.send(:enqueue_follow_up_prompt, @session_with_pr, human_comment_info)
+
+    assert_empty reacted_to
+    assert_equal 0, @session_with_pr.reload.enqueued_messages.count
+  end
+
+  test "a failed reaction API call still enqueues the follow-up prompt" do
+    mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
+    mock_builder.stubs(:build).returns("Test prompt content")
+    GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
+
+    failure_status = mock
+    failure_status.stubs(:success?).returns(false)
+    Open3.stubs(:capture3).returns([ "", "API error", failure_status ])
+
+    job = GithubCommentPollerJob.new
+
+    assert_nothing_raised do
+      job.send(:enqueue_follow_up_prompt, @session_with_pr, human_comment_info)
+    end
+
+    assert_equal 1, @session_with_pr.reload.enqueued_messages.count
+  end
+
+  test "a raising reaction API call still enqueues the follow-up prompt" do
+    mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
+    mock_builder.stubs(:build).returns("Test prompt content")
+    GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
+
+    Open3.stubs(:capture3).raises(Errno::ENOENT, "gh")
+
+    job = GithubCommentPollerJob.new
+
+    assert_nothing_raised do
+      job.send(:enqueue_follow_up_prompt, @session_with_pr, human_comment_info)
+    end
+
+    assert_equal 1, @session_with_pr.reload.enqueued_messages.count
+  end
+
+  # Test subclass that returns the merge gate's rating comment, posted (as it is in
+  # production) by `gh` authenticated as a whitelisted human and with no [CC Says] marker
+  class TestJobWithMergeGateComment < GithubCommentPollerJob
+    def fetch_pr_comments(_owner, _repo, _pr_number)
+      [
+        {
+          "id" => 2001,
+          "user" => { "login" => "tadasant" },
+          "body" => "## 🚀 Merge gate\n\n**Verdict: AUTO-MERGE** — all four axes small.",
+          "html_url" => "https://github.com/owner/repo/pull/123#issuecomment-2001",
+          "created_at" => "2025-01-01T12:00:00Z"
+        }
+      ]
+    end
+
+    def fetch_review_comments(_owner, _repo, _pr_number)
+      []
+    end
+  end
+
+  # Test subclass that returns the merge gate's rating as an inline review comment, to
+  # cover the review-comment call site of the filter as well as the PR-comment one
+  class TestJobWithMergeGateReviewComment < GithubCommentPollerJob
+    def fetch_pr_comments(_owner, _repo, _pr_number)
+      []
+    end
+
+    def fetch_review_comments(_owner, _repo, _pr_number)
+      [
+        {
+          "id" => 2002,
+          "user" => { "login" => "tadasant" },
+          "body" => "## 🚀 Merge gate\n\n**Verdict: HOLD**",
+          "html_url" => "https://github.com/owner/repo/pull/123#discussion_r2002",
+          "path" => "src/main.rb",
+          "line" => 12,
+          "diff_hunk" => "@@ -10,3 +10,5 @@ code here",
+          "in_reply_to_id" => nil,
+          "created_at" => "2025-01-01T12:00:00Z"
+        }
+      ]
+    end
+  end
+
   # Test subclass with a review comment created AFTER tracking started
   class TestJobWithNewReviewComment < GithubCommentPollerJob
     def fetch_pr_comments(_owner, _repo, _pr_number)
@@ -871,5 +1100,32 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
         }
       ]
     end
+  end
+
+  private
+
+  def merge_gate_body
+    <<~BODY
+      ## 🚀 Merge gate
+
+      **Verdict: AUTO-MERGE** — all four axes small.
+    BODY
+  end
+
+  # A genuine human comment on a trusted repo, shaped as poll_comments_for_session builds it
+  def human_comment_info
+    {
+      type: "pr",
+      owner: "tadasant",
+      repo: "zimmer",
+      pr_number: "123",
+      pr_url: "https://github.com/tadasant/zimmer/pull/123",
+      data: {
+        "id" => 999,
+        "author" => "tadasant",
+        "body" => "Please fix this",
+        "url" => "https://github.com/tadasant/zimmer/pull/123#issuecomment-999"
+      }
+    }
   end
 end
