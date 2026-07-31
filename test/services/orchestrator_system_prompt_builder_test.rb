@@ -478,4 +478,47 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     session.agent_runtime = "codex"
     session
   end
+  # ===== MCP APPROVAL GATE =====
+  #
+  # An MCP reveal that comes back redacted has to mean something the agent can act
+  # on. When the approval endpoint is up, that is a denial; when it is down, it is
+  # nothing at all — and an agent told otherwise goes looking for the value by
+  # another route, which is what actually happened.
+
+  test "MCP section explains that a redacted value is the gate's answer" do
+    ElicitationEndpoint.stubs(:unreachable?).returns(false)
+
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session, clone_path: "/home/rails/clone/path")
+
+    assert_includes prompt, "that is the gate's answer"
+    refute_includes prompt, "The MCP approval gate is currently broken"
+  end
+
+  test "MCP section warns loudly when the approval endpoint is unreachable" do
+    ElicitationEndpoint.stubs(:unreachable?).returns(true)
+    ElicitationEndpoint.stubs(:status).returns({
+      "reachable" => false,
+      "detail" => "SocketError: getaddrinfo failed",
+      "url" => "http://zimmer/api/v1/elicitations",
+      "checked_at" => "2026-07-31T12:00:00Z"
+    })
+
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session, clone_path: "/home/rails/clone/path")
+
+    assert_includes prompt, "The MCP approval gate is currently broken"
+    assert_includes prompt, "http://zimmer/api/v1/elicitations"
+    assert_includes prompt, "SocketError: getaddrinfo failed"
+    assert_includes prompt, "not a denial"
+    assert_includes prompt, "Do NOT obtain the value by"
+  end
+
+  test "no approval gate guidance at all when the session has no MCP servers" do
+    ElicitationEndpoint.stubs(:unreachable?).returns(true)
+    ElicitationEndpoint.stubs(:status).returns({ "reachable" => false, "detail" => "d", "url" => "u", "checked_at" => "t" })
+    @session.update!(mcp_servers: [])
+
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session, clone_path: "/home/rails/clone/path")
+
+    refute_includes prompt, "approval gate"
+  end
 end

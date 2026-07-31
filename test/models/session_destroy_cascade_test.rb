@@ -19,6 +19,9 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
   # Every foreign key that points at `sessions`, and the rule each one carries:
   # [from_table, column, on_delete].
   EXPECTED_SESSION_FOREIGN_KEYS = [
+    # Nullify, not cascade: the record of a comment an agent posted has to outlive
+    # the session, because the comment on GitHub does.
+    [ "agent_posted_github_comments", "session_id", :nullify ],
     [ "elicitations", "session_id", :cascade ],
     [ "enqueued_messages", "session_id", :cascade ],
     [ "logs", "session_id", :cascade ],
