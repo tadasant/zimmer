@@ -339,12 +339,113 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     attempt.update!(pid: pid)
     assert process_alive?(pid), "sanity: spawned CLI should be running"
 
-    RuntimeLoginJob.new.send(:finish_canceled, attempt, pid)
+    RuntimeLoginJob.new.send(:finish_settled, attempt, pid, "canceled")
 
     assert_not process_alive?(pid), "canceled login CLI must be terminated"
     assert_nil attempt.reload.pasted_code, "credential-adjacent pasted code must be dropped on cancel"
   ensure
     [ reader, writer ].each { |io| io&.close rescue IOError }
+  end
+
+  test "stamps a heartbeat so a worker that dies mid-login is detectable" do
+    Dir.mktmpdir do |dir|
+      claude = ClaudeAccount.create!(
+        email: "runtime-login-job-heartbeat@example.com", runtime: "claude_code",
+        status: :needs_reauth, is_current: false, priority: 64, oauth_config: {}
+      )
+      attempt = claude.runtime_login_attempts.create!(runtime: "claude_code", pasted_code: "good-code")
+      assert_nil attempt.heartbeat_at
+
+      RuntimeLoginDriver.stub(:for, FakePasteDriver.new(dir)) do
+        RuntimeLoginJob.perform_now(attempt.id)
+      end
+
+      assert_not_nil attempt.reload.heartbeat_at, "the job must record that it was alive and driving the login"
+      assert_not attempt.stalled?
+    end
+  end
+
+  # The reaper (or the user, or an account deletion) can settle an attempt while
+  # the job is still pumping its CLI. Finishing the capture anyway would flip a
+  # row the user has already been shown as failed back to "succeeded", so the job
+  # must stop on ANY terminal status rather than only on "canceled".
+  test "stops without resurrecting an attempt that was reaped to failed mid-flight" do
+    Dir.mktmpdir do |dir|
+      claude = ClaudeAccount.create!(
+        email: "runtime-login-job-reaped@example.com", runtime: "claude_code",
+        status: :needs_reauth, is_current: false, priority: 65, oauth_config: {}
+      )
+      attempt = claude.runtime_login_attempts.create!(
+        runtime: "claude_code", status: "awaiting_code", pasted_code: "good-code"
+      )
+
+      # The attempt is live when the job starts and is settled underneath it on
+      # the second bus read — exactly what CleanupRuntimeLoginAttemptsJob does to
+      # an attempt it judges orphaned while the job is still pumping the CLI.
+      reads = 0
+      settle = lambda do |id|
+        reads += 1
+        return [ "awaiting_code", nil ] if reads == 1
+
+        RuntimeLoginAttempt.where(id: id).update_all(
+          status: "failed",
+          error_message: "The worker running this login stopped responding."
+        )
+        [ "failed", "good-code" ]
+      end
+
+      RuntimeLoginDriver.stub(:for, FakePasteDriver.new(dir)) do
+        RuntimeLoginAttempt.stub(:bus_state, settle) do
+          RuntimeLoginJob.perform_now(attempt.id)
+        end
+      end
+
+      attempt.reload
+      assert_equal "failed", attempt.status, "a settled outcome must not be overwritten"
+      assert_match(/stopped responding/, attempt.error_message)
+      assert_nil attempt.pasted_code
+      assert_not claude.reload.active?, "no credentials may be captured onto a settled attempt"
+    end
+  end
+
+  # The loop's terminal-status guard runs at the top of an iteration, but the
+  # capture that follows it — driver.capture! and all — is a window in which the
+  # user can hit Cancel. Writing "succeeded" over that would show the user an
+  # outcome they had already been told was something else, so the status filter
+  # lives in the UPDATE itself.
+  test "a capture that lands after the attempt was settled does not overwrite the outcome" do
+    claude = ClaudeAccount.create!(
+      email: "runtime-login-job-late-capture@example.com", runtime: "claude_code",
+      status: :needs_reauth, is_current: false, priority: 66, oauth_config: {}
+    )
+    attempt = claude.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "canceled", pasted_code: "secret-auth-code"
+    )
+
+    assert_not RuntimeLoginJob.new.send(:settle, attempt, "succeeded", nil),
+      "settle must report that it lost the race"
+
+    attempt.reload
+    assert_equal "canceled", attempt.status
+    assert_nil attempt.pasted_code, "the single-use code must be dropped even when the write loses"
+  end
+
+  test "settle drops the pasted code on the success path" do
+    claude = ClaudeAccount.create!(
+      email: "runtime-login-job-success-code@example.com", runtime: "claude_code",
+      status: :needs_reauth, is_current: false, priority: 67, oauth_config: {}
+    )
+    # A double-submitted code can land in the row after the loop consumed the
+    # first one, so the success path cannot assume it is already nil.
+    attempt = claude.runtime_login_attempts.create!(
+      runtime: "claude_code", status: "completing", pasted_code: "resubmitted-code"
+    )
+
+    assert RuntimeLoginJob.new.send(:settle, attempt, "succeeded", nil)
+
+    attempt.reload
+    assert_equal "succeeded", attempt.status
+    assert_nil attempt.pasted_code
   end
 
   def process_alive?(pid)
