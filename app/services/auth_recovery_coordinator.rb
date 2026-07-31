@@ -196,7 +196,10 @@ class AuthRecoveryCoordinator
   # process died holding. Take it; do not rotate again.
   def adopt_or_park(working_directory, detail)
     account = inject(working_directory)
-    return park_plan unless account
+    # inject swallows filesystem/IO failures into nil, so "no account" here does
+    # not always mean "no account in the pool". Say which, or the park message
+    # tells the user to re-authenticate over what is really a disk problem.
+    return park_plan(injection_failed: pool.available.exists?) unless account
 
     self.class.record_identity!(session, account)
     @logger.info("Adopted the pool's current identity", account: account.email, detail: detail)
@@ -215,6 +218,14 @@ class AuthRecoveryCoordinator
     )
 
     unless result[:success]
+      # A rotation that lost the lock race is not an exhausted pool — the holder
+      # is mid-rotation and about to write good credentials. Wait for it rather
+      # than parking a session whose pool is fine.
+      if result[:reason] == "rotation_in_flight"
+        return Plan.new(outcome: :rotation_in_flight, account: nil,
+          detail: "another session's account rotation is still running")
+      end
+
       @logger.warn("No account to rotate into during auth recovery", from: current.email, reason: result[:reason])
       return park_plan
     end
@@ -237,16 +248,37 @@ class AuthRecoveryCoordinator
   # successful or merely transient refresh leaves it to be marked quota_exceeded.
   # Best effort — a network blip must not block the rotation.
   def classify_outgoing!(account)
+    before = refresh_token_of(account)
+
     result = auth_provider.refresh!(account)
     return if result.ok?
 
-    if result.error == :needs_reauth
-      @logger.warn("Outgoing account's credentials are permanently invalid", account: account.email)
-    else
+    unless result.error == :needs_reauth
       @logger.info("Outgoing account's token refresh failed transiently", account: account.email)
+      return
     end
+
+    # A permanent verdict is only trustworthy if we were the ones holding the
+    # token. Anthropic's refresh tokens are single-use, so a concurrent refresh
+    # elsewhere (the 5-minute sweep, the quotas page — both still unguarded, see
+    # #242) consumes ours and hands us `invalid_grant`, which is indistinguishable
+    # from a genuinely dead credential. If the stored token moved under us, that
+    # is what happened: this is a lost race, not a dead account, and condemning it
+    # to needs_reauth would take a healthy account out of the pool for good.
+    if before.present? && refresh_token_of(account.reload) != before
+      @logger.warn("Refresh lost a race with a concurrent refresh — restoring the account",
+        account: account.email)
+      account.update!(status: :active) if account.needs_reauth?
+      return
+    end
+
+    @logger.warn("Outgoing account's credentials are permanently invalid", account: account.email)
   rescue => e
     @logger.info("Could not classify the outgoing account before rotating", error: e.message)
+  end
+
+  def refresh_token_of(account)
+    account.oauth_config&.dig("credentials_json", "claudeAiOauth", "refreshToken")
   end
 
   def inject(working_directory)
@@ -256,7 +288,7 @@ class AuthRecoveryCoordinator
     nil
   end
 
-  def park_plan
+  def park_plan(injection_failed: false)
     reason = park_reason_for_pool
     if reason == AuthOutageParkService::QUOTA_EXHAUSTED
       Plan.new(
@@ -265,11 +297,13 @@ class AuthRecoveryCoordinator
         detail: "every account in the pool is over its quota"
       )
     else
-      Plan.new(
-        outcome: :unusable,
-        account: nil,
-        detail: "no account in the pool has usable credentials"
-      )
+      detail = if injection_failed
+        "the pool has a usable account but its credentials could not be written to disk"
+      else
+        "no account in the pool has usable credentials"
+      end
+
+      Plan.new(outcome: :unusable, account: nil, detail: detail)
     end
   end
 end

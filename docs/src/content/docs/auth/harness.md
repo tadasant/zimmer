@@ -181,8 +181,12 @@ Everything below runs under a pool-wide advisory lock (`ClaudeAccount.with_pool_
 branches one at a time instead of each starting its own rotation.
 
 The branch is chosen by comparing the pool's current account against
-`metadata["auth_identity_email"]` — the identity the session's process was actually spawned with,
-recorded by `AgentSessionJob` at every injection.
+`metadata["auth_identity_email"]` — the identity the session's process was spawned with, recorded by
+`AgentSessionJob` before each spawn and re-recorded whenever the coordinator or the quota path moves
+this session onto a new account. It is a per-session record, so it can lag: nothing writes it when
+*another* session rotates the pool, or when an operator switches accounts from the quotas page. The
+consequence is bounded and named under
+[a stale spawn identity](/limitations/#a-stale-spawn-identity-can-cost-one-extra-respawn).
 
 ```mermaid
 flowchart TD

@@ -197,7 +197,13 @@ class CodexAuthProvider < RuntimeAuthProvider
   private def rotate_under_lock(triggered_by, reason, expected_current_email)
     current = current_account
 
-    if expected_current_email.present? && current && current.email != expected_current_email
+    # Same two conditions as AccountRotationService#collapse_onto?, including the
+    # recency gate — a caller's recorded identity goes stale whenever the pool
+    # moves without telling it, so inequality alone would collapse a genuine
+    # complaint about the account the caller has been using.
+    rotated_at = current&.last_rotated_to_at
+    if expected_current_email.present? && current && current.email != expected_current_email &&
+        rotated_at.present? && rotated_at > AccountRotationService::COLLAPSE_WINDOW.ago
       @logger.info("Codex rotation already performed by another session, collapsing",
         expected: expected_current_email, current: current.email)
       return { success: true, account: current, collapsed: true }

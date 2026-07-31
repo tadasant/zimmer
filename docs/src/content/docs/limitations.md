@@ -523,6 +523,25 @@ That is the deliberate trade: an unnecessary rotation costs one account for one 
 re-injecting a dead identity costs the user three visible auth failures and a park with the wrong
 instruction. Worth revisiting if Anthropic ever exposes a structured reason.
 
+### A stale spawn identity can cost one extra respawn
+
+🟡 `metadata["auth_identity_email"]` is what
+[the recovery decision tree](/auth/harness/#the-recovery-decision-tree) compares against the pool's
+current account to tell *the pool moved under me* from *I am holding the identity that failed*. It is
+written per session — at spawn, and whenever the coordinator or the quota path moves that session —
+so it goes stale when the pool moves for a reason this session was not part of: another session's
+rotation, or an operator switching accounts from the quotas page.
+
+A session whose record says account A, and which has since been running on account B, will read a
+genuine "Not logged in" from B as *the pool already moved off A* and adopt B — the identity it was
+already using. It re-spawns once into the same wall.
+
+It self-corrects rather than looping: adopting rewrites the record to B, so the next failure takes
+the rotate branch for real. The cost is one wasted respawn and one misleading log line, against a
+prior behaviour of three. The rotation-collapse path avoids the same trap with a recency gate
+(`AccountRotationService::COLLAPSE_WINDOW`, 60s) — a rotation older than that is the account the
+caller has been living with, not a stampede to ride.
+
 ### A rotation that wedges makes other sessions wait, then guess
 
 🟡 The pool lock (`ClaudeAccount.with_pool_lock`) is a session-level Postgres advisory lock, so it

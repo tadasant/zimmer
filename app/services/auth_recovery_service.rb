@@ -291,6 +291,11 @@ class AuthRecoveryService
   # keep an old auth_recovery_count alive past CONSECUTIVE_WINDOW (that would let
   # other sessions' rotations park this one), and a run of charged attempts must
   # not keep the adoption cap alive either.
+  #
+  # The accepted consequence: a pool churning slower than CONSECUTIVE_WINDOW ages
+  # the adoption cap out between adoptions, so such a session adopts for free
+  # indefinitely. That is the intended reading — an adoption every 16 minutes is a
+  # session riding genuine rotations, which is exactly what must not be charged.
   def record_attempt!(working_directory, retry_attempt, charge_budget)
     updates = { "auth_error_last_checked_line" => get_transcript_line_count(working_directory) }
 
