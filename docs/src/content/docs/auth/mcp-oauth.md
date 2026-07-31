@@ -102,7 +102,8 @@ sequenceDiagram
     participant AS as MCP server / its auth server
     participant S as Session
 
-    U->>Z: POST /mcp_oauth/initiate (server_name, session_id)
+    U->>Z: POST /mcp_oauth/initiate (server_name, session_id?)
+    Note over U,Z: session_id is present from a session's OAuth banner and absent<br/>from the Connectors page Authorize button — that is the only difference
     alt a PreregisteredOauthConfig exists
         Note over Z: Rails credentials: mcp_oauth_clients.{name}<br/>client_id, endpoints, scopes — wins outright<br/>client_secret optional (public client); a non-hosted redirect_uri (or manual: true) means paste-back
     else discovery
@@ -120,7 +121,7 @@ sequenceDiagram
             Note over Z: client_id = "zimmer" literal
         end
     end
-    Z->>Z: McpOauthPendingFlow.create_for_session!<br/>state (32B) + PKCE code_verifier → S256 challenge<br/>expires in 24h
+    Z->>Z: McpOauthPendingFlow.start!<br/>state (32B) + PKCE code_verifier → S256 challenge<br/>expires in 24h<br/>session_id null for a Connectors-page flow
     Z-->>U: 302 to authorization_url<br/>plus resource per RFC 8707<br/>Google additionally gets access_type=offline and prompt=consent
     Note over Z,U: this is the hosted-callback path — a flow whose redirect_uri<br/>is not Zimmer's own callback renders the paste-back page instead (below)
     U->>AS: authorize
@@ -129,7 +130,7 @@ sequenceDiagram
     Z->>AS: POST token endpoint (code + code_verifier + redirect_uri)
     AS-->>Z: { access_token, refresh_token?, expires_in }
     Z->>Z: upsert McpOauthCredential by credential_key
-    Z->>S: McpOauthResumeService — all servers satisfied?
+    Z->>S: McpOauthResumeService — all servers satisfied?<br/>(skipped entirely when the flow has no session;<br/>Zimmer redirects back to /connectors instead)
     alt yes
         S->>S: status = waiting, clear oauth_required_servers
         S->>S: re-enqueue AgentSessionJob (replays the original prompt)
@@ -347,9 +348,9 @@ order, so a connector reported **Ready** is one that will actually connect:
 | State | Meaning |
 | --- | --- |
 | **Ready** | OAuth is complete and the credential saved, or every required `${VAR}` resolves |
-| **Needs authorization** | An OAuth-capable server with no stored credential |
+| **Needs authorization** | An OAuth-capable server with no stored credential. The row carries an **Authorize** button |
 | **Token expired** | Expired, but has a refresh token — `RefreshMcpOauthTokensJob` will renew it |
-| **Needs re-auth** | Expired with no refresh token; the credential has to be replaced |
+| **Needs re-auth** | Expired with no refresh token; the row carries a **Re-authorize** button that replaces the credential in place |
 | **Missing configuration** | A required `${VAR}` has no value. The row renders the exact commands to set it |
 | **Secret store unreachable** | The store did not answer. Deliberately *not* "missing" — see [Secrets in the Parameter Store](/operate/secrets-parameter-store/) |
 | **No credential required** | The catalog entry configures no credential at all |
@@ -364,13 +365,55 @@ be deleted.
 The page never contacts the MCP server itself and never displays a secret value;
 it reports presence and where to set what is absent.
 
+### Authorizing from the Connectors page
+
+A row that needs a consent screen runs one: **Authorize** (or **Re-authorize** on a
+`needs_reauth` row) POSTs to the same `/mcp_oauth/initiate` the session banner uses,
+just without a `session_id`. Authorizing a connector is something you do to Zimmer,
+not to one session, and it used to cost you a throwaway session to do it.
+
+A session-less flow differs from an in-session one in exactly two places:
+
+- **It returns to `/connectors`** rather than to a session — through the callback,
+  through paste-back, and through every `initiate` error exit. (A callback that fails
+  outright renders the shared OAuth error page, as an in-session one does.)
+- **It resumes nothing**, because nothing is parked on it. `McpOauthResumeService`
+  is skipped rather than called with no session.
+
+Everything in between — discovery, DCR, PKCE, the hosted callback, the paste-back
+page, the stored `McpOauthCredential` — is the same code on the same path. The
+credential is keyed on the server config, not on who started the flow, so a
+connector authorized here is a connector every future session inherits.
+
+Only rows where a consent screen is actually the fix get the button:
+`needs_authorization` and `needs_reauth`. A `token_expired` row does not — the
+refresh job resolves it without you. A `missing_configuration` row does not either:
+its credential is a `${VAR}` secret and no OAuth provider will ever set it.
+
+The button offers only catalog servers, and the session-less `initiate` enforces
+that server-side: the server must be in the catalog and pass
+`McpOauthCredentialInjector.oauth_capable_server?`. Both paths now read the server
+URL from the catalog whenever the catalog has the server, so a `server_url`
+submitted alongside a session-less `initiate` is ignored outright.
+
+A session-less flow has no session to be reaped with (`Session has_many
+:mcp_oauth_pending_flows, dependent: :destroy` is what collects the in-session ones),
+so `initiate` calls `McpOauthPendingFlow.sweep_expired_session_less!` each time it
+starts a flow. An abandoned Connectors-page flow would otherwise sit indefinitely
+holding a PKCE `code_verifier` and a client secret.
+
 ## Known problems
 
-:::danger[Anyone who can reach the host can start an OAuth flow for any session]
+:::danger[Anyone who can reach the host can start an OAuth flow]
 `McpOauthController` has `skip_forgery_protection only: [:callback, :initiate, :complete]` — and Zimmer has
 [no user authentication at all](/auth/overview/#1-human--zimmer-there-is-no-authentication).
 
-The `state` parameter is the *only* CSRF defense on the callback.
+The `state` parameter is the *only* CSRF defense on the callback. On `initiate`, the
+defense is that the request cannot freely invent its target: whenever the catalog has
+the server, its URL is read from there rather than from the request, and a session-less
+`initiate` additionally refuses a server the catalog does not have at all. The gap that
+remains is an **in-session** `initiate` naming a server *outside* the catalog — that one
+still falls back to the submitted `server_url`, and discovery will fetch it.
 :::
 
 :::caution[The loopback check is a substring match]
@@ -444,6 +487,14 @@ process. For a `running` session that is a runtime limitation; for a `needs_inpu
 self-heals a turn later, because the next message re-injects the fresh credential on the follow-up
 spawn. The gap is that re-auth gives no immediate feedback or re-establishment.
 Tracked in [#195](https://github.com/tadasant/zimmer/issues/195).
+:::
+
+:::caution[Authorizing from the Connectors page does not release a session parked on that server]
+A session-less flow has no session to resume, so it does not run `McpOauthResumeService` at
+all — not even for a session that is `failed` with `oauth_required` on the very server you
+just authorized. The credential is stored and every *future* spawn picks it up, but the
+parked session stays parked until you click Authorize on its own banner (which then takes
+the already-have-a-credential branch: re-inject, clear the runtime needs-auth cache, resume).
 :::
 
 :::caution[A server that fails before it connects disappears from the status instead of showing "failed"]

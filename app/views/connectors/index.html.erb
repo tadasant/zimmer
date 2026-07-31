@@ -93,8 +93,8 @@
               <li>Statuses read the same inputs a spawn reads: the server's <code class="font-mono">${VAR}</code> values, whether an OAuth flow applies, and the stored credential. No request is made to the server itself, so a Ready badge means "Zimmer has what it needs", not "the remote host answered".</li>
               <li><strong>Ready</strong> — OAuth is complete and saved, or every required variable resolves.</li>
               <li><strong>Missing configuration</strong> — a required <code class="font-mono">${VAR}</code> has no value. The row says where to put it.</li>
-              <li><strong>Needs authorization</strong> — an OAuth server with no stored credential. Authorize it from the banner on a session that uses it.</li>
-              <li><strong>Token expired</strong> resolves itself via the refresh job; <strong>Needs re-auth</strong> does not, because no refresh token was issued.</li>
+              <li><strong>Needs authorization</strong> — an OAuth server with no stored credential. Click Authorize on the row to run the OAuth flow; no session required.</li>
+              <li><strong>Token expired</strong> resolves itself via the refresh job; <strong>Needs re-auth</strong> does not, because no refresh token was issued — use Re-authorize on the row.</li>
               <li>Secret values are never shown here — only whether they are set.</li>
             </ul>
           </div>
