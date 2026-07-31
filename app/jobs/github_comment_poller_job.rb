@@ -69,10 +69,10 @@ class GithubCommentPollerJob < ApplicationJob
     "merge gate"  # pr-merge-gate's rating: "## 🚀 Merge gate"
   ].freeze
 
-  # A leading Markdown heading, with any emoji or other decoration before the text
-  # discarded: "## 🚀 Merge gate", "### Merge gate" and "# 🚦 merge gate" all yield
-  # "Merge gate".
-  AUTOMATION_HEADING_PATTERN = /\A[#]{1,6}\s*\P{Alnum}*\s*(?<title>.+?)\s*\z/
+  # A Markdown heading, with the level, any emoji or other decoration before the text, and
+  # a closing "#" run all discarded: "## 🚀 Merge gate", "### Merge gate", "# 🚦 merge
+  # gate" and "## Merge gate ##" all yield "Merge gate".
+  AUTOMATION_HEADING_PATTERN = /\A[#]{1,6}\s*\P{Alnum}*\s*(?<title>.+?)\s*[#]*\s*\z/
 
   # Maximum comments to fetch per API call (GitHub's default is 30, max is 100)
   MAX_COMMENTS_PER_PAGE = 100
@@ -271,12 +271,12 @@ class GithubCommentPollerJob < ApplicationJob
   end
 
   # Check if a comment is a report from Zimmer's own PR automation, by the heading it
-  # opens with. Only the first line is considered, so a human quoting a report -- or
-  # writing about it -- is left alone.
+  # opens with. Only the first non-blank line is considered, so a human quoting a report
+  # -- or writing about it -- is left alone.
   def automated_comment?(body)
     return false if body.blank?
 
-    match = AUTOMATION_HEADING_PATTERN.match(body.lines.first.to_s.strip)
+    match = AUTOMATION_HEADING_PATTERN.match(body.strip.lines.first.to_s.strip)
     return false unless match
 
     AUTOMATION_REPORT_HEADINGS.include?(match[:title].downcase.squish)
