@@ -523,6 +523,23 @@ That is the deliberate trade: an unnecessary rotation costs one account for one 
 re-injecting a dead identity costs the user three visible auth failures and a park with the wrong
 instruction. Worth revisiting if Anthropic ever exposes a structured reason.
 
+### The quotas page can hold row-lock transactions across a token endpoint call
+
+🟡 `ClaudeAccount#refresh_token!` serializes on the account row and keeps that lock for the whole
+read-refresh-persist sequence, HTTP included (see
+[Refreshing a token without burning it](/auth/harness/#refreshing-a-token-without-burning-it)). That
+is what makes the token it presents provably the token it holds, and it was already the shape of the
+5-minute sweep, which wrapped each refresh in `account.with_lock` before this.
+
+What is new is that the same lock now applies on the **web** tier. `QuotasController` refreshes to
+validate an account before switching, and its probe can call `refresh_token!` more than once per
+account per render — so rendering `/quotas` while Anthropic's token endpoint is slow holds a
+sequence of transactions, each up to the 5s-open/10s-read timeout, on a Puma thread.
+
+Tolerable because the page is operator-facing and rarely loaded, and because the alternative — an
+unserialized refresh — is the bug that drained the pool. If it becomes a problem the fix is a
+`lock_timeout` on the refresh path rather than dropping the lock.
+
 ### A stale spawn identity can cost one extra respawn
 
 🟡 `metadata["auth_identity_email"]` is what
