@@ -750,6 +750,10 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     # Model the racer: while this caller waits for the row lock, another one
     # completes a refresh and writes a new pair to the row. Acquiring the lock
     # therefore reveals a token that is no longer the one we set out to spend.
+    #
+    # This substitutes for the lock rather than exercising it — it is the
+    # post-acquire comparison under test here. The lock itself is covered by
+    # "performs the whole refresh inside the row lock" below.
     account.define_singleton_method(:with_lock) do |&block|
       rotated = oauth_config.deep_dup
       rotated["credentials_json"]["claudeAiOauth"]["refreshToken"] = "rotated_by_the_other_caller"
@@ -765,33 +769,67 @@ class ClaudeAccountTest < ActiveSupport::TestCase
       "Another caller's completed refresh is this caller's refresh — report success, don't re-spend the token"
   end
 
-  # The other half: the request went out before we could tell, and came back
-  # invalid_grant. If the stored token has moved on, someone else spent it.
+  # The other half, driven through the REAL filesystem sync rather than a stub of
+  # it. The window this guards is narrow and specific: the CLI rewrites
+  # ~/.claude/.credentials.json in the seconds between refresh_token!'s pre-request
+  # sync and its post-failure re-sync. Faking the sync would manufacture a
+  # divergence the production path cannot produce, and prove nothing.
   test "refresh_token! does not condemn an account that lost the race to a concurrent rotation" do
-    account = claude_accounts(:primary)
-    presented = account.claude_refresh_token
+    tmpdir = Dir.mktmpdir
+    original_cred_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
+    original_json_path = ClaudeAuthProvider::CLAUDE_JSON_PATH
+    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, File.join(tmpdir, ".credentials.json"))
+    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, File.join(tmpdir, "claude.json"))
 
-    invalid_grant = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
-    invalid_grant.stubs(:code).returns("400")
-    invalid_grant.stubs(:body).returns({ error: "invalid_grant" }.to_json)
-    Net::HTTP.any_instance.stubs(:request).returns(invalid_grant)
+    begin
+      account = claude_accounts(:primary)
+      FileUtils.mkdir_p(tmpdir)
+      File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate(
+        "oauthAccount" => { "emailAddress" => account.email }
+      ))
+      write_credentials = lambda do |refresh_token|
+        File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(
+          "claudeAiOauth" => {
+            "accessToken" => "access-for-#{refresh_token}",
+            "refreshToken" => refresh_token,
+            "expiresAt" => ((Time.current + 1.hour).to_f * 1000).to_i
+          }
+        ))
+      end
+      write_credentials.call("token-we-will-present")
+      ClaudeAccount.write_credentials_owner_marker!(account.email)
 
-    # The CLI rotated the shared credentials mid-flight, so by the time we look,
-    # the token of record is no longer the one we presented.
-    account.stubs(:sync_tokens_from_filesystem!).with do
-      rotated = account.oauth_config.deep_dup
-      rotated["credentials_json"]["claudeAiOauth"]["refreshToken"] = "rotated_mid_flight"
-      ClaudeAccount.where(id: account.id).update_all(oauth_config: rotated)
-      true
+      invalid_grant = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+      invalid_grant.stubs(:code).returns("400")
+      invalid_grant.stubs(:body).returns({ error: "invalid_grant" }.to_json)
+
+      sent = nil
+      Net::HTTP.any_instance.stubs(:request).with do |req|
+        sent = URI.decode_www_form(req.body).to_h["refresh_token"]
+        # The CLI finishes its own rotation while our request is in flight, so the
+        # token we just sent is spent by the time the response comes back.
+        write_credentials.call("cli-rotated-while-we-were-in-flight")
+        true
+      end.returns(invalid_grant)
+
+      assert_not account.refresh_token!, "The refresh itself did fail"
+      assert_equal "token-we-will-present", sent
+
+      account.reload
+      assert_not account.needs_reauth?,
+        "An account whose token was spent by someone else is healthy — condemning it is what drains the pool"
+      assert account.active?
+      assert_equal "cli-rotated-while-we-were-in-flight", account.claude_refresh_token,
+        "The post-failure re-sync should have adopted the CLI's newer token"
+    ensure
+      FileUtils.rm_rf(tmpdir)
+      ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
+      ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, original_cred_path)
+      ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
+      ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, original_json_path)
     end
-
-    assert_not account.refresh_token!, "The refresh itself did fail"
-
-    account.reload
-    assert_not account.needs_reauth?,
-      "An account whose token was spent by someone else is healthy — condemning it is what drains the pool"
-    assert account.active?
-    assert_not_equal presented, account.claude_refresh_token
   end
 
   # The guard must not become a blanket amnesty: a genuinely dead credential is
@@ -811,11 +849,47 @@ class ClaudeAccountTest < ActiveSupport::TestCase
       "No concurrent rotation happened, so invalid_grant means what it says"
   end
 
-  test "refresh_token! serializes on the account row" do
+  # Mocha replaces with_lock and never yields, so the whole body is dead — which
+  # is exactly what makes the second assertion meaningful: if any part of the
+  # read-refresh-persist sequence escaped the lock, the request would still fire.
+  test "refresh_token! performs the whole refresh inside the row lock" do
     account = claude_accounts(:primary)
     account.expects(:with_lock).once
+    Net::HTTP.any_instance.expects(:request).never
 
     account.refresh_token!
+  end
+
+  # The Codex half of the same guard. OpenAI's tokens are single-use too, and
+  # lost_refresh_race? routes through a different sync with a different identity
+  # gate, so it needs its own coverage.
+  test "refresh_token! does not condemn a Codex account that lost the race" do
+    account = claude_accounts(:codex_primary)
+    presented = account.send(:codex_refresh_token)
+
+    reused = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    reused.stubs(:code).returns("400")
+    reused.stubs(:body).returns({ error: "refresh_token_reused" }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(reused)
+
+    # refresh_codex_token! syncs from ~/.codex/auth.json twice: once before the
+    # request, and once from lost_refresh_race? after it fails. The CLI's rotation
+    # lands between the two, so only the second sync sees the new token — which is
+    # precisely the window the guard exists for.
+    syncs = 0
+    account.define_singleton_method(:sync_codex_tokens_from_filesystem!) do
+      syncs += 1
+      next if syncs < 2
+
+      rotated = oauth_config.deep_dup
+      rotated["auth_json"]["tokens"]["refresh_token"] = "codex-rotated-in-flight"
+      update!(oauth_config: rotated)
+    end
+
+    assert_not account.refresh_token!
+    assert_not account.reload.needs_reauth?,
+      "A Codex account whose token was spent by the CLI is healthy, not dead"
+    assert_not_equal presented, account.send(:codex_refresh_token)
   end
 
   # API-key Codex accounts have no token to rotate and so no race to lose; they

@@ -359,7 +359,7 @@ class ClaudeAccount < ApplicationRecord
     if codex?
       codex_refresh_token.present?
     else
-      oauth_config&.dig("credentials_json", "claudeAiOauth", "refreshToken").present?
+      claude_refresh_token.present?
     end
   end
 
@@ -388,13 +388,14 @@ class ClaudeAccount < ApplicationRecord
     # needs_reauth. That is how a healthy pool drains itself one account at a
     # time (#242): four different accounts died that way in ten days.
     #
-    # There are nine call sites (the quota page, the 15-minute quota-reset checker,
-    # the 5-minute refresh sweep, rotation, activation), so the serialization lives
-    # HERE rather than at each of them: a row lock held across the whole
-    # read-refresh-persist sequence, which is the only place that can promise the
+    # Callers reach this from the quotas page, the quota-reset checker, the refresh
+    # sweep, rotation, activation and needs_reauth recovery, so the serialization
+    # lives HERE rather than at each of them: a row lock held across the whole
+    # read-refresh-persist sequence, which is the only scope that can promise the
     # token we present is the token we hold. Bounded by the HTTP timeouts each
     # runtime's refresh sets (5s open, 10s read), and re-entrant with the outer
-    # with_lock in RuntimeAuthProvider#recover_needs_reauth.
+    # with_lock that ClaudeAuthProvider#recover_needs_reauth and
+    # RefreshRuntimeAuthTokensJob already take.
     #
     # Captured before with_lock, which reloads the row — so the comparison inside
     # tells "the token moved while I queued" from "the token is what I saw".
@@ -405,8 +406,15 @@ class ClaudeAccount < ApplicationRecord
       # Whoever held the lock before us may have already done this work. Their new
       # pair is on the row we just re-read, so refreshing again would consume a
       # token nobody has used yet. Their refresh is our refresh.
-      if current_refresh_token.present? && token_before_lock.present? &&
-          current_refresh_token != token_before_lock
+      #
+      # The token moving is necessary evidence but not sufficient: a plain
+      # filesystem sync also rewrites it, and a caller whose HTTP refresh then
+      # failed leaves a moved token behind without having refreshed anything. So
+      # also require the access token to be good — otherwise we would report
+      # success to callers (rotation, the quotas page) that asked precisely so
+      # they could avoid writing stale credentials to disk.
+      if token_before_lock.present? && current_refresh_token.present? &&
+          current_refresh_token != token_before_lock && !token_expiring_soon?
         Rails.logger.info "[ClaudeAccount] Refresh for #{email} already performed by a concurrent caller, skipping"
         refreshed = true
         next
@@ -427,6 +435,13 @@ class ClaudeAccount < ApplicationRecord
     end
 
     refreshed
+  rescue StandardError => e
+    # with_lock sits outside the per-runtime refresh bodies' own rescues, so a
+    # lock timeout or deadlock would otherwise escape from a method every caller
+    # treats as returning a boolean — 500ing the quotas page and aborting a
+    # rotation mid-flight. Preserve the "returns false, never raises" contract.
+    Rails.logger.error "[ClaudeAccount] Token refresh could not acquire or hold the account lock for #{email}: #{e.message}"
+    false
   end
 
   # The refresh token currently stored on this row, whichever runtime owns it.
@@ -446,9 +461,15 @@ class ClaudeAccount < ApplicationRecord
   # Re-syncs from the filesystem first: the row lock in #refresh_token! excludes
   # other Zimmer callers, so the only racer left is the agent CLI writing the
   # shared credentials file mid-session, and that lands on disk rather than in the
-  # DB. Conservative on every uncertainty — no token to compare, or the sync
-  # failing — because wrongly sparing a dead account costs one retry, while
-  # wrongly condemning a live one costs the pool an account until a human notices.
+  # DB.
+  #
+  # When it cannot tell — no token to compare, or the sync raising — it answers
+  # "not a race", which condemns the account. That is the deliberate direction:
+  # a wrongly-condemned account is picked back up by
+  # RuntimeAuthProvider#recover_needs_reauth, which probes needs_reauth accounts
+  # and restores the ones that work, whereas an account wrongly spared is never
+  # marked and so never surfaces to the human who has to re-authenticate it. The
+  # recoverable mistake is the one to make.
   def lost_refresh_race?(presented)
     return false if presented.blank?
 
@@ -461,13 +482,19 @@ class ClaudeAccount < ApplicationRecord
     Rails.logger.warn "[ClaudeAccount] Could not check for a lost refresh race on #{email}: #{e.message}"
     false
   end
+  private :lost_refresh_race?
 
   # The read-refresh-persist body of #refresh_token!, run with the row lock held.
   #
+  # Private, and `presented:` is required with no fallback: called without it, the
+  # method would send one token and then compare a nil against it, which reads as
+  # "not a race" and condemns the account — reintroducing #242 through the back
+  # door. A missing argument must be a load error, not a production needs_reauth.
+  #
   # @param presented [String] the refresh token being sent to Anthropic, so a
   #   failure can tell whether the token moved underneath the attempt.
-  def perform_claude_refresh!(recovery_probe: false, presented: nil)
-    refresh_tok = presented || claude_refresh_token
+  def perform_claude_refresh!(presented:, recovery_probe: false)
+    refresh_tok = presented
     raise "Cannot refresh: missing refresh token for #{email}" unless refresh_tok.present?
 
     uri = URI(ClaudeAuthProvider::TOKEN_ENDPOINT)
@@ -549,6 +576,7 @@ class ClaudeAccount < ApplicationRecord
     end
     false
   end
+  private :perform_claude_refresh!
 
   # Reads the current shared filesystem credentials and updates this account's
   # oauth_config. Captures any tokens the Claude Code CLI rotated on its own
