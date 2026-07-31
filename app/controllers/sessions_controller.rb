@@ -842,9 +842,29 @@ class SessionsController < ApplicationController
     # Check if session is failed and attempt to resume it
     if @session.failed?
       if resume_failed_session(@session)
-        redirect_to session_path(@session), notice: "Attempting to resume failed session..."
+        redirect_to refresh_redirect_target(@session), notice: "Attempting to resume failed session..."
         return
       end
+    end
+
+    # A waiting session that is stalled — rather than deliberately asleep — gets the
+    # automated continue nudge (AutomatedPrompts::SYSTEM_RECOVERY, sent through the
+    # same #restart_with_continue_prompt every recovery path uses) instead of a plain
+    # transcript re-sync. There is no live process behind a waiting session, so
+    # re-reading its transcript is a no-op for the user; nudging it is the action they
+    # actually want from "refresh". Session#continue_nudge_on_refresh? excludes the two
+    # waiting sessions that must NOT be nudged: one that never started (no session_id,
+    # still owned by the spawn pipeline) and one sleeping on an unfired wake-up trigger.
+    if @session.continue_nudge_on_refresh?
+      success, error_message = restart_with_continue_prompt(@session)
+      return if performed?
+
+      if success
+        redirect_to refresh_redirect_target(@session), notice: "Continuing waiting session..."
+      else
+        redirect_to refresh_redirect_target(@session), alert: "Could not continue waiting session: #{error_message}"
+      end
+      return
     end
 
     # Read the latest transcript from filesystem
@@ -852,7 +872,7 @@ class SessionsController < ApplicationController
     transcript_dir = get_transcript_directory_for_session(@session)
 
     if transcript_dir.nil?
-      redirect_to session_path(@session), alert: "No clone path found for this session"
+      redirect_to refresh_redirect_target(@session), alert: "No clone path found for this session"
       return
     end
 
@@ -874,7 +894,7 @@ class SessionsController < ApplicationController
           # overwriting it would destroy history. Keep the longer stored copy.
           if Session.transcript_regression?(@session.transcript, transcript_content)
             Rails.logger.warn "[SessionsController#refresh] Refused transcript regression for session #{@session.id} (stored #{Session.transcript_line_count(@session.transcript)} events, filesystem #{message_count}); preserving stored transcript"
-            redirect_to session_path(@session), alert: "Filesystem transcript is shorter than the stored one (clone likely recreated) — kept the longer stored transcript."
+            redirect_to refresh_redirect_target(@session), alert: "Filesystem transcript is shorter than the stored one (clone likely recreated) — kept the longer stored transcript."
             return
           end
 
@@ -895,16 +915,16 @@ class SessionsController < ApplicationController
           # Only continue if the operation succeeded
           return if result == false
 
-          redirect_to session_path(@session), notice: "Transcript refreshed successfully"
+          redirect_to refresh_redirect_target(@session), notice: "Transcript refreshed successfully"
           return
         end
       end
 
       # If we get here, transcript files not found
-      redirect_to session_path(@session), alert: "No transcript files found on filesystem"
+      redirect_to refresh_redirect_target(@session), alert: "No transcript files found on filesystem"
     rescue => e
       Rails.logger.error "Error refreshing transcript: #{e.message}"
-      redirect_to session_path(@session), alert: "Error refreshing transcript: #{e.message}"
+      redirect_to refresh_redirect_target(@session), alert: "Error refreshing transcript: #{e.message}"
     end
   end
 
@@ -913,6 +933,20 @@ class SessionsController < ApplicationController
     # bucket and are intentionally left untouched by this bulk refresh.
     sessions = Session.not_in_frozen_category.where.not(status: :archived)
     bulk_refresh_sessions(sessions, empty_notice: "No non-archived sessions to refresh")
+  end
+
+  # Refresh only the non-archived starred (favorited) sessions, applying the exact same
+  # restart/continue/transcript-refresh behavior as #refresh_all (both share
+  # #bulk_refresh_sessions). Triggered by the Refresh button in the dashboard's "Starred"
+  # group header.
+  #
+  # Unlike #refresh_all, this does NOT exclude frozen categories: the Starred group
+  # renders every favorited session regardless of category, so scoping the button to
+  # exactly what the group shows keeps it honest. Starring is a deliberate per-session
+  # opt-in that outranks the category's parked flag.
+  def refresh_starred
+    sessions = Session.where(favorited: true).where.not(status: :archived)
+    bulk_refresh_sessions(sessions, empty_notice: "No non-archived starred sessions to refresh")
   end
 
   # Refresh only the non-archived sessions belonging to a single category, applying the
@@ -946,12 +980,13 @@ class SessionsController < ApplicationController
     bulk_refresh_sessions(sessions, empty_notice: empty_notice)
   end
 
-  # Shared implementation behind #refresh_all and #refresh_category. Given a relation of
-  # candidate sessions (already scoped to exclude archived sessions and any frozen
-  # bucket), it (1) restarts failed sessions, (2) continues auto-continuable needs_input
-  # sessions (those NOT paused by the user), and (3) refreshes transcripts for the
-  # remaining running/waiting sessions, then redirects to the dashboard with a summary.
-  # +empty_notice+ is the flash shown when the relation has no sessions to act on.
+  # Shared implementation behind #refresh_all, #refresh_category and #refresh_starred.
+  # Given a relation of candidate sessions (already scoped to exclude archived sessions
+  # and any frozen bucket), it (1) restarts failed sessions, (2) continues
+  # auto-continuable needs_input sessions (those NOT paused by the user), (3) continues
+  # stalled waiting sessions with the same nudge single-session #refresh sends, and
+  # (4) refreshes transcripts for everything left, then redirects to the dashboard with a
+  # summary. +empty_notice+ is the flash shown when the relation has no sessions to act on.
   def bulk_refresh_sessions(sessions, empty_notice:)
     if sessions.empty?
       redirect_to root_path, notice: empty_notice
@@ -961,6 +996,7 @@ class SessionsController < ApplicationController
     refreshed_count = 0
     restarted_count = 0
     continued_count = 0
+    continued_waiting_count = 0
     error_count = 0
 
     # Separate restartable sessions (failed and auto-continuable needs_input) from others
@@ -971,23 +1007,53 @@ class SessionsController < ApplicationController
       .where(status: :needs_input)
       .where("metadata->>'paused_by' IS NULL OR metadata->>'paused_by' != 'user'")
 
+    # Waiting sessions that are stalled rather than deliberately asleep get the same
+    # continue nudge as a single-session #refresh — see the rationale there. A session
+    # with no session_id has never started (the spawn pipeline still owns it), and
+    # Session.ids_awaiting_scheduled_wake names the ones sleeping on a wake-up that has
+    # not come due. Both fall through to the plain transcript refresh below, exactly as
+    # the single-session predicate decides. The batch form costs two queries for the
+    # whole set rather than one per waiting session.
+    waiting_candidates = sessions.where(status: :waiting).where.not(session_id: [ nil, "" ]).to_a
+    sleeping_ids = Session.ids_awaiting_scheduled_wake(waiting_candidates.map(&:id))
+    nudgeable_waiting = waiting_candidates.reject { |session| sleeping_ids.include?(session.id) }
+
     # Track totals to warn if limit is exceeded
     total_failed_count = sessions.where(status: :failed).count
     total_needs_input_count = auto_continuable_needs_input.count
-    total_restartable_count = total_failed_count + total_needs_input_count
+    total_restartable_count = total_failed_count + total_needs_input_count + nudgeable_waiting.size
 
-    # Apply bulk limit across both failed and needs_input sessions
-    # Prioritize failed sessions, then needs_input
+    # Apply bulk limit across failed, needs_input and waiting sessions
+    # Prioritize failed sessions, then needs_input, then waiting
     # Use .load to force loading, then .size to avoid extra COUNT query
     failed_sessions = sessions.where(status: :failed).limit(BULK_RESTART_LIMIT).load
     remaining_limit = [ BULK_RESTART_LIMIT - failed_sessions.size, 0 ].max
-    needs_input_sessions = auto_continuable_needs_input.limit(remaining_limit)
+    needs_input_sessions = auto_continuable_needs_input.limit(remaining_limit).load
+    waiting_limit = [ remaining_limit - needs_input_sessions.size, 0 ].max
+    waiting_sessions = nudgeable_waiting.first(waiting_limit)
 
-    non_restartable_sessions = sessions.where.not(status: [ :failed, :needs_input ])
+    # Ids of everything the three restart/continue loops below will touch. They are
+    # captured BEFORE those loops run because each one flips its session to :running —
+    # and non_restartable_sessions is a lazy relation iterated afterwards, so without
+    # this exclusion a just-restarted session would no longer match
+    # `where.not(status: [:failed, :needs_input])`, fall into the transcript pass, and
+    # be counted twice while overwriting a transcript its new job is about to rewrite.
+    restarted_ids = (failed_sessions + needs_input_sessions + waiting_sessions).map(&:id)
+
+    # Everything not restarted/continued above still gets a transcript refresh — the
+    # running sessions, plus any waiting session the nudge deliberately skipped or the
+    # bulk limit pushed past.
+    non_restartable_sessions = sessions
+      .where.not(status: [ :failed, :needs_input ])
+      .where.not(id: restarted_ids)
 
     # Restart failed sessions
-    failed_sessions.find_each do |session|
+    failed_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
+      # with_db_retry redirects when it exhausts its retries; keep going and we would
+      # double-render at the summary redirect below.
+      return if performed?
+
       if success
         restarted_count += 1
       else
@@ -997,13 +1063,28 @@ class SessionsController < ApplicationController
     end
 
     # Continue needs_input sessions (e.g., after deployment killed their processes)
-    needs_input_sessions.find_each do |session|
+    needs_input_sessions.each do |session|
       success, error_message = restart_with_continue_prompt(session)
+      return if performed?
+
       if success
         continued_count += 1
       else
         error_count += 1
         Rails.logger.warn "[bulk_refresh] Failed to continue session #{session.id}: #{error_message}"
+      end
+    end
+
+    # Continue stalled waiting sessions with the automated nudge
+    waiting_sessions.each do |session|
+      success, error_message = restart_with_continue_prompt(session)
+      return if performed?
+
+      if success
+        continued_waiting_count += 1
+      else
+        error_count += 1
+        Rails.logger.warn "[bulk_refresh] Failed to continue waiting session #{session.id}: #{error_message}"
       end
     end
 
@@ -1067,6 +1148,7 @@ class SessionsController < ApplicationController
     messages << "Refreshed #{refreshed_count} session(s)" if refreshed_count.positive?
     messages << "Restarted #{restarted_count} failed session(s)" if restarted_count.positive?
     messages << "Continued #{continued_count} paused session(s)" if continued_count.positive?
+    messages << "Continued #{continued_waiting_count} waiting session(s)" if continued_waiting_count.positive?
 
     if messages.any?
       notice = messages.join(", ")
@@ -2902,6 +2984,22 @@ class SessionsController < ApplicationController
     ]
   end
 
+  # Where a single-session #refresh should land. The per-card refresh icon on the
+  # dashboard fires from the sessions index, and yanking the user to the session detail
+  # page after clicking a small inline icon would be jarring — send them back to the
+  # dashboard (which re-renders with the new status) instead. Refreshing from the
+  # session's own page still lands on that page.
+  #
+  # The referer is used verbatim rather than a bare root_path so the dashboard's own
+  # state survives the round trip: the flat "Sort By Last Touched" / "Sort By Created
+  # Time" views and every per-category page live in the query string, and dropping it
+  # would bounce the user to an unfiltered categories view on page 1.
+  # referrer_is_sessions_index? has already checked that the referer is this host's
+  # index path, so it is not an open redirect.
+  def refresh_redirect_target(session)
+    referrer_is_sessions_index? ? request.referer : session_path(session)
+  end
+
   # Check if the HTTP referer is the sessions index (home) page
   # Used to determine redirect behavior after toggle_favorite action
   # Must match exactly / or /sessions (with optional query params)
@@ -3102,7 +3200,13 @@ class SessionsController < ApplicationController
     end
 
     # Determine if this is a failed session restart or a paused session continuation
-    action_description = session.failed? ? "Restarting failed session" : "Continuing paused session"
+    action_description = if session.failed?
+      "Restarting failed session"
+    elsif session.waiting?
+      "Continuing waiting session"
+    else
+      "Continuing paused session"
+    end
 
     # Determine the prompt to send on restart. If the session failed before the
     # initial prompt was ever processed (e.g., MCP connection failure, spawn failure),
