@@ -85,8 +85,10 @@ class SlackTriggerPollerJob < ApplicationJob
   PASSIVE_IGNORED_SUBTYPES = %w[
     channel_join channel_leave group_join group_leave
     channel_topic channel_purpose channel_name
-    channel_archive channel_unarchive
-    bot_message message_changed message_deleted tombstone
+    channel_archive channel_unarchive channel_posting_permissions
+    bot_message bot_add bot_remove
+    huddle_thread pinned_item reminder_add
+    message_changed message_deleted tombstone
   ].freeze
 
   # Lightweight stand-in for a thread parent synthesized from a tracked
@@ -389,24 +391,28 @@ class SlackTriggerPollerJob < ApplicationJob
       Rails.logger.error "[SlackTriggerPollerJob] Error passively polling channel #{channel_id}: #{e.message}"
     end
 
-    # One write for both cursor hashes. condition.configuration is re-read here so
-    # the thread_timestamps written per-channel above are preserved.
+    # One write for both cursor hashes plus last_polled_at. condition.configuration
+    # is re-read here so the thread bookkeeping written per-channel above survives.
+    attrs = { last_polled_at: Time.current }
     if channel_ts_updates.any? || bot_activity_updates.any?
-      new_config = condition.configuration.merge(
+      attrs[:configuration] = condition.configuration.merge(
         "channel_timestamps" => condition.channel_timestamps.merge(channel_ts_updates),
         "bot_activity_timestamps" => condition.bot_activity_timestamps.merge(bot_activity_updates)
       )
-      condition.update!(configuration: new_config)
     end
-
-    condition.update!(last_polled_at: Time.current)
+    condition.update!(attrs)
   end
 
   # Poll one channel passively.
   #
   # Returns { channel_ts:, bot_activity_ts: } — the newest top-level message seen
-  # (the channel cursor to store) and the newest moment Zimmer was seen speaking in
-  # this channel, either of which may be nil.
+  # (the channel cursor to store) and the newest moment Zimmer is known to have
+  # spoken in this channel, either of which may be nil.
+  #
+  # Note that a passive condition keys its cursor off channel_timestamps even when
+  # a single channel is configured, where bot_mention would use last_message_ts.
+  # One code path covers both shapes; the cost is that last_message_ts stays nil on
+  # a passive condition, so read last_polled_at, not it, to tell whether one is live.
   def process_channel_passively(condition, channel_id, bot_id:)
     last_ts = condition.channel_timestamps[channel_id]
     new_messages = fetch_new_messages(channel_id, last_ts)
@@ -423,8 +429,13 @@ class SlackTriggerPollerJob < ApplicationJob
     thread_activity_ts = check_thread_replies_passively(condition, channel_id, history, bot_id: bot_id)
 
     # The other half: Zimmer's own top-level posts in the recent window.
-    channel_activity_ts = history.select { |msg| msg.user == bot_id }.map(&:ts).max
+    channel_activity_ts = history.select { |msg| msg.user == bot_id }.map(&:ts).max if engagement_channel?(channel_id)
 
+    # Engagement only ever moves forward. Taking the max with what is already on
+    # record matters twice: it is what keeps a channel engaged for the full window
+    # once Zimmer's post scrolls out of the recent-history window, and it stops a
+    # tick that happens to observe OLDER activity — an old bot reply in a thread
+    # that just woke up — from winding the cursor backwards and disengaging early.
     bot_activity_ts = [
       thread_activity_ts,
       channel_activity_ts,
@@ -439,9 +450,7 @@ class SlackTriggerPollerJob < ApplicationJob
       end
     end
 
-    # Only the freshly observed activity is worth persisting; re-storing the value
-    # already on record would be a no-op write.
-    { channel_ts: new_messages.map(&:ts).max, bot_activity_ts: [ thread_activity_ts, channel_activity_ts ].compact.max }
+    { channel_ts: new_messages.map(&:ts).max, bot_activity_ts: bot_activity_ts }
   end
 
   # Whether Zimmer has spoken in a channel recently enough for that channel's
@@ -452,17 +461,49 @@ class SlackTriggerPollerJob < ApplicationJob
     bot_activity_ts.to_f >= CHANNEL_ENGAGEMENT_WINDOW.ago.to_f
   end
 
+  # Whether Zimmer's own posts in this channel count as being in a conversation.
+  #
+  # They don't in the alert channel. AlertService posts there with the same token
+  # and therefore the same user ID, so a single automated alert would otherwise mark
+  # the channel engaged and turn the next 24 hours of it into a session per message
+  # — in the one channel guaranteed to be noisy when things are going wrong. Threads
+  # are unaffected: if Zimmer actually replied in a thread there, that IS a
+  # conversation and passive listening still follows it.
+  def engagement_channel?(channel_id)
+    channel_id != alert_channel_id
+  end
+
+  def alert_channel_id
+    return @alert_channel_id if defined?(@alert_channel_id)
+
+    @alert_channel_id = AlertService.channel_id
+  end
+
+  # The oldest a reply may be and still fire in a thread passive listening has no
+  # cursor for.
+  #
+  # First sight of a thread falls back to the channel cursor, which tracks TOP-LEVEL
+  # messages — and in a channel whose conversation lives in threads that cursor can
+  # be weeks old, which would fire every reply since. Clamping to the engagement
+  # window means meeting a thread late costs at most a day of catch-up instead of
+  # the whole backlog.
+  def first_sight_baseline(channel_baseline_ts)
+    [ channel_baseline_ts, format("%.6f", CHANNEL_ENGAGEMENT_WINDOW.ago.to_f) ].max_by(&:to_f)
+  end
+
   # Check this channel's threads for replies that continue a conversation Zimmer is
   # already in, and fire on them.
   #
-  # Same thread selection, same cursors and same recheck caps as
-  # check_thread_replies_for_mentions. Two deliberate differences:
-  # - The whole thread is fetched, not just the tail since the cursor: whether
-  #   Zimmer has spoken here is a property of the thread's history, not of its new
-  #   replies. Threads are read one page of 100 at a time, so this is the same
-  #   single API call for all but very long threads.
-  # - A reply fires when Zimmer participated in the thread, rather than when it was
-  #   @mentioned.
+  # Same thread selection, same cursors, same fetch shape (`oldest:` the thread's
+  # cursor) and same recheck caps as check_thread_replies_for_mentions. What differs
+  # is the filter: a reply fires when Zimmer participated in the thread rather than
+  # when it was @mentioned.
+  #
+  # Participation is answered without ever re-reading a thread's history. First
+  # sight of a thread has no cursor, so `oldest: nil` already returns the whole
+  # thread — that read decides participation. From then on every reply Zimmer has
+  # not already inspected is in the tail, and a thread it has spoken in is
+  # remembered in participating_threads, so the tail alone is enough forever after.
   #
   # @return [String, nil] the newest timestamp at which Zimmer was seen speaking in
   #   one of this channel's threads
@@ -473,7 +514,9 @@ class SlackTriggerPollerJob < ApplicationJob
     thread_parents = history.select { |msg| msg.reply_count.to_i > 0 }
     thread_parents.concat(aged_out_thread_parents(condition, channel_id, thread_parents))
 
+    known_participating = condition.participating_threads
     thread_ts_updates = {}
+    participating_updates = []
     bot_activity_ts = nil
 
     thread_parents.each do |parent|
@@ -484,25 +527,27 @@ class SlackTriggerPollerJob < ApplicationJob
       latest_reply = parent.latest_reply
       next if latest_reply.present? && last_reply_ts.present? && latest_reply <= last_reply_ts
 
-      replies = SlackService.get_thread_replies(channel_id, parent.ts)
+      replies = SlackService.get_thread_replies(channel_id, parent.ts, oldest: last_reply_ts)
+      # Slack's oldest parameter is inclusive, so drop the already-seen reply.
+      replies.reject! { |reply| reply.ts == last_reply_ts } if last_reply_ts.present?
       next if replies.empty?
-
-      bot_reply_ts = replies.select { |reply| reply.user == bot_id }.map(&:ts).max
-      participation_ts = bot_reply_ts || (parent.user == bot_id ? parent.ts : nil)
-      bot_activity_ts = [ bot_activity_ts, participation_ts ].compact.max
 
       # Track the newest reply for this thread whether or not Zimmer is in it — the
       # same thing the @mention scan does. A thread it joins later then starts from
       # a real cursor instead of replaying everything said before it arrived.
       thread_ts_updates[thread_key] = replies.map { |reply| reply.ts }.max
 
-      next if participation_ts.blank?
+      participation_ts = replies.select { |reply| reply.user == bot_id }.map(&:ts).max
+      participation_ts ||= parent.ts if parent.user == bot_id
+      bot_activity_ts = [ bot_activity_ts, participation_ts ].compact.max
 
-      # For a thread with no cursor of its own yet, the channel cursor decides what
-      # counts as new — mirroring the @mention path, so the first poll after a
-      # deploy doesn't swallow replies that arrived while the channel was already
-      # being watched.
-      effective_prior_ts = last_reply_ts || channel_baseline_ts
+      participating = participation_ts.present? || known_participating.include?(thread_key)
+      participating_updates << thread_key if participation_ts.present?
+      next unless participating
+
+      # A thread with no cursor of its own falls back to the channel's, clamped —
+      # see first_sight_baseline.
+      effective_prior_ts = last_reply_ts || first_sight_baseline(channel_baseline_ts)
 
       replies.each do |reply|
         next if reply.ts <= effective_prior_ts
@@ -514,9 +559,13 @@ class SlackTriggerPollerJob < ApplicationJob
       Rails.logger.error "[SlackTriggerPollerJob] Error passively checking thread #{parent.ts} in #{channel_id}: #{e.message}"
     end
 
+    # Only threads that actually moved produce updates, so a channel of dormant
+    # tracked threads costs no writes at all.
     if thread_ts_updates.any?
-      new_thread_ts = condition.thread_timestamps.merge(thread_ts_updates)
-      condition.update!(configuration: condition.configuration.merge("thread_timestamps" => new_thread_ts))
+      condition.update!(configuration: condition.configuration.merge(
+        "thread_timestamps" => condition.thread_timestamps.merge(thread_ts_updates),
+        "participating_threads" => known_participating | participating_updates
+      ))
     end
 
     bot_activity_ts

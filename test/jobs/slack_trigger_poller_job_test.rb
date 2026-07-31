@@ -1122,6 +1122,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/passive")
     SlackService.stubs(:get_user_name).returns("Test User")
     SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "general"))
+    AlertService.stubs(:channel_id).returns("C_ALERTS")
     SlackService.stubs(:list_member_channels).returns(
       [ OpenStruct.new(id: PASSIVE_CHANNEL, name: "general", is_member: true) ]
     )
@@ -1153,7 +1154,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
       OpenStruct.new(ts: parent_ts, reply_count: 2, latest_reply: new_reply_ts, user: "U222", thread_ts: nil, bot_id: nil)
     ])
-    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts).returns([
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: nil).returns([
       OpenStruct.new(ts: bot_reply_ts, text: "On it.", user: "U_BOT_123", bot_id: "B_ZIMMER", thread_ts: parent_ts),
       OpenStruct.new(ts: new_reply_ts, text: "any update?", user: "U222", bot_id: nil, thread_ts: parent_ts)
     ])
@@ -1179,7 +1180,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
       OpenStruct.new(ts: parent_ts, reply_count: 1, latest_reply: new_reply_ts, user: "U222", thread_ts: nil, bot_id: nil)
     ])
-    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts).returns([
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: nil).returns([
       OpenStruct.new(ts: new_reply_ts, text: "two humans talking", user: "U333", bot_id: nil, thread_ts: parent_ts)
     ])
 
@@ -1209,7 +1210,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
       OpenStruct.new(ts: parent_ts, reply_count: 2, latest_reply: new_reply_ts, user: "U222", thread_ts: nil, bot_id: nil)
     ])
-    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts).returns([
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: nil).returns([
       OpenStruct.new(ts: bot_reply_ts, text: "Done.", user: "U_BOT_123", bot_id: "B_ZIMMER", thread_ts: parent_ts),
       OpenStruct.new(ts: new_reply_ts, text: "one more thing", user: "U222", bot_id: nil, thread_ts: parent_ts)
     ])
@@ -1341,20 +1342,231 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     parent_ts = passive_ts(20.days)
     tracked_reply_ts = passive_ts(2.days)
     new_reply_ts = passive_ts(1.minute)
+    thread_key = "#{PASSIVE_CHANNEL}:#{parent_ts}"
 
     condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
-    condition.configuration["thread_timestamps"] = { "#{PASSIVE_CHANNEL}:#{parent_ts}" => tracked_reply_ts }
+    condition.configuration["thread_timestamps"] = { thread_key => tracked_reply_ts }
+    # Zimmer's own reply here predates the cursor, so it is not in the tail — the
+    # participation memo from the poll that first read this thread is what carries.
+    condition.configuration["participating_threads"] = [ thread_key ]
     condition.save!
 
     # The parent is far too old to appear in recent history.
     SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([])
     SlackService.stubs(:get_messages_since).returns([])
-    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts).returns([
-      OpenStruct.new(ts: tracked_reply_ts, text: "Shipped.", user: "U_BOT_123", bot_id: "B_ZIMMER", thread_ts: parent_ts),
+    # Tail-only read, and Slack's inclusive `oldest` re-returns the cursor reply.
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: tracked_reply_ts).returns([
+      OpenStruct.new(ts: tracked_reply_ts, text: "already seen", user: "U222", bot_id: nil, thread_ts: parent_ts),
       OpenStruct.new(ts: new_reply_ts, text: "it regressed", user: "U222", bot_id: nil, thread_ts: parent_ts)
     ])
 
     assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    assert_equal new_reply_ts, condition.reload.thread_timestamps[thread_key]
+  end
+
+  test "passive_listen reads a tracked thread's tail only, and remembers participation" do
+    condition = stub_passive_listening
+    parent_ts = passive_ts(5.hours)
+    bot_reply_ts = passive_ts(2.hours)
+    new_reply_ts = passive_ts(1.minute)
+    thread_key = "#{PASSIVE_CHANNEL}:#{parent_ts}"
+
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.save!
+
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, reply_count: 2, latest_reply: new_reply_ts, user: "U222", thread_ts: nil, bot_id: nil)
+    ])
+
+    # First sight: no cursor, so the whole thread is read and participation learned.
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: nil).returns([
+      OpenStruct.new(ts: bot_reply_ts, text: "On it.", user: "U_BOT_123", bot_id: "B_ZIMMER", thread_ts: parent_ts),
+      OpenStruct.new(ts: new_reply_ts, text: "any update?", user: "U222", bot_id: nil, thread_ts: parent_ts)
+    ])
+
+    SlackTriggerPollerJob.new.send(:process_condition, condition)
+    condition.reload
+    assert_equal [ thread_key ], condition.participating_threads
+
+    # Next poll: a cursor exists, so only the tail is read — and it contains no
+    # message of Zimmer's. The memo is what keeps the thread engaged.
+    later_reply_ts = passive_ts(0)
+    SlackService.unstub(:get_thread_replies)
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, reply_count: 3, latest_reply: later_reply_ts, user: "U222", thread_ts: nil, bot_id: nil)
+    ])
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: new_reply_ts).returns([
+      OpenStruct.new(ts: later_reply_ts, text: "and one more thing", user: "U222", bot_id: nil, thread_ts: parent_ts)
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  test "passive_listen skips a tracked thread whose latest_reply has not moved" do
+    condition = stub_passive_listening
+    parent_ts = passive_ts(5.hours)
+    last_reply_ts = passive_ts(2.hours)
+
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.configuration["thread_timestamps"] = { "#{PASSIVE_CHANNEL}:#{parent_ts}" => last_reply_ts }
+    condition.save!
+
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, reply_count: 1, latest_reply: last_reply_ts, user: "U222", thread_ts: nil, bot_id: nil)
+    ])
+    SlackService.expects(:get_thread_replies).never
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  test "passive_listen clamps a first-sight thread to the engagement window" do
+    condition = stub_passive_listening
+    parent_ts = passive_ts(30.days)
+    bot_reply_ts = passive_ts(20.days)
+    stale_reply_ts = passive_ts(5.days)
+    fresh_reply_ts = passive_ts(1.minute)
+
+    # A channel whose conversation lives in threads: the top-level cursor is weeks
+    # old, so without the clamp every reply since would fire at once.
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(25.days) }
+    condition.save!
+
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, reply_count: 3, latest_reply: fresh_reply_ts, user: "U222", thread_ts: nil, bot_id: nil)
+    ])
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: nil).returns([
+      OpenStruct.new(ts: bot_reply_ts, text: "Done.", user: "U_BOT_123", bot_id: "B_ZIMMER", thread_ts: parent_ts),
+      OpenStruct.new(ts: stale_reply_ts, text: "old backlog reply", user: "U222", bot_id: nil, thread_ts: parent_ts),
+      OpenStruct.new(ts: fresh_reply_ts, text: "still broken", user: "U222", bot_id: nil, thread_ts: parent_ts)
+    ])
+
+    # Only the reply inside the 24-hour clamp fires; the 5-day-old one does not.
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  test "passive_listen never winds channel engagement backwards" do
+    condition = stub_passive_listening
+    parent_ts = passive_ts(10.days)
+    old_bot_reply_ts = passive_ts(9.days)
+    new_reply_ts = passive_ts(1.minute)
+    fresh_engagement_ts = passive_ts(2.hours)
+
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.configuration["bot_activity_timestamps"] = { PASSIVE_CHANNEL => fresh_engagement_ts }
+    condition.save!
+
+    # The only activity this tick observes is Zimmer's 9-day-old reply in a thread
+    # that just woke up. Its own recent post has scrolled out of history.
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, reply_count: 2, latest_reply: new_reply_ts, user: "U222", thread_ts: nil, bot_id: nil)
+    ])
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: nil).returns([
+      OpenStruct.new(ts: old_bot_reply_ts, text: "Shipped.", user: "U_BOT_123", bot_id: "B_ZIMMER", thread_ts: parent_ts),
+      OpenStruct.new(ts: new_reply_ts, text: "it regressed", user: "U222", bot_id: nil, thread_ts: parent_ts)
+    ])
+    SlackService.stubs(:get_messages_since).returns([ passive_message(passive_ts(2.minutes)) ])
+
+    # The top-level message still fires — the channel is engaged as of 2 hours ago —
+    # and the stored engagement is not dragged back to 9 days ago. (The thread reply
+    # fires too, hence 2.)
+    assert_difference("Session.count", 2) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    assert_equal fresh_engagement_ts, condition.reload.bot_activity_timestamps[PASSIVE_CHANNEL]
+  end
+
+  test "passive_listen does not count Zimmer's own alert posts as channel engagement" do
+    condition = stub_passive_listening
+    AlertService.stubs(:channel_id).returns(PASSIVE_CHANNEL)
+
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.save!
+
+    # AlertService posts with the same token, so an alert looks exactly like any
+    # other message from Zimmer — but it is a feed, not a conversation.
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: passive_ts(30.minutes), text: "ALERT: poller error", user: "U_BOT_123", bot_id: "B_ZIMMER", thread_ts: nil, reply_count: 0)
+    ])
+    SlackService.stubs(:get_messages_since).returns([ passive_message(passive_ts(1.minute), text: "looking") ])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  test "passive_listen with a configured channel polls only that channel" do
+    condition = stub_passive_listening
+    condition.configuration["channel_id"] = PASSIVE_CHANNEL
+    condition.configuration["channel_name"] = "general"
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.configuration["bot_activity_timestamps"] = { PASSIVE_CHANNEL => passive_ts(1.hour) }
+    condition.save!
+
+    SlackService.expects(:list_member_channels).never
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([])
+    SlackService.stubs(:get_messages_since).returns([ passive_message(passive_ts(1.minute)) ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  test "passive_listen batches cursors across channels and survives one channel erroring" do
+    condition = stub_passive_listening
+    other_channel = "C_TESTING"
+    SlackService.unstub(:list_member_channels)
+    SlackService.stubs(:list_member_channels).returns([
+      OpenStruct.new(id: PASSIVE_CHANNEL, name: "general", is_member: true),
+      OpenStruct.new(id: other_channel, name: "testing", is_member: true)
+    ])
+
+    good_ts = passive_ts(1.minute)
+    condition.configuration["channel_timestamps"] = {
+      PASSIVE_CHANNEL => passive_ts(3.hours), other_channel => passive_ts(3.hours)
+    }
+    condition.configuration["bot_activity_timestamps"] = { PASSIVE_CHANNEL => passive_ts(1.hour) }
+    condition.save!
+
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([])
+    SlackService.stubs(:get_messages_since).with(PASSIVE_CHANNEL, since_ts: anything).returns([ passive_message(good_ts) ])
+    SlackService.stubs(:get_messages_since).with(other_channel, since_ts: anything)
+      .raises(SlackService::SlackError, "channel_not_found")
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    # The healthy channel's cursor still advances; the broken one is left alone.
+    condition.reload
+    assert_equal good_ts, condition.channel_timestamps[PASSIVE_CHANNEL]
+    assert_in_delta passive_ts(3.hours).to_f, condition.channel_timestamps[other_channel].to_f, 1.0
+  end
+
+  test "passive_listen ignores messages with no user at all" do
+    condition = stub_passive_listening
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.configuration["bot_activity_timestamps"] = { PASSIVE_CHANNEL => passive_ts(1.hour) }
+    condition.save!
+
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([])
+    SlackService.stubs(:get_messages_since).returns([
+      OpenStruct.new(ts: passive_ts(1.minute), text: "legacy webhook post", user: nil, bot_id: nil, thread_ts: nil)
+    ])
+
+    assert_no_difference("Session.count") do
       SlackTriggerPollerJob.new.send(:process_condition, condition)
     end
   end

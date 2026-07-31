@@ -189,6 +189,18 @@ class TriggerCondition < ApplicationRecord
     configuration["bot_activity_timestamps"] || {}
   end
 
+  # Thread keys ("channel_id:thread_ts") Zimmer has been seen speaking in, for
+  # passive_listen conditions.
+  #
+  # Participation is permanent — a thread you have joined stays yours — so it is
+  # remembered rather than re-derived. Without this the poller would have to re-read
+  # a thread's entire history on every tick to answer the same question, which for a
+  # long-lived thread is several paginated API calls a minute for as long as it
+  # stays tracked.
+  def participating_threads
+    Array(configuration["participating_threads"])
+  end
+
   # Schedule configuration accessors
   def scheduled_at
     configuration["scheduled_at"]
