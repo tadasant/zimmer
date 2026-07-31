@@ -99,6 +99,11 @@ Rails.application.configure do
       class: "StaleCloneCleanupJob",
       description: "Clean up stale clone directories from archived sessions"
     },
+    elicitation_endpoint_health_check: {
+      cron: "*/5 * * * *", # Every 5 minutes
+      class: "ElicitationEndpointHealthCheckJob",
+      description: "Probe the MCP approval (elicitation) endpoint agents are pointed at"
+    },
     github_comment_poller: {
       cron: "*/30 * * * * *", # Every 30 seconds
       class: "GithubCommentPollerJob",

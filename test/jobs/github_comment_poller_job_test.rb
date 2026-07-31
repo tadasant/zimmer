@@ -1128,4 +1128,193 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
       }
     }
   end
+  # --- Agent-posted comments (the cross-session dispatch loop) ----------------
+
+  # A whitelisted-author comment that a Zimmer session actually posted. Because
+  # `gh` authenticates as the human inside every session, this is byte-identical
+  # to a human comment from GitHub's side — which is the bug.
+  class TestJobWithAgentPostedComment < GithubCommentPollerJob
+    def fetch_pr_comments(_owner, _repo, _pr_number)
+      [
+        {
+          "id" => 5145406778,
+          "user" => { "login" => "tadasant" },
+          "body" => "Reported back: the deploy is green.",
+          "html_url" => "https://github.com/tadasant/zimmer/pull/123#issuecomment-5145406778",
+          "created_at" => "2025-01-01T12:00:00Z"
+        }
+      ]
+    end
+
+    def fetch_review_comments(_owner, _repo, _pr_number)
+      []
+    end
+  end
+
+  # The same comment, arriving fresh — inside the window where the authorship hook
+  # may not have claimed it yet.
+  class TestJobWithFreshComment < GithubCommentPollerJob
+    # Stamped once, so a later poll sees the same comment aging rather than a new
+    # one created at the new "now".
+    def created_at
+      @created_at ||= Time.current.iso8601
+    end
+
+    def fetch_pr_comments(_owner, _repo, _pr_number)
+      [
+        {
+          "id" => 5145406778,
+          "user" => { "login" => "tadasant" },
+          "body" => "Reported back: the deploy is green.",
+          "html_url" => "https://github.com/tadasant/zimmer/pull/123#issuecomment-5145406778",
+          "created_at" => created_at
+        }
+      ]
+    end
+
+    def fetch_review_comments(_owner, _repo, _pr_number)
+      []
+    end
+  end
+
+  def trusted_pr_session
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/tadasant/zimmer/pull/123" ] })
+    @session_with_pr
+  end
+
+  def stub_actionable_builder
+    mock_builder = mock
+    mock_builder.stubs(:actionable?).returns(true)
+    mock_builder.stubs(:build).returns("Test prompt content")
+    GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
+  end
+
+  def stored_pr_comments(session)
+    session.reload.custom_metadata.dig("github_comments", "https://github.com/tadasant/zimmer/pull/123", "pr_comments")
+  end
+
+  test "poll_comments_for_session does not enqueue a comment another session posted" do
+    session = trusted_pr_session
+    poster = sessions(:running)
+    AgentPostedGithubComment.record!(session: poster, comment_type: "pr", comment_id: 5145406778)
+
+    stub_actionable_builder
+    # No 👀 either: reacting is a promise to reply, and there is nothing to reply to.
+    Open3.expects(:capture3).never
+
+    TestJobWithAgentPostedComment.new.send(:poll_comments_for_session, session)
+
+    assert_equal 0, session.reload.enqueued_messages.count
+    assert_equal "skipped:agent_posted", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "poll_comments_for_session still records an agent-posted comment in custom_metadata" do
+    session = trusted_pr_session
+    AgentPostedGithubComment.record!(session: sessions(:running), comment_type: "pr", comment_id: 5145406778)
+    stub_actionable_builder
+
+    TestJobWithAgentPostedComment.new.send(:poll_comments_for_session, session)
+
+    stored = stored_pr_comments(session)
+    assert_equal 1, stored.size, "the comment is suppressed, not hidden"
+    assert_equal 5145406778, stored.first["id"]
+  end
+
+  test "poll_comments_for_session defers a comment younger than the attribution grace period" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    Open3.expects(:capture3).never
+
+    TestJobWithFreshComment.new.send(:poll_comments_for_session, session)
+
+    assert_equal 0, session.reload.enqueued_messages.count
+    assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "poll_comments_for_session dispatches a deferred human comment once it ages past the grace period" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestJobWithFreshComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+
+    job.send(:poll_comments_for_session, session)
+    assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
+
+    travel (GithubCommentPollerJob::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
+      job.send(:poll_comments_for_session, session)
+    end
+
+    assert_equal 1, session.reload.enqueued_messages.count
+    assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "poll_comments_for_session suppresses a deferred comment the authorship hook claims during the grace period" do
+    # The race the grace period exists for: the poller sees the comment before
+    # TranscriptHooks::GithubCommentAuthorshipHook has recorded who posted it.
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestJobWithFreshComment.new
+
+    job.send(:poll_comments_for_session, session)
+    assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
+
+    AgentPostedGithubComment.record!(session: sessions(:running), comment_type: "pr", comment_id: 5145406778)
+
+    Open3.expects(:capture3).never
+    travel (GithubCommentPollerJob::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
+      job.send(:poll_comments_for_session, session)
+    end
+
+    assert_equal 0, session.reload.enqueued_messages.count
+    assert_equal "skipped:agent_posted", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "poll_comments_for_session leaves a terminal dispatch_state alone on later polls" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestJobWithNonWhitelistedComment.new
+
+    job.send(:poll_comments_for_session, session)
+    stored = stored_pr_comments(session)
+    assert_equal "skipped:author_not_whitelisted", stored.first["dispatch_state"]
+
+    # A second poll must not re-open a decision that was already made.
+    job.send(:poll_comments_for_session, session)
+    assert_equal 1, stored_pr_comments(session).size
+    assert_equal "skipped:author_not_whitelisted", stored_pr_comments(session).first["dispatch_state"]
+    assert_equal 0, session.reload.enqueued_messages.count
+  end
+
+  test "poll_comments_for_session records why a comment with the agent marker was skipped" do
+    session = trusted_pr_session
+    stub_actionable_builder
+
+    TestJobWithAgentComment.new.send(:poll_comments_for_session, session)
+
+    assert_equal "skipped:self_marker", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "poll_comments_for_session dispatches a human comment when nothing claims it" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestJobWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+
+    job.send(:poll_comments_for_session, session)
+
+    assert_equal 1, session.reload.enqueued_messages.count
+    assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "an agent-authorship lookup failure fails open rather than swallowing the comment" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    AgentPostedGithubComment.stubs(:posted_by_agent).raises(ActiveRecord::StatementInvalid, "connection lost")
+
+    job = TestJobWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+    job.send(:poll_comments_for_session, session)
+
+    assert_equal 1, session.reload.enqueued_messages.count
+  end
 end

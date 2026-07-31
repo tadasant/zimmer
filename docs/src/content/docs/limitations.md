@@ -620,11 +620,15 @@ on its first poll.
 
 Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
 
-### Elicitations silently do nothing on Codex
+### The approval gate can only be verified as far as Zimmer's own doorstep
 
-`ELICITATION_SESSION_ID` is injected only by `ClaudeSpawnEnv`. `CodexRuntimeAdapter` never sets it, so
-Codex sessions' MCP servers have no session id to send. The controller logs a warning; the user sees
-nothing; the agent hangs until its MCP call times out.
+`CliSpawnEnv#apply_elicitation_env` gives both runtimes `ELICITATION_REQUEST_URL`,
+`ELICITATION_SESSION_ID` and `ELICITATION_ENABLED`, and `ElicitationEndpointHealthCheckJob` proves
+every 5 minutes that the endpoint answers from the host agents run on. Neither proves that a given
+MCP server *used* those variables: a server that hard-codes its own URL, or one already running from
+before the change, still posts into the void and still returns a redacted value. What is guaranteed
+now is that the failure is not silent on Zimmer's side — the agent's system prompt says the gate is
+down, so a redaction is never read as a policy decision.
 
 Tracked in [#55](https://github.com/tadasant/zimmer/issues/55).
 
@@ -983,6 +987,23 @@ Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 ---
 
 ## Triggers
+
+### Agent-posted comments are only recognized when a known command posted them
+
+`TranscriptHooks::GithubCommentAuthorshipHook` is what keeps Zimmer from routing its own agents'
+GitHub comments back to agents, and it works by recognizing the *command* that posted the comment:
+`gh pr comment`, `gh issue comment`, `gh pr review`, and `gh api` writes to a comments endpoint. A
+comment posted any other way — a Python script, an MCP GitHub tool, `curl` — leaves no
+`AgentPostedGithubComment` row, so it still looks exactly like a human comment and can still wake a
+session. The `[CC Says]` marker remains a second line of defence for those, with the weakness that
+put it here: an agent can forget it.
+
+Deliberately narrow rather than scanning every tool result: an agent that merely *reads* a comment
+gets that comment's own `html_url` back, and treating that as a post would silence a human. Covering
+a new posting route means adding its pattern to `COMMENT_POST_PATTERNS`.
+
+The same recognition gap sets the cost of the 60-second `ATTRIBUTION_GRACE_SECONDS` hold-down: every
+human comment waits up to a minute longer (on top of the 30-second poll) before it wakes a session.
 
 ### A failed repo visibility lookup drops the comment
 

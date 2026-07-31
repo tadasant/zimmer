@@ -10,9 +10,21 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_07_31_130000) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_31_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "agent_posted_github_comments", force: :cascade do |t|
+    t.bigint "session_id"
+    t.string "comment_type", null: false
+    t.bigint "comment_id", null: false
+    t.string "comment_url"
+    t.string "pr_url"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["comment_type", "comment_id"], name: "index_agent_posted_github_comments_on_type_and_comment_id", unique: true
+    t.index ["session_id"], name: "index_agent_posted_github_comments_on_session_id"
+  end
 
   create_table "elicitations", force: :cascade do |t|
     t.bigint "session_id", null: false
@@ -468,6 +480,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_07_31_130000) do
 
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id"
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id"
+  add_foreign_key "agent_posted_github_comments", "sessions", on_delete: :nullify
   add_foreign_key "claude_account_quota_snapshots", "claude_accounts"
   add_foreign_key "elicitations", "sessions", on_delete: :cascade
   add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
