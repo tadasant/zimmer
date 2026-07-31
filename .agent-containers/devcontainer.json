@@ -1,0 +1,27 @@
+{
+  "// About": "Dev Container spec for the containerized Zimmer dev stack. Opens the",
+  "// About2": "app service defined in docker-compose.dev.yml as your workspace. See",
+  "// About3": ".agent-containers/README.md for the ac.sh CLI and manual usage.",
+  "name": "Zimmer (dev)",
+  "dockerComposeFile": "docker-compose.dev.yml",
+  "service": "app",
+  "workspaceFolder": "/app",
+  "shutdownAction": "stopCompose",
+  "postCreateCommand": ".agent-containers/setup.sh",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Zimmer web",
+      "onAutoForward": "notify"
+    }
+  },
+  "remoteUser": "root",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "Shopify.ruby-lsp",
+        "bradlc.vscode-tailwindcss"
+      ]
+    }
+  }
+}

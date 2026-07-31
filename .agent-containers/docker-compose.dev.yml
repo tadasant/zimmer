@@ -1,0 +1,74 @@
+# Containerized Zimmer dev stack.
+#
+# Three services: the app workspace (Rails 8 + Tailwind watcher), Postgres, and
+# Redis. The `app` container is a long-lived workspace — it does NOT auto-start
+# the Rails server. setup.sh prepares it and run.sh starts the dev processes
+# inside it (see ac.sh for the full boot sequence, or do it by hand).
+#
+# Host ports are dynamic by default (APP_PORT=0 → a random free host port maps to
+# container :3000) so many isolated sessions can run in parallel without colliding.
+# `docker compose port app 3000` (or ac.sh status) tells you the assigned port.
+#
+# Teardown MUST use `-v` to drop the named postgres volume, or it leaks:
+#   docker compose -f .agent-containers/docker-compose.dev.yml down -v
+#
+# Project name: this default (`zimmer-dev-local`) applies when you run compose
+# directly — a SINGLE shared stack, not for parallel use. ac.sh overrides it with
+# `-p zimmer-dev-<name>` to give each session its own isolated project. Both start
+# with `zimmer-dev-`, which is exactly the prefix DockerCleanupJob reaps and keeps
+# them consistent with DockerComposeCleanupService's path-based teardown.
+
+name: zimmer-dev-local
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .agent-containers/Dockerfile.dev
+    command: sleep infinity
+    env_file: .env.dev
+    volumes:
+      # The repo itself, live-mounted. Edits on the host appear instantly inside.
+      - ..:/app
+      # Share the host's Claude Code + gh credentials into the container so the
+      # agent is already logged in. These are optional — the stack boots without
+      # them; only interactive agent/PR work needs them.
+      - ${HOME}/.claude:/root/.claude
+      - ${HOME}/.config/gh:/root/.config/gh
+      # Let the container drive sibling Docker containers via the host daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      # APP_PORT=0 (the default) publishes container :3000 on a random host port.
+      - "${APP_PORT:-0}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: password
+      # Only the primary DB is seeded here; `db:prepare` (setup.sh) also creates
+      # zimmer_development_cable, since the `app` superuser can create databases.
+      POSTGRES_DB: zimmer_development
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d zimmer_development"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
