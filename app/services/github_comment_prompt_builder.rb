@@ -6,12 +6,15 @@ require "open3"
 # The prompt includes context (code, thread history) and instructions for how to respond.
 # Intent determination (question vs change request) is left to the agent, not hardcoded.
 #
+# It also owns the decision of whether a comment is worth actioning at all -- see
+# #actionable?, which the poller consults before it reacts to or enqueues anything.
+#
 # Usage:
 #   builder = GithubCommentPromptBuilder.new(
 #     session: session,
 #     comment_info: { type: "review", data: comment_data, pr_url: "...", owner: "...", repo: "...", pr_number: "123" }
 #   )
-#   prompt = builder.build
+#   prompt = builder.build if builder.actionable?
 #
 class GithubCommentPromptBuilder
   attr_reader :session, :comment_info
@@ -19,6 +22,25 @@ class GithubCommentPromptBuilder
   def initialize(session:, comment_info:)
     @session = session
     @comment_info = comment_info
+  end
+
+  # Whether Zimmer should action this comment at all.
+  #
+  # False on a public repository we don't control: there the agent may not reply, commit,
+  # push, or react without explicit human approval, so waking a session to hand it a
+  # comment it isn't allowed to answer only produces noise -- on the PR (a 👀 nobody
+  # follows up on) and in the session. The poller checks this before doing anything else.
+  def actionable?
+    !public_repo?
+  end
+
+  # True when the visibility lookup itself failed, so "public" was assumed rather than
+  # observed. The comment is skipped either way -- better to leave one alone than to act
+  # publicly on a repo we couldn't check -- but this case is a `gh` problem rather than a
+  # policy one, and the poller says so when it logs the skip. Only meaningful after
+  # #actionable? or #public_repo? has run.
+  def visibility_lookup_failed?
+    @visibility_lookup_failed.present?
   end
 
   def build
@@ -33,8 +55,7 @@ class GithubCommentPromptBuilder
     # Build context based on comment type
     context = build_context(comment_type, comment_data)
 
-    # Build the prompt
-    prompt = build_prompt(
+    build_prompt(
       body: body,
       author: author,
       comment_url: comment_url,
@@ -42,13 +63,6 @@ class GithubCommentPromptBuilder
       context: context,
       pr_url: pr_url
     )
-
-    # Append public repo warning if applicable
-    if public_repo?
-      prompt += "\n\n#{public_repo_warning}"
-    end
-
-    prompt
   end
 
   private
@@ -205,15 +219,15 @@ class GithubCommentPromptBuilder
   # These are organizations/users that we control, so we trust agent actions on them.
   TRUSTED_OWNERS = %w[tadasant].freeze
 
-  # Check if the repository requires the public repo warning
+  # Check whether the repository is one the agent may not act on publicly
   # Uses the GitHub API to fetch repository visibility
   #
-  # Returns false (no warning needed) if:
+  # Returns false (the comment is actionable) if:
   # - The repository is private
   # - The repository is owned by a trusted owner (tadasant)
   # - Owner or repo is missing/blank
   #
-  # Returns true (warning needed) if:
+  # Returns true (leave the comment alone) if:
   # - The repository is public AND not owned by a trusted owner
   # - API call fails (err on the side of caution)
   def public_repo?
@@ -238,34 +252,20 @@ class GithubCommentPromptBuilder
       !is_private
     else
       Rails.logger.warn "[GithubCommentPromptBuilder] Failed to check repo visibility for #{owner}/#{repo}: #{stderr}"
-      # Default to true (treat as public) if API fails - better to require approval than risk public changes
+      # Default to true (treat as public) if API fails - better to skip a comment than to
+      # act publicly on a repo we couldn't check. See #visibility_lookup_failed?
+      @visibility_lookup_failed = true
       @repo_visibility_cache[cache_key] = true
       true
     end
   rescue StandardError => e
     Rails.logger.error "[GithubCommentPromptBuilder] Exception checking repo visibility: #{e.class} - #{e.message}"
+    @visibility_lookup_failed = true
     # Cache the result for consistency (cache_key may not be defined if error occurs early)
     if defined?(cache_key) && cache_key
       @repo_visibility_cache ||= {}
       @repo_visibility_cache[cache_key] = true
     end
     true
-  end
-
-  # Warning message to append to prompts for public repositories
-  def public_repo_warning
-    <<~WARNING.strip
-      ---
-
-      ⚠️ **PUBLIC REPOSITORY NOTICE**
-
-      This is a public repository. You should NOT make any public-facing changes (emojis, comments, commits, pushes) without explicit review and approval by a human message (not this templated message).
-
-      "Continue" is not sufficient approval - the human needs to directly respond to your proposed action with specific approval.
-
-      **DO** still do all the exploring, analysis, and brainstorming you need to determine the right next action.
-      **DO** propose your intended action in chat for human approval.
-      **DO NOT** execute public-facing actions yourself until you receive explicit human approval.
-    WARNING
   end
 end

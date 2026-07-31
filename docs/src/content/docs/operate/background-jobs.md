@@ -50,6 +50,39 @@ six-field entries suggest it's the Slack one.
 Tracked in [#106](https://github.com/tadasant/zimmer/issues/106).
 :::
 
+## What the PR comment poller acts on
+
+`GithubCommentPollerJob` records every new comment on a tracked PR in the session's
+`custom_metadata`, but only some of them wake the session. A comment produces a follow-up prompt
+when all of these hold:
+
+- the author is in `WHITELISTED_USERS` (`tadasant`, `macoughl`);
+- the body carries no `[CC Says]` marker — that's how the agent's own comments are attributed;
+- the body is not a bot command (`BLACKLISTED_PATTERNS`, currently just `/deploy staging`);
+- the body is not a Zimmer automation report (`AUTOMATION_REPORT_HEADINGS`, currently the
+  pr-merge-gate rating, recognized by its `## 🚀 Merge gate` heading);
+- the comment was created after this session started tracking the PR — sessions predating
+  `github_pr_tracking_started_at` have no such timestamp, and for those every comment qualifies.
+
+The automation filter lives in Zimmer rather than in the automations themselves because the merge
+gate posts through `gh` as `tadasant` and carries no marker — to the poller it looks exactly like
+the owner leaving a comment. Matching the report heading is what keeps a rating from waking the
+session it rates, and it means a new automation doesn't have to remember to opt in. Add its heading
+to `AUTOMATION_REPORT_HEADINGS`; the comparison ignores heading level and leading emoji.
+
+The 👀 reaction follows the same decision, and follows it *after* the fact rather than before:
+Zimmer adds the reaction only once a follow-up is actually going out — the comment cleared every
+filter above, `GithubCommentPromptBuilder#actionable?` returned true, and the prompt came back
+non-blank. On a public repo owned by someone outside `TRUSTED_OWNERS`, `actionable?` is false and
+nothing happens at all: no prompt, no reaction, just an info log line. A 👀 is a promise to
+respond, and on a repo we don't control the agent isn't allowed to keep it. The reaction itself
+stays best-effort — a failed reaction API call is logged and the follow-up proceeds.
+
+`actionable?` is also false when the visibility lookup *fails*, because "public" is the safe
+assumption when `gh` can't answer — see [Limitations](/limitations/#a-failed-repo-visibility-lookup-drops-the-comment).
+That case logs at `warn` rather than `info`, since the comment it drops may well have been a real
+one on a private repo.
+
 ## Queues
 
 Most jobs run on `default`. Two are deliberately isolated:

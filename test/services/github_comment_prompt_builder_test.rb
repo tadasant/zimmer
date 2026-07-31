@@ -169,7 +169,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     assert_includes context, "Third comment"
   end
 
-  test "appends public repo warning when repo is public" do
+  test "actionable? is false on a public repo we don't control" do
     comment_info = build_comment_info(
       type: "pr",
       body: "Please fix this bug",
@@ -178,20 +178,12 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
 
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
 
-    # Stub public_repo? to return true
     builder.stub(:public_repo?, true) do
-      prompt = builder.build
-
-      assert_includes prompt, "PUBLIC REPOSITORY NOTICE"
-      assert_includes prompt, "You should NOT make any public-facing changes"
-      assert_includes prompt, "explicit review and approval by a human"
-      assert_includes prompt, "\"Continue\" is not sufficient approval"
-      assert_includes prompt, "**DO** still do all the exploring"
-      assert_includes prompt, "**DO NOT** execute public-facing actions"
+      refute builder.actionable?
     end
   end
 
-  test "does not append public repo warning when repo is private" do
+  test "actionable? is true when the repo is private or trusted" do
     comment_info = build_comment_info(
       type: "pr",
       body: "Please fix this bug",
@@ -200,12 +192,9 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
 
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
 
-    # Stub public_repo? to return false
     builder.stub(:public_repo?, false) do
-      prompt = builder.build
-
-      refute_includes prompt, "PUBLIC REPOSITORY NOTICE"
-      refute_includes prompt, "explicit review and approval by a human"
+      assert builder.actionable?
+      assert_includes builder.build, "GitHub Comment Response Required"
     end
   end
 
@@ -443,7 +432,27 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     end
   end
 
-  test "does not append public repo warning for tadasant-owned repos" do
+  test "visibility_lookup_failed? distinguishes an assumed-public repo from an observed one" do
+    comment_info = build_comment_info(
+      type: "pr",
+      body: "Test",
+      author: "tadasant"
+    )
+
+    observed = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
+    Open3.stub(:capture3, [ "false\n", "", mock_success_status ]) do
+      refute observed.actionable?
+      refute observed.visibility_lookup_failed?
+    end
+
+    assumed = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
+    Open3.stub(:capture3, [ "", "HTTP 502", mock_failure_status ]) do
+      refute assumed.actionable?
+      assert assumed.visibility_lookup_failed?
+    end
+  end
+
+  test "actionable? is true for tadasant-owned repos without an API call" do
     comment_info = build_comment_info_with_owner(
       type: "pr",
       body: "Please fix this bug",
@@ -453,9 +462,10 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     )
 
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
-    prompt = builder.build
 
-    refute_includes prompt, "PUBLIC REPOSITORY NOTICE", "tadasant repos should not show warning"
+    Open3.stub(:capture3, ->(*) { flunk "should not check visibility for a trusted owner" }) do
+      assert builder.actionable?
+    end
   end
 
   private
