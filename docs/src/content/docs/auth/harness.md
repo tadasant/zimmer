@@ -135,20 +135,28 @@ Anthropic meters two windows per account, 5-hour and 7-day, and the page shows b
 and averaged across the pool.
 
 The pool's 5-hour average is labelled **"Avg 5-Hour Utilization (effective)"** because it is not a
-plain average of the 5-hour counters. An account whose 7-day window is spent — rejecting, or at its
-cap — cannot serve a request no matter how much 5-hour headroom it reports, so it counts as 100% in
-that average, and its card says *"Unavailable anyway — the 7-day window is spent"* under the 5-hour
-bar. Without the correction, an account at 29% on 5 hours and 100% on the week pulled the headline
-number down and advertised pool headroom that nothing could spend.
+plain average of the 5-hour counters. An account whose 7-day window is spent — status `rejected`, or
+the counter at its cap — cannot serve a request however much 5-hour headroom it reports, so it counts
+as 100% in that average, and its card says *"Counted as 100% in the pool figure"* under the 5-hour
+bar. An account at 29% on 5 hours and 100% on the week would otherwise pull the headline down and
+advertise pool headroom that nothing can spend.
 
-The correction runs one way only. The 7-day average takes the 7-day counters as they are: the weekly
-window subsumes the 5-hour one, not the reverse, and an account at its 5-hour cap is idle for minutes
-and then serves again. A window whose reset time has passed reads as 0% on both axes — the sliding
-window has cleared, so the last number Zimmer recorded for it is stale.
+The correction runs one way. The 7-day average takes the 7-day counters as they are, because the
+weekly window subsumes the 5-hour one: an account at its 5-hour cap is idle for minutes and then
+serves again. A window whose reset time has passed reads as 0% on both axes, since the sliding window
+has cleared and the last number Zimmer recorded for it is stale.
 
-The figures are display-only. Rotation never reads them: `activate_next_account` picks from
-`ClaudeAccount.available` (status `active`), and a quota-blocked account has already been moved to
-`quota_exceeded`, so it is out of the pool regardless of what the page shows.
+Two vocabularies of "spent" now coexist, and they disagree at one edge. `QuotasHelper` reads the API
+status (`allowed` and `allowed_warning` serve; anything else blocks); `QuotaResetCheckerJob.window_clear?`,
+which decides whether to restore a `quota_exceeded` account, ignores status and looks only at reset
+time and utilization. A snapshot with status `rejected` at 50% utilization is therefore *spent* to the
+page and *clear* to the healer. The healer governs account state; the page governs what you read.
+
+`pool_utilization_5h` itself is display-only — no scheduler or rotation path reads it. The underlying
+snapshot numbers are not: `QuotaResetCheckerJob` and `QuotasController#auto_heal_accounts` both flip
+accounts back to `active` from them. Rotation picks from `ClaudeAccount.available` (status `active`)
+and applies no quota test of its own, which is why an account that is 7-day-spent but was never
+current stays a rotation candidate — see [#248](https://github.com/tadasant/zimmer/issues/248).
 
 :::danger[Rotation is triggered by matching an English error string]
 `ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN`:

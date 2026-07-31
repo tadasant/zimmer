@@ -53,6 +53,20 @@ class QuotasHelperTest < ActionView::TestCase
     assert_not seven_day_window_spent?(nil)
   end
 
+  test "seven_day_window_spent? is false for allowed_warning, which still serves" do
+    # Anthropic's third status value. Reading it as blocking would invent
+    # exhaustion for an account that is merely approaching its cap.
+    assert_not seven_day_window_spent?(snapshot(utilization_7d: 0.82, status_7d: "allowed_warning", reset_7d: 2.days.from_now))
+  end
+
+  test "seven_day_window_spent? treats an unrecognized status as blocking" do
+    assert seven_day_window_spent?(snapshot(utilization_7d: 0.9, status_7d: "exceeded", reset_7d: 2.days.from_now))
+  end
+
+  test "seven_day_window_spent? is true for a rejecting window with no reset time" do
+    assert seven_day_window_spent?(snapshot(utilization_7d: 1.0, status_7d: "rejected", reset_7d: nil))
+  end
+
   # pool_utilization_5h tests
   #
   # The motivating case: an account reporting plenty of 5-hour headroom while
@@ -84,6 +98,15 @@ class QuotasHelperTest < ActionView::TestCase
     )
 
     assert_in_delta 0.10, pool_utilization_5h(snap)
+  end
+
+  test "pool_utilization_5h leaves an allowed_warning 7d window alone" do
+    snap = snapshot(
+      utilization_5h: 0.15, status_5h: "allowed", reset_5h: 3.hours.from_now,
+      utilization_7d: 0.82, status_7d: "allowed_warning", reset_7d: 2.days.from_now
+    )
+
+    assert_in_delta 0.15, pool_utilization_5h(snap)
   end
 
   test "pool_utilization_5h drops back to the 5h value once the 7d window resets" do
@@ -131,6 +154,10 @@ class QuotasHelperTest < ActionView::TestCase
       utilization_5h: 1.0, status_5h: "rejected", reset_5h: 1.hour.from_now,
       utilization_7d: 1.0, status_7d: "rejected", reset_7d: 1.day.from_now
     ))
+  end
+
+  test "five_hour_headroom_unusable? is false for a nil snapshot" do
+    assert_not five_hour_headroom_unusable?(nil)
   end
 
   test "five_hour_headroom_unusable? is false when the 7d window is healthy" do

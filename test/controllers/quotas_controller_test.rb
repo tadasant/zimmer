@@ -119,6 +119,23 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_match(/None right now/, stats)
   end
 
+  test "show counts every weekly-spent account in the explanatory line" do
+    # The line claims to count accounts whose 7-day window is spent, so it must
+    # include one that is also at its 5-hour cap — where the correction changes
+    # nothing, but the claim still holds.
+    seed_aggregate_snapshots(
+      { utilization_5h: 0.29, status_5h: "allowed", reset_5h: 72.minutes.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: 1.day.from_now },
+      { utilization_5h: 1.0, status_5h: "rejected", reset_5h: 1.hour.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: 2.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    assert_match(/2 accounts counted that way now/, aggregate_stats_text)
+  end
+
   test "show leaves the 7-day aggregate untouched when the 5-hour window is spent" do
     # The correction is one-directional: a spent 5-hour window says nothing
     # about the week, so the 7-day average must not inherit it.
@@ -149,10 +166,10 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "#account_card_#{accounts.first.id}" do
-      assert_select "p", text: /Unavailable anyway — the 7-day window is spent/
+      assert_select "p", text: /Counted as 100% in the pool figure — the 7-day window is spent/
     end
     assert_select "#account_card_#{accounts.second.id}" do
-      assert_select "p", text: /Unavailable anyway/, count: 0
+      assert_select "p", text: /Counted as 100% in the pool figure/, count: 0
     end
   end
 

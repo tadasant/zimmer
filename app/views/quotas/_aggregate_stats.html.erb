@@ -7,7 +7,7 @@
       exceeded_count = accounts.quota_exceeded.count
       reauth_count = accounts.needs_reauth.count
 
-      weekly_blocked_count = 0
+      weekly_spent_count = 0
 
       accounts.each do |account|
         if (snap = snapshots[account.id])
@@ -18,7 +18,7 @@
           eff_7d = effective_utilization(snap.utilization_7d, snap.reset_7d)
           all_utilizations_5h << pool_5h if pool_5h
           all_utilizations_7d << eff_7d if eff_7d
-          weekly_blocked_count += 1 if five_hour_headroom_unusable?(snap)
+          weekly_spent_count += 1 if seven_day_window_spent?(snap)
         end
       end
 
@@ -67,10 +67,12 @@
               <% if max_5h %>
                 <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_5h) %></p>
               <% end %>
-              <p class="mt-1 text-xs text-gray-500">
-                Accounts whose 7-day window is spent count as 100% — their 5-hour headroom can't be served.
-                <%= weekly_blocked_count > 0 ? "#{pluralize(weekly_blocked_count, 'account')} counted that way now." : "None right now." %>
-              </p>
+              <% if avg_5h %>
+                <p class="mt-1 text-xs text-gray-500">
+                  Accounts whose 7-day window is spent count as 100% here: their 5-hour headroom can't be served.
+                  <%= weekly_spent_count > 0 ? "#{pluralize(weekly_spent_count, 'account')} counted that way now." : "None right now." %>
+                </p>
+              <% end %>
             </div>
 
             <div>
