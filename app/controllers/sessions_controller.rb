@@ -599,6 +599,18 @@ class SessionsController < ApplicationController
     # Load Claude skills for the follow-up form slash command typeahead
     @session_skills = ClaudeSkillsCacheService.get_for_session(@session)
 
+    # MCP Apps spike (SEP-1865 / io.modelcontextprotocol/ui). Flag-gated PoC:
+    # Zimmer connects to an app-capable MCP server as its own host, fetches an
+    # interactive UI fragment + tool result, and surfaces it in the session
+    # detail page (see _mcp_app_panel + mcp_app_host_controller.js). The QR
+    # fragment encodes this session's own URL, tying the demo to the session.
+    if McpAppPreviewService.enabled? && params[:mcp_app].to_s != "off"
+      args = ENV["ZIMMER_MCP_APPS_POC_ARGS"].present? ? JSON.parse(ENV["ZIMMER_MCP_APPS_POC_ARGS"]) : { "text" => session_url(@session) }
+      result = McpAppPreviewService.fetch(tool_args: args)
+      @mcp_app_preview = result.data if result.ok?
+      Rails.logger.info("[mcp-apps-poc] preview fetch failed: #{result.error}") unless result.ok?
+    end
+
     # This URL serves two structurally different bodies from the same path: the
     # full-page variant (no frame) and the drawer variant (wrapped in
     # <turbo-frame id="session_detail">). Which one is rendered depends solely on
