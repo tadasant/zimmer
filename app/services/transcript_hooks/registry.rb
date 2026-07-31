@@ -47,6 +47,7 @@ class TranscriptHooks::Registry
     # which reads logs from the Claude CLI cache directory directly
     def register_defaults!
       register(TranscriptHooks::GithubPrUrlHook)
+      register(TranscriptHooks::GithubCommentAuthorshipHook)
     end
   end
 end

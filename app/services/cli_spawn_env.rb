@@ -263,6 +263,32 @@ module CliSpawnEnv
     env_vars
   end
 
+  # Tell the MCP servers this agent starts where Zimmer's approval endpoint is, and
+  # which session is asking.
+  #
+  # Both runtimes need this, which is why it lives here rather than in
+  # ClaudeSpawnEnv: a Codex session that never set ELICITATION_SESSION_ID sent
+  # approval requests Zimmer could not attribute, and neither runtime told the
+  # server the endpoint's address at all. See ElicitationEndpoint.
+  #
+  # An explicit value from the session's .env wins — an operator pointing a server
+  # at a different Zimmer must not be overridden.
+  #
+  # @param env_vars [Hash] Environment variables to pass to the child process
+  # @return [Hash] env_vars with the ELICITATION_* variables set
+  def apply_elicitation_env(env_vars)
+    ElicitationEndpoint.spawn_env(session_id: @zimmer_session_id).each do |key, value|
+      next if env_vars[key].present?
+
+      env_vars[key] = value
+    end
+    @logger.info "Set ELICITATION_REQUEST_URL=#{env_vars['ELICITATION_REQUEST_URL']} (session #{@zimmer_session_id.presence || 'unknown'})"
+    env_vars
+  rescue => e
+    @logger.warn "Failed to set elicitation env: #{e.message}"
+    env_vars
+  end
+
   # Point SSH clients at the operator SSH key (SSH_PRIVATE_KEY_PATH).
   #
   # The key file itself is materialized by OperatorSshKeyProvisioner (from the

@@ -1,6 +1,7 @@
 Rails.application.routes.draw do
   namespace :supervisor do
     resources :account_rotation_events
+    resources :agent_posted_github_comments
     resources :app_settings
     resources :catalog_pins
     resources :categories

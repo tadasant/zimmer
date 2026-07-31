@@ -265,6 +265,10 @@ class CodexRuntimeAdapter
     env_vars = apply_session_scratch_dir(env_vars)
     # Point the ssh-* MCP servers (and the plain ssh/git CLIs) at the operator SSH key.
     env_vars = apply_operator_ssh_key(env_vars)
+    # Tell MCP servers where to send approval requests (and who is asking). Codex
+    # sessions previously sent no session id at all, so every elicitation they
+    # raised was dropped by the API as unattributable.
+    env_vars = apply_elicitation_env(env_vars)
 
     pid = @process_manager.spawn(
       env_vars,
