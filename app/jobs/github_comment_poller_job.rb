@@ -28,7 +28,8 @@ require "open3"
 # `dispatch_state` records what the poller decided about each comment, so a comment
 # that never woke a session leaves a trace. It is one of:
 #   "dispatched"       — a follow-up prompt went out
-#   "deferred"         — too new to attribute yet; re-examined on the next poll
+#   "dispatching"      — handed over, outcome not yet recorded (see DISPATCH_DISPATCHING)
+#   "deferred"         — not decidable yet; re-examined on the next poll
 #   "skipped:<reason>" — terminal; never reconsidered
 #
 # Three classes of comment are deliberately skipped even though their author is
@@ -97,6 +98,10 @@ class GithubCommentPollerJob < ApplicationJob
   # Values of a comment's "dispatch_state" (see the class comment).
   DISPATCH_DISPATCHED = "dispatched"
   DISPATCH_DEFERRED = "deferred"
+  # Written before the follow-up is handed over and replaced with the outcome after.
+  # Terminal if the process dies in between: better a comment that says it was being
+  # dispatched than one that is dispatched afresh on every poll.
+  DISPATCH_DISPATCHING = "dispatching"
 
   # How long a comment must exist before the poller will act on it.
   #
@@ -108,6 +113,11 @@ class GithubCommentPollerJob < ApplicationJob
   # hook latency and costs a human's comment at most one extra minute before it wakes
   # a session — on top of the poller's own 30-second cadence.
   ATTRIBUTION_GRACE_SECONDS = 60
+
+  # How long to keep retrying a repo-visibility lookup that keeps failing before
+  # giving up on the comment. Bounded so a permanently unanswerable repo (renamed,
+  # deleted, access revoked) stops costing a `gh api` call every poll forever.
+  VISIBILITY_RETRY_WINDOW_SECONDS = 1.hour.to_i
 
   # Per-session backoff key + base cadence; see PollBackoff for the curve.
   POLL_BACKOFF_KEY = "github_comment_poller".freeze
@@ -183,21 +193,28 @@ class GithubCommentPollerJob < ApplicationJob
       end
     end
 
-    # Enqueue follow-up prompts for new user comments. Each call records its own
-    # outcome on the (shared, mutable) comment hash, so the write below persists the
-    # decision that was actually made rather than the one that was proposed.
-    # enqueue_follow_up_prompt rescues its own errors, so this cannot skip the write.
-    #
-    # Dispatching before the write inverts one failure mode: a process killed between
-    # the two now re-evaluates the comment on the next poll (a possible duplicate
-    # prompt) where it used to record the comment as seen and never dispatch it at all
-    # (a silent drop). A visible duplicate beats a comment that vanishes.
+    # Persist before dispatching, so a comment cannot be handed to the session
+    # repeatedly if the write later fails; the state recorded here is "dispatching",
+    # which is terminal. A process killed mid-dispatch therefore leaves a comment that
+    # says what happened to it rather than one that silently never arrives.
+    persisted = persist_comments!(session, updated_comments, current_comments)
+
+    # Each call records its own outcome on the (shared, mutable) comment hash, so the
+    # second write persists the decision that was actually made. enqueue_follow_up_prompt
+    # rescues its own errors, so this cannot skip that write.
     new_user_comments.each do |comment_info|
       comment_info[:data]["dispatch_state"] = enqueue_follow_up_prompt(session, comment_info)
     end
 
-    # Update session if comments changed
-    return if updated_comments == current_comments
+    persist_comments!(session, updated_comments, persisted)
+  end
+
+  # Write the comment blob when it differs from what is already stored.
+  #
+  # @param previous [Hash] the blob as last persisted
+  # @return [Hash] the blob now persisted (a snapshot, since updated_comments mutates)
+  def persist_comments!(session, updated_comments, previous)
+    return previous if updated_comments == previous
 
     with_db_retry do
       session.update!(
@@ -205,6 +222,8 @@ class GithubCommentPollerJob < ApplicationJob
       )
     end
     Rails.logger.info "[GithubCommentPollerJob] Updated comments for session #{session.id}"
+
+    updated_comments.deep_dup
   end
 
   # Decide what to do with every comment of one kind on one PR, recording the
@@ -236,7 +255,7 @@ class GithubCommentPollerJob < ApplicationJob
 
       state = dispatch_state_for(comment_data, type: type, tracking_started_at: tracking_started_at)
       comment_data["dispatch_state"] = state
-      next unless state == DISPATCH_DISPATCHED
+      next unless state == DISPATCH_DISPATCHING
 
       to_dispatch << { type: type, data: comment_data, pr_url: pr_url, owner: owner, repo: repo, pr_number: pr_number }
     end
@@ -246,8 +265,8 @@ class GithubCommentPollerJob < ApplicationJob
 
   # Whether a comment should wake the session, and if not, why not.
   #
-  # Returns DISPATCH_DISPATCHED (provisionally — enqueue_follow_up_prompt has the
-  # final say), DISPATCH_DEFERRED, or "skipped:<reason>".
+  # Returns DISPATCH_DISPATCHING (enqueue_follow_up_prompt has the final say),
+  # DISPATCH_DEFERRED, or "skipped:<reason>".
   def dispatch_state_for(comment_data, type:, tracking_started_at:)
     return "skipped:self_marker" if comment_data["attribution"] == "self"
     return "skipped:author_not_whitelisted" unless WHITELISTED_USERS.include?(comment_data["author"].to_s.downcase)
@@ -264,7 +283,7 @@ class GithubCommentPollerJob < ApplicationJob
 
     return DISPATCH_DEFERRED unless attribution_settled?(comment_data)
 
-    DISPATCH_DISPATCHED
+    DISPATCH_DISPATCHING
   end
 
   # The record of a Zimmer session having posted this comment, or nil.
@@ -298,6 +317,17 @@ class GithubCommentPollerJob < ApplicationJob
     !deferred
   rescue ArgumentError
     true
+  end
+
+  # Whether a comment is still young enough to be worth another visibility lookup.
+  # A comment with no parseable created_at cannot be aged out, so it is not retried.
+  def visibility_retry_window_open?(comment_info)
+    created_at = comment_info.dig(:data, "created_at")
+    return false if created_at.blank?
+
+    Time.parse(created_at) > VISIBILITY_RETRY_WINDOW_SECONDS.seconds.ago
+  rescue ArgumentError
+    false
   end
 
   def fetch_pr_comments(owner, repo, pr_number)
@@ -500,14 +530,23 @@ class GithubCommentPollerJob < ApplicationJob
     # react without human approval -- so there is nothing to hand it, and a 👀 there is a
     # promise Zimmer is designed not to keep.
     unless builder.actionable?
-      if builder.visibility_lookup_failed?
-        # A real comment is dropped here, so say so at warn: the repo may well have been
-        # private, and we skipped it only because `gh` couldn't tell us.
-        Rails.logger.warn "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: repo visibility lookup failed, assuming public"
-      else
+      unless builder.visibility_lookup_failed?
         Rails.logger.info "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: public repository outside our control"
+        return "skipped:not_actionable"
       end
-      return "skipped:not_actionable"
+
+      # `gh` couldn't tell us whether the repo is private, so "public" here is an
+      # assumption, not an observation. Failing closed is still right -- acting
+      # publicly on a repo we couldn't check is worse than answering late -- but a
+      # transient rate limit or network blip must not drop a real comment forever, so
+      # retry on later polls until the lookup answers or the comment ages out.
+      if visibility_retry_window_open?(comment_info)
+        Rails.logger.warn "[GithubCommentPollerJob] Deferring comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: repo visibility lookup failed, will retry"
+        return DISPATCH_DEFERRED
+      end
+
+      Rails.logger.warn "[GithubCommentPollerJob] Skipping comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: repo visibility lookup still failing after #{VISIBILITY_RETRY_WINDOW_SECONDS}s, assuming public"
+      return "skipped:visibility_unknown"
     end
 
     prompt = builder.build

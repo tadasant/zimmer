@@ -1317,4 +1317,100 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     assert_equal 1, session.reload.enqueued_messages.count
   end
+  # A comment on a repo whose visibility `gh` cannot report.
+  class TestJobWithUnknownVisibilityComment < GithubCommentPollerJob
+    def created_at
+      @created_at ||= 5.minutes.ago.iso8601
+    end
+
+    def fetch_pr_comments(_owner, _repo, _pr_number)
+      [
+        {
+          "id" => 4242,
+          "user" => { "login" => "tadasant" },
+          "body" => "Please fix this",
+          "html_url" => "https://github.com/tadasant/zimmer/pull/123#issuecomment-4242",
+          "created_at" => created_at
+        }
+      ]
+    end
+
+    def fetch_review_comments(_owner, _repo, _pr_number)
+      []
+    end
+  end
+
+  test "a transient repo-visibility failure defers the comment instead of dropping it" do
+    session = trusted_pr_session
+
+    failing_builder = mock
+    failing_builder.stubs(:actionable?).returns(false)
+    failing_builder.stubs(:visibility_lookup_failed?).returns(true)
+    GithubCommentPromptBuilder.stubs(:new).returns(failing_builder)
+
+    job = TestJobWithUnknownVisibilityComment.new
+    job.send(:poll_comments_for_session, session)
+
+    assert_equal 0, session.reload.enqueued_messages.count
+    assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
+
+    # Once `gh` answers, the same comment goes out rather than having been lost.
+    stub_actionable_builder
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+    job.send(:poll_comments_for_session, session)
+
+    assert_equal 1, session.reload.enqueued_messages.count
+    assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "a repo-visibility failure stops being retried once the comment ages out" do
+    session = trusted_pr_session
+
+    failing_builder = mock
+    failing_builder.stubs(:actionable?).returns(false)
+    failing_builder.stubs(:visibility_lookup_failed?).returns(true)
+    GithubCommentPromptBuilder.stubs(:new).returns(failing_builder)
+
+    job = TestJobWithUnknownVisibilityComment.new
+    job.created_at # stamp the comment's age now, so travelling ages the comment itself
+
+    travel (GithubCommentPollerJob::VISIBILITY_RETRY_WINDOW_SECONDS + 60).seconds do
+      job.send(:poll_comments_for_session, session)
+    end
+
+    assert_equal "skipped:visibility_unknown", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "a public repo outside our control is still terminal, not retried" do
+    session = trusted_pr_session
+
+    public_builder = mock
+    public_builder.stubs(:actionable?).returns(false)
+    public_builder.stubs(:visibility_lookup_failed?).returns(false)
+    GithubCommentPromptBuilder.stubs(:new).returns(public_builder)
+
+    job = TestJobWithWhitelistedComment.new
+    job.send(:poll_comments_for_session, session)
+
+    assert_equal "skipped:not_actionable", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "the comment is persisted before it is dispatched, so a mid-dispatch death is terminal" do
+    session = trusted_pr_session
+    stub_actionable_builder
+
+    job = TestJobWithWhitelistedComment.new
+    # Die where the process would: after the pre-dispatch write, inside the handover.
+    job.define_singleton_method(:enqueue_follow_up_prompt) { |_s, _i| raise Interrupt }
+
+    assert_raises(Interrupt) { job.send(:poll_comments_for_session, session) }
+
+    assert_equal "dispatching", stored_pr_comments(session).first["dispatch_state"],
+      "the comment must be on record before the handover, so it is not re-dispatched forever"
+
+    # A later poll leaves that terminal state alone.
+    TestJobWithWhitelistedComment.new.send(:poll_comments_for_session, session)
+    assert_equal "dispatching", stored_pr_comments(session).first["dispatch_state"]
+    assert_equal 0, session.reload.enqueued_messages.count
+  end
 end

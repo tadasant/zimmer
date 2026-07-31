@@ -19,14 +19,28 @@ class TranscriptHooks::ClaudeToolCallParser < TranscriptHooks::ToolCallParser
     @tool_results ||= content_blocks.filter_map do |block|
       next unless block["type"] == "tool_result"
 
-      result_content = block["content"]
-      next unless result_content.is_a?(String)
+      text = result_text(block["content"])
+      next if text.blank?
 
-      { id: block["tool_use_id"], text: result_content, is_error: !!block["is_error"] }
+      { id: block["tool_use_id"], text: text, is_error: !!block["is_error"] }
     end
   end
 
   private
+
+  # Claude Code serializes a tool result either as a bare String or as an array of
+  # content items ({ "type" => "text", "text" => ... }). Both shapes appear in real
+  # transcripts, and a hook that reads only the first is blind to half of them.
+  def result_text(content)
+    case content
+    when String
+      content
+    when Array
+      content.filter_map { |item| item["text"] if item.is_a?(Hash) && item["text"].is_a?(String) }.join("\n")
+    else
+      ""
+    end
+  end
 
   # Every content block across every message, in transcript order.
   def content_blocks

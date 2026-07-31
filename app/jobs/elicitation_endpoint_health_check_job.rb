@@ -25,10 +25,9 @@ class ElicitationEndpointHealthCheckJob < ApplicationJob
 
   ALERT_DEDUP_KEY = "elicitation_endpoint_unreachable"
 
-  # @param endpoint [Class] injectable for tests; defaults to the real probe.
-  def perform(endpoint: ElicitationEndpoint)
-    was_unreachable = endpoint.status&.dig("reachable") == false
-    stored = endpoint.record(endpoint.probe)
+  def perform
+    was_unreachable = ElicitationEndpoint.status&.dig("reachable") == false
+    stored = ElicitationEndpoint.record(ElicitationEndpoint.probe)
 
     if stored["reachable"]
       Rails.logger.info("[ElicitationEndpointHealthCheckJob] elicitation endpoint reachable: #{stored['detail']}") if was_unreachable

@@ -36,7 +36,7 @@ class ElicitationEndpointTest < ActiveSupport::TestCase
 
     assert_equal "https://zimmer.example.com/api/v1/elicitations", env["ELICITATION_REQUEST_URL"]
     assert_equal "886", env["ELICITATION_SESSION_ID"]
-    assert_equal "true", env["ELICITATION_ENABLED"]
+    assert_not env.key?("ELICITATION_ENABLED"), "enablement stays the server's decision"
   end
 
   test "spawn_env omits the session tag when there is no session" do

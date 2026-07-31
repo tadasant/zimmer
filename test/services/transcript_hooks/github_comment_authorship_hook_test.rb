@@ -140,4 +140,97 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
 
     assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
   end
+  # --- False positives that would silence a human ----------------------------
+  #
+  # Over-recording is the dangerous direction: a wrongly recorded id suppresses that
+  # comment for every session, permanently, with only a log line to show for it.
+
+  test "does NOT record a comments READ that shares a command line with an unrelated -f flag" do
+    # `rm -f`, `git push -f`, `grep -f` are everywhere in agent one-liners. Matching the
+    # write flag across the whole line would turn this read of a whole thread into a
+    # "post" and record every comment in it — including the human's.
+    output = [
+      { "id" => 5145406778, "html_url" => POSTED_URL, "user" => { "login" => "tadasant" } },
+      { "id" => 999, "html_url" => "https://github.com/tadasant/tadasant-internal/pull/281#issuecomment-999" }
+    ].to_json
+    command = "gh api repos/tadasant/tadasant-internal/issues/281/comments --paginate && rm -f /tmp/old.json"
+
+    run_hook(claude_transcript(command: command, output: output))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 999)
+  end
+
+  test "does NOT record a comments read piped into grep -f" do
+    output = { "id" => 5145406778, "html_url" => POSTED_URL }.to_json
+
+    run_hook(claude_transcript(
+      command: "gh api repos/o/r/pulls/7/comments --jq . | grep -f /tmp/patterns",
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "does NOT record a comment quoted in the body of the comment it posts" do
+    # GithubCommentPromptBuilder hands the agent the human's permalink under
+    # "Comment URL" and tells it to reply with `gh api ... -f body=...`. The API
+    # echoes the created comment INCLUDING its body, so a reply that quotes the
+    # human's link must not register that link as agent-posted.
+    output = {
+      "id" => 4242,
+      "html_url" => "https://github.com/tadasant/tadasant-internal/pull/281#discussion_r4242",
+      "body" => "[CC Says] Replying to #{POSTED_URL} — fixed in abc123."
+    }.to_json
+    command = "gh api repos/tadasant/tadasant-internal/pulls/281/comments -f body='[CC Says] ...' -f in_reply_to=5"
+
+    run_hook(claude_transcript(command: command, output: output))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "review", comment_id: 4242),
+      "the comment it actually created is still recorded"
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778),
+      "the comment merely quoted in the body must not be suppressed"
+  end
+
+  test "does NOT record a non-comments gh api write that mentions comments" do
+    run_hook(claude_transcript(
+      command: "gh api graphql -f query=@q.graphql   # fetch comments urls",
+      output: POSTED_URL
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "records a gh api post written with --method=POST" do
+    output = { "id" => 7777, "html_url" => "https://github.com/o/r/pull/7#issuecomment-7777" }.to_json
+
+    run_hook(claude_transcript(
+      command: "gh api --method=POST repos/o/r/issues/7/comments -f body=hi",
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 7777)
+  end
+
+  test "records a post whose gh api call is one segment of a compound command" do
+    output = { "id" => 8888, "html_url" => "https://github.com/o/r/pull/7#issuecomment-8888" }.to_json
+
+    run_hook(claude_transcript(
+      command: "cd /app && gh api repos/o/r/issues/7/comments -f body='done'",
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 8888)
+  end
+
+  test "reads a tool result whose content is an array of text blocks" do
+    transcript = <<~JSONL
+      {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"gh pr comment 281 --body done"}}]}}
+      {"type":"user","message":{"content":[{"tool_use_id":"toolu_1","type":"tool_result","content":[{"type":"text","text":"#{POSTED_URL}"}],"is_error":false}]}}
+    JSONL
+
+    run_hook(transcript)
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
 end

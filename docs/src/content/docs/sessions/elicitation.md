@@ -107,19 +107,22 @@ and showed `X-API-Key` in its request samples. That was wrong.
 
 ## Where the request goes, and what happens when it can't get there
 
-`CliSpawnEnv#apply_elicitation_env` puts three variables in the agent's environment, which its
+`CliSpawnEnv#apply_elicitation_env` puts two variables in the agent's environment, which its
 stdio MCP servers inherit:
 
 | Variable | Value |
 | --- | --- |
-| `ELICITATION_ENABLED` | `true` |
 | `ELICITATION_REQUEST_URL` | `<AppUrl.base_url>/api/v1/elicitations` |
 | `ELICITATION_SESSION_ID` | the Zimmer session id |
 
 A value already present in the session's `.env` wins, so an operator can point a server at a
-different Zimmer. The poll URL is deliberately *not* set: the create response carries
-`_meta["com.pulsemcp/poll-url"]`, which Rails builds from the request it just received, so the poll
-URL follows the request URL automatically.
+different Zimmer.
+
+Two variables are deliberately *not* set. The poll URL, because the create response carries
+`_meta["com.pulsemcp/poll-url"]`, which Rails builds from the request it just received — so the poll
+URL follows the request URL automatically. And `ELICITATION_ENABLED`, because whether a server gates
+a given action is that server's decision: the reported failure was the address, not the enablement,
+and forcing it on would newly block sessions on approvals across every server at once.
 
 Naming the request URL is not cosmetic. With only `ELICITATION_SESSION_ID` set — which is all Zimmer
 used to set, and only for Claude — the `@pulsemcp/mcp-elicitation` client fell back to its built-in
@@ -132,8 +135,8 @@ reading the secret it needed through the service account instead.
 `ElicitationEndpointHealthCheckJob` probes the endpoint every 5 minutes from the host agents run on
 (any HTTP response counts — a 404 for the probe id proves the request reached Rails; only a transport
 failure is a broken gate) and records the result. When it is unreachable, the job warns on every tick
-and pages once per incident, and `OrchestratorSystemPromptBuilder` puts the failure in the agent's own
-system prompt: *the gate is broken, a redaction means nothing about policy, report it rather than
+and pages once per incident, and `OrchestratorSystemPromptBuilder` puts the failure in the system prompt of every session
+spawned while it is down: *the gate is broken, a redaction means nothing about policy, report it rather than
 routing around it.* Sessions with MCP servers always get the healthy-case counterpart — a redacted
 value **is** the gate's answer — so a redaction is never ambiguous.
 

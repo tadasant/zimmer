@@ -622,13 +622,14 @@ Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
 
 ### The approval gate can only be verified as far as Zimmer's own doorstep
 
-`CliSpawnEnv#apply_elicitation_env` gives both runtimes `ELICITATION_REQUEST_URL`,
-`ELICITATION_SESSION_ID` and `ELICITATION_ENABLED`, and `ElicitationEndpointHealthCheckJob` proves
+`CliSpawnEnv#apply_elicitation_env` gives both runtimes `ELICITATION_REQUEST_URL` and
+`ELICITATION_SESSION_ID`, and `ElicitationEndpointHealthCheckJob` proves
 every 5 minutes that the endpoint answers from the host agents run on. Neither proves that a given
 MCP server *used* those variables: a server that hard-codes its own URL, or one already running from
 before the change, still posts into the void and still returns a redacted value. What is guaranteed
-now is that the failure is not silent on Zimmer's side — the agent's system prompt says the gate is
-down, so a redaction is never read as a policy decision.
+now is that the failure is not silent on Zimmer's side — the system prompt of every session spawned
+while the gate is down says so, so a redaction is never read as a policy decision. A session already
+running when the gate breaks reads the status from its spawn and will not learn of it.
 
 Tracked in [#55](https://github.com/tadasant/zimmer/issues/55).
 
@@ -1000,7 +1001,8 @@ put it here: an agent can forget it.
 
 Deliberately narrow rather than scanning every tool result: an agent that merely *reads* a comment
 gets that comment's own `html_url` back, and treating that as a post would silence a human. Covering
-a new posting route means adding its pattern to `COMMENT_POST_PATTERNS`.
+a new posting route means adding its pattern to `DIRECT_POST_PATTERNS`, or teaching
+`gh_api_post?` the shape.
 
 The same recognition gap sets the cost of the 60-second `ATTRIBUTION_GRACE_SECONDS` hold-down: every
 human comment waits up to a minute longer (on top of the 30-second poll) before it wakes a session.

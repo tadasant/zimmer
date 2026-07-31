@@ -34,7 +34,8 @@ class CliSpawnEnvElicitationTest < ActiveSupport::TestCase
 
     assert_equal "https://zimmer.example.com/api/v1/elicitations", env["ELICITATION_REQUEST_URL"]
     assert_equal "886", env["ELICITATION_SESSION_ID"]
-    assert_equal "true", env["ELICITATION_ENABLED"]
+    # Deliberately absent: whether a server gates an action stays that server's call.
+    assert_not env.key?("ELICITATION_ENABLED")
   end
 
   test "an explicit value from the session .env wins" do

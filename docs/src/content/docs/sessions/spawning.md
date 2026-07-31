@@ -84,7 +84,7 @@ Shared scrubbing (`CliSpawnEnv`):
   worker, so anything else in Zimmer's environment is inherited verbatim — a new secret in
   `env.secret` is one `env` away from a transcript until it is named here.
 - Sets `AO_SESSION_SCRATCH_DIR` — a durable per-session scratch directory.
-- Sets `ELICITATION_REQUEST_URL`, `ELICITATION_SESSION_ID` and `ELICITATION_ENABLED` — where an MCP
+- Sets `ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` — where an MCP
   server sends an [approval request](/sessions/elicitation/#where-the-request-goes-and-what-happens-when-it-cant-get-there),
   and who is asking. A value in the clone's `.env` wins.
 - Sets `SSH_PRIVATE_KEY_PATH` — the [operator SSH key](/operate/provisioning/#the-ssh-identity-an-agent-session-holds)
