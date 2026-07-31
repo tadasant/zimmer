@@ -1186,12 +1186,16 @@ parameter proven to `:render` — but a human did all of it, and no agent in thi
 have: there is no `gcloud` on the box, no GCP MCP server in the catalog, and CI holds no IAM-admin
 credential.
 
-The Kamal delivery of `ZIMMER_PARAMS_*` is wired here now (`.kamal/secrets.production`,
-`config/deploy.production.yml`), and the env-file round trip is verified for real. What remains is
-two human steps in `tadasant-internal`: setting
-`PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`, and naming it in **both** places
-`zimmer-deploy-prod.yml` enumerates secrets. Miss the second and the Kamal mapping resolves to
-blank with no error — a deploy that looks healthy while the store never turns on.
+The Kamal delivery of `ZIMMER_PARAMS_*` is wired here now for **both** environments
+(`.kamal/secrets.*`, `config/deploy.*.yml`, and for staging the `env:` allowlist in
+`deploy-staging.yml` too), and the env-file round trip is verified for real. What remains is
+human steps that no test can stand in for. For production, two of them, both in
+`tadasant-internal`: setting `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`, and naming it
+in **both** places `zimmer-deploy-prod.yml` enumerates secrets. Miss the second and the Kamal
+mapping resolves to blank with no error — a deploy that looks healthy while the store never turns
+on. For staging, one: adding `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` to this
+repo's Actions secrets. Staging's `zimmer-secrets-staging` project is provisioned and audited, and
+the deploy prints whether the credential arrived.
 
 What *is* verified here: the chain and its precedence, the degraded state when no credential is
 configured, the miss-vs-outage distinction, the snapshot cache semantics, the envelope round-trip
@@ -1204,6 +1208,43 @@ the production client is what runs, only the network is faked.
 So: the code is ready the moment the secret is set, and until it is Zimmer resolves every
 `${VAR}` from encrypted credentials exactly as before. The first live `:render` from Zimmer itself
 is still ahead of us.
+
+---
+
+## 🔴 The envelope Zimmer tells you to store breaks on any secret containing a quote, brace or newline
+
+**Unfixed, and known.** Tracked so it is not rediscovered from a production symptom.
+
+`SecretsLocation#envelope_json` — the copy-paste `gcloud` block the Connectors page renders, and
+the same shape written down in [the runbook](/operate/secrets-parameter-store/#adding-a-secret) —
+creates the parameter with `--parameter-format json` and puts the `__REF__` pointer inside a **JSON
+string**:
+
+```json
+{"path":"/zimmer/production/mcp/static/X","secret":true,"value":"__REF__(\"//secretmanager…\")"}
+```
+
+Parameter Manager's `:render` substitutes the secret's **raw bytes** in place of that token, inside
+the enclosing string literal. It does not re-escape them. So a value containing a `"`, a `{` or a
+newline breaks the JSON it is being pasted into, and Google refuses the render with **`400 injection
+detected`** — which `GcpClient#rendered_envelope` re-raises (it swallows only `404`), failing the
+whole namespace snapshot, not just that one variable. Every `${VAR}` in the environment stops
+resolving from the store at once.
+
+That rules out most real credentials: service-account key JSON, PEM private keys, anything
+JSON-shaped. Plain tokens are fine, which is why nothing has surfaced — no real secret has been
+stored under `/zimmer/{env}/mcp/static/` yet, and the resolver is not yet delivered to a running
+container.
+
+**The reason no test catches it** is the more important half. `FakeParameterStore#render_version`
+parses the envelope, replaces the value on the *parsed Ruby object*, and re-serializes with
+`JSON.generate` — which correctly re-escapes anything. Structural substitution that Google rejects
+therefore round-trips cleanly through the fake, for every possible value. The fake models the
+`:render` join but not its validation, so the suite is green on inputs that fail against real
+Google. Zimmer inherited both the envelope and the blind spot from strad, where the same defect
+surfaced as a real production failure on an 802-byte JSON array containing 88 double-quotes.
+
+Fixing it is a credential-path change and gets its own diff.
 
 ---
 

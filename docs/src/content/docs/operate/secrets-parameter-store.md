@@ -326,18 +326,48 @@ Then:
 shred -u /tmp/zimmer-secrets-resolver.json
 ```
 
-#### Staging has none of this, on purpose
+#### Staging gets the same three links, against its own project
 
-There is no staging Parameter Store project, and staging is **not** getting
-production's. `.kamal/secrets.staging` leaves all three variables unset, and says
-so where someone adding a secret will read it.
+Staging is where the store path gets rehearsed before production — the render
+join, the per-parameter `secretAccessor` grant, the Connectors banner — so it
+reads a store of its own: `zimmer-secrets-staging`, provisioned exactly like the
+production project above, with its own resolver service account holding the same
+three roles and nothing more.
 
-Absence is a designed state rather than a gap: with no credential
-`SecretProviders.build` composes `[rails_credentials, env]`, nothing raises, and
-staging resolves every `${VAR}` from the committed `staging.yml.enc` exactly as it
-always has. The alternative — pointing staging at `zimmer-secrets-prod` — would
-hand a throwaway box that agent sessions have root on a credential that reads
-production secret *values*. If staging ever needs a store, it gets its own project.
+It is **not** production's. Pointing a throwaway box that agent sessions have root
+on at `zimmer-secrets-prod` would hand them a credential that reads production
+secret *values*. The two projects also mean two namespaces:
+`Namespace.static_namespace` folds in `Rails.env`, so staging reads
+`/zimmer/staging/mcp/static/` and cannot see production's.
+
+The wiring is the same three links, and unlike production's, all three live in
+**this** repo:
+
+| Link | Where |
+| --- | --- |
+| GitHub Actions secret `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | this repo's settings |
+| The step's `env:` allowlist | `.github/workflows/deploy-staging.yml`, the `Kamal deploy (staging)` step |
+| The Kamal mapping | `.kamal/secrets.staging` |
+| The `env.secret` list, plus the address in `env.clear` | `config/deploy.staging.yml` |
+
+`test/config/parameter_store_env_delivery_test.rb` asserts every one of them,
+including the `env:` allowlist — the link the production runbook calls out as "the
+one that gets skipped, and skipping it is invisible". Production's workflow lives
+in `tadasant-internal`, so there it can only be written down; staging's is here,
+so there it is a test.
+
+**The credential stays optional, deliberately** — no `:?` assertion anywhere in the
+chain. Unset means the store link is simply absent: `SecretProviders.build`
+composes `[rails_credentials, env]`, nothing raises, and staging resolves every
+`${VAR}` from the committed `staging.yml.enc` exactly as it always has, with the
+Connectors page saying the store is not configured rather than reporting a
+failure. That fallback is what makes turning the store on a no-op for every
+credential already in use, and it is why the address can be wired in `env.clear`
+before the secret itself exists. The deploy prints which state it is in:
+
+```
+✅ Parameter Store ON (resolver key set; reads /zimmer/staging/mcp/static/ in zimmer-secrets-staging)
+```
 
 ### If any CI or deploy step handles this key
 
@@ -381,9 +411,16 @@ line-by-line, and put only a **path** in `env:`:
 ```
 
 This is the shape `tadasant-internal` PR #218 landed after the leak tracked in
-its issues #215 and #77. No workflow in *this* repo handles the key today; the
-pattern is written down here because the workflow that eventually does will live
-in `tadasant-internal`.
+its issues #215 and #77 — for a key that arrives from somewhere *other* than
+`secrets.*`.
+
+`deploy-staging.yml` does not need it. Its key comes straight from
+`${{ secrets.STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON }}`, and
+GitHub masks a registered secret's value anywhere in the log, including that
+header — which is why the step's preflight reports only whether the credential is
+*set*, exactly like the SSH key and the observability secrets beside it. The
+leak-safe shape above is for a value the runner fetches or derives, which the
+masker has never seen.
 
 ## Adding a secret
 
@@ -469,7 +506,12 @@ body *is* the secret).
 
 ## What has to change outside this repo
 
-These live in `tadasant-internal`'s `zimmer/` root and need a human:
+Staging's chain is entirely in this repo — except the GitHub Actions secret
+itself, which is a repository *setting* and needs a human to add it. Until it is
+added, staging deploys with the address wired and the credential blank, which is
+the designed degraded state and is what the deploy's preflight line reports.
+
+The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
 
 1. **The GitHub Actions secret, and the deploy workflow edit** —
    `PROD_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (base64,

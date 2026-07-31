@@ -205,6 +205,13 @@ jobs:
           # is survivable: the app boots, but sessions get no SSH identity and every
           # ssh-* MCP server fails its startup health check.
           STAGING_OPERATOR_SSH_KEY: ${{ secrets.STAGING_OPERATOR_SSH_KEY }}
+          # Base64 of the Parameter Store resolver's service-account key JSON (see
+          # .kamal/secrets.staging). It MUST be named here as well as mapped there:
+          # a var missing from this env: block just arrives empty, and Kamal's
+          # FOO=$FOO mapping resolves to blank with no error -- so the deploy looks
+          # completely healthy while the store never turns on. Unset is survivable by
+          # design: the chain falls back to staging.yml.enc and nothing raises.
+          STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON }}
           # Observability. STAGING_-prefixed on purpose -- see .kamal/secrets.staging.
           # STAGING_SENTRY_DSN_BACKEND must be the DSN of a SEPARATE GlitchTip project
           # (zimmer-staging), never production's: GlitchTip's Slack alert has no
@@ -268,6 +275,19 @@ jobs:
           else
             echo "::warning::Sessions will have NO SSH identity: STAGING_OPERATOR_SSH_KEY is unset,"
             echo "::warning::so every ssh-* MCP server fails its startup health check."
+          fi
+          # The Parameter Store resolver credential. Same reasoning again, and this one
+          # is the most invisible of the lot: with it unset the app boots healthy, every
+          # ${VAR} still resolves from staging.yml.enc, and the ONLY symptom is that the
+          # first link of the chain silently never turns on. Set/unset is the whole
+          # question -- the value is masked by GitHub anyway, and the store's address is
+          # in env.clear in config/deploy.staging.yml, not here.
+          if [ -n "${STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON:-}" ]; then
+            echo "✅ Parameter Store ON (resolver key set; reads /zimmer/staging/mcp/static/ in zimmer-secrets-staging)"
+          else
+            echo "::warning::Parameter Store is OFF: STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON is unset."
+            echo "::warning::Staging boots fine and every \${VAR} resolves from staging.yml.enc as before --"
+            echo "::warning::the store link is simply absent. The Connectors page names the reason."
           fi
           echo "-------------------------------"
           kamal accessory boot all -d staging
