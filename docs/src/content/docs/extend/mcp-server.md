@@ -167,6 +167,21 @@ listed rather than persisted (a bad value would otherwise fail AIR prepare on th
 Like `change_mcp_servers`, these persist to the session and take effect the next time its runtime
 config is prepared — they do not hot-reconfigure a running process.
 
+Two tools deliver a message to a session that already exists, and both let you choose whether to
+interrupt. `action_session` `follow_up` queues the prompt when the session is running and sends it
+straight through when the session is idle; `force_immediate: true` interrupts instead.
+`manage_enqueued_messages` makes the same choice by action name: `create` queues, `send_now` stages
+and interrupts in one step, `interrupt` promotes a message already in the queue. All three interrupt
+paths run through `Sessions::InterruptService`, the same backend the web UI's "Send Now" button uses,
+so they inherit its per-session advisory lock and exactly-once FIFO delivery.
+
+Interrupting is opt-in, and the tool descriptions push callers toward it more than the default
+implies. A queued message is not read until the current turn ends, so a message that would have
+redirected the agent arrives after the wasted work is done. What an interrupt costs is one turn: the
+in-flight process is terminated, an uncommitted tool call is lost, files already written stay
+written, and the next turn resumes the same conversation with the new message appended. Queue the
+additive messages; interrupt the ones that change the plan.
+
 The two wake-up tools are the ones worth knowing by name. `wake_me_up_later` sleeps the calling
 session and creates a one-time trigger that resumes it at a wall-clock time; `wake_me_up_when_session_changes_state`
 resumes it when *another* session hits `needs_input`, `failed`, or `archived`. Together they are how
