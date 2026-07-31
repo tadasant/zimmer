@@ -248,37 +248,20 @@ class AuthRecoveryCoordinator
   # successful or merely transient refresh leaves it to be marked quota_exceeded.
   # Best effort — a network blip must not block the rotation.
   def classify_outgoing!(account)
-    before = refresh_token_of(account)
-
     result = auth_provider.refresh!(account)
     return if result.ok?
 
-    unless result.error == :needs_reauth
+    # A lost single-use-token race no longer reaches here as :needs_reauth —
+    # ClaudeAccount#refresh_token! serializes on the row and checks, before
+    # condemning anything, whether the token it presented has since moved. So a
+    # :needs_reauth verdict at this point is a real one.
+    if result.error == :needs_reauth
+      @logger.warn("Outgoing account's credentials are permanently invalid", account: account.email)
+    else
       @logger.info("Outgoing account's token refresh failed transiently", account: account.email)
-      return
     end
-
-    # A permanent verdict is only trustworthy if we were the ones holding the
-    # token. Anthropic's refresh tokens are single-use, so a concurrent refresh
-    # elsewhere (the 5-minute sweep, the quotas page — both still unguarded, see
-    # #242) consumes ours and hands us `invalid_grant`, which is indistinguishable
-    # from a genuinely dead credential. If the stored token moved under us, that
-    # is what happened: this is a lost race, not a dead account, and condemning it
-    # to needs_reauth would take a healthy account out of the pool for good.
-    if before.present? && refresh_token_of(account.reload) != before
-      @logger.warn("Refresh lost a race with a concurrent refresh — restoring the account",
-        account: account.email)
-      account.update!(status: :active) if account.needs_reauth?
-      return
-    end
-
-    @logger.warn("Outgoing account's credentials are permanently invalid", account: account.email)
   rescue => e
     @logger.info("Could not classify the outgoing account before rotating", error: e.message)
-  end
-
-  def refresh_token_of(account)
-    account.oauth_config&.dig("credentials_json", "claudeAiOauth", "refreshToken")
   end
 
   def inject(working_directory)
