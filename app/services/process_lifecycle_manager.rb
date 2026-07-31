@@ -1021,14 +1021,26 @@ class ProcessLifecycleManager
       end
       ExitDecision.new(action: :continue)
     when :exhausted
-      # Re-injecting credentials did not clear the error within the attempt
-      # budget. The cause is usually transient on Anthropic's side (a rejected
-      # token that a later refresh fixes), so park with a scheduled retry rather
-      # than declaring a terminal failure a human has to notice and restart.
-      park_for_auth_outage(AuthOutageParkService::AUTH_UNRECOVERABLE)
+      # Rotating and re-injecting did not clear the error within the attempt
+      # budget. Which park reason that justifies depends on the pool, not on the
+      # fact we ran out of tries: if the budget ran out while the pool was being
+      # drained by quota, telling the user to re-authenticate is wrong — waiting
+      # is what fixes it. AuthRecoveryCoordinator#park_reason_for_pool reads the
+      # pool's current shape and answers that.
+      reason = auth_park_reason_for_pool
+      park_for_auth_outage(reason)
 
       @mutex.synchronize { @state = :idle }
-      ExitDecision.new(action: :needs_input, error_message: "Auth recovery retry limit exhausted — session parked for automatic retry")
+      ExitDecision.new(action: :needs_input, error_message: exhausted_auth_message(reason))
+    when :pool_quota_exhausted
+      # Every account is over quota with nothing to rotate into. Same verdict the
+      # quota path reaches, reached on the FIRST auth failure instead of after
+      # three re-spawns into the same wall — and with the reset-derived retry
+      # time rather than AUTH_UNRECOVERABLE's flat one-hour guess.
+      park_for_auth_outage(AuthOutageParkService::QUOTA_EXHAUSTED)
+
+      @mutex.synchronize { @state = :idle }
+      ExitDecision.new(action: :needs_input, error_message: "Account quota limit reached and no other accounts available — session parked until quota resets")
     when :unrecoverable
       # No valid account available to recover to — surface to the user (re-auth
       # needed) rather than failing silently or looping.
@@ -1043,6 +1055,24 @@ class ProcessLifecycleManager
       # Shouldn't happen since we checked retry_strategy.auth_recovery_needed? first, but handle gracefully
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: "Auth recovery failed")
+    end
+  end
+
+  # Which outage the pool's current shape justifies once the auth-recovery budget
+  # is spent. Falls back to AUTH_UNRECOVERABLE if the pool can't be read at all —
+  # the conservative answer, since it asks a human to look.
+  def auth_park_reason_for_pool
+    AuthRecoveryCoordinator.new(@session).park_reason_for_pool
+  rescue => e
+    @logger.info("Could not derive auth park reason from the pool", error: e.message)
+    AuthOutageParkService::AUTH_UNRECOVERABLE
+  end
+
+  def exhausted_auth_message(reason)
+    if reason == AuthOutageParkService::QUOTA_EXHAUSTED
+      "Auth recovery exhausted with every account over quota — session parked until quota resets"
+    else
+      "Auth recovery retry limit exhausted — session parked for automatic retry"
     end
   end
 
@@ -1066,13 +1096,20 @@ class ProcessLifecycleManager
   def attempt_account_rotation(working_dir)
     provider = RuntimeAuthProvider.for(@session&.agent_runtime)
     result = provider.rotate_for_quota!(
-      triggered_by: @session ? "session:#{@session.id}" : nil
+      triggered_by: @session ? "session:#{@session.id}" : nil,
+      # The identity this session's process was actually running as. A quota
+      # stampede has N sessions arrive here about the SAME account; passing it
+      # lets everyone after the first collapse onto that rotation instead of
+      # burning one more account each (#242).
+      expected_current_email: @session&.metadata&.dig(AuthRecoveryCoordinator::IDENTITY_KEY)
     )
 
     return nil unless result[:success]
 
+    AuthRecoveryCoordinator.record_identity!(@session, result[:account])
+
     add_log(
-      "Account quota hit — rotated to #{result[:account].email}",
+      result[:collapsed] ? "Account quota hit — another session had already rotated to #{result[:account].email}" : "Account quota hit — rotated to #{result[:account].email}",
       level: "warning"
     )
     @log_buffer&.flush

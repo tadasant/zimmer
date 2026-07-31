@@ -493,7 +493,7 @@ Tracked in [#50](https://github.com/tadasant/zimmer/issues/50).
 | What | Pattern | File |
 | --- | --- | --- |
 | Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb:116` |
-| Auth lost → re-inject and respawn, then park | `/not logged in\|please run\s*\/login/i` | `auth_recovery_service.rb` |
+| Auth lost → adopt/rotate/wait, respawn, then park | `/not logged in\|please run\s*\/login/i` | `auth_recovery_service.rb` |
 | Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb:44` |
 | Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb:75` |
 
@@ -503,6 +503,38 @@ account, and failed, with no log line saying rotation should have happened. The 
 by construction.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
+
+### Auth recovery can rotate away from an account that was fine
+
+🟡 `AuthRecoveryCoordinator` reacts to the runtime saying "Not logged in" by moving the pool — it
+rotates away from the identity that failed rather than re-injecting it (that re-injection loop is
+what made the message user-visible three times in a row; see
+[Agent harness auth](/auth/harness/#the-recovery-decision-tree)). But "Not logged in" carries no
+structured reason, so the coordinator cannot always know *why* the identity failed.
+
+It probes the outgoing account's refresh token before rotating, which separates a dead credential
+(`needs_reauth`) from a live one (`quota_exceeded`), and that is enough to get the **park reason**
+right. It is not enough to distinguish "over quota" from "a transient rejection Anthropic would have
+served on the next call". In the latter case the account is marked `quota_exceeded` and leaves the
+pool until `QuotaResetCheckerJob`'s next sweep sees its snapshot is clear and restores it — up to
+15 minutes of a healthy account sitting out.
+
+That is the deliberate trade: an unnecessary rotation costs one account for one sweep, whereas
+re-injecting a dead identity costs the user three visible auth failures and a park with the wrong
+instruction. Worth revisiting if Anthropic ever exposes a structured reason.
+
+### A rotation that wedges makes other sessions wait, then guess
+
+🟡 The pool lock (`ClaudeAccount.with_pool_lock`) is a session-level Postgres advisory lock, so it
+is released if the holder's connection drops — a crashed worker cannot deadlock the pool. A holder
+that is *alive but stuck* (a hung HTTP token refresh, say) is different: other sessions wait
+`POOL_LOCK_WAIT` (45 s), then give up and take the `rotation_in_flight` branch, which re-spawns
+against whatever credentials are on disk and charges an attempt. That is the right guess most of the
+time — the stuck holder is mid-rotation and its credential write has probably landed — but it is a
+guess, and three of them exhaust the session's budget and park it.
+
+There is no visibility into *which* session holds the lock; the only signal is the
+`"Pool lock held past the wait"` warning in the waiting session's logs.
 
 ### A parked session retries forever, once an hour
 

@@ -124,6 +124,25 @@ When an account hits its rate limit, Zimmer rotates to the next one by priority:
 5. Write the new account's config and credentials to disk, stamp the owner marker.
 6. Record an `AccountRotationEvent`.
 
+Steps 1–6 run under the per-runtime pool lock (`ClaudeAccount.with_pool_lock`), and the caller
+passes the identity its session was running as. A stampede — N sessions hitting the same account's
+quota within seconds — therefore produces **one** rotation: the first racer moves the pool, and
+every racer behind it finds the pool already off the account it was complaining about and returns
+that new account instead of rotating again.
+
+:::caution[Without that, a stampede drained the pool]
+Anthropic's refresh tokens are single-use. Unserialized, N racers read the same `current`, selected
+the same successor, and each called `refresh_token!` on it; the first rotated the token and the rest
+got `invalid_grant`, which `refresh_token!` reads as permanently dead and marks `needs_reauth`. Four
+different accounts died that way in ten days, and `account_rotation_events` carries the fingerprint —
+duplicate and triplicate `from → to` pairs seconds apart. Serializing stops the concurrent refresh;
+collapsing stops the serialized racers from each burning one more account.
+
+The lock closes the rotation-vs-rotation race. `refresh_token!` is still unguarded at its other call
+sites (the 5-minute sweep, the quotas page), so a cron refresh landing on a rotation can still lose
+the same way. Tracked in [#242](https://github.com/tadasant/zimmer/issues/242).
+:::
+
 `QuotaResetCheckerJob` (every 15 min, **Claude only**) restores `quota_exceeded` accounts when either
 window's reset time has passed, or utilization drops below 100%. It then calls
 `AuthOutageParkService.wake_parked_sessions!` so the sessions that were blocked on those accounts
@@ -151,9 +170,53 @@ Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 ## Mid-run auth loss
 
 `AuthRecoveryService` watches the transcript for `"Not logged in · Please run /login"` (matched by
-`/not logged in|please run\s*\/login/i`), re-injects credentials to disk, and re-spawns the process.
-Bounded by `MAX_RECOVERY_ATTEMPTS` attempts within `CONSECUTIVE_WINDOW` (15 minutes); returns
-`:unrecoverable` if no account is available.
+`/not logged in|please run\s*\/login/i`) and, on the **first** match, hands the decision to
+`AuthRecoveryCoordinator` rather than re-spawning. Bounded by `MAX_RECOVERY_ATTEMPTS` attempts
+within `CONSECUTIVE_WINDOW` (15 minutes).
+
+### The recovery decision tree
+
+Everything below runs under a pool-wide advisory lock (`ClaudeAccount.with_pool_lock`, namespace
+`0x415F4143`, keyed per runtime), so N sessions hitting the wall at the same moment take these
+branches one at a time instead of each starting its own rotation.
+
+The branch is chosen by comparing the pool's current account against
+`metadata["auth_identity_email"]` — the identity the session's process was actually spawned with,
+recorded by `AgentSessionJob` at every injection.
+
+```mermaid
+flowchart TD
+    A["Not logged in"] --> L{"Pool lock free?"}
+    L -- "no, held past POOL_LOCK_WAIT" --> F["rotation_in_flight:<br/>resume, charge one attempt"]
+    L -- yes --> B{"current account ==<br/>the one we spawned with?"}
+    B -- "no — pool already moved" --> C["adopted:<br/>re-inject, charge nothing"]
+    B -- yes --> D["Probe the outgoing token,<br/>then rotate_for_quota!"]
+    D -- succeeded --> E["rotated:<br/>re-inject, charge one attempt"]
+    D -- "no_available_accounts" --> G{"Any account<br/>quota_exceeded?"}
+    G -- yes --> H["QUOTA_EXHAUSTED park<br/>(wait for reset)"]
+    G -- no --> I["AUTH_UNRECOVERABLE park<br/>(a human must re-authenticate)"]
+```
+
+An **adoption** costs nothing against the retry budget: it is another session's rotation doing this
+one a favour, not an attempt this session made, and charging for it would park a healthy
+long-running session for the fleet's activity. Adoptions are separately capped at
+`MAX_FREE_ADOPTIONS` (3) per window, after which they start costing budget — a free retry that
+never converges is the same unbounded loop the attempt cap exists to stop.
+
+### Why the outgoing account is probed before rotating
+
+"Not logged in" is the runtime's word for both *your token is dead* and *you are out of quota*, and
+those two want opposite instructions in the outage banner. So the outgoing account's refresh token
+is probed (`RuntimeAuthProvider#refresh!`) before it is rotated away: a permanent OAuth failure
+marks it `needs_reauth` — which `rotate!` now leaves alone rather than relabelling `quota_exceeded`
+— and anything else leaves it `quota_exceeded`. The pool's resulting shape is what
+`AuthRecoveryCoordinator#park_reason_for_pool` reads to choose the park reason. The distinction is
+made on evidence, not on prose.
+
+This coordination adds **no new string matching**; the fragile pattern in this subsystem is still
+the `/not logged in|please run\s*\/login/i` match above.
+
+### Why the attempt bound is time-based
 
 The bound is **time-based, not success-based**, and that distinction is the whole reason the service
 terminates. A re-spawned Claude Code process spends its first 10–15 seconds connecting MCP servers
@@ -166,11 +229,27 @@ every 18 seconds, and surfaced nothing to the user but a wall of `Not logged in 
 Attempts now accumulate and are only forgiven by elapsed time, so an unrecoverable identity costs
 three re-spawns instead of an unbounded loop.
 
+:::note[This used to be three walls, not one]
+Before the coordinator, recovery meant "re-inject the **current active account**" unconditionally.
+When that account was itself the problem, each attempt wrote the identical dead credentials back to
+disk and re-spawned into the identical wall — so the user saw `Not logged in · Please run /login`
+three times — and the session then parked with `AUTH_UNRECOVERABLE`, telling them to re-authenticate
+when the actual remedy was to wait for a quota window.
+
+Production session 657 is the trail. At `11:46:39Z` it logged *"Not logged in detected on successful
+exit - attempting auth recovery"* → *"Auth recovery limit reached (3 attempts) — failing"* → parked
+`AUTH_UNRECOVERABLE` for an hour; by `11:50:12Z` it was back at *"retrying 1/3"*, refreshing to the
+**same** account. Across the whole incident it logged not one `Account quota hit — rotated to …`
+line: the rotation path never ran, because the auth signature is checked before the API-error path
+(most-recent-error-wins) and shadowed the weekly-limit message sitting in the same transcript.
+:::
+
 ## When the pool runs dry
 
-Two exits mean Zimmer has no runway left: a quota hit with no rotation target
-(`AccountRotationService#rotate!` → `{ success: false, reason: "no_available_accounts" }`), and auth
-recovery that cannot succeed. Both route to `AuthOutageParkService`, which:
+Three exits mean Zimmer has no runway left: a quota hit with no rotation target
+(`AccountRotationService#rotate!` → `{ success: false, reason: "no_available_accounts" }`), an auth
+recovery whose rotation finds the same thing, and an auth recovery that exhausts its retry budget.
+All route to `AuthOutageParkService`, which:
 
 1. Writes a session log naming the outage and the retry time.
 2. Sends a push notification.
@@ -186,6 +265,14 @@ clears an account only when **both** windows are clear, so an account frees up a
 two future resets and the pool frees up at the earliest such account; `RESET_BUFFER` (2 min) is
 added, and the result is clamped between `MIN_RETRY_DELAY` (5 min) and `MAX_RETRY_DELAY` (12 h). An
 auth outage has no published reset clock, so it uses `DEFAULT_RETRY_DELAY` (1 h).
+
+Which of the two reasons a park gets is decided by the **pool's shape**, not by which code path
+arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` when nothing
+is available and at least one account is `quota_exceeded` (waiting genuinely helps), and
+`AUTH_UNRECOVERABLE` otherwise — including when the pool is healthy and the runtime is rejecting it
+anyway, which is a credentials problem a human has to look at. `ProcessLifecycleManager` consults it
+for the budget-exhaustion park too, so running out of tries during a quota drain no longer produces
+the "re-authenticate an account" instruction.
 
 For a **quota** park the trigger is only the backstop: `QuotaResetCheckerJob` usually restores the
 accounts first and wakes those sessions in the same sweep, and only for a runtime that has an

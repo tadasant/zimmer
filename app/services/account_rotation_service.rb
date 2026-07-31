@@ -23,11 +23,46 @@ class AccountRotationService
   # Rotate away from the current account to the next available one.
   # Marks the current account as quota_exceeded and takes quota snapshots.
   #
+  # Serialized pool-wide. Every session that hits a quota wall calls this, so a
+  # stampede used to have N sessions read the same `current`, pick the same
+  # successor, and each call `refresh_token!` on it — and Anthropic's refresh
+  # tokens are single-use, so the losers got `invalid_grant` and condemned a
+  # healthy account to needs_reauth. That is what drained the pool (#242).
+  #
+  # The lock alone only serializes the stampede; it does not collapse it. Racers
+  # would still rotate in sequence, one account burned each. So a caller passes
+  # the identity it was actually running as, and a racer that finds the pool has
+  # already moved off that identity returns the new account instead of rotating
+  # again — which is the same "someone else already fixed this" test
+  # AuthRecoveryCoordinator makes.
+  #
   # @param reason [String] why the rotation happened (e.g., "quota_exceeded")
   # @param triggered_by [String] what triggered the rotation (e.g., "session:123")
+  # @param expected_current_email [String, nil] the identity the caller was running
+  #   as. When the pool has already moved off it, the caller's complaint is stale.
   # @return [Hash] { success: true, account: ClaudeAccount } or { success: false, reason: String }
-  def rotate!(reason: "quota_exceeded", triggered_by: nil)
+  def rotate!(reason: "quota_exceeded", triggered_by: nil, expected_current_email: nil)
+    result = ClaudeAccount.with_pool_lock(ClaudeAuthProvider::RUNTIME) do
+      [ rotate_under_lock(reason, triggered_by, expected_current_email) ]
+    end
+
+    return result.first if result
+
+    @logger.warn("Could not acquire the account pool lock — another rotation is still running")
+    { success: false, reason: "rotation_in_flight" }
+  end
+
+  # The body of #rotate!, run with the pool lock held.
+  private def rotate_under_lock(reason, triggered_by, expected_current_email)
+    # Re-read under the lock: a racer that queued behind another rotation must
+    # see the pool as it is now, not as it was when it decided to rotate.
     current = ClaudeAccount.current_account
+
+    if expected_current_email.present? && current && current.email != expected_current_email
+      @logger.info("Rotation already performed by another session, collapsing",
+        expected: expected_current_email, current: current.email)
+      return { success: true, account: current, collapsed: true }
+    end
 
     if current
       # Sync filesystem tokens back to DB before rotating away.
@@ -36,8 +71,20 @@ class AccountRotationService
 
       # Take a snapshot of the outgoing account before switching
       take_snapshot(current, trigger: "rotation")
-      current.mark_quota_exceeded!
-      @logger.info("Marked account as quota_exceeded", email: current.email)
+
+      # Don't relabel an account the caller has already diagnosed as
+      # credentially dead. quota_exceeded and needs_reauth drive different
+      # recoveries — QuotaResetCheckerJob restores the first automatically,
+      # only a human restores the second — and AuthRecoveryCoordinator reads
+      # the resulting pool state to decide whether a parked session should be
+      # told "wait for reset" or "re-authenticate". Overwriting needs_reauth
+      # here would make an unusable pool look like a merely throttled one.
+      if current.needs_reauth?
+        @logger.info("Rotating away from account already marked needs_reauth", email: current.email)
+      else
+        current.mark_quota_exceeded!
+        @logger.info("Marked account as quota_exceeded", email: current.email)
+      end
     end
 
     result = activate_next_account(exclude_ids: [ current&.id ].compact)

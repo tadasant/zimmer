@@ -150,7 +150,11 @@ Tracked in [#96](https://github.com/tadasant/zimmer/issues/96).
 - **`RuntimeMcpCredentialWriter`** — `write!(working_directory:, credentials:)`,
   `credential_key_for(server_name, server_config)`.
 - **`RuntimeAuthProvider`** — `accounts`, `current_account`, `select_account_for`, `refresh!`,
-  `inject_for_session!`, `activate!`, `rotation_interval`.
+  `inject_for_session!`, `activate!`, `rotation_interval`, and
+  `rotate_for_quota!(triggered_by:, reason:)`. The last one is the pool's only move-off-this-account
+  seam: both the quota path and `AuthRecoveryCoordinator` go through it, and `reason` is what
+  distinguishes their `AccountRotationEvent` rows. A runtime that doesn't pool accounts inherits the
+  base class's no-op, which parks its sessions instead of rotating them.
 - **`RuntimeLoginDriver`** — `command`, `env(config_dir)`, `parse_verification(buffer)`,
   `completion_mode` (`:poll` | `:paste`), `capture!(config_dir, account)`, `credentials_ready?`.
 
@@ -184,6 +188,13 @@ success.
 Which means, for a Codex session: no context-length compaction retry, no API-error retry, no quota
 rotation, and no auth recovery. Everything the Claude path does to keep a session alive, Codex
 sessions do without.
+
+`AuthRecoveryCoordinator` is runtime-agnostic — it reads the pool and rotates through
+`RuntimeAuthProvider`, and `CodexAuthProvider` implements both — so the coordinated
+adopt/rotate/park behaviour is available to Codex the moment
+`CodexRetryStrategy#auth_recovery_needed?` learns to recognize the signature. Until then it is
+unreachable for Codex, because nothing routes a Codex exit into the auth branch. The blocker is the
+classifier, not the recovery.
 :::
 
 Other known gaps:
