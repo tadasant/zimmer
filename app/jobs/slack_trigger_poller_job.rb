@@ -17,6 +17,17 @@
 # - Only processes messages from allowed users: the condition's own allowed_user_ids if
 #   set, else the SLACK_BOT_MENTION_ALLOWED_USER_IDS allow-list, else EVERYONE (see
 #   TriggerCondition#allow_all_users?). The bot's own messages never trigger anything.
+#
+# For passive_listen conditions (see #process_passive_listen_condition):
+# - Same channel sweep and same per-channel/per-thread bookkeeping as bot_mention,
+#   but the filter is PARTICIPATION rather than @mention: a reply fires when Zimmer
+#   has already spoken in that thread, and a top-level message fires when Zimmer has
+#   been active in that channel within CHANNEL_ENGAGEMENT_WINDOW.
+# - Same allow-list, and the same rule that the bot's own messages never fire. Other
+#   apps' messages don't fire passively either — passive listening is for the
+#   conversation Zimmer is already in, not for feeds.
+# - No DM polling: every DM to the bot is already directed at it, and a bot_mention
+#   condition covers DMs unconditionally.
 class SlackTriggerPollerJob < ApplicationJob
   # Runs on the dedicated `pollers` queue (like every other *PollerJob), NOT on
   # `default`. A single poll is a long, external-API-bound unit of work: it makes
@@ -54,10 +65,37 @@ class SlackTriggerPollerJob < ApplicationJob
   # poll, keeps its tracked timestamp fresh so it stays eligible going forward.
   RECHECK_HORIZON = 45.days
 
+  # How many recent top-level messages to pull when looking for a channel's active
+  # threads (and, for passive listening, for Zimmer's own recent posts).
+  RECENT_HISTORY_LIMIT = 50
+
+  # How recently Zimmer must have spoken in a channel for passive listening to fire
+  # on that channel's TOP-LEVEL messages. "Recently involved in a conversation" has
+  # to be bounded by something explicit, or a single message months ago would make
+  # the bot a permanent listener on every message in the channel.
+  #
+  # Threads are deliberately NOT bounded by this: a reply to a thread Zimmer is part
+  # of is addressed to that conversation however old it is. Those are bounded by
+  # RECHECK_HORIZON instead, via the tracked-thread recheck cap.
+  CHANNEL_ENGAGEMENT_WINDOW = 24.hours
+
+  # Message subtypes that are events about a channel rather than somebody talking
+  # in it. They can carry a `user` and would otherwise look like a passive-listening
+  # candidate — "Sam has joined the channel" is not a conversation continuing.
+  PASSIVE_IGNORED_SUBTYPES = %w[
+    channel_join channel_leave group_join group_leave
+    channel_topic channel_purpose channel_name
+    channel_archive channel_unarchive channel_posting_permissions
+    bot_message bot_add bot_remove
+    huddle_thread pinned_item reminder_add
+    message_changed message_deleted tombstone
+  ].freeze
+
   # Lightweight stand-in for a thread parent synthesized from a tracked
-  # thread_timestamps key: we know the thread_ts but not its latest_reply, so
-  # latest_reply is nil to force a direct replies fetch in the checking loop.
-  RecheckThreadParent = Struct.new(:ts, :latest_reply)
+  # thread_timestamps key: we know the thread_ts but not its latest_reply or its
+  # author, so both are nil — latest_reply being nil forces a direct replies fetch
+  # in the checking loop.
+  RecheckThreadParent = Struct.new(:ts, :latest_reply, :user)
 
   def perform
     return unless SlackService.configured?
@@ -86,8 +124,11 @@ class SlackTriggerPollerJob < ApplicationJob
   private
 
   def process_condition(condition)
-    if condition.event_type == "bot_mention"
+    case condition.event_type
+    when "bot_mention"
       process_bot_mention_condition(condition)
+    when "passive_listen"
+      process_passive_listen_condition(condition)
     else
       process_new_message_condition(condition)
     end
@@ -267,33 +308,7 @@ class SlackTriggerPollerJob < ApplicationJob
       end
     end
 
-    # Re-check tracked threads whose parent has aged out of the recent-history
-    # window. fetch_recent_thread_parents only surfaces threads whose parent is
-    # among the last 50 top-level messages, so a long-lived thread — e.g. a
-    # months-old digest thread that still receives daily replies — stops being
-    # visited once its parent scrolls past that window, even though it remains
-    # tracked in thread_timestamps. Without this, @mentions posted as replies to
-    # such a thread are silently missed.
-    #
-    # Fan-out is one conversations.replies call per re-checked thread, so bound
-    # these aged-out additions (the recent-window parents above are already
-    # limited by fetch_recent_thread_parents): drop threads with no tracked
-    # activity within RECHECK_HORIZON (treated as dead) and keep only the
-    # MAX_TRACKED_THREAD_RECHECKS most-recently-active per channel. Threads
-    # already covered above (parent still near the top of the channel) are
-    # skipped to avoid duplicate fetches.
-    already_covered = thread_parents.map(&:ts).to_set
-    horizon_ts = RECHECK_HORIZON.ago.to_f
-    aged_out = condition.thread_timestamps.select do |key, last_reply_ts|
-      key.start_with?("#{channel_id}:") &&
-        !already_covered.include?(key.split(":", 2).last) &&
-        last_reply_ts.to_f >= horizon_ts
-    end
-    aged_out = aged_out.sort_by { |_key, last_reply_ts| -last_reply_ts.to_f }
-      .first(MAX_TRACKED_THREAD_RECHECKS)
-    aged_out.each do |key, _last_reply_ts|
-      thread_parents << RecheckThreadParent.new(key.split(":", 2).last, nil)
-    end
+    thread_parents.concat(aged_out_thread_parents(condition, channel_id, thread_parents))
 
     thread_parents.each do |parent|
       thread_key = "#{channel_id}:#{parent.ts}"
@@ -340,14 +355,285 @@ class SlackTriggerPollerJob < ApplicationJob
     end
   end
 
+  # ── Passive listening ───────────────────────────────────────────────────────
+
+  # Process a passive_listen condition: fire on messages that continue a
+  # conversation Zimmer is already part of, with no @mention required.
+  #
+  # Two sources, both gated on participation rather than on being addressed:
+  # - Thread replies, when Zimmer has already spoken in that thread. Not bounded by
+  #   age — a reply to a thread you are in is addressed to that conversation
+  #   whenever it lands — beyond the RECHECK_HORIZON cap that already bounds how far
+  #   back tracked threads get re-visited.
+  # - Top-level channel messages, only while Zimmer has been active in that channel
+  #   within CHANNEL_ENGAGEMENT_WINDOW.
+  #
+  # Bookkeeping is bot_mention's: per-channel cursors in channel_timestamps,
+  # per-thread cursors in thread_timestamps, both advanced for everything fetched
+  # whether or not it fired, so a quiet spell never replays as a burst.
+  def process_passive_listen_condition(condition)
+    bot_id = SlackService.bot_user_id
+
+    channel_ids = if condition.channel_id.present?
+      [ condition.channel_id ]
+    else
+      SlackService.list_member_channels.map(&:id)
+    end
+
+    channel_ts_updates = {}
+    bot_activity_updates = {}
+
+    channel_ids.each do |channel_id|
+      result = process_channel_passively(condition, channel_id, bot_id: bot_id)
+      channel_ts_updates[channel_id] = result[:channel_ts] if result[:channel_ts].present?
+      bot_activity_updates[channel_id] = result[:bot_activity_ts] if result[:bot_activity_ts].present?
+    rescue => e
+      Rails.logger.error "[SlackTriggerPollerJob] Error passively polling channel #{channel_id}: #{e.message}"
+    end
+
+    # One write for both cursor hashes plus last_polled_at. condition.configuration
+    # is re-read here so the thread bookkeeping written per-channel above survives.
+    attrs = { last_polled_at: Time.current }
+    if channel_ts_updates.any? || bot_activity_updates.any?
+      attrs[:configuration] = condition.configuration.merge(
+        "channel_timestamps" => condition.channel_timestamps.merge(channel_ts_updates),
+        "bot_activity_timestamps" => condition.bot_activity_timestamps.merge(bot_activity_updates)
+      )
+    end
+    condition.update!(attrs)
+  end
+
+  # Poll one channel passively.
+  #
+  # Returns { channel_ts:, bot_activity_ts: } — the newest top-level message seen
+  # (the channel cursor to store) and the newest moment Zimmer is known to have
+  # spoken in this channel, either of which may be nil.
+  #
+  # Note that a passive condition keys its cursor off channel_timestamps even when
+  # a single channel is configured, where bot_mention would use last_message_ts.
+  # One code path covers both shapes; the cost is that last_message_ts stays nil on
+  # a passive condition, so read last_polled_at, not it, to tell whether one is live.
+  def process_channel_passively(condition, channel_id, bot_id:)
+    last_ts = condition.channel_timestamps[channel_id]
+    new_messages = fetch_new_messages(channel_id, last_ts)
+
+    # First poll for this channel only establishes the cursor — same baseline rule
+    # every other Slack path follows, so enabling a passive condition never replays
+    # history.
+    return { channel_ts: new_messages.map(&:ts).max, bot_activity_ts: nil } if last_ts.blank?
+
+    history = fetch_recent_history(channel_id)
+
+    # Walking the threads both fires on engaged threads and reports when Zimmer last
+    # spoke inside one, which is half the channel-engagement signal.
+    thread_activity_ts = check_thread_replies_passively(condition, channel_id, history, bot_id: bot_id)
+
+    # The other half: Zimmer's own top-level posts in the recent window.
+    channel_activity_ts = history.select { |msg| msg.user == bot_id }.map(&:ts).max if engagement_channel?(channel_id)
+
+    # Engagement only ever moves forward. Taking the max with what is already on
+    # record matters twice: it is what keeps a channel engaged for the full window
+    # once Zimmer's post scrolls out of the recent-history window, and it stops a
+    # tick that happens to observe OLDER activity — an old bot reply in a thread
+    # that just woke up — from winding the cursor backwards and disengaging early.
+    bot_activity_ts = [
+      thread_activity_ts,
+      channel_activity_ts,
+      condition.bot_activity_timestamps[channel_id]
+    ].compact.max
+
+    if channel_engaged?(bot_activity_ts)
+      new_messages.each do |message|
+        next unless passive_candidate?(condition, message, bot_id)
+
+        process_message(condition, message, channel_id: channel_id, prior_ts: last_ts)
+      end
+    end
+
+    { channel_ts: new_messages.map(&:ts).max, bot_activity_ts: bot_activity_ts }
+  end
+
+  # Whether Zimmer has spoken in a channel recently enough for that channel's
+  # top-level messages to count as continuing a conversation it is part of.
+  def channel_engaged?(bot_activity_ts)
+    return false if bot_activity_ts.blank?
+
+    bot_activity_ts.to_f >= CHANNEL_ENGAGEMENT_WINDOW.ago.to_f
+  end
+
+  # Whether Zimmer's own posts in this channel count as being in a conversation.
+  #
+  # They don't in the alert channel. AlertService posts there with the same token
+  # and therefore the same user ID, so a single automated alert would otherwise mark
+  # the channel engaged and turn the next 24 hours of it into a session per message
+  # — in the one channel guaranteed to be noisy when things are going wrong. Threads
+  # are unaffected: if Zimmer actually replied in a thread there, that IS a
+  # conversation and passive listening still follows it.
+  def engagement_channel?(channel_id)
+    channel_id != alert_channel_id
+  end
+
+  def alert_channel_id
+    return @alert_channel_id if defined?(@alert_channel_id)
+
+    @alert_channel_id = AlertService.channel_id
+  end
+
+  # The oldest a reply may be and still fire in a thread passive listening has no
+  # cursor for.
+  #
+  # First sight of a thread falls back to the channel cursor, which tracks TOP-LEVEL
+  # messages — and in a channel whose conversation lives in threads that cursor can
+  # be weeks old, which would fire every reply since. Clamping to the engagement
+  # window means meeting a thread late costs at most a day of catch-up instead of
+  # the whole backlog.
+  def first_sight_baseline(channel_baseline_ts)
+    [ channel_baseline_ts, format("%.6f", CHANNEL_ENGAGEMENT_WINDOW.ago.to_f) ].max_by(&:to_f)
+  end
+
+  # Check this channel's threads for replies that continue a conversation Zimmer is
+  # already in, and fire on them.
+  #
+  # Same thread selection, same cursors, same fetch shape (`oldest:` the thread's
+  # cursor) and same recheck caps as check_thread_replies_for_mentions. What differs
+  # is the filter: a reply fires when Zimmer participated in the thread rather than
+  # when it was @mentioned.
+  #
+  # Participation is answered without ever re-reading a thread's history. First
+  # sight of a thread has no cursor, so `oldest: nil` already returns the whole
+  # thread — that read decides participation. From then on every reply Zimmer has
+  # not already inspected is in the tail, and a thread it has spoken in is
+  # remembered in participating_threads, so the tail alone is enough forever after.
+  #
+  # @return [String, nil] the newest timestamp at which Zimmer was seen speaking in
+  #   one of this channel's threads
+  def check_thread_replies_passively(condition, channel_id, history, bot_id:)
+    channel_baseline_ts = condition.channel_timestamps[channel_id]
+    return nil if channel_baseline_ts.blank?
+
+    thread_parents = history.select { |msg| msg.reply_count.to_i > 0 }
+    thread_parents.concat(aged_out_thread_parents(condition, channel_id, thread_parents))
+
+    known_participating = condition.participating_threads
+    thread_ts_updates = {}
+    participating_updates = []
+    bot_activity_ts = nil
+
+    thread_parents.each do |parent|
+      thread_key = "#{channel_id}:#{parent.ts}"
+      last_reply_ts = condition.thread_timestamps[thread_key]
+
+      # Skip threads with nothing new since the last check.
+      latest_reply = parent.latest_reply
+      next if latest_reply.present? && last_reply_ts.present? && latest_reply <= last_reply_ts
+
+      replies = SlackService.get_thread_replies(channel_id, parent.ts, oldest: last_reply_ts)
+      # Slack's oldest parameter is inclusive, so drop the already-seen reply.
+      replies.reject! { |reply| reply.ts == last_reply_ts } if last_reply_ts.present?
+      next if replies.empty?
+
+      # Track the newest reply for this thread whether or not Zimmer is in it — the
+      # same thing the @mention scan does. A thread it joins later then starts from
+      # a real cursor instead of replaying everything said before it arrived.
+      thread_ts_updates[thread_key] = replies.map { |reply| reply.ts }.max
+
+      participation_ts = replies.select { |reply| reply.user == bot_id }.map(&:ts).max
+      participation_ts ||= parent.ts if parent.user == bot_id
+      bot_activity_ts = [ bot_activity_ts, participation_ts ].compact.max
+
+      participating = participation_ts.present? || known_participating.include?(thread_key)
+      participating_updates << thread_key if participation_ts.present?
+      next unless participating
+
+      # A thread with no cursor of its own falls back to the channel's, clamped —
+      # see first_sight_baseline.
+      effective_prior_ts = last_reply_ts || first_sight_baseline(channel_baseline_ts)
+
+      replies.each do |reply|
+        next if reply.ts <= effective_prior_ts
+        next unless passive_candidate?(condition, reply, bot_id)
+
+        process_message(condition, reply, channel_id: channel_id, prior_ts: effective_prior_ts)
+      end
+    rescue => e
+      Rails.logger.error "[SlackTriggerPollerJob] Error passively checking thread #{parent.ts} in #{channel_id}: #{e.message}"
+    end
+
+    # Only threads that actually moved produce updates, so a channel of dormant
+    # tracked threads costs no writes at all.
+    if thread_ts_updates.any?
+      condition.update!(configuration: condition.configuration.merge(
+        "thread_timestamps" => condition.thread_timestamps.merge(thread_ts_updates),
+        "participating_threads" => known_participating | participating_updates
+      ))
+    end
+
+    bot_activity_ts
+  end
+
+  # Whether a message may fire a passive_listen condition, given that the
+  # conversation it belongs to already qualifies.
+  #
+  # No bot fires passively — not Zimmer, not anyone else's app. bot_mention accepts
+  # other apps because an @mention is an explicit request; a passive listener firing
+  # on every CI notification that lands in a thread it once replied to is precisely
+  # the noise passive listening must not make. Messages with no user (legacy
+  # webhooks) have no identity to check the allow-list against, and message
+  # subtypes that aren't somebody talking — joins, topic changes, edits — never
+  # count as a conversation continuing.
+  def passive_candidate?(condition, message, bot_id)
+    return false if message.user.blank?
+    return false if message.user == bot_id
+    return false if message.bot_id.present?
+    return false if PASSIVE_IGNORED_SUBTYPES.include?(message.subtype)
+
+    condition.user_allowed?(message.user)
+  end
+
+  # Tracked threads in this channel whose parent has aged out of the recent-history
+  # window, as RecheckThreadParent stand-ins.
+  #
+  # fetch_recent_thread_parents only surfaces threads whose parent is among the last
+  # RECENT_HISTORY_LIMIT top-level messages, so a long-lived thread — e.g. a
+  # months-old digest thread that still receives daily replies — stops being visited
+  # once its parent scrolls past that window, even though it remains tracked in
+  # thread_timestamps. Without this, replies to such a thread are silently missed.
+  #
+  # Fan-out is one conversations.replies call per re-checked thread, so bound these
+  # aged-out additions (the recent-window parents are already limited by
+  # fetch_recent_thread_parents): drop threads with no tracked activity within
+  # RECHECK_HORIZON (treated as dead) and keep only the MAX_TRACKED_THREAD_RECHECKS
+  # most-recently-active per channel. Threads already covered by the recent window
+  # are skipped to avoid duplicate fetches.
+  def aged_out_thread_parents(condition, channel_id, covered_parents)
+    already_covered = covered_parents.map(&:ts).to_set
+    horizon_ts = RECHECK_HORIZON.ago.to_f
+
+    condition.thread_timestamps
+      .select do |key, last_reply_ts|
+        key.start_with?("#{channel_id}:") &&
+          !already_covered.include?(key.split(":", 2).last) &&
+          last_reply_ts.to_f >= horizon_ts
+      end
+      .sort_by { |_key, last_reply_ts| -last_reply_ts.to_f }
+      .first(MAX_TRACKED_THREAD_RECHECKS)
+      .map { |key, _last_reply_ts| RecheckThreadParent.new(key.split(":", 2).last, nil, nil) }
+  end
+
   # Fetch recent thread parents from a channel to catch old threads with new replies.
   # Uses a small limit since we only need to find active threads.
   # Returns messages that have replies (reply_count > 0).
   def fetch_recent_thread_parents(channel_id)
-    messages = SlackService.get_channel_history(channel_id, limit: 50)
-    messages.select { |msg| msg.reply_count.to_i > 0 }
+    fetch_recent_history(channel_id).select { |msg| msg.reply_count.to_i > 0 }
+  end
+
+  # The channel's last RECENT_HISTORY_LIMIT top-level messages. Passive listening
+  # needs the raw history (not just the thread parents) to see whether Zimmer has
+  # posted in the channel recently.
+  def fetch_recent_history(channel_id)
+    SlackService.get_channel_history(channel_id, limit: RECENT_HISTORY_LIMIT)
   rescue => e
-    Rails.logger.error "[SlackTriggerPollerJob] Error fetching recent threads for #{channel_id}: #{e.message}"
+    Rails.logger.error "[SlackTriggerPollerJob] Error fetching recent history for #{channel_id}: #{e.message}"
     []
   end
 

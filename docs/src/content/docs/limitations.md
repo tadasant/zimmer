@@ -473,6 +473,12 @@ next item (untrusted Slack text reaching the prompt). Set the allowlist
 (`SLACK_BOT_MENTION_ALLOWED_USER_IDS`, comma-separated user IDs, in `mcp_secrets` or ENV) on any
 workspace bigger than your circle of trust; a per-condition `allowed_user_ids` overrides it.
 
+The same allowlist governs `passive_listen`, where the open default is a **wider** grant. Under
+`bot_mention` the practical bound is "somebody had to type `<@bot>`". Under `passive_listen` the
+bound is only "this conversation already involves Zimmer" — any reply in a thread it has spoken in,
+and, for 24 hours after it speaks in a channel, any top-level message there. Set the allowlist
+before enabling an all-channel passive condition on a workspace wider than your circle of trust.
+
 ### Triggers make the agent a trusted courier for untrusted input
 
 [Issue #18](https://github.com/tadasant/zimmer/issues/18): there is nothing between "Slack event
@@ -1039,9 +1045,35 @@ Tracked in [#77](https://github.com/tadasant/zimmer/issues/77).
 
 ### `thread_ts` is not supported for bot mentions
 
-You can watch a thread for new messages, but not for bot mentions.
+You can watch a thread for new messages, but not for bot mentions, and not for passive listening
+either.
 
 Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
+
+### Passive listening decides restraint in the prompt, not in the poller
+
+`passive_listen` fires on every new reply in a thread Zimmer has spoken in, and — while the channel
+is inside `CHANNEL_ENGAGEMENT_WINDOW` (24 hours) — on every new top-level message from an allowed
+human. The poller cannot tell "any update on that PR?" from "thanks, that worked": both continue a
+conversation Zimmer is in, so both spawn a session. Whether the session then *says* anything is
+decided entirely by its prompt template, and a template that isn't written for silence turns
+passive listening into a session per message.
+
+Three bounds worth knowing:
+
+- **Channel engagement is detected from what the poll already fetched** — Zimmer's own posts among
+  the last `RECENT_HISTORY_LIMIT` (50) top-level messages, plus its messages in the threads walked
+  that tick, remembered per channel in `bot_activity_timestamps`. In a channel busy enough that
+  Zimmer's last post falls outside that window before it is ever observed, top-level passive
+  listening simply doesn't engage. Thread listening is unaffected.
+- **A thread seen for the first time is clamped to the engagement window.** It has no cursor of its
+  own, so it falls back to the channel's top-level cursor, which in a thread-heavy channel can be
+  weeks old. The clamp caps the catch-up at a day — but that day still fires, so a passive condition
+  meeting a busy old thread for the first time can spawn several sessions at once, bounded only by
+  the trigger's `max_sessions_per_minute` burst cap (above which the rest are *dropped*).
+- **`participating_threads` and `bot_activity_timestamps` grow monotonically** inside the
+  condition's `configuration` JSONB, exactly like the `channel_timestamps` and `thread_timestamps`
+  hashes they sit beside. Nothing prunes any of the four.
 
 ### Everything is polled; there are no webhooks
 

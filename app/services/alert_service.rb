@@ -87,11 +87,17 @@ class AlertService
       @logger = nil
     end
 
-    private
-
+    # The channel alerts are posted to, or nil when unconfigured.
+    #
+    # Public because it is also a channel other code has to recognize rather than
+    # write to: SlackTriggerPollerJob excludes it from passive listening's
+    # channel-engagement signal, since an alert Zimmer posted here is a feed entry,
+    # not Zimmer joining a conversation.
     def channel_id
       SecretsLoader.get("ENG_ALERTS_SLACK_CHANNEL_ID") || ENV["ENG_ALERTS_SLACK_CHANNEL_ID"]
     end
+
+    private
 
     def logger
       @logger ||= StructuredLogger.new({ service: "AlertService" })

@@ -15,7 +15,7 @@ Conditions on a trigger are ORed. Any one firing fires the trigger.
 ```mermaid
 flowchart LR
     subgraph conditions["TriggerCondition"]
-        SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention)"]
+        SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention | passive_listen)"]
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
         AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived"]
         GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
@@ -37,8 +37,8 @@ flowchart LR
 
 ### `slack`
 
-Polls a channel for `new_message` or `bot_mention`. Optionally scoped to a thread (`thread_ts`)
-and an allowlist of user IDs.
+Polls a channel for `new_message`, `bot_mention`, or `passive_listen`. Optionally scoped to a
+thread (`thread_ts`) and an allowlist of user IDs.
 
 #### Picking the channel
 
@@ -51,7 +51,7 @@ API error, or a workspace the bot isn't in — the form falls back to a manual c
 trigger can still be created, and a saved channel that is no longer in the accessible list is kept
 selected rather than silently blanked.
 
-#### Who may trigger a `bot_mention`
+#### Who may trigger a `bot_mention` (or a `passive_listen`)
 
 Three layers, most specific first:
 
@@ -76,15 +76,130 @@ workspace is larger than the circle of trust.
 
 :::caution[`thread_ts` doesn't work for bot mentions]
 `TriggerCondition` explicitly rejects it: *"thread_ts is not supported for bot_mention
-conditions."* You can watch a thread for new messages, but not for bot mentions.
+conditions."* You can watch a thread for new messages, but not for bot mentions. The same
+applies to `passive_listen` — both walk threads themselves.
 Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
 :::
 
-:::caution[`thread_ts` doesn't work for bot mentions]
-`TriggerCondition` explicitly rejects it: *"thread_ts is not supported for bot_mention
-conditions."* You can watch a thread for new messages, but not for bot mentions.
-Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
+#### Passive listening (`passive_listen`)
+
+An @mention is how you *start* a conversation with Zimmer. `passive_listen` is how it stays in one:
+it fires on messages that continue a conversation Zimmer is already part of, with no mention
+required.
+
+It sweeps channels exactly like `bot_mention` — one channel if `channel_id` is set, otherwise every
+channel the bot is a member of — and keeps the same cursors: per-channel in `channel_timestamps`,
+per-thread in `thread_timestamps` (`"channel_id:thread_ts" => last_reply_ts`), advanced for
+everything it fetched whether or not it fired, so a quiet spell never replays as a burst. Aged-out
+threads are re-visited under the same `MAX_TRACKED_THREAD_RECHECKS` (20 per channel per poll) and
+`RECHECK_HORIZON` (45 days) caps, reading only the tail since each thread's cursor. What changes is
+the filter: participation instead of mention.
+
+Participation is answered without ever re-reading a thread's history. The first time a thread is
+seen there is no cursor, so the read returns the whole thread — that read decides participation.
+After that, every reply Zimmer has not already inspected is in the tail, and a thread it has spoken
+in is remembered in `participating_threads`, so the tail alone is enough from then on.
+
+Two sources fire:
+
+| Source | Fires when | Bounded by |
+| --- | --- | --- |
+| A new reply in a thread | Zimmer has already spoken in that thread | `RECHECK_HORIZON` (45 days) for threads whose parent has scrolled out of the recent-history window |
+| A new top-level message in a channel | Zimmer has spoken in that channel within `CHANNEL_ENGAGEMENT_WINDOW` | 24 hours |
+
+Thread replies are deliberately *not* subject to the 24-hour window. A reply to a thread you are in
+is addressed to that conversation whenever it lands. A top-level message in a busy channel is not,
+which is why "recently involved" there has to be bounded by something explicit — otherwise one
+message months ago would make Zimmer a permanent listener on every message in the channel.
+
+Channel engagement is learned from what the poll already fetches: Zimmer's own posts in the last 50
+top-level messages, and Zimmer's own messages in the threads walked that tick. The newest of those
+is remembered per channel in `bot_activity_timestamps` and only ever moves forward, so a channel
+stays engaged for the full window even through polls where nothing has moved, and a tick that
+happens to observe *older* activity can't wind it back and disengage early.
+
+The alert channel (`ENG_ALERTS_SLACK_CHANNEL_ID`) is excluded from that signal. `AlertService` posts
+there with the same token and therefore the same user ID, so one automated alert would otherwise
+mark the channel engaged and turn the next 24 hours of it into a session per message — in the one
+channel guaranteed to be noisy when things are going wrong. Threads there are unaffected: if Zimmer
+actually replied in one, that is a conversation and passive listening still follows it.
+
+A thread seen for the first time has no cursor of its own and falls back to the channel's, which
+tracks *top-level* messages — in a channel whose conversation lives in threads that can be weeks
+old. It is clamped to the engagement window, so meeting a thread late costs at most a day of
+catch-up rather than the entire backlog.
+
+Passive listening never fires on:
+
+- **Zimmer's own messages**, the same self-loop rule `bot_mention` has.
+- **Any other app's messages.** `bot_mention` accepts them because an @mention is an explicit
+  request; a passive listener firing on every CI notification that lands in a thread it once
+  replied to is exactly the noise it must not make.
+- **Channel-event subtypes** — joins, leaves, topic/purpose/name changes, huddles, pins, edits
+  (`PASSIVE_IGNORED_SUBTYPES`). "Sam has joined the channel" is not a conversation continuing.
+  Subtypes that *are* somebody talking — `file_share`, `me_message`, `thread_broadcast` — still
+  fire.
+- **DMs.** Every DM to the bot is already directed at it, and a `bot_mention` condition covers DMs
+  unconditionally; firing passively there would double-spawn.
+
+The allowlist is the same three layers as `bot_mention` above, including
+`SLACK_BOT_MENTION_ALLOWED_USER_IDS`.
+
+:::caution[Restraint belongs in the prompt, not just the poller]
+The poller decides which messages Zimmer *sees*. It cannot decide which deserve a reply — a
+teammate saying "thanks, that worked" in a thread Zimmer is in fires the trigger just as a direct
+follow-up question does. A passive-listening trigger's prompt template has to make silence the
+default, and it should tell the session to add its :eyes: reaction only once it has decided to
+respond, so the reaction is a commitment rather than an acknowledgement. See
+[the draft template](#a-passive-listening-prompt-template).
 :::
+
+:::note[No stall detection]
+`SlackTriggerHealthCheckJob` skips `passive_listen` for the same reason it skips `bot_mention`:
+the condition fans out across many channels, each with its own cursor, so there is no single
+"newest message" to compare against.
+:::
+
+#### A passive-listening prompt template
+
+A starting point for the trigger's `prompt_template`, tuned for restraint. `{{text}}`, `{{author}}`,
+`{{channel}}` and `{{link}}` are interpolated by `Trigger#interpolate_prompt`.
+
+```text
+A message landed in #{{channel}}, in a Slack conversation you are already part of.
+Nobody @mentioned you. You are here because you have spoken in this thread before,
+or you were active in this channel recently.
+
+Author: {{author}}
+Message: {{text}}
+Link: {{link}}
+
+Your default is to say nothing. Most messages in a conversation you are part of are
+not for you, and a wrong guess is worse than silence.
+
+Read the thread with the slack-workspace MCP server before deciding anything.
+
+Respond ONLY if one of these is clearly true:
+- The message asks you something, or asks for something you were doing.
+- It continues a task you were working on in this thread — an answer to a question
+  you asked, a review of work you delivered, a report that something you shipped is
+  broken.
+- It is a direct instruction that plainly lands on you given what you were doing.
+
+Stay silent if any of these is true:
+- It is two people talking to each other, even about work you did.
+- It mentions a topic, repo, or PR you touched, without asking you for anything.
+- It is an acknowledgement, a reaction, or small talk ("thanks", "nice", "lol").
+- You are unsure. Ambiguous means silent. Do not split the difference by posting a
+  short reply just in case.
+
+If you are staying silent: add NO reaction, post NOTHING, and archive your own
+session immediately. That is a successful outcome, not a failure.
+
+If you are responding: FIRST add an :eyes: reaction to the message, so the humans
+know you have picked it up. The reaction is a commitment to reply — never add it
+before you have decided to. Then do the work and reply in the thread.
+```
 
 ### `schedule`
 
