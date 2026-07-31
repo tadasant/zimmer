@@ -13,11 +13,18 @@
 # The `state` parameter serves dual purposes:
 # 1. CSRF protection in the OAuth flow
 # 2. Lookup key to resume the flow after OAuth provider callback
+#
+# A flow has a session when it came from the OAuth banner on a session parked
+# waiting for authorization, and none when it came from the Authorize button on
+# the Connectors page. The session is what the flow returns to and what gets
+# resumed once the credential lands; a session-less flow returns to /connectors
+# and resumes nothing. The credential it stores is identical either way — it is
+# keyed on the server config, not on who started the flow.
 class McpOauthPendingFlow < ApplicationRecord
   # Pending flows expire after 24 hours
   EXPIRATION_DURATION = 24.hours
 
-  belongs_to :session
+  belongs_to :session, optional: true
 
   validates :server_name, presence: true
   validates :server_url, presence: true
@@ -36,19 +43,21 @@ class McpOauthPendingFlow < ApplicationRecord
   # Flows that have expired (for cleanup)
   scope :expired, -> { where("expires_at < ?", Time.current) }
 
-  # Flows for a specific session
+  # Flows for a specific session. Pass nil for the session-less (Connectors
+  # page) flows.
   scope :for_session, ->(session) { where(session: session) }
 
-  # Creates a new pending flow with generated state and calculated expiration.
+  # Starts a new pending flow with generated state and calculated expiration.
   #
-  # @param session [Session] The session waiting for OAuth completion
+  # @param session [Session, nil] The session waiting for OAuth completion, or
+  #   nil when the flow was started from the Connectors page
   # @param server_name [String] Name of the MCP server
   # @param server_url [String] URL of the MCP server
   # @param oauth_metadata [Hash] OAuth metadata discovered from the server
   # @param redirect_uri [String] The callback URI to use
   # @param mcp_server_config [Hash] Full MCP server config for credential key computation
   # @return [McpOauthPendingFlow] The created flow
-  def self.create_for_session!(session:, server_name:, server_url:, oauth_metadata:, redirect_uri:, mcp_server_config:)
+  def self.start!(session:, server_name:, server_url:, oauth_metadata:, redirect_uri:, mcp_server_config:)
     # Generate PKCE code verifier (43 characters from base64url alphabet)
     code_verifier = SecureRandom.urlsafe_base64(32).gsub(/=+$/, "")[0, 43]
 
@@ -75,6 +84,13 @@ class McpOauthPendingFlow < ApplicationRecord
   # Returns true if this flow has expired
   def expired?
     expires_at < Time.current
+  end
+
+  # True when the flow was started from the Connectors page rather than from a
+  # session's OAuth banner. Such a flow has nothing to resume and returns the
+  # user to /connectors.
+  def session_less?
+    session_id.nil?
   end
 
   # Extracts the authorization code from a value the user pastes back after consenting

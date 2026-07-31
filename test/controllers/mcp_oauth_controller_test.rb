@@ -435,4 +435,141 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
     assert_not McpOauthCredential.where(server_name: "slack").exists?
   end
+
+  # --- Session-less flows (the Connectors page Authorize button) --------------
+
+  CONNECTOR = { "type" => "streamable-http", "url" => "https://mcp.notion.example.com/mcp" }.freeze
+
+  # Stubs discovery for a catalog connector and POSTs initiate with no session_id,
+  # exactly as the Connectors page row does.
+  def initiate_without_session(server_name: "notion", extra_params: {})
+    server = ServersConfig::Server.new(server_name, CONNECTOR)
+    ServersConfig.stub(:find, ->(name) { name == server_name ? server : nil }) do
+      Net::HTTP.stub(:new, discovery_http_for(
+        "authorization_endpoint" => "https://notion.example.com/oauth/authorize",
+        "token_endpoint" => "https://notion.example.com/oauth/token"
+      )) do
+        post mcp_oauth_initiate_path, params: { server_name: server_name }.merge(extra_params)
+      end
+    end
+  end
+
+  def discovery_http_for(metadata)
+    http = Object.new
+    http.define_singleton_method(:use_ssl=) { |_| }
+    http.define_singleton_method(:open_timeout=) { |_| }
+    http.define_singleton_method(:read_timeout=) { |_| }
+    http.define_singleton_method(:request) do |_req|
+      response = Net::HTTPSuccess.new("1.1", "200", "OK")
+      response.define_singleton_method(:code) { "200" }
+      response.define_singleton_method(:body) { metadata.to_json }
+      response.define_singleton_method(:[]) { |_key| "application/json" }
+      response
+    end
+    http
+  end
+
+  test "initiate with no session starts a flow for a catalog connector and redirects to consent" do
+    initiate_without_session
+
+    assert_response :redirect
+    location = URI(@response.headers["Location"])
+    assert_equal "notion.example.com", location.host
+    assert_equal "/oauth/authorize", location.path
+
+    flow = McpOauthPendingFlow.for_session(nil).find_by(server_name: "notion")
+    assert flow, "session-less pending flow created"
+    assert flow.session_less?
+    assert_nil flow.session_id
+    assert_equal CONNECTOR["url"], flow.server_url
+  end
+
+  # A forged POST must not be able to point Zimmer at a host of its choosing: the
+  # URL is read from the catalog, and the submitted one is ignored outright.
+  test "initiate with no session ignores a submitted server_url and uses the catalog's" do
+    initiate_without_session(extra_params: { server_url: "https://evil.example.com/mcp" })
+
+    assert_response :redirect
+    flow = McpOauthPendingFlow.for_session(nil).find_by(server_name: "notion")
+    assert_equal CONNECTOR["url"], flow.server_url
+    assert_no_match(/evil\.example\.com/, flow.authorization_endpoint)
+  end
+
+  test "initiate with no session refuses a server the catalog does not have" do
+    ServersConfig.stubs(:find).returns(nil)
+
+    post mcp_oauth_initiate_path, params: { server_name: "not-in-the-catalog" }
+
+    assert_redirected_to connectors_path
+    assert_match "not an OAuth connector", flash[:error]
+    assert_equal 0, McpOauthPendingFlow.for_session(nil).count
+  end
+
+  # A `${VAR}`-header server is not OAuth, so no flow should ever start for it.
+  test "initiate with no session refuses a server whose credential is a static header" do
+    static = ServersConfig::Server.new("strad", {
+      "type" => "streamable-http",
+      "url" => "https://strad.example.com/mcp",
+      "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" }
+    })
+    ServersConfig.stub(:find, ->(name) { name == "strad" ? static : nil }) do
+      post mcp_oauth_initiate_path, params: { server_name: "strad" }
+    end
+
+    assert_redirected_to connectors_path
+    assert_equal 0, McpOauthPendingFlow.for_session(nil).count
+  end
+
+  test "initiate with no session on an already-authorized connector goes straight back" do
+    server = ServersConfig::Server.new("notion", CONNECTOR)
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? server : nil }) do
+      McpOauthCredential.create!(
+        server_name: "notion", server_url: CONNECTOR["url"],
+        credential_key: McpOauthCredential.compute_credential_key("notion", ServersConfig.credential_config("notion")),
+        client_id: "c", access_token: "tok", expires_at: 1.hour.from_now
+      )
+
+      post mcp_oauth_initiate_path, params: { server_name: "notion" }
+    end
+
+    assert_redirected_to connectors_path
+    assert_match "already authorized", flash[:notice]
+    assert_equal 0, McpOauthPendingFlow.for_session(nil).count
+  end
+
+  test "the callback for a session-less flow stores the credential and returns to connectors" do
+    flow = McpOauthPendingFlow.create!(
+      session: nil, server_name: "notion", server_url: CONNECTOR["url"],
+      state: "connector-state", code_verifier: "v" * 43,
+      authorization_endpoint: "https://notion.example.com/oauth/authorize",
+      token_endpoint: "https://notion.example.com/oauth/token",
+      client_id: "cid", redirect_uri: McpOauthService.new.build_redirect_uri,
+      mcp_server_config: CONNECTOR.merge("headers" => {}),
+      expires_at: 1.hour.from_now
+    )
+
+    Net::HTTP.stub(:post_form, ->(_uri, _params) { token_response }) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    assert_redirected_to connectors_path
+    assert_match "Successfully authorized notion", flash[:notice]
+
+    credential = McpOauthCredential.for_credential_key(flow.credential_key).active.first
+    assert credential, "the credential a session-less flow stores is an ordinary credential"
+    assert_not McpOauthPendingFlow.exists?(flow.id), "pending flow cleaned up"
+  end
+
+  # The in-session flow is what the OAuth banner depends on; a session-less
+  # re-initiate must not sweep away a session's own pending flow for the server.
+  test "a session-less initiate leaves an in-session pending flow for the same server alone" do
+    in_session = pending_flow_for("notion", { type: "http", url: CONNECTOR["url"], headers: {} },
+      state: "in-session-notion")
+
+    initiate_without_session
+
+    assert_response :redirect
+    assert McpOauthPendingFlow.exists?(in_session.id), "the session's own flow survives"
+    assert McpOauthPendingFlow.for_session(nil).exists?(server_name: "notion")
+  end
 end

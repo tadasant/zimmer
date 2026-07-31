@@ -118,13 +118,13 @@
     {
       "warning_type": "Redirect",
       "warning_code": 18,
-      "fingerprint": "4ca2e092658607459187563042441c367202d839343d88004e3a75ebb805d65d",
+      "fingerprint": "82915be83cc277f3891dd75ab02e88c02d8529d1a7a4aac46d7c8c3903f3a2a3",
       "check_name": "Redirect",
       "message": "Possible unprotected redirect",
       "file": "app/controllers/mcp_oauth_controller.rb",
-      "line": 166,
+      "line": 218,
       "link": "https://brakemanscanner.org/docs/warning_types/redirect/",
-      "code": "redirect_to(McpOauthPendingFlow.create_for_session!(...).authorization_url, :allow_other_host => true)",
+      "code": "redirect_to(McpOauthPendingFlow.start!(...).authorization_url, :allow_other_host => true)",
       "render_path": null,
       "location": {
         "type": "method",

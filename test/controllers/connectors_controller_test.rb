@@ -203,6 +203,55 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_match "Could not confirm", response.body
   end
 
+  # --- the Authorize button ---------------------------------------------------
+
+  # The point of the button: authorizing a connector must not cost the user a
+  # throwaway session, so the row posts to initiate with no session_id at all.
+  test "an unauthorized OAuth row offers Authorize and posts a session-less initiate" do
+    get connector_path("notion")
+
+    assert_response :success
+    assert_select "[data-connector-state=needs_authorization]"
+    assert_select "form[action=?][method=post]", mcp_oauth_initiate_path do
+      assert_select "input[name=server_name][value=notion]"
+      assert_select "input[name=session_id]", count: 0
+      assert_select "input[data-connector-authorize=notion][value=Authorize]"
+    end
+  end
+
+  test "an authorized OAuth row offers Disconnect and no Authorize button" do
+    create_credential("notion")
+
+    get connector_path("notion")
+
+    assert_response :success
+    assert_select "[data-connector-state=ready]"
+    assert_select "[data-connector-authorize]", count: 0
+    assert_select "form[action=?]", mcp_oauth_credential_path(McpOauthCredential.last)
+  end
+
+  # An expired credential with no refresh token is the one other row a consent
+  # screen fixes, and re-authorizing overwrites the dead credential in place.
+  test "a needs-re-auth row offers Re-authorize" do
+    create_credential("notion").update!(expires_at: 1.hour.ago, refresh_token: nil, token_endpoint: nil)
+
+    get connector_path("notion")
+
+    assert_response :success
+    assert_select "[data-connector-state=needs_reauth]"
+    assert_select "input[data-connector-authorize=notion][value=Re-authorize]"
+  end
+
+  # A `${VAR}` credential is not OAuth. No consent screen will ever set
+  # STRAD_API_KEY, so offering to start one would be a lie.
+  test "a missing-configuration row offers no Authorize button" do
+    get connector_path("secrets-service-account")
+
+    assert_response :success
+    assert_select "[data-connector-state=missing_configuration]"
+    assert_select "[data-connector-authorize]", count: 0
+  end
+
   # --- secret-source badges ---------------------------------------------------
 
   test "a connector row badges the provider that resolved each secret" do

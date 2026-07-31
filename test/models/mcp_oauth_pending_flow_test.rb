@@ -5,7 +5,8 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
     flow = McpOauthPendingFlow.new
 
     assert_not flow.valid?
-    assert_includes flow.errors[:session], "must exist"
+    # Not the session: a flow started from the Connectors page has none.
+    assert_empty flow.errors[:session]
     assert_includes flow.errors[:server_name], "can't be blank"
     assert_includes flow.errors[:server_url], "can't be blank"
     assert_includes flow.errors[:state], "can't be blank"
@@ -211,7 +212,7 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
     assert_not flow.google_oauth_provider?
   end
 
-  test "create_for_session! creates flow with generated values" do
+  test "start! creates flow with generated values" do
     session = sessions(:running)
     oauth_metadata = {
       authorization_endpoint: "https://example.com/auth",
@@ -220,7 +221,7 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
       scopes: "read write"
     }
 
-    flow = McpOauthPendingFlow.create_for_session!(
+    flow = McpOauthPendingFlow.start!(
       session: session,
       server_name: "test-server",
       server_url: "https://test.example.com/mcp",
@@ -238,7 +239,7 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
     assert flow.expires_at > Time.current
   end
 
-  test "create_for_session! persists the resource from oauth_metadata" do
+  test "start! persists the resource from oauth_metadata" do
     session = sessions(:running)
     oauth_metadata = {
       authorization_endpoint: "https://example.com/auth",
@@ -247,7 +248,7 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
       resource: "https://mcp.example.com"
     }
 
-    flow = McpOauthPendingFlow.create_for_session!(
+    flow = McpOauthPendingFlow.start!(
       session: session,
       server_name: "test-server",
       server_url: "https://test.example.com/mcp",
@@ -259,7 +260,7 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
     assert_equal "https://mcp.example.com", flow.resource
   end
 
-  test "create_for_session! with Google OAuth endpoint adds Google params to authorization_url" do
+  test "start! with Google OAuth endpoint adds Google params to authorization_url" do
     session = sessions(:running)
     oauth_metadata = {
       authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -268,7 +269,7 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
       scopes: "https://www.googleapis.com/auth/bigquery"
     }
 
-    flow = McpOauthPendingFlow.create_for_session!(
+    flow = McpOauthPendingFlow.start!(
       session: session,
       server_name: "bigquery-pulsemcp",
       server_url: "https://bigquery.googleapis.com/mcp",
@@ -290,9 +291,9 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
 
   # --- manual (paste-back) mode ---
 
-  test "create_for_session! persists the manual flag from oauth_metadata" do
+  test "start! persists the manual flag from oauth_metadata" do
     session = sessions(:running)
-    flow = McpOauthPendingFlow.create_for_session!(
+    flow = McpOauthPendingFlow.start!(
       session: session,
       server_name: "slack",
       server_url: "https://mcp.slack.com/mcp",
@@ -309,9 +310,9 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
     assert flow.manual?
   end
 
-  test "create_for_session! defaults manual to false" do
+  test "start! defaults manual to false" do
     session = sessions(:running)
-    flow = McpOauthPendingFlow.create_for_session!(
+    flow = McpOauthPendingFlow.start!(
       session: session,
       server_name: "test-server",
       server_url: "https://test.example.com/mcp",

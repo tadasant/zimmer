@@ -176,6 +176,8 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
 
     assert_equal :needs_authorization, status.state
     assert status.actionable?
+    assert status.authorizable?, "the Connectors page can start this flow"
+    assert_match "you don't need a session", status.summary
   end
 
   test "an expired credential with a refresh token reports token expired" do
@@ -188,6 +190,8 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
 
     assert_equal :token_expired, status.state
     assert_match "renew it automatically", status.summary
+    assert_not status.authorizable?,
+      "the refresh job fixes this one; offering a consent screen would be noise"
   end
 
   test "an expired credential with no refresh token reports needs re-auth" do
@@ -198,6 +202,7 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
     status = probe("notion", OAUTH_SERVER)
 
     assert_equal :needs_reauth, status.state
+    assert status.authorizable?, "nothing renews this credential but a fresh flow"
   end
 
   test "a credential stored under a different credential key does not count as ready" do

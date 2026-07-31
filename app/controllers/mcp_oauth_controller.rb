@@ -15,6 +15,14 @@
 # 5. OAuth provider redirects back to callback with authorization code
 # 6. Controller exchanges code for tokens, stores credentials
 # 7. When all OAuth flows complete, session can proceed
+#
+# The same endpoints also serve the Connectors page, where a `session_id` is
+# simply absent: authorizing a connector is a thing the user does to Zimmer, not
+# to one session, and requiring a throwaway session to do it was pure friction.
+# A session-less flow differs in exactly two places — it returns to /connectors
+# instead of to a session, and it resumes nothing, because there is nothing
+# parked. Everything in between (discovery, PKCE, the callback, the manual
+# paste-back, the stored credential) is the same code on the same path.
 class McpOauthController < ApplicationController
   # The real app-wide layout. (An earlier "application_shell" name pointed at a template
   # that does not exist in this repo — a leftover from the squashed AO import — so any
@@ -26,7 +34,11 @@ class McpOauthController < ApplicationController
   # Initiate and complete may also have stale CSRF tokens after deploys (the manual
   # authorization page can sit open while the user consents in another tab), so we skip
   # them there too.
-  # Security is maintained via: valid session_id required, OAuth state parameter protection
+  # Security is maintained via: OAuth state parameter protection, and — on initiate — a
+  # server the request is not free to invent. An in-session initiate must name a session
+  # that exists; a session-less one (the Connectors page) must name a catalog server, and
+  # its URL is read from the catalog rather than taken from the request, so a forged POST
+  # cannot steer Zimmer at a host of its choosing.
   skip_forgery_protection only: [ :callback, :initiate, :complete ]
 
   # GET /mcp_oauth/status/:session_id
@@ -44,13 +56,36 @@ class McpOauthController < ApplicationController
   # POST /mcp_oauth/initiate
   # Initiates OAuth flow for a specific MCP server
   def initiate
-    @session = Session.find(params[:session_id])
+    @session = params[:session_id].present? ? Session.find(params[:session_id]) : nil
     server_name = params[:server_name]
-    server_url = params[:server_url]
+
+    if @session
+      server_url = params[:server_url]
+    else
+      # Session-less (Connectors page): the server must be one the catalog knows
+      # and one an OAuth flow can even apply to, and its URL comes from the
+      # catalog. Nothing about the target is taken from the request.
+      catalog_config = get_mcp_server_config(server_name)
+      unless catalog_config && McpOauthCredentialInjector.oauth_capable_server?(server_name)
+        flash[:error] = "#{server_name.presence || 'That server'} is not an OAuth connector in the catalog."
+        redirect_to connectors_path
+        return
+      end
+
+      server_url = catalog_config[:url]
+    end
 
     # Check if we already have valid credentials
     credential_key = compute_credential_key(server_name, server_url)
     existing_credential = McpOauthCredential.for_credential_key(credential_key).active.first
+
+    if existing_credential && @session.nil?
+      # Nothing to re-inject and nothing parked to resume — the Connectors page
+      # simply already shows this connector as Ready. Say so and go back.
+      flash[:notice] = "#{server_name} is already authorized."
+      redirect_to connectors_path
+      return
+    end
 
     if existing_credential
       # A valid credential already exists, so this was never "the user must
@@ -69,7 +104,7 @@ class McpOauthController < ApplicationController
       else
         "#{server_name} is already authorized."
       end
-      redirect_to session_path(@session)
+      redirect_to oauth_return_path(@session)
       return
     end
 
@@ -122,7 +157,7 @@ class McpOauthController < ApplicationController
 
       unless requirement.required && requirement.metadata
         flash[:error] = "Could not determine OAuth requirements for #{server_name}"
-        redirect_to session_path(@session)
+        redirect_to oauth_return_path(@session)
         return
       end
 
@@ -146,23 +181,25 @@ class McpOauthController < ApplicationController
 
     unless oauth_metadata && oauth_metadata[:authorization_endpoint]
       flash[:error] = "Could not determine OAuth endpoints for #{server_name}"
-      redirect_to session_path(@session)
+      redirect_to oauth_return_path(@session)
       return
     end
 
     # Check if client_id is available - if DCR failed, we can't proceed
     unless oauth_metadata[:client_id].present?
       flash[:error] = "Dynamic Client Registration failed for #{server_name}. The OAuth provider may be temporarily unavailable. Please try again."
-      redirect_to session_path(@session)
+      redirect_to oauth_return_path(@session)
       return
     end
 
-    # Delete any existing pending flow for this session/server (user is re-initiating)
+    # Delete any existing pending flow for this session/server (user is re-initiating).
+    # for_session(nil) scopes this to the session-less flows, so a Connectors-page
+    # re-click replaces its own previous flow and leaves in-session ones alone.
     existing_pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: server_name)
     existing_pending&.destroy
 
     # Create pending flow
-    pending_flow = McpOauthPendingFlow.create_for_session!(
+    pending_flow = McpOauthPendingFlow.start!(
       session: @session,
       server_name: server_name,
       server_url: server_url,
@@ -229,7 +266,7 @@ class McpOauthController < ApplicationController
     end
 
     flash[:notice] = "Successfully authorized #{credential.server_name}"
-    redirect_to session_path(session)
+    redirect_to oauth_return_path(session)
   end
 
   # POST /mcp_oauth/complete
@@ -280,10 +317,20 @@ class McpOauthController < ApplicationController
     end
 
     flash[:notice] = "Successfully authorized #{credential.server_name}"
-    redirect_to session_path(session)
+    redirect_to oauth_return_path(session)
   end
 
   private
+
+  # Where an OAuth flow puts the user when it is done, whichever way it ended.
+  # A flow started from a session's banner belongs to that session; one started
+  # from the Connectors page belongs to the Connectors page.
+  #
+  # @param session [Session, nil]
+  # @return [String]
+  def oauth_return_path(session)
+    session ? session_path(session) : connectors_path
+  end
 
   # Handles the "Authorize" click for a server Zimmer already holds a valid
   # credential for: re-inject the token into the runtime store, clear the
@@ -311,6 +358,9 @@ class McpOauthController < ApplicationController
   # Exchanges the authorization code for tokens, stores the credential, and resumes the
   # session if every blocking OAuth flow is now complete. Shared by the hosted callback
   # and the manual paste-back completion.
+  #
+  # A session-less flow (started from the Connectors page) stores exactly the same
+  # credential and skips only the resume — there is no parked session to release.
   #
   # On success: destroys the pending flow, fires the (idempotent) resume, and returns the
   # stored credential. On failure (no usable token in the response): leaves the pending
@@ -350,7 +400,7 @@ class McpOauthController < ApplicationController
     # Resume the session if every blocking OAuth flow is now complete. The
     # service is idempotent and fires the resume exactly once, replaying the
     # session's original prompt.
-    McpOauthResumeService.new(session).call
+    McpOauthResumeService.new(session).call if session
 
     credential
   end
