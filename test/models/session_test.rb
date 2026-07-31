@@ -3459,4 +3459,130 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal original_updated_at.to_i, session.reload.updated_at.to_i,
       "a mere view must not bump updated_at, otherwise it would fire index broadcasts"
   end
+
+  # ---------------------------------------------------------------------------
+  # Refresh-time wake-up detection (#awaiting_scheduled_wake?, #continue_nudge_on_refresh?)
+  # ---------------------------------------------------------------------------
+
+  # Build a per-session one-time wake-up trigger of the shape wake_me_up_later creates.
+  # Creating it sleeps a needs_input session (needs_input -> waiting) as a side effect.
+  def wake_trigger_for(session, scheduled_at:)
+    Trigger.create!(
+      name: "Wake session ##{session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => scheduled_at, "timezone" => "UTC" } }
+      ]
+    )
+  end
+
+  def waiting_session_with_conversation
+    Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Waiting",
+      status: :needs_input,
+      session_id: SecureRandom.uuid
+    )
+  end
+
+  test "awaiting_scheduled_wake? is false for a session with no wake trigger" do
+    session = waiting_session_with_conversation
+    session.update_columns(status: "waiting")
+
+    assert_not session.awaiting_scheduled_wake?
+    assert session.continue_nudge_on_refresh?, "a stalled waiting session should get the continue nudge"
+  end
+
+  test "awaiting_scheduled_wake? is true while a one-time wake is still ahead" do
+    session = waiting_session_with_conversation
+    wake_trigger_for(session, scheduled_at: 3.hours.from_now.utc.iso8601)
+
+    assert_equal "waiting", session.reload.status
+    assert session.awaiting_scheduled_wake?
+    assert_not session.continue_nudge_on_refresh?, "a session sleeping on a future wake must not be nudged"
+  end
+
+  # A one-time wake whose moment has passed without firing describes a stuck session
+  # (stopped scheduler, crashed trigger job), not a resting one — exactly what refresh
+  # exists to rescue.
+  test "awaiting_scheduled_wake? is false once a one-time wake has come due unfired" do
+    session = waiting_session_with_conversation
+    wake_trigger_for(session, scheduled_at: 2.days.ago.utc.iso8601)
+
+    assert_equal "waiting", session.reload.status
+    assert_not session.awaiting_scheduled_wake?,
+      "an overdue, never-fired wake-up means the session is stuck, not sleeping"
+    assert session.continue_nudge_on_refresh?
+  end
+
+  test "awaiting_scheduled_wake? ignores an already-fired wake trigger" do
+    session = waiting_session_with_conversation
+    trigger = wake_trigger_for(session, scheduled_at: 3.hours.from_now.utc.iso8601)
+    trigger.trigger_conditions.each { |c| c.update!(last_triggered_at: Time.current) }
+
+    assert_not session.reload.awaiting_scheduled_wake?
+  end
+
+  # Recurring schedules are not per-session wake-ups and must not make a session look asleep.
+  test "awaiting_scheduled_wake? ignores a recurring schedule condition" do
+    session = waiting_session_with_conversation
+    session.update_columns(status: "waiting")
+    Trigger.create!(
+      name: "Every hour",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Tick",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "interval" => 1, "unit" => "hours" } }
+      ]
+    )
+
+    assert_not session.reload.awaiting_scheduled_wake?
+    assert session.continue_nudge_on_refresh?
+  end
+
+  test "continue_nudge_on_refresh? is false for a session that never started" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Fresh", status: :waiting)
+
+    assert_nil session.session_id
+    assert_not session.continue_nudge_on_refresh?
+  end
+
+  test "continue_nudge_on_refresh? is false for every non-waiting status" do
+    session = waiting_session_with_conversation
+
+    %w[running needs_input failed archived].each do |status|
+      session.update_columns(status: status)
+      assert_not session.reload.continue_nudge_on_refresh?, "#{status} must not take the waiting nudge path"
+    end
+  end
+
+  test "ids_awaiting_scheduled_wake batches the same answer as the per-session predicate" do
+    sleeping = waiting_session_with_conversation
+    wake_trigger_for(sleeping, scheduled_at: 3.hours.from_now.utc.iso8601)
+    overdue = waiting_session_with_conversation
+    wake_trigger_for(overdue, scheduled_at: 2.days.ago.utc.iso8601)
+    stalled = waiting_session_with_conversation
+    stalled.update_columns(status: "waiting")
+
+    ids = [ sleeping.id, overdue.id, stalled.id ]
+    sleeping_ids = Session.ids_awaiting_scheduled_wake(ids)
+
+    assert_equal [ sleeping.id ].to_set, sleeping_ids
+    ids.each do |id|
+      assert_equal Session.find(id).awaiting_scheduled_wake?, sleeping_ids.include?(id),
+        "batch and per-session answers must agree for session #{id}"
+    end
+  end
+
+  test "ids_awaiting_scheduled_wake returns an empty set for no ids" do
+    assert_equal Set.new, Session.ids_awaiting_scheduled_wake([])
+    assert_equal Set.new, Session.ids_awaiting_scheduled_wake(nil)
+  end
 end
