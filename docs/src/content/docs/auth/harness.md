@@ -133,15 +133,42 @@ that new account instead of rotating again.
 :::caution[Without that, a stampede drained the pool]
 Anthropic's refresh tokens are single-use. Unserialized, N racers read the same `current`, selected
 the same successor, and each called `refresh_token!` on it; the first rotated the token and the rest
-got `invalid_grant`, which `refresh_token!` reads as permanently dead and marks `needs_reauth`. Four
-different accounts died that way in ten days, and `account_rotation_events` carries the fingerprint —
+got `invalid_grant`, which was read as permanently dead and marked `needs_reauth`. Four different
+accounts died that way in ten days, and `account_rotation_events` carries the fingerprint —
 duplicate and triplicate `from → to` pairs seconds apart. Serializing stops the concurrent refresh;
 collapsing stops the serialized racers from each burning one more account.
-
-The lock closes the rotation-vs-rotation race. `refresh_token!` is still unguarded at its other call
-sites (the 5-minute sweep, the quotas page), so a cron refresh landing on a rotation can still lose
-the same way. Tracked in [#242](https://github.com/tadasant/zimmer/issues/242).
+See [#242](https://github.com/tadasant/zimmer/issues/242).
 :::
+
+## Refreshing a token without burning it
+
+Both vendors issue **single-use** refresh tokens: a successful refresh returns a new pair and
+invalidates the old one. Present a spent one and Anthropic answers `invalid_grant`, OpenAI
+`refresh_token_reused` — and neither response can tell you whether the credential is dead or whether
+somebody else simply got there first.
+
+`ClaudeAccount#refresh_token!` has nine call sites (the quotas page ×4, `QuotaResetCheckerJob` ×2,
+rotation, activation, and the 5-minute `RefreshRuntimeAuthTokensJob` sweep), so both protections live
+in that one method rather than at each of them:
+
+1. **A row lock across the whole read-refresh-persist sequence** — the only scope that can promise
+   the token being presented is the token still held. On acquiring it the method re-reads the row: if
+   another caller rotated the token while this one queued, their refresh *is* this one's refresh, so
+   it reports success rather than spending a token nobody has used yet.
+2. **A lost-race check before condemning anything.** The lock excludes other Zimmer callers but not
+   the agent CLI, which rotates the shared credential file mid-session. So on a permanent-looking
+   failure the method re-syncs from disk and compares: if the token of record has moved on from the
+   one it presented, this was a lost race, and the account stays `active` instead of going
+   `needs_reauth`.
+
+That second one is what makes re-authentication stick. Before it, a re-authed account rejoined the
+pool and the next stampede condemned it again within minutes.
+
+Both are runtime-agnostic — the Codex path has the same single-use semantics and gets the same two
+protections. API-key Codex accounts skip the lock entirely: nothing to rotate, no race to lose.
+
+The lock is re-entrant with the outer `account.with_lock` in
+`RuntimeAuthProvider#recover_needs_reauth` and in the sweep, so nesting is safe.
 
 `QuotaResetCheckerJob` (every 15 min, **Claude only**) restores `quota_exceeded` accounts when either
 window's reset time has passed, or utilization drops below 100%. It then calls

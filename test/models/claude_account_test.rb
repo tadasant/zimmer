@@ -731,6 +731,102 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert account.needs_reauth?
   end
 
+  # ===========================================================================
+  # Single-use refresh token races (#242)
+  #
+  # Anthropic's refresh tokens are single-use. Two callers presenting the same
+  # one means the second is told it is invalid — and reading that as "dead
+  # credential" is what drained the pool: 9 permanent-invalid events across four
+  # accounts in ten days, with re-authentication not sticking because the next
+  # race killed the account again within minutes.
+  # ===========================================================================
+
+  # The second caller must not spend a token the first already replaced. It
+  # cannot tell by looking at the response — by then the damage is done — so it
+  # checks before the request, under the row lock.
+  test "refresh_token! skips the request when a concurrent caller already rotated the token" do
+    account = claude_accounts(:primary)
+
+    # Model the racer: while this caller waits for the row lock, another one
+    # completes a refresh and writes a new pair to the row. Acquiring the lock
+    # therefore reveals a token that is no longer the one we set out to spend.
+    account.define_singleton_method(:with_lock) do |&block|
+      rotated = oauth_config.deep_dup
+      rotated["credentials_json"]["claudeAiOauth"]["refreshToken"] = "rotated_by_the_other_caller"
+      ClaudeAccount.where(id: id).update_all(oauth_config: rotated)
+      reload
+      block.call
+    end
+
+    # Any HTTP call at all is the bug: the token we would present is spent.
+    Net::HTTP.any_instance.expects(:request).never
+
+    assert account.refresh_token!,
+      "Another caller's completed refresh is this caller's refresh — report success, don't re-spend the token"
+  end
+
+  # The other half: the request went out before we could tell, and came back
+  # invalid_grant. If the stored token has moved on, someone else spent it.
+  test "refresh_token! does not condemn an account that lost the race to a concurrent rotation" do
+    account = claude_accounts(:primary)
+    presented = account.claude_refresh_token
+
+    invalid_grant = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    invalid_grant.stubs(:code).returns("400")
+    invalid_grant.stubs(:body).returns({ error: "invalid_grant" }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(invalid_grant)
+
+    # The CLI rotated the shared credentials mid-flight, so by the time we look,
+    # the token of record is no longer the one we presented.
+    account.stubs(:sync_tokens_from_filesystem!).with do
+      rotated = account.oauth_config.deep_dup
+      rotated["credentials_json"]["claudeAiOauth"]["refreshToken"] = "rotated_mid_flight"
+      ClaudeAccount.where(id: account.id).update_all(oauth_config: rotated)
+      true
+    end
+
+    assert_not account.refresh_token!, "The refresh itself did fail"
+
+    account.reload
+    assert_not account.needs_reauth?,
+      "An account whose token was spent by someone else is healthy — condemning it is what drains the pool"
+    assert account.active?
+    assert_not_equal presented, account.claude_refresh_token
+  end
+
+  # The guard must not become a blanket amnesty: a genuinely dead credential is
+  # still dead, and the pool still needs it marked so a human is asked to fix it.
+  test "refresh_token! still marks needs_reauth when the token did not move" do
+    account = claude_accounts(:primary)
+
+    invalid_grant = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    invalid_grant.stubs(:code).returns("400")
+    invalid_grant.stubs(:body).returns({ error: "invalid_grant" }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(invalid_grant)
+    account.stubs(:sync_tokens_from_filesystem!)
+
+    assert_not account.refresh_token!
+
+    assert account.reload.needs_reauth?,
+      "No concurrent rotation happened, so invalid_grant means what it says"
+  end
+
+  test "refresh_token! serializes on the account row" do
+    account = claude_accounts(:primary)
+    account.expects(:with_lock).once
+
+    account.refresh_token!
+  end
+
+  # API-key Codex accounts have no token to rotate and so no race to lose; they
+  # must not pay for a row lock on every sweep.
+  test "refresh_token! skips the lock for an API-key Codex account" do
+    account = claude_accounts(:codex_api_key)
+    account.expects(:with_lock).never
+
+    assert account.refresh_token!
+  end
+
   test "refresh_token! does not mark needs_reauth on 503 transient error" do
     account = claude_accounts(:expired_token)
 

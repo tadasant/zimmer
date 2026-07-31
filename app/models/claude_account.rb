@@ -376,17 +376,98 @@ class ClaudeAccount < ApplicationRecord
   #   account first transitioned to needs_reauth, and a known-dead token fails every
   #   cycle until a human re-authenticates.
   def refresh_token!(recovery_probe: false)
-    return refresh_codex_token!(recovery_probe: recovery_probe) if codex?
+    # API-key Codex accounts authenticate statically — nothing to rotate, nothing
+    # to race, so they skip the lock entirely.
+    return true if codex? && codex_api_key_account?
 
-    # The Claude CLI refreshes tokens independently during sessions, and Anthropic's
-    # OAuth endpoint rotates refresh_token for security. When that happens, the CLI
-    # writes the new pair to ~/.claude/.credentials.json but Zimmer's DB copy stays
-    # stale — using it would fail with invalid_grant. Sync from filesystem first.
-    # sync_tokens_from_filesystem! is a no-op when ~/.claude.json's identity does
-    # not match this account or when ~/.claude.json is missing entirely.
-    sync_tokens_from_filesystem!
+    # Both vendors issue SINGLE-USE refresh tokens: a successful refresh returns a
+    # new pair and invalidates the old one. Two callers presenting the same token
+    # means the second is told the token is invalid (`invalid_grant` from Anthropic,
+    # `refresh_token_reused` from OpenAI) — indistinguishable, from the response
+    # alone, from a genuinely dead credential — and the account is marked
+    # needs_reauth. That is how a healthy pool drains itself one account at a
+    # time (#242): four different accounts died that way in ten days.
+    #
+    # There are nine call sites (the quota page, the 15-minute quota-reset checker,
+    # the 5-minute refresh sweep, rotation, activation), so the serialization lives
+    # HERE rather than at each of them: a row lock held across the whole
+    # read-refresh-persist sequence, which is the only place that can promise the
+    # token we present is the token we hold. Bounded by the HTTP timeouts each
+    # runtime's refresh sets (5s open, 10s read), and re-entrant with the outer
+    # with_lock in RuntimeAuthProvider#recover_needs_reauth.
+    #
+    # Captured before with_lock, which reloads the row — so the comparison inside
+    # tells "the token moved while I queued" from "the token is what I saw".
+    token_before_lock = current_refresh_token
+    refreshed = false
 
-    refresh_tok = oauth_config&.dig("credentials_json", "claudeAiOauth", "refreshToken")
+    with_lock do
+      # Whoever held the lock before us may have already done this work. Their new
+      # pair is on the row we just re-read, so refreshing again would consume a
+      # token nobody has used yet. Their refresh is our refresh.
+      if current_refresh_token.present? && token_before_lock.present? &&
+          current_refresh_token != token_before_lock
+        Rails.logger.info "[ClaudeAccount] Refresh for #{email} already performed by a concurrent caller, skipping"
+        refreshed = true
+        next
+      end
+
+      refreshed = if codex?
+        refresh_codex_token!(recovery_probe: recovery_probe)
+      else
+        # The Claude CLI refreshes tokens independently during sessions, and Anthropic's
+        # OAuth endpoint rotates refresh_token for security. When that happens, the CLI
+        # writes the new pair to ~/.claude/.credentials.json but Zimmer's DB copy stays
+        # stale — using it would fail with invalid_grant. Sync from filesystem first.
+        # sync_tokens_from_filesystem! is a no-op when ~/.claude.json's identity does
+        # not match this account or when ~/.claude.json is missing entirely.
+        sync_tokens_from_filesystem!
+        perform_claude_refresh!(recovery_probe: recovery_probe, presented: claude_refresh_token)
+      end
+    end
+
+    refreshed
+  end
+
+  # The refresh token currently stored on this row, whichever runtime owns it.
+  def current_refresh_token
+    codex? ? codex_refresh_token : claude_refresh_token
+  end
+
+  # The refresh token currently stored on this row.
+  def claude_refresh_token
+    oauth_config&.dig("credentials_json", "claudeAiOauth", "refreshToken")
+  end
+
+  # True when the token we just presented is no longer the token of record —
+  # someone rotated it while our request was in flight, so the `invalid_grant` we
+  # got back says "already spent", not "dead".
+  #
+  # Re-syncs from the filesystem first: the row lock in #refresh_token! excludes
+  # other Zimmer callers, so the only racer left is the agent CLI writing the
+  # shared credentials file mid-session, and that lands on disk rather than in the
+  # DB. Conservative on every uncertainty — no token to compare, or the sync
+  # failing — because wrongly sparing a dead account costs one retry, while
+  # wrongly condemning a live one costs the pool an account until a human notices.
+  def lost_refresh_race?(presented)
+    return false if presented.blank?
+
+    codex? ? sync_codex_tokens_from_filesystem! : sync_tokens_from_filesystem!
+    reload
+    current_token = current_refresh_token
+
+    current_token.present? && current_token != presented
+  rescue => e
+    Rails.logger.warn "[ClaudeAccount] Could not check for a lost refresh race on #{email}: #{e.message}"
+    false
+  end
+
+  # The read-refresh-persist body of #refresh_token!, run with the row lock held.
+  #
+  # @param presented [String] the refresh token being sent to Anthropic, so a
+  #   failure can tell whether the token moved underneath the attempt.
+  def perform_claude_refresh!(recovery_probe: false, presented: nil)
+    refresh_tok = presented || claude_refresh_token
     raise "Cannot refresh: missing refresh token for #{email}" unless refresh_tok.present?
 
     uri = URI(ClaudeAuthProvider::TOKEN_ENDPOINT)
@@ -425,13 +506,30 @@ class ClaudeAccount < ApplicationRecord
       Rails.logger.info "[ClaudeAccount] Recovery probe for #{email} still failing (#{response.code}); awaiting re-auth"
       false
     elsif permanent_refresh_failure?(response)
-      # A known-permanent failure (e.g. 400 invalid_grant, 401, 404): the account
-      # is gracefully marked needs_reauth and rotated out of the active pool, so
-      # this is expected and handled. Log at .warn — not .error — so it does not
-      # page on a recoverable, non-alerting condition (the human re-auths to recover).
-      Rails.logger.warn "[ClaudeAccount] Refresh token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
-      update!(status: :needs_reauth)
-      false
+      if lost_refresh_race?(presented)
+        # `invalid_grant` has two meanings and the response cannot tell them apart:
+        # "this credential is dead" and "someone already spent this single-use
+        # token". Reading it only as the first is what drained the pool — a healthy
+        # account condemned for losing a race, and re-authenticating did not stick
+        # because the next race killed it again within minutes.
+        #
+        # The row lock above rules out another Zimmer caller, but not the Claude
+        # CLI, which rotates the shared credentials file on its own during a
+        # session. So: re-sync from disk and see whether the token we presented is
+        # still the token of record. If it moved, we lost a race and the account is
+        # fine.
+        Rails.logger.warn "[ClaudeAccount] Refresh for #{email} lost a race with a concurrent token rotation; " \
+          "the stored token has moved on, so the account is healthy and is NOT being marked needs_reauth"
+        false
+      else
+        # A known-permanent failure (e.g. 400 invalid_grant, 401, 404): the account
+        # is gracefully marked needs_reauth and rotated out of the active pool, so
+        # this is expected and handled. Log at .warn — not .error — so it does not
+        # page on a recoverable, non-alerting condition (the human re-auths to recover).
+        Rails.logger.warn "[ClaudeAccount] Refresh token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
+        update!(status: :needs_reauth)
+        false
+      end
     else
       # An unexpected non-2xx response — neither a known permanent OAuth error nor
       # a retried transient exception — means the refresh path is genuinely broken.
@@ -761,13 +859,23 @@ class ClaudeAccount < ApplicationRecord
       Rails.logger.info "[ClaudeAccount] Codex recovery probe for #{email} still failing (#{response.code}); awaiting re-auth"
       false
     elsif codex_permanent_refresh_failure?(response)
-      # A known-permanent failure (e.g. 401, refresh_token_expired/reused/invalidated):
-      # the account is gracefully marked needs_reauth and rotated out of the active
-      # pool, so this is expected and handled. Log at .warn — not .error — so it does
-      # not page on a recoverable, non-alerting condition (the human re-auths to recover).
-      Rails.logger.warn "[ClaudeAccount] Codex refresh token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
-      update!(status: :needs_reauth)
-      false
+      if lost_refresh_race?(refresh_tok)
+        # `refresh_token_reused` is OpenAI's way of saying exactly what it sounds
+        # like, and "someone else already spent this single-use token" is a much
+        # more common cause than a dead credential. Same reasoning as the Claude
+        # branch: the stored token having moved on is proof the account is healthy.
+        Rails.logger.warn "[ClaudeAccount] Codex refresh for #{email} lost a race with a concurrent token rotation; " \
+          "the stored token has moved on, so the account is healthy and is NOT being marked needs_reauth"
+        false
+      else
+        # A known-permanent failure (e.g. 401, refresh_token_expired/reused/invalidated):
+        # the account is gracefully marked needs_reauth and rotated out of the active
+        # pool, so this is expected and handled. Log at .warn — not .error — so it does
+        # not page on a recoverable, non-alerting condition (the human re-auths to recover).
+        Rails.logger.warn "[ClaudeAccount] Codex refresh token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
+        update!(status: :needs_reauth)
+        false
+      end
     else
       # An unexpected non-2xx response — neither a known permanent OAuth error nor
       # a retried transient exception — means the refresh path is genuinely broken.
