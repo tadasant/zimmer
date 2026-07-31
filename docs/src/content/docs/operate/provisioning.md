@@ -82,6 +82,7 @@ resize command.
 | `STAGING_OTEL_LOGS_EXPORTER_ENDPOINT` / `STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN` | ship staging's WARN/ERROR/FATAL logs over OTLP. **Both** are required — either one missing is a silent no-op ([observability](/operate/observability/)) |
 | `STAGING_SENTRY_DSN_BACKEND` | staging's GlitchTip DSN. Must be a **staging-only project**, never production's — a DSN selects a project, and GlitchTip's alert rules are per-project with no environment filter |
 | `STAGING_OPERATOR_SSH_KEY` | base64 of the operator SSH **private** key — the identity agent sessions SSH with ([below](#the-ssh-identity-an-agent-session-holds)). Optional: without it the app boots fine and only the `ssh-*` MCP servers fail |
+| `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | base64 of the `zimmer-secrets-staging` resolver service-account key — the first link of the `${VAR}` chain ([Parameter Store](/operate/secrets-parameter-store/#staging-gets-the-same-three-links-against-its-own-project)). Optional: without it the app boots fine and every `${VAR}` resolves from `staging.yml.enc` as before |
 | `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
 
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]

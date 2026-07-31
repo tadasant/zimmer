@@ -69,6 +69,16 @@ env:
     DATABASE_USERNAME: zimmer
     # The throwaway Postgres accessory speaks no TLS.
     DATABASE_SSLMODE: prefer
+    # The Google Parameter Store the ${VAR} resolution chain reads FIRST. Staging's
+    # OWN project, never production's -- agent sessions have root on this box, and
+    # zimmer-secrets-prod's resolver reads production secret VALUES. These two are the
+    # store's ADDRESS, not a credential (only the service-account key below is secret),
+    # and they are deliberately in the clear so a misconfiguration is diagnosable: the
+    # Connectors page can name the project it failed to reach, and
+    # `kamal app exec 'env | grep ZIMMER_PARAMS_PROJECT_ID'` answers "is it even set?"
+    # without touching a secret. Absent, the chain is just credentials -> ENV.
+    ZIMMER_PARAMS_PROJECT_ID: zimmer-secrets-staging
+    ZIMMER_PARAMS_LOCATION: global
   secret:
     - SECRET_KEY_BASE
     # Decrypts the committed config/credentials/staging.yml.enc, so SecretsLoader
@@ -82,6 +92,11 @@ env:
     # ~/.ssh/zimmer_operator_ed25519 so agent sessions (and the ssh-* MCP servers they
     # attach) have an SSH identity; without it they have none. See .kamal/secrets.staging.
     - ZIMMER_OPERATOR_SSH_KEY
+    # Base64 of the Parameter Store resolver's service-account key JSON -- base64 for
+    # the same env-file reason as the SSH key above, spelled out in .kamal/secrets.staging.
+    # Its two non-secret companions are in env.clear. Unset is a designed state, not a
+    # gap: the store link is absent and every ${VAR} comes from staging.yml.enc as before.
+    - ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
     # The API key the injected self-session MCP server uses to call this instance's
     # own REST API. It lives in process ENV rather than mcp_secrets (SecretsInterpolator
     # falls back to ENV), because the deploy workflow derives it from API_KEYS -- which
