@@ -40,7 +40,19 @@ The **post-spawn** MCP-failure classifier (`AgentSessionJob#check_and_handle_mcp
 applies the same rule. An auth-shaped error (`401`, `Unauthorized`, `Supported scopes`,
 `invalid_token`, …) only becomes `oauth_required` when the server is actually
 OAuth-capable — `McpOauthCredentialInjector.oauth_capable_server?`: in the catalog, remote
-transport, and **no** static credential header. A static-header server (e.g. Zimmer's own
+transport, and **no** static credential header.
+
+A "static credential header" is decided by the header's *name*, matched against a word list
+(`CREDENTIAL_HEADER_PATTERN`): `authorization`, `auth`, `api-key`/`apikey`, `token`, `secret`,
+`password`, `credential(s)`, as whole `-`/`_`-delimited parts. Vendors spell that header
+however they like — `X-API-Key`, `X-Goog-Api-Key`, `X-Figma-Token`, `PRIVATE-TOKEN` — and the
+spelling says nothing about whether an OAuth flow exists, so matching words beats matching
+names. The list stays narrow on purpose: `key` counts only within `api-key`, so
+`Idempotency-Key` is not a credential, and `auth` must be a whole part, so `X-Author` is not
+one either. Reading a routine header as a credential would hide the Authorize button on a
+server that genuinely needs one, which is the worse failure of the two.
+
+A static-header server (e.g. Zimmer's own
 `zimmer*` entries, which send `X-API-Key: ${ZIMMER_PROD_API_KEY}`) returns the same 401 when
 its token is invalid or under-scoped, but no OAuth flow can mint a valid API token, so that
 failure is recorded as `mcp_connection_failed` — surfacing the raw error and the credential
@@ -438,7 +450,10 @@ connector authorized here is a connector every future session inherits.
 Only rows where a consent screen is actually the fix get the button:
 `needs_authorization` and `needs_reauth`. A `token_expired` row does not — the
 refresh job resolves it without you. A `missing_configuration` row does not either:
-its credential is a `${VAR}` secret and no OAuth provider will ever set it.
+its credential is a `${VAR}` secret and no OAuth provider will ever set it. Nor does
+a server authenticated by a static header, whatever the vendor named it: with its
+`${VAR}` set it is `ready`, and with it unset it is `missing_configuration` — never
+`needs_authorization`, because there is no OAuth flow behind that button to run.
 
 The button offers only catalog servers, and the session-less `initiate` enforces
 that server-side: the server must be in the catalog and pass

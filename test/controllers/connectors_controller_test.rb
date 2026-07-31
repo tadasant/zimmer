@@ -18,6 +18,16 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
       "description" => "Hosted Notion MCP server.",
       "type" => "streamable-http",
       "url" => "https://mcp.notion.example.com/mcp"
+    },
+    # Static header auth under a vendor's own header name. Rendered, this row is
+    # the one that read "Needs authorization" next to a key the same card
+    # reported as resolving.
+    "google-maps" => {
+      "title" => "Google Maps",
+      "description" => "Google Maps Grounding Lite MCP server.",
+      "type" => "streamable-http",
+      "url" => "https://mapstools.example.com/mcp",
+      "headers" => { "X-Goog-Api-Key" => "${GOOGLE_MAPS_API_KEY}" }
     }
   }.freeze
 
@@ -345,6 +355,35 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "[data-connector-state=missing_configuration]"
     assert_select "[data-connector-authorize]", count: 0
+  end
+
+  # The reported bug, at the level the user actually saw it: the card offered an
+  # OAuth flow while, three lines below, badging the very key that authenticates
+  # the server as resolved. Asserting the rendered row (not just the probe's
+  # return value) is what keeps those two halves from contradicting each other.
+  test "a row authenticated by a vendor-spelled API-key header offers no Authorize button" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("GOOGLE_MAPS_API_KEY", "AIza-not-a-real-key")
+    stub_chain_with(fake)
+
+    get connector_path("google-maps")
+
+    assert_response :success
+    assert_select "[data-connector-state=ready]"
+    assert_select "[data-connector-authorize]", count: 0
+    assert_select "form[action=?]", mcp_oauth_initiate_path, count: 0
+    assert_no_match "No OAuth credential is stored yet", response.body
+    # The key it authenticates with is still named, and still badged resolved.
+    assert_select "[data-secret-source=GOOGLE_MAPS_API_KEY][data-secret-source-badge=GSM]"
+  end
+
+  test "an unset vendor-spelled API key reads as missing configuration, not as needing OAuth" do
+    get connector_path("google-maps")
+
+    assert_response :success
+    assert_select "[data-connector-state=missing_configuration]"
+    assert_select "[data-connector-authorize]", count: 0
+    assert_match "GOOGLE_MAPS_API_KEY", response.body
   end
 
   # --- secret-source badges ---------------------------------------------------

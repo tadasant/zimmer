@@ -16,6 +16,18 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
     "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" }
   }.freeze
 
+  # A remote server whose credential is a static header under a VENDOR-SPECIFIC
+  # name — Google's `X-Goog-Api-Key` rather than the generic `X-API-Key`. Auth is
+  # every bit as static as SECRETS_SERVICE_ACCOUNT's bearer header; only the
+  # spelling differs, and the spelling must not decide whether OAuth applies.
+  VENDOR_HEADER_SERVER = {
+    "title" => "Google Maps",
+    "description" => "Google Maps Grounding Lite MCP server.",
+    "type" => "streamable-http",
+    "url" => "https://mapstools.example.com/mcp",
+    "headers" => { "X-Goog-Api-Key" => "${GOOGLE_MAPS_API_KEY}" }
+  }.freeze
+
   OAUTH_SERVER = {
     "title" => "Notion",
     "description" => "Hosted Notion MCP server.",
@@ -144,6 +156,28 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
     assert_equal :ready, status.state
     assert status.ready?
     assert_match "STRAD_API_KEY", status.summary
+  end
+
+  # The bug this pins: a resolvable static-header credential under a vendor's own
+  # header name was read as "no OAuth credential stored yet", so a connector that
+  # is fully configured asked its user to complete an OAuth flow that does not
+  # exist for it — and that no consent screen could ever satisfy.
+  test "a static-header server is ready whatever the vendor named its header" do
+    status = probe("google-maps", VENDOR_HEADER_SERVER, resolvable: [ "GOOGLE_MAPS_API_KEY" ])
+
+    assert_equal :ready, status.state
+    refute status.authorizable?, "a static API key is not something OAuth can mint"
+    assert_match "GOOGLE_MAPS_API_KEY", status.summary
+  end
+
+  # The other half of the same rule: the header being static does not excuse its
+  # ${VAR} from resolving, and the fix must not turn an unset key into "ready".
+  test "a vendor-header server with an unset key is missing configuration, not needing OAuth" do
+    status = probe("google-maps", VENDOR_HEADER_SERVER)
+
+    assert_equal :missing_configuration, status.state
+    assert_equal [ "GOOGLE_MAPS_API_KEY" ], status.missing_variables
+    refute status.authorizable?
   end
 
   test "an OAuth server with an active stored credential is ready" do
