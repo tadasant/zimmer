@@ -5305,8 +5305,16 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Track loop iterations
     poll_count = 0
 
+    # Terminating the process is teardown, not a loop iteration. It polls `wait`
+    # too — ProcessTerminationService answers liveness by reaping rather than by
+    # signal 0 — so counting those would measure the ladder, not the loop.
+    terminating = false
+    mock_process_manager.kill_hook = ->(_signal, _target_pid) { terminating = true }
+
     # Configure mock to keep process "running" but session becomes needs_input
     mock_process_manager.wait_hook = ->(pid, flags) do
+      next nil if terminating
+
       poll_count += 1
       # After first poll, simulate session being paused externally
       if poll_count >= 2
