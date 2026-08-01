@@ -18,51 +18,50 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 # cloud-init appends them to /root/.ssh/authorized_keys, and they are reachable ONLY over
 # the tailnet on :2222 (real OpenSSH; tailnet :22 is Tailscale SSH, which ignores publickey).
 #
-# Put the public key(s) your operators and tooling (e.g. an SSH-based MCP server)
-# use to reach the box here. This list is STAGING'S ONLY: production's key list lives in
-# the private companion repo (zimmer/admin_authorized_keys.pub) and is converged by its
-# own workflow. Nothing in THIS repo authorizes a key on production.
+# NO KEY IS SET HERE, AND NONE MAY BE. This file is committed and the repository is
+# public, while `deploy-staging.yml` runs `cp staging.tfvars.example staging.tfvars`
+# VERBATIM -- so a key committed here is a key authorized for root on the droplet of
+# whoever runs that workflow, which for a fork means a stranger's key on their own box.
+# The deploy passes the list in as TF_VAR_admin_ssh_pubkeys from the ADMIN_SSH_PUBKEYS
+# Actions variable instead (a JSON list of strings), so a fork that never sets it falls
+# through to the module default of [].
 #
-# That split is deliberate, and the two lists are NOT meant to match -- see below.
+# Un-commenting the line below does NOT "also" authorize the CI keys -- it REPLACES them.
+# A `-var-file` value beats TF_VAR_* in Terraform's precedence order, so an assignment in
+# this file silently wins over whatever the workflow exports. Set it locally only:
 #
-# FORKING / SELF-HOSTING: replace the keys below with YOUR OWN. A public key is not a
-# secret, but leaving someone else's here authorizes them for root on your droplet, so
-# this MUST be set per environment (never as a module default).
+#   admin_ssh_pubkeys = ["ssh-ed25519 AAAA...replace-with-your-own-key you@example.com"]
 #
-# `zimmer-production-operator` is the identity ZIMMER'S OWN AGENT SESSIONS hold: the
-# private half rides Kamal's env.secret as ZIMMER_OPERATOR_SSH_KEY, and
-# OperatorSshKeyProvisioner writes it to ~/.ssh/zimmer_operator_ed25519 in the container.
-# Authorizing it here is what makes an ssh-* MCP server in a session able to reach this box.
+# for a local `terraform apply -var-file=staging.tfvars` (your copy is gitignored). Put
+# YOUR key in it, never someone else's, and do not commit it back into this example --
+# test/infra/staging_tfvars_example_test.rb fails the build if key material or an active
+# assignment reappears here.
 #
-# It takes effect on the NEXT droplet creation only -- cloud-init runs once, and the
-# droplet's lifecycle block ignores user_data changes -- so a live box also needs the key
-# appended to /root/.ssh/authorized_keys by hand. See docs/operate/ssh-access.md.
-# It is deliberately a SEPARATE keypair from the Kamal deploy key and from the
-# orchestrator's key, so it can be revoked on its own by deleting this one line.
+# AN EMPTY LIST IS A WORKING DROPLET, NOT A BRICK. The Kamal deploy key is its own
+# variable (TF_VAR_deploy_ssh_pubkey), so CI still deploys; humans on the tailnet still
+# reach the box over Tailscale SSH on :22, which authenticates by tailnet identity. What
+# an empty list costs is the publickey door on :2222 -- the ssh-* MCP servers in an agent
+# session cannot attach, and there is no OpenSSH break-glass login for when the tailnet
+# identity path is itself the thing that is broken.
 #
-# THE OPERATOR KEY IS AUTHORIZED HERE (STAGING) AND DELIBERATELY *NOT* ON PRODUCTION.
-# The sessions that hold it RUN ON production, and this key is root. A session with root on
-# its own host can stop the containers or wipe the catalog out from under the service that
-# is executing it -- self-inflicted, and unrecoverable from inside. Root on production is
-# reserved for humans (break-glass) and for the orchestrator that reaches in from a
-# SEPARATE host, which survives to repair what it breaks. Staging is disposable, so the
-# same key here costs a rebuild at worst -- and reaching staging is the point.
+# WHAT THE VARIABLE HOLDS, for this repo: the `zimmer-production-operator` key that
+# Zimmer's own agent sessions carry (its private half rides Kamal's env.secret as
+# ZIMMER_OPERATOR_SSH_KEY, and OperatorSshKeyProvisioner writes it into the container),
+# the off-box orchestrator's key, and the maintainer's laptop key for break-glass. The
+# operator key is authorized on STAGING and deliberately NOT on production, because the
+# sessions holding it RUN ON production and this variable is root: a session with root on
+# its own host can stop the containers out from under the service executing it. Staging
+# is disposable, so the same key here costs a rebuild at worst -- and reaching staging is
+# the point. If you are "fixing" that drift: don't. See
+# docs/operate/ssh-access.md#who-is-authorized-where.
 #
-# If you are "fixing" a drift between this list and production's: don't. The ONE mismatch
-# that is a control is that the operator key above is here and NOT on production -- never
-# reconcile *that*. See docs/operate/ssh-access.md#who-is-authorized-where.
+# Production's list is not this variable at all: it lives in the private companion repo
+# (zimmer/admin_authorized_keys.pub) and is converged live by its own workflow. Nothing in
+# THIS repo authorizes a key on production.
 #
-# `root@local` is the maintainer's LAPTOP KEY -- a human's key, break-glass only. It is the
-# opposite case from the operator key: a person off-box, not a session on-box, so it is root
-# on production too (that is the recovery path of last resort). Authorizing it on staging as
-# well is not reconciling the control above -- it just gives the same human the same
-# independent OpenSSH-on-:2222 door into staging, for when the tailnet identity path (:22)
-# is the thing that is broken. A public key is not a secret; forks replace all three.
-admin_ssh_pubkeys = [
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEp3tk5RCh76zPddFcoyY01MazsyHnacqo0KrAczCY6 zimmer-production-operator",
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmRanTTxADIQWHp9PZqOAFQX2SVXibTqVXb0D3AtuiU agent-orchestrator-prod-hetzner",
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINtfKYBq3IWBflQJ8lXNhfgJAmS6RynvC2A1m0eFy3Zn root@local",
-]
+# Either way the list takes effect on the NEXT droplet creation only -- cloud-init runs
+# once, and the droplet's lifecycle block ignores user_data changes -- so a live box also
+# needs the key appended to /root/.ssh/authorized_keys by hand.
 
 # Custom-domain HTTPS over the tailnet: turns on the Caddy TLS terminator on :443,
 # fronting kamal-proxy. The cert and the `domain -> tailnet IP` A record are managed
