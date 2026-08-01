@@ -261,16 +261,24 @@ refresh token became current anyway and every session on the instance failed to 
 human intervened ([#239](https://github.com/tadasant/zimmer/issues/239)).
 
 It now walks the pool in priority order and takes the first candidate that is not capped and whose
-token Anthropic actually honours. The probe is `QuotaCheckService.token_rejected?`, **not**
+token Anthropic actually honours. The probe is `QuotaCheckService#check_with_token`, **not**
 `refresh_token!`: it reads the rate-limit headers off a one-token request, so it can be run over
-candidates that may be skipped without spending a single-use refresh token. `ClaudeLoginDriver#capture!`
-applies the same probe, because a login that produces a complete-looking token pair is another way an
-unusable account enters the pool.
+candidates that may be skipped without spending a single-use refresh token. A candidate Anthropic
+*refuses* is refreshed once and probed again — a stale access token is the one refusal a refresh can
+fix — so the single-use token is spent only where it might help, never on a candidate whose
+credentials already work. `ClaudeLoginDriver#capture!` applies the same probe through
+`QuotaCheckService.token_rejected?`, because a login that produces a complete-looking token pair is
+another way an unusable account enters the pool.
 
 The probe answers three ways, and only one of them condemns an account: Anthropic honoured the token,
 Anthropic answered and refused it, or **the probe never got an answer** (timeout, DNS failure, 5xx).
 The last is evidence about the network, not the credential, so it does not skip the account — reading
 an Anthropic outage as "every credential is dead" would park every session at once.
+
+A successful probe is a live quota reading, so it is recorded as a snapshot rather than reduced to a
+boolean. That is what lets bootstrap refuse an account whose weekly window is spent but which nothing
+has ever probed — the case stored evidence cannot cover — and it leaves rotation with evidence about
+an account that has never been current.
 
 ### What `/quotas` reports for the pool
 

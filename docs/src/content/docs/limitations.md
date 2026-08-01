@@ -549,9 +549,12 @@ that nobody has probed can still hand out an account whose week ran out an hour 
 pick-time check only fires on evidence that already exists.
 
 The floor is `QuotaResetCheckerJob`'s 15-minute sweep, which probes `quota_exceeded` accounts — but
-not `active` ones. In practice the gap closes the first time a session rotates or an operator loads
-the page. Making it deterministic would mean probing every active account on a schedule, which costs
-a request per account per sweep for a condition that is usually visible sooner anyway.
+not `active` ones. The two paths that actually hand an account to a session close the gap for
+themselves: bootstrap probes each candidate live before promoting it, and rotation snapshots the
+account it activates. What is left is the window in between, where `/quotas` can show an account as
+healthy on evidence that has gone stale. Making that deterministic would mean probing every active
+account on a schedule, which costs a request per account per sweep for a condition the paths that
+matter already check at the moment they matter.
 
 ### The quotas page can hold row-lock transactions across a token endpoint call
 

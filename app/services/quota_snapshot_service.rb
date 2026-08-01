@@ -6,13 +6,13 @@
 # ClaudeAccountQuotaSnapshot (database record) so quota data persists
 # across page loads and account rotations.
 #
-# It is also where an account's status learns about its own weekly window.
-# `mark_quota_exceeded!` only ever fired on the account that was CURRENT when a
-# session hit a wall, so an account that filled its 7-day window while sitting
-# idle in the pool stayed `active`, stayed in `ClaudeAccount.available`, and was
-# the next thing rotation reached for — activate, fail on the first request,
-# rotate again (#248). A reading that says the week is spent marks the account
-# here, as it lands, whichever path took it.
+# It is also where an account's status learns about its own weekly window. The
+# other caller of `mark_quota_exceeded!` acts on the account that is CURRENT when
+# a session hits a wall, which leaves an account that filled its 7-day window
+# while sitting idle in the pool `active`, in `ClaudeAccount.available`, and the
+# next thing rotation reaches for — activate, fail on the first request, rotate
+# again (#248). A reading that says the week is spent marks the account here, as
+# it lands, whichever path took it.
 class QuotaSnapshotService
   # Save a QuotaCheckService::Result as a snapshot for the given account, and
   # mark the account quota_exceeded when the reading says its weekly allowance
