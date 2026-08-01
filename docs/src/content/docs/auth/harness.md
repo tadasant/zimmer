@@ -125,7 +125,8 @@ it:
 - **one atomic write** — temp file + `rename`, mode `0600`, so a concurrent reader never sees a
   half-written store.
 - **read-merge, never overwrite** — the account writer layers its stored blob over what is on disk
-  and leaves `mcpOAuth` exactly as found.
+  and leaves `mcpOAuth` exactly as found. It also stamps the owner marker *inside* the lock, so the
+  marker can never end up naming an account whose tokens two interleaved writes replaced.
 
 That last rule runs in both directions. `mcpOAuth` on disk always wins, including when it is absent:
 `sync_tokens_from_filesystem!` captures the *whole* file into `oauth_config`, so an account's DB copy
