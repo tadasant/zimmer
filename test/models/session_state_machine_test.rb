@@ -782,7 +782,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     session.pause!
 
-    warning = session.logs.where(level: "warning").find { |log| log.content.include?("No pull request URL was captured") }
+    warning = session.logs.where(level: "warning").find { |log| log.content.include?(TranscriptHooks::GithubPrUrlHook::MISSING_PR_URL_WARNING_MARKER) }
     assert_not_nil warning, "expected pause to warn about the missing PR URL"
   end
 
@@ -800,7 +800,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     session.pause!
 
-    assert_empty session.logs.where(level: "warning").select { |log| log.content.include?("No pull request URL was captured") }
+    assert_empty session.logs.where(level: "warning").select { |log| log.content.include?(TranscriptHooks::GithubPrUrlHook::MISSING_PR_URL_WARNING_MARKER) }
   end
 
   # === Tests for execute_pending_sleep (pause callback) ===

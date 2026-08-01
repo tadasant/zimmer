@@ -670,7 +670,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
 
     log = @session.logs.order(:created_at).last
     assert_equal "warning", log.level
-    assert_match(/No pull request URL was captured/, log.content)
+    assert_match(/no PR URL has been captured/, log.content)
 
     assert_no_difference -> { @session.logs.count } do
       TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session.reload)
