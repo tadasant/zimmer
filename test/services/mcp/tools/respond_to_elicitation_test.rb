@@ -87,6 +87,26 @@ class Mcp::Tools::RespondToElicitationTest < ActiveSupport::TestCase
     assert_raises(Mcp::ToolError) { @tool.call("action_type" => "accept") }
   end
 
+  # Parity with PATCH /api/v1/elicitations/:id/respond (#82): the tool accepted
+  # only the request_id, so an agent holding the id it read off the web UI could
+  # not act on the elicitation.
+  test "resolves an elicitation by its database primary key" do
+    elicitation = create_elicitation
+
+    result = @tool.call("request_id" => elicitation.id.to_s, "action_type" => "accept")
+
+    assert_equal "accept", elicitation.reload.status
+    assert_includes result, elicitation.request_id
+  end
+
+  test "raises when the identifier is neither a request_id nor a primary key" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("request_id" => "no-such-elicitation", "action_type" => "accept")
+    end
+
+    assert_match(/Elicitation not found/, error.message)
+  end
+
   private
 
   def create_elicitation

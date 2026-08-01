@@ -1,13 +1,39 @@
 require "test_helper"
 
 class Api::SecretsControllerTest < ActionDispatch::IntegrationTest
-  test "should get keys" do
+  setup do
+    @valid_api_key = "test_api_key_12345"
+    @headers = { "X-API-Key" => @valid_api_key }
+    ENV["API_KEYS"] = @valid_api_key
+  end
+
+  teardown do
+    ENV.delete("API_KEYS")
+  end
+
+  test "should return 401 without an API key" do
     get api_secrets_keys_path
+
+    assert_response :unauthorized
+    json_response = JSON.parse(response.body)
+    assert_equal "Unauthorized", json_response["error"]
+    refute json_response.key?("secrets"), "Unauthenticated response must not leak secret names"
+  end
+
+  test "should return 401 with an invalid API key" do
+    get api_secrets_keys_path, headers: { "X-API-Key" => "wrong_key" }
+
+    assert_response :unauthorized
+    refute JSON.parse(response.body).key?("secrets")
+  end
+
+  test "should get keys" do
+    get api_secrets_keys_path, headers: @headers
     assert_response :success
   end
 
   test "should return JSON with secrets array" do
-    get api_secrets_keys_path
+    get api_secrets_keys_path, headers: @headers
     assert_response :success
 
     json_response = JSON.parse(response.body)
@@ -16,13 +42,13 @@ class Api::SecretsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should return correct Content-Type" do
-    get api_secrets_keys_path
+    get api_secrets_keys_path, headers: @headers
     assert_response :success
     assert_equal "application/json; charset=utf-8", response.content_type
   end
 
   test "should return secrets with metadata from credentials" do
-    get api_secrets_keys_path
+    get api_secrets_keys_path, headers: @headers
     assert_response :success
 
     json_response = JSON.parse(response.body)

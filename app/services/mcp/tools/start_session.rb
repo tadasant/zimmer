@@ -12,7 +12,7 @@ module Mcp
       tool_name "start_session"
 
       AGENT_RUNTIME_DESC = <<~TEXT.strip
-        Per-spawn agent runtime override. Valid values are "claude_code" (Claude Code) and "codex" (OpenAI Codex CLI). When omitted, the session adopts the agent_root's default_runtime, falling back to "claude_code". Call get_configs to see each agent root's default_runtime. Pair with `config.model` to pick a model valid for the chosen runtime (e.g. "opus"/"sonnet"/"haiku" for claude_code, "gpt-5.5"/"gpt-5.4" for codex).
+        Per-spawn agent runtime override. Valid values are "claude_code" (Claude Code) and "codex" (OpenAI Codex CLI). When omitted, the session adopts the agent_root's default_runtime, then the global session default configured on the Settings page, then "claude_code". Call get_configs to see each agent root's default_runtime. Pair with `config.model` to pick a model valid for the chosen runtime (e.g. "opus"/"sonnet"/"haiku" for claude_code, "gpt-5.5"/"gpt-5.4" for codex).
       TEXT
 
       PROMPT_DESC = "Initial prompt for the agent. If provided, the agent job is automatically queued. Omit for a clone-only session."
@@ -36,7 +36,7 @@ module Mcp
       PLUGINS_DESC = 'List of plugin names to enable for this session. Plugins extend agent capabilities with additional integrations. Example: ["my-plugin"]'
 
       CONFIG_DESC = <<~TEXT.strip
-        Additional configuration as a JSON object. Use `config.model` to choose the agent model for this session (e.g. {"model": "gpt-5.4"} for a codex runtime, or {"model": "sonnet"} for claude_code). The model must be valid for the resolved agent_runtime; call get_configs to see each agent root's default_model. When omitted, the session uses the agent root's default_model (or the runtime's default model). An explicit config.model always takes precedence over the agent root's default_model.
+        Additional configuration as a JSON object. Use `config.model` to choose the agent model for this session (e.g. {"model": "gpt-5.4"} for a codex runtime, or {"model": "sonnet"} for claude_code). The model must be valid for the resolved agent_runtime; call get_configs to see each agent root's default_model. When omitted, the session uses the agent root's default_model, then the global session default configured on the Settings page, then the runtime's catalog default; a model that is not valid for the resolved runtime is replaced by that fallback. An explicit config.model always takes precedence.
       TEXT
 
       CUSTOM_METADATA_DESC = "User-defined metadata as a JSON object. Useful for tracking tickets, projects, etc."
@@ -63,7 +63,7 @@ module Mcp
         - **MCP servers:** Start with `default_mcp_servers`. Drop servers the task doesn't need (least-privilege). Add extras when the task requires tools beyond the defaults. When this connection is restricted to specific agent roots, you cannot add servers beyond the defaults.
         - **Skills:** Start with `default_skills`. You can freely add skills beyond the defaults. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
 
-        **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku` for claude_code, `gpt-5.5`/`gpt-5.4` for codex). Both are optional: when omitted, the session inherits the agent root's `default_runtime` and `default_model`. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
+        **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku` for claude_code, `gpt-5.5`/`gpt-5.4` for codex). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
 
         **Use cases:**
         - Start a new agent task on a repository
@@ -196,7 +196,10 @@ module Mcp
       end
 
       # The model is always explicit in config so the spawn never depends on a
-      # runtime-side default.
+      # runtime-side default. In practice apply_agent_root_defaults! has already
+      # filled it in: this tool has no git_root param, so every spawn it can
+      # complete names an agent_root (Session validates git_root presence, and
+      # the root is the only thing that supplies it).
       def ensure_model!(session)
         return if session.config&.dig("model").present?
 

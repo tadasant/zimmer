@@ -86,6 +86,6 @@ class Api::V1::HealthController < Api::BaseController
   end
 
   def render_rate_limited
-    render json: { error: "Rate limited", message: "Please wait #{CLEANUP_COOLDOWN.to_i} seconds between actions", retry_after: CLEANUP_COOLDOWN.to_i }, status: :too_many_requests
+    render_api_error("Rate limited", "Please wait #{CLEANUP_COOLDOWN.to_i} seconds between actions", status: :too_many_requests, retry_after: CLEANUP_COOLDOWN.to_i)
   end
 end

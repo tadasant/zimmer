@@ -420,13 +420,6 @@ elicitation for any session id, or enumerate and poll any elicitation by `reques
 
 Tracked in [#45](https://github.com/tadasant/zimmer/issues/45).
 
-### `GET /api/secrets/keys` is unauthenticated
-
-`Api::SecretsController` inherits `ApplicationController`, not `Api::BaseController`. It leaks secret
-*names and descriptions* (not values).
-
-Tracked in [#45](https://github.com/tadasant/zimmer/issues/45).
-
 ### API keys have no scope, identity, or audit trail
 
 Opaque strings from `ENV["API_KEYS"]`, memoized per request. Any valid key can do anything to anything.
@@ -1175,28 +1168,6 @@ noted rather than fixed at the source.
 
 ## API
 
-### `refresh_all` always reports `refreshed: 0`
-
-`refreshed_count` is initialized to 0 and never incremented. The old docs' example showed
-`"refreshed": 5`.
-
-Tracked in [#80](https://github.com/tadasant/zimmer/issues/80).
-
-### The Settings-page default runtime is ignored without an `agent_root`
-
-`Api::V1::SessionsController#create` only reads `AppSetting.default_runtime` *through* `AgentRootsConfig`.
-With no `agent_root`, it returns early and you get the DB column default, `claude_code`. Same for the
-model.
-
-Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
-
-### Three different error shapes
-
-`{error, message: String}`, `{error, messages: Array}`, and `{error, message: Array}` (singular key,
-array value, from the `RecordInvalid` rescue). Parse defensively.
-
-Tracked in [#82](https://github.com/tadasant/zimmer/issues/82).
-
 ### The only rate limit is global
 
 `Api::V1::HealthController`'s `CLEANUP_COOLDOWN = 30.seconds` is keyed in `Rails.cache` as
@@ -1213,12 +1184,6 @@ change.
 
 Tracked in [#34](https://github.com/tadasant/zimmer/issues/34) (removing the page) and
 [#95](https://github.com/tadasant/zimmer/issues/95) (nothing tests that the two surfaces agree).
-
-### `agent_root` is read outside strong params
-
-On session create, from raw `params`.
-
-Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
 
 ---
 

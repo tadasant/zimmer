@@ -15,7 +15,7 @@ module Mcp
         **Context:** When an MCP server needs human approval (e.g. a write-class action), it creates an *elicitation* and blocks, polling Zimmer until someone responds. Normally a human clicks "accept" / "decline" in the Zimmer web UI. This tool exposes that same resolution over the API, so an agent or automated test can unblock the flow without a human in the loop.
 
         **What it does:**
-        - Looks up the elicitation by its public `request_id` (the `com.pulsemcp/request-id` identifier, not the DB primary key).
+        - Looks up the elicitation by its public `request_id` (the `com.pulsemcp/request-id` identifier), or by its numeric database primary key — whichever identifier you hold.
         - Records an `accept` (optionally with a structured `content` payload) or `decline`.
         - Returns the elicitation's resulting poll-response so you can confirm the outcome.
 
@@ -37,7 +37,7 @@ module Mcp
         - Automating approval of a known, expected elicitation as part of a larger orchestrated task.
 
         **Errors:**
-        - Unknown `request_id` → 404 (elicitation not found).
+        - An identifier matching neither a `request_id` nor a primary key → 404 (elicitation not found).
         - Elicitation already resolved / not pending, or an invalid `action_type` → 422.
       DESC
 
@@ -46,7 +46,7 @@ module Mcp
         properties: {
           request_id: {
             type: "string",
-            description: "The elicitation `request_id` — the public identifier the MCP server assigned when it created the elicitation (the `com.pulsemcp/request-id` value, surfaced in the poll URL). This is NOT the database primary key."
+            description: "The elicitation's `request_id` — the public identifier the MCP server assigned when it created the elicitation (the `com.pulsemcp/request-id` value, surfaced in the poll URL). The numeric database primary key, which is what the web UI's own respond route uses, is also accepted, so whichever identifier you already hold works."
           },
           action_type: {
             type: "string",
@@ -65,8 +65,11 @@ module Mcp
         request_id = require_arg(args, :request_id).to_s
         action_type = require_arg(args, :action_type).to_s
 
+        # Matches PATCH /api/v1/elicitations/:id/respond: the request_id first,
+        # then the numeric primary key the web UI's route speaks.
         elicitation = Elicitation.find_by(request_id: request_id)
-        raise ToolError, "Elicitation not found for request_id: #{request_id}" unless elicitation
+        elicitation ||= Elicitation.find_by(id: request_id) if request_id.match?(/\A\d+\z/)
+        raise ToolError, "Elicitation not found for: #{request_id}" unless elicitation
 
         unless elicitation.pending?
           raise ToolError, "Elicitation has already been resolved (status: #{elicitation.status})"
@@ -83,7 +86,10 @@ module Mcp
         lines = [
           "## Elicitation #{action_type == 'accept' ? 'Accepted' : 'Declined'}",
           "",
-          "- **Request ID:** #{request_id}",
+          # The elicitation's own request_id, not the argument — the argument may
+          # be the primary key, and echoing that back under this label would name
+          # the wrong identifier.
+          "- **Request ID:** #{elicitation.request_id}",
           "- **Action:** #{poll_response[:action]}"
         ]
         lines << "- **Content:** #{poll_response[:content].to_json}" unless poll_response[:content].nil?

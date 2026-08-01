@@ -81,7 +81,7 @@ class Api::V1::TriggersController < Api::BaseController
     if @trigger.save
       render json: { trigger: trigger_json(@trigger) }, status: :created
     else
-      render json: { error: "Validation failed", messages: @trigger.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @trigger.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -91,7 +91,7 @@ class Api::V1::TriggersController < Api::BaseController
     if @trigger.update(trigger_params)
       render json: { trigger: trigger_json(@trigger) }
     else
-      render json: { error: "Validation failed", messages: @trigger.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @trigger.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -113,7 +113,10 @@ class Api::V1::TriggersController < Api::BaseController
   # List available Slack channels for trigger configuration.
   def channels
     unless SlackService.configured?
-      render json: { error: "Slack is not configured" }, status: :service_unavailable
+      # These two keep their historical `error` label (it is the human-readable
+      # sentence, not a code) and gain the `message`/`messages` pair the rest of
+      # the surface carries.
+      render_api_error("Slack is not configured", "Slack is not configured", status: :service_unavailable)
       return
     end
 
@@ -129,7 +132,7 @@ class Api::V1::TriggersController < Api::BaseController
       end
     }
   rescue SlackService::SlackError => e
-    render json: { error: e.message }, status: :service_unavailable
+    render_api_error(e.message, e.message, status: :service_unavailable)
   end
 
   private

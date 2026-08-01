@@ -5,6 +5,8 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::EnqueuedMessagesController < Api::BaseController
+  include ApiSessionSerialization
+
   before_action :set_session
   before_action :set_enqueued_message, only: [ :show, :update, :destroy, :reorder, :interrupt ]
 
@@ -44,7 +46,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
     content = params[:content].to_s.strip
 
     if content.blank?
-      render json: { error: "Missing parameter", message: "content is required" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "content is required", status: :unprocessable_entity)
       return
     end
 
@@ -62,7 +64,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
       @session.logs.create!(content: "Enqueued message added at position #{@enqueued_message.position}", level: "info")
       render json: { enqueued_message: enqueued_message_json(@enqueued_message) }, status: :created
     else
-      render json: { error: "Validation failed", messages: @enqueued_message.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @enqueued_message.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -74,7 +76,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
     attrs[:goal] = params[:goal].to_s.strip.presence if params.key?(:goal)
 
     if attrs.key?(:content) && attrs[:content].blank?
-      render json: { error: "Validation failed", messages: [ "Content can't be blank" ] }, status: :unprocessable_entity
+      render_api_error("Validation failed", [ "Content can't be blank" ], status: :unprocessable_entity)
       return
     end
 
@@ -82,7 +84,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
       @session.logs.create!(content: "Enqueued message at position #{@enqueued_message.position} updated", level: "info")
       render json: { enqueued_message: enqueued_message_json(@enqueued_message) }
     else
-      render json: { error: "Validation failed", messages: @enqueued_message.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @enqueued_message.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -111,7 +113,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
     new_position = params[:position].to_i
 
     if new_position < 1
-      render json: { error: "Invalid position", message: "Position must be >= 1" }, status: :unprocessable_entity
+      render_api_error("Invalid position", "Position must be >= 1", status: :unprocessable_entity)
       return
     end
 
@@ -143,7 +145,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
     else
       # Sessions::Result error codes are already valid Rails status symbols
       # (:not_found, :conflict, :unprocessable_entity, :internal_server_error).
-      render json: { error: "Cannot interrupt", message: result.error }, status: (result.error_code || :internal_server_error)
+      render_api_error("Cannot interrupt", result.error, status: result.error_code || :internal_server_error)
     end
   end
 
@@ -167,19 +169,6 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
       status: message.status,
       created_at: message.created_at.iso8601,
       updated_at: message.updated_at.iso8601
-    }
-  end
-
-  def session_json(session)
-    {
-      id: session.id,
-      slug: session.slug,
-      title: session.title,
-      status: session.status,
-      agent_runtime: session.agent_runtime,
-      prompt: session.prompt,
-      created_at: session.created_at.iso8601,
-      updated_at: session.updated_at.iso8601
     }
   end
 end
