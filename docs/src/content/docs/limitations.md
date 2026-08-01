@@ -434,23 +434,6 @@ Rotation requires a restart. No record of which key did what.
 
 Tracked in [#46](https://github.com/tadasant/zimmer/issues/46).
 
-### The MCP OAuth loopback check is a substring match
-
-```ruby
-redirect_uri.include?("localhost") || redirect_uri.include?("127.0.0.1")
-```
-
-`https://localhost.evil.com` matches.
-
-Tracked in [#47](https://github.com/tadasant/zimmer/issues/47).
-
-### No timeout on the OAuth token exchange
-
-`McpOauthService#exchange_code_for_tokens` uses `Net::HTTP.post_form` with no timeout, unlike its
-siblings which set 30 seconds.
-
-Tracked in [#48](https://github.com/tadasant/zimmer/issues/48).
-
 ### Agents run unsandboxed on the app host
 
 `lib/execution/providers/remote_sandbox.rb:6` — the remote sandbox provider is a stub. Every method
@@ -754,6 +737,11 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 key format, including string-munging `": "` → `":"` to fake compact JSON. If Claude Code changes it,
 every stored credential becomes unfindable — and the symptom is "the agent says it needs authorization,"
 not an error.
+
+A canary test in `test/models/mcp_oauth_credential_test.rb` pins the literal key for two fixed server
+configs, so a change to Zimmer's side of the algorithm fails loudly and names the hashed preimage.
+It cannot detect the other direction: if Claude Code changes *its* algorithm, the canary stays green
+and lookups start missing.
 
 Tracked in [#62](https://github.com/tadasant/zimmer/issues/62).
 

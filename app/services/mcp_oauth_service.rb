@@ -258,7 +258,16 @@ class McpOauthService
     params[:resource] = pending_flow.resource if pending_flow.resource.present?
 
     uri = URI(pending_flow.token_endpoint)
-    response = Net::HTTP.post_form(uri, params)
+    request = Net::HTTP::Post.new(uri.request_uri)
+    request.set_form_data(params)
+
+    response = Net::HTTP.start(
+      uri.host,
+      uri.port,
+      use_ssl: uri.scheme == "https",
+      open_timeout: REQUEST_TIMEOUT,
+      read_timeout: REQUEST_TIMEOUT
+    ) { |http| http.request(request) }
 
     if response.code == "200"
       parse_token_response(response)
