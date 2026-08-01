@@ -43,9 +43,13 @@ class ElicitationEndpointHealthCheckJob < ApplicationJob
 
     AlertService.raise_alert(
       "MCP approval gate unreachable",
-      details: "MCP servers cannot reach #{stored['url']}, so every gated reveal fails closed and returns a redacted value with no error. #{stored['detail']}",
+      details: "MCP servers cannot reach #{stored['url']}, so every gated reveal fails closed and returns a redacted value with no error.",
       source: "ElicitationEndpointHealthCheckJob",
-      dedup_key: ALERT_DEDUP_KEY
+      dedup_key: ALERT_DEDUP_KEY,
+      # The probe's detail is the raw failure it hit ("Errno::ECONNREFUSED:
+      # Failed to open TCP connection to ..."), which is the diagnostic — carry
+      # it as the snippet rather than trailing it off the end of the prose.
+      error: stored["detail"]
     )
   end
 end

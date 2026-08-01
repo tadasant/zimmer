@@ -273,21 +273,23 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     # touch the condition's seen-set.
     BoundedSubprocess.stubs(:run).returns([ "", "", nil ])
 
-    details = []
+    # The gh failure rides on error: (rendered into the alert's log snippet)
+    # rather than being hand-copied into details.
+    snippets = []
     AlertService.stubs(:raise_alert).with do |*args, **kwargs|
       opts = kwargs.empty? ? (args.last.is_a?(Hash) ? args.last : {}) : kwargs
-      details << opts[:details].to_s
+      snippets << AlertSnippet.build(opts[:error]).to_s
       true
     end
 
     before = @label_condition.github_seen_items
     assert_nothing_raised { GithubTriggerPollerJob.perform_now }
 
-    assert details.any?, "expected the nil gh status to raise a per-condition alert"
-    assert details.all? { |d| d.include?("gh api search/issues failed") },
-           "alert should describe the gh failure, got: #{details.inspect}"
-    assert details.none? { |d| d.include?("undefined method") },
-           "a nil status must not escape as a NoMethodError, got: #{details.inspect}"
+    assert snippets.any?, "expected the nil gh status to raise a per-condition alert"
+    assert snippets.all? { |s| s.include?("gh api search/issues failed") },
+           "alert should describe the gh failure, got: #{snippets.inspect}"
+    assert snippets.none? { |s| s.include?("undefined method") },
+           "a nil status must not escape as a NoMethodError, got: #{snippets.inspect}"
     assert_equal before, @label_condition.reload.github_seen_items
   end
 

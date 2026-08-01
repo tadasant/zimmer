@@ -218,3 +218,58 @@ Tracked in [#86](https://github.com/tadasant/zimmer/issues/86).
 `AlertService` has a `DEDUP_WINDOW = 1.hour` — a genuinely new instance of the same alert inside an
 hour is swallowed. `AlertBatcher` truncates aggregated bodies at `MAX_AGGREGATED_DETAILS_CHARS =
 2700`.
+
+### The log snippet
+
+Pass the rescued exception as `error:` and the alert carries an excerpt of the real failure into
+Slack, rendered as a fenced code block:
+
+```ruby
+AlertService.raise_alert(
+  "Slack trigger poller error",
+  details: "Condition 42 on trigger 'anomaly-review' (ID: 7) failed.",
+  source: "SlackTriggerPollerJob",
+  dedup_key: "slack_trigger_condition_42",
+  error: e
+)
+```
+
+`AlertSnippet` builds it. `details:` is for the prose a human needs on top of the failure — not for
+a hand-copied `e.message`, which carries strictly less than the backtrace sitting right there at the
+rescue site. A raw log or stderr blob works too (`error: stored["detail"]`).
+
+What it does with the exception:
+
+- **Keeps the frames worth reading.** The first `APP_FRAME_LIMIT` (8) app-owned frames, plus the top
+  `TOP_FRAME_LIMIT` (2) frames — usually vendored, and where the raise actually happened. Everything
+  skipped is marked (`… 6 frames elided …`) so nothing looks complete when it isn't. Rails root is
+  stripped from paths.
+- **Follows the cause chain**, up to `CAUSE_LIMIT` (2) — an adapter error wrapping a connection
+  error is frequently the whole story.
+- **Bounds the result** at `MAX_CHARS` (1200), well inside Slack's 3000-character section limit. A
+  blob that overruns keeps its head *and* its tail, with the elided character count between them —
+  the end of a log is often where the failure is.
+- **Redacts secret shapes** — Slack (bot and app-level), GitHub, Anthropic, OpenAI and Google keys,
+  AWS key ids, JWTs, PEM private-key blocks, `Authorization` headers, URL passwords, and
+  `token=`/`secret=` assignments — before anything is posted.
+- **Never raises.** Raw stderr can end mid-multibyte-character (`BoundedSubprocess` kills the process
+  group on deadline), and `raise_alert` wraps everything in a blanket rescue — so a snippet that
+  raised would not degrade the alert, it would delete it. Input is scrubbed to valid UTF-8, and a
+  render that fails anyway degrades to `(log snippet unavailable: <class>)`.
+
+Inside an `AlertBatcher` aggregate the occurrence list wins over the snippets. Each occurrence gets
+`MAX_AGGREGATED_DETAILS_CHARS / N` minus a reserve for its own prose, capped at `MAX_BATCHED_CHARS`
+(500); past roughly fifteen occurrences the share is worth less than the line it would displace and
+snippets drop out entirely. Naming *which* triggers were affected is the reason the batcher exists,
+so a snippet must never push the tail of that list off the end of a truncated message.
+
+The snippet reaches the `text:` field as well as the blocks, because block-blind consumers (push
+notifications, the `slack-workspace` MCP server) only ever see `text:`. When both must be trimmed,
+the prose is trimmed and the snippet is kept whole.
+
+:::caution[Snippets must never reach a dedup key]
+Snippet content varies per occurrence — line numbers, timestamps, object addresses. The dedup key is
+derived from title + source only (and, for an aggregate, from the set of per-event dedup keys). If
+snippet text leaked into either, the hourly throttle would stop throttling and one wedged poller
+would fill `#eng-alerts` once per tick.
+:::

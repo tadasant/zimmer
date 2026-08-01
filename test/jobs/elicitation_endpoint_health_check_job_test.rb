@@ -36,7 +36,8 @@ class ElicitationEndpointHealthCheckJobTest < ActiveSupport::TestCase
     AlertService.expects(:raise_alert).with do |title, opts|
       title == "MCP approval gate unreachable" &&
         opts[:dedup_key] == ElicitationEndpointHealthCheckJob::ALERT_DEDUP_KEY &&
-        opts[:details].include?("SocketError: no such host")
+        # The probe's raw failure is carried as the log snippet, not as prose.
+        opts[:error].include?("SocketError: no such host")
     end
 
     ElicitationEndpointHealthCheckJob.new.perform
