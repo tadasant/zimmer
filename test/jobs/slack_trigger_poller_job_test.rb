@@ -1675,6 +1675,34 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_difference("Session.count", 1) do
       SlackTriggerPollerJob.new.send(:process_condition, condition)
     end
+
+    # Assert WHICH one fired — the inverted bug would also spawn exactly one.
+    assert_includes Session.order(:id).last.prompt, "any update?"
+    assert_not_includes Session.order(:id).last.prompt, "look again"
+  end
+
+  test "a mention in a participated thread is still caught by a bot_mention condition" do
+    stub_passive_listening(event_type: "passive_listen_thread")
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.update!(last_message_ts: passive_ts(3.hours))
+
+    parent_ts = passive_ts(5.hours)
+    mention_ts = passive_ts(2.minutes)
+
+    SlackService.stubs(:list_dm_channels).returns([])
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(condition.channel_id, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, reply_count: 2, latest_reply: mention_ts, user: "U222", thread_ts: nil, bot_id: nil)
+    ])
+    SlackService.stubs(:get_thread_replies).with(condition.channel_id, parent_ts, oldest: nil).returns([
+      OpenStruct.new(ts: mention_ts, text: "<@U_BOT_123> can you look again?", user: "U222", bot_id: nil, thread_ts: parent_ts)
+    ])
+
+    # The passive path declining it is only safe because this path still takes it.
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    assert_includes Session.order(:id).last.prompt, "look again"
   end
 
   test "channel condition ignores a top-level message that @mentions Zimmer" do
@@ -1692,6 +1720,8 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_difference("Session.count", 1) do
       SlackTriggerPollerJob.new.send(:process_condition, condition)
     end
+
+    assert_includes Session.order(:id).last.prompt, "unrelated chatter"
   end
 
   test "the passive exclusion and the bot_mention filter agree on what a mention is" do
@@ -1715,6 +1745,16 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
 
     assert_not job.send(:mentions_bot?, textless, "U_BOT_123")
     assert job.send(:passive_candidate?, condition, textless, "U_BOT_123")
+  end
+
+  # Without the guard this degrades to matching the literal "<@>".
+  test "an unknown bot id never makes a message look like a mention" do
+    job = SlackTriggerPollerJob.new
+    condition = stub_passive_listening(event_type: "passive_listen_thread")
+    odd = passive_message(passive_ts(1.minute), text: "who is <@> anyway")
+
+    assert_not job.send(:mentions_bot?, odd, nil)
+    assert job.send(:passive_candidate?, condition, odd, nil)
   end
 
   # ── The deprecated combined type ────────────────────────────────────────────

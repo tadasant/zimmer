@@ -227,6 +227,8 @@ class SlackTriggerPollerJob < ApplicationJob
   # notions would double-fire whatever fell between them, which is the exact bug the
   # exclusion exists to close.
   def mentions_bot?(message, bot_id)
+    return false if bot_id.blank?
+
     message.text.to_s.include?("<@#{bot_id}>")
   end
 
@@ -617,15 +619,27 @@ class SlackTriggerPollerJob < ApplicationJob
   # top-level message there — so without this, one Slack message spawned two
   # concurrent sessions on identical text, one per matching trigger. Mentions belong
   # to bot_mention, which exists to catch being addressed directly; the passive
-  # types own everything else. A deployment running a passive condition with NO
-  # bot_mention condition therefore hears nothing when it is @mentioned — that is
-  # the intended division of labour, not an oversight.
+  # types own everything else.
+  #
+  # The exclusion is unconditional, and does NOT check that some bot_mention
+  # condition would in fact pick the message up — conditions are polled
+  # independently, and one cannot see the others. So a deployment hears nothing when
+  # @mentioned if it has no bot_mention condition, if its bot_mention condition is
+  # disabled or scoped to a different channel, or if its allow-lists diverge (they
+  # are per-condition). That is the intended division of labour rather than an
+  # oversight — being addressed directly is what bot_mention is for — but it is a
+  # silent drop, so it is logged.
   def passive_candidate?(condition, message, bot_id)
     return false if message.user.blank?
     return false if message.user == bot_id
     return false if message.bot_id.present?
     return false if PASSIVE_IGNORED_SUBTYPES.include?(message.subtype)
-    return false if mentions_bot?(message, bot_id)
+
+    if mentions_bot?(message, bot_id)
+      Rails.logger.info "[SlackTriggerPollerJob] Message #{message.ts} mentions the bot — left to " \
+                        "bot_mention rather than fired passively by condition #{condition.id}"
+      return false
+    end
 
     condition.user_allowed?(message.user)
   end
