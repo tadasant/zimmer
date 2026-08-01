@@ -34,12 +34,6 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up" => "rails/health#show", as: :rails_health_check
 
-  # Browsers fall back to requesting /favicon.ico at the root when no <link rel="icon">
-  # is honored. The app ships PNG icons under /icons but no favicon.ico, so without this
-  # the request raises ActionController::RoutingError (logged at ERROR). Return 204 No
-  # Content so favicon probes stay quiet.
-  get "/favicon.ico", to: ->(_env) { [ 204, {}, [] ] }
-
   # Zimmer's native MCP server (streamable HTTP). Scoped variants are selected
   # with query params: /mcp?tool_groups=self_session[&allowed_agent_roots=a,b].
   # The SDK's transport dispatches POST / GET / DELETE itself (GET and DELETE are

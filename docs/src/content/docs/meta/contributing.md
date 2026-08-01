@@ -147,15 +147,25 @@ docs/
 ├── astro.config.mjs          # site config + sidebar
 ├── package.json
 ├── public/
-│   ├── favicon.svg
+│   ├── favicon.ico           # + favicon-16x16/32x32.png, apple-touch-icon.png
 │   └── mcp.schema.json       # served at /mcp.schema.json
+├── scripts/
+│   ├── zimmer-icon-source.jpg    # the master artwork
+│   └── generate-icons.mjs        # `npm run icons` — see below
 └── src/
     ├── assets/               # logo
-    ├── components/Head.astro # the Mermaid client renderer
+    ├── components/Head.astro # the Mermaid client renderer + favicon links
     ├── content/docs/**/*.md  # every page
     ├── plugins/remark-mermaid.mjs
     └── styles/custom.css
 ```
+
+Every icon in the repo — the docs site's favicons, the Rails app's favicons, its
+PWA icons and its apple-touch icon — is derived from a single master render at
+`docs/scripts/zimmer-icon-source.jpg`. Nothing is hand-edited: change the master,
+run `npm run icons` from `docs/`, and commit what it writes into `docs/public/`
+and `public/icons/`. The generator lives here because `docs/` is the only npm
+workspace in the repo, and image resizing needs `sharp`.
 
 Adding a page means creating the markdown file **and** adding it to the `sidebar` array in
 `astro.config.mjs`. Starlight won't auto-discover it into the nav.
