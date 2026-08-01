@@ -30,6 +30,14 @@ class AlertBatcher
   # Appended when truncation lands inside an occurrence's fenced snippet.
   CLOSING_FENCE = "\n```"
 
+  # Room set aside per occurrence for its own prose and separators, before any
+  # of the shared body is spent on snippets.
+  PER_EVENT_PROSE_RESERVE = 160
+
+  # Below this a snippet is a fragment, not a diagnosis — better to spend the
+  # characters on listing the remaining occurrences.
+  MIN_USEFUL_SNIPPET_CHARS = 120
+
   class << self
     def open?
       !Thread.current[:alert_batch].nil?
@@ -108,7 +116,8 @@ class AlertBatcher
 
     def aggregate_details(events)
       header = "*#{events.size} occurrences in this run* — grouped to reduce alert spam.\n\n"
-      body = events.each_with_index.map { |e, i| "*—— #{i + 1} ——*\n#{event_body(e)}" }.join("\n\n")
+      budget = snippet_budget(events.size)
+      body = events.each_with_index.map { |e, i| "*—— #{i + 1} ——*\n#{event_body(e, budget)}" }.join("\n\n")
       out = header + body
       return out if out.length <= MAX_AGGREGATED_DETAILS_CHARS
 
@@ -122,15 +131,28 @@ class AlertBatcher
     # One occurrence's prose plus its own snippet. An aggregate collapses N
     # distinct failures, and they are only sometimes the same failure — a
     # per-occurrence snippet is what lets a reader tell "same error N times"
-    # from "N different errors that happened to share a title". Re-clamped
-    # tighter than a standalone alert's, since N of them share one body.
-    def event_body(event)
+    # from "N different errors that happened to share a title".
+    def event_body(event, snippet_budget)
       parts = []
       parts << event[:details] if event[:details].present?
-      if event[:log_snippet].present?
-        parts << AlertSnippet.fenced(AlertSnippet.clamp(event[:log_snippet], AlertSnippet::MAX_BATCHED_CHARS))
+      if snippet_budget.positive? && event[:log_snippet].present?
+        parts << AlertSnippet.fenced(AlertSnippet.clamp(event[:log_snippet], snippet_budget))
       end
       parts.join("\n")
+    end
+
+    # How much snippet each occurrence may carry.
+    #
+    # Naming which triggers were affected is the whole reason this class
+    # exists, so the occurrence list wins over the snippets: with the body
+    # shared N ways, a fixed per-event snippet would push later occurrences off
+    # the end of the truncated message. Past ~15 occurrences the share is worth
+    # less than the line it would displace, and snippets drop out entirely.
+    def snippet_budget(count)
+      share = (MAX_AGGREGATED_DETAILS_CHARS / count) - PER_EVENT_PROSE_RESERVE
+      return 0 if share < MIN_USEFUL_SNIPPET_CHARS
+
+      [ share, AlertSnippet::MAX_BATCHED_CHARS ].min
     end
 
     # Dedup the aggregated message by the set of per-event dedup keys, so that

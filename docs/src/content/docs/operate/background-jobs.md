@@ -235,8 +235,8 @@ AlertService.raise_alert(
 ```
 
 `AlertSnippet` builds it. `details:` is for the prose a human needs on top of the failure — not for
-a hand-copied `e.message`, which is what these alerts used to carry instead of the backtrace sitting
-right there at the rescue site. A raw log or stderr blob works too (`error: stored["detail"]`).
+a hand-copied `e.message`, which carries strictly less than the backtrace sitting right there at the
+rescue site. A raw log or stderr blob works too (`error: stored["detail"]`).
 
 What it does with the exception:
 
@@ -248,10 +248,20 @@ What it does with the exception:
   error is frequently the whole story.
 - **Bounds the result** at `MAX_CHARS` (1200), well inside Slack's 3000-character section limit. A
   blob that overruns keeps its head *and* its tail, with the elided character count between them —
-  the end of a log is often where the failure is. Snippets folded into an `AlertBatcher` aggregate
-  are re-clamped to `MAX_BATCHED_CHARS` (500), since N of them share one body.
-- **Redacts secret shapes** — Slack/GitHub/Anthropic tokens, AWS key ids, JWTs, `Authorization`
-  headers, URL passwords, `token=`/`secret=` assignments — before anything is posted.
+  the end of a log is often where the failure is.
+- **Redacts secret shapes** — Slack (bot and app-level), GitHub, Anthropic, OpenAI and Google keys,
+  AWS key ids, JWTs, PEM private-key blocks, `Authorization` headers, URL passwords, and
+  `token=`/`secret=` assignments — before anything is posted.
+- **Never raises.** Raw stderr can end mid-multibyte-character (`BoundedSubprocess` kills the process
+  group on deadline), and `raise_alert` wraps everything in a blanket rescue — so a snippet that
+  raised would not degrade the alert, it would delete it. Input is scrubbed to valid UTF-8, and a
+  render that fails anyway degrades to `(log snippet unavailable: <class>)`.
+
+Inside an `AlertBatcher` aggregate the occurrence list wins over the snippets. Each occurrence gets
+`MAX_AGGREGATED_DETAILS_CHARS / N` minus a reserve for its own prose, capped at `MAX_BATCHED_CHARS`
+(500); past roughly fifteen occurrences the share is worth less than the line it would displace and
+snippets drop out entirely. Naming *which* triggers were affected is the reason the batcher exists,
+so a snippet must never push the tail of that list off the end of a truncated message.
 
 The snippet reaches the `text:` field as well as the blocks, because block-blind consumers (push
 notifications, the `slack-workspace` MCP server) only ever see `text:`. When both must be trimmed,

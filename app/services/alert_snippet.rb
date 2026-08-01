@@ -3,10 +3,10 @@
 # Turns a raised exception (or a raw log blob) into the bounded excerpt that
 # rides along with an AlertService alert.
 #
-# Why this exists: alerts used to carry only hand-written prose — "Condition 42
-# on trigger 'x' failed: <e.message>" — so the one thing a human needs to
-# diagnose from Slack (what actually blew up, and where in our code) was the one
-# thing missing. The backtrace was always right there at the rescue site.
+# An alert whose body is only hand-written prose — "Condition 42 on trigger 'x'
+# failed: <e.message>" — omits the one thing a human needs to diagnose it from
+# Slack: what actually blew up, and where in our code. The backtrace is right
+# there at the rescue site; this is what carries it.
 #
 # Two decisions carry most of the value:
 #
@@ -62,6 +62,10 @@ class AlertSnippet
   # connection string, a shell command in an Errno message).
   REDACTION_RULES = [
     [ /xox[abposre]-[A-Za-z0-9-]{8,}/, REDACTED ],                                  # Slack tokens
+    [ /\bxapp-\d-[A-Za-z0-9-]{8,}/, REDACTED ],                                     # Slack app-level tokens
+    [ /\bAIza[A-Za-z0-9\-_]{20,}/, REDACTED ],                                      # Google API keys
+    [ /\bsk-(?:proj-)?[A-Za-z0-9\-_]{16,}/, REDACTED ],                             # OpenAI keys
+    [ /-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/m, REDACTED ],
     [ /\bgh[pousr]_[A-Za-z0-9]{16,}/, REDACTED ],                                   # GitHub tokens
     [ /\bgithub_pat_[A-Za-z0-9_]{20,}/, REDACTED ],                                 # GitHub fine-grained PATs
     [ /\bsk-ant-[A-Za-z0-9\-_]{16,}/, REDACTED ],                                   # Anthropic API keys
@@ -83,11 +87,18 @@ class AlertSnippet
     def build(error, max_chars: MAX_CHARS)
       return nil if error.nil?
 
-      text = error.is_a?(Exception) ? render_exception(error) : error.to_s
+      text = utf8(error.is_a?(Exception) ? render_exception(error) : error)
       text = redact(text).strip
       return nil if text.empty?
 
       clamp(text, max_chars)
+    rescue StandardError => e
+      # Rendering the snippet must never cost the alert. A stderr blob that ends
+      # mid-multibyte-character (BoundedSubprocess SIGKILLs the process group on
+      # deadline, so this happens) would otherwise raise here, hit raise_alert's
+      # blanket rescue, and drop the whole page — the GitHub-poller alert being
+      # the one that guards the merge gate.
+      "(log snippet unavailable: #{e.class})"
     end
 
     # Bound an already-built snippet to a smaller budget, marking the cut.
@@ -115,13 +126,24 @@ class AlertSnippet
     # Mask secret-shaped substrings. Exposed for tests and for call sites that
     # assemble their own body.
     def redact(text)
-      REDACTION_RULES.reduce(text.to_s) { |acc, (pattern, replacement)| acc.gsub(pattern, replacement) }
+      REDACTION_RULES.reduce(utf8(text)) { |acc, (pattern, replacement)| acc.gsub(pattern, replacement) }
+    end
+
+    # Coerce to valid UTF-8. Raw stderr arrives as bytes and may be tagged
+    # binary or hold an incomplete character; either makes a gsub against a
+    # UTF-8 pattern raise.
+    def utf8(value)
+      string = value.to_s
+      string = string.dup.force_encoding(Encoding::UTF_8) unless string.encoding == Encoding::UTF_8
+      string.valid_encoding? ? string : string.scrub("?")
     end
 
     private
 
     def render_exception(error)
-      lines = [ "#{error.class}: #{error.message}" ]
+      # The message is scrubbed here, not just in build: interpolating a
+      # binary-tagged string into a UTF-8 literal raises on its own.
+      lines = [ "#{error.class}: #{utf8(error.message)}" ]
       lines.concat(frame_lines(error.backtrace, app_limit: APP_FRAME_LIMIT, top_limit: TOP_FRAME_LIMIT))
       lines.concat(cause_lines(error))
       lines.join("\n")
@@ -140,11 +162,14 @@ class AlertSnippet
 
         seen << cause
         lines << ""
-        lines << "Caused by: #{cause.class}: #{cause.message}"
+        lines << "Caused by: #{cause.class}: #{utf8(cause.message)}"
         lines.concat(frame_lines(cause.backtrace, app_limit: CAUSE_FRAME_LIMIT, top_limit: 1))
         cause = cause.cause
       end
 
+      # The innermost cause is usually the root cause; say so rather than
+      # letting the chain just stop.
+      lines << "… further causes elided …" if cause && !seen.any? { |e| e.equal?(cause) }
       lines
     end
 
@@ -169,23 +194,26 @@ class AlertSnippet
       lines
     end
 
+    # The top frames always make the cut, so a backtrace with no app-owned
+    # frames at all (raised entirely inside a gem) still renders something.
     def selected_indexes(backtrace, app_limit, top_limit)
       app = backtrace.each_index.select { |i| app_frame?(backtrace[i]) }.first(app_limit)
       top = (0...backtrace.length).first(top_limit)
-      chosen = (app + top).uniq.sort
-      # A backtrace with no app-owned frames at all (raised entirely inside a
-      # gem, or synthesized in a test) still deserves its top frames.
-      chosen.presence || (0...backtrace.length).first(app_limit)
+      (app + top).uniq.sort
     end
 
     def app_frame?(frame)
+      frame = utf8(frame)
       return false if frame.match?(VENDOR_FRAME_PATTERN)
+      # `<internal:kernel>:187:in 'loop'` and friends are neither ours nor
+      # actionable; they must not eat an app-frame slot.
+      return false if frame.start_with?("<", "(")
 
       frame.start_with?(rails_root_prefix) || !frame.start_with?("/")
     end
 
     def relativize(frame)
-      frame.delete_prefix(rails_root_prefix)
+      utf8(frame).delete_prefix(rails_root_prefix)
     end
 
     def rails_root_prefix

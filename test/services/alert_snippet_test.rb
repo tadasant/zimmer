@@ -115,6 +115,23 @@ class AlertSnippetTest < ActiveSupport::TestCase
     assert_includes snippet, "Caused by: IOError: connection reset"
   end
 
+  test "build marks a cause chain deeper than the limit" do
+    deepest = exception_with([], klass: IOError, message: "the root cause")
+    chain = deepest
+    3.times do |i|
+      inner = chain
+      wrapper = exception_with([], message: "wrapper #{i}")
+      wrapper.define_singleton_method(:cause) { inner }
+      chain = wrapper
+    end
+
+    snippet = AlertSnippet.build(chain)
+
+    assert_equal AlertSnippet::CAUSE_LIMIT, snippet.scan("Caused by:").length
+    assert_includes snippet, "further causes elided",
+                    "a chain that stops short must say so, like frame elision does"
+  end
+
   test "build survives a self-referential cause without looping" do
     error = exception_with([ app_frame("app/a.rb", 1, "go") ])
     error.define_singleton_method(:cause) { self }
@@ -123,6 +140,51 @@ class AlertSnippetTest < ActiveSupport::TestCase
 
     assert_includes snippet, "RuntimeError: boom"
     assert_not_includes snippet, "Caused by"
+  end
+
+  # === Hostile input must never cost the alert ===
+  #
+  # AlertService#raise_alert wraps everything in a blanket rescue, so a snippet
+  # that raises doesn't degrade the alert — it deletes it. Raw stderr is the
+  # realistic source: BoundedSubprocess SIGKILLs the process group on deadline,
+  # so a captured buffer can end mid-character.
+
+  test "build handles a log blob with invalid UTF-8" do
+    snippet = AlertSnippet.build("gh api search/issues failed: \xC3\x28 truncated")
+
+    assert_includes snippet, "gh api search/issues failed"
+    assert snippet.valid_encoding?
+  end
+
+  test "build handles a binary-encoded exception message" do
+    error = exception_with([ app_frame("app/services/github_search_service.rb", 161, "search") ],
+                           message: "gh failed: #{"\xff\xfe".b}")
+
+    snippet = AlertSnippet.build(error)
+
+    assert_includes snippet, "gh failed"
+    assert_includes snippet, "app/services/github_search_service.rb:161"
+  end
+
+  test "build degrades to a marker rather than raising when rendering fails" do
+    error = exception_with([ app_frame("app/a.rb", 1, "go") ])
+    error.define_singleton_method(:message) { raise "message itself explodes" }
+
+    snippet = AlertSnippet.build(error)
+
+    assert_includes snippet, "log snippet unavailable"
+  end
+
+  test "build ignores Ruby-internal frames when picking app frames" do
+    backtrace = [
+      "<internal:kernel>:187:in 'Kernel#loop'",
+      "<internal:array>:23:in 'Array#each'",
+      app_frame("app/jobs/real_job.rb", 55, "perform")
+    ]
+
+    snippet = AlertSnippet.build(exception_with(backtrace))
+
+    assert_includes snippet, "app/jobs/real_job.rb:55"
   end
 
   # === Redaction ===
