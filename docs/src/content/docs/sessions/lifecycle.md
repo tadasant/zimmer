@@ -157,21 +157,42 @@ never renders the flash toast, so there is no toast and no Undo affordance — e
 `undo_archive` endpoint still works. The undo window is unusable from the UI.
 :::
 
-## Side effects fail silently, by design
+## Side effects are swallowed by design — but no longer silently
 
-Almost every callback in the state machine is wrapped in a bare `rescue` that logs and swallows:
+Every callback in the state machine is wrapped in a bare `rescue`. That part is deliberate and
+unchanged: a broken notification service should not be able to wedge a session in `running`,
+so a failed side effect never aborts the transition. The consequence is still real — cleanup
+can not happen while the state advances anyway.
+
+What changed is that swallowing no longer means silence. All 22 callbacks route their rescue
+through one helper:
 
 ```ruby
 rescue => e
-  Rails.logger.error "[SessionStateMachine] Failed to ..."
-  # Don't raise - notification failures shouldn't block state transitions
+  report_swallowed_side_effect(__method__, e, alert: true)
 end
 ```
 
-This is a deliberate trade: a broken notification service should not be able to wedge a
-session in `running`. The consequence is that cleanup can silently not happen while the state
-still advances — an archived session whose trash expiry failed to set, a paused session whose
-notification never fired. `StaleCloneCleanupJob` exists as the safety net for the clone case.
+`alert: true` logs **and** raises an operational alert via `AlertService` (the same
+`#eng-alerts` seam the trigger pollers and `SystemHealthMonitorJob` use). `alert: false` logs
+only. The split is by consequence, not by severity of the exception:
+
+| | Callbacks | Why |
+| --- | --- | --- |
+| **Alerts** | `set_archived_at`, `cleanup_running_job`, `clear_stale_mcp_failure_metadata`, `clear_auth_recovery_budget`, `execute_pending_sleep`, `cancel_pending_one_time_wake_triggers`, `clear_pending_sleep`, `set_blocked_on_elicitation_marker`, `cleanup_watched_session_ao_event_triggers`, `fire_ao_event_triggers`, `clear_trash_expiry` | The failure leaves persistent state inconsistent and nothing reconciles it — a resumed session that re-fails on a stale MCP flag, an armed wake-up that fires into live work, a restored session still queued for deletion. |
+| **Logs only** | `reset_elapsed_time_counter`, `log_state_change`, `clear_blocked_on_elicitation_marker`, `clear_paused_by_metadata`, `mark_notifications_stale`, `dismiss_notifications`, `enqueue_failure_push_notification`, `enqueue_debounced_needs_input_push_notification`, `enqueue_session_inference_if_needed`, `set_trash_expiry`, `enqueue_deferred_cleanup` | Cosmetic, best-effort by construction, or already covered by a reconciling sweep — `CleanupExpiredElicitationsJob` for a stranded elicitation marker, `StaleCloneCleanupJob` for a nil `trash_after`, `EmptyTrashJob` for a missed cleanup enqueue. A second alert path to an event that already self-heals is just noise. |
+
+The alert's dedup key is the **callback name, not the session**. A sick database hits the same
+callback for every session in flight; collapsing them into one page per
+`AlertService::DEDUP_WINDOW` is the difference between a signal and a flood.
+
+Note this covers reporting only. The transition itself stays atomic: a swallowed error is
+still swallowed, never re-raised into the middle of a transition.
+
+:::note
+A failed one-time scheduled wake is still destroyed silently — that is a separate path from
+these callbacks and is tracked in [Limitations](/limitations/).
+:::
 
 ## Who else moves sessions around
 

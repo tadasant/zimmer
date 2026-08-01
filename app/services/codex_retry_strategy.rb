@@ -110,4 +110,11 @@ class CodexRetryStrategy
   def auth_recovery_needed?(working_dir:)
     false
   end
+
+  # No transcript error envelope to mine for unmatched prose, for the same
+  # reason as the two classifiers above. The unclassified failure alert still
+  # fires for a Codex session — it just carries the stderr tail alone.
+  def unclassified_error_text(working_dir:)
+    nil
+  end
 end
