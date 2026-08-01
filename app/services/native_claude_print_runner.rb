@@ -105,11 +105,11 @@ class NativeClaudePrintRunner
   def terminate_process(pid)
     return unless pid
 
-    # Timeout delivers its exception at the next safe point, which can be after
-    # the blocking wait already collected the child. Check before signalling so
-    # we never fire at a pid we no longer own.
-    return if collected?(pid)
-
+    # The signal always goes first. Timeout delivers its exception at the next
+    # safe point, so the blocking wait may already have collected the child — in
+    # which case the signal raises ESRCH and the poll after it raises ECHILD,
+    # both of which read as "collected". Polling first instead would put a
+    # syscall that can fail between a live child and its SIGTERM.
     signal(pid, "TERM")
     return if reap(pid)
 
