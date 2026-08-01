@@ -309,9 +309,7 @@ class ApiErrorRetryService
 
     # Update session metadata with new process PID
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge("process_pid" => new_pid)
-      )
+      session.merge_metadata!("process_pid" => new_pid)
     end
 
     # Verify the process stays running
