@@ -37,15 +37,23 @@
 #   asks the returned object whether a given process exit warrants context-length,
 #   failed-resume, or API-error recovery. Each runtime owns its own patterns
 #   because the signals (stderr strings, transcript error envelopes) differ.
-#   The returned object must respond to:
+#   The returned object must respond to all five of these predicates. This list
+#   is the contract: ProcessLifecycleManager calls every one of them, and
+#   test/support/runtime_cli_adapter_contract.rb asserts every one of them, so a
+#   runtime that implements only part of it fails the suite rather than raising
+#   NoMethodError in production on an already-failing session.
 #     - normal_completion_exit?(status) -> Boolean
 #     - context_length_error?(stderr_log_path:) -> Boolean
 #     - failed_resume_recovery_needed?(stderr_log_path:) -> Boolean
 #     - api_error_for_retry?(working_dir:) -> Boolean
+#     - auth_recovery_needed?(working_dir:) -> Boolean
 #   normal_completion_exit? answers whether a non-zero exit code is actually a
 #   normal "paused turn" rather than a failure — Claude Code exits 1 when it
 #   finishes a turn and awaits input, whereas Codex exits 1 on a genuine error.
 #   ProcessLifecycleManager asks the strategy instead of hardcoding `== 1`.
+#   auth_recovery_needed? answers whether the exit was the runtime refusing the
+#   current credentials, which is what routes a session into
+#   AuthRecoveryCoordinator (adopt/rotate/park) rather than into a plain failure.
 #   Generic, OS-level exit classification (e.g. SIGTERM detection) stays in
 #   ProcessLifecycleManager because it applies to every runtime.
 #

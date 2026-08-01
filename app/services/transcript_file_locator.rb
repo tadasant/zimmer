@@ -4,8 +4,15 @@
 # - Main session transcript: <session_id>.jsonl
 # - Nested agent transcripts: agent-*.jsonl
 #
-# This class provides a unified way to find the main transcript file,
-# avoiding the pitfall of selecting by mtime (which can pick nested agent files).
+# Selection is by session id whenever the runtime has minted one. Only in the
+# window before that id is captured does this fall back to the most recently
+# modified transcript, and the fallback is deliberately narrow: it skips
+# agent-*.jsonl (a subagent transcript is frequently the newest file in the
+# directory) and skips anything last written before the session existed, so a
+# working directory that still holds an earlier session's transcript cannot hand
+# this session someone else's conversation. Dropping the fallback entirely is
+# not an option — during that window it is the only way to find the transcript
+# at all, and a session with no transcript reads as dead when it is fine.
 class TranscriptFileLocator
   # Find the main transcript file for a session
   #
@@ -22,20 +29,26 @@ class TranscriptFileLocator
       return session_transcript_file if file_system.exists?(session_transcript_file)
     end
 
-    # Fallback: find any non-agent transcript file by mtime
-    # This handles cases where session_id might not be set yet
-    all_transcript_files = file_system.glob(File.join(transcript_dir, "*.jsonl"))
-    return nil if all_transcript_files.empty?
-
-    # Filter out agent-*.jsonl files (subagent transcripts)
-    main_transcript_files = all_transcript_files.reject { |f| File.basename(f).start_with?("agent-") }
-
-    # If no non-agent files, return nil (all files are subagent transcripts)
-    return nil if main_transcript_files.empty?
-
-    # Return the most recently modified main transcript file
-    main_transcript_files.max_by { |f| file_system.mtime(f) }
+    fallback_transcript(session, transcript_dir, file_system)
   end
+
+  # The pre-session_id fallback described in the class comment. nil means "no
+  # transcript this session could have written yet", which callers already treat
+  # as a waiting state rather than an error.
+  def self.fallback_transcript(session, transcript_dir, file_system)
+    candidates = file_system.glob(File.join(transcript_dir, "*.jsonl"))
+      .reject { |path| File.basename(path).start_with?("agent-") }
+    return nil if candidates.empty?
+
+    # The runtime is spawned after the session row exists, so its transcript is
+    # always written after session.created_at. Anything older belongs to a
+    # previous occupant of this working directory.
+    started_at = session.created_at
+    candidates = candidates.select { |path| file_system.mtime(path) >= started_at } if started_at
+
+    candidates.max_by { |path| file_system.mtime(path) }
+  end
+  private_class_method :fallback_transcript
 
   # Default file system adapter for production use
   class DefaultFileSystem

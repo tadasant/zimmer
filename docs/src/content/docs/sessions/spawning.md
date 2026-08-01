@@ -122,9 +122,16 @@ which both runtimes include.
 ## The monitor loop
 
 Once spawned, the job loops: check the process is alive, poll the transcript file, broadcast new
-messages, repeat. There is a 0.15 second sleep between each broadcast — it must exceed
-SolidCable's 100 ms polling interval, and it's a real throughput cost on a bursty transcript.
-Tracked in [#108](https://github.com/tadasant/zimmer/issues/108).
+messages, repeat. Consecutive broadcasts are spaced apart, because a subscriber only sees SolidCable
+messages when its poll thread wakes: two broadcasts published inside one poll window can arrive
+coalesced, which is how a timeline renders messages out of order.
+
+The spacing is *derived* from that window rather than restated:
+`TranscriptPollerService.broadcast_spacing` reads `SolidCable.polling_interval` — the same accessor
+the cable adapter itself sleeps on, parsed from `config/cable.yml` — and multiplies it by
+`BROADCAST_SPACING_MARGIN` (1.5). With the configured 100 ms interval that is the 150 ms this used
+to hardcode, but changing `cable.yml` now moves the spacing with it instead of silently breaking the
+relationship (#108). It remains a real throughput cost on a bursty transcript.
 
 Two independent output channels:
 
