@@ -115,6 +115,9 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
 
   def capture(name)
     FileUtils.mkdir_p(SCREENSHOT_DIR)
+    # The session page restores its scroll position on load, which would frame
+    # the shot below the thing the test just asserted.
+    page.execute_script("window.scrollTo(0, 0)")
     page.save_screenshot(SCREENSHOT_DIR.join("proof-#{name}.png"))
   end
 
