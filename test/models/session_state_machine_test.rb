@@ -93,9 +93,24 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     FileUtils.rm_rf("/tmp/test-clone-2")
   end
 
-  # Note: The can_resume? guard was simplified to always return true
-  # because the actual job handles setting up or validating the clone.
-  # This makes the state machine more permissive while the job handles preconditions.
+  # `resume` is deliberately unguarded (#107): AgentSessionJob establishes or
+  # validates the clone and fails the session with a specific failure_reason when
+  # it cannot, so the state machine stays permissive and lets the job try. What
+  # bounds `resume` is its source states, asserted below — not a guard.
+  test "resume is bounded by its source states, not by a guard" do
+    session = sessions(:waiting)
+
+    %i[waiting needs_input failed].each do |state|
+      session.update!(status: state)
+      assert session.may_resume?, "resume must be available from #{state}"
+    end
+
+    %i[running archived].each do |state|
+      session.update!(status: state)
+      refute session.may_resume?, "resume must NOT be available from #{state}"
+    end
+  end
+
   test "can resume session even without session_id" do
     session = sessions(:waiting)
     session.update!(status: :needs_input, session_id: nil)

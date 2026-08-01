@@ -2192,6 +2192,70 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "The marker must be set before AgentSessionJob inspects it"
   end
 
+  # ===========================================================================
+  # Rebuilt stderr log path (#187)
+  # ===========================================================================
+  #
+  # After a recovery spawn, the manager rebuilds the stderr path it tails from
+  # session state. Building it from the clone root, or with a hardcoded Claude
+  # filename, points a recovered session at a file that does not exist — and
+  # both context-length and failed-resume recovery are DETECTED by reading that
+  # file, so the next recovery silently never fires.
+
+  test "recovery rebuilds the stderr path under the working directory, not the clone root" do
+    clone_path = "/tmp/agent-root-clone"
+    working_dir = "/tmp/agent-root-clone/apps/web"
+    stderr_path = File.join(working_dir, "claude_stderr.log")
+    @mock_file_system.mkdir_p(working_dir)
+    @session.update!(metadata: @session.metadata.merge(
+      "clone_path" => clone_path, "working_directory" => working_dir
+    ))
+
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: working_dir)
+
+    # A failed-resume signature routes through the recovery path, which resets
+    # the manager's stderr path after respawning.
+    @mock_file_system.write(stderr_path, "No conversation found with session ID: some-uuid\n")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: working_dir)
+
+    assert_equal :continue, decision.action
+    assert_equal stderr_path, manager.stderr_log_path,
+      "The rebuilt path must be the working directory's log — the clone root's does not exist"
+    refute_equal File.join(clone_path, "claude_stderr.log"), manager.stderr_log_path
+  end
+
+  test "recovery rebuilds a Codex session's stderr path with the Codex filename" do
+    session = create_codex_session
+    stderr_path = "/tmp/codex-clone/codex_stderr.log"
+    codex_adapter = MockCodexRuntimeAdapter.new
+    codex_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = ProcessLifecycleManager.new(
+      session: session,
+      cli_adapter: codex_adapter,
+      process_manager: @mock_process_manager,
+      log_buffer: LogBuffer.new(session),
+      file_system: @mock_file_system
+    )
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/codex-clone")
+
+    @mock_file_system.write(
+      stderr_path,
+      "Error: stream error: no rollout found for thread id 0199c0f6-dead-beef - code -32600\n"
+    )
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/codex-clone")
+
+    assert_equal :continue, decision.action
+    assert_equal stderr_path, manager.stderr_log_path
+    assert_not_includes manager.stderr_log_path, "claude_stderr.log",
+      "A Codex session must never be handed a Claude stderr filename"
+  end
+
   # The quota signature ApiErrorRetryService classifies as :quota_exceeded.
   def setup_transcript_with_quota_error
     transcript_dir = calculate_test_transcript_dir

@@ -304,7 +304,7 @@ class CodexMcpStatusDetector
     working_directory = @session.metadata&.dig("working_directory")
     return nil unless working_directory
 
-    File.join(working_directory, "codex_stderr.log")
+    CodexRuntimeAdapter.stderr_log_path(working_directory)
   end
 
   def stale?(timestamp)

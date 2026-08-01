@@ -77,8 +77,14 @@ module SessionStateMachine
 
       # Resume execution with follow-up prompt or restart
       # Also allows resuming from waiting state (for clone-only sessions receiving first prompt)
+      #
+      # Deliberately unguarded: the preconditions for resuming (a clone that
+      # exists, a runtime session id to resume, a live process) are established or
+      # validated by AgentSessionJob, which resumes what it can and fails the
+      # session with a specific failure_reason when it cannot. Re-checking them
+      # here would only strand sessions the job knows how to recover.
       event :resume do
-        transitions from: [ :waiting, :needs_input, :failed ], to: :running, guard: :can_resume?
+        transitions from: [ :waiting, :needs_input, :failed ], to: :running
         after do
           clear_stale_mcp_failure_metadata
           clear_paused_by_metadata
@@ -244,14 +250,6 @@ module SessionStateMachine
   # Requires git_root to be present
   def can_start?
     git_root.present?
-  end
-
-  # Guard: Check if session can resume
-  # Only requires basic validation - the actual job will handle
-  # setting up or validating the clone. This allows the state machine
-  # to be more permissive while the job handles preconditions.
-  def can_resume?
-    true
   end
 
   # Whether this session's needs_input state was caused by a pending MCP

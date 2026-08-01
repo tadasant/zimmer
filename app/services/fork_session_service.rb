@@ -182,13 +182,18 @@ class ForkSessionService
   end
 
   def cleanup_inherited_files(clone_path)
-    # Remove old stderr log - new session will create its own
-    stderr_log = File.join(clone_path, "claude_stderr.log")
+    # Remove the inherited stderr log - the new session will create its own. The
+    # filename comes from the runtime the fork will be driven by, so a forked
+    # Codex session sheds codex_stderr.log rather than a Claude filename it never
+    # writes.
+    adapter_class = RuntimeRegistry.cli_adapter_class_for(source_session.agent_runtime)
+
+    stderr_log = adapter_class.stderr_log_path(clone_path)
     file_system.rm_rf(stderr_log) if file_system.exists?(stderr_log)
 
     # If there's a subdirectory, also clean up there
     if source_session.subdirectory.present?
-      subdir_stderr_log = File.join(clone_path, source_session.subdirectory, "claude_stderr.log")
+      subdir_stderr_log = adapter_class.stderr_log_path(File.join(clone_path, source_session.subdirectory))
       file_system.rm_rf(subdir_stderr_log) if file_system.exists?(subdir_stderr_log)
     end
   end

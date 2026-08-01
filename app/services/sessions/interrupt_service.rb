@@ -220,7 +220,7 @@ module Sessions
 
       return unless process_pid
 
-      stderr_log_path = File.join(@session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+      stderr_log_path = @session.stderr_log_path
       resume_result = lifecycle_manager.resume_monitoring(
         pid: process_pid,
         stderr_log_path: stderr_log_path
