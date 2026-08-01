@@ -134,8 +134,10 @@ reading the secret it needed through the service account instead.
 
 `ElicitationEndpointHealthCheckJob` probes the endpoint every 5 minutes from the host agents run on
 (any HTTP response counts — a 404 for the probe id proves the request reached Rails; only a transport
-failure is a broken gate) and records the result. When it is unreachable, the job warns on every tick
-and pages once per incident, and `OrchestratorSystemPromptBuilder` puts the failure in the system prompt of every session
+failure is a broken gate) and records the result. It runs in production and staging;
+[not in development](/operate/background-jobs/#why-the-elicitation-probe-doesnt-run-in-development),
+where the URL it would probe describes your own laptop rather than anything agents depend on. When
+the endpoint is unreachable, the job warns on every tick and pages once per incident, and `OrchestratorSystemPromptBuilder` puts the failure in the system prompt of every session
 spawned while it is down: *the gate is broken, a redaction means nothing about policy, report it rather than
 routing around it.* Sessions with MCP servers always get the healthy-case counterpart — a redacted
 value **is** the gate's answer — so a redaction is never ambiguous.

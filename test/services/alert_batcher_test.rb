@@ -14,6 +14,9 @@ class AlertBatcherTest < ActiveSupport::TestCase
     SlackService.stubs(:configured?).returns(true)
     SlackService.stubs(:client).returns(@mock_client)
     SecretsLoader.stubs(:get).with("ENG_ALERTS_SLACK_CHANNEL_ID").returns("C123")
+    # These tests are about batching, not about who is allowed to page: the
+    # environment gate is off in `test` and is covered by AlertServiceTest.
+    AlertService.stubs(:enabled?).returns(true)
   end
 
   teardown do
@@ -67,9 +70,9 @@ class AlertBatcherTest < ActiveSupport::TestCase
 
   test "with_batch preserves single-alert behavior when only one alert in group" do
     @mock_client.expects(:chat_postMessage).once.with do |args|
-      # Title leads the fallback text (no ×N suffix for a single event), and
-      # the section block carries the original details verbatim.
-      args[:text].start_with?("Some isolated error") &&
+      # The environment-tagged title leads the fallback text (no ×N suffix for a
+      # single event), and the section block carries the original details verbatim.
+      args[:text].start_with?("[test] Some isolated error") &&
         args[:blocks].find { |b| b[:type] == "section" }&.dig(:text, :text) == "the details"
     end.returns(true)
 

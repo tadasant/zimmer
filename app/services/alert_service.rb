@@ -41,6 +41,41 @@ class AlertService
   # can never squeeze the framing down to nothing.
   MIN_FRAMING_TEXT_CHARS = 400
 
+  # The environments that own the alert channel. Zimmer's two deployed
+  # environments page; a process running as anything else does not, however
+  # completely it is credentialed. This is the same boundary
+  # `config/initializers/sentry.rb` draws for the production error DSN, for the
+  # same reason (issue #176).
+  #
+  # Holding the secret is not authorization to page, and every agent-session
+  # clone holds it: `AgentSessionJob` writes `SecretsLoader.all` into the clone's
+  # `.env`, and that bundle carries `SLACK_BOT_TOKEN` and
+  # `ENG_ALERTS_SLACK_CHANNEL_ID`. An agent's shell has no `RAILS_ENV` (see
+  # `CliSpawnEnv#clear_inherited_env_vars`), so a clone that boots Zimmer boots it
+  # as `development`. In #272 one did: it registered development's cron table,
+  # probed the elicitation endpoint at `http://localhost:3000` where nothing was
+  # listening, and paged the production channel every 5 minutes while production's
+  # own approval gate was healthy.
+  #
+  # The gate reads the environment and nothing else. In particular it does not
+  # lean on the dedup cache, which is best-effort by construction: `suppressed?`
+  # and `mark_sent` swallow their own failures, as does
+  # `ElicitationEndpoint.record`. When the cache is unreachable — which is the
+  # ordinary case for a clone, whose `REDIS_URL` points somewhere it cannot use —
+  # every suppressor falls open at once, and one incident becomes a message per
+  # tick. A throttle that fails open is not a containment boundary.
+  ALERTING_ENVIRONMENTS = %w[production staging].freeze
+
+  # Declares the gate explicitly, overriding the environment default in both
+  # directions: true on an instance that should page anyway, false to mute one
+  # that otherwise would. Set it as deploy environment configuration only, never
+  # in `mcp_secrets` — secret-store values are copied into every clone's `.env`,
+  # so an opt-in stored there would travel with the clones and reopen this hole.
+  # `CliSpawnEnv` clears it from spawned agents for the same reason.
+  ALERTS_ENABLED_ENV_VAR = "ALERTS_ENABLED"
+  ALERTS_ENABLED_TRUE_VALUES = %w[1 true t yes y on].freeze
+  ALERTS_ENABLED_FALSE_VALUES = %w[0 false f no n off].freeze
+
   class << self
     # Raise an operational alert to #eng-alerts
     #
@@ -62,6 +97,14 @@ class AlertService
       # addresses, line numbers), so letting it reach the key would give every
       # occurrence a distinct key and turn an hourly-throttled alert into a flood.
       key = dedup_key || default_dedup_key(title, source)
+
+      # Before the snippet and before the batch, not just before the post: an
+      # alert this instance may never send should not be rendered, and should not
+      # be accumulated for a flush that will drop it. The caller gets the same
+      # false either way, and `post_to_slack` checks again for the paths that
+      # reach it directly.
+      return log_gated(title, details: details, source: source) unless enabled?
+
       snippet = AlertSnippet.build(error)
 
       if AlertBatcher.open?
@@ -96,6 +139,28 @@ class AlertService
       SlackService.configured? && channel_id.present?
     end
 
+    # Whether this instance is allowed to post to the alert channel at all.
+    #
+    # Separate from {configured?} on purpose: "I hold the credentials" and "I am
+    # an instance that owns this channel" are different questions, and only the
+    # second one decides whether a page is legitimate. See ALERTING_ENVIRONMENTS.
+    #
+    # @return [Boolean]
+    def enabled?
+      override = alerts_enabled_override
+      return override unless override.nil?
+
+      ALERTING_ENVIRONMENTS.include?(Rails.env.to_s)
+    end
+
+    # The environment tag stamped onto every alert, so a message that reaches the
+    # channel from somewhere unexpected identifies itself instead of being read
+    # as a production incident.
+    # @return [String] e.g. "production", "staging", "development"
+    def environment_label
+      Rails.env.to_s
+    end
+
     # Returns a list of missing configuration components, or an empty array if fully configured.
     # Used by the boot-time health check initializer to provide actionable diagnostics.
     # @return [Array<String>] list of missing components (e.g. ["Slack token missing"])
@@ -127,6 +192,43 @@ class AlertService
       @logger ||= StructuredLogger.new({ service: "AlertService" })
     end
 
+    # Record an alert this instance is not allowed to send. Warn, and carry the
+    # body: it is dropped, but a developer exercising alerting should see what
+    # would have gone out and why it didn't, rather than silence.
+    # @return [false] so callers can `return log_gated(...)`
+    def log_gated(title, details:, source:)
+      logger.warn(
+        "Alert not sent: this instance does not page the alert channel (set #{ALERTS_ENABLED_ENV_VAR}=true to page from here)",
+        title: title,
+        source: source,
+        environment: environment_label,
+        details: details&.truncate(500)
+      )
+      false
+    end
+
+    # Read as an explicit declaration or not at all: an unrecognized value is
+    # treated as unset (and warned about) rather than as "yes, page production".
+    #
+    # ENV, not SecretsLoader — this is deploy configuration (which instance owns
+    # the channel), not a secret, and it has to be answerable on an instance
+    # whose credential store is exactly what's in doubt.
+    #
+    # @return [Boolean, nil] nil when unset or unparseable
+    def alerts_enabled_override
+      raw = ENV[ALERTS_ENABLED_ENV_VAR].to_s.strip.downcase
+      return nil if raw.empty?
+      return true if ALERTS_ENABLED_TRUE_VALUES.include?(raw)
+      return false if ALERTS_ENABLED_FALSE_VALUES.include?(raw)
+
+      logger.warn(
+        "Ignoring unrecognized #{ALERTS_ENABLED_ENV_VAR} value; falling back to the environment default",
+        value: raw,
+        environment: environment_label
+      )
+      nil
+    end
+
     # Check if an alert with this key was already sent within the dedup window
     def suppressed?(key)
       Rails.cache.exist?(cache_key(key))
@@ -152,6 +254,11 @@ class AlertService
 
     # Post a formatted alert message to the #eng-alerts Slack channel
     def post_to_slack(title, details: nil, source: nil, log_snippet: nil)
+      # The choke point every path into Slack passes through, including
+      # AlertBatcher's flush — which calls `emit` directly and so never sees
+      # raise_alert's check.
+      return log_gated(title, details: details, source: source) unless enabled?
+
       unless configured?
         logger.warn("AlertService not configured (missing Slack token or channel ID)")
         return false
@@ -181,7 +288,7 @@ class AlertService
       snippet = bounded_snippet(log_snippet)
       snippet_block = snippet ? "\n#{AlertSnippet.fenced(snippet)}" : ""
 
-      parts = [ title ]
+      parts = [ tagged_title(title) ]
       parts << "Source: #{source}" if source.present?
       parts << details if details.present?
 
@@ -208,7 +315,7 @@ class AlertService
       # Header
       blocks << {
         type: "header",
-        text: { type: "plain_text", text: title.truncate(150), emoji: true }
+        text: { type: "plain_text", text: tagged_title(title).truncate(150), emoji: true }
       }
 
       # Details section
@@ -235,11 +342,19 @@ class AlertService
       # Context: source and timestamp
       context_elements = []
       context_elements << { type: "mrkdwn", text: "*Source:* #{source}" } if source.present?
+      context_elements << { type: "mrkdwn", text: "*Environment:* #{environment_label}" }
       context_elements << { type: "mrkdwn", text: "*Time:* #{Time.current.strftime('%Y-%m-%d %H:%M:%S UTC')}" }
 
       blocks << { type: "context", elements: context_elements }
 
       blocks
+    end
+
+    # Tag the environment onto the title. Applied at render time, not to the
+    # title callers pass in, so dedup keys and AlertBatcher's (title, source)
+    # grouping stay keyed on the alert itself.
+    def tagged_title(title)
+      "[#{environment_label}] #{title}"
     end
   end
 end
