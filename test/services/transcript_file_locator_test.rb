@@ -41,10 +41,11 @@ class TranscriptFileLocatorTest < ActiveSupport::TestCase
     @mock_file_system.write(agent_file1, '{"type":"user"}')
     @mock_file_system.write(agent_file2, '{"type":"user"}')
 
-    # Make agent files more recent
-    @mock_file_system.set_mtime(main_file, 1.hour.ago)
-    @mock_file_system.set_mtime(agent_file1, 30.minutes.ago)
-    @mock_file_system.set_mtime(agent_file2, Time.current)
+    # Make agent files more recent; all are written after the session started,
+    # so only the agent- prefix distinguishes them
+    @mock_file_system.set_mtime(main_file, @session.created_at + 1.minute)
+    @mock_file_system.set_mtime(agent_file1, @session.created_at + 2.minutes)
+    @mock_file_system.set_mtime(agent_file2, @session.created_at + 3.minutes)
 
     result = TranscriptFileLocator.find_main_transcript(@session, transcript_dir, file_system: @mock_file_system)
 
@@ -101,12 +102,90 @@ class TranscriptFileLocatorTest < ActiveSupport::TestCase
     @mock_file_system.write(old_file, '{"type":"user"}')
     @mock_file_system.write(new_file, '{"type":"user"}')
 
-    @mock_file_system.set_mtime(old_file, 1.hour.ago)
-    @mock_file_system.set_mtime(new_file, Time.current)
+    @mock_file_system.set_mtime(old_file, @session.created_at + 1.minute)
+    @mock_file_system.set_mtime(new_file, @session.created_at + 2.minutes)
 
     result = TranscriptFileLocator.find_main_transcript(@session, transcript_dir, file_system: @mock_file_system)
 
     assert_equal new_file, result
+  end
+
+  # === The blank-session_id fallback (#57) ===
+  #
+  # The fallback exists only for the window between spawning the CLI and
+  # capturing the session id it mints. It must not reach outside that window.
+
+  test "find_main_transcript ignores a transcript written before the session started" do
+    @session.update!(session_id: nil)
+
+    transcript_dir = "/transcript/dir"
+    stale_file = "#{transcript_dir}/previous-occupant.jsonl"
+
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(stale_file, '{"type":"user"}')
+    @mock_file_system.set_mtime(stale_file, @session.created_at - 1.minute)
+
+    result = TranscriptFileLocator.find_main_transcript(@session, transcript_dir, file_system: @mock_file_system)
+
+    assert_nil result,
+      "a transcript last written before this session existed belongs to a previous occupant of the working directory"
+  end
+
+  test "find_main_transcript still selects a transcript written after the session started" do
+    @session.update!(session_id: nil)
+
+    transcript_dir = "/transcript/dir"
+    stale_file = "#{transcript_dir}/previous-occupant.jsonl"
+    own_file = "#{transcript_dir}/this-session.jsonl"
+
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(stale_file, '{"type":"user"}')
+    @mock_file_system.write(own_file, '{"type":"user"}')
+
+    # The stale file is the newer of the two by mtime alone would be wrong;
+    # here it is older than the session, so it is not a candidate at all.
+    @mock_file_system.set_mtime(stale_file, @session.created_at - 1.hour)
+    @mock_file_system.set_mtime(own_file, @session.created_at + 1.minute)
+
+    result = TranscriptFileLocator.find_main_transcript(@session, transcript_dir, file_system: @mock_file_system)
+
+    assert_equal own_file, result
+  end
+
+  test "find_main_transcript tolerates a coarse filesystem mtime at the floor" do
+    # A filesystem storing whole-second mtimes can report a write from the same
+    # second as the session's creation as fractionally older than it. That file
+    # is this session's own transcript and must still be found.
+    @session.update!(session_id: nil)
+
+    transcript_dir = "/transcript/dir"
+    own_file = "#{transcript_dir}/this-session.jsonl"
+
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(own_file, '{"type":"user"}')
+    @mock_file_system.set_mtime(own_file, @session.created_at - 0.5.seconds)
+
+    result = TranscriptFileLocator.find_main_transcript(@session, transcript_dir, file_system: @mock_file_system)
+
+    assert_equal own_file, result
+  end
+
+  test "find_main_transcript prefers the session_id file even when it predates the session" do
+    # The floor applies to the fallback only — an exact session_id match is
+    # never in doubt, and the restore path (resume_transcript_path) writes that
+    # file with whatever mtime the restore happens to produce.
+    @session.update!(session_id: "abc123-def456")
+
+    transcript_dir = "/transcript/dir"
+    session_file = "#{transcript_dir}/abc123-def456.jsonl"
+
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(session_file, '{"type":"user"}')
+    @mock_file_system.set_mtime(session_file, @session.created_at - 1.hour)
+
+    result = TranscriptFileLocator.find_main_transcript(@session, transcript_dir, file_system: @mock_file_system)
+
+    assert_equal session_file, result
   end
 
   test "DefaultFileSystem works with real filesystem" do

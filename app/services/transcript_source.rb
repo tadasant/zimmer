@@ -59,6 +59,20 @@ class TranscriptSource
     raise NotImplementedError, "#{self.class}#locate"
   end
 
+  # Find the main (non-subagent) transcript file inside a directory.
+  #
+  # Declared here rather than only on the concrete sources because
+  # TranscriptPollerService calls it on every poll: a source that implements
+  # only the rest of this interface would otherwise NoMethodError on its first
+  # poll instead of failing loudly at the seam (#56).
+  #
+  # @param transcript_directory [String] the session's transcript directory
+  # @param session [Session] the session whose transcript we want
+  # @return [String, nil] the main transcript file path, or nil if not found
+  def find_main_transcript(transcript_directory:, session:)
+    raise NotImplementedError, "#{self.class}#find_main_transcript"
+  end
+
   # Read the raw, decoded transcript bytes for a path.
   #
   # Implementations handle any runtime-specific decompression (e.g. .zst) so

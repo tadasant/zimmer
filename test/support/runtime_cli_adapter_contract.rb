@@ -18,6 +18,16 @@ module RuntimeCliAdapterContractAssertions
   # Keyword arguments every adapter's #resume must accept.
   RESUME_KEYWORDS = %i[session_id working_dir prompt mcp_config_path images append_system_prompt model auto_compact_window].freeze
 
+  # Every predicate ProcessLifecycleManager asks the retry strategy. Kept in sync
+  # with the contract docstring in app/services/runtime_cli_adapter.rb.
+  RETRY_STRATEGY_PREDICATES = %i[
+    normal_completion_exit?
+    context_length_error?
+    failed_resume_recovery_needed?
+    api_error_for_retry?
+    auth_recovery_needed?
+  ].freeze
+
   def assert_runtime_cli_adapter_contract(klass)
     assert klass.include?(RuntimeCliAdapter),
       "#{klass} must include RuntimeCliAdapter so it is recognizable as a runtime adapter"
@@ -60,8 +70,12 @@ module RuntimeCliAdapterContractAssertions
       process_manager: nil,
       rate_limit_tracker: nil
     )
-    %i[context_length_error? failed_resume_recovery_needed? api_error_for_retry?].each do |method_name|
-      assert_respond_to strategy, method_name
+    # Every predicate ProcessLifecycleManager calls, so a runtime that implements
+    # a subset fails here rather than raising NoMethodError on the auth-recovery
+    # path — in production, on a session that is already failing (#56).
+    RETRY_STRATEGY_PREDICATES.each do |method_name|
+      assert_respond_to strategy, method_name,
+        "#{klass}'s retry strategy must implement #{method_name} — see the contract in runtime_cli_adapter.rb"
     end
   end
 
