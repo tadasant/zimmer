@@ -152,6 +152,24 @@ class TranscriptFileLocatorTest < ActiveSupport::TestCase
     assert_equal own_file, result
   end
 
+  test "find_main_transcript tolerates a coarse filesystem mtime at the floor" do
+    # A filesystem storing whole-second mtimes can report a write from the same
+    # second as the session's creation as fractionally older than it. That file
+    # is this session's own transcript and must still be found.
+    @session.update!(session_id: nil)
+
+    transcript_dir = "/transcript/dir"
+    own_file = "#{transcript_dir}/this-session.jsonl"
+
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(own_file, '{"type":"user"}')
+    @mock_file_system.set_mtime(own_file, @session.created_at - 0.5.seconds)
+
+    result = TranscriptFileLocator.find_main_transcript(@session, transcript_dir, file_system: @mock_file_system)
+
+    assert_equal own_file, result
+  end
+
   test "find_main_transcript prefers the session_id file even when it predates the session" do
     # The floor applies to the fallback only — an exact session_id match is
     # never in doubt, and the restore path (resume_transcript_path) writes that
