@@ -139,10 +139,22 @@ class McpOauthPendingFlow < ApplicationRecord
     nil
   end
 
+  # Hosts that count as a loopback redirect target. Compared against the parsed
+  # URI host exactly — a substring test would accept `localhost.evil.com` and any
+  # URL merely carrying `127.0.0.1` in its query string.
+  LOOPBACK_HOSTS = [ "localhost", "127.0.0.1", "::1" ].freeze
+
   # Returns true if this is a localhost OAuth flow
-  # (redirect_uri points to localhost)
+  # (redirect_uri points to loopback)
   def localhost_flow?
-    redirect_uri.present? && (redirect_uri.include?("localhost") || redirect_uri.include?("127.0.0.1"))
+    return false if redirect_uri.blank?
+
+    host = URI.parse(redirect_uri).host
+    return false if host.blank?
+
+    LOOPBACK_HOSTS.include?(host.delete_prefix("[").delete_suffix("]").downcase)
+  rescue URI::InvalidURIError
+    false
   end
 
   # Computes the PKCE code challenge (S256 method)
