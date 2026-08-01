@@ -28,25 +28,70 @@ export default class extends Controller {
   // so a persistently-failing endpoint doesn't poll forever in the background.
   static MAX_CONSECUTIVE_ERRORS = 10
 
+  // Consecutive failures back the poll off exponentially rather than retrying at
+  // the flat intervalValue cadence. The count above is a budget for "the server
+  // is really gone", but at a flat 2s it was spent in twenty seconds — well
+  // inside a deploy, a laptop lid closing, or a wifi handover — and abandoning a
+  // login that would have completed is worse than waiting. Backing off spends the
+  // same ten attempts over ~3 minutes (2s, 4s, 8s, 16s, then 30s each), which is
+  // long enough for a real blip to end and still bounded by the attempt's own
+  // expires_at deadline below.
+  static BACKOFF_MULTIPLIER = 2
+  static MAX_BACKOFF_MS = 30000
+
   connect() {
     this.stopped = false
     this.errorCount = 0
     // Anchored to this browser's own clock, so only elapsed time matters. Each
     // poll re-renders the panel and re-anchors it against a fresh server value.
     this.deadline = this.remainingValue ? Date.now() + this.remainingValue : 0
-    this.timer = setInterval(() => this.poll(), this.intervalValue)
+    this.scheduleNextPoll()
   }
 
   disconnect() {
     this.stopped = true
     if (this.timer) {
-      clearInterval(this.timer)
+      clearTimeout(this.timer)
       this.timer = null
     }
   }
 
+  // A self-rescheduling timeout rather than a fixed setInterval, because the gap
+  // between polls is no longer constant — it grows with errorCount. It also means
+  // a poll can never be scheduled on top of one still in flight.
+  scheduleNextPoll() {
+    if (this.stopped) return
+
+    this.timer = setTimeout(() => {
+      this.timer = null
+      this.poll()
+    }, this.delayForNextPoll())
+  }
+
+  // The normal cadence while healthy; the backoff curve while failing.
+  //
+  // Never schedules past the deadline, because the deadline is only ever noticed
+  // by a poll waking up: a 30s backoff gap that straddles it would leave the
+  // panel claiming to be working for up to 30 seconds after the attempt could
+  // still have succeeded. Clamping keeps the give-up message as prompt as it was
+  // at a flat cadence.
+  delayForNextPoll() {
+    const delay =
+      this.errorCount === 0
+        ? this.intervalValue
+        : Math.min(
+            this.intervalValue * this.constructor.BACKOFF_MULTIPLIER ** (this.errorCount - 1),
+            this.constructor.MAX_BACKOFF_MS
+          )
+
+    if (!this.deadline) return delay
+    // +1 so a clamped wake-up lands strictly PAST the deadline, which is what
+    // the `>` check in poll() tests for.
+    return Math.min(delay, Math.max(0, this.deadline - Date.now() + 1))
+  }
+
   async poll() {
-    if (this.stopped || this.polling) return
+    if (this.stopped) return
 
     // Client-side backstop. The server drives every attempt to a terminal state
     // (RuntimeLoginAttempt#fail_orphaned!, applied lazily on this very endpoint),
@@ -59,7 +104,6 @@ export default class extends Controller {
       return
     }
 
-    this.polling = true
     try {
       const response = await fetch(this.urlValue, {
         headers: { Accept: "text/vnd.turbo-stream.html" },
@@ -78,7 +122,9 @@ export default class extends Controller {
       // Transient network error — the next tick retries, up to the error cap.
       this.recordError()
     } finally {
-      this.polling = false
+      // No-op once giveUp() or a Turbo swap has stopped us, so the give-up paths
+      // stay terminal.
+      this.scheduleNextPoll()
     }
   }
 

@@ -546,14 +546,19 @@ offer; polling needs nothing but the outbound `gh` credential that is already th
 | `SlackTriggerHealthCheckJob` | hourly at :45 |
 | `CleanupStaleTriggersJob` | reaps leftovers |
 
-:::caution[A Slack rate-limit episode stalls all polling]
-`SlackService` retries up to 10 times with a fixed 1-second delay (not exponential backoff),
-using blocking `sleep` inside a job thread. `SlackTriggerPollerJob`'s own comment acknowledges
-this would "saturate the queue's whole thread pool," so the job is confined to a `pollers` queue
-with `total_limit: 1`.
+:::caution[While Slack is rate-limiting you, Slack triggers fire late]
+`SlackTriggerPollerJob` is confined to a `pollers` queue with `total_limit: 1`, so while it runs it
+is Slack polling for the whole instance.
 
-The consequence: while Slack is rate-limiting you, *all* Slack polling is stalled, and ticks are
-silently dropped.
+It does not wait a throttle out on that slot. `SlackService` absorbs a short blip in process (three
+retries, backing off 1s, 2s, 4s) and hands anything longer back; the job then reschedules itself —
+30s, 60s, 120s, 240s, 480s, or Slack's own `retry_after` if that is longer — and frees the worker
+thread. The cron ticks in between are still no-ops, but they are no longer landing on a run parked
+in a `sleep`.
+
+Nothing is lost — `last_message_ts` is a cursor, so the next successful poll still sees the messages
+— but a trigger can fire minutes after the message that should have fired it. After five deferrals
+the job alerts and the ordinary once-a-minute cadence takes over.
 :::
 
 :::note[Triggers have no input validation — this is a known design gap]

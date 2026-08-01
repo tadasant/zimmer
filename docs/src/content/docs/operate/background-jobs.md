@@ -125,16 +125,22 @@ Most jobs run on `default`. Two are deliberately isolated:
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
 - **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`.
-  `SlackService` retries up to 10 times with a blocking 1-second `sleep` inside the job thread, and
-  the comment admits this would "saturate the queue's whole thread pool." `GithubTriggerPollerJob`
-  is capped for the same reason: it shells out to `gh` once per condition, and a slow tick must not
-  stack against itself. Its polling is idempotent — state only advances for items that produced a
-  session — so a skipped tick is simply picked up by the next run.
+  Both make slow external calls once per condition, and a slow tick must not stack against itself.
+  Their polling is idempotent — state only advances for items that produced a session — so a skipped
+  tick is simply picked up by the next run.
 
-:::caution[A Slack rate-limit episode stalls all Slack polling]
-`total_limit: 1` caps the blast radius, but it also means no Slack polling at all while you're
-throttled — and ticks are silently dropped.
-:::
+`total_limit: 1` has a corollary that matters for failure handling: a run that blocks *is* polling
+for the whole instance, and every cron tick that lands meanwhile is rejected rather than queued. So
+`SlackTriggerPollerJob` does not wait out a Slack outage on its slot. `SlackService` absorbs a short
+blip in process (`MAX_RETRIES = 3`, backing off 1s, 2s, 4s, and honoring a `retry_after` only when it
+is 8s or under), and raises `SlackService::TransientError` for anything longer. The job catches that,
+calls `retry_job` with an exponential wait (30s, 60s, 120s, 240s, 480s — or Slack's `retry_after` if
+longer, capped at 10 minutes), and returns, freeing the thread.
+
+Rescheduling rather than re-enqueuing is deliberate. `retry_job` reuses the same job id, which
+GoodJob's concurrency control lets through, and the row stays unfinished — so the singleton key is
+still held, the cron ticks in between stay no-ops, and the deferred run is the *next* poll rather
+than an extra one. After `MAX_DEFERRALS` (5) the job stops deferring and raises an alert.
 
 ## Trigger-poll liveness
 
