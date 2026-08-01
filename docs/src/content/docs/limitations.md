@@ -1310,14 +1310,20 @@ keys, where one global bucket capped it at one per 30 seconds for the whole inst
 
 Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
 
-### The in-app API docs page is still stale
+### `follow_up` accepts a `goal` it sometimes throws away
 
-`app/views/api_docs/show.html.erb` omits triggers, notifications, health, clis, and transcript_archive —
-even though `app/controllers/api/AGENTS.md` requires both doc surfaces to be updated with every endpoint
-change.
+`POST /api/v1/sessions/:id/follow_up` takes a `goal`, and `Api::V1::SessionsController#follow_up`
+only ever hands it to `enqueued_messages.create!`. The two paths that queue a message — a `running`
+session, and any `force_immediate` — therefore honor it, because
+`EnqueuedMessageProcessorService` applies a non-blank message goal when it claims the message. The
+direct path for a `waiting` or `needs_input` session updates `prompt`, spawns the job, and never
+reads `goal` again.
 
-Tracked in [#34](https://github.com/tadasant/zimmer/issues/34) (removing the page) and
-[#95](https://github.com/tadasant/zimmer/issues/95) (nothing tests that the two surfaces agree).
+The request answers 200 either way, so the caller cannot tell. Whether the goal you sent applies
+depends on what state the session happened to be in when your call landed. The MCP
+`follow_up_session` tool routes through the same code and inherits it.
+
+Tracked in [#290](https://github.com/tadasant/zimmer/issues/290).
 
 ---
 
