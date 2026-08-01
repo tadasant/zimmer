@@ -269,11 +269,45 @@ Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
 ## Metadata races
 
-Session `metadata` is a JSON blob, and the job mutates it with a non-atomic read-modify-write.
-The code says so out loud (`agent_session_job.rb:1073-1078`), and recommends PostgreSQL's `jsonb`
-operators as the real fix. Correctness-adjacent flags live in there anyway
-(`interrupt_terminate_pid`, `pending_follow_up_prompt`), described in the code as "best-effort
-FAST PATH, not the correctness guarantee." Lost updates are possible.
+Session `metadata` and `custom_metadata` are JSON blobs that several processes write at once: the
+job's monitoring loop, the web process, the GitHub pollers, and the transcript hooks. Writing one by
+rebuilding the whole column from a snapshot — `update!(metadata: session.metadata.merge(...))` —
+erases any key another writer set since that snapshot was read. `session.reload` first narrows the
+window; it does not close it.
+
+Most of those writers use `Session#merge_metadata!` / `#remove_metadata!` (and the
+`custom_metadata` equivalents) instead. Those push the merge into PostgreSQL as one statement —
+`(metadata::jsonb - ARRAY[…]) || '{…}'::jsonb` — so keys the caller never named survive.
+
+```ruby
+session.merge_metadata!("process_pid" => pid, "runtime_started" => true)
+session.merge_metadata!({ "process_pid" => pid }, [ "interrupt_terminate_pid" ]) # merge + remove
+session.remove_metadata!(Session::SIGTERM_RETRY_METADATA_KEYS)
+```
+
+What that buys and what it doesn't:
+
+- **Does:** a write stops being destructive to keys it didn't name. `interrupt_terminate_pid` (lose it
+  and a "Send now" terminates nothing), `pending_follow_up_prompt` (lose it and a user's message never
+  reaches the agent), and `github_pull_request_urls` (lose it and no GitHub integration engages) now
+  survive a concurrent writer.
+- **Doesn't:** serialize two writers of the *same* key — last writer still wins. And atomicity is a
+  property of *every* writer to the row, not of one key: a caller that still does a whole-column
+  read-modify-write can erase a key no matter how carefully that key was written. Three groups still
+  do. The terminal failure paths (`failure_reason`, `exit_status`) — the session is being failed at
+  that point, so a lost neighbouring key changes nothing. The `resume!` state-machine callbacks
+  (`clear_pending_sleep`, `clear_paused_by_metadata`), which write with `update_column` and fire no
+  callbacks at all today. And **`TranscriptPollerService`**, which batches `metadata` into the same
+  `update!` as `transcript` and `last_timeline_entry_at` on every poll of a live turn — the worker's
+  single most frequent metadata writer. That last one is the honest asterisk on the line above: a key
+  set in the window between its `reload` and its `update!` is still lost, so `interrupt_terminate_pid`
+  is *harder* to lose than it was, not impossible. Splitting that batched write is what would close
+  it, at the cost of a second write and an extra index broadcast on the hottest loop in the app.
+
+Two deliberate differences from `update!`: model validations don't run (which is what makes these
+usable on terminal paths, where a stale-catalog validation error would otherwise block a session from
+recording why it failed), and the `after_update_commit` broadcast callbacks are re-dispatched
+explicitly by the concern rather than fired by Active Record.
 
 ## Stale job supersession
 

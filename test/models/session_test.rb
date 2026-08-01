@@ -3780,4 +3780,118 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal Set.new, Session.ids_awaiting_scheduled_wake([])
     assert_equal Set.new, Session.ids_awaiting_scheduled_wake(nil)
   end
+
+  # ---- deliver_follow_up! ----
+  #
+  # The five immediate-delivery entry points (web follow-up form, triggers, the GitHub
+  # comment and merge-conflict pollers, the heartbeat sweep) all run this one sequence.
+  # These pin the contract they now share.
+
+  test "deliver_follow_up! resumes, stamps the prompt, enqueues, and records the job id" do
+    session = sessions(:needs_input)
+
+    job = nil
+    assert_enqueued_with(job: AgentSessionJob) do
+      job = session.deliver_follow_up!("please continue")
+    end
+
+    session.reload
+    assert session.running?, "an idle session must be running before the job picks up the prompt"
+    assert_equal "please continue", session.metadata["pending_follow_up_prompt"]
+    assert_equal job.job_id, session.running_job_id,
+      "running_job_id closes the window where a session is running with no tracked job"
+  end
+
+  test "deliver_follow_up! clears the stale keys and leaves everything else alone" do
+    session = sessions(:needs_input)
+    session.update!(metadata: {
+      "sigterm_retry_count" => 2,
+      "last_sigterm_at" => 1.minute.ago.iso8601,
+      "clone_path" => "/tmp/clone"
+    })
+
+    session.deliver_follow_up!("please continue", clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+
+    session.reload
+    assert_nil session.metadata["sigterm_retry_count"]
+    assert_nil session.metadata["last_sigterm_at"]
+    assert_equal "/tmp/clone", session.metadata["clone_path"], "unrelated metadata must survive"
+  end
+
+  # The call sites this replaced cleared the WHOLE stale set once any member was
+  # present. Filtering to the `present?` members instead would strand a key held as
+  # `[]`, `false` or `""` — not present, but very much still there for the next turn to
+  # read back.
+  test "deliver_follow_up! clears blank-but-set stale keys along with the rest" do
+    session = sessions(:needs_input)
+    session.update!(metadata: {
+      "sigterm_retry_count" => 2,
+      "sigterm_retry_timestamps" => [],
+      "clone_path" => "/tmp/clone"
+    })
+
+    session.deliver_follow_up!("please continue", clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+
+    session.reload
+    refute session.metadata.key?("sigterm_retry_timestamps"),
+      "an empty-array retry list is still stale state and must go with the counter"
+    assert_nil session.metadata["sigterm_retry_count"]
+    assert_equal "/tmp/clone", session.metadata["clone_path"]
+  end
+
+  test "deliver_follow_up! merges extra metadata alongside the prompt" do
+    session = sessions(:needs_input)
+    sent_at = Time.current.iso8601
+
+    session.deliver_follow_up!(
+      "please continue",
+      metadata_updates: { "sent_message" => "please continue", "sent_message_at" => sent_at }
+    )
+
+    session.reload
+    assert_equal "please continue", session.metadata["pending_follow_up_prompt"]
+    assert_equal "please continue", session.metadata["sent_message"]
+    assert_equal sent_at, session.metadata["sent_message_at"]
+  end
+
+  test "deliver_follow_up! stamps the prompt only after the session is running" do
+    session = sessions(:needs_input)
+    seen_status = nil
+
+    AgentSessionJob.stub(:enqueue_with_prompt, ->(*_args, **_kwargs) {
+      reloaded = Session.find(session.id)
+      seen_status = [ reloaded.status, reloaded.metadata["pending_follow_up_prompt"] ]
+      OpenStruct.new(job_id: "job-123")
+    }) do
+      session.deliver_follow_up!("please continue")
+    end
+
+    assert_equal [ "running", "please continue" ], seen_status,
+      "a reader that sees pending_follow_up_prompt must also see the session running"
+  end
+
+  test "deliver_follow_up! skips the pending stamp for the heartbeat drumbeat" do
+    session = sessions(:needs_input)
+
+    session.deliver_follow_up!("beat", stamp_pending_prompt: false)
+
+    session.reload
+    assert session.running?
+    assert_nil session.metadata["pending_follow_up_prompt"],
+      "a heartbeat must not be resurrected by SIGTERM recovery after its moment has passed"
+  end
+
+  test "deliver_follow_up! forwards images and files to the job" do
+    session = sessions(:needs_input)
+    captured = nil
+
+    AgentSessionJob.stub(:enqueue_with_prompt, ->(_id, _prompt, images: nil, files: nil) {
+      captured = { images: images, files: files }
+      OpenStruct.new(job_id: "job-123")
+    }) do
+      session.deliver_follow_up!("look at this", images: [ "/tmp/a.png" ], files: [ "/tmp/b.txt" ])
+    end
+
+    assert_equal({ images: [ "/tmp/a.png" ], files: [ "/tmp/b.txt" ] }, captured)
+  end
 end

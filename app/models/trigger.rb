@@ -493,31 +493,7 @@ class Trigger < ApplicationRecord
       session.lock!
 
       if session.needs_input? || session.waiting?
-        # Reset SIGTERM retry state for fresh execution
-        # (matches SessionsController#follow_up and GithubCommentPollerJob pattern)
-        if session.metadata&.dig("sigterm_retry_count").present?
-          session.update!(
-            metadata: (session.metadata || {}).except(
-              "sigterm_retry_count",
-              "sigterm_retry_timestamps",
-              "last_sigterm_at"
-            )
-          )
-        end
-
-        # Transition session to running before enqueuing the job.
-        # This matches the pattern used by SessionsController#follow_up and
-        # EnqueuedMessageProcessorService - the session must be running when
-        # AgentSessionJob picks up the follow-up prompt.
-        session.resume! if session.may_resume?
-
-        # Store pending prompt in metadata for recovery if job is interrupted
-        # (matches SessionsController#follow_up and GithubCommentPollerJob pattern)
-        session.update!(
-          metadata: (session.metadata || {}).merge("pending_follow_up_prompt" => prompt)
-        )
-
-        AgentSessionJob.enqueue_with_prompt(session.id, prompt)
+        session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
         @last_follow_up_status = :delivered
       elsif session.running?
         # Wake-up triggers (one_time_reuse_trigger?) must deliver durably across

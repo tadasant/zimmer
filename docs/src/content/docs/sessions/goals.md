@@ -104,13 +104,24 @@ automated nudge prompt and resumes it — the "keep working toward your goal" lo
 It deliberately skips sessions that are blocked on an elicitation or that have pending enqueued
 messages, because resuming those would spawn a second process against the same clone.
 
-:::note[The sweep's own code flags a duplication]
-`HeartbeatSweepJob`'s comment: *"That 4-line sequence is duplicated across several callers — a
-future refactor could extract a shared `Session#deliver_follow_up!`."* The
-follow-up-delivery logic exists in at least three places. So does the rule for applying a follow-up
-goal, which now has four copies — the two API controllers, the MCP tool, and
-`EnqueuedMessageProcessorService` — each writing its own wording of the same log line.
-Tracked in [#105](https://github.com/tadasant/zimmer/issues/105).
+The nudge goes out through `Session#deliver_follow_up!`. Five entry points share it: the web
+follow-up form, triggers, the GitHub comment and merge-conflict pollers, and this sweep. The method
+clears the stale per-turn metadata, transitions the session to running, stamps the prompt where the
+recovery paths look for it, enqueues `AgentSessionJob`, and records `running_job_id` so the session
+is never "running with no job."
+
+Two direct-delivery paths deliberately stay outside it: the REST API's `follow_up` (which never
+stamped a pending prompt, and would change behaviour if it started) and `EnqueuedMessageProcessorService`
+(which delivers a message it has already claimed from a queue, under different locking).
+
+The heartbeat is the one caller that passes `stamp_pending_prompt: false`. A user's message is worth
+replaying after a SIGTERM retry; a drumbeat is not — replaying one would deliver a beat for a moment
+that has already passed.
+
+:::note[The goal rule is still duplicated]
+Delivery is shared; the rule for applying a follow-up *goal* is not. It has four copies — the two API
+controllers, the MCP tool, and `EnqueuedMessageProcessorService` — each writing its own wording of the
+same log line. Tracked in [#105](https://github.com/tadasant/zimmer/issues/105).
 :::
 
 ## `needs_input` vs `archived`

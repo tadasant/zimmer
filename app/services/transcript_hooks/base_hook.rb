@@ -37,17 +37,21 @@ class TranscriptHooks::BaseHook
   protected
 
   # Helper to update custom_metadata on the session
-  # Merges the provided hash with existing custom_metadata
-  # Reloads session first to avoid overwriting concurrent updates
+  #
+  # Hooks run alongside each other and alongside the session's own worker, all writing
+  # the same column. The merge happens in PostgreSQL as one statement, so a hook that
+  # writes `github_pull_request_urls` cannot erase a key another writer set in between —
+  # previously a real hazard, since losing that key means none of the GitHub integration
+  # engages for the session.
+  #
+  # Two hooks writing the SAME key still race; the guidance to keep hooks on distinct
+  # keys stands.
+  #
   # @param updates [Hash] The key-value pairs to merge into custom_metadata
   def update_custom_metadata(updates)
     return if updates.blank?
 
-    with_db_retry do
-      session.reload
-      current = session.custom_metadata || {}
-      session.update!(custom_metadata: current.merge(updates))
-    end
+    with_db_retry { session.merge_custom_metadata!(updates) }
   end
 
   # Helper to get a value from custom_metadata

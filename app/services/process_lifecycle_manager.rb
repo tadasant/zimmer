@@ -306,9 +306,7 @@ class ProcessLifecycleManager
       # so we route directly to compact recovery regardless of exit status.
       if session.metadata&.dig("prompt_too_long_hang_detected")
         with_db_retry do
-          session.update!(
-            metadata: session.metadata.except("prompt_too_long_hang_detected")
-          )
+          session.remove_metadata!("prompt_too_long_hang_detected")
         end
         add_log("Routing to compact recovery after 'Prompt is too long' hang detection", level: "info")
         return handle_context_length_error(working_dir)
@@ -576,11 +574,9 @@ class ProcessLifecycleManager
 
     next_attempt = retry_count + 1
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "signal_death_retry_count" => next_attempt,
-          "last_signal_death_at" => Time.current.iso8601
-        )
+      session.merge_metadata!(
+        "signal_death_retry_count" => next_attempt,
+        "last_signal_death_at" => Time.current.iso8601
       )
     end
 
@@ -730,9 +726,7 @@ class ProcessLifecycleManager
 
     # Update session metadata with new process PID
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge("process_pid" => new_pid)
-      )
+      session.merge_metadata!("process_pid" => new_pid)
     end
 
     # Update our state to reflect the new process
@@ -799,9 +793,7 @@ class ProcessLifecycleManager
 
     # Reset runtime_started so future spawns use --session-id instead of --resume
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge("runtime_started" => false)
-      )
+      session.merge_metadata!("runtime_started" => false)
     end
 
     add_log("Recovering from failed resume: starting fresh CLI session with original prompt", level: "info")
@@ -830,12 +822,7 @@ class ProcessLifecycleManager
 
     # Update session metadata with new process PID and re-set runtime_started
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "process_pid" => new_pid,
-          "runtime_started" => true
-        )
-      )
+      session.merge_metadata!("process_pid" => new_pid, "runtime_started" => true)
     end
 
     # Update our state to reflect the new process
