@@ -1094,4 +1094,153 @@ class SessionsTest < ApplicationSystemTestCase
     assert_equal 1, session.enqueued_messages.count
     assert_equal "Queued from the drawer", session.enqueued_messages.first.content
   end
+
+  # --- The drawer's settle gate (#180) ---------------------------------------
+
+  # While the panel slides it is inert, so a click aimed at a control that is
+  # still travelling can't land on whatever slid under the pointer instead — in
+  # this header, "Close" sits next to a `data-turbo-frame="_top"` link that
+  # navigates the whole document. The gate must then LIFT: the drawer is useless
+  # if it stays inert. The suite serves every page with `transition: none`, so
+  # these assertions run the zero-duration path, where `transitionend` never
+  # fires at all — the case that would strand a reduced-motion user.
+  test "the drawer settles into an interactive panel and re-arms the gate on close" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Settle gate session",
+      status: :running
+    )
+
+    visit root_url
+    view_link = "a[aria-label='View session #{session.id}']"
+    find(view_link).click
+
+    # The gate lifted: the open panel takes pointer events again.
+    assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']:not(.pointer-events-none)"
+    assert_equal "auto", panel_pointer_events
+
+    # And the panel is genuinely usable — the Close control works.
+    assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
+    within "[data-session-drawer-target='panel']" do
+      find("button[aria-label='Close session details']").click
+    end
+
+    # On the way out the gate is re-armed, so a click chasing a control that is
+    # sliding away lands on nothing.
+    assert_selector "[data-session-drawer-target='panel'][aria-hidden='true'].pointer-events-none", visible: :all
+    assert_current_path root_path
+  end
+
+  # The trap in #180: gate the panel on `transitionend` and a user who asked for
+  # reduced motion gets an event that never fires and a drawer that never becomes
+  # clickable. The suite already forces zero-duration transitions everywhere, so
+  # what this adds is the real media state — the drawer opens, is interactive,
+  # and closes with `prefers-reduced-motion: reduce` in effect.
+  test "the drawer works under prefers-reduced-motion" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Reduced motion session",
+      status: :running
+    )
+
+    emulate_reduced_motion
+    begin
+      visit root_url
+
+      # Fail loudly rather than vacuously if the emulation didn't take.
+      assert page.evaluate_script("window.matchMedia('(prefers-reduced-motion: reduce)').matches"),
+        "prefers-reduced-motion emulation did not apply; this test would prove nothing"
+
+      find("a[aria-label='View session #{session.id}']").click
+
+      assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']:not(.pointer-events-none)"
+      assert_equal "auto", panel_pointer_events
+
+      assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
+      within "[data-session-drawer-target='panel']" do
+        find("button[aria-label='Close session details']").click
+      end
+      assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
+    ensure
+      reset_emulated_media
+    end
+  end
+
+  # Once settled, the overlay still dismisses the drawer — the settle gate routes
+  # overlay clicks through #overlayClick, and that must not cost the plain
+  # click-outside-to-close behavior.
+  test "clicking the overlay closes the settled drawer" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Overlay dismiss session",
+      status: :running
+    )
+
+    visit root_url
+    find("a[aria-label='View session #{session.id}']").click
+    assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']:not(.pointer-events-none)"
+    assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
+
+    # Dispatched rather than clicked by coordinate: the overlay spans the
+    # viewport, so its centre is behind the panel, and the dashboard's own
+    # stacking contexts sit above it elsewhere. What matters here is the wiring —
+    # a click on the overlay reaches #overlayClick and, once settled, closes.
+    js_click(find("[data-session-drawer-target='overlay']"))
+
+    assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
+    assert_current_path root_path
+  end
+
+  # Close and "open full page" are adjacent controls with opposite consequences,
+  # so they are separated by a divider rather than sitting 4px apart.
+  test "the drawer's Close control is separated from the full-page link" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Close separation session",
+      status: :running
+    )
+
+    visit root_url
+    find("a[aria-label='View session #{session.id}']").click
+    assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
+
+    # The header is rendered twice — a mobile variant and a desktop one, one of
+    # which is always display:none. Measure the one actually on screen; the
+    # hidden copy reports a zero-sized rect for everything.
+    gap = page.evaluate_script(<<~JS)
+      (function() {
+        const panel = document.querySelector("[data-session-drawer-target='panel']");
+        const visible = (el) => el && el.getBoundingClientRect().width > 0;
+        const close = Array.from(panel.querySelectorAll("button[aria-label='Close session details']")).find(visible);
+        const expand = Array.from(panel.querySelectorAll("a[aria-label='Expand to full page']")).find(visible);
+        if (!close || !expand) return null;
+        return Math.round(expand.getBoundingClientRect().left - close.getBoundingClientRect().right);
+      })()
+    JS
+
+    assert gap, "Expected both the Close button and the full-page link in the drawer header"
+    assert_operator gap, :>=, 16,
+      "Close sat #{gap}px from a link that navigates the whole document; it needs real separation (#180)"
+  end
+
+  private
+
+  def panel_pointer_events
+    page.evaluate_script(<<~JS)
+      getComputedStyle(document.querySelector("[data-session-drawer-target='panel']")).pointerEvents
+    JS
+  end
+
+  # Chrome DevTools media emulation — the only way to put the real
+  # `prefers-reduced-motion: reduce` state in front of the page.
+  def emulate_reduced_motion
+    page.driver.browser.execute_cdp(
+      "Emulation.setEmulatedMedia",
+      features: [ { name: "prefers-reduced-motion", value: "reduce" } ]
+    )
+  end
+
+  def reset_emulated_media
+    page.driver.browser.execute_cdp("Emulation.setEmulatedMedia", features: [])
+  end
 end

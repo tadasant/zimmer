@@ -12,6 +12,13 @@ class BroadcastServiceTest < ActiveSupport::TestCase
     @service.reset_circuit_breaker
   end
 
+  # The breaker is class-level state, and `paused_until` is now read by the
+  # layout on every page. A test that leaves it open would paint a "live updates
+  # paused" banner across unrelated system tests in the same worker.
+  teardown do
+    @service.reset_circuit_breaker
+  end
+
   # === timeline_message tests ===
 
   test "timeline_message broadcasts to correct stream with message data" do
@@ -399,6 +406,73 @@ class BroadcastServiceTest < ActiveSupport::TestCase
     assert_nil BroadcastService.circuit_breaker_opened_at
   end
 
+  # === Circuit breaker visibility (the "live updates paused" banner, #86) ===
+
+  test "paused_until is nil while broadcasts are flowing" do
+    assert_nil BroadcastService.paused_until
+    assert_not BroadcastService.live_updates_paused?
+  end
+
+  test "paused_until reports when this process's breaker will close" do
+    opened_at = Time.current
+    BroadcastService.circuit_breaker_opened_at = opened_at
+
+    assert BroadcastService.live_updates_paused?
+    assert_in_delta opened_at + BroadcastService::CIRCUIT_BREAKER_RESET_TIME,
+      BroadcastService.paused_until, 1
+  end
+
+  test "paused_until ignores a breaker whose reset window has already elapsed" do
+    BroadcastService.circuit_breaker_opened_at =
+      Time.current - (BroadcastService::CIRCUIT_BREAKER_RESET_TIME + 1)
+
+    assert_nil BroadcastService.paused_until
+  end
+
+  # The point of the shared cache: in production the breaker opens in the GoodJob
+  # worker, and the banner renders in the web process. Simulated here by opening
+  # the breaker, then wiping the ivar the way a second process would never have
+  # had it in the first place.
+  test "an open breaker stays visible to a process that did not open it" do
+    with_shared_cache do
+      @mock_channel.stubs(:broadcast_append_to).raises(StandardError, "Error")
+      message = { "type" => "user", "message" => { "role" => "user", "content" => "Hello" } }
+      BroadcastService::CIRCUIT_BREAKER_THRESHOLD.times { @service.timeline_message(@session, message) }
+
+      assert BroadcastService.live_updates_paused?, "the breaker should be open in this process"
+
+      # Another process: same shared cache, no local breaker state.
+      BroadcastService.circuit_breaker_opened_at = nil
+
+      assert BroadcastService.live_updates_paused?,
+        "an open breaker must be visible to the web process, which is where the banner renders"
+      assert_operator BroadcastService.paused_until, :<=,
+        Time.current + BroadcastService::CIRCUIT_BREAKER_RESET_TIME
+    end
+  end
+
+  test "resetting the breaker clears the shared state too" do
+    with_shared_cache do
+      BroadcastService.publish_circuit_open(Time.current + BroadcastService::CIRCUIT_BREAKER_RESET_TIME)
+      assert BroadcastService.live_updates_paused?
+
+      @service.reset_circuit_breaker
+      assert_nil BroadcastService.paused_until
+    end
+  end
+
+  # A Redis hiccup must not take the page down with it: the banner is a
+  # diagnostic, and an unreadable cache is not worth a 500.
+  test "the banner's cache reads and writes survive a broken cache" do
+    Rails.stubs(:cache).returns(broken_cache)
+
+    assert_nothing_raised do
+      assert_nil BroadcastService.paused_until
+      BroadcastService.publish_circuit_open(Time.current + BroadcastService::CIRCUIT_BREAKER_RESET_TIME)
+      BroadcastService.clear_published_circuit_open
+    end
+  end
+
   # === Error handling tests ===
 
   test "broadcast failures do not raise exceptions" do
@@ -482,5 +556,26 @@ class BroadcastServiceTest < ActiveSupport::TestCase
     )
 
     @service.timeline_message(@session, message)
+  end
+
+  private
+
+  # The test environment's cache is a :null_store, which cannot demonstrate a
+  # value crossing between processes. Swap in a real store for the tests that are
+  # specifically about the shared cache carrying the breaker to the web process.
+  def with_shared_cache
+    store = ActiveSupport::Cache::MemoryStore.new
+    Rails.stubs(:cache).returns(store)
+    yield
+  ensure
+    BroadcastService.clear_published_circuit_open
+  end
+
+  def broken_cache
+    cache = mock("broken_cache")
+    cache.stubs(:read).raises(StandardError, "redis down")
+    cache.stubs(:write).raises(StandardError, "redis down")
+    cache.stubs(:delete).raises(StandardError, "redis down")
+    cache
   end
 end

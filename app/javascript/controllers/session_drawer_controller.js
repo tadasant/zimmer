@@ -21,6 +21,14 @@ import { Controller } from "@hotwired/stimulus"
  * The panel's left edge carries a resize handle: drag it to widen or narrow the
  * drawer. The chosen width is persisted in localStorage so it sticks across
  * opens and page loads.
+ *
+ * While the panel is still sliding it is inert (`pointer-events: none`), and the
+ * overlay swallows clicks instead of closing. A control clicked mid-slide has
+ * moved by the time the browser dispatches the event, so the click lands on
+ * whatever slid into those coordinates — and the detail header puts "Close" next
+ * to a `data-turbo-frame="_top"` link that navigates the whole document. See
+ * `transitionMs` for why the settle timing is read off the element rather than
+ * restated as a constant here.
  */
 export default class extends Controller {
   static targets = ["panel", "overlay", "frame", "resizeHandle"]
@@ -71,6 +79,7 @@ export default class extends Controller {
     this.element.removeEventListener("click", this.boundDelegatedClose)
     window.removeEventListener("resize", this.boundViewportResize)
     this.stopResizeListeners()
+    this.stopSettling()
     this.unlockScroll()
     if (this.clearTimer) clearTimeout(this.clearTimer)
   }
@@ -127,6 +136,8 @@ export default class extends Controller {
 
   show() {
     this.overlayTarget.classList.remove("hidden")
+    // Make the panel inert for the length of the slide. Lifted by settle().
+    this.beginSettling()
     // Toggle to an explicit translate-x-0 (rather than just removing
     // translate-x-full) so the panel always carries a non-none `translate`
     // value. That makes it the containing block for its `position: fixed`
@@ -153,6 +164,11 @@ export default class extends Controller {
       this.returnFocusEl.focus({ preventScroll: true })
     }
     this.returnFocusEl = null
+    // The panel is on its way out, so nothing in it should be clickable again:
+    // its controls are moving away under the pointer for the whole slide-out.
+    // show() re-arms the gate and lifts it once the panel has settled.
+    this.stopSettling()
+    this.panelTarget.classList.add("pointer-events-none")
     this.panelTarget.classList.remove("translate-x-0")
     this.panelTarget.classList.add("translate-x-full")
     this.overlayTarget.classList.add("hidden")
@@ -168,7 +184,78 @@ export default class extends Controller {
         this.frameTarget.innerHTML = ""
       }
       this.clearTimer = null
-    }, 300)
+    }, this.transitionMs)
+  }
+
+  // The overlay dismisses the drawer — but not while the panel is still sliding
+  // in. During that window the overlay is the only thing between a stray click
+  // and the dashboard underneath, so it swallows the click rather than acting on
+  // it. Without this, gating the panel's pointer events would merely relocate
+  // the misfire: the click would fall through to the overlay and dismiss the
+  // drawer the user just opened.
+  overlayClick() {
+    if (this.settling) return
+    this.close()
+  }
+
+  // --- Settle gate -----------------------------------------------------------
+
+  // Hold the panel inert until it stops moving. The gate lifts on `transitionend`
+  // OR a timer, whichever lands first — both are needed. `transitionend` never
+  // fires for a zero-duration transition, which is exactly what a
+  // prefers-reduced-motion user (and the system suite's forced `transition:
+  // none`) gets, so a transitionend-only gate would leave them a permanently
+  // dead drawer. The timer alone would be a second copy of the CSS duration,
+  // free to drift from it.
+  beginSettling() {
+    this.stopSettling()
+    this.settling = true
+    this.panelTarget.classList.add("pointer-events-none")
+
+    this.boundSettle = this.settle.bind(this)
+    this.panelTarget.addEventListener("transitionend", this.boundSettle)
+    this.settleTimer = setTimeout(this.boundSettle, this.transitionMs)
+  }
+
+  settle(event) {
+    // transitionend bubbles: a hover transition on a button inside the panel
+    // would otherwise lift the gate while the panel is still travelling.
+    if (event && event.target !== this.panelTarget) return
+    this.stopSettling()
+    this.panelTarget.classList.remove("pointer-events-none")
+  }
+
+  stopSettling() {
+    this.settling = false
+    if (this.settleTimer) {
+      clearTimeout(this.settleTimer)
+      this.settleTimer = null
+    }
+    if (this.boundSettle) {
+      this.panelTarget.removeEventListener("transitionend", this.boundSettle)
+      this.boundSettle = null
+    }
+  }
+
+  // How long the panel actually takes to slide, read from the panel itself. The
+  // duration is declared once, in CSS (`transition-transform duration-300`), and
+  // every timer here derives from that one number — restating it as a JS
+  // constant is what let the two drift apart silently. Reading the computed
+  // value also means the gate follows whatever the browser is really doing:
+  // 0ms under prefers-reduced-motion or the system suite's disabled animations.
+  get transitionMs() {
+    // transition-duration lists one value per transitioned property; the panel
+    // is not at rest until the longest of them ends.
+    return getComputedStyle(this.panelTarget)
+      .transitionDuration.split(",")
+      .reduce((longest, value) => Math.max(longest, this.constructor.parseDuration(value)), 0)
+  }
+
+  static parseDuration(value) {
+    const trimmed = value.trim()
+    const amount = parseFloat(trimmed)
+    if (!Number.isFinite(amount)) return 0
+    return trimmed.endsWith("ms") ? amount : amount * 1000
   }
 
   // Eagerly-bound delegated handler for close controls inside the lazy-loaded
