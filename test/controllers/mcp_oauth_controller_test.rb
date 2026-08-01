@@ -6,7 +6,7 @@ require "mocha/minitest"
 # Exercises the real OAuth callback wiring end-to-end: completing the token
 # exchange stores the credential and, once every blocking flow is done, the
 # session auto-resumes its original intent. The external token endpoint is the
-# only thing stubbed (Net::HTTP.post_form); the resume decision runs for real.
+# only thing stubbed (McpOauthService#post_form); the resume decision runs for real.
 class McpOauthControllerTest < ActionDispatch::IntegrationTest
   CONFIG_A = { type: "http", url: "https://a.example.com/mcp", headers: {} }.freeze
   CONFIG_B = { type: "http", url: "https://b.example.com/mcp", headers: {} }.freeze
@@ -48,6 +48,18 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     )
   end
 
+  # The controller builds its own McpOauthService, so the token endpoint is stubbed at
+  # the service's transport seam (McpOauthService#post_form) rather than on an instance
+  # this test holds. `capture` receives the form params that would go on the wire.
+  def stub_token_exchange(response, capture: nil)
+    McpOauthService.any_instance.stubs(:post_form).with do |_uri, params|
+      capture&.call(params)
+      true
+    end.returns(response)
+
+    yield
+  end
+
   def token_response
     response = Net::HTTPSuccess.new("1.1", "200", "OK")
     response.define_singleton_method(:code) { "200" }
@@ -66,7 +78,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     flow = pending_flow_for("server-b", CONFIG_B, state: "state-b")
 
     assert_enqueued_with(job: AgentSessionJob, args: [ @session.id ]) do
-      Net::HTTP.stub(:post_form, ->(_uri, _params) { token_response }) do
+      stub_token_exchange(token_response) do
         get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
       end
     end
@@ -86,7 +98,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     flow = pending_flow_for("server-a", CONFIG_A, state: "state-a")
 
     assert_no_enqueued_jobs do
-      Net::HTTP.stub(:post_form, ->(_uri, _params) { token_response }) do
+      stub_token_exchange(token_response) do
         get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
       end
     end
@@ -276,7 +288,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
       expires_at: 1.hour.from_now
     )
 
-    Net::HTTP.stub(:post_form, ->(_uri, _params) { slack_nested_token_response }) do
+    stub_token_exchange(slack_nested_token_response) do
       get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
     end
 
@@ -377,7 +389,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     )
 
     captured = nil
-    Net::HTTP.stub(:post_form, ->(_uri, params) { captured = params; slack_nested_token_response }) do
+    stub_token_exchange(slack_nested_token_response, capture: ->(params) { captured = params }) do
       post mcp_oauth_complete_path, params: {
         state: "slack-state",
         redirect_response: "http://localhost:3118/callback?code=real-code&state=slack-state"
@@ -561,7 +573,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
       expires_at: 1.hour.from_now
     )
 
-    Net::HTTP.stub(:post_form, ->(_uri, _params) { token_response }) do
+    stub_token_exchange(token_response) do
       get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
     end
 
@@ -594,7 +606,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
     assert_select "a[href=?]", connectors_path
 
-    Net::HTTP.stub(:post_form, ->(_uri, _params) { token_response }) do
+    stub_token_exchange(token_response) do
       post mcp_oauth_complete_path, params: {
         state: "connector-manual",
         redirect_response: "http://localhost:3118/callback?code=real-code&state=connector-manual"

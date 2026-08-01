@@ -167,6 +167,10 @@ PKCE alone (RFC 7636). The token exchange omits the `client_secret` parameter wh
 secret and relies on the persisted `code_verifier`; when a secret *is* configured, the previous
 `client_secret_post` behavior is preserved.
 
+Every outbound call `McpOauthService` makes — probe, discovery, DCR, and the token exchange itself —
+sets `open_timeout` and `read_timeout` to `REQUEST_TIMEOUT` (30 seconds). An auth server that accepts
+the connection and then never answers fails the exchange rather than holding a request thread.
+
 ### Manual (paste-back) completion
 
 Some public clients only permit a redirect URI they already whitelisted — for the official Slack
@@ -249,7 +253,10 @@ it. `McpOauthCredential.compute_credential_key`:
 ```
 
 ...where "compact JSON" is faked by string-munging `": "` → `":"` and `", "` → `","`, and
-`streamable-http` is normalized to `http`.
+`streamable-http` is normalized to `http`. A canary test pins the literal key for two fixed configs —
+`notion|3fad03f7abd02b9c` for `{"type":"http","url":"https://mcp.notion.com/v1/mcp","headers":{}}` —
+so that a change on Zimmer's side of the algorithm fails a test instead of silently missing every
+credential lookup.
 
 :::danger[This is a reimplementation of another project's internals]
 It is a hash algorithm reverse-engineered from Claude Code so the two agree on a dictionary key, with
@@ -481,20 +488,12 @@ remains is an **in-session** `initiate` naming a server *outside* the catalog �
 still falls back to the submitted `server_url`, and discovery will fetch it.
 :::
 
-:::caution[The loopback check is a substring match]
-`McpOauthPendingFlow` decides "is this a loopback redirect" with:
-
-```ruby
-redirect_uri.include?("localhost") || redirect_uri.include?("127.0.0.1")
-```
-
-So `https://localhost.evil.com` matches.
-Tracked in [#47](https://github.com/tadasant/zimmer/issues/47).
-:::
-
-:::caution[No timeout on the token exchange]
-`McpOauthService#exchange_code_for_tokens` uses `Net::HTTP.post_form` with **no timeout**, unlike its
-sibling `fetch_json` / `post_json` which both set 30 seconds. A hung auth server hangs the request.
+:::note[The loopback check has no production caller]
+`McpOauthPendingFlow#localhost_flow?` parses `redirect_uri` and compares the **host** exactly against
+`localhost`, `127.0.0.1` and `::1`; a malformed or schemeless URI is not a loopback. Nothing in the
+app calls it — the decision that actually matters, whether a flow can be completed automatically, is
+made by comparing the redirect against `build_redirect_uri`, below. The predicate is correct so that
+the first caller inherits a correct answer, not because it gates anything today.
 :::
 
 :::caution[Servers without `offline_access` become one-shot credentials]

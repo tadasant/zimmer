@@ -58,6 +58,71 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     assert_equal key_streamable, key_http
   end
 
+  # Canary. compute_credential_key reimplements a private Claude Code algorithm so that
+  # Zimmer and the agent's MCP client agree on a dictionary key. Nothing in production
+  # notices when the two disagree — every credential lookup just misses and the agent
+  # says it needs authorization. The shape assertions above stay green through any drift,
+  # so pin the literal key for a fixed config: if this fails, the algorithm changed and
+  # every stored credential is now unfindable unless upstream changed the same way.
+  test "compute_credential_key pins the exact key for a fixed server config" do
+    config = {
+      type: "streamable-http",
+      url: "https://mcp.notion.com/v1/mcp",
+      headers: {}
+    }
+
+    key = McpOauthCredential.compute_credential_key("notion", config)
+
+    # The hashed preimage is compact JSON with keys in this exact order, `streamable-http`
+    # normalized to `http`, and no spaces after `:` or `,`:
+    preimage = '{"type":"http","url":"https://mcp.notion.com/v1/mcp","headers":{}}'
+    expected = "notion|#{Digest::SHA256.hexdigest(preimage)[0, 16]}"
+
+    assert_equal "notion|3fad03f7abd02b9c", key,
+      "credential_key algorithm drifted; hashed preimage must be #{preimage}"
+    assert_equal expected, key
+  end
+
+  test "compute_credential_key pins the exact key for a config with headers" do
+    config = {
+      type: "http",
+      url: "https://mcp.example.com/v1/mcp",
+      headers: { "X-Team" => "acme" }
+    }
+
+    key = McpOauthCredential.compute_credential_key("example", config)
+
+    preimage = '{"type":"http","url":"https://mcp.example.com/v1/mcp","headers":{"X-Team":"acme"}}'
+    expected = "example|#{Digest::SHA256.hexdigest(preimage)[0, 16]}"
+
+    assert_equal "example|b58a89d437216c17", key,
+      "credential_key algorithm drifted; hashed preimage must be #{preimage}"
+    assert_equal expected, key
+  end
+
+  # The `", "` → `","` munge is the fragile part of the reimplementation, and the two
+  # canaries above would pass with it deleted — their preimages have no spaces to munge.
+  # This one pins it: the munge reaches inside header *values*, so the hashed preimage is
+  # not the real compact JSON of the config. Ugly, but it is what Claude Code keys on.
+  test "compute_credential_key pins the compact-JSON munge reaching into header values" do
+    config = {
+      type: "http",
+      url: "https://mcp.example.com/v1/mcp",
+      headers: { "Accept" => "application/json, text/event-stream" }
+    }
+
+    key = McpOauthCredential.compute_credential_key("example", config)
+
+    munged = '{"type":"http","url":"https://mcp.example.com/v1/mcp","headers":{"Accept":"application/json,text/event-stream"}}'
+    honest = config.to_json
+
+    assert_equal "example|#{Digest::SHA256.hexdigest(munged)[0, 16]}", key,
+      "credential_key algorithm drifted; hashed preimage must be #{munged}"
+    assert_equal "example|c40efadd07652db1", key
+    assert_not_equal "example|#{Digest::SHA256.hexdigest(honest)[0, 16]}", key,
+      "the munge is lossy inside header values — hashing the config's real JSON gives a different key"
+  end
+
   test "active? returns true when expires_at is nil" do
     credential = mcp_oauth_credentials(:notion)
     credential.expires_at = nil
