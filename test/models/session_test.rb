@@ -354,6 +354,31 @@ class SessionTest < ActiveSupport::TestCase
     assert session.valid?
   end
 
+  # Zimmer has exactly one execution provider and no sandbox. `remote_sandbox` was in
+  # this enum, and in the MCP start_session tool's schema described as "runs in isolated
+  # sandbox," while the class behind it returned `Result.failure("not yet implemented")`
+  # from every method. The enum is the advertisement; it now matches what exists.
+  test "local_filesystem is the only execution provider" do
+    assert_equal [ "local_filesystem" ], Session::EXECUTION_PROVIDERS
+  end
+
+  test "should reject the stub remote_sandbox execution provider" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test",
+                          agent_runtime: "claude_code", status: :waiting,
+                          execution_provider: "remote_sandbox")
+
+    assert_not session.valid?
+    assert_includes session.errors[:execution_provider], "remote_sandbox is not a valid execution provider"
+  end
+
+  test "should default execution_provider to local_filesystem" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test",
+                              agent_runtime: "claude_code", status: :waiting)
+
+    assert_equal "local_filesystem", session.execution_provider
+    assert session.valid?
+  end
+
   test "should validate mcp_servers is an array" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code", status: :waiting)
     session.mcp_servers = "not_an_array"

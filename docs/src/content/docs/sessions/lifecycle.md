@@ -143,13 +143,7 @@ triggers watching this session, and sets a trash expiry.
 
 The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a short undo
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
-`TRASH_RETENTION_PERIOD`.
-
-:::caution[The retention period in the code comment is wrong]
-The comment on the `archive` event says artifacts "are preserved for 14 days before deletion."
-The `TRASH_RETENTION_PERIOD` constant that actually governs it is `4.days`. Four days is what
-happens. The comment is stale. Tracked in [#72](https://github.com/tadasant/zimmer/issues/72).
-:::
+`TRASH_RETENTION_PERIOD`, which is `4.days`. `EmptyTrashJob` deletes them once that expires.
 
 :::danger[The Undo button doesn't work]
 [Issue #12](https://github.com/tadasant/zimmer/issues/12): the archive `turbo_stream` response

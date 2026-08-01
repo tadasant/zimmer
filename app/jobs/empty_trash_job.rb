@@ -7,7 +7,8 @@
 # - Preserve lightweight artifacts and delete the clone if dirty
 #
 # This job handles the second phase: permanently deleting preserved artifacts
-# after the retention period expires (default: 14 days). It also cleans up
+# after the retention period expires (SessionStateMachine::TRASH_RETENTION_PERIOD,
+# 4 days). It also cleans up
 # any clones that somehow survived (belt-and-suspenders).
 #
 # Runs every hour via GoodJob cron.
