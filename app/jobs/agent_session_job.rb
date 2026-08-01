@@ -1029,6 +1029,15 @@ class AgentSessionJob < ApplicationJob
         spawn_identity = RuntimeAuthProvider.for(session.agent_runtime).inject_for_session!(session, working_directory)
         AuthRecoveryCoordinator.record_identity!(session, spawn_identity)
 
+        # Wait out the container's background boot tasks before launching the CLI.
+        # bin/docker-entrypoint updates the runtime CLI in the background so Rails can
+        # boot immediately, which leaves a window right after a deploy where the binary
+        # on disk is still the previous version (issue #122). This sits as close to the
+        # spawn as possible on purpose: the clone, AIR prepare and MCP setup above have
+        # already overlapped with the update, so in the common case there is nothing
+        # left to wait for. See BootTasksReadiness for why the wait is bounded.
+        report_boot_tasks_readiness(BootTasksReadiness.await, log_buffer, runtime_label)
+
         # Use ProcessLifecycleManager to spawn the process
         # Images are passed for follow-up prompts with attachments
         spawn_result = lifecycle_manager.spawn(
@@ -1964,6 +1973,40 @@ class AgentSessionJob < ApplicationJob
       end
     end
     true
+  end
+
+  # Turn a BootTasksReadiness result into a trace on the session.
+  #
+  # The point of the gate is that the stale-CLI window stops being invisible, so every
+  # outcome other than "the marker was already there" says something. A session that
+  # waited gets an info line explaining the delay; a session that spawns anyway — because
+  # a boot task failed, or because the deadline passed with the marker never landing —
+  # gets a warning in its own log AND in the process log, since the second case is an
+  # operator problem (a hung `claude update`) that outlives this one session.
+  #
+  # @param result [BootTasksReadiness::Result]
+  def report_boot_tasks_readiness(result, log_buffer, runtime_label)
+    waited = result.waited_seconds.to_f.round(1)
+
+    case result.state
+    when :degraded
+      message = "Container boot tasks reported a failure (#{result.detail}) — spawning #{runtime_label} " \
+                "anyway, but the CLI may be the version baked into the image rather than the latest."
+      log_buffer.add(message, level: "warning")
+      Rails.logger.warn("[BootTasksReadiness] #{message}")
+    when :timed_out
+      message = "Container boot tasks did not finish within #{waited}s — spawning #{runtime_label} against " \
+                "whatever CLI is on disk, which may be the previous deploy's version."
+      log_buffer.add(message, level: "warning")
+      Rails.logger.warn("[BootTasksReadiness] #{message}")
+    when :ready
+      if result.waited?
+        log_buffer.add(
+          "Waited #{waited}s for container boot tasks (#{runtime_label} CLI update) to finish before spawning",
+          level: "info"
+        )
+      end
+    end
   end
 
   # Build spawn options for the Claude CLI process

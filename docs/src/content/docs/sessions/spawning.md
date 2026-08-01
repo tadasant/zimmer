@@ -119,6 +119,46 @@ The elicitation variables used to be the other half of this pair. They now come 
 which both runtimes include.
 :::
 
+## The boot-tasks readiness gate
+
+The last thing the job does before launching the CLI is check that the container it is running
+in has finished its background boot tasks.
+
+`bin/docker-entrypoint` runs `claude update` and `bin/ensure-playwright-browsers` in a
+backgrounded block, deliberately: they are network-bound and can take 30s+, and running them in
+the foreground would hold Rails behind them until Kamal's health check gave up. The cost is a
+window. `~/.local` is a named volume that survives the deploy, so it shadows the CLI baked into
+the new image — until `claude update` finishes, the binary on disk is the *previous* deploy's.
+
+The entrypoint writes a marker file when that block completes, whatever the outcome, and exports
+its path as `ZIMMER_BOOT_TASKS_MARKER`. `BootTasksReadiness.await` blocks on the marker and the
+spawn path reports the result into the session's log.
+
+| Outcome | What the session sees |
+| --- | --- |
+| Marker already present | Nothing. The overwhelmingly common case — the clone, `air prepare`, and MCP setup have already overlapped with the update. |
+| Marker appeared after a wait | An info line naming the wait: `Waited 4.2s for container boot tasks…` |
+| Marker says a task failed | A **warning**: the CLI may be the image's version rather than the latest. Spawns anyway. |
+| Marker never appeared | A **warning** naming the deadline, in the session log and in the process log. Spawns anyway. |
+
+Three properties are deliberate, because each of their opposites is worse than a stale CLI:
+
+- **Nothing here blocks Rails boot.** This is read on the spawn path only. `/up` answers on
+  schedule no matter what the background block is doing.
+- **The wait is bounded, and bounded from process start rather than from the call.** If
+  `claude update` hangs the marker never lands, and after `ZIMMER_BOOT_TASKS_TIMEOUT_SECONDS`
+  (default 120) sessions spawn regardless. Because the deadline is anchored to when the process
+  booted, the mechanism is inert once the container has been up longer than that — a session
+  started an hour into a deploy never waits, and never can. A worker that refuses to spawn until
+  a hung `npm` returns would be a worse outage than the bug.
+- **The gate is off unless the entrypoint armed it.** Development, test, and `bin/dev` never run
+  the entrypoint, so the variable is unset and `await` returns immediately without touching the
+  filesystem.
+
+The marker is per container, in `/tmp`, which is what you want: `web` and `worker` are separate
+containers running the same entrypoint, and each one gates on its own boot tasks. Sessions spawn
+in `worker`.
+
 ## The monitor loop
 
 Once spawned, the job loops: check the process is alive, poll the transcript file, broadcast new
