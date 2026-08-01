@@ -8374,6 +8374,150 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "Retry must not report the resumable conversation as missing"
   end
 
+  # ============================================================================
+  # Boot-tasks readiness gate (issue #122)
+  #
+  # bin/docker-entrypoint updates the runtime CLI in the background so Rails can
+  # boot immediately, which leaves a window right after a deploy where the binary
+  # on disk is the previous deploy's. The spawn path waits on the entrypoint's
+  # readiness marker; these cover the trace it must leave when it doesn't get a
+  # clean one, because the whole point is that the window stops being silent.
+  # ============================================================================
+
+  test "boot tasks readiness leaves no log line when the gate is disabled" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(
+      :report_boot_tasks_readiness,
+      BootTasksReadiness::Result.new(state: :disabled, waited_seconds: 0.0),
+      log_buffer,
+      "Claude Code"
+    )
+    log_buffer.flush
+
+    assert_empty @session.logs.reload.select { |entry| entry.content.include?("boot tasks") }
+  end
+
+  test "boot tasks readiness stays quiet when the marker was already there" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(
+      :report_boot_tasks_readiness,
+      BootTasksReadiness::Result.new(state: :ready, waited_seconds: 0.2),
+      log_buffer,
+      "Claude Code"
+    )
+    log_buffer.flush
+
+    assert_empty @session.logs.reload.select { |entry| entry.content.include?("boot tasks") }
+  end
+
+  test "boot tasks readiness records how long the spawn waited" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(
+      :report_boot_tasks_readiness,
+      BootTasksReadiness::Result.new(state: :ready, waited_seconds: 12.34),
+      log_buffer,
+      "Claude Code"
+    )
+    log_buffer.flush
+
+    log = @session.logs.reload.find { |entry| entry.content.include?("Waited 12.3s for container boot tasks") }
+    assert log, "Expected an info log naming the wait, got: #{@session.logs.map(&:content).inspect}"
+    assert_equal "info", log.level
+    assert_includes log.content, "Claude Code"
+  end
+
+  test "boot tasks readiness warns loudly when a boot task failed" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(
+      :report_boot_tasks_readiness,
+      BootTasksReadiness::Result.new(state: :degraded, waited_seconds: 0.0, detail: "claude-update-failed"),
+      log_buffer,
+      "Claude Code"
+    )
+    log_buffer.flush
+
+    log = @session.logs.reload.find { |entry| entry.content.include?("claude-update-failed") }
+    assert log, "Expected a warning naming the failed boot task, got: #{@session.logs.map(&:content).inspect}"
+    assert_equal "warning", log.level
+  end
+
+  test "boot tasks readiness warns loudly when the marker never landed" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(
+      :report_boot_tasks_readiness,
+      BootTasksReadiness::Result.new(state: :timed_out, waited_seconds: 120.0),
+      log_buffer,
+      "Codex"
+    )
+    log_buffer.flush
+
+    log = @session.logs.reload.find { |entry| entry.content.include?("had not finished after waiting 120.0s") }
+    assert log, "Expected a warning that the gate gave up, got: #{@session.logs.map(&:content).inspect}"
+    assert_equal "warning", log.level
+    assert_includes log.content, "Codex"
+  end
+
+  test "the spawn path consults the boot tasks readiness gate before launching the CLI" do
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+    mock_fs.mkdir_p("/tmp/test-clone")
+
+    awaited = 0
+    gate = lambda do |*|
+      awaited += 1
+      # The gate must be consulted BEFORE the CLI is launched, never after.
+      assert_empty mock_cli_adapter.executed_commands,
+        "BootTasksReadiness must be consulted before the CLI is spawned"
+      BootTasksReadiness::Result.new(state: :ready, waited_seconds: 0.0)
+    end
+
+    BootTasksReadiness.stub(:await, gate) do
+      GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+        TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+          mock_poller = Object.new
+          def mock_poller.poll_and_broadcast; end
+          mock_poller
+        }) do
+          mock_process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+          mock_cli_adapter.execute_hook = ->(_opts) do
+            { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+          end
+
+          Thread.stub(:new, ->(&block) {
+            mock_thread = Object.new
+            def mock_thread.alive?; false; end
+            def mock_thread.kill; end
+            def mock_thread.join(*); end
+            mock_thread
+          }) do
+            job.perform(@session.id)
+          end
+        end
+      end
+    end
+
+    assert_equal 1, awaited, "The spawn path must consult BootTasksReadiness exactly once"
+    assert_equal 1, mock_cli_adapter.executed_commands.length
+  end
+
   private
 
   # An OAuth-capable catalog server with a stored, still-unexpired credential whose

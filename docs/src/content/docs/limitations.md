@@ -377,10 +377,20 @@ hit exactly that.
 app's own suffixing produces a single, correct index. The trap is still there for anyone who
 "helpfully" adds the `/0` back. ([#20](https://github.com/tadasant/zimmer/issues/20))
 
-### `claude update` runs in the background at boot
+### `claude update` still runs in the background at boot — the spawn path just waits for it now
 
-`bin/docker-entrypoint` backgrounds `claude update` and the Playwright browser install. Sessions
-started in the first ~30 seconds after a container boot use the old CLI and Chromium.
+`bin/docker-entrypoint` backgrounds `claude update` and the Playwright browser install, because
+running them in the foreground would hold Rails behind a 30s+ network operation until Kamal's
+health check gave up. It now writes a readiness marker when that block finishes, and the spawn
+path [waits on it](/sessions/spawning/#the-boot-tasks-readiness-gate) before launching a CLI.
+
+What is left is the deliberate escape hatch. The wait is bounded by
+`ZIMMER_BOOT_TASKS_TIMEOUT_SECONDS` (default 120, measured from process start), so if
+`claude update` hangs, sessions spawn against whatever CLI is on disk rather than deadlocking the
+worker. That case is loud — a warning in the session's own log and in the process log — but it is
+still a session running on the previous deploy's CLI. Recovery respawns driven by
+`ProcessLifecycleManager#handle_exit` (SIGTERM retry, context-length compaction) do not re-check
+the gate; they only happen after a spawn that did.
 
 Tracked in [#122](https://github.com/tadasant/zimmer/issues/122).
 
