@@ -25,7 +25,10 @@ export default defineConfig({
         dark: "./src/assets/logo-dark.svg",
         replacesTitle: false,
       },
-      favicon: "/favicon.svg",
+      // Raster, not vector: the mark is a 3D render, and tracing it to SVG
+      // produces a smear. The .ico holds the 16/32/48 renders; Head.astro adds
+      // the PNG and apple-touch variants alongside it.
+      favicon: "/favicon.ico",
       social: [
         {
           icon: "github",
