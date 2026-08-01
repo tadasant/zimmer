@@ -845,10 +845,16 @@ Tracked in [#62](https://github.com/tadasant/zimmer/issues/62).
 
 Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
-### Servers without `offline_access` become one-shot credentials
+### Servers without `offline_access` issue one-shot credentials
 
 Scope acquisition just joins the server's advertised `scopes_supported`. No `offline_access` ⇒ no refresh
-token ⇒ the credential becomes single-use and dies with no way to refresh.
+token ⇒ the credential is single-use and dies with no way to refresh, and Zimmer does not ask for a scope
+the server did not advertise.
+
+What it no longer does is stay quiet about it. A token response with no refresh token sets
+`refresh_token_unsupported` on the credential, and the Connectors row says the credential cannot be
+renewed and will need authorizing again — while the row is still green, rather than months later as an
+unexplained re-auth. The chore is real; the surprise is not.
 
 Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 
@@ -880,9 +886,9 @@ An exact two-name list (`Authorization`, `X-API-Key`) is what shipped before, an
 `google-maps` entry's `X-Goog-Api-Key` rendered "Needs authorization" beside the very key that
 authenticates it.
 
-### The fallback `client_id` is the literal string `"agent-orchestrator"`
+### The fallback `client_id` is the literal string `"zimmer"`
 
-Used when a server advertises no DCR endpoint.
+Used only when neither a statically-configured client id nor a DCR endpoint is available.
 **Unclear / needs confirmation:** whether any real server accepts this.
 
 Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
@@ -1633,7 +1639,7 @@ Things the code doesn't answer, flagged here rather than guessed at:
 
 - Does the double-suffixed Redis URL (`redis://redis:6379/0/0`) actually work? The client may tolerate
   it or may fall back to db 0. ([#20](https://github.com/tadasant/zimmer/issues/20))
-- Does any real MCP server accept `client_id: "agent-orchestrator"`? It looks like it would only work
+- Does any real MCP server accept the fallback `client_id: "zimmer"`? It looks like it would only work
   against a server that ignores `client_id` entirely. ([#64](https://github.com/tadasant/zimmer/issues/64))
 - What is `tadasant/zimmer-catalog`, and are the five roots pointing at it still live? It's a separate
   repo this documentation can't see. ([#67](https://github.com/tadasant/zimmer/issues/67))

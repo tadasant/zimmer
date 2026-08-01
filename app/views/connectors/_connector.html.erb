@@ -14,6 +14,17 @@
 
     <p class="mt-2 text-sm text-gray-600"><%= status.summary %></p>
 
+    <%# A permanent limitation of the server, stated once and up front. Without
+        it the credential looks healthy right until it lapses, and the periodic
+        re-authorization reads as Zimmer randomly losing access. %>
+    <% if status.requires_periodic_reauth? %>
+      <p class="mt-2 text-xs text-amber-700" data-connector-no-refresh-token="<%= status.server_name %>">
+        This server issued no refresh token, so Zimmer cannot renew this credential on its own.
+        You will have to authorize it again periodically — once the access token expires this row
+        offers a Re-authorize button. That is how this server works, not a fault in this connection.
+      </p>
+    <% end %>
+
     <%# Which provider actually resolved each required ${VAR}. Not what config
         declares — what the spawn will use. %>
     <% if status.variable_sources.any? %>

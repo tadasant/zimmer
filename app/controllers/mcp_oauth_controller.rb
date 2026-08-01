@@ -389,7 +389,12 @@ class McpOauthController < ApplicationController
       token_endpoint: pending_flow.token_endpoint,
       scopes: tokens["scope"],
       resource: pending_flow.resource,
-      expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil
+      expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil,
+      # A token response with no refresh token means this server issues one-shot
+      # credentials. Recorded here, at the only moment it is knowable, so the
+      # Connectors page can state the limitation instead of letting it resurface
+      # later as an unexplained re-auth. See McpOauthCredential#requires_periodic_reauth?.
+      refresh_token_unsupported: tokens["refresh_token"].blank?
     )
 
     session = pending_flow.session

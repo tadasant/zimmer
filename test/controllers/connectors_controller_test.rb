@@ -261,6 +261,24 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_match FakeParameterStore::PROJECT, response.body
   end
 
+  # Issue #233. The resolver reads only through `parameterVersions.render`, so a
+  # credential holding `versions.access` without it resolves nothing at all —
+  # reporting it as the intended least-privilege shape is the green-banner,
+  # nothing-works state the banner exists to prevent.
+  test "secret_store reports a credential that can access but not render as unable to read" do
+    fake = FakeParameterStore.new
+    fake.held_permissions = [ ParameterStore::Capabilities::READ_SECRET_VALUE ]
+    stub_chain_with(fake)
+
+    get secret_store_connectors_path
+
+    assert_response :success
+    assert_select "[data-store-capabilities=least_privilege]", count: 0
+    assert_select "[data-store-capabilities=cannot_read]" do |elements|
+      assert_match ParameterStore::Capabilities::RENDER_PARAMETER, elements.first.text
+    end
+  end
+
   test "secret_store calls out a credential that can also write" do
     fake = FakeParameterStore.new
     fake.held_permissions = [ ParameterStore::Capabilities::READ_SECRET_VALUE,
@@ -345,6 +363,34 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "[data-connector-state=needs_reauth]"
     assert_select "input[data-connector-authorize=notion][value=Re-authorize]"
+  end
+
+  # Issue #64, at the level the user saw it: a green row that quietly becomes a
+  # re-authorization prompt later. The server issued no refresh token, which is
+  # permanent, so the row says it while the credential still works.
+  test "a ready row whose server issued no refresh token states the standing limitation" do
+    create_credential("notion").update!(refresh_token: nil, refresh_token_unsupported: true)
+
+    get connector_path("notion")
+
+    assert_response :success
+    assert_select "[data-connector-state=ready]"
+    assert_select "[data-connector-no-refresh-token=notion]" do |elements|
+      copy = elements.first.text
+      assert_match "no refresh token", copy
+      assert_match "authorize it again", copy
+    end
+  end
+
+  test "a ready row with a refresh token carries no re-authorization warning" do
+    create_credential("notion").update!(refresh_token: "refresh",
+      token_endpoint: "https://mcp.notion.example.com/token")
+
+    get connector_path("notion")
+
+    assert_response :success
+    assert_select "[data-connector-state=ready]"
+    assert_select "[data-connector-no-refresh-token]", count: 0
   end
 
   # A `${VAR}` credential is not OAuth. No consent screen will ever set
