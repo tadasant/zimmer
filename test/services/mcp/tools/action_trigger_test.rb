@@ -393,6 +393,152 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_match(/conditions\[0\] is missing "trigger_type"/, error.message)
   end
 
+  # The most likely way to misuse an upsert: read the trigger, send back what you
+  # believe is the desired final state, forget to echo the ids. Obeying that would
+  # double every condition — and the duplicates would be un-baselined while the
+  # originals kept the cursors.
+  test "update refuses to append a condition identical to one the trigger already has" do
+    trigger = triggers(:enabled_slack_trigger)
+    existing = trigger.trigger_conditions.sole
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "update",
+        "id" => trigger.id,
+        "conditions" => [
+          { "trigger_type" => "slack",
+            "configuration" => { "event_type" => existing.event_type, "channel_id" => existing.channel_id } }
+        ]
+      )
+    end
+
+    assert_match(/identical to condition #{existing.id}/, error.message)
+    assert_equal 1, trigger.reload.trigger_conditions.count
+  end
+
+  test "update still appends a condition that listens to something different" do
+    trigger = triggers(:enabled_slack_trigger)
+    existing = trigger.trigger_conditions.sole
+
+    @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "conditions" => [
+        { "trigger_type" => "slack",
+          "configuration" => { "event_type" => "passive_listen_channel", "channel_id" => existing.channel_id } }
+      ]
+    )
+
+    assert_equal 2, trigger.reload.trigger_conditions.count
+  end
+
+  test "update rejects a conditions array that names the same condition twice" do
+    trigger = triggers(:enabled_slack_trigger)
+    existing = trigger.trigger_conditions.sole
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "update",
+        "id" => trigger.id,
+        "conditions" => [
+          { "id" => existing.id, "configuration" => { "event_type" => "new_message", "channel_id" => "C1" } },
+          { "id" => existing.id, "remove" => true }
+        ]
+      )
+    end
+
+    assert_match(/more than once/, error.message)
+    assert_equal existing.configuration, existing.reload.configuration
+  end
+
+  # Dropping event_type is not a small mistake: the reader defaults to new_message,
+  # so a passive condition would silently start firing on every message.
+  test "update refuses a configuration that would silently reset event_type" do
+    trigger = triggers(:enabled_slack_trigger)
+    existing = trigger.trigger_conditions.sole
+    existing.update!(configuration: existing.configuration.merge("event_type" => "passive_listen_thread"))
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "update",
+        "id" => trigger.id,
+        "conditions" => [ { "id" => existing.id, "configuration" => { "channel_id" => "C_NEW" } } ]
+      )
+    end
+
+    assert_match(/would reset it to "new_message"/, error.message)
+    assert_equal "passive_listen_thread", existing.reload.event_type
+  end
+
+  test "update rejects an added condition with no configuration, and an unknown trigger_type" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id,
+                 "conditions" => [ { "trigger_type" => "schedule" } ])
+    end
+    assert_match(/missing "configuration"/, error.message)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id,
+                 "conditions" => [ { "trigger_type" => "ao_event", "configuration" => { "event_name" => "session_failed" } } ])
+    end
+    assert_match(/unknown trigger_type/, error.message)
+  end
+
+  test "an empty conditions array is refused rather than silently ignored" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "conditions" => [])
+    end
+
+    assert_match(/sent empty/, error.message)
+    assert_equal 1, trigger.reload.trigger_conditions.count
+  end
+
+  test "create rejects a conditions element carrying id or remove" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "create", "name" => "Bad Create", "agent_root_name" => "zimmer",
+        "prompt_template" => "x",
+        "conditions" => [ { "id" => 5, "trigger_type" => "slack", "configuration" => { "channel_id" => "C1" } } ]
+      )
+    end
+
+    assert_match(/only apply when updating/, error.message)
+  end
+
+  # The flat contract names a TYPE, which stopped identifying one condition as soon
+  # as a trigger could carry two of the same type.
+  test "a flat update is refused when the trigger has two conditions of that type" do
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.trigger_conditions.create!(
+      condition_type: "slack",
+      configuration: { "event_type" => "passive_listen_channel", "channel_id" => "C_OTHER" }
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id,
+                 "trigger_type" => "slack", "configuration" => { "channel_id" => "C_X" })
+    end
+
+    assert_match(/does not identify one/, error.message)
+    assert_match(/conditions/, error.message)
+  end
+
+  test "removing the last condition is refused by the model rather than leaving a condition-less trigger" do
+    trigger = triggers(:enabled_slack_trigger)
+    existing = trigger.trigger_conditions.sole
+
+    assert_raises(ActiveRecord::RecordInvalid) do
+      @tool.call("action" => "update", "id" => trigger.id,
+                 "conditions" => [ { "id" => existing.id, "remove" => true } ])
+    end
+
+    assert_equal 1, trigger.reload.trigger_conditions.count
+  end
+
   test "deletes a trigger" do
     trigger = triggers(:new_slack_trigger)
 

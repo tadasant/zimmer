@@ -1081,6 +1081,21 @@ Three bounds worth knowing:
   parent has aged out of recent history. See the migration note in
   [Triggers](/sessions/triggers/#passive-listening-passive_listen_thread-passive_listen_channel).
 
+### An @mention can fall between `bot_mention` and passive listening
+
+Passive listening refuses any message that mentions the bot, so that a mention inside a participated
+thread stops matching two triggers and spawning two sessions on the same text (it did, on every
+mention, until it was fixed). The refusal is unconditional: `passive_candidate?` cannot see whether a
+`bot_mention` condition would actually catch the message, because the poller processes conditions
+independently.
+
+So the mention is dropped by *both* paths when the deployment has no `bot_mention` condition, when
+that condition is disabled or scoped to one channel while the passive condition sweeps all of them,
+or when the two carry different `allowed_user_ids` (that list is per-condition). The intended shape
+is a `bot_mention` condition at least as wide as the passive ones; nothing enforces it. Each drop
+logs one `info` line naming the message and the condition that declined it, which is the only signal
+you get.
+
 ### Everything is polled; there are no webhooks
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and

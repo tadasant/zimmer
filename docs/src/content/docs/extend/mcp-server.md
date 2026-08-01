@@ -170,8 +170,8 @@ explicit (`{"id": 123, "remove": true}`). That asymmetry is deliberate — a Sla
 `configuration` holds the poller's only copy of its cursors
 (`TriggerCondition::SLACK_POLL_STATE_KEYS`), which `preserve_slack_poll_state` keeps by merging back
 the keys an incoming configuration omits. Replace semantics would destroy the row and its cursors
-with it, silently re-baselining a live trigger. `search_triggers` prints each condition's id, which
-is what the array addresses.
+with it, silently re-baselining a live trigger. Fetching a trigger by id through `search_triggers`
+prints each condition's id, which is what the array addresses.
 
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
