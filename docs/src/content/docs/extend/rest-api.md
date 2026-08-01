@@ -120,6 +120,12 @@ also reports `bursting`, true while the trigger is inside a burst and spawning n
 `POST /health/cleanup_processes` · `POST /health/retry_sessions` ·
 `POST /health/archive_old` (`days`, clamped 1–365, default 7).
 
+Two health endpoints sit **outside** this API — no `/api/v1` prefix, no API key, because a load
+balancer and a deploy gate have neither: `GET /up` (200 if the process booted) and `GET /up/deep`
+(200 only if the database, the cache and Redis each answered a real round trip; `503` with a
+`failed` list naming the one that did not). They report; they change nothing, and they are not rate
+limited. See [Deploying](/operate/deploying/#up-is-a-liveness-ping-updeep-is-the-health-check).
+
 :::caution[The only rate limit in the API lives here]
 The three `POST`s share `HealthActionCooldown::COOLDOWN = 30.seconds` — and share it with the MCP
 `action_health` tool and the `/health` web dashboard — keyed in `Rails.cache` as
