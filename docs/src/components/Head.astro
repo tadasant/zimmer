@@ -4,6 +4,15 @@ import Default from "@astrojs/starlight/components/Head.astro";
 
 <Default><slot /></Default>
 
+{/* Starlight's `favicon` option emits a single <link>; these are the rest of the
+    set, so a browser that prefers a PNG — or an iOS home-screen bookmark — gets
+    the right file instead of resampling the .ico. They sit beside <Default>
+    rather than inside its slot: passed through the slot they did not reach the
+    emitted <head> at all. Verify against built HTML, not the dev server. */}
+<link rel="icon" href="/favicon-32x32.png" type="image/png" sizes="32x32" />
+<link rel="icon" href="/favicon-16x16.png" type="image/png" sizes="16x16" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
+
 <script>
   import mermaid from "mermaid";
 

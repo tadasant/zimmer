@@ -40,8 +40,10 @@ Rails.application.configure do
   # Full error reports are disabled.
   config.consider_all_requests_local = false
 
-  # Cache assets for far-future expiry since they are all digest stamped.
-  config.public_file_server.headers = { "cache-control" => "public, max-age=#{1.year.to_i}" }
+  # Matches production: these headers cover public/, which is not digest stamped,
+  # so a far-future max-age would pin a stale icon or manifest at a URL that never
+  # changes. Propshaft serves the digested build output under /assets separately.
+  config.public_file_server.headers = { "cache-control" => "public, max-age=#{1.hour.to_i}" }
 
   # Enable serving of images, stylesheets, and JavaScripts from an asset server.
   # config.asset_host = "http://assets.example.com"
