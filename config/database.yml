@@ -22,18 +22,33 @@ default: &default
   port: <%= ENV.fetch("DATABASE_PORT", "5432") %>
   username: <%= ENV.fetch("DATABASE_USERNAME", ENV['USER']) %>
   password: <%= ENV["DATABASE_PASSWORD"] %>
-  # "prefer" uses TLS when the server offers it and falls back when it does not,
-  # which is what local dev, CI, and the compose Postgres on the staging droplet
-  # need. Managed providers (e.g. DigitalOcean Managed Postgres) require TLS, so
-  # those deployments set DATABASE_SSLMODE=require.
+  # "require" means TLS or no connection. The strict value is the default on
+  # purpose: "prefer" asks for TLS, accepts plaintext when the server does not
+  # offer it, and says nothing either way -- so a deployment that loses TLS
+  # (a rebuilt server with SSL off, a proxy in the path, a hostname pointed at
+  # the wrong box) keeps working, unencrypted, with no error to notice. A
+  # deployment that genuinely speaks no TLS opts down explicitly and visibly:
+  # config/deploy.staging.yml sets DATABASE_SSLMODE=prefer for the throwaway
+  # compose Postgres accessory, .agent-containers/.env.dev sets "disable", and
+  # config/deploy.production.yml sets "require" for DigitalOcean Managed
+  # Postgres. Dev and test override below -- see local_default.
+  sslmode: <%= ENV.fetch("DATABASE_SSLMODE", "require") %>
+
+# Development and test. Local Postgres -- the Homebrew/Postgres.app one, the
+# GitHub Actions `postgres:` service container, the compose `db` -- ships with
+# `ssl = off`, so "require" here would refuse to connect at all. These databases
+# hold fixtures on loopback, not credentials over a network, so "prefer" is the
+# honest default and DATABASE_SSLMODE still overrides it.
+local_default: &local_default
+  <<: *default
   sslmode: <%= ENV.fetch("DATABASE_SSLMODE", "prefer") %>
 
 development:
   primary:
-    <<: *default
+    <<: *local_default
     database: zimmer_development
   cable:
-    <<: *default
+    <<: *local_default
     database: zimmer_development_cable
     # Deliberately not the primary pool's size: solid_cable takes no advisory lock, so a
     # cable connection is leased per INSERT rather than held for a job. See ConnectionBudget.
@@ -45,10 +60,10 @@ development:
 # Do not set this db to the same as development or production.
 test:
   primary:
-    <<: *default
+    <<: *local_default
     database: zimmer_test
   cable:
-    <<: *default
+    <<: *local_default
     database: zimmer_test_cable
     # Deliberately not the primary pool's size: solid_cable takes no advisory lock, so a
     # cable connection is leased per INSERT rather than held for a job. See ConnectionBudget.

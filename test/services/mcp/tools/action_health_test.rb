@@ -6,8 +6,26 @@ require "mocha/minitest"
 class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
+  # The cooldown fails closed under the test environment's :null_store — a
+  # limiter that cannot enforce anything refuses rather than waves things
+  # through — so a real store is what lets the happy paths below run at all.
   setup do
-    @tool = Mcp::Tools::ActionHealth.new(context: Mcp::Context.new(tool_groups: "health"))
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    @tool = tool_for("key_one")
+  end
+
+  teardown do
+    Rails.cache = @original_cache
+  end
+
+  def tool_for(api_key)
+    Mcp::Tools::ActionHealth.new(
+      context: Mcp::Context.new(
+        tool_groups: "health",
+        caller_fingerprint: HealthActionCooldown.fingerprint(api_key)
+      )
+    )
   end
 
   test "cleanup_processes reports terminated pids" do
@@ -81,5 +99,58 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) { @tool.call({}) }
 
     assert_equal "Missing required parameter: action", error.message
+  end
+
+  # === Cooldown ===
+
+  test "a second call within the cooldown is refused" do
+    HealthMonitorService.any_instance.stubs(:cleanup_orphaned_processes)
+      .returns({ terminated: [], failed: [], already_dead: [] })
+
+    @tool.call("action" => "cleanup_processes")
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "cleanup_processes") }
+
+    assert_includes error.message, "Rate limited"
+  end
+
+  test "the cooldown is scoped per caller" do
+    HealthMonitorService.any_instance.stubs(:cleanup_orphaned_processes)
+      .returns({ terminated: [], failed: [], already_dead: [] })
+
+    @tool.call("action" => "cleanup_processes")
+
+    # A different API key is a different bucket, so it is not locked out by the
+    # first caller's cooldown.
+    assert_includes tool_for("key_two").call("action" => "cleanup_processes"), "## Processes Cleaned Up"
+  end
+
+  # The REST controller and this tool share HealthActionCooldown, so a caller
+  # cannot get two runs out of one cooldown by alternating surfaces.
+  test "the cooldown is shared with the REST surface for the same caller" do
+    HealthActionCooldown.new(HealthActionCooldown.fingerprint("key_one")).record("cleanup_processes")
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "cleanup_processes") }
+
+    assert_includes error.message, "Rate limited"
+  end
+
+  test "the CLI actions are not rate limited" do
+    assert_includes @tool.call("action" => "cli_refresh"), "## CLI Refresh Queued"
+    assert_includes @tool.call("action" => "cli_refresh"), "## CLI Refresh Queued"
+  end
+
+  test "a null cache store refuses the destructive actions rather than running them unthrottled" do
+    Rails.cache = ActiveSupport::Cache::NullStore.new
+    HealthMonitorService.any_instance.expects(:cleanup_orphaned_processes).never
+
+    error = assert_raises(Mcp::ToolError) { tool_for("key_one").call("action" => "cleanup_processes") }
+
+    assert_includes error.message, "Rate limiting unavailable"
+  end
+
+  test "a null cache store still allows the CLI actions" do
+    Rails.cache = ActiveSupport::Cache::NullStore.new
+
+    assert_includes tool_for("key_one").call("action" => "cli_refresh"), "## CLI Refresh Queued"
   end
 end

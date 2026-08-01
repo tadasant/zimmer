@@ -10,11 +10,10 @@ module Mcp
 
       # The three HealthMonitorService actions terminate processes and rewrite rows
       # in bulk, so they carry the same cooldown Api::V1::HealthController enforces
-      # — and share its cache keys, so hammering one surface throttles the other.
-      # The two CLI actions only enqueue a job (and are unthrottled over REST), so
-      # they are not rate-limited here either.
+      # — literally the same object, so hammering one surface throttles the other
+      # for this caller. The two CLI actions only enqueue a job (and are
+      # unthrottled over REST), so they are not rate-limited here either.
       RATE_LIMITED_ACTIONS = %w[cleanup_processes retry_sessions archive_old].freeze
-      COOLDOWN = 30.seconds
       DEFAULT_ARCHIVE_DAYS = 7
       MIN_ARCHIVE_DAYS = 1
       MAX_ARCHIVE_DAYS = 365
@@ -31,7 +30,7 @@ module Mcp
         - **cli_refresh**: Trigger a background refresh of CLI tool installations
         - **cli_clear_cache**: Clear npm/pip caches and reinstall MCP packages
 
-        Note: Health actions are rate-limited (30s cooldown between calls).
+        Note: Health actions are rate-limited (30s cooldown between calls, per API key).
       DESC
 
       input_schema({
@@ -57,7 +56,7 @@ module Mcp
         action = require_arg(args, :action)
         raise ToolError, "Unknown action \"#{action}\". Valid actions: #{ACTIONS.join(', ')}" unless ACTIONS.include?(action)
 
-        raise ToolError, rate_limit_message if rate_limited?(action)
+        raise ToolError, rate_limit_message(action) if rate_limited?(action)
 
         result = case action
         when "cleanup_processes" then cleanup_processes
@@ -104,27 +103,36 @@ module Mcp
         "```json\n#{JSON.pretty_generate(payload.as_json)}\n```"
       end
 
+      def cooldown
+        @cooldown ||= HealthActionCooldown.new(context.caller_fingerprint)
+      end
+
       def rate_limited?(action)
         return false unless RATE_LIMITED_ACTIONS.include?(action)
 
-        last_run = Rails.cache.read(rate_limit_key(action))
-        return false unless last_run
-
-        Time.current - last_run < COOLDOWN
+        cooldown.limited?(action)
       end
 
       def record_action(action)
         return unless RATE_LIMITED_ACTIONS.include?(action)
 
-        Rails.cache.write(rate_limit_key(action), Time.current, expires_in: COOLDOWN + 1.second)
+        cooldown.record(action)
       end
 
-      def rate_limit_key(action)
-        "health_api_rate_limit:#{action}"
-      end
+      # A null cache cannot enforce the cooldown, so `limited?` reports true and
+      # the action is refused rather than run unthrottled. Say which it was —
+      # "wait 30 seconds" is a lie the caller would act on by waiting forever.
+      def rate_limit_message(action)
+        unless cooldown.store_usable?
+          # The model reads the raised message; an operator reads the log. Both
+          # need to know this was a refusal, not a cooldown they can wait out.
+          Rails.logger.error("[mcp action_health] refusing #{action}: the cache cannot enforce the cooldown")
+          return "Rate limiting unavailable: the cache is unavailable, so the " \
+            "#{HealthActionCooldown::COOLDOWN.to_i}-second cooldown cannot be enforced. " \
+            "Refusing to run health maintenance actions."
+        end
 
-      def rate_limit_message
-        "Rate limited: please wait #{COOLDOWN.to_i} seconds between health actions."
+        "Rate limited: please wait #{HealthActionCooldown::COOLDOWN.to_i} seconds between health actions."
       end
     end
   end

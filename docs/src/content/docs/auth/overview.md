@@ -10,8 +10,9 @@ which is most of the battle.
 
 ```mermaid
 flowchart TB
-    subgraph none["1 · Human → Zimmer: NOTHING"]
-        W["Web UI · /supervisor admin<br/>/quotas · /settings · /jobs<br/>NO AUTH OF ANY KIND"]
+    subgraph none["1 · Human → Zimmer: NOTHING (except /supervisor)"]
+        W["Web UI · /quotas · /settings · /jobs<br/>NO AUTH OF ANY KIND"]
+        SUP["/supervisor admin panel<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
     end
     subgraph api["2 · Client → REST API"]
         A["X-API-Key header<br/>vs ENV['API_KEYS'] (comma-separated)<br/>opaque, unscoped, no identity"]
@@ -24,52 +25,72 @@ flowchart TB
     end
 
     U["You"] --> W
+    U --> SUP
     C["Script / MCP self-session"] --> A
     W --> H
+    SUP --> H
     H --> V["Anthropic · OpenAI"]
     M --> S["Linear · Slack · Google · …"]
 ```
 
-## 1. Human → Zimmer: there is no authentication
+## 1. Human → Zimmer: there is no authentication (except `/supervisor`)
 
 This is not a simplification. `ApplicationController` has no `before_action` for auth, no session
-auth, no Devise, no OmniAuth, no HTTP Basic. There are no login routes. There is no `User` model in
-the auth path.
+auth, no Devise, no OmniAuth. There are no login routes. There is no `User` model in the auth path.
 
 Everything is open to anyone who can reach the host:
 
 - the session dashboard and every transcript,
 - `/settings`, `/quotas` (including the OAuth login flow),
-- the GoodJob dashboard at `/jobs`,
-- and `/supervisor` — the Administrate admin panel, which exposes `claude_accounts` (whose
-  `oauth_config` JSONB holds plaintext access and refresh tokens), `mcp_oauth_credentials`,
-  `x_oauth_credentials`, and `runtime_login_attempts` as *editable* resources.
+- the GoodJob dashboard at `/jobs`.
 
-`app/controllers/supervisor/application_controller.rb` is the whole story:
+### The one exception: `/supervisor` is behind HTTP Basic
+
+The Administrate admin panel renders `claude_accounts` (whose `oauth_config` JSONB holds plaintext
+access and refresh tokens), `mcp_oauth_credentials`, `x_oauth_credentials`, and
+`runtime_login_attempts` as *editable* resources. That is the one surface where "anyone who reaches
+the host" is too generous, so it gets a second wall —
+`app/controllers/supervisor/application_controller.rb`:
 
 ```ruby
 before_action :authenticate_supervisor
 
 def authenticate_supervisor
-  # TODO Add authentication logic here.
+  expected_password = ENV[PASSWORD_ENV].to_s
+  return request_http_basic_authentication(REALM) if expected_password.empty?
+  # ...constant-time compare of username and password
 end
 ```
 
-:::danger[The security model is "put it on a tailnet"]
-That is deliberate: the network perimeter is the authentication boundary, and Zimmer's own Terraform
+One shared credential, no user model — this is not "who are you", it is "are you inside the
+perimeter at all". Set `SUPERVISOR_PASSWORD`; `SUPERVISOR_USERNAME` is optional and defaults to
+`supervisor`. Both halves are compared with `ActiveSupport::SecurityUtils.secure_compare`, the same
+constant-time primitive `Api::BaseController#authenticate_api_key` uses.
+
+**It fails closed.** With `SUPERVISOR_PASSWORD` unset — or blank, which is what a trailing space in
+an env file gets you — every request to every dashboard gets a 401, and the refusal is logged.
+An unconfigured deployment gets no admin panel rather than an anonymous one — so on a fresh deploy
+you must set the variable before `/supervisor` will open for you either.
+
+:::danger[The security model is still "put it on a tailnet"]
+The perimeter remains the authentication boundary for everything else, and Zimmer's own Terraform
 enforces it. The DigitalOcean firewall allows only `22/tcp` and Tailscale's `41641/udp`, port 80 is
 closed at the edge, and the app is reachable only over the tailnet, at `http://zimmer`.
 
-The sharp edge is real. The entire security posture rests on that perimeter, so any deployment that
-exposes port 80 (a reverse proxy, a public load balancer, a well-meaning `docker run -p 80:80` on a
-box with a public IP) hands an anonymous visitor your Anthropic refresh tokens.
-Tracked in [#42](https://github.com/tadasant/zimmer/issues/42) and
-[#43](https://github.com/tadasant/zimmer/issues/43).
-
-There are also at least six `# TODO: Add proper authorization checks` comments scattered through
-`sessions_controller.rb`.
-Tracked in [#44](https://github.com/tadasant/zimmer/issues/44).
+The sharp edge is real. Any deployment that exposes port 80 (a reverse proxy, a public load
+balancer, a well-meaning `docker run -p 80:80` on a box with a public IP) hands an anonymous visitor
+every session transcript and the `/quotas` OAuth flow. The Basic realm narrows the worst of it — the
+token-bearing dashboards — but it is one credential in front of one panel, not a login system.
+Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
 :::
+
+### There is no per-user authorization in `SessionsController`, and that is the design
+
+Sessions have no owner column and there is no principal to compare one against, so there is nothing
+for a policy object to decide. `SessionsController` says so explicitly at the top of the class, and
+each action that used to carry a `# TODO: Add authorization check` comment now points at that note.
+Those comments read as unfinished work; they described the product's shape. See
+[the philosophy](/intro/philosophy/) for why a single circle of trust has no ACLs to build.
 
 ## 2. Client → REST API: `X-API-Key`
 
@@ -167,9 +188,12 @@ controls are the only control, and the admin panel bypasses them.
 | Var | Used for |
 | --- | --- |
 | `API_KEYS` | REST API auth (comma-separated) |
+| `SUPERVISOR_PASSWORD` | The `/supervisor` HTTP Basic realm. **Unset or blank means the panel is closed**, not open. |
+| `SUPERVISOR_USERNAME` | Optional; defaults to `supervisor`. |
 | `APP_HOST` | The MCP OAuth **redirect URI**. Defaults to `localhost:3000`, and picks `http` iff the host string contains "localhost". |
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |
 | `X_OAUTH_CLIENT_ID` / `_SECRET` | X/Twitter token vending |
+| `X_OAUTH_REDIRECT_URI` | The callback `XOauthBootstrap` sends on both the consent request and the token exchange. Defaults to `http://localhost:8080/callback`; whatever you set must already be registered on the X app. |
 | `ANTHROPIC_API_KEY` | Local dev, when not using OAuth |
 
 :::caution[`APP_HOST` unset breaks every MCP OAuth flow]

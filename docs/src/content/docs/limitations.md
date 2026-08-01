@@ -303,6 +303,27 @@ The accessory's `max_connections=100` (the `postgres:16` default) happens to lea
 the same as the `db-s-2vcpu-4gb` plan, which makes the comparison a fair one — but it is a
 coincidence, not a guarantee, and nothing pins it.
 
+### `DATABASE_SSLMODE` defaults to `require`, so a non-TLS Postgres must opt down explicitly
+
+The default used to be `prefer`, which asks for TLS and accepts plaintext when the server does not
+offer it, saying nothing either way — a deployment that lost TLS kept working, unencrypted, with
+nothing to notice. The default is now `require`: TLS or no connection.
+
+The edge that creates is the mirror image. A deployment pointed at a Postgres with `ssl = off` now
+fails to connect at boot with `server does not support SSL, but SSL was required`, instead of
+quietly proceeding. Every environment Zimmer ships already names its own value —
+`config/deploy.production.yml` sets `require` for DigitalOcean Managed Postgres,
+`config/deploy.staging.yml` sets `prefer` for the throwaway compose accessory,
+`.agent-containers/.env.dev` sets `disable` — and `development`/`test` default to `prefer` via a
+separate `local_default` anchor in `config/database.yml`, because local Postgres (Homebrew, the
+GitHub Actions service container, the compose `db`) ships with SSL off and `require` would refuse
+every connection.
+
+So the failure lands on a *self-hosted* deployment running its own non-TLS Postgres in the
+`production` or `staging` Rails environment without setting the variable. The fix is one line of
+config, and the error names itself — which is the trade: a loud failure you fix once, instead of a
+silent plaintext connection you never learn about.
+
 ### Rebuilding staging costs a Let's Encrypt issuance, and there are only five a week
 
 The custom-domain cert lives in exactly one place: on the droplet, pushed there by
@@ -403,21 +424,30 @@ perimeter is the authentication boundary (see [Auth overview](/auth/overview/)),
 has no `before_action` for auth and there are no login routes or `User` model. Zimmer's own Terraform
 puts the app on a Tailscale tailnet with port 80 closed at the DigitalOcean firewall.
 
-The sharp edge is real and load-bearing. Expose port 80 and there is no second wall. Worse, the
-`/supervisor` Administrate panel is served with the auth stubbed out —
-`app/controllers/supervisor/application_controller.rb:12`:
+The sharp edge is real and load-bearing. Expose port 80 and, for most of the app, there is no second
+wall: an anonymous visitor gets every session transcript, `/settings`, `/quotas` (including the OAuth
+login flow), and the GoodJob dashboard.
 
-```ruby
-def authenticate_supervisor
-  # TODO Add authentication logic here.
-end
-```
+The `/supervisor` Administrate panel is the exception, and the reason is its blast radius — it renders
+`claude_accounts` (whose `oauth_config` JSONB holds plaintext Anthropic and OpenAI access and refresh
+tokens), `mcp_oauth_credentials`, `x_oauth_credentials`, and `runtime_login_attempts` as *editable*
+resources. It now sits behind an HTTP Basic realm keyed on `SUPERVISOR_PASSWORD` (with an optional
+`SUPERVISOR_USERNAME`, default `supervisor`), compared in constant time, and it **fails closed**: with
+the variable unset or blank, every dashboard returns 401 and the refusal is logged. An unconfigured deployment gets no panel rather than an
+open one.
 
-It renders `claude_accounts` (whose `oauth_config` JSONB holds plaintext Anthropic and OpenAI access and
-refresh tokens), `mcp_oauth_credentials`, `x_oauth_credentials`, and `runtime_login_attempts` as editable
-resources. On a public perimeter, that hands an anonymous visitor your refresh tokens. There are also six
-`# TODO: Add proper authorization checks` comments in `sessions_controller.rb` (`:63`, `:687`, `:724`,
-`:751`, `:790`, and `:1475`, the last on transcripts, which "contain sensitive conversation data").
+Two things that follow, in both directions:
+
+- **You have to set the variable to use the panel at all**, including on a fresh deploy and on any
+  existing deployment that has not seeded it. Until then `/supervisor` is 401 for you too.
+- **One shared credential in front of one panel is not a login system.** It does not protect the rest
+  of the app, it has no identity or audit trail, and rotating it requires a restart — the same
+  shape as `API_KEYS`. The perimeter is still the security model.
+
+There is no per-user authorization in `sessions_controller.rb`, and that is the design rather than a
+gap: no `User` model, no owner column, nothing for a policy object to compare. The six
+`# TODO: Add proper authorization checks` comments that used to imply otherwise are now a single
+explicit note at the top of the class explaining why there is nothing to check.
 
 Tracked in [#42](https://github.com/tadasant/zimmer/issues/42) and [#44](https://github.com/tadasant/zimmer/issues/44).
 
@@ -426,8 +456,9 @@ Tracked in [#42](https://github.com/tadasant/zimmer/issues/42) and [#44](https:/
 🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. No model declares
 `encrypts`, no `active_record.encryption` config exists, and every OAuth token, client secret, and PKCE
 verifier is a plaintext column. `XOauthCredential`'s own header says the quiet part: *"Security relies on
-database access controls."* The sharp edge is the same one as above — the unauthenticated admin panel
-bypasses those controls, so a broken perimeter exposes the tokens in the clear.
+database access controls."* The admin panel that renders those columns is now behind a Basic realm, which
+means a broken perimeter no longer exposes them in one click — but the columns are still plaintext, and
+anything with database access reads them.
 
 Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
 
@@ -1163,11 +1194,40 @@ noted rather than fixed at the source.
 
 ## API
 
-### The only rate limit is global
+### The only rate limit is on the health endpoints, and it needs a real cache
 
-`Api::V1::HealthController`'s `CLEANUP_COOLDOWN = 30.seconds` is keyed in `Rails.cache` as
-`health_api_rate_limit:<action>` — not scoped to an API key. One client's cleanup locks out
-everyone for 30s. It no-ops with no error under a null cache store.
+`HealthActionCooldown::COOLDOWN = 30.seconds` is the whole of Zimmer's rate limiting. It is keyed in
+`Rails.cache` as `health_api_rate_limit:<action>:<digest of the API key>`, so it is per-caller — one
+client's cleanup no longer locks everyone else out — and the raw key never lands in a cache key. All
+three surfaces that can run these actions share that one object — the `/health` web dashboard,
+`Api::V1::HealthController`, and the MCP `action_health` tool — so switching surfaces does not buy a
+second run.
+
+The web dashboard is the exception to "per caller", and unavoidably so: it has no authentication, so
+there is no key to fingerprint and every visitor lands in one shared anonymous bucket. That is the
+global cooldown it has always had.
+
+The cooldown is only as real as the store behind it, and it can be unreal in two ways. A null store
+drops every write and misses every read. A **dead Redis** does the same thing without being a null
+store: `:redis_cache_store` is configured with an `error_handler` that logs the exception and
+swallows it, so `write` returns nil and `read` returns nil rather than raising. Either way a naive
+limiter answers "not limited" forever. So the cooldown writes a canary to the store and checks what
+came back, and **fails closed** when it cannot: the three mutating API endpoints return
+`503 {"error": "Rate limiting unavailable"}`, the MCP tool raises `Rate limiting unavailable`, and
+the dashboard's buttons refuse with a flash. All of them log it. `GET /api/v1/health` and the
+dashboard page itself are unaffected — they have no cooldown to enforce.
+
+The consequence to know: an instance whose Redis is down cannot run `cleanup_processes`,
+`retry_sessions`, or `archive_old` on any surface. That is deliberate — these are destructive
+maintenance actions and the throttle is the only thing standing in front of them — but it is a hard
+stop, not a degradation, and it arrives during a Redis outage, which is exactly when someone may be
+reaching for those buttons.
+
+Two things per-caller bucketing does *not* give you. It is not per-identity: `API_KEYS` entries are
+opaque strings with no owner, so the bucket separates keys, not people. And it raises the
+**aggregate** ceiling — the total rate of destructive actions now scales with the number of valid
+keys, where one global bucket capped it at one per 30 seconds for the whole instance. With
+`API_KEYS` holding a handful of strings that is the right trade, but it is a trade.
 
 Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
 
@@ -1190,9 +1250,13 @@ Tracked in [#34](https://github.com/tadasant/zimmer/issues/34) (removing the pag
 
 Tracked in [#85](https://github.com/tadasant/zimmer/issues/85).
 
-### `X_OAUTH` bootstrap requires a localhost callback
+### The `X_OAUTH` bootstrap callback must be registered with X by hand
 
-`DEFAULT_REDIRECT_URI = "http://localhost:8080/callback"` — you must pre-register that on your X app.
+`XOauthBootstrap` sends `X_OAUTH_REDIRECT_URI` on both the consent request and the token exchange,
+falling back to `http://localhost:8080/callback` (the URI already registered on the `ao-x-mcp-server`
+app). X compares the two, so the value has to reach both call sites — it does — and it has to already
+exist on your X app. **Registering it is a manual step on X's developer portal**; there is no API for
+it, so setting the variable to an unregistered URI fails at consent time with an opaque error.
 
 Tracked in [#104](https://github.com/tadasant/zimmer/issues/104).
 

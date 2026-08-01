@@ -5,8 +5,6 @@
 # Provides system health monitoring, diagnostics, and cleanup actions.
 # All actions require user interaction for safety (no automated cleanup).
 class HealthController < ApplicationController
-  # Rate limiting cooldown period
-  CLEANUP_COOLDOWN = 30.seconds
   # Maximum days for archive operation (security bound)
   MAX_ARCHIVE_DAYS = 365
   # Minimum days for archive operation
@@ -121,28 +119,59 @@ class HealthController < ApplicationController
 
   private
 
-  # Rate limiting using Rails cache for thread-safety and persistence
-  def rate_limited?(action)
-    cache_key = "health_controller_rate_limit:#{action}"
-    last_time = Rails.cache.read(cache_key)
-    return false unless last_time
+  # The same cooldown Api::V1::HealthController and the MCP action_health tool
+  # enforce — the same object, so a caller cannot get a second run out of one
+  # cooldown by switching surfaces.
+  #
+  # This surface has no key to fingerprint: the web UI has no authentication at
+  # all, so every visitor lands in the one anonymous bucket. That is the global
+  # cooldown this controller has always had. What is new is that it fails closed
+  # when the cache cannot enforce it, instead of silently waving every action
+  # through.
+  def cooldown
+    @cooldown ||= HealthActionCooldown.new(nil)
+  end
 
-    Time.current - last_time < CLEANUP_COOLDOWN
+  def rate_limited?(action)
+    cooldown.limited?(action)
   end
 
   def record_action(action)
-    cache_key = "health_controller_rate_limit:#{action}"
-    Rails.cache.write(cache_key, Time.current, expires_in: CLEANUP_COOLDOWN + 1.second)
+    cooldown.record(action)
   end
 
   def render_rate_limited
+    if cooldown.store_usable?
+      render_cooldown_pending
+    else
+      render_cooldown_unenforceable
+    end
+  end
+
+  def render_cooldown_pending
     respond_to do |format|
       format.html do
-        flash[:alert] = "Please wait #{CLEANUP_COOLDOWN.to_i} seconds between cleanup actions"
+        flash[:alert] = "Please wait #{HealthActionCooldown::COOLDOWN.to_i} seconds between cleanup actions"
         redirect_to health_dashboard_path
       end
       format.json do
-        render json: { error: "Rate limited", retry_after: CLEANUP_COOLDOWN.to_i }, status: :too_many_requests
+        render json: { error: "Rate limited", retry_after: HealthActionCooldown::COOLDOWN.to_i }, status: :too_many_requests
+      end
+    end
+  end
+
+  def render_cooldown_unenforceable
+    Rails.logger.error("[health] refusing #{action_name}: the cache cannot enforce the cooldown")
+    message = "The cache is unavailable, so the #{HealthActionCooldown::COOLDOWN.to_i}-second cooldown cannot be enforced. " \
+      "Maintenance actions are disabled until it is back."
+
+    respond_to do |format|
+      format.html do
+        flash[:alert] = message
+        redirect_to health_dashboard_path
+      end
+      format.json do
+        render json: { error: "Rate limiting unavailable", message: message }, status: :service_unavailable
       end
     end
   end

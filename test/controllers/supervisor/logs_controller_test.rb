@@ -2,6 +2,9 @@ require "test_helper"
 
 module Supervisor
   class LogsControllerTest < ActionDispatch::IntegrationTest
+    include SupervisorAuthTestHelper
+    include SupervisorAuthTestHelper::AutoBasicAuth
+
     setup do
       @log = logs(:info_log)
     end
