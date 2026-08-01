@@ -142,14 +142,9 @@ Note the parameter is `action_type`, not `action` — `action` is a Rails reserv
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status` |
 | **Config (read-only)** | `GET /configs` · `GET /mcp_servers` · `GET /skills` |
 
-:::danger[`GET /api/secrets/keys` has no authentication]
-`Api::SecretsController` inherits `ApplicationController`, not `Api::BaseController`, so it is
-outside the API-key gate entirely. It returns `{secrets: [{name, description}]}` — secret *names and
-descriptions*, not values.
-
-Since [the web UI has no auth either](/auth/overview/#1-human--zimmer-there-is-no-authentication),
-this is public to anyone who can reach the host.
-:::
+One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{name, description}]}`,
+the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind
+the same `X-API-Key` gate as everything else.
 
 ## Errors
 

@@ -26,7 +26,7 @@
           </div>
           <div>
             <h3 class="text-sm font-medium text-gray-900 mb-2">Authentication</h3>
-            <p class="text-sm text-gray-600 mb-2">All requests require an API key via the <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">X-API-Key</code> header. API keys are configured via the <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">API_KEYS</code> environment variable (comma-separated list).</p>
+            <p class="text-sm text-gray-600 mb-2">All requests require an API key via the <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">X-API-Key</code> header. API keys are configured via the <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">API_KEYS</code> environment variable (comma-separated list). This includes the one endpoint outside <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">/api/v1</code>: <code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">GET /api/secrets/keys</code>, the secret-name autocomplete, which returns names and descriptions but never values.</p>
             <div class="bg-gray-900 rounded-md p-4 overflow-x-auto">
               <pre class="text-xs text-gray-100 font-mono">curl -H "X-API-Key: your_api_key" <%= request.base_url %>/api/v1/sessions</pre>
             </div>

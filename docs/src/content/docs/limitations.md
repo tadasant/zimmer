@@ -420,13 +420,6 @@ elicitation for any session id, or enumerate and poll any elicitation by `reques
 
 Tracked in [#45](https://github.com/tadasant/zimmer/issues/45).
 
-### `GET /api/secrets/keys` is unauthenticated
-
-`Api::SecretsController` inherits `ApplicationController`, not `Api::BaseController`. It leaks secret
-*names and descriptions* (not values).
-
-Tracked in [#45](https://github.com/tadasant/zimmer/issues/45).
-
 ### API keys have no scope, identity, or audit trail
 
 Opaque strings from `ENV["API_KEYS"]`, memoized per request. Any valid key can do anything to anything.
