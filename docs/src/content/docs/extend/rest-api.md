@@ -170,10 +170,8 @@ Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`,
 `auto_compact_window`, `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`, `catalog_plugins[]`,
 `config{}`, `custom_metadata{}`.
 
-`execution_provider` is `local_filesystem` or `remote_sandbox` — the second one is
-[a stub](/limitations/), so `local_filesystem` is the only value that runs anything. `branch`
-defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents` default to
-false wherever they appear.
+`branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
+default to false wherever they appear.
 
 `agent_root` is not a Session column — it names a catalog entry that expands into `git_root`,
 `branch`, `subdirectory` and the catalog defaults, and is recorded as `metadata.agent_root_key`. An
