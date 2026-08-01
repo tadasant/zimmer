@@ -13,8 +13,27 @@
 <% in_drawer = local_assigns.fetch(:in_drawer, false) %>
 <%# In the drawer, pull-to-refresh and stream-visibility-recovery are already
     declared on the dashboard root (an ancestor), so omit them here to avoid two
-    instances double-binding document/window listeners and double-refreshing. %>
-<% detail_controllers = "session-scroll auto-scroll log-level-filter page-header-offset" %>
+    instances double-binding document/window listeners and double-refreshing.
+    cable-reconnect is exempt from that concern and runs in both contexts: it
+    binds nothing global and only observes the stream sources inside this
+    element, so a drawer copy and the dashboard root cannot contend over the
+    same subscription.
+
+    cable-reconnect and stream-visibility-recovery both key on the `connected`
+    attribute, but they answer different failures and do not overlap:
+
+    - The page was hidden (backgrounded PWA, bfcache restore) and came back with
+      a dead socket. Everything broadcast while it was away is gone — a
+      subscription alone would not bring it back — so stream-visibility-recovery
+      reloads. It fires first by design; its 1.5s grace is shorter than
+      cable-reconnect's 3s.
+    - The socket died while the page stayed visible. No content was missed, so
+      cable-reconnect re-subscribes in place and nothing the user typed is lost.
+
+    A reload is therefore still reachable on this page. What is gone is the
+    unconditional one: the meta refresh below fired on elapsed time whether or
+    not the cable had actually dropped. %>
+<% detail_controllers = "session-scroll auto-scroll log-level-filter page-header-offset cable-reconnect" %>
 <% detail_controllers += " pull-to-refresh stream-visibility-recovery" unless in_drawer %>
 <div class="<%= in_drawer ? "min-h-full pb-32" : "min-h-screen" %> bg-gray-50" data-controller="<%= detail_controllers %>"
      data-log-level-filter-server-filter-value="<%= @filter_level %>"
@@ -24,15 +43,12 @@
   <%= turbo_stream_from "session_#{@session.id}_elicitations" %>
 
   <% if @session.recently_recovered? %>
-    <%# A meta-refresh navigates the TOP-LEVEL document, so inside the drawer it
-        would reload the whole dashboard and dismiss the drawer — losing the
-        user's place, the very thing the drawer exists to preserve. Only emit it
-        full-page. In the drawer the detail's Turbo Stream subscriptions already
-        reconnect on frame load, so no page refresh is needed to restore live
-        updates. %>
-    <% unless in_drawer %>
-      <meta http-equiv="refresh" content="3">
-    <% end %>
+    <%# Recovery is announced, not acted on: the cable-reconnect controller above
+        re-subscribes any stream source that is actually dead, keyed on the
+        subscription's connection state. The banner used to be paired with a
+        <meta http-equiv="refresh">, which reloaded the page on a 5-second timing
+        window whether or not the cable had dropped — and, being a top-level
+        navigation, dismissed the drawer along with the user's place in it. %>
     <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
       <div class="flex">
         <div class="flex-shrink-0">
@@ -42,11 +58,7 @@
         </div>
         <div class="ml-3">
           <p class="text-sm text-yellow-700">
-            <% if in_drawer %>
-              Session connection recovered. Live updates have been restored.
-            <% else %>
-              Session connection recovered. Page will refresh in 3 seconds to restore live updates...
-            <% end %>
+            Session connection recovered. Live updates have been restored.
           </p>
         </div>
       </div>

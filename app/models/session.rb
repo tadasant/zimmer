@@ -619,12 +619,14 @@ class Session < ApplicationRecord
     slug.presence || id.to_s
   end
 
-  # Check if the session was recently recovered by the cleanup job
-  # Used to trigger auto-refresh of the page to re-establish Turbo Stream connections
+  # Check if the session was recently recovered by the cleanup job. The detail
+  # view uses this to show the "connection recovered" banner on the page load
+  # right after a recovery; the 5-second window keeps the banner to that one
+  # load rather than following the session around.
   #
-  # Uses a 5-second window to ensure only one auto-refresh occurs. The meta refresh
-  # takes 3 seconds, so by using 5 seconds we avoid multiple refreshes while still
-  # catching the initial page load after recovery.
+  # Re-establishing the Turbo Stream subscriptions is not this flag's job — the
+  # cable-reconnect Stimulus controller does that from the subscription's own
+  # connection state, whether or not a recovery happened.
   #
   # @return [Boolean] true if a recovery log exists within the last 5 seconds
   def recently_recovered?

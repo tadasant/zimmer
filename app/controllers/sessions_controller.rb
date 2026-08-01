@@ -704,7 +704,7 @@ class SessionsController < ApplicationController
 
     if @session.archived?
       respond_to do |format|
-        format.turbo_stream { render turbo_stream: archive_remove_streams(@session) }
+        format.turbo_stream { render turbo_stream: archive_remove_streams(@session, notice: "Session is already in trash.") }
         format.html { redirect_to @session, notice: "Session is already in trash." }
       end
       return
@@ -721,18 +721,55 @@ class SessionsController < ApplicationController
     # Only respond if the operation succeeded (not false from max retry handler)
     return if result == false
 
+    undo_notice = "Session moved to trash.|undo_archive|#{@session.id}"
+
     respond_to do |format|
-      format.turbo_stream { render turbo_stream: archive_remove_streams(@session) }
-      format.html { redirect_to root_path, notice: "Session moved to trash.|undo_archive|#{@session.id}" }
+      format.turbo_stream { render turbo_stream: archive_remove_streams(@session, notice: undo_notice) }
+      format.html { redirect_to root_path, notice: undo_notice }
     end
   end
 
   # In-place removal for the homepage Trash button. Removes the
-  # `dom_id(session)` turbo_frame wrapping the session's card.
-  def archive_remove_streams(session)
-    [ turbo_stream.remove(dom_id(session)) ]
+  # `dom_id(session)` turbo_frame wrapping the session's card, and streams the
+  # notice into the layout's #flash target — without that second stream the
+  # card vanished silently and the Undo button in the toast never appeared.
+  def archive_remove_streams(session, notice:)
+    [ turbo_stream.remove(dom_id(session)), flash_stream(notice: notice) ]
   end
   private :archive_remove_streams
+
+  # A turbo_stream that replaces the layout's single #flash container with one
+  # message. Actions that answer a Turbo request with a stream instead of a
+  # redirect use this to deliver what the redirect's flash used to carry; the
+  # message is never written to the real `flash`, so it does not also reappear
+  # on the next full page load.
+  def flash_stream(notice: nil, alert: nil)
+    messages = {}
+    messages["notice"] = notice if notice.present?
+    messages["alert"] = alert if alert.present?
+
+    turbo_stream.replace("flash", partial: "shared/flash", locals: { messages: messages })
+  end
+  private :flash_stream
+
+  # The dashboard's mutating actions used to redirect purely to carry a flash:
+  # every card they touch already re-renders itself over the
+  # `sessions_index_individual` and `session_<id>_status` broadcast channels, so
+  # the round trip through a full page render was the only reason the UI blinked.
+  # Turbo clients get `streams` (usually just the flash) applied in place;
+  # non-Turbo clients — and the controller tests that assert on them — still get
+  # the original redirect.
+  def respond_with_flash(notice: nil, alert: nil, location:, streams: [])
+    respond_to do |format|
+      format.turbo_stream do
+        render turbo_stream: streams + [ flash_stream(notice: notice, alert: alert) ]
+      end
+      format.html do
+        redirect_to location, notice: notice, alert: alert
+      end
+    end
+  end
+  private :respond_with_flash
 
   def unarchive
     @session = find_session
@@ -740,7 +777,7 @@ class SessionsController < ApplicationController
     # against. See the authorization note at the top of this class.
 
     unless @session.archived?
-      redirect_to @session, alert: "Session is not in trash."
+      respond_with_flash(alert: "Session is not in trash.", location: @session)
       return
     end
 
@@ -755,9 +792,14 @@ class SessionsController < ApplicationController
       else
         "Session restored from trash. Ready to continue."
       end
-      redirect_to @session, notice: notice
+      # No card stream: the session's card is still in the dashboard's DOM (the
+      # trash view lists archived and live sessions together), and unarchiving
+      # fires broadcast_update_to_sessions_index, which replaces it in place.
+      # The session page's own chrome rides along in this response rather than
+      # waiting on the broadcast — see #session_chrome_streams.
+      respond_with_flash(notice: notice, location: @session, streams: session_chrome_streams(@session))
     else
-      redirect_to @session, alert: "Failed to restore session: #{result.error}"
+      respond_with_flash(alert: "Failed to restore session: #{result.error}", location: @session)
     end
   end
 
@@ -767,13 +809,13 @@ class SessionsController < ApplicationController
     # against. See the authorization note at the top of this class.
 
     unless @session.archived?
-      redirect_to root_path, alert: "Session is not in trash."
+      respond_with_flash(alert: "Session is not in trash.", location: root_path)
       return
     end
 
     # Check if the trash is within the 5-second undo window
     if @session.archived_at.nil? || Time.current - @session.archived_at > 5.seconds
-      redirect_to root_path, alert: "The undo window has expired. Use the restore feature instead."
+      respond_with_flash(alert: "The undo window has expired. Use the restore feature instead.", location: root_path)
       return
     end
 
@@ -795,11 +837,87 @@ class SessionsController < ApplicationController
       )
     end
 
-    # Only redirect if the operation succeeded
+    # Only respond if the operation succeeded
     return if result == false
 
-    redirect_to @session, notice: "Session restored from trash."
+    # #archive removed this card from the dashboard, so the restore's
+    # broadcast_update_to_sessions_index has nothing left to replace. Put the
+    # card back into its own section's grid — that is what "Undo" means to the
+    # user standing on the dashboard, and it is why undo stays there instead of
+    # navigating to the session (the HTML fallback still redirects).
+    respond_with_flash(
+      notice: "Session restored from trash.",
+      location: @session,
+      streams: [ restored_card_stream(@session) ]
+    )
   end
+
+  # Re-inserts a session's card at the top of the grid it belongs to. Turbo
+  # de-duplicates by element id on prepend, so this is safe if the card somehow
+  # never left; on the session's own page neither target exists and the stream
+  # is a silent no-op.
+  def restored_card_stream(session)
+    turbo_stream.prepend(
+      restored_card_target(session),
+      partial: "sessions/session_card_frame",
+      locals: { agent_session: session }
+    )
+  end
+  private :restored_card_stream
+
+  # The two bits of session-page chrome that encode a session's status: the badge
+  # and the header's action buttons (Restore vs Pause/Trash). Session#broadcast_
+  # status_change pushes both over the cable on every status change, so an action
+  # that changes status could rely on that alone — but a broadcast is
+  # fire-and-forget, and this whole PR exists because a cable can be silently
+  # dead. The direct HTTP reply to the user's own click cannot be lost, so a
+  # status-changing action carries its own chrome. Both targets are absent when
+  # the click came from a dashboard card, where the streams are a no-op.
+  def session_chrome_streams(session)
+    [
+      turbo_stream.replace(
+        "session_#{session.id}_status_badge",
+        partial: "sessions/status_badge",
+        locals: { agent_session: session }
+      ),
+      turbo_stream.replace(
+        "session_#{session.id}_header_actions",
+        partial: "sessions/session_header_actions",
+        locals: { agent_session: session }
+      )
+    ]
+  end
+  private :session_chrome_streams
+
+  # Which grid that is depends on the dashboard view the Undo was clicked from,
+  # because only the categories view renders per-category grids. The flat sort
+  # views and an active search render everything into one "sessions_grid", so a
+  # categorized card has to go there — prepending to a "category_grid_<id>" that
+  # is not in the DOM drops the card silently, and Undo looks like it failed.
+  #
+  # Both signals travel with this POST: the view mode lives in the
+  # VIEW_MODE_COOKIE the browser sends, and the search lives in the query string
+  # of the dashboard page the Undo form sits on, i.e. this request's referer.
+  def restored_card_target(session)
+    return "sessions_grid" if session.category_id.nil?
+    return "sessions_grid" unless resolve_view_mode == VIEW_MODE_CATEGORIES
+    return "sessions_grid" if referer_search_active?
+
+    "category_grid_#{session.category_id}"
+  end
+  private :restored_card_target
+
+  # True when the referring dashboard had a search or agent-root filter applied,
+  # which collapses the category sections into a single flat results grid.
+  def referer_search_active?
+    return false if request.referer.blank?
+
+    query = Rack::Utils.parse_nested_query(URI.parse(request.referer).query.to_s)
+    query["q"].to_s.strip.present? || query["agent_root"].to_s.strip.present?
+  rescue URI::InvalidURIError
+    false
+  end
+  private :referer_search_active?
 
   def bulk_archive
     # No per-user authorization: there is no "their own sessions" to scope to.
@@ -808,7 +926,7 @@ class SessionsController < ApplicationController
     session_ids = params[:session_ids] || []
 
     if session_ids.empty?
-      redirect_to root_path, alert: "No sessions selected."
+      respond_with_flash(alert: "No sessions selected.", location: root_path)
       return
     end
 
@@ -832,10 +950,12 @@ class SessionsController < ApplicationController
       end
     end
 
-    # Only redirect if the operation succeeded
+    # Only respond if the operation succeeded
     return if result == false
 
-    redirect_to root_path, notice: "#{archived_count} session(s) moved to trash."
+    # Each archived session broadcasts its own card removal
+    # (broadcast_remove_from_sessions_index), so the stream only owes the count.
+    respond_with_flash(notice: "#{archived_count} session(s) moved to trash.", location: root_path)
   end
 
   # Maximum number of sessions to restart in a single bulk operation
@@ -981,11 +1101,11 @@ class SessionsController < ApplicationController
     else
       category = Category.find_by(id: category_id)
       if category.nil?
-        redirect_to root_path, alert: "Category not found"
+        respond_with_flash(alert: "Category not found", location: root_path)
         return
       end
       if category.is_frozen?
-        redirect_to root_path, alert: "Frozen categories are excluded from refresh"
+        respond_with_flash(alert: "Frozen categories are excluded from refresh", location: root_path)
         return
       end
       sessions = category.sessions.where.not(status: :archived)
@@ -1004,7 +1124,7 @@ class SessionsController < ApplicationController
   # summary. +empty_notice+ is the flash shown when the relation has no sessions to act on.
   def bulk_refresh_sessions(sessions, empty_notice:)
     if sessions.empty?
-      redirect_to root_path, notice: empty_notice
+      respond_with_flash(notice: empty_notice, location: root_path)
       return
     end
 
@@ -1169,11 +1289,11 @@ class SessionsController < ApplicationController
       notice = messages.join(", ")
       notice += " (#{error_count} errors)" if error_count.positive?
       notice += ". #{total_restartable_count - BULK_RESTART_LIMIT} more sessions to restart/continue" if total_restartable_count > BULK_RESTART_LIMIT
-      redirect_to root_path, notice: notice
+      respond_with_flash(notice: notice, location: root_path)
     elsif error_count.positive?
-      redirect_to root_path, alert: "Failed to process #{error_count} session(s)"
+      respond_with_flash(alert: "Failed to process #{error_count} session(s)", location: root_path)
     else
-      redirect_to root_path, notice: "No sessions to refresh or restart"
+      respond_with_flash(notice: "No sessions to refresh or restart", location: root_path)
     end
   end
   private :bulk_refresh_sessions
@@ -1375,7 +1495,7 @@ class SessionsController < ApplicationController
 
     # Only allow pausing sessions that are currently running
     unless @session.running?
-      redirect_to @session, alert: "Cannot pause session that is not running (status: #{@session.status})"
+      respond_with_flash(alert: "Cannot pause session that is not running (status: #{@session.status})", location: @session)
       return
     end
 
@@ -1383,7 +1503,7 @@ class SessionsController < ApplicationController
     process_pid = @session.metadata&.dig("process_pid")
 
     unless process_pid
-      redirect_to @session, alert: "Cannot pause session: no process found"
+      respond_with_flash(alert: "Cannot pause session: no process found", location: @session)
       return
     end
 
@@ -1463,7 +1583,15 @@ class SessionsController < ApplicationController
         )
       end
 
-      redirect_to @session, notice: "Session paused successfully. You can now send a follow-up prompt to redirect the agent."
+      # The pause flips the session to needs_input; broadcast_status_change also
+      # re-renders the follow-up form and running loader over the cable, but the
+      # badge and header actions ride back in this response so they land even if
+      # the socket is down (see #session_chrome_streams).
+      respond_with_flash(
+        notice: "Session paused successfully. You can now send a follow-up prompt to redirect the agent.",
+        location: @session,
+        streams: session_chrome_streams(@session)
+      )
     rescue => e
       Rails.logger.error "Error pausing session: #{e.message}"
       with_db_retry do
@@ -1472,7 +1600,7 @@ class SessionsController < ApplicationController
           level: "error"
         )
       end
-      redirect_to @session, alert: "Failed to pause session: #{e.message}"
+      respond_with_flash(alert: "Failed to pause session: #{e.message}", location: @session)
     end
   end
 
@@ -1699,6 +1827,10 @@ class SessionsController < ApplicationController
       category = Category.find_by(id: category_id)
       unless category
         respond_to do |format|
+          # 200, not 404: Turbo renders a failed form submission's body as a full
+          # page rather than applying its streams, which would blow the dashboard
+          # away to say "category not found". The JSON branch keeps the real status.
+          format.turbo_stream { render turbo_stream: flash_stream(alert: "Category ##{category_id} not found") }
           format.html { redirect_back fallback_location: root_path, alert: "Category ##{category_id} not found" }
           format.json { render json: { error: "Category ##{category_id} not found" }, status: :not_found }
         end
@@ -1706,12 +1838,14 @@ class SessionsController < ApplicationController
       end
       @session.update!(category_id: category.id)
       respond_to do |format|
+        format.turbo_stream { render turbo_stream: flash_stream(notice: "Moved to \"#{category.name}\".") }
         format.html { redirect_back fallback_location: root_path }
         format.json { render json: { success: true, session_id: @session.id, category_id: category.id } }
       end
     else
       @session.update!(category_id: nil)
       respond_to do |format|
+        format.turbo_stream { render turbo_stream: flash_stream(notice: "Moved to Uncategorized.") }
         format.html { redirect_back fallback_location: root_path }
         format.json { render json: { success: true, session_id: @session.id, category_id: nil } }
       end
