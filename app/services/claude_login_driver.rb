@@ -60,7 +60,7 @@ class ClaudeLoginDriver < RuntimeLoginDriver
     claude_json_path = File.join(config_dir, ".claude.json")
     claude_json = File.exist?(claude_json_path) ? JSON.parse(File.read(claude_json_path)) : {}
 
-    captured_email = extract_email(claude_json)
+    captured_email = ClaudeAccount.extract_oauth_email(claude_json["oauthAccount"])
     if captured_email.present? && captured_email.casecmp?(account.email) == false
       raise "claude login authenticated as #{captured_email}, expected #{account.email}"
     end
@@ -125,7 +125,7 @@ class ClaudeLoginDriver < RuntimeLoginDriver
   def identity_email(config_dir)
     claude_json_path = File.join(config_dir, ".claude.json")
     return nil unless File.exist?(claude_json_path)
-    extract_email(JSON.parse(File.read(claude_json_path)))
+    ClaudeAccount.extract_oauth_email(JSON.parse(File.read(claude_json_path))["oauthAccount"])
   end
 
   # A credentials_json holds a complete, usable subscription token pair. Delegates
@@ -144,12 +144,6 @@ class ClaudeLoginDriver < RuntimeLoginDriver
       File.join(config_dir, ".credentials.json"),
       File.join(config_dir, ".claude", ".credentials.json")
     ].find { |p| File.exist?(p) }
-  end
-
-  def extract_email(claude_json)
-    oauth_account = claude_json["oauthAccount"]
-    return nil if oauth_account.blank?
-    oauth_account.is_a?(Hash) ? oauth_account["emailAddress"] : oauth_account
   end
 
   def executable_candidates

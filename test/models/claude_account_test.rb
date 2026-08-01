@@ -1002,6 +1002,17 @@ class ClaudeAccountTest < ActiveSupport::TestCase
 
   # Class-method bootstrap helpers
 
+  test "extract_oauth_email handles both CLI oauthAccount shapes" do
+    # The one implementation AccountRotationService and ClaudeLoginDriver share.
+    assert_equal "hash@example.com",
+      ClaudeAccount.extract_oauth_email({ "emailAddress" => "hash@example.com", "uuid" => "abc" })
+    assert_equal "legacy@example.com", ClaudeAccount.extract_oauth_email("legacy@example.com")
+    assert_nil ClaudeAccount.extract_oauth_email({})
+    assert_nil ClaudeAccount.extract_oauth_email("")
+    assert_nil ClaudeAccount.extract_oauth_email(nil)
+    assert_nil ClaudeAccount.extract_oauth_email({ "uuid" => "no-email-here" })
+  end
+
   test "filesystem_oauth_email returns email from Hash-form oauthAccount" do
     with_claude_account_fs do |fs|
       File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({
@@ -1541,6 +1552,151 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     end
   end
 
+  # ── one credential file, two writers (#60) ──
+
+  test "write_credentials_to_filesystem! preserves the mcpOAuth block the MCP writer maintains" do
+    # The rotation regression: ClaudeMcpCredentialWriter keeps its mcpOAuth map in
+    # the same file this method writes, so a whole-file overwrite silently drops
+    # every MCP OAuth credential — which the user meets as "the agent says it needs
+    # to authorize this server again".
+    with_claude_account_fs do |tmpdir|
+      credentials_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
+
+      with_mcp_writer_credentials_path(credentials_path) do
+        writer = ClaudeMcpCredentialWriter.new
+        writer.stubs(:macos?).returns(false)
+        writer.write!(working_directory: tmpdir, credentials: [ resolved_mcp_credential ])
+
+        account = claude_accounts(:secondary)
+        account.update!(oauth_config: { "credentials_json" => {
+          "claudeAiOauth" => { "accessToken" => "rotated-access", "refreshToken" => "rotated-refresh" }
+        } })
+
+        assert account.write_credentials_to_filesystem!
+
+        on_disk = JSON.parse(File.read(credentials_path))
+        assert_equal "rotated-access", on_disk.dig("claudeAiOauth", "accessToken"),
+          "the rotated-in account's login tokens must land on disk"
+        assert_equal "access-token-xyz", on_disk.dig("mcpOAuth", "notion|abc123", "accessToken"),
+          "the other writer's mcpOAuth entry must survive the rotation"
+        assert_equal "refresh-token-123", on_disk.dig("mcpOAuth", "notion|abc123", "refreshToken")
+
+        # And the entry is still readable through the writer's own reader, which is
+        # what McpOauthRuntimeReconciler uses to capture runtime-refreshed tokens.
+        assert_equal "access-token-xyz", writer.read_runtime_credentials["notion|abc123"].access_token
+      end
+    end
+  end
+
+  test "write_credentials_to_filesystem! preserves unknown top-level keys the CLI wrote" do
+    with_claude_account_fs do
+      credentials_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
+      FileUtils.mkdir_p(File.dirname(credentials_path))
+      File.write(credentials_path, JSON.generate({
+        "claudeAiOauth" => { "accessToken" => "old-access", "refreshToken" => "old-refresh" },
+        "someFutureCliBlock" => { "keep" => "me" }
+      }))
+
+      account = claude_accounts(:secondary)
+      account.update!(oauth_config: { "credentials_json" => {
+        "claudeAiOauth" => { "accessToken" => "new-access", "refreshToken" => "new-refresh" }
+      } })
+
+      assert account.write_credentials_to_filesystem!
+
+      on_disk = JSON.parse(File.read(credentials_path))
+      assert_equal "new-access", on_disk.dig("claudeAiOauth", "accessToken")
+      assert_equal({ "keep" => "me" }, on_disk["someFutureCliBlock"])
+    end
+  end
+
+  test "write_credentials_to_filesystem! does not write back the DB's stale mcpOAuth copy" do
+    # sync_tokens_from_filesystem! captures the WHOLE credentials file into
+    # oauth_config, so the DB copy carries whatever mcpOAuth map was on disk at the
+    # time. Writing that back would resurrect entries McpOauthCredential has since
+    # deleted and clobber entries authorized since. On-disk mcpOAuth always wins.
+    with_claude_account_fs do
+      credentials_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
+      FileUtils.mkdir_p(File.dirname(credentials_path))
+      File.write(credentials_path, JSON.generate({
+        "mcpOAuth" => { "live|key" => { "accessToken" => "live-token" } }
+      }))
+
+      account = claude_accounts(:secondary)
+      account.update!(oauth_config: { "credentials_json" => {
+        "claudeAiOauth" => { "accessToken" => "a", "refreshToken" => "r" },
+        "mcpOAuth" => { "revoked|key" => { "accessToken" => "revoked-token" } }
+      } })
+
+      assert account.write_credentials_to_filesystem!
+
+      on_disk = JSON.parse(File.read(credentials_path))
+      assert_equal [ "live|key" ], on_disk["mcpOAuth"].keys,
+        "the stale DB copy of mcpOAuth must not be written back to disk"
+    end
+  end
+
+  test "write_credentials_to_filesystem! omits mcpOAuth entirely when the file has none" do
+    with_claude_account_fs do
+      account = claude_accounts(:secondary)
+      account.update!(oauth_config: { "credentials_json" => {
+        "claudeAiOauth" => { "accessToken" => "a", "refreshToken" => "r" },
+        "mcpOAuth" => { "revoked|key" => { "accessToken" => "revoked-token" } }
+      } })
+
+      assert account.write_credentials_to_filesystem!
+
+      on_disk = JSON.parse(File.read(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
+      assert_not on_disk.key?("mcpOAuth"),
+        "MCP state is the other writer's to install; it is re-injected on every spawn"
+    end
+  end
+
+  test "the account writer and the MCP credential writer address the same credentials file" do
+    # The two writers coordinate through a lock file derived from this path. If the
+    # constants ever diverge, the lock stops coordinating anything and #60 returns.
+    assert_equal ClaudeAuthProvider::CREDENTIALS_JSON_PATH, ClaudeMcpCredentialWriter::CLAUDE_CREDENTIALS_PATH
+  end
+
+  test "write_credentials_to_filesystem! waits for the shared credential-store lock" do
+    with_claude_account_fs do
+      account = claude_accounts(:secondary)
+      account.update!(oauth_config: { "credentials_json" => {
+        "claudeAiOauth" => { "accessToken" => "a", "refreshToken" => "r" }
+      } })
+
+      holder_ready = Queue.new
+      release_holder = Queue.new
+      write_finished = Queue.new
+
+      holder = Thread.new do
+        ClaudeCredentialStore.with_lock(ClaudeAuthProvider::CREDENTIALS_JSON_PATH) do
+          holder_ready << true
+          release_holder.pop
+        end
+      end
+      holder_ready.pop
+
+      writer = Thread.new do
+        account.write_credentials_to_filesystem!
+        write_finished << true
+      end
+
+      sleep 0.1
+      assert_raises(ThreadError, "the write must block while another writer holds the lock") do
+        write_finished.pop(true)
+      end
+      assert_not File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
+
+      release_holder << true
+      holder.join(5)
+      writer.join(5)
+
+      assert_equal true, write_finished.pop(true)
+      assert File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
+    end
+  end
+
   test "write_credentials_to_filesystem! stamps the shared owner marker" do
     with_claude_account_fs do
       account = claude_accounts(:primary)
@@ -1593,6 +1749,34 @@ class ClaudeAccountTest < ActiveSupport::TestCase
 
       assert_equal before, primary.reload.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken")
     end
+  end
+
+  # Points ClaudeMcpCredentialWriter at the same credentials file the account
+  # writer is using, so the two writers meet on one file (and one lock) the way
+  # they do in production.
+  def with_mcp_writer_credentials_path(path)
+    klass = ClaudeMcpCredentialWriter
+    original = klass::CLAUDE_CREDENTIALS_PATH
+    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
+    klass.const_set(:CLAUDE_CREDENTIALS_PATH, path)
+    yield
+  ensure
+    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
+    klass.const_set(:CLAUDE_CREDENTIALS_PATH, original)
+  end
+
+  def resolved_mcp_credential
+    ResolvedMcpCredential.new(
+      server_name: "notion",
+      server_url: "https://mcp.notion.com/v1/mcp",
+      client_id: "client-123",
+      access_token: "access-token-xyz",
+      refresh_token: "refresh-token-123",
+      expires_at: 1.hour.from_now,
+      scope: nil,
+      headers: {},
+      credential_key: "notion|abc123"
+    )
   end
 
   def with_claude_account_fs
