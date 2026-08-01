@@ -10,6 +10,7 @@
 class Api::V1::SessionsController < Api::BaseController
   require "automated_prompts"
   include SessionSearchable
+  include ApiSessionSerialization
 
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_heartbeat, :set_category ]
 
@@ -68,16 +69,12 @@ class Api::V1::SessionsController < Api::BaseController
   #   - config: Additional configuration (JSON)
   #   - custom_metadata: Custom user metadata (JSON)
   def create
-    @session = Session.new(session_params)
+    @session = Session.new(session_params.except(:agent_root))
 
-    # Resolve agent_root to git_root and defaults from the catalog
+    # Resolve the runtime, the model, and — when agent_root was given — the
+    # repository fields, through the shared param → root → AppSetting → hardcoded
+    # chain. This always leaves an explicit model in config.
     resolve_agent_root_defaults!
-
-    # Ensure model is always explicitly set in config, defaulting to the
-    # resolved runtime's default model (ModelCatalog is the source of truth).
-    unless @session.config&.dig("model").present?
-      @session.config = (@session.config || {}).merge("model" => ModelCatalog.default_for(@session.agent_runtime))
-    end
 
     if @session.save
       # Queue the agent job if a prompt was provided
@@ -88,10 +85,10 @@ class Api::V1::SessionsController < Api::BaseController
 
       render json: { session: session_json(@session) }, status: :created
     else
-      render json: { error: "Validation failed", messages: @session.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   rescue AgentRootsConfig::AgentRootNotFoundError => e
-    render json: { error: "Invalid agent_root", message: e.message }, status: :unprocessable_entity
+    render_api_error("Invalid agent_root", e.message, status: :unprocessable_entity)
   end
 
   # PATCH/PUT /api/v1/sessions/:id
@@ -101,7 +98,7 @@ class Api::V1::SessionsController < Api::BaseController
     if @session.update(session_update_params)
       render json: { session: session_json(@session) }
     else
-      render json: { error: "Validation failed", messages: @session.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -123,7 +120,7 @@ class Api::V1::SessionsController < Api::BaseController
         trash_after: @session.trash_after&.iso8601
       }
     else
-      render json: { error: "Cannot trash", message: "Session cannot be trashed from current status: #{@session.status}" }, status: :unprocessable_entity
+      render_api_error("Cannot trash", "Session cannot be trashed from current status: #{@session.status}", status: :unprocessable_entity)
     end
   end
 
@@ -133,7 +130,7 @@ class Api::V1::SessionsController < Api::BaseController
   # so Claude Code can resume where it left off.
   def unarchive
     unless @session.archived?
-      render json: { error: "Cannot restore", message: "Session is not in trash" }, status: :unprocessable_entity
+      render_api_error("Cannot restore", "Session is not in trash", status: :unprocessable_entity)
       return
     end
 
@@ -146,7 +143,7 @@ class Api::V1::SessionsController < Api::BaseController
         message: result.clone_restored ? "Session restored from trash with clone restored" : "Session restored from trash"
       }
     else
-      render json: { error: "Failed to restore", message: result.error }, status: :unprocessable_entity
+      render_api_error("Failed to restore", result.error, status: :unprocessable_entity)
     end
   end
 
@@ -170,12 +167,12 @@ class Api::V1::SessionsController < Api::BaseController
     prompt = params[:prompt].to_s.strip
 
     if prompt.blank?
-      render json: { error: "Missing parameter", message: "prompt is required" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "prompt is required", status: :unprocessable_entity)
       return
     end
 
     if prompt.length > Session::PROMPT_MAX_LENGTH
-      render json: { error: "Validation failed", message: "prompt is too long (maximum #{Session::PROMPT_MAX_LENGTH} characters)" }, status: :unprocessable_entity
+      render_api_error("Validation failed", "prompt is too long (maximum #{Session::PROMPT_MAX_LENGTH} characters)", status: :unprocessable_entity)
       return
     end
 
@@ -186,7 +183,7 @@ class Api::V1::SessionsController < Api::BaseController
     # If the session is running, pause it first, then resume with the new prompt.
     if force_immediate
       unless @session.running? || @session.waiting? || @session.needs_input?
-        render json: { error: "Cannot send follow-up", message: "Session is #{@session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions." }, status: :unprocessable_entity
+        render_api_error("Cannot send follow-up", "Session is #{@session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.", status: :unprocessable_entity)
         return
       end
 
@@ -232,7 +229,7 @@ class Api::V1::SessionsController < Api::BaseController
         rescue ActiveRecord::RecordNotFound
           # already claimed by a concurrent interrupt — nothing to clean up
         end
-        render json: { error: "Cannot send follow-up", message: result.error }, status: (result.error_code || :internal_server_error)
+        render_api_error("Cannot send follow-up", result.error, status: result.error_code || :internal_server_error)
       end
       return
     end
@@ -266,7 +263,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     # For waiting/needs_input sessions, send immediately
     unless @session.waiting? || @session.needs_input?
-      render json: { error: "Cannot send follow-up", message: "Session is #{@session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions." }, status: :unprocessable_entity
+      render_api_error("Cannot send follow-up", "Session is #{@session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.", status: :unprocessable_entity)
       return
     end
 
@@ -279,9 +276,9 @@ class Api::V1::SessionsController < Api::BaseController
 
     render json: { session: session_json(@session.reload), message: "Follow-up prompt sent" }
   rescue ActiveRecord::RecordInvalid => e
-    render json: { error: "Validation failed", message: e.message }, status: :unprocessable_entity
+    render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   rescue ActiveRecord::RecordNotUnique
-    render json: { error: "Conflict", message: "Message position conflict, please retry" }, status: :conflict
+    render_api_error("Conflict", "Message position conflict, please retry", status: :conflict)
   end
 
   # POST /api/v1/sessions/:id/pause
@@ -293,7 +290,7 @@ class Api::V1::SessionsController < Api::BaseController
       @session.pause!
       render json: { session: session_json(@session) }
     else
-      render json: { error: "Cannot pause", message: "Session is not running" }, status: :unprocessable_entity
+      render_api_error("Cannot pause", "Session is not running", status: :unprocessable_entity)
     end
   end
 
@@ -307,7 +304,7 @@ class Api::V1::SessionsController < Api::BaseController
   # The pause callback executes the sleep after the agent's turn completes.
   def sleep_session
     unless @session.needs_input? || @session.running?
-      render json: { error: "Cannot sleep", message: "Session must be in needs_input or running state to sleep (current: #{@session.status})" }, status: :unprocessable_entity
+      render_api_error("Cannot sleep", "Session must be in needs_input or running state to sleep (current: #{@session.status})", status: :unprocessable_entity)
       return
     end
 
@@ -325,7 +322,7 @@ class Api::V1::SessionsController < Api::BaseController
   # enqueuing a recovery prompt to spawn a new CLI process.
   def restart
     unless @session.may_resume?
-      render json: { error: "Cannot restart", message: "Session cannot be restarted from current status: #{@session.status}" }, status: :unprocessable_entity
+      render_api_error("Cannot restart", "Session cannot be restarted from current status: #{@session.status}", status: :unprocessable_entity)
       return
     end
 
@@ -339,7 +336,7 @@ class Api::V1::SessionsController < Api::BaseController
     # For sessions with complete setup artifacts, only require session_id.
     # The job handles clone recreation if the working directory is missing.
     unless @session.session_id.present?
-      render json: { error: "Cannot restart", message: "Session has no session_id" }, status: :unprocessable_entity
+      render_api_error("Cannot restart", "Session has no session_id", status: :unprocessable_entity)
       return
     end
 
@@ -377,7 +374,7 @@ class Api::V1::SessionsController < Api::BaseController
   #   - message_index: Index of the transcript message to fork from (required)
   def fork
     if params[:message_index].blank?
-      render json: { error: "Missing parameter", message: "message_index is required" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "message_index is required", status: :unprocessable_entity)
       return
     end
 
@@ -389,7 +386,7 @@ class Api::V1::SessionsController < Api::BaseController
     if result.success?
       render json: { session: session_json(result.forked_session), message: "Session forked successfully" }, status: :created
     else
-      render json: { error: "Fork failed", message: result.error }, status: :unprocessable_entity
+      render_api_error("Fork failed", result.error, status: :unprocessable_entity)
     end
   end
 
@@ -399,7 +396,7 @@ class Api::V1::SessionsController < Api::BaseController
     transcript_dir = get_transcript_directory_for_session(@session)
 
     if transcript_dir.nil?
-      render json: { error: "No clone path", message: "No clone path found for this session" }, status: :unprocessable_entity
+      render_api_error("No clone path", "No clone path found for this session", status: :unprocessable_entity)
       return
     end
 
@@ -435,9 +432,9 @@ class Api::V1::SessionsController < Api::BaseController
       end
     end
 
-    render json: { error: "Not found", message: "No transcript files found on filesystem" }, status: :not_found
+    render_api_error("Not found", "No transcript files found on filesystem", status: :not_found)
   rescue => e
-    render json: { error: "Refresh failed", message: e.message }, status: :internal_server_error
+    render_api_error("Refresh failed", e.message, status: :internal_server_error)
   end
 
   # POST /api/v1/sessions/refresh_all
@@ -464,7 +461,15 @@ class Api::V1::SessionsController < Api::BaseController
 
     failed_sessions = sessions.where(status: :failed).limit(bulk_limit).load
     remaining_limit = [ bulk_limit - failed_sessions.size, 0 ].max
-    needs_input_sessions = auto_continuable.limit(remaining_limit)
+    needs_input_sessions = auto_continuable.limit(remaining_limit).load
+
+    # Ids of everything the two restart/continue loops below touch, captured
+    # BEFORE they run: each loop flips its session to :running, so a lazily
+    # evaluated "everything else" relation would pick the same session up again
+    # in the transcript pass — counting it twice and overwriting a transcript
+    # its freshly enqueued job is about to rewrite. Same guard as the web
+    # bulk refresh.
+    restarted_ids = (failed_sessions + needs_input_sessions).map(&:id)
 
     # Restart failed sessions
     failed_sessions.each do |session|
@@ -494,6 +499,25 @@ class Api::V1::SessionsController < Api::BaseController
       end
     end
 
+    # Everything not restarted or continued above still gets its transcript
+    # re-read from disk — that is what "refreshed" counts, and it is the pass
+    # the API was missing entirely, which is why `refreshed` was always 0.
+    #
+    # Capped at the same bulk_limit as the restart passes. Each iteration is a
+    # whole-file read plus an UPDATE that broadcasts, and this runs inside the
+    # request, so an instance with hundreds of live sessions would otherwise turn
+    # one POST into an unbounded synchronous fan-out.
+    sessions
+      .where.not(status: [ :failed, :needs_input ])
+      .where.not(id: restarted_ids)
+      .limit(bulk_limit)
+      .each do |session|
+        refreshed_count += 1 if refresh_transcript_from_disk(session)
+      rescue => e
+        error_count += 1
+        Rails.logger.error "[API refresh_all] Failed to refresh session #{session.id}: #{e.message}"
+      end
+
     render json: {
       message: "Refresh complete",
       refreshed: refreshed_count,
@@ -512,12 +536,12 @@ class Api::V1::SessionsController < Api::BaseController
     mcp_servers = params[:mcp_servers] || []
 
     unless mcp_servers.is_a?(Array)
-      render json: { error: "Invalid parameter", message: "mcp_servers must be an array" }, status: :unprocessable_entity
+      render_api_error("Invalid parameter", "mcp_servers must be an array", status: :unprocessable_entity)
       return
     end
 
     if mcp_servers.length > 50
-      render json: { error: "Too many servers", message: "Maximum 50 MCP servers" }, status: :unprocessable_entity
+      render_api_error("Too many servers", "Maximum 50 MCP servers", status: :unprocessable_entity)
       return
     end
 
@@ -526,7 +550,7 @@ class Api::V1::SessionsController < Api::BaseController
     # Validate server names
     invalid_servers = mcp_servers.reject { |name| ServersConfig.exists?(name) }
     if invalid_servers.any?
-      render json: { error: "Invalid servers", message: "Invalid MCP servers: #{invalid_servers.join(', ')}" }, status: :unprocessable_entity
+      render_api_error("Invalid servers", "Invalid MCP servers: #{invalid_servers.join(', ')}", status: :unprocessable_entity)
       return
     end
 
@@ -550,7 +574,7 @@ class Api::V1::SessionsController < Api::BaseController
 
       render json: { session: session_json(@session), message: "MCP servers updated" }
     else
-      render json: { error: "Update failed", messages: @session.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -563,12 +587,12 @@ class Api::V1::SessionsController < Api::BaseController
     catalog_skills = params[:catalog_skills] || []
 
     unless catalog_skills.is_a?(Array)
-      render json: { error: "Invalid parameter", message: "catalog_skills must be an array" }, status: :unprocessable_entity
+      render_api_error("Invalid parameter", "catalog_skills must be an array", status: :unprocessable_entity)
       return
     end
 
     if catalog_skills.length > SessionsController::MAX_CATALOG_SKILLS
-      render json: { error: "Too many skills", message: "Maximum #{SessionsController::MAX_CATALOG_SKILLS} catalog skills" }, status: :unprocessable_entity
+      render_api_error("Too many skills", "Maximum #{SessionsController::MAX_CATALOG_SKILLS} catalog skills", status: :unprocessable_entity)
       return
     end
 
@@ -576,7 +600,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     invalid_skills = catalog_skills.reject { |name| SkillsConfig.exists?(name) }
     if invalid_skills.any?
-      render json: { error: "Invalid skills", message: "Invalid catalog skills: #{invalid_skills.join(', ')}" }, status: :unprocessable_entity
+      render_api_error("Invalid skills", "Invalid catalog skills: #{invalid_skills.join(', ')}", status: :unprocessable_entity)
       return
     end
 
@@ -595,7 +619,7 @@ class Api::V1::SessionsController < Api::BaseController
 
       render json: { session: session_json(@session), message: "Catalog skills updated" }
     else
-      render json: { error: "Update failed", messages: @session.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -604,12 +628,12 @@ class Api::V1::SessionsController < Api::BaseController
     catalog_hooks = params[:catalog_hooks] || []
 
     unless catalog_hooks.is_a?(Array)
-      render json: { error: "Invalid parameter", message: "catalog_hooks must be an array" }, status: :unprocessable_entity
+      render_api_error("Invalid parameter", "catalog_hooks must be an array", status: :unprocessable_entity)
       return
     end
 
     if catalog_hooks.length > SessionsController::MAX_CATALOG_HOOKS
-      render json: { error: "Too many hooks", message: "Maximum #{SessionsController::MAX_CATALOG_HOOKS} catalog hooks" }, status: :unprocessable_entity
+      render_api_error("Too many hooks", "Maximum #{SessionsController::MAX_CATALOG_HOOKS} catalog hooks", status: :unprocessable_entity)
       return
     end
 
@@ -617,7 +641,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     invalid_hooks = catalog_hooks.reject { |name| HooksConfig.exists?(name) }
     if invalid_hooks.any?
-      render json: { error: "Invalid hooks", message: "Invalid catalog hooks: #{invalid_hooks.join(', ')}" }, status: :unprocessable_entity
+      render_api_error("Invalid hooks", "Invalid catalog hooks: #{invalid_hooks.join(', ')}", status: :unprocessable_entity)
       return
     end
 
@@ -636,7 +660,7 @@ class Api::V1::SessionsController < Api::BaseController
 
       render json: { session: session_json(@session), message: "Catalog hooks updated" }
     else
-      render json: { error: "Update failed", messages: @session.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -645,12 +669,12 @@ class Api::V1::SessionsController < Api::BaseController
     catalog_plugins = params[:catalog_plugins] || []
 
     unless catalog_plugins.is_a?(Array)
-      render json: { error: "Invalid parameter", message: "catalog_plugins must be an array" }, status: :unprocessable_entity
+      render_api_error("Invalid parameter", "catalog_plugins must be an array", status: :unprocessable_entity)
       return
     end
 
     if catalog_plugins.length > SessionsController::MAX_CATALOG_PLUGINS
-      render json: { error: "Too many plugins", message: "Maximum #{SessionsController::MAX_CATALOG_PLUGINS} catalog plugins" }, status: :unprocessable_entity
+      render_api_error("Too many plugins", "Maximum #{SessionsController::MAX_CATALOG_PLUGINS} catalog plugins", status: :unprocessable_entity)
       return
     end
 
@@ -658,7 +682,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     invalid_plugins = catalog_plugins.reject { |id| PluginsConfig.exists?(id) }
     if invalid_plugins.any?
-      render json: { error: "Invalid plugins", message: "Invalid catalog plugins: #{invalid_plugins.join(', ')}" }, status: :unprocessable_entity
+      render_api_error("Invalid plugins", "Invalid catalog plugins: #{invalid_plugins.join(', ')}", status: :unprocessable_entity)
       return
     end
 
@@ -679,7 +703,7 @@ class Api::V1::SessionsController < Api::BaseController
 
       render json: { session: session_json(@session), message: "Catalog plugins updated" }
     else
-      render json: { error: "Update failed", messages: @session.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -693,7 +717,7 @@ class Api::V1::SessionsController < Api::BaseController
     model = params[:model]
 
     unless model.is_a?(String) && model.present?
-      render json: { error: "Invalid parameter", message: "model must be a non-empty string" }, status: :unprocessable_entity
+      render_api_error("Invalid parameter", "model must be a non-empty string", status: :unprocessable_entity)
       return
     end
 
@@ -702,7 +726,7 @@ class Api::V1::SessionsController < Api::BaseController
     # Reject models that don't belong to the session's runtime catalog.
     unless ModelCatalog.valid_model?(@session.agent_runtime, model)
       allowed = ModelCatalog.model_ids_for(@session.agent_runtime)
-      render json: { error: "Invalid model", message: "model #{model.inspect} is not valid for runtime #{@session.agent_runtime}. Valid models: #{allowed.join(', ')}" }, status: :unprocessable_entity
+      render_api_error("Invalid model", "model #{model.inspect} is not valid for runtime #{@session.agent_runtime}. Valid models: #{allowed.join(', ')}", status: :unprocessable_entity)
       return
     end
 
@@ -716,7 +740,7 @@ class Api::V1::SessionsController < Api::BaseController
 
       render json: { session: session_json(@session), message: "Model updated" }
     else
-      render json: { error: "Update failed", messages: @session.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -725,42 +749,16 @@ class Api::V1::SessionsController < Api::BaseController
   def transcript
     parsed = @session.parsed_transcript
     if parsed.blank?
-      render json: { error: "No transcript", message: "No transcript available for this session" }, status: :not_found
+      render_api_error("No transcript", "No transcript available for this session", status: :not_found)
       return
     end
 
-    lines = []
-    parsed.each do |entry|
-      type = entry["type"]
-      message = entry["message"] || entry
-      content = message["content"] || ""
-      role = message["role"]
-
-      case type
-      when "user"
-        lines << "--- User ---"
-        lines << content
-        lines << ""
-      when "assistant"
-        lines << "--- Assistant ---"
-        lines << content
-        lines << ""
-      when "tool_use"
-        tool_name = message["name"] || "unknown"
-        lines << "--- Tool Use: #{tool_name} ---"
-        lines << content.to_s unless content.blank?
-        lines << ""
-      when "tool_result"
-        lines << "--- Tool Result ---"
-        lines << content.to_s.truncate(500) unless content.blank?
-        lines << ""
-      end
-    end
+    text = TranscriptTextRenderer.render(parsed)
 
     if params[:format] == "text"
-      render plain: lines.join("\n"), content_type: "text/plain"
+      render plain: text, content_type: "text/plain"
     else
-      render json: { transcript_text: lines.join("\n") }
+      render json: { transcript_text: text }
     end
   end
 
@@ -773,7 +771,7 @@ class Api::V1::SessionsController < Api::BaseController
     notes = params[:session_notes]
 
     if notes.present? && notes.length > 50_000
-      render json: { error: "Too long", message: "Notes are too long (maximum 50,000 characters)" }, status: :unprocessable_entity
+      render_api_error("Too long", "Notes are too long (maximum 50,000 characters)", status: :unprocessable_entity)
       return
     end
 
@@ -783,7 +781,7 @@ class Api::V1::SessionsController < Api::BaseController
         session_notes_updated_at: @session.session_notes_updated_at&.iso8601
       }
     else
-      render json: { error: "Update failed", messages: @session.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -810,7 +808,7 @@ class Api::V1::SessionsController < Api::BaseController
       # cast("") / cast("maybe") => nil; reject rather than let a nil reach the
       # NOT NULL column (which would surface as a 500, not a 422).
       if casted.nil?
-        render json: { error: "Validation failed", message: "enabled must be a boolean" }, status: :unprocessable_entity
+        render_api_error("Validation failed", "enabled must be a boolean", status: :unprocessable_entity)
         return
       end
       attrs[:heartbeat_enabled] = casted
@@ -819,14 +817,14 @@ class Api::V1::SessionsController < Api::BaseController
     unless params[:interval_seconds].nil?
       interval = params[:interval_seconds]
       unless interval.to_s.match?(/\A\d+\z/)
-        render json: { error: "Validation failed", message: "interval_seconds must be an integer" }, status: :unprocessable_entity
+        render_api_error("Validation failed", "interval_seconds must be an integer", status: :unprocessable_entity)
         return
       end
       attrs[:heartbeat_interval_seconds] = interval.to_i
     end
 
     if attrs.empty?
-      render json: { error: "Missing parameter", message: "Provide enabled and/or interval_seconds" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "Provide enabled and/or interval_seconds", status: :unprocessable_entity)
       return
     end
 
@@ -837,7 +835,7 @@ class Api::V1::SessionsController < Api::BaseController
       heartbeat_interval_seconds: @session.heartbeat_interval_seconds
     }
   rescue ActiveRecord::RecordInvalid => e
-    render json: { error: "Validation failed", message: e.message }, status: :unprocessable_entity
+    render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   end
 
   # PATCH /api/v1/sessions/:id/set_category
@@ -852,7 +850,7 @@ class Api::V1::SessionsController < Api::BaseController
     if category_id.present?
       category = Category.find_by(id: category_id)
       unless category
-        render json: { error: "Not Found", message: "Category ##{category_id} not found" }, status: :not_found
+        render_api_error("Not Found", "Category ##{category_id} not found", status: :not_found)
         return
       end
       @session.update!(category_id: category.id)
@@ -875,7 +873,7 @@ class Api::V1::SessionsController < Api::BaseController
     session_ids = params[:session_ids]
 
     if session_ids.blank? || !session_ids.is_a?(Array)
-      render json: { error: "Missing parameter", message: "session_ids array is required" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "session_ids array is required", status: :unprocessable_entity)
       return
     end
 
@@ -911,13 +909,13 @@ class Api::V1::SessionsController < Api::BaseController
     query = params[:q].to_s.strip
 
     if query.blank?
-      render json: { error: "Missing parameter", message: "q (search query) is required" }, status: :bad_request
+      render_api_error("Missing parameter", "q (search query) is required", status: :bad_request)
       return
     end
 
     # Validate query length to prevent performance issues
     if query.length > 1000
-      render json: { error: "Query too long", message: "Maximum query length is 1000 characters" }, status: :bad_request
+      render_api_error("Query too long", "Maximum query length is 1000 characters", status: :bad_request)
       return
     end
 
@@ -952,7 +950,7 @@ class Api::V1::SessionsController < Api::BaseController
   # Used when setup never completed (e.g., git clone failed).
   def restart_from_scratch(session)
     unless session.git_root.present?
-      render json: { error: "Cannot restart", message: "No git_root configured for restart from scratch" }, status: :unprocessable_entity
+      render_api_error("Cannot restart", "No git_root configured for restart from scratch", status: :unprocessable_entity)
       return
     end
 
@@ -988,7 +986,7 @@ class Api::V1::SessionsController < Api::BaseController
       content: "Error restarting session from scratch: #{e.message}",
       level: "error"
     )
-    render json: { error: "Cannot restart", message: e.message }, status: :internal_server_error
+    render_api_error("Cannot restart", e.message, status: :internal_server_error)
   end
 
   def set_session
@@ -996,9 +994,13 @@ class Api::V1::SessionsController < Api::BaseController
     @session = Session.find_by(slug: params[:id]) || Session.find(params[:id])
   end
 
+  # `agent_root` is permitted here alongside the rest of the create payload, but
+  # it is not a Session column — it names a catalog entry that
+  # resolve_agent_root_defaults! expands into git_root, branch, subdirectory and
+  # the catalog defaults. Hence `.except(:agent_root)` at the Session.new call.
   def session_params
     params.permit(
-      :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
+      :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
       :title, :slug, :goal, :execution_provider, :is_autonomous,
       :parent_session_id, :auto_compact_window,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
@@ -1008,24 +1010,42 @@ class Api::V1::SessionsController < Api::BaseController
   # Resolve agent_root param to git_root and apply catalog defaults.
   # Explicit params (git_root, branch, subdirectory, mcp_servers, catalog_skills, catalog_hooks, catalog_plugins)
   # take precedence over agent root defaults.
+  # Resolve the runtime and model for a new session, and — when an agent_root was
+  # named — the repository fields that come with it.
+  #
+  # The precedence is the one the whole app shares:
+  #
+  #   request param  →  agent root's declared value  →  AppSetting (the global
+  #   base default set on the Settings page)  →  the hardcoded default
+  #
+  # This runs whether or not an agent_root was given. Without one there is simply
+  # no root tier, and the chain falls straight through to AppSetting — which is
+  # the point: the Settings page presents those values as global defaults, so a
+  # rootless API spawn has to honor them too.
   def resolve_agent_root_defaults!
-    agent_root_name = params[:agent_root]&.to_s&.strip
-    return unless agent_root_name.present?
+    agent_root_name = session_params[:agent_root].to_s.strip
+    agent_root = AgentRootsConfig.find!(agent_root_name) if agent_root_name.present?
+    app_setting = AppSetting.current
 
-    agent_root = AgentRootsConfig.find!(agent_root_name)
+    # An explicit agent_runtime param (the per-spawn override) wins and is left
+    # exactly as given, so an unregistered value still fails the model's
+    # inclusion validation with a 422 rather than being silently corrected.
+    unless params[:agent_runtime].present?
+      @session.agent_runtime = agent_root&.default_runtime.presence ||
+        app_setting.default_runtime.presence ||
+        RuntimeRegistry::DEFAULT_RUNTIME
+    end
 
-    # An explicit agent_runtime param (the per-spawn override) wins; otherwise the
-    # session adopts the agent root's declared runtime rather than the column
-    # default, so spawning under a non-default-runtime root carries that runtime.
-    @session.agent_runtime = agent_root.default_runtime unless params[:agent_runtime].present?
-    @session.git_root = agent_root.url if @session.git_root.blank?
-    @session.branch = agent_root.default_branch || "main" unless params[:branch].present?
-    @session.subdirectory = agent_root.subdirectory if @session.subdirectory.blank? && agent_root.subdirectory.present?
-    @session.mcp_servers = agent_root.default_mcp_servers || [] if @session.mcp_servers.blank?
-    @session.catalog_skills = agent_root.default_skills || [] if @session.catalog_skills.blank?
-    @session.catalog_hooks = agent_root.default_hooks || [] if @session.catalog_hooks.blank?
-    @session.catalog_plugins = agent_root.default_plugins || [] if @session.catalog_plugins.blank?
-    @session.metadata = (@session.metadata || {}).merge("agent_root_key" => agent_root_name)
+    if agent_root
+      @session.git_root = agent_root.url if @session.git_root.blank?
+      @session.branch = agent_root.default_branch || "main" unless params[:branch].present?
+      @session.subdirectory = agent_root.subdirectory if @session.subdirectory.blank? && agent_root.subdirectory.present?
+      @session.mcp_servers = agent_root.default_mcp_servers || [] if @session.mcp_servers.blank?
+      @session.catalog_skills = agent_root.default_skills || [] if @session.catalog_skills.blank?
+      @session.catalog_hooks = agent_root.default_hooks || [] if @session.catalog_hooks.blank?
+      @session.catalog_plugins = agent_root.default_plugins || [] if @session.catalog_plugins.blank?
+      @session.metadata = (@session.metadata || {}).merge("agent_root_key" => agent_root_name)
+    end
 
     # When the caller didn't specify a model, adopt the agent root's default
     # (which already folds in the global base default). A root's default is
@@ -1033,13 +1053,14 @@ class Api::V1::SessionsController < Api::BaseController
     # a codex spawn would persist an invalid model, so self-heal to the global
     # base default for the resolved runtime (falling back to that runtime's
     # catalog default) whenever the root's model isn't valid for the runtime.
-    if @session.config&.dig("model").blank?
-      model = agent_root.default_model
-      unless ModelCatalog.valid_model?(@session.agent_runtime, model)
-        model = AppSetting.current.resolved_default_model_for(@session.agent_runtime)
-      end
-      @session.config = (@session.config || {}).merge("model" => model)
+    # With no root, that self-heal branch is the whole resolution.
+    return if @session.config&.dig("model").present?
+
+    model = agent_root&.default_model
+    unless ModelCatalog.valid_model?(@session.agent_runtime, model)
+      model = app_setting.resolved_default_model_for(@session.agent_runtime)
     end
+    @session.config = (@session.config || {}).merge("model" => model)
   end
 
   def session_update_params
@@ -1061,68 +1082,45 @@ class Api::V1::SessionsController < Api::BaseController
     Rails.logger.error "Failed to run AIR prepare for session #{session.id}: #{e.message}"
   end
 
-  def session_json(session, include_transcript: false)
-    json = {
-      id: session.id,
-      slug: session.slug,
-      title: session.title,
-      status: session.status,
-      agent_runtime: session.agent_runtime,
-      prompt: session.prompt,
-      git_root: session.git_root,
-      branch: session.branch,
-      subdirectory: session.subdirectory,
-      execution_provider: session.execution_provider,
-      goal: session.goal,
-      mcp_servers: session.mcp_servers,
-      # `mcp_servers` is only the explicitly-selected list. Consumers asking
-      # "which MCP servers does this session actually have wired?" must read
-      # `all_mcp_servers` — the effective set, including plugin-bundled and
-      # Zimmer-auto-injected servers. `injected_mcp_servers` is the auto-injected
-      # subset alone (e.g. the self-session server); on a healthy session it
-      # legitimately omits every user-selected server, so it must never be read
-      # as the effective set.
-      all_mcp_servers: session.all_mcp_servers,
-      injected_mcp_servers: session.injected_mcp_servers,
-      catalog_skills: session.catalog_skills,
-      catalog_hooks: session.catalog_hooks,
-      catalog_plugins: session.catalog_plugins,
-      config: session.config,
-      metadata: session.metadata,
-      custom_metadata: session.custom_metadata,
-      is_autonomous: session.is_autonomous,
-      heartbeat_enabled: session.heartbeat_enabled,
-      heartbeat_interval_seconds: session.heartbeat_interval_seconds,
-      auto_compact_window: session.auto_compact_window,
-      category_id: session.category_id,
-      category: category_summary(session.category),
-      session_id: session.session_id,
-      job_id: session.job_id,
-      running_job_id: session.running_job_id,
-      archived_at: session.archived_at&.iso8601,
-      trash_after: session.trash_after&.iso8601,
-      created_at: session.created_at.iso8601,
-      updated_at: session.updated_at.iso8601
-    }
+  # Re-read one session's transcript from the filesystem and persist it.
+  #
+  # Returns true only when the stored transcript actually changed — that is what
+  # `refresh_all` counts as "refreshed". Returns false when there is nothing to
+  # read (no clone path, no transcript directory, no main transcript file), when
+  # the filesystem copy is byte-identical to the stored one (nothing was
+  # refreshed, and writing anyway would append a log row to every session on
+  # every call), or when the filesystem copy is shorter than the stored one. That
+  # last case means the clone was recreated at a new path and started a fresh
+  # file; session.transcript is the only durable record, so the longer stored copy
+  # is kept rather than destroyed.
+  def refresh_transcript_from_disk(session)
+    transcript_dir = get_transcript_directory_for_session(session)
+    return false if transcript_dir.nil? || !Dir.exist?(transcript_dir)
 
-    json[:session_notes] = session.session_notes
-    json[:session_notes_updated_at] = session.session_notes_updated_at&.iso8601
-    json[:favorited] = session.favorited
-    json[:transcript] = session.transcript if include_transcript
+    main_transcript_file = find_main_transcript_file_for_session(session, transcript_dir)
+    return false unless main_transcript_file
 
-    json
-  end
+    transcript_content = File.read(main_transcript_file)
+    return false if session.transcript == transcript_content
 
-  # Compact representation of the session's category (nil when Uncategorized).
-  def category_summary(category)
-    return nil unless category
+    message_count = count_transcript_messages(transcript_content)
 
-    {
-      id: category.id,
-      name: category.name,
-      position: category.position,
-      is_frozen: category.is_frozen
-    }
+    if Session.transcript_regression?(session.transcript, transcript_content)
+      Rails.logger.warn "[API refresh_all] Skipped transcript regression for session #{session.id} (stored #{Session.transcript_line_count(session.transcript)} events, filesystem #{message_count}); preserving stored transcript"
+      return false
+    end
+
+    session.update!(
+      transcript: transcript_content,
+      metadata: (session.metadata || {}).merge("broadcast_message_count" => message_count)
+    )
+
+    session.logs.create!(
+      content: "Transcript refreshed via API bulk refresh (#{message_count} messages)",
+      level: "info"
+    )
+
+    true
   end
 
   # Transcript directory helpers (shared with web SessionsController)

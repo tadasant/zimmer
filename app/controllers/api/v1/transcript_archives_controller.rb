@@ -12,7 +12,7 @@
 class Api::V1::TranscriptArchivesController < Api::BaseController
   def download
     unless File.exist?(archive_path)
-      render json: { error: "Not Found", message: "No transcript archive exists yet. The archive is built every 10 minutes." }, status: :not_found
+      render_api_error("Not Found", "No transcript archive exists yet. The archive is built every 10 minutes.", status: :not_found)
       return
     end
 
@@ -29,7 +29,7 @@ class Api::V1::TranscriptArchivesController < Api::BaseController
 
   def status
     unless File.exist?(archive_path)
-      render json: { error: "Not Found", message: "No transcript archive exists yet. The archive is built every 10 minutes." }, status: :not_found
+      render_api_error("Not Found", "No transcript archive exists yet. The archive is built every 10 minutes.", status: :not_found)
       return
     end
 

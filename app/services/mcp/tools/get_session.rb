@@ -23,9 +23,6 @@ module Mcp
         "failed" => "❌"
       }.freeze
 
-      # Tool result truncation the REST transcript action applies to tool results.
-      TOOL_RESULT_TRUNCATION = 500
-
       tool_name "get_session"
 
       description <<~DESC
@@ -218,32 +215,7 @@ module Mcp
         parsed = session.parsed_transcript
         raise ToolError, "No transcript available for this session" if parsed.blank?
 
-        lines = []
-        parsed.each do |entry|
-          message = entry["message"] || entry
-          content = message["content"] || ""
-
-          case entry["type"]
-          when "user"
-            lines << "--- User ---"
-            lines << content
-            lines << ""
-          when "assistant"
-            lines << "--- Assistant ---"
-            lines << content
-            lines << ""
-          when "tool_use"
-            lines << "--- Tool Use: #{message['name'] || 'unknown'} ---"
-            lines << content.to_s if content.present?
-            lines << ""
-          when "tool_result"
-            lines << "--- Tool Result ---"
-            lines << content.to_s.truncate(TOOL_RESULT_TRUNCATION) if content.present?
-            lines << ""
-          end
-        end
-
-        lines.join("\n")
+        TranscriptTextRenderer.render(parsed)
       end
 
       def format_logs(session, args)

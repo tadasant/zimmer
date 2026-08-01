@@ -146,12 +146,14 @@ reads these variables, or that it was launched with them — a server started be
 one hard-coding its own URL, still fails the same way.
 :::
 
-:::note[The web and API respond endpoints key on different things]
+:::note[`respond` takes either identifier; `show` takes only the `request_id`]
 `PATCH /elicitations/:id/respond` (web) takes the database primary key.
-`PATCH /api/v1/elicitations/:id/respond` (API) takes the `request_id`.
+`PATCH /api/v1/elicitations/:id/respond` (API) takes **either** the `request_id` or the primary
+key, so whichever one you already hold works.
 
-Same verb, same-looking path, different identifier.
-Tracked in [#82](https://github.com/tadasant/zimmer/issues/82).
+`GET /api/v1/elicitations/:id` stays `request_id`-only on purpose. It is unauthenticated for the
+poll protocol, and accepting a primary key would turn it into a sequential-id enumeration of every
+elicitation.
 
 Also: the API uses `action_type`, not `action`, because `action` collides with a Rails reserved
 param. Clients have to know that.

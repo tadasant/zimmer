@@ -63,7 +63,7 @@ class Api::V1::SubagentTranscriptsController < Api::BaseController
     if @transcript.save
       render json: { subagent_transcript: transcript_json(@transcript) }, status: :created
     else
-      render json: { error: "Validation failed", messages: @transcript.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @transcript.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -73,7 +73,7 @@ class Api::V1::SubagentTranscriptsController < Api::BaseController
     if @transcript.update(transcript_params)
       render json: { subagent_transcript: transcript_json(@transcript) }
     else
-      render json: { error: "Validation failed", messages: @transcript.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @transcript.errors.full_messages, status: :unprocessable_entity)
     end
   end
 

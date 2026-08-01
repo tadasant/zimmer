@@ -46,7 +46,7 @@ class Api::V1::LogsController < Api::BaseController
     if @log.save
       render json: { log: log_json(@log) }, status: :created
     else
-      render json: { error: "Validation failed", messages: @log.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @log.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -56,7 +56,7 @@ class Api::V1::LogsController < Api::BaseController
     if @log.update(log_params)
       render json: { log: log_json(@log) }
     else
-      render json: { error: "Validation failed", messages: @log.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @log.errors.full_messages, status: :unprocessable_entity)
     end
   end
 

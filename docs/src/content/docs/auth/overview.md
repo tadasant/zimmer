@@ -83,12 +83,10 @@ What it isn't:
 - **No rotation without a restart** — the valid-key list is memoized per request instance from ENV.
 - **No audit trail** of which key did what.
 
-Three endpoints skip it entirely:
+Two endpoints skip it entirely:
 
 - `POST /api/v1/elicitations` and `GET /api/v1/elicitations/:id` — required by the MCP
   fallback-elicitation protocol, since the MCP child process has no key.
-- `GET /api/secrets/keys` — because `Api::SecretsController` inherits `ApplicationController`, not
-  `Api::BaseController`. It leaks secret names and descriptions (not values), unauthenticated.
 
 ## 3. Zimmer → the agent vendor
 

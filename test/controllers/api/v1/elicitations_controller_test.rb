@@ -339,6 +339,46 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     assert_not_nil elicitation.responded_at
   end
 
+  # #82: respond takes the same identifiers the web path takes, so an API
+  # consumer holding either one can act on the elicitation.
+  test "should accept a pending elicitation by database id" do
+    elicitation = create_pending_elicitation
+
+    patch respond_api_v1_elicitation_path(elicitation.id),
+      params: { action_type: "accept" },
+      headers: @headers,
+      as: :json
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "accept", json["action"]
+    assert_equal elicitation.request_id, json["_meta"]["com.pulsemcp/request-id"]
+    assert_equal "accept", elicitation.reload.status
+  end
+
+  test "respond returns 404 for an identifier that is neither request_id nor id" do
+    patch respond_api_v1_elicitation_path("no-such-elicitation"),
+      params: { action_type: "accept" },
+      headers: @headers,
+      as: :json
+
+    assert_response :not_found
+    json = JSON.parse(response.body)
+    assert_equal "Not Found", json["error"]
+    assert_kind_of String, json["message"]
+    assert_kind_of Array, json["messages"]
+  end
+
+  # show stays request_id-only: it is unauthenticated for the MCP poll protocol,
+  # so accepting a primary key would make it a sequential-id enumeration.
+  test "show does not resolve an elicitation by database id" do
+    elicitation = create_pending_elicitation
+
+    get api_v1_elicitation_path(elicitation.id)
+
+    assert_response :not_found
+  end
+
   test "should decline a pending elicitation" do
     elicitation = create_pending_elicitation
 
