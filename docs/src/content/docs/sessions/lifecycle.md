@@ -182,7 +182,12 @@ The state machine is not the only actor:
   elicitation or with pending enqueued messages — resuming those would spawn a second process.
 - **`CleanupOrphanedSessionsJob`** (every 5 min) catches sessions marked `running` whose process
   is gone.
-- **`ZombieReaperJob`** reaps dead child processes.
+- **`ZombieReaperJob`** (every 5 min) reaps dead child processes that nothing is waiting on. It
+  deliberately leaves alone any pid a live waiter has claimed — see
+  [Background jobs](/operate/background-jobs/#the-zombie-reaper-only-takes-what-nobody-is-waiting-for).
+  Reaping a pid the monitoring loop was waiting on used to drop the session into `needs_input`
+  with no explanation, because the loop lost the exit status it needed to route through
+  `handle_exit`.
 - **`SessionRecoveryService`** handles hung and interrupted sessions on a best-effort basis;
   `SigtermRetryService` covers gracefully SIGTERM'd sessions (deploys) with a bounded retry
   ladder (`MAX_RETRIES = 3`); an abnormal signal death (SIGKILL from an OOM kill, SIGSEGV, …)

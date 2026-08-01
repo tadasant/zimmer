@@ -935,6 +935,30 @@ of the three to `zimmer`. Same root cause as [#67](https://github.com/tadasant/z
 
 ## Sessions
 
+### Terminating a session's process takes ~15–25 seconds and always escalates to SIGKILL
+
+`ProcessTerminationService` decides whether a process is still alive with `Process.kill(0, pid)`. For
+a child we spawned ourselves that keeps succeeding after the child dies, because an unreaped child
+holds its pid as a zombie. So a child that exited on the first SIGTERM still receives a second
+SIGTERM and two SIGKILLs, and the ladder burns its full sequence of 3-second waits in a GoodJob
+thread before returning.
+
+The zombie that used to be left behind at the end of that ladder is collected now. The wasted time
+and the redundant signals are not fixed, because making the loop exit early would also drop the
+group SIGKILL that today cleans up grandchildren (MCP servers, `node`, `gh`) as a side effect of the
+bug.
+
+Tracked in [#280](https://github.com/tadasant/zimmer/issues/280).
+
+### A headless `claude -p` call that times out leaves its child defunct
+
+`NativeClaudePrintRunner#terminate_process` sends SIGTERM and returns; the `Timeout` has already
+unwound the only `wait`, so nothing collects the child. `ZombieReaperJob` picks it up on its next
+tick and now names the command in a warn-level line, so it is self-reporting rather than silent —
+but it is still a leak. Latent: the timeout path has no production hits.
+
+Tracked in [#281](https://github.com/tadasant/zimmer/issues/281).
+
 ### Session `metadata` is a lost-update hazard, by design
 
 `agent_session_job.rb:1073-1078` says it out loud: *"This uses a read-modify-write pattern which is not
