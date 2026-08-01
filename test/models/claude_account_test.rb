@@ -1466,6 +1466,60 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     end
   end
 
+  # backfill_identity_from_filesystem! — the converge step that lets
+  # AccountRotationService#config_file_matches? fail closed (#61).
+
+  test "backfill_identity_from_filesystem! adopts an on-disk identity that names this account" do
+    with_claude_account_fs do
+      account = claude_accounts(:primary)
+      account.update!(oauth_config: account.oauth_config.except("claude_json"))
+      File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({
+        "oauthAccount" => { "emailAddress" => account.email }, "numStartups" => 4
+      }))
+
+      assert account.backfill_identity_from_filesystem!
+      account.reload
+      assert_equal account.email, account.oauth_config.dig("claude_json", "oauthAccount", "emailAddress")
+      assert_equal 4, account.oauth_config.dig("claude_json", "numStartups")
+      assert_equal "test_access_token_1", account.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken"),
+        "credentials must be left untouched"
+    end
+  end
+
+  test "backfill_identity_from_filesystem! refuses an identity belonging to another account" do
+    with_claude_account_fs do
+      account = claude_accounts(:primary)
+      account.update!(oauth_config: account.oauth_config.except("claude_json"))
+      File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({
+        "oauthAccount" => { "emailAddress" => "someone-else@example.com" }
+      }))
+
+      assert_not account.backfill_identity_from_filesystem!
+      assert_nil account.reload.oauth_config.dig("claude_json")
+    end
+  end
+
+  test "backfill_identity_from_filesystem! never overwrites a stored identity" do
+    with_claude_account_fs do
+      account = claude_accounts(:primary) # already carries claude_json
+      File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({
+        "oauthAccount" => { "emailAddress" => account.email }, "numStartups" => 9
+      }))
+
+      assert_not account.backfill_identity_from_filesystem!
+      assert_nil account.reload.oauth_config.dig("claude_json", "numStartups")
+    end
+  end
+
+  test "backfill_identity_from_filesystem! is a no-op with no identity file on disk" do
+    with_claude_account_fs do
+      account = claude_accounts(:primary)
+      account.update!(oauth_config: account.oauth_config.except("claude_json"))
+
+      assert_not account.backfill_identity_from_filesystem!
+    end
+  end
+
   private
 
   # Builds a codex oauth_config envelope with a controllable last_refresh so

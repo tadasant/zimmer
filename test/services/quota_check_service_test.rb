@@ -215,6 +215,51 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
     assert_match(/timed out/, result.error_message)
   end
 
+  # token_rejected? — the pool's non-consuming validity test (#239)
+
+  test "token_rejected? is false when Anthropic honors the token" do
+    stub_probe(quota_response: stub_http_response(200, headers: {
+      "anthropic-ratelimit-unified-5h-utilization" => "0.30",
+      "anthropic-ratelimit-unified-7d-utilization" => "0.10"
+    }))
+
+    assert_not QuotaCheckService.token_rejected?("sk-ant-oat01-test-token")
+  end
+
+  test "token_rejected? is true when Anthropic answers and refuses the token" do
+    # A 401 comes back as a response with no rate-limit headers.
+    stub_probe(quota_response: stub_http_response(401, body: '{"error":"invalid"}', headers: {}))
+
+    assert QuotaCheckService.token_rejected?("sk-ant-oat01-dead-token")
+  end
+
+  test "token_rejected? is false when the API cannot be reached" do
+    # A network failure says nothing about the credential, and treating it as a
+    # refusal would condemn every account in the pool at once.
+    profile_resp = stub_http_response(200, body: @profile_response_body)
+    Net::HTTP.any_instance.stubs(:request)
+      .with { |req| req.path.include?("oauth/profile") }.returns(profile_resp)
+    Net::HTTP.any_instance.stubs(:request)
+      .with { |req| req.path.include?("messages") }.raises(Net::OpenTimeout.new("timeout"))
+
+    assert_not QuotaCheckService.token_rejected?("sk-ant-oat01-test-token")
+  end
+
+  test "token_rejected? is false when Anthropic itself is failing" do
+    # A 5xx is the provider failing, not the token failing.
+    stub_probe(quota_response: stub_http_response(503, body: "upstream", headers: {}))
+
+    result = QuotaCheckService.check_with_token("sk-ant-oat01-test-token")
+    assert result.unreachable?, "a 5xx must be flagged unreachable"
+    assert_not QuotaCheckService.token_rejected?("sk-ant-oat01-test-token")
+  end
+
+  test "token_rejected? is true for a blank token" do
+    Net::HTTP.any_instance.expects(:request).never
+    assert QuotaCheckService.token_rejected?(nil)
+    assert QuotaCheckService.token_rejected?("")
+  end
+
   test "quota request authenticates OAuth token via Bearer + oauth beta header, not x-api-key" do
     profile_resp = stub_http_response(200, body: @profile_response_body)
     headers = {
@@ -302,6 +347,16 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
   def stub_credentials
     File.stubs(:exist?).with(QuotaCheckService::CREDENTIALS_PATH).returns(true)
     File.stubs(:read).with(QuotaCheckService::CREDENTIALS_PATH).returns(@credentials.to_json)
+  end
+
+  # Wire both legs of a probe: the profile lookup always succeeds, the quota call
+  # returns whatever the test is exercising.
+  def stub_probe(quota_response:)
+    Net::HTTP.any_instance.stubs(:request)
+      .with { |req| req.path.include?("oauth/profile") }
+      .returns(stub_http_response(200, body: @profile_response_body))
+    Net::HTTP.any_instance.stubs(:request)
+      .with { |req| req.path.include?("messages") }.returns(quota_response)
   end
 
   def stub_http_response(code, body: nil, headers: nil)

@@ -16,6 +16,44 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
 
   scope :recent, -> { order(created_at: :desc) }
 
+  # The `anthropic-ratelimit-unified-*-status` values that mean the window is
+  # still serving. "allowed_warning" is an account approaching its cap, not one
+  # past it. Anything else — "rejected", or a value Anthropic adds later — is
+  # read as blocking, so an unknown status errs toward reporting exhaustion.
+  SERVING_QUOTA_STATUSES = %w[allowed allowed_warning].freeze
+
+  # The utilization a window actually carries right now. Once a window's reset
+  # time has passed the sliding window has cleared, so the recorded number says
+  # nothing about what the account can serve today.
+  def self.effective_utilization(utilization, reset_time)
+    return utilization if utilization.nil? || reset_time.nil?
+    return 0.0 if reset_time <= Time.current
+
+    utilization
+  end
+
+  # True when the weekly allowance this snapshot recorded is gone: the API was
+  # rejecting on the 7-day window, or its counter had reached the cap. Either way
+  # the account cannot serve a request until that window resets.
+  #
+  # A status, like a number, holds only until its reset time passes — after that
+  # the sliding window has cleared, the same rule .effective_utilization applies.
+  #
+  # This is the one definition of "the week is spent". /quotas reads it to decide
+  # what an account contributes to the pool figure, QuotaSnapshotService reads it
+  # to mark an account quota_exceeded as the reading lands, AccountRotationService
+  # reads it to refuse a capped candidate, and QuotaResetCheckerJob reads it to
+  # decide the account is not back yet. They must agree, or an account flips
+  # between exceeded and active on every sweep.
+  def seven_day_window_spent?
+    blocked = status_7d.present? && SERVING_QUOTA_STATUSES.exclude?(status_7d)
+    return false if blocked && reset_7d && reset_7d <= Time.current
+    return true if blocked
+
+    eff_7d = self.class.effective_utilization(utilization_7d, reset_7d)
+    !eff_7d.nil? && eff_7d >= 1.0
+  end
+
   # Returns a hash suitable for display, mirroring QuotaCheckService::Result fields
   def to_display_hash
     {

@@ -1,10 +1,20 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 require "tmpdir"
 
 class ClaudeLoginDriverTest < ActiveSupport::TestCase
   setup do
+    # capture! probes the freshly-minted token against Anthropic before the
+    # account enters the pool. Default to a token Anthropic honours.
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(
+        success: true, utilization_5h: 0.1, utilization_7d: 0.1,
+        status_5h: "allowed", status_7d: "allowed"
+      )
+    )
+
     @driver = ClaudeLoginDriver.new
     @account = ClaudeAccount.create!(
       email: "claude-login-driver@example.com", runtime: "claude_code",
@@ -77,6 +87,42 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
         JSON.generate({ "claudeAiOauth" => { "accessToken" => "at-only" } }))
       error = assert_raises(RuntimeError) { @driver.capture!(dir, @account) }
       assert_match(/incomplete/, error.message)
+    end
+  end
+
+  test "capture! raises when Anthropic rejects the freshly-minted token" do
+    # A complete token pair is not a working one. Installing it would put an
+    # account into the pool that fails the first time rotation reaches it (#239).
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(
+        success: false, unreachable: false,
+        error_message: "No rate-limit headers in response (HTTP 401). Token may be expired or invalid."
+      )
+    )
+
+    Dir.mktmpdir do |dir|
+      write_claude_config(dir, email: @account.email)
+      error = assert_raises(RuntimeError) { @driver.capture!(dir, @account) }
+      assert_match(/Anthropic rejected/, error.message)
+      assert_not @account.reload.active?
+      assert_empty @account.oauth_config
+    end
+  end
+
+  test "capture! completes when the probe cannot reach Anthropic" do
+    # Unreachable is evidence about the network, not the credentials — a login the
+    # user completed must not be thrown away over an API blip.
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(
+        success: false, unreachable: true, error_message: "API request timed out: execution expired"
+      )
+    )
+
+    Dir.mktmpdir do |dir|
+      write_claude_config(dir, email: @account.email)
+      @driver.capture!(dir, @account)
+      assert @account.reload.active?
+      assert_equal "at-1", @account.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken")
     end
   end
 

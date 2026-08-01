@@ -69,6 +69,15 @@ class ClaudeLoginDriver < RuntimeLoginDriver
       raise "claude login credentials are incomplete (missing accessToken or refreshToken)"
     end
 
+    # A complete token pair is not a working one. This is an activation path like
+    # any other — the row it writes goes straight into the rotation pool — so it
+    # gets the same non-consuming probe rotation and bootstrap use (#239): present
+    # the freshly-minted access token and see whether Anthropic honours it. A
+    # probe that cannot reach Anthropic says nothing and does not block the login.
+    if QuotaCheckService.token_rejected?(credentials_json.dig("claudeAiOauth", "accessToken"))
+      raise "claude login produced credentials Anthropic rejected — the login did not complete against a usable account"
+    end
+
     account.update!(
       oauth_config: { "claude_json" => claude_json, "credentials_json" => credentials_json },
       status: :active

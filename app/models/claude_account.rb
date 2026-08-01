@@ -628,6 +628,38 @@ class ClaudeAccount < ApplicationRecord
     Rails.logger.warn "[ClaudeAccount] Failed to parse credentials file: #{e.message}"
   end
 
+  # Adopt the on-disk ~/.claude.json identity into this account's stored config,
+  # but only when that file already names this account.
+  #
+  # Identity-only and one-directional: it fills a gap, never overwrites a stored
+  # identity, and never touches credentials — an account that already carries a
+  # claude_json, or whose email the file does not match, is left alone. That makes
+  # it safe on the shared worker, where ~/.claude.json is whoever the CLI last
+  # wrote: the guard is the same email match every other adoption path applies.
+  #
+  # Exists so AccountRotationService#config_file_matches? can fail closed (#61)
+  # without stranding an account that holds credentials but no identity — a fresh
+  # install, or a row bootstrapped from credentials alone.
+  #
+  # @return [Boolean] true when an identity was adopted
+  def backfill_identity_from_filesystem!
+    return false if oauth_config&.dig("claude_json").present?
+    return false unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
+
+    fs_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
+    fs_email = extract_oauth_email(fs_config["oauthAccount"])
+    return false unless fs_email.present? && fs_email.casecmp?(email)
+
+    updated = (oauth_config || {}).deep_dup
+    updated["claude_json"] = fs_config
+    update!(oauth_config: updated)
+    Rails.logger.info "[ClaudeAccount] Adopted the on-disk ~/.claude.json identity for #{email}"
+    true
+  rescue JSON::ParserError, Errno::ENOENT => e
+    Rails.logger.warn "[ClaudeAccount] Could not read ~/.claude.json to backfill #{email}'s identity: #{e.message}"
+    false
+  end
+
   # Writes the credentials portion of oauth_config to the shared filesystem,
   # then stamps the credentials-owner marker so every later reader knows whose
   # tokens are on disk.
