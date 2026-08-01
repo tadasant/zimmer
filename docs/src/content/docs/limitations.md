@@ -1055,9 +1055,9 @@ Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
 `passive_listen_thread` fires on every new reply in a thread Zimmer has spoken in, and
 `passive_listen_channel` — while the channel is inside `CHANNEL_ENGAGEMENT_WINDOW` (6 hours) — on
 every new top-level message from an allowed human. The poller cannot tell "any update on that PR?"
-from "thanks, that worked": both continue a conversation Zimmer is in, so both spawn a session. Whether the session then *says* anything is
-decided entirely by its prompt template, and a template that isn't written for silence turns
-passive listening into a session per message.
+from "thanks, that worked": both continue a conversation Zimmer is in, so both spawn a session.
+Whether the session then *says* anything is decided entirely by its prompt template, and a template
+that isn't written for silence turns passive listening into a session per message.
 
 Three bounds worth knowing:
 
@@ -1076,8 +1076,10 @@ Three bounds worth knowing:
   condition's `configuration` JSONB, exactly like the `channel_timestamps` and `thread_timestamps`
   hashes they sit beside. Nothing prunes any of the four — and because all four live on the
   *condition*, replacing a condition (for instance swapping the deprecated `passive_listen` for the
-  two split types) starts from empty bookkeeping unless they are copied across by hand. Nothing
-  replays as a result, but Zimmer forgets which threads it is in until it next speaks in each.
+  two split types) starts from empty bookkeeping unless they are copied across by hand. That is not
+  a clean slate: it both replays up to a day of thread replies and permanently loses threads whose
+  parent has aged out of recent history. See the migration note in
+  [Triggers](/sessions/triggers/#passive-listening-passive_listen_thread-passive_listen_channel).
 
 ### Everything is polled; there are no webhooks
 
