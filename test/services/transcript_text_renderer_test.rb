@@ -90,7 +90,8 @@ class TranscriptTextRendererTest < ActiveSupport::TestCase
       { "type" => "file-history-snapshot", "snapshot" => { "contents" => "y" * 50_000 } }
     ])
 
-    assert_includes text, "--- File-History-Snapshot ---"
+    # titleize turns the dashes into spaces.
+    assert_includes text, "--- File History Snapshot ---"
     assert_operator text.length, :<, 1_200
   end
 
