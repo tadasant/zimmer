@@ -85,7 +85,11 @@ Precedence, in order:
 3. Nothing — the column is nullable, and the goal suffix is simply not appended.
 
 It can be changed after the fact: `PATCH /api/v1/sessions/:id` accepts `goal`, and a follow-up
-prompt can carry a new one.
+prompt can carry a new one — through the web form, `POST /api/v1/sessions/:id/follow_up`, or the MCP
+`action_session` `follow_up` action. A follow-up goal is applied whether the prompt is sent straight
+through, queued behind a running turn, or interrupted in; a blank one preserves the goal the session
+already has rather than clearing it (see
+[the REST API reference](/extend/rest-api/#following-up-and-the-goal-that-rides-along)).
 
 The column is validated on length only (`GOAL_MAX_LENGTH`). Any string is a legal goal.
 Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).

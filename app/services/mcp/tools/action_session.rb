@@ -24,7 +24,7 @@ module Mcp
       SKILLS_DESC = 'Required for "change_skills" action. Array of catalog skill IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected. Call get_configs / the skills catalog for valid IDs.'
       HOOKS_DESC = 'Required for "change_hooks" action. Array of catalog hook IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
       PLUGINS_DESC = 'Required for "change_plugins" action. Array of catalog plugin IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
-      GOAL_DESC = 'Required for "change_goal" action. The goal text to set for the session; pass an empty string to clear the goal.'
+      GOAL_DESC = 'Required for "change_goal" action. The goal text to set for the session; pass an empty string to clear the goal. Also optional for "follow_up": a non-blank goal is applied to the session along with the prompt, while a blank or omitted one leaves the session\'s current goal alone (use "change_goal" to clear it).'
       AUTO_COMPACT_WINDOW_DESC = 'Required for "change_auto_compact_window" action. The context (auto-compact) window in tokens, a positive integer. Applies on the next turn or restart, not the currently running process.'
       CATEGORY_ID_DESC = 'Required for "change_category" action (the key must be present). The organizational category ID to assign; pass null to move the session back to Uncategorized.'
       BLOCKED_BY_SESSION_ID_DESC = 'Required for "set_blocked" action. The ID of the session that blocks this one; pass null to clear the blocked-by relationship.'
@@ -89,7 +89,7 @@ module Mcp
         Perform an action on an agent session.
 
         **Actions:**
-        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Alternative: use manage_enqueued_messages "send_now" for one-step immediate delivery with goal support.
+        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
         - **restart**: Restart an idle or failed session without providing new input
         - **archive**: Archive a session (marks as completed)
@@ -215,15 +215,32 @@ module Mcp
           raise ToolError, "prompt is too long (maximum #{Session::PROMPT_MAX_LENGTH} characters)"
         end
 
-        return force_immediate_follow_up(session, prompt) if boolean(args["force_immediate"])
-        return queue_follow_up(session, prompt) if session.running?
+        # Rejected before any branch mutates state, so an over-long goal fails the
+        # same way whether the message is queued, interrupted in, or sent directly.
+        goal = args["goal"].to_s.strip.presence
+        if goal && goal.length > Session::GOAL_MAX_LENGTH
+          raise ToolError, "goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)"
+        end
+
+        return force_immediate_follow_up(session, prompt, goal) if boolean(args["force_immediate"])
+        return queue_follow_up(session, prompt, goal) if session.running?
 
         unless session.waiting? || session.needs_input?
           raise ToolError, "Session is #{session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
         end
 
         ActiveRecord::Base.transaction do
-          session.update!(prompt: prompt)
+          # The goal is applied to the session here; the queue and interrupt
+          # branches carry it on the EnqueuedMessage and let
+          # EnqueuedMessageProcessorService apply it on claim. Same rule
+          # everywhere: a non-blank goal overwrites, a blank or absent one leaves
+          # the session's goal alone (clearing it is the "change_goal" action).
+          if goal.present? && goal != session.goal
+            session.update!(prompt: prompt, goal: goal)
+            session.logs.create!(content: "Goal updated from follow-up", level: "info")
+          else
+            session.update!(prompt: prompt)
+          end
           session.resume! if session.may_resume?
           job = AgentSessionJob.enqueue_with_prompt(session.id, prompt)
           session.update!(running_job_id: job.job_id)
@@ -235,7 +252,7 @@ module Mcp
       # force_immediate goes through the one race-free interrupt path
       # (Sessions::InterruptService) the web and REST "Send Now" buttons use, so
       # "deliver now, terminating the current turn" cannot diverge across entry points.
-      def force_immediate_follow_up(session, prompt)
+      def force_immediate_follow_up(session, prompt, goal)
         unless session.running? || session.waiting? || session.needs_input?
           raise ToolError, "Session is #{session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
         end
@@ -245,6 +262,7 @@ module Mcp
           max_position = session.enqueued_messages.maximum(:position) || 0
           enqueued_message = session.enqueued_messages.create!(
             content: prompt,
+            goal: goal,
             position: max_position + 1,
             status: "pending"
           )
@@ -274,10 +292,11 @@ module Mcp
 
       # A running session queues the message rather than rejecting it, so a caller
       # that raced the end of a turn does not lose the prompt.
-      def queue_follow_up(session, prompt)
+      def queue_follow_up(session, prompt, goal)
         max_position = session.enqueued_messages.maximum(:position) || 0
         enqueued_message = session.enqueued_messages.create!(
           content: prompt,
+          goal: goal,
           position: max_position + 1,
           status: "pending"
         )
