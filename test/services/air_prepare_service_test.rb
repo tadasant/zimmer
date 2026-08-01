@@ -328,6 +328,33 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "prepare! does NOT persist the pruned list while the catalog is degraded" do
+    # A failed resolve does not empty SkillsConfig — AirCatalogService serves a
+    # last-known-good tree, which is non-empty and can predate a rename. An id
+    # that is valid today then looks stale, and persisting that drop would erase
+    # it permanently. The in-memory scrub still runs so `air prepare` survives.
+    @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
+    AirCatalogService.stubs(:degraded?).returns(true)
+    AlertService.stubs(:raise_alert)
+
+    captured_cmd = nil
+    stub_air_subprocess(proc { |*args, **opts|
+      captured_cmd = args
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs
+      ).prepare!
+    end
+
+    refute_includes captured_cmd[1..], "renamed-away-skill",
+      "the scrub must still apply in memory so a stale id can't brick `air prepare`"
+    assert_equal [ "zimmer-run-tests", "renamed-away-skill" ], @session.reload.catalog_skills,
+      "a degraded catalog must not be able to write a drop back to the session"
+  end
+
   test "prepare! still drops the stale id when persisting the pruned list fails" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
     AlertService.stubs(:raise_alert)

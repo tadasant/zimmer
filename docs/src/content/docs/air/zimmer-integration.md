@@ -191,10 +191,16 @@ stale catalog skill(s) removed" alert — then prepares with the survivors. This
 *skill* the same non-fatal degradation an unknown *root* already gets. The pruned list is
 **persisted** (`update_column`, so no validation or `updated_at` touch): a session does not prepare
 once — every resume, unarchive, and mid-run clone recreation re-runs `air prepare`, so an
-in-memory-only scrub would re-discover the same stale id and re-alert forever. If the catalog itself
-failed to load (so every id would look stale), the guard leaves the list untouched rather than
-stripping everything, and a failed write degrades to a warning so the scrub can still keep the
-prepare alive.
+in-memory-only scrub would re-discover the same stale id and re-alert forever.
+
+Two guards keep that write from doing damage. If the catalog failed to load *and* left `SkillsConfig`
+empty (so every id would look stale), the list is left untouched rather than stripped. And nothing is
+persisted while the catalog is **degraded** — a failed resolve usually does *not* empty
+`SkillsConfig`, it serves a last-known-good tree, which is non-empty and can predate a rename, so an
+id that is perfectly valid today looks stale against it. Dropping such an id in memory costs one
+prepare; writing that drop back would erase a valid id permanently and undo the backfill that
+repointed it. A failed write likewise degrades to a warning, so the scrub can still keep the prepare
+alive.
 
 Renaming a skill in the catalog is what creates those stale ids in the first place, so a rename
 should ship with a **data backfill** that repoints existing `catalog_skills` rows (sessions *and*
