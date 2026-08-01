@@ -123,6 +123,7 @@ jobs:
           # staging.tfvars.example deliberately assigns nothing, because a -var-file value
           # BEATS TF_VAR_* in Terraform's precedence order: an assignment there would not
           # add to this list, it would silently replace it.
+          keys=0
           if [ -n "${ADMIN_SSH_PUBKEYS:-}" ]; then
             if ! jq -e 'type == "array" and all(type == "string")' >/dev/null 2>&1 <<<"$ADMIN_SSH_PUBKEYS"; then
               echo "::error::ADMIN_SSH_PUBKEYS is set but is not a JSON list of strings."
@@ -130,11 +131,22 @@ jobs:
               echo "::error::  [\"ssh-ed25519 AAAA... op@host\", \"ssh-ed25519 AAAA... you@laptop\"]"
               exit 1
             fi
+            keys=$(jq -r length <<<"$ADMIN_SSH_PUBKEYS")
+          fi
+          # An explicit `[]` is the same outcome as unset -- a box nobody is authorized on --
+          # so it takes the same warning path rather than a green tick over an empty list.
+          if [ "$keys" -gt 0 ]; then
             export TF_VAR_admin_ssh_pubkeys="$ADMIN_SSH_PUBKEYS"
-            echo "✅ admin_ssh_pubkeys: $(jq -r length <<<"$ADMIN_SSH_PUBKEYS") key(s) authorized for root on :2222 --" \
-                 "$(jq -r '[.[] | (split(" ")[2] // "(no comment)")] | join(", ")' <<<"$ADMIN_SSH_PUBKEYS")"
+            # Comment field = everything after the type and the body. Split on runs of
+            # whitespace and drop empties: a double space, a leading space, or a multi-word
+            # comment must not silently print the key body (or the type) as the identity.
+            echo "✅ admin_ssh_pubkeys: $keys key(s) authorized for root on :2222 --" \
+                 "$(jq -r '[.[] | split(" ") | map(select(. != "")) | if length > 2 then .[2:] | join(" ") else "(no comment)" end] | join(", ")' <<<"$ADMIN_SSH_PUBKEYS")"
           else
-            echo "::warning::ADMIN_SSH_PUBKEYS is unset, so admin_ssh_pubkeys=[] and this apply authorizes NO"
+            # Never inherit one from the runner's ambient environment: the log below asserts
+            # that nothing is authorized, and a leaked value would make that assertion a lie.
+            unset TF_VAR_admin_ssh_pubkeys
+            echo "::warning::ADMIN_SSH_PUBKEYS is unset or empty, so admin_ssh_pubkeys=[] and this apply authorizes NO"
             echo "::warning::operator key for root. The deploy itself is unaffected (Kamal has its own key) and"
             echo "::warning::humans still reach the box over Tailscale SSH on :22 -- what is gone is the publickey"
             echo "::warning::door on :2222, so every ssh-* MCP server in a session fails its startup health check."

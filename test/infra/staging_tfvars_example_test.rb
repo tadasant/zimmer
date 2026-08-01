@@ -22,15 +22,25 @@ class StagingTfvarsExampleTest < ActiveSupport::TestCase
 
   # A real SSH public key: a key type, then a base64 body. The `AAAA...` placeholder in
   # the example file and the `AAAA...FEp3` elisions in the docs do not match -- the body
-  # has to be long enough to be usable.
-  KEY_TYPES = %w[ssh-ed25519 ssh-rsa ssh-dss ecdsa-sha2-nistp256 ecdsa-sha2-nistp384 ecdsa-sha2-nistp521].freeze
-  PUBKEY = /\b(?:#{KEY_TYPES.join("|")})\s+AAAA[A-Za-z0-9+\/=]{20,}/
+  # has to be long enough to be usable. The FIDO/`sk-` types carry a literal `@openssh.com`
+  # in the type name, so they need their dots escaped and cannot be matched by the plain
+  # word-boundary alternation the others use.
+  KEY_TYPES = [
+    "ssh-ed25519", "ssh-ed448", "ssh-rsa", "ssh-dss",
+    "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+    "sk-ssh-ed25519@openssh\\.com",
+    "sk-ecdsa-sha2-nistp256@openssh\\.com",
+    "sk-ecdsa-sha2-nistp384@openssh\\.com",
+    "sk-ecdsa-sha2-nistp521@openssh\\.com"
+  ].freeze
+  PUBKEY = /(?:#{KEY_TYPES.join("|")})\s+AAAA[A-Za-z0-9+\/=]{20,}/
 
   # Where an infra key would plausibly land if someone put one back.
   SCANNED = %w[
     infra/**/*
     .github/**/*
-    .kamal/*
+    .kamal/**/*
+    scripts/**/*
     docs/src/content/docs/**/*
   ].freeze
 
@@ -39,7 +49,11 @@ class StagingTfvarsExampleTest < ActiveSupport::TestCase
       .uniq
       .reject { |path| File.directory?(path) || path.include?("node_modules") }
       .filter_map do |path|
-        body = File.read(path, encoding: "UTF-8", invalid: :replace, undef: :replace)
+        # `.scrub`, not File.read's invalid:/undef: -- those only act during a transcode,
+        # so with no internal encoding they are inert and a binary file added under one of
+        # these globs would blow up on the match below with an encoding error nobody could
+        # connect to SSH keys.
+        body = File.read(path, encoding: "UTF-8").scrub
         next unless (match = body[PUBKEY])
 
         "  #{Pathname.new(path).relative_path_from(Rails.root)}: #{match[0, 40]}…"

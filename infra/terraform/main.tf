@@ -115,9 +115,14 @@ variable "admin_ssh_pubkeys" {
     cloud-init-provisioned droplet learns an operator/tooling key (e.g. the key an
     SSH-based MCP server connects with).
 
-    Set it per environment in *.tfvars -- NOT as a default here, so a fork does not
-    silently authorize someone else's key on its own box. The lists are per environment
-    on purpose and are NOT meant to be identical: the key Zimmer's own agent sessions
+    Supplied per environment as TF_VAR_admin_ssh_pubkeys -- in CI, from the
+    ADMIN_SSH_PUBKEYS Actions variable. NEVER as a default here and never in a committed
+    tfvars: staging.tfvars.example is public and the deploy copies it verbatim, so a key
+    in either would authorize that key for root on every fork's own box. The [] default
+    is what makes an unset variable safe. See docs/operate/ssh-access.md#operator-keys.
+
+    The lists are per environment on purpose and are NOT meant to be identical: the key
+    Zimmer's own agent sessions
     hold is authorized on staging and deliberately withheld from production, because
     those sessions RUN ON production and this variable authorizes root. See
     docs/operate/ssh-access.md#who-is-authorized-where before reconciling them.
