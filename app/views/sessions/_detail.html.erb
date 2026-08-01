@@ -13,10 +13,11 @@
 <% in_drawer = local_assigns.fetch(:in_drawer, false) %>
 <%# In the drawer, pull-to-refresh and stream-visibility-recovery are already
     declared on the dashboard root (an ancestor), so omit them here to avoid two
-    instances double-binding document/window listeners and double-refreshing. %>
-<%# cable-reconnect is safe in both contexts: it only observes the stream sources
-    inside this element, so the drawer copy and the dashboard root never contend
-    over the same subscription. %>
+    instances double-binding document/window listeners and double-refreshing.
+    cable-reconnect is exempt from that concern and runs in both contexts: it
+    binds nothing global and only observes the stream sources inside this
+    element, so a drawer copy and the dashboard root cannot contend over the
+    same subscription. %>
 <% detail_controllers = "session-scroll auto-scroll log-level-filter page-header-offset cable-reconnect" %>
 <% detail_controllers += " pull-to-refresh stream-visibility-recovery" unless in_drawer %>
 <div class="<%= in_drawer ? "min-h-full pb-32" : "min-h-screen" %> bg-gray-50" data-controller="<%= detail_controllers %>"
