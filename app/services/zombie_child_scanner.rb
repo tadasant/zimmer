@@ -58,8 +58,10 @@ class ZombieChildScanner
 
   def run_ps
     stdout, _stderr, status = Open3.capture3(*PS_ARGS)
-    # A nil status means the wait was lost to another reaper (#271); treat the
-    # output as untrustworthy rather than acting on a half-read process table.
+    # `status` is nil when Open3's wait thread lost the child's exit status to
+    # another reaper. Nothing in this process reaps blindly any more, so that
+    # should not happen — but a nil status is still not a "ps succeeded", and
+    # acting on a half-read process table means reaping the wrong pid.
     [ stdout, status&.success? == true ]
   rescue StandardError => e
     Rails.logger.warn "[ZombieChildScanner] Could not read the process table: #{e.class}: #{e.message}"

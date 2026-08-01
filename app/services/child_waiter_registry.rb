@@ -3,10 +3,11 @@
 # Process-wide record of which child pids this Ruby process has a *live waiter* for.
 #
 # Why this exists (#273): ZombieReaperJob runs on a cron inside the same worker
-# process as AgentSessionJob's monitoring loop and the pollers. It used to call
-# `Process.waitpid(-1, Process::WNOHANG)`, which reaps ANY child — including one
-# another thread is actively waiting on — and consumes its exit status. The thread
-# that actually needed that status then gets `Errno::ECHILD` and loses it.
+# process as AgentSessionJob's monitoring loop and the pollers, so it cannot reap
+# with `Process.waitpid(-1, …)` — that takes ANY child, including one another
+# thread is actively waiting on, and consumes its exit status. The thread that
+# needed that status gets `Errno::ECHILD` and loses it. This registry is how the
+# reaper tells the two kinds of child apart.
 #
 # A "live waiter" here means: some thread spawned this pid through
 # SystemProcessManager and is still calling `SystemProcessManager#wait` on it.
@@ -14,11 +15,11 @@
 # "claimed AND heartbeated recently" is the reaper's test for "another thread owns
 # this child's exit status; leave it alone".
 #
-# The heartbeat is the part that matters most. Without it, a pid whose waiter died
-# without reaping (an *orphaned* waiter) would be protected forever and its zombie
-# would never be collected — which is the failure mode that produced the original
-# incident (tadasant/zimmer-catalog#3549: 6,032 zombies over ~2 days). With it, the
-# reaper can distinguish "someone is waiting" from "someone was supposed to be
+# The heartbeat is the part that matters most. A bare claim would protect a pid
+# forever — including one whose waiter is gone — and its zombie would never be
+# collected, which is the failure mode that produced the original incident
+# (tadasant/zimmer-catalog#3549: 6,032 zombies over ~2 days). The heartbeat lets
+# the reaper distinguish "someone is waiting" from "someone was supposed to be
 # waiting and is gone", and reap only the latter.
 #
 # Timestamps use CLOCK_MONOTONIC so a wall-clock adjustment (NTP step, container
@@ -30,6 +31,11 @@ class ChildWaiterRegistry
   # Cap on the diagnostic command string kept per claim. Long enough to identify
   # a caller, short enough that a warn line stays readable.
   MAX_COMMAND_LENGTH = 200
+
+  # Cap on a single retained flag name. A "flag" is any argument starting with
+  # `-`, and an argument VALUE can start with one too, so this bounds what a
+  # value masquerading as a flag can put into a log line.
+  MAX_FLAG_LENGTH = 40
 
   Waiter = Struct.new(:pid, :command, :claimed_at, :last_waited_at, keyword_init: true) do
     # Seconds since this waiter last called wait on the pid.
@@ -54,7 +60,7 @@ class ChildWaiterRegistry
 
     # Test seam: drop the process-wide instance so a test can start from empty.
     def reset!
-      @instance = nil
+      INSTANCE_MUTEX.synchronize { @instance = nil }
     end
   end
 
@@ -171,8 +177,14 @@ class ChildWaiterRegistry
     parts = parts.reject { |part| part.is_a?(Hash) }.map(&:to_s)
     return nil if parts.empty?
 
-    program = File.basename(parts.first)
-    flags = parts.drop(1).select { |part| part.start_with?("-") }.map { |flag| flag.split("=").first }
+    # Process.spawn also accepts a single shell-command STRING, in which case
+    # parts.first is the whole command line — arguments and all. Split on
+    # whitespace first so that shape reduces to a program name like the argv
+    # shape does, instead of passing the entire command through untouched.
+    program = File.basename(parts.first.split(/\s+/).first.to_s)
+    flags = parts.drop(1)
+                 .select { |part| part.start_with?("-") }
+                 .map { |flag| flag.split("=").first.to_s[0, MAX_FLAG_LENGTH] }
 
     ([ program ] + flags).join(" ").truncate(MAX_COMMAND_LENGTH)
   end

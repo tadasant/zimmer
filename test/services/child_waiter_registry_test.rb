@@ -36,6 +36,24 @@ class ChildWaiterRegistryTest < ActiveSupport::TestCase
     assert_equal "gh --token", @registry.waiter(4242).command
   end
 
+  test "a single shell-command string is reduced to its program, not passed through" do
+    # Process.spawn also takes one command STRING. Recording that shape verbatim
+    # would put the whole command line — arguments and all — into a log message.
+    @registry.claim(4242, command: "/usr/bin/gh api --token=ghp_secret /repos/x", at: @now)
+
+    recorded = @registry.waiter(4242).command
+
+    assert_equal "gh", recorded
+    assert_not_includes recorded, "ghp_secret"
+  end
+
+  test "an argument value masquerading as a flag is bounded" do
+    long_value = "-#{'s' * 500}"
+    @registry.claim(4242, command: [ "claude", "-p", long_value ], at: @now)
+
+    assert_equal "claude -p #{'-' + 's' * (ChildWaiterRegistry::MAX_FLAG_LENGTH - 1)}", @registry.waiter(4242).command
+  end
+
   test "the recorded command is bounded" do
     @registry.claim(4242, command: [ "claude" ] + Array.new(200) { |i| "--flag-#{i}" }, at: @now)
 

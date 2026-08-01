@@ -29,17 +29,40 @@ class ZombieReaperJobTest < ActiveJob::TestCase
     ChildWaiterRegistry.reset!
   end
 
-  # === The hazard this job used to cause ===
+  # === The hazard a pid-blind reap causes ===
 
-  test "the untargeted reap this job used to do steals a tracked child's exit status" do
+  test "an untargeted reap steals a tracked child's exit status" do
     manager = SystemProcessManager.new
     pid = spawn_exiting_child(manager: manager, exit_code: 7)
 
-    # Verbatim what the old implementation did.
+    # `Process.waitpid(-1, …)` is the thing this job must never do. Reaping
+    # blindly here consumes the status AgentSessionJob's monitoring loop needs to
+    # route through handle_exit — the regression the tests below guard against.
     Process.waitpid(-1, Process::WNOHANG)
 
-    assert_raises Errno::ECHILD, "the old reaper consumed the status the monitoring loop needed" do
+    assert_raises Errno::ECHILD do
       manager.wait(pid, Process::WNOHANG)
+    end
+  end
+
+  test "a Process.detach waiter outside the registry keeps its status across a real confirmation delay" do
+    # No stubbed sleep: this is the only protection an Open3/Process.detach wait
+    # thread has, since nothing claims those pids in the registry.
+    ZombieReaperJob.any_instance.unstub(:sleep)
+
+    # An abandoned zombie guarantees the job takes the slow path rather than
+    # returning early on an empty first pass.
+    abandoned = spawn_exiting_child(manager: nil)
+    detached = Process.spawn("sh", "-c", "exit 5")
+    @spawned << detached
+    wait_thr = Process.detach(detached)
+
+    ZombieReaperJob.perform_now
+
+    assert_not_nil wait_thr.value, "the reaper stole the detach thread's exit status"
+    assert_equal 5, wait_thr.value.exitstatus
+    assert_raises Errno::ECHILD, "the abandoned child was still collected" do
+      Process.waitpid(abandoned, Process::WNOHANG)
     end
   end
 
@@ -118,7 +141,7 @@ class ZombieReaperJobTest < ActiveJob::TestCase
     ZombieReaperJob.perform_now
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
 
-    assert_equal "R", process_state(pid)
+    assert_equal "alive", process_state(pid)
     assert elapsed < 5.0, "ZombieReaperJob took #{elapsed}s — it must never block on a live child"
   end
 
@@ -171,14 +194,37 @@ class ZombieReaperJobTest < ActiveJob::TestCase
     assert_nil ChildWaiterRegistry.instance.waiter(999_999)
   end
 
-  test "says nothing alarming when there is nothing to reap" do
+  test "keeps a claim for a candidate that turns out not to be reapable" do
+    pid = spawn_exiting_child(manager: nil)
+    # Stale enough not to be skipped, so the pid reaches the waitpid call.
+    ChildWaiterRegistry.instance.heartbeat(
+      pid,
+      at: ChildWaiterRegistry.monotonic_now - ZombieReaperJob::LIVE_WAITER_STALE_AFTER - 1
+    )
+    # A nil return means the pid is alive after all — its real waiter collected
+    # it and the number was recycled. The claim then belongs to a NEW process.
+    Process.stubs(:waitpid).returns(nil)
+
+    ZombieReaperJob.perform_now
+    # Restore before teardown, which has a real child to collect.
+    Process.unstub(:waitpid)
+
+    assert_not_nil ChildWaiterRegistry.instance.waiter(pid),
+      "a claim must not be dropped for a pid the job did not actually reap"
+  end
+
+  test "reports nothing to reap without raising an alarm" do
     ZombieChildScanner.any_instance.stubs(:snapshot).returns(
       ZombieChildScanner::Snapshot.new(pids: [ Process.pid ], zombie_child_pids: [])
     )
-    Rails.logger.stubs(:info)
-    Rails.logger.expects(:warn).never
+    logged = []
+    Rails.logger.stubs(:info).with { |message| logged << [ :info, message ]; true }
+    Rails.logger.stubs(:warn).with { |message| logged << [ :warn, message ]; true }
 
     ZombieReaperJob.perform_now
+
+    assert_includes logged, [ :info, "[ZombieReaperJob] No zombies to reap" ]
+    assert_empty logged.select { |level, message| level == :warn && message.include?("[ZombieReaperJob]") }
   end
 
   private
@@ -197,16 +243,17 @@ class ZombieReaperJobTest < ActiveJob::TestCase
   def wait_until_defunct(pid, timeout: 5)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
     loop do
-      return if process_state(pid) == "Z"
+      return if process_state(pid) == "defunct"
       raise "pid #{pid} never became defunct" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       sleep 0.02
     end
   end
 
-  # "Z" defunct, "R" present and not defunct, "-" gone from the table entirely.
+  # "defunct" exited but unreaped, "alive" in the table and not defunct, "gone"
+  # absent from the table entirely.
   def process_state(pid)
     state = `ps -o stat= -p #{pid}`.strip
-    return "-" if state.empty?
-    state.start_with?("Z") ? "Z" : "R"
+    return "gone" if state.empty?
+    state.start_with?("Z") ? "defunct" : "alive"
   end
 end
