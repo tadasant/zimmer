@@ -746,9 +746,15 @@ class ClaudeAccount < ApplicationRecord
   # every entry authorized since — the user meets this as "the agent says it needs
   # to authorize this server again" after a rotation — and could resurrect entries
   # McpOauthCredential deliberately deleted (see
-  # ClaudeMcpCredentialWriter#delete_credentials). Unknown top-level keys the CLI
-  # may have written are preserved for the same reason: this writer owns the login
-  # tokens and nothing else.
+  # ClaudeMcpCredentialWriter#delete_credentials).
+  #
+  # `mcpOAuth` is the only block carved out. On-disk keys the DB copy does not
+  # carry survive because this is a merge rather than a replacement, but for a key
+  # present in both, the account's copy wins: the point of the write is to make the
+  # file describe THIS account, and guessing the other way for a future
+  # account-scoped block would leave the previous account's data on disk — the
+  # contamination the owner marker exists to prevent. A host-scoped block Zimmer
+  # does not know about is the milder mistake, and the fix is to name it here.
   #
   # @param stored [Hash] credentials_json from oauth_config
   # @param on_disk [Hash] the current parsed contents of the credentials file
