@@ -62,7 +62,14 @@ rm -f "$ZIMMER_BOOT_TASKS_MARKER" 2>/dev/null || true
 
   # Always write the marker, including on failure: the gate must unblock either
   # way. The contents are what tell the spawn path whether to warn.
-  echo "${boot_tasks_status:-ok}" > "$ZIMMER_BOOT_TASKS_MARKER" 2>/dev/null || true
+  #
+  # Written to a temp path and renamed, because a plain `>` truncates the target
+  # before the content lands: a reader polling in that gap would see a marker that
+  # exists and is empty, read it as a clean finish, and drop the very warning this
+  # block exists to raise. Rename within one directory is atomic.
+  if echo "${boot_tasks_status:-ok}" > "$ZIMMER_BOOT_TASKS_MARKER.tmp" 2>/dev/null; then
+    mv -f "$ZIMMER_BOOT_TASKS_MARKER.tmp" "$ZIMMER_BOOT_TASKS_MARKER" 2>/dev/null || true
+  fi
 } &
 
 # If running the rails server then create or migrate existing database
