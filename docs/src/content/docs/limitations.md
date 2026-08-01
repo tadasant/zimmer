@@ -1060,12 +1060,16 @@ but it is still a leak. Latent: the timeout path has no production hits.
 
 Tracked in [#281](https://github.com/tadasant/zimmer/issues/281).
 
-### Session `metadata` is a lost-update hazard, by design
+### Not every session `metadata` writer is atomic
 
-`agent_session_job.rb:1073-1078` says it out loud: *"This uses a read-modify-write pattern which is not
-atomic… consider using PostgreSQL's jsonb ops."* Correctness-adjacent flags live in it anyway
-(`interrupt_terminate_pid`, `pending_follow_up_prompt`), described as *"best-effort FAST PATH, not the
-correctness guarantee."*
+The writers on the hot paths — the monitoring loop, follow-up delivery, the interrupt flag, the GitHub
+pollers, the transcript hooks — merge in PostgreSQL as one statement and so cannot erase keys they did
+not name. See [Metadata races](/sessions/spawning/#metadata-races).
+
+The terminal failure paths (`failure_reason`, `exit_status`, and friends) still rebuild the whole
+column from a snapshot. Nothing correctness-critical is lost there — the session is being failed at
+that point — but the shape remains, so a key written concurrently with a session failing can still
+disappear. And no amount of atomic merging serializes two writers of the *same* key.
 
 Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
 

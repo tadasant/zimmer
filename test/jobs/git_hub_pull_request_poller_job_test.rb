@@ -32,6 +32,31 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     assert_not_includes result_ids, failed_session.id
   end
 
+  # A poll cycle spans several seconds of GitHub API calls, so the session object this
+  # job holds is stale by the time it writes. Before the write became a single-statement
+  # jsonb merge, that write rebuilt the whole column from the stale snapshot — erasing a
+  # PR URL the session's own transcript hook recorded during the poll, which is a session
+  # where none of the GitHub integration ever engages again (issue #70).
+  test "poll_pr_statuses keeps a PR url a transcript hook recorded during the poll" do
+    first_pr = "https://github.com/owner/repo/pull/123"
+    second_pr = "https://github.com/owner/repo/pull/456"
+    @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ first_pr ] })
+
+    stale_view = Session.find(@session_with_pr.id)
+
+    # Mid-poll, the agent opens a second PR and the transcript hook records it.
+    TranscriptHooks::BaseHook
+      .new(session: Session.find(@session_with_pr.id), transcript_content: "", new_messages: [])
+      .send(:update_custom_metadata, "github_pull_request_urls" => [ first_pr, second_pr ])
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, stale_view)
+
+    @session_with_pr.reload
+    assert_equal [ first_pr, second_pr ], @session_with_pr.custom_metadata["github_pull_request_urls"],
+      "the poller must not erase a PR url recorded while it was polling"
+    assert_equal({ first_pr => "merged" }, @session_with_pr.custom_metadata["github_pull_request_statuses"])
+  end
+
   test "poll_pr_statuses updates statuses when they change" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 

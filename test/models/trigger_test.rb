@@ -371,7 +371,7 @@ class TriggerTest < ActiveSupport::TestCase
     session.update_column(:status, Session.statuses[:needs_input])
 
     # Verify enqueue_with_prompt is called with the correct session and prompt
-    AgentSessionJob.expects(:enqueue_with_prompt).with(session.id, "Follow-up prompt").once
+    AgentSessionJob.expects(:enqueue_with_prompt).with(session.id, "Follow-up prompt", images: nil, files: nil).once
 
     @trigger.create_session!(prompt: "Follow-up prompt")
   end

@@ -101,12 +101,10 @@ class SigtermRetryService
     # Record retry attempt in metadata
     sigterm_retry_timestamps << Time.current.iso8601
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "sigterm_retry_count" => retry_attempt,
-          "sigterm_retry_timestamps" => sigterm_retry_timestamps,
-          "last_sigterm_at" => Time.current.iso8601
-        )
+      session.merge_metadata!(
+        "sigterm_retry_count" => retry_attempt,
+        "sigterm_retry_timestamps" => sigterm_retry_timestamps,
+        "last_sigterm_at" => Time.current.iso8601
       )
     end
 
@@ -139,9 +137,7 @@ class SigtermRetryService
         add_log("Using pending follow-up prompt instead of automated recovery prompt", level: "info")
         # Clear the pending prompt and sent_at now that we're using it
         with_db_retry do
-          session.update!(
-            metadata: session.metadata.except("pending_follow_up_prompt", "pending_follow_up_sent_at")
-          )
+          session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
         end
         pending_prompt
       else

@@ -44,11 +44,7 @@ module PollBackoff
     session.reload if session.persisted?
     last_polled = (session.custom_metadata&.dig("poller_last_polled_at") || {}).dup
     last_polled[job_key] = Time.current.iso8601
-    session.update!(
-      custom_metadata: (session.custom_metadata || {}).merge(
-        "poller_last_polled_at" => last_polled
-      )
-    )
+    session.merge_custom_metadata!("poller_last_polled_at" => last_polled)
   end
 
   # The minimum interval (seconds) between polls for this session, based on

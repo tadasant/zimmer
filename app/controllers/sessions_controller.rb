@@ -1381,47 +1381,6 @@ class SessionsController < ApplicationController
           )
         end
 
-        stale_keys = Session::STALE_RETRY_METADATA_KEYS
-        if stale_keys.any? { |key| @session.metadata&.dig(key).present? }
-          @session.update!(
-            metadata: (@session.metadata || {}).except(*stale_keys)
-          )
-        end
-
-        # Update session status to running
-        @session.resume! if @session.may_resume?
-
-        # Log the follow-up prompt (truncate to prevent log bloat)
-        truncated_prompt = follow_up_prompt.length > 200 ? "#{follow_up_prompt[0..197]}..." : follow_up_prompt
-        @session.logs.create!(
-          content: "Follow-up prompt received: #{truncated_prompt}",
-          level: "info"
-        )
-
-        # Store pending prompt in metadata so it can be recovered if the job
-        # is interrupted (e.g., SIGTERM retry kicks in before job processes).
-        # Also store sent_at timestamp for pause-wait-for-delivery logic.
-        # This prevents the race condition where follow-up prompts are lost
-        # and replaced with the automated recovery prompt during SIGTERM retries.
-        #
-        # We also store sent_message for recovery purposes: if the session
-        # transitions to paused/failed before the message appears in the transcript,
-        # we can preload it back into the follow-up entry box so the user doesn't
-        # lose their message. The sent_message is cleared by TranscriptPollerService
-        # once the message appears in the transcript.
-        sent_at = Time.current
-        @session.update!(
-          metadata: (@session.metadata || {}).merge(
-            "pending_follow_up_prompt" => follow_up_prompt,
-            "pending_follow_up_sent_at" => sent_at.iso8601,
-            "sent_message" => follow_up_prompt,
-            "sent_message_at" => sent_at.iso8601,
-            # Stamps user activity so PollBackoff resets the GitHub-poll cadence
-            # for this session (this key is NOT cleared by transcript polling).
-            "last_user_activity_at" => sent_at.iso8601
-          )
-        )
-
         # Parse image paths from params if provided (stored by upload_images action)
         images = parse_image_params
         # Parse file paths from params if provided (stored by upload_files action)
@@ -1429,9 +1388,39 @@ class SessionsController < ApplicationController
 
         # Broadcast optimistic user message immediately for instant feedback
         # This shows the message in the timeline before Claude processes it
+        sent_at = Time.current
         BroadcastService.new.optimistic_user_message(@session, follow_up_prompt, sent_at: sent_at)
 
-        # Log if images are being sent
+        # Clear stale retry state, resume, stamp the prompt, enqueue, record the job id.
+        #
+        # sent_at drives the pause-wait-for-delivery logic. sent_message is stored for
+        # recovery: if the session transitions to paused/failed before the message
+        # appears in the transcript, we preload it back into the follow-up entry box so
+        # the user doesn't lose their message. TranscriptPollerService clears it once the
+        # message lands in the transcript.
+        @session.deliver_follow_up!(
+          follow_up_prompt,
+          clear_metadata_keys: Session::STALE_RETRY_METADATA_KEYS,
+          metadata_updates: {
+            "pending_follow_up_sent_at" => sent_at.iso8601,
+            "sent_message" => follow_up_prompt,
+            "sent_message_at" => sent_at.iso8601,
+            # Stamps user activity so PollBackoff resets the GitHub-poll cadence
+            # for this session (this key is NOT cleared by transcript polling).
+            "last_user_activity_at" => sent_at.iso8601
+          },
+          images: images,
+          files: attached_files
+        )
+
+        # Logged after the delivery so the timeline reads
+        # "resumed" → "prompt received" → attachments, as it always has.
+        truncated_prompt = follow_up_prompt.length > 200 ? "#{follow_up_prompt[0..197]}..." : follow_up_prompt
+        @session.logs.create!(
+          content: "Follow-up prompt received: #{truncated_prompt}",
+          level: "info"
+        )
+
         if images.present?
           @session.logs.create!(
             content: "Sending #{images.size} image(s) with follow-up prompt",
@@ -1439,21 +1428,12 @@ class SessionsController < ApplicationController
           )
         end
 
-        # Log if files are being sent
         if attached_files.present?
           @session.logs.create!(
             content: "Sending #{attached_files.size} file(s) with follow-up prompt",
             level: "info"
           )
         end
-
-        # Enqueue job to continue the session with the follow-up prompt and images.
-        # Store running_job_id immediately to close the window where the session is
-        # "running" but has no tracked job — without this, if the job is delayed or
-        # fails before setting running_job_id itself, the session gets stuck as
-        # "running" with no job and no feedback to the user.
-        job = AgentSessionJob.enqueue_with_prompt(@session.id, follow_up_prompt, images: images, files: attached_files)
-        @session.update!(running_job_id: job.job_id)
       end
     rescue ActiveRecord::RecordInvalid => e
       respond_to_follow_up_error("Failed to submit follow-up prompt: #{e.message}")

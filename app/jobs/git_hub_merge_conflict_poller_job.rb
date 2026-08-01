@@ -128,13 +128,9 @@ class GitHubMergeConflictPollerJob < ApplicationJob
     metadata_updates["github_pull_request_merge_conflicts_suspected"] = updated_suspected if updated_suspected != current_suspected
 
     if metadata_updates.any?
-      with_db_retry do
-        # Reload to minimize stale-read window (other pollers may have updated custom_metadata)
-        session.reload
-        session.update!(
-          custom_metadata: (session.custom_metadata || {}).merge(metadata_updates)
-        )
-      end
+      # The merge happens in PostgreSQL, so there is no stale-read window left for a
+      # reload to narrow: keys other pollers wrote during this poll survive.
+      with_db_retry { session.merge_custom_metadata!(metadata_updates) }
       Rails.logger.info "[GitHubMergeConflictPollerJob] Updated merge conflict statuses for session #{session.id}: confirmed=#{updated_conflicts} suspected=#{updated_suspected}"
     end
   end
@@ -217,29 +213,12 @@ class GitHubMergeConflictPollerJob < ApplicationJob
   # Send prompt directly to the session, transitioning it to running
   # Used when session is in needs_input state
   def send_prompt_immediately(session, prompt, pr_url)
-    # Reset SIGTERM retry state for fresh execution
-    if session.metadata&.dig("sigterm_retry_count").present?
-      session.update!(
-        metadata: (session.metadata || {}).except(
-          "sigterm_retry_count",
-          "sigterm_retry_timestamps",
-          "last_sigterm_at"
-        )
-      )
-    end
-
-    session.resume! if session.may_resume?
-
     session.logs.create!(
       content: "Merge conflict detected on #{pr_url} — automated message sent immediately",
       level: "info"
     )
 
-    session.update!(
-      metadata: (session.metadata || {}).merge("pending_follow_up_prompt" => prompt)
-    )
-
-    AgentSessionJob.enqueue_with_prompt(session.id, prompt)
+    session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
 
     Rails.logger.info "[GitHubMergeConflictPollerJob] Sent immediate merge conflict message for session #{session.id}, PR #{pr_url}"
   end
