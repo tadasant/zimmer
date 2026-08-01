@@ -132,15 +132,24 @@ Most jobs run on `default`. Two are deliberately isolated:
 `total_limit: 1` has a corollary that matters for failure handling: a run that blocks *is* polling
 for the whole instance, and every cron tick that lands meanwhile is rejected rather than queued. So
 `SlackTriggerPollerJob` does not wait out a Slack outage on its slot. `SlackService` absorbs a short
-blip in process (`MAX_RETRIES = 3`, backing off 1s, 2s, 4s, and honoring a `retry_after` only when it
-is 8s or under), and raises `SlackService::TransientError` for anything longer. The job catches that,
-calls `retry_job` with an exponential wait (30s, 60s, 120s, 240s, 480s — or Slack's `retry_after` if
-longer, capped at 10 minutes), and returns, freeing the thread.
+blip in process (`MAX_RETRIES = 3`, backing off 1s, 2s, 4s; a 429's `retry_after` is honored verbatim
+when Slack gives one, but only ridden out in process when it is 8s or under), and raises
+`SlackService::TransientError` for anything longer. The job answers that by calling `retry_job` with
+an exponential wait (30s, 60s, 120s, 240s, 480s — or Slack's `retry_after` if longer, capped at 10
+minutes) and returning, freeing the thread.
 
 Rescheduling rather than re-enqueuing is deliberate. `retry_job` reuses the same job id, which
 GoodJob's concurrency control lets through, and the row stays unfinished — so the singleton key is
 still held, the cron ticks in between stay no-ops, and the deferred run is the *next* poll rather
-than an extra one. After `MAX_DEFERRALS` (5) the job stops deferring and raises an alert.
+than an extra one. The deferral count rides in the job's serialized params, not in `executions`,
+which also counts retries the poller knows nothing about. After `MAX_DEFERRALS` (5) the job stops
+deferring and raises an alert.
+
+A transient failure deep in the sweep does not abort it. Each unit — channel, thread, DM — owns a
+cursor that only advances for units that finished, and those writes are batched at the end, so
+unwinding mid-sweep would skip them and replay finished units as duplicate sessions. The unit
+rescues record the failure instead, the sweep completes its bookkeeping, and the deferral happens
+once at the end.
 
 ## Trigger-poll liveness
 

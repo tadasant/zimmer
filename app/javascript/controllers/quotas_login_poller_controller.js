@@ -29,13 +29,12 @@ export default class extends Controller {
   static MAX_CONSECUTIVE_ERRORS = 10
 
   // Consecutive failures back the poll off exponentially rather than retrying at
-  // the flat intervalValue cadence. The count above is a budget for "the server
-  // is really gone", but at a flat 2s it was spent in twenty seconds — well
-  // inside a deploy, a laptop lid closing, or a wifi handover — and abandoning a
-  // login that would have completed is worse than waiting. Backing off spends the
-  // same ten attempts over ~3 minutes (2s, 4s, 8s, 16s, then 30s each), which is
-  // long enough for a real blip to end and still bounded by the attempt's own
-  // expires_at deadline below.
+  // the flat intervalValue cadence. The count above is a budget for "the server is
+  // really gone", and at a flat 2s it would be spent in twenty seconds — well
+  // inside a deploy, a laptop lid closing, or a wifi handover — abandoning a login
+  // that would have completed. Backing off spends the same ten attempts over ~3
+  // minutes (2s, 4s, 8s, 16s, then 30s each), which is long enough for a real blip
+  // to end and still bounded by the attempt's own expires_at deadline below.
   static BACKOFF_MULTIPLIER = 2
   static MAX_BACKOFF_MS = 30000
 
@@ -61,6 +60,10 @@ export default class extends Controller {
   // a poll can never be scheduled on top of one still in flight.
   scheduleNextPoll() {
     if (this.stopped) return
+
+    // Only ever one timer tracked at a time: an untracked one would survive
+    // disconnect() and poll on at a doubled cadence with nothing able to stop it.
+    if (this.timer) clearTimeout(this.timer)
 
     this.timer = setTimeout(() => {
       this.timer = null
@@ -122,8 +125,10 @@ export default class extends Controller {
       // Transient network error — the next tick retries, up to the error cap.
       this.recordError()
     } finally {
-      // No-op once giveUp() or a Turbo swap has stopped us, so the give-up paths
-      // stay terminal.
+      // A no-op once giveUp() has stopped us, so the give-up paths stay terminal.
+      // A Turbo swap is different: Stimulus delivers disconnect() on a later
+      // microtask, so this still schedules a timer — disconnect()'s clearTimeout is
+      // what tears it down, which is why the handle must stay tracked.
       this.scheduleNextPoll()
     }
   }

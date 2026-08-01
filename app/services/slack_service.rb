@@ -284,19 +284,22 @@ class SlackService
       begin
         yield
       rescue Slack::Web::Api::Errors::TooManyRequestsError => e
-        # Rate limited - Slack tells us exactly how long to wait, so honor that value.
-        # What is bounded here is only WHERE we wait: a retry_after longer than a
-        # single in-process sleep is worth (RETRY_MAX_DELAY) is handed back as a
-        # RateLimitedError carrying that same value, so the caller reschedules for
+        # Rate limited - Slack tells us exactly how long to wait, so honor that value
+        # verbatim when it gives one, and back off like the network branch when it
+        # does not. What is bounded here is only WHERE we wait: a retry_after longer
+        # than a single in-process sleep is worth (RETRY_MAX_DELAY) is handed back as
+        # a RateLimitedError carrying that same value, so the caller reschedules for
         # then instead of holding its slot asleep for the whole window.
-        delay = e.retry_after || RETRY_BASE_DELAY
         retries += 1
+        delay = e.retry_after || backoff_delay(retries)
         if retries <= MAX_RETRIES && delay <= RETRY_MAX_DELAY
           Rails.logger.warn("[SlackService] Rate limited (attempt #{retries}/#{MAX_RETRIES}). Retrying in #{delay}s...")
           sleep(delay)
           retry
         end
-        raise RateLimitedError.new("Slack rate limit exceeded: #{e.message}", retry_after: delay)
+        # retry_after stays whatever Slack actually said — nil when it said nothing,
+        # rather than a backoff figure we invented, so the caller can tell the two apart.
+        raise RateLimitedError.new("Slack rate limit exceeded: #{e.message}", retry_after: e.retry_after)
       rescue Slack::Web::Api::Errors::SlackError => e
         # SlackError inherits from Faraday::Error, so catch it before Faraday::Error
         # Don't retry API errors (invalid channel, permission denied, etc.)
