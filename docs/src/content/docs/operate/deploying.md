@@ -314,6 +314,66 @@ deploys the app onto it. `deploy-staging.yml`:
    never goes healthy leaves the old one serving.
 5. Re-verifies `/up` over the tailnet and asserts the **worker** container is running too — the
    worker is where agent sessions actually execute.
+6. Smoke-tests the app it just deployed: `/up/deep`, a real page render, a CSRF round trip, and an
+   Action Cable upgrade. See below — this is the step that decides whether the deploy is called
+   healthy.
+
+If the rebuild path (`recreate_droplet`) runs without `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET`,
+`scripts/tailnet-reap-node.sh` still skips the stale-node cleanup — a fork that never configured a
+Tailscale OAuth client must not have its rebuild fail over it — but it now says so as a GitHub
+Actions **warning** rather than an info line nobody reads. The consequence of a silent skip surfaces
+much later and somewhere else: the rebuilt droplet registers as `zimmer-staging-1` and the MagicDNS
+name drifts off the box you deployed.
+
+### `/up` is a liveness ping; `/up/deep` is the health check
+
+`/up` is Rails' built-in endpoint, and it answers 200 for any process that finished booting. A
+container with a dead database, an unreachable Redis, or a cache store that silently drops every
+write answers it 200 all the same. A deploy gate that asks only `/up` therefore declares a fully
+broken deploy healthy — which is what happened.
+
+`GET /up/deep` (`app/services/deep_health_check.rb`) answers 200 only when every backing service the
+app cannot serve a page without has answered a real round trip, and `503` naming the one that did
+not:
+
+| Check | What it does | What only it catches |
+| --- | --- | --- |
+| `database` | `SELECT 1`, then one indexed row from a real application table | A Postgres that connects but has none of the app's tables — wrong database, unmigrated volume |
+| `cache` | Writes a per-request canary and **reads it back** | `:redis_cache_store`'s `error_handler` swallows connection errors, so a dead Redis makes `write` and `read` return `nil` instead of raising. Reading the value back is the only way to tell a working store from one quietly discarding everything |
+| `redis` | `PING` on the connection the cache store actually holds | Turns "the cache is not storing anything" into "Redis is unreachable, and here is what it said". Reported as `skipped` where no Redis is configured (development, test), which is not a failure |
+
+```json
+{
+  "status": "error",
+  "failed": ["cache"],
+  "checks": {
+    "database": { "status": "ok", "adapter": "PostgreSQL" },
+    "cache": { "status": "error", "error": "the cache store did not return the value it just wrote (read back nil)" },
+    "redis": { "status": "error", "error": "Redis::CannotConnectError: Error connecting to redis://[redacted]@…" }
+  },
+  "checked_at": "2026-08-01T20:13:38Z"
+}
+```
+
+Two deliberate properties. It is **unauthenticated**, like `/up`, so a deploy gate and an uptime
+monitor can reach it — which is why anything it echoes from a backing service is scrubbed of
+`scheme://user:password@` credentials and truncated. And it is **not** behind
+`HealthActionCooldown`: that limiter guards the destructive maintenance actions and fails closed, so
+it would answer "rate limited" for precisely the broken-cache case this endpoint exists to report,
+and a health endpoint that refuses a monitor's second poll in 30 seconds is not a health endpoint.
+What makes that safe is that the probe is cheap and fixed-cost — one `SELECT 1`, one single-row
+indexed read, one cache round trip, one `PING`, less work than any page the same visitor could
+request instead.
+
+The post-deploy smoke step asserts four things, and every one of them fails the run (unlike the
+telemetry probe, which warns — broken telemetry is not a reason to withhold a working deploy):
+
+| Assertion | A failure means |
+| --- | --- |
+| `GET /up/deep` → 200 | A backing service is down; the body names which |
+| `GET /` → 200 | The app is serving errors on its own root page |
+| `POST` without a CSRF token → 422, then with the page's token → 404 | The session cookie or `secret_key_base` did not survive the deploy: every GET looks perfect while every form in the UI 422s. The target is a session id that cannot exist, so the authorized request 404s having changed nothing |
+| `GET /cable` upgrades to a WebSocket | Turbo Streams cannot connect — every live update in the UI (timelines, status badges, notification counts) is dead |
 
 Two things follow from this that did not used to be true:
 

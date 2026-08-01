@@ -23,6 +23,69 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     Rails.cache = @original_cache
   end
 
+  # === Deep health check (GET /up/deep) ===
+
+  # Whether a Redis happens to be reachable from the test runner must not decide
+  # these assertions -- with REDIS_URL unset the redis check reports `skipped`,
+  # which is not a failure. The Redis branches themselves are exercised in
+  # test/services/deep_health_check_test.rb.
+  def without_redis_url
+    original = ENV["REDIS_URL"]
+    ENV.delete("REDIS_URL")
+    yield
+  ensure
+    ENV["REDIS_URL"] = original
+  end
+
+  test "deep health check answers 200 with a per-component report when healthy" do
+    without_redis_url { get deep_health_check_url }
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "ok", json["status"]
+    assert_empty json["failed"]
+    assert_equal "ok", json.dig("checks", "database", "status")
+    assert_equal "ok", json.dig("checks", "cache", "status")
+    assert json["checks"].key?("redis")
+    assert json["checked_at"].present?
+  end
+
+  # The whole point of the endpoint: a broken backing service must be a RED
+  # answer, because `/up` returns 200 for exactly this container.
+  test "deep health check answers 503 and names the failed component" do
+    Rails.cache = ActiveSupport::Cache::NullStore.new
+
+    without_redis_url { get deep_health_check_url }
+
+    assert_response :service_unavailable
+    json = JSON.parse(response.body)
+    assert_equal "error", json["status"]
+    assert_equal [ "cache" ], json["failed"]
+    assert_match(/NullStore/, json.dig("checks", "cache", "error"))
+  end
+
+  test "deep health check answers 503 when the database cannot answer" do
+    ActiveRecord::Base.connection.stubs(:select_value).raises(ActiveRecord::StatementInvalid, "PG::ConnectionBad")
+
+    without_redis_url { get deep_health_check_url }
+
+    assert_response :service_unavailable
+    json = JSON.parse(response.body)
+    assert_equal [ "database" ], json["failed"]
+  end
+
+  # It is a health endpoint, not a maintenance action: HealthActionCooldown
+  # fails closed under an unusable cache, which would answer "rate limited" for
+  # precisely the broken-cache case this exists to report.
+  test "deep health check is not rate limited" do
+    without_redis_url do
+      3.times do
+        get deep_health_check_url
+        assert_response :success
+      end
+    end
+  end
+
   # === Dashboard Tests ===
 
   test "should get dashboard" do
