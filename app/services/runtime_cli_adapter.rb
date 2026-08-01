@@ -47,6 +47,11 @@
 #     - failed_resume_recovery_needed?(stderr_log_path:) -> Boolean
 #     - api_error_for_retry?(working_dir:) -> Boolean
 #     - auth_recovery_needed?(working_dir:) -> Boolean
+#     - unclassified_error_text(working_dir:) -> String or nil (optional)
+#   unclassified_error_text supplies the runtime's own unmatched error prose for
+#   the unclassified-failure alert ProcessLifecycleManager raises when none of
+#   the classifiers above matched. It is optional — a strategy that cannot mine
+#   its transcript may omit it, and the alert then carries stderr alone.
 #   normal_completion_exit? answers whether a non-zero exit code is actually a
 #   normal "paused turn" rather than a failure — Claude Code exits 1 when it
 #   finishes a turn and awaits input, whereas Codex exits 1 on a genuine error.

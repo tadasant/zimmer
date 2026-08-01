@@ -1453,6 +1453,70 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not_includes Session.blocked_on_elicitation.to_a, sessions(:waiting)
   end
 
+  # ===========================================================================
+  # Swallowed side effects announce themselves (#73)
+  # ===========================================================================
+
+  # The trade the bare rescues make is still the right one: a broken side effect
+  # must not wedge a session mid-transition. What changed is that the ones that
+  # leave inconsistent persistent state now page instead of only logging.
+  test "a swallowed side effect that leaves inconsistent state raises an alert" do
+    session = sessions(:running)
+    session.update!(status: :running, running_job_id: "job-123")
+
+    session.stubs(:update_column).raises(StandardError, "database is unhappy")
+
+    alerted = []
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alerted << [ title, opts[:source], opts[:dedup_key] ]
+      true
+    end.returns(true)
+
+    session.pause!
+
+    assert_equal :needs_input, session.status.to_sym,
+      "the transition must still complete — swallowing is the whole point"
+    cleanup = alerted.find { |_title, source, _key| source == "SessionStateMachine#cleanup_running_job" }
+    assert cleanup, "expected cleanup_running_job to page, got: #{alerted.inspect}"
+    assert_equal "Session state-machine side effect failed", cleanup[0]
+    assert_equal "session_state_machine_side_effect_cleanup_running_job", cleanup[2]
+  end
+
+  # The dedup key must key on the callback, not the session: a sick database
+  # hits this for every session in flight and must collapse to one alert.
+  test "the alert dedup key is per-callback, not per-session" do
+    keys = []
+    AlertService.stubs(:raise_alert).with do |_title, opts|
+      keys << opts[:dedup_key]
+      true
+    end.returns(true)
+
+    [ sessions(:running), sessions(:active_session) ].each do |session|
+      session.update!(status: :running, running_job_id: "job-#{session.id}")
+      session.stubs(:update_column).raises(StandardError, "database is unhappy")
+      session.pause!
+    end
+
+    cleanup_keys = keys.select { |k| k == "session_state_machine_side_effect_cleanup_running_job" }
+    assert_equal 2, cleanup_keys.size
+    assert_equal 1, cleanup_keys.uniq.size
+  end
+
+  # The other half of the split. Push delivery is best-effort by construction and
+  # the failed session is on the homepage queue regardless, so it stays log-only —
+  # adding a second alert path to an event that already self-heals is just noise.
+  test "a best-effort side effect failure stays log-only" do
+    session = sessions(:running)
+    session.update!(status: :running)
+
+    SendPushNotificationJob.stubs(:perform_later).raises(StandardError, "queue is down")
+    AlertService.expects(:raise_alert).never
+
+    session.fail!
+
+    assert_equal :failed, session.status.to_sym
+  end
+
   private
 
   def create_blocking_elicitation(session)

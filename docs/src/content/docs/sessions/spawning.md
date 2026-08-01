@@ -170,7 +170,7 @@ flowchart TD
     F -->|yes| FR["restart from scratch"]
     F -->|no| SD{"signal_death_exit?<br/>(SIGKILL/OOM, non-SIGTERM)"}
     SD -->|yes| SDR["handle_signal_death<br/>resume same session<br/>(MAX_SIGNAL_DEATH_RETRIES = 3)"]
-    SD -->|no| FAIL["fail! → failed"]
+    SD -->|no| FAIL["unclassified:<br/>alert #eng-alerts<br/>fail! → failed"]
     CR --> P
     AR --> P
     RT --> P
@@ -222,6 +222,14 @@ account before giving up — with no log saying rotation should have happened. T
 written up in the code. See
 [Known limitations](/limitations/#failure-classification-is-regex-against-cli-prose).
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
+
+Falling off the end of that list is now loud. When none of the questions above answer yes,
+`UnclassifiedFailureReporter` logs and raises an `#eng-alerts` alert carrying the stderr tail
+and any transcript API-error text no pattern matched, before the session fails as it always
+did. It also fires on the inverse: a classifier that says a recovery path applies while that
+path's service reports it does not. Dedup is keyed on the failure shape (never the session),
+so a fleet-wide wave of one unknown mode is one page per hour, and a genuinely new mode still
+pages on its own.
 :::
 
 ## Metadata races
