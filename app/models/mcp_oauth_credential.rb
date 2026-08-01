@@ -95,6 +95,26 @@ class McpOauthCredential < ApplicationRecord
     !active? && !can_refresh?
   end
 
+  # True when this credential will need re-authorizing by hand, on a schedule,
+  # for as long as it exists.
+  #
+  # A server that does not issue a refresh token (it advertises no
+  # `offline_access` scope, or simply declines to mint one) hands Zimmer a
+  # one-shot credential: RefreshMcpOauthTokensJob has nothing to send, so the
+  # access token lapses and the next session stops for consent. That is a
+  # permanent property of the server, knowable the moment the token response
+  # arrives — `refresh_token_unsupported` records it there so it can be said
+  # once, up front, instead of resurfacing later as "the agent randomly needs me
+  # to authorize this again".
+  #
+  # The `refresh_token` check keeps the claim honest in the other direction: if a
+  # refresh token later arrives (a runtime-captured rotation, a re-auth against a
+  # server that changed its mind), the credential is no longer one-shot and the
+  # warning goes away without a second write.
+  def requires_periodic_reauth?
+    refresh_token_unsupported? && refresh_token.blank?
+  end
+
   # Runtime-specific serialization (e.g. the Claude Code mcpOAuth entry format)
   # lives in the matching RuntimeMcpCredentialWriter, not on this protocol-level
   # model. McpOauthCredentialInjector resolves these records into runtime-agnostic
@@ -140,7 +160,12 @@ class McpOauthCredential < ApplicationRecord
       update!(
         access_token: tokens["access_token"],
         refresh_token: tokens["refresh_token"] || self.refresh_token,
-        expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil
+        expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil,
+        # A refresh that succeeded is proof the server supports refreshing,
+        # whatever was recorded at issuance. The column holds the last observed
+        # truth, so a later invalidate_refresh_token! cannot resurrect a
+        # "this server issued no refresh token" claim this refresh just disproved.
+        refresh_token_unsupported: false
       )
       Rails.logger.info "[McpOauthCredential] Token refresh succeeded for #{server_name}"
       true

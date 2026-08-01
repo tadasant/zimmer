@@ -84,6 +84,12 @@ module McpServerBackfill
   # that hash via Session#forget_mcp_server_status!, so what remains here is an
   # unexplained loss.
   #
+  # `pending` entries are excluded: McpStatusPersisting seeds one for every
+  # trackable server a detector has said nothing about yet, so a pending key is
+  # the absence of evidence rather than a server this session ever connected to.
+  # Counting it would report a loss on a name that never worked, under a warning
+  # that says the session previously connected to it.
+  #
   # @param session [Session] the session whose config was just regenerated
   # @param injected_servers [Array<String>, nil] names AIR auto-injected this run
   # @param context [String] short label for the regeneration path, used in logs
@@ -92,8 +98,9 @@ module McpServerBackfill
     previously_seen = (session.custom_metadata || {})["mcp_servers_status"]
     return [] if previously_seen.blank?
 
+    connected = previously_seen.reject { |_name, status| status.is_a?(Hash) && status["status"] == "pending" }
     effective = (session.user_selected_mcp_servers + Array(injected_servers)).uniq
-    lost = previously_seen.keys - effective
+    lost = connected.keys - effective
     return [] if lost.empty?
 
     Rails.logger.warn(

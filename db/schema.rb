@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2026_08_01_190000) do
+ActiveRecord::Schema[8.0].define(version: 2026_08_01_200000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -178,6 +178,7 @@ ActiveRecord::Schema[8.0].define(version: 2026_08_01_190000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.string "resource"
+    t.boolean "refresh_token_unsupported", default: false, null: false
     t.index ["credential_key"], name: "index_mcp_oauth_credentials_on_credential_key", unique: true
     t.index ["server_name", "server_url"], name: "index_mcp_oauth_credentials_on_server_name_and_server_url", unique: true
   end

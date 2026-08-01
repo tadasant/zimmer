@@ -72,6 +72,34 @@ class McpServerBackfillTest < ActiveSupport::TestCase
       "an auto-injected server is part of the effective config and is not lost"
   end
 
+  # McpStatusPersisting seeds a `pending` entry for every trackable server a
+  # detector has said nothing about, so a pending key is the absence of evidence
+  # — not a server this session ever connected to. Counting one would report a
+  # loss under a warning that claims the session previously connected to it.
+  test "a pending placeholder is not a connection, so dropping it is not a loss" do
+    with_status(
+      "appsignal-pulsemcp-prod" => { "status" => "connected" },
+      "digitalocean-tadasant" => { "status" => "pending" }
+    )
+
+    lost = @host.detect_lost_mcp_servers(@session, [], context: "test")
+
+    assert_empty lost, "a server that never connected cannot be reported as lost"
+  end
+
+  test "a server that connected before going missing is still reported, alongside placeholders" do
+    with_status(
+      "appsignal-pulsemcp-prod" => { "status" => "connected" },
+      "digitalocean-tadasant" => { "status" => "failed", "error" => "boom" },
+      "never-started" => { "status" => "pending" }
+    )
+
+    lost = @host.detect_lost_mcp_servers(@session, [], context: "test")
+
+    assert_equal [ "digitalocean-tadasant" ], lost,
+      "a real status is evidence of a server the config used to carry"
+  end
+
   test "returns empty for a session that has never connected any MCP server" do
     lost = @host.detect_lost_mcp_servers(@session, [], context: "test")
 

@@ -94,6 +94,89 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Original intent to replay", @session.prompt
   end
 
+  # --- one-shot credentials (issue #64) --------------------------------------
+
+  def refreshable_token_response
+    response = Net::HTTPSuccess.new("1.1", "200", "OK")
+    response.define_singleton_method(:code) { "200" }
+    response.define_singleton_method(:body) do
+      { access_token: "tok", refresh_token: "refresh-tok", expires_in: 3600 }.to_json
+    end
+    response.define_singleton_method(:[]) { |_key| "application/json" }
+    response
+  end
+
+  # A server that mints no refresh token has handed Zimmer a credential it can
+  # never renew. That is permanent and knowable right here — recorded so the
+  # Connectors page can say it once instead of the user meeting it later as an
+  # unexplained re-authorization.
+  test "a token response with no refresh token marks the credential one-shot" do
+    flow = pending_flow_for("server-a", CONFIG_A, state: "no-refresh-a")
+
+    stub_token_exchange(token_response) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    credential = McpOauthCredential.for_credential_key(@key_a).first
+    assert credential.refresh_token_unsupported?, "the absent refresh token is recorded"
+    assert credential.requires_periodic_reauth?, "and surfaces as a standing limitation"
+  end
+
+  test "a token response carrying a refresh token is not marked one-shot" do
+    flow = pending_flow_for("server-a", CONFIG_A, state: "with-refresh-a")
+
+    stub_token_exchange(refreshable_token_response) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    credential = McpOauthCredential.for_credential_key(@key_a).first
+    assert_equal "refresh-tok", credential.refresh_token
+    assert_not credential.refresh_token_unsupported?
+    assert_not credential.requires_periodic_reauth?
+  end
+
+  # Plenty of servers mint a refresh token on first consent and omit it when
+  # re-authorizing a grant that is still live. Claiming "this server issues no
+  # refresh token" off that response would assert a permanent property about a
+  # server we have already seen issue one.
+  test "a re-authorization that omits the refresh token does not label the server one-shot" do
+    McpOauthCredential.create!(
+      server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
+      client_id: "c", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
+      refresh_token: "issued-on-first-consent", expires_at: 1.hour.from_now
+    )
+    flow = pending_flow_for("server-a", CONFIG_A, state: "reconsent-a")
+
+    stub_token_exchange(token_response) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    credential = McpOauthCredential.for_credential_key(@key_a).first
+    assert_not credential.refresh_token_unsupported?,
+      "a server that has issued a refresh token before is not one-shot"
+    assert_not credential.requires_periodic_reauth?
+  end
+
+  # Re-authorizing against a server that has since started issuing refresh
+  # tokens must clear the flag, not leave a stale warning on a credential that
+  # can now be renewed.
+  test "re-authorizing a one-shot credential clears the flag when a refresh token arrives" do
+    McpOauthCredential.create!(
+      server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
+      client_id: "c", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
+      refresh_token_unsupported: true, expires_at: 1.hour.from_now
+    )
+    flow = pending_flow_for("server-a", CONFIG_A, state: "reauth-a")
+
+    stub_token_exchange(refreshable_token_response) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    credential = McpOauthCredential.for_credential_key(@key_a).first
+    assert_not credential.refresh_token_unsupported?
+    assert_not credential.requires_periodic_reauth?
+  end
+
   test "completing one of several OAuth flows keeps the session blocked" do
     flow = pending_flow_for("server-a", CONFIG_A, state: "state-a")
 

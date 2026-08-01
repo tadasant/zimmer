@@ -481,12 +481,15 @@ class TranscriptPollerService
     return unless @session.all_mcp_servers.any?
 
     result = @mcp_status_detector.poll(transcript_content: transcript_content)
-    return if result[:server_statuses].empty?
 
     # Broadcast new MCP log entries
     broadcast_mcp_logs(result[:logs])
 
-    # Update session metadata with server statuses (may set should_fail_session)
+    # Update session metadata with server statuses (may set should_fail_session).
+    # Called even when the detector produced nothing: a server that failed before
+    # it ever created a log directory has no status of its own, and the pending
+    # placeholder update_session_mcp_status seeds is the only thing that keeps it
+    # from vanishing from mcp_servers_status and reading as "not configured".
     @mcp_status_detector.update_session_mcp_status(result[:server_statuses])
   rescue => e
     # Log but don't fail - MCP log polling is supplementary

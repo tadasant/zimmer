@@ -19,14 +19,17 @@ module McpStatusPersisting
   # @param server_statuses [Hash] Server name => { status:, error:, connected_at:, failed_at: }
   # @return [Boolean] true if any configured server changed to failed
   def update_session_mcp_status(server_statuses)
-    return false if server_statuses.empty?
-
     configured_servers = @session.user_selected_mcp_servers
     trackable_servers = @session.all_mcp_servers
     return false if trackable_servers.empty?
 
     any_failed = false
     failed_servers = []
+    # Whether this poll actually has something to persist. Polls are frequent and
+    # mostly say nothing new; an unconditional update! would re-run Session's full
+    # validation set — including the AIR-catalog-backed artifact validators — several
+    # times a minute per live session for no write.
+    status_changed = false
 
     with_db_retry do
       @session.reload
@@ -37,7 +40,28 @@ module McpStatusPersisting
       # can show real connection state for every server in the runtime config.
       trackable_servers.each do |server_name|
         new_status = server_statuses[server_name]
-        next unless new_status
+
+        # A server the detector said nothing about is not a server that is not
+        # there. Claude Code writes a per-server log directory only once the
+        # process gets far enough to log; a server whose process died before that
+        # produces no status at all, and skipping it here left it absent from
+        # mcp_servers_status entirely. The session views already read an absent
+        # key as pending, but the JSON consumers do not: the REST API and the
+        # get_session MCP tool hand back custom_metadata verbatim, so a broken
+        # server simply was not in it, and absent there reads as "not configured"
+        # rather than "configured and broken". Seed the same `pending` the views
+        # assume so every consumer sees the server listed.
+        #
+        # Writing only when the key is absent is the whole safety property: the
+        # placeholder is a floor, so a real status — from this poll or any
+        # earlier one — is never overwritten by it.
+        if new_status.nil?
+          unless current_mcp_status.key?(server_name)
+            current_mcp_status[server_name] = { "status" => "pending" }
+            status_changed = true
+          end
+          next
+        end
 
         current_status = current_mcp_status[server_name] || { "status" => "pending" }
 
@@ -49,6 +73,7 @@ module McpStatusPersisting
             "connected_at" => new_status[:connected_at],
             "failed_at" => new_status[:failed_at]
           }.compact
+          status_changed = true
         end
 
         # Only selected-server failures escalate to a session-level failure.
@@ -69,6 +94,7 @@ module McpStatusPersisting
 
       # If any configured server failed, mark session for failure
       if any_failed && !current_metadata["mcp_connection_checked"]
+        status_changed = true
         updated_metadata["mcp_connection_checked"] = true
         updated_metadata["should_fail_session"] = true
         updated_metadata["mcp_failed_servers"] = failed_servers
@@ -91,7 +117,7 @@ module McpStatusPersisting
         @logger.info("MCP server(s) detected as failed; flagging session for retry/failure handling", failed_servers: failed_servers)
       end
 
-      @session.update!(custom_metadata: updated_metadata)
+      @session.update!(custom_metadata: updated_metadata) if status_changed
     end
 
     any_failed
