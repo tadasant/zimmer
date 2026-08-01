@@ -256,11 +256,17 @@ module Sessions
     # superseded turn is never orphaned lives in the worker loop's running_job_id
     # ownership backstop (AgentSessionJob branch 1c): once the interrupting job reclaims
     # running_job_id, the old turn terminates itself regardless of whether this flag
-    # survived. The fast path is nonetheless written with Session#merge_metadata!, a
-    # single-statement jsonb merge, and the worker's own metadata writes (retry
-    # timestamps, exit status) are too — so the still-running worker no longer clobbers
-    # the flag by rewriting the whole column from a snapshot taken before it was set.
-    # Logged at info because in production this fires on every cross-container
+    # survived.
+    #
+    # The fast path is written with Session#merge_metadata!, a single-statement jsonb
+    # merge, and so are the worker's own retry-counter writes — so the writers that used
+    # to erase this flag most often no longer can. It is NOT proof against every writer:
+    # TranscriptPollerService still rewrites the whole `metadata` column on every poll
+    # iteration of a live turn (it batches metadata with `transcript` and
+    # `last_timeline_entry_at` in one update), and it is the worker's most frequent
+    # writer. A flag set in the window between that service's `reload` and its `update!`
+    # is still lost, which is exactly why the backstop above is the guarantee and this is
+    # not. Logged at info because in production this fires on every cross-container
     # interrupt and self-resolves within one worker loop iteration; it is not an
     # alertable condition.
     def request_worker_side_termination(process_pid)
