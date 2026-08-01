@@ -139,9 +139,10 @@ class NativeClaudePrintRunnerTest < ActiveSupport::TestCase
   end
 
   # Timeout delivers its exception at the next safe point, so the blocking wait
-  # can already have collected the child. Signalling then aims at a pid we no
-  # longer own.
-  test "does not signal a pid the blocking wait already collected" do
+  # can already have collected the child: the signal then finds nothing (ESRCH)
+  # and the poll after it confirms the collection.
+  test "settles quietly when the blocking wait already collected the child" do
+    @pm.kill_hook = ->(_signal, _pid) { raise Errno::ESRCH }
     @pm.wait_hook = lambda do |pid, flags|
       next [ pid, MockProcessManager::MockStatus.new(0) ] if flags == Process::WNOHANG
       sleep 5
@@ -149,7 +150,7 @@ class NativeClaudePrintRunnerTest < ActiveSupport::TestCase
 
     assert_raises(Timeout::Error) { build_runner.run(prompt: "hi", timeout: 0.05) }
 
-    assert_empty @pm.killed_processes, "nothing to signal — the child was already collected"
+    refute terminated?("KILL"), "an already-collected child needs no escalation"
     assert_empty @logger.warnings
   end
 
