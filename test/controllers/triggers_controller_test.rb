@@ -47,6 +47,51 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "option[value=passive_listen][selected]", 1
   end
 
+  # The form renders none of the poller's cursor keys, so without
+  # TriggerCondition::SLACK_POLL_STATE_KEYS a plain "save" would submit a
+  # configuration hash without them and reset a live condition to un-baselined.
+  test "saving a Slack condition from the form preserves its poller cursors and allowlist" do
+    trigger = triggers(:passive_listen_all_channels_trigger)
+    condition = trigger.trigger_conditions.first
+    condition.update!(configuration: condition.configuration.merge(
+      "channel_timestamps" => { "C_GENERAL" => "1704067200.000000" },
+      "thread_timestamps" => { "C_GENERAL:1704060000.000000" => "1704067100.000000" },
+      "bot_activity_timestamps" => { "C_GENERAL" => "1704067000.000000" },
+      "participating_threads" => [ "C_GENERAL:1704060000.000000" ],
+      "allowed_user_ids" => %w[U222]
+    ))
+
+    patch trigger_path(trigger), params: {
+      trigger: {
+        name: trigger.name,
+        trigger_conditions_attributes: [
+          {
+            id: condition.id,
+            condition_type: "slack",
+            configuration: { channel_id: "", channel_name: "", event_type: "passive_listen" }
+          }
+        ]
+      }
+    }
+
+    condition.reload
+    assert_equal "passive_listen", condition.event_type
+    assert_equal({ "C_GENERAL" => "1704067200.000000" }, condition.channel_timestamps)
+    assert_equal({ "C_GENERAL:1704060000.000000" => "1704067100.000000" }, condition.thread_timestamps)
+    assert_equal({ "C_GENERAL" => "1704067000.000000" }, condition.bot_activity_timestamps)
+    assert_equal [ "C_GENERAL:1704060000.000000" ], condition.participating_threads
+    assert_equal %w[U222], condition.allowed_user_ids
+  end
+
+  test "an explicit empty allowlist still clears it" do
+    condition = trigger_conditions(:passive_listen_all_channels_condition)
+    condition.update!(configuration: condition.configuration.merge("allowed_user_ids" => %w[U222]))
+
+    condition.update!(configuration: condition.configuration.merge("allowed_user_ids" => []))
+
+    assert_empty condition.reload.configuration["allowed_user_ids"]
+  end
+
   test "new form renders the lazy-loaded channel dropdown instead of free-text name and ID inputs" do
     get new_trigger_path
     assert_response :success

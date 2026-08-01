@@ -117,8 +117,9 @@ reading only the tail since each thread's cursor. What changes is the filter: pa
 of mention.
 
 A `passive_listen_channel` condition never reads threads at all, and a `passive_listen_thread`
-condition never reads or writes the channel-engagement signal. Each pays only for the API calls its
-own signal needs.
+condition never reads or writes the channel-engagement signal. Each pays only for the thread and
+history calls its own signal needs — both still sweep top-level messages per channel per poll, since
+that cursor is what a first-sight thread falls back to.
 
 Participation is answered without ever re-reading a thread's history. The first time a thread is
 seen there is no cursor, so the read returns the whole thread — that read decides participation.
@@ -173,14 +174,29 @@ respond, so the reaction is a commitment rather than an acknowledgement. See
 The original single event type fired on both signals at once. It still works — a deploy of the split
 must not strand a trigger that names it — and behaves as though both new conditions were present,
 including the 6-hour window and the top-level-only engagement rule. The triggers form offers it only
-on a condition that already carries it, so new conditions can't be created with it.
+on a condition that already carries it; the REST API still accepts it, since it is a member of
+`EVENT_TYPES` like any other. Removal is tracked in
+[#253](https://github.com/tadasant/zimmer/issues/253).
 
-Replacing it on an existing trigger means two fresh condition rows, and **a fresh condition starts
-with empty bookkeeping**. That is safe — a condition baselines on its first poll, so nothing
-replays — but `participating_threads` starting empty means Zimmer forgets every thread it is
-currently in and only re-learns each one the next time it speaks there. Copy `participating_threads`,
-`thread_timestamps`, `channel_timestamps` and `bot_activity_timestamps` from the old condition's
-`configuration` into the new ones as part of the reconfiguration.
+**Replacing it means two fresh condition rows, and a fresh condition starts with empty
+bookkeeping.** Carry the old condition's cursors across, or the two new ones are worse than the one
+they replace in both directions at once:
+
+- **They over-fire.** A fresh condition baselines its *channel* cursor on the first poll, which is
+  the newest top-level message — in a thread-heavy channel that can be weeks old. On the second poll
+  every thread is a first-sight thread, so each replays back to `THREAD_BACKFILL_HORIZON` (24 hours).
+  Every reply from the last day in every thread Zimmer is in fires at once, bounded only by the
+  trigger's `max_sessions_per_minute` (above which the rest are dropped).
+- **They also under-fire, permanently.** A thread is only ever discovered through its parent
+  appearing in the last 50 top-level messages, or through an existing `thread_timestamps` entry. A
+  thread whose parent has already scrolled past that window and has no entry is invisible — and
+  stays invisible, even after Zimmer next speaks in it.
+
+Copy `thread_timestamps` and `participating_threads` onto the thread condition,
+`bot_activity_timestamps` onto the channel condition, and `channel_timestamps` onto **both** (a
+first-sight thread falls back to that cursor). Editing `configuration` directly is the only way:
+the trigger form does not render these keys, and `TriggerCondition::SLACK_POLL_STATE_KEYS` exists
+precisely so that saving the form does not *destroy* them.
 :::
 
 :::note[No stall detection]

@@ -383,9 +383,10 @@ class SlackTriggerPollerJob < ApplicationJob
   #   everything else said in the channel.
   # - passive_listen — deprecated, both at once.
   #
-  # Bookkeeping is bot_mention's: per-channel cursors in channel_timestamps,
-  # per-thread cursors in thread_timestamps, both advanced for everything fetched
-  # whether or not it fired, so a quiet spell never replays as a burst.
+  # Bookkeeping is bot_mention's: per-channel cursors in channel_timestamps, and —
+  # for the conditions that walk threads — per-thread cursors in thread_timestamps.
+  # Both advance for everything fetched whether or not it fired, so a quiet spell
+  # never replays as a burst.
   def process_passive_listen_condition(condition)
     bot_id = SlackService.bot_user_id
 
@@ -448,8 +449,11 @@ class SlackTriggerPollerJob < ApplicationJob
     # Engagement is Zimmer's own TOP-LEVEL posts in the recent window, and only
     # those. A reply it left inside a thread makes it party to that thread — which
     # is what passive_listen_thread follows — not to everything else said in the
-    # channel.
-    channel_activity_ts = history.select { |msg| msg.user == bot_id }.map(&:ts).max if engagement_channel?(channel_id)
+    # channel. That includes a reply broadcast back to the channel: conversations
+    # .history returns those (thread_ts != ts), and they are still thread replies,
+    # so they are filtered out here exactly as fetch_new_messages filters them out
+    # of what may fire.
+    channel_activity_ts = bot_top_level_posts(history, bot_id).map(&:ts).max if engagement_channel?(channel_id)
 
     # Engagement only ever moves forward. Taking the max with what is already on
     # record is what keeps a channel engaged for the full window once Zimmer's post
@@ -465,6 +469,14 @@ class SlackTriggerPollerJob < ApplicationJob
     end
 
     { channel_ts: new_messages.map(&:ts).max, bot_activity_ts: bot_activity_ts }
+  end
+
+  # Zimmer's own top-level messages in a channel history slice — thread replies,
+  # including ones broadcast back to the channel, excluded.
+  def bot_top_level_posts(history, bot_id)
+    history.select do |msg|
+      msg.user == bot_id && (msg.thread_ts.blank? || msg.thread_ts == msg.ts)
+    end
   end
 
   # Whether Zimmer has posted in a channel recently enough for that channel's
@@ -521,7 +533,7 @@ class SlackTriggerPollerJob < ApplicationJob
   # remembered in participating_threads, so the tail alone is enough forever after.
   def check_thread_replies_passively(condition, channel_id, history, bot_id:)
     channel_baseline_ts = condition.channel_timestamps[channel_id]
-    return nil if channel_baseline_ts.blank?
+    return if channel_baseline_ts.blank?
 
     thread_parents = history.select { |msg| msg.reply_count.to_i > 0 }
     thread_parents.concat(aged_out_thread_parents(condition, channel_id, thread_parents))

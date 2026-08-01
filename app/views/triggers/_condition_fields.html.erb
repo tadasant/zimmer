@@ -86,7 +86,7 @@
         <option value="bot_mention" <%= "selected" if condition.event_type == "bot_mention" %>>Bot mention - @mentions and DMs from allowed users</option>
         <option value="passive_listen_thread" <%= "selected" if condition.event_type == "passive_listen_thread" %>>Passive listen: threads - Replies in threads Zimmer has joined, no @mention needed</option>
         <option value="passive_listen_channel" <%= "selected" if condition.event_type == "passive_listen_channel" %>>Passive listen: channels - Messages in channels Zimmer posted in recently</option>
-        <% if condition.event_type == "passive_listen" %>
+        <% if condition.deprecated_event_type? %>
           <option value="passive_listen" selected>Passive listen (deprecated) - Both of the above at once</option>
         <% end %>
       </select>

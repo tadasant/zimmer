@@ -25,6 +25,7 @@
 # state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
   CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
+
   # The passive-listening event types, in the order the UI offers them.
   #
   # "passive_listen" is the deprecated original, which fires on BOTH signals at
@@ -32,6 +33,9 @@ class TriggerCondition < ApplicationRecord
   # still names it; new conditions should carry the two halves separately, which is
   # what lets a Trigger enable one without the other.
   PASSIVE_EVENT_TYPES = %w[passive_listen_thread passive_listen_channel passive_listen].freeze
+
+  # Delete once no condition names a deprecated type — the check and the removal
+  # steps are in https://github.com/tadasant/zimmer/issues/253.
   DEPRECATED_EVENT_TYPES = %w[passive_listen].freeze
 
   EVENT_TYPES = (%w[new_message bot_mention] + PASSIVE_EVENT_TYPES).freeze
@@ -57,6 +61,22 @@ class TriggerCondition < ApplicationRecord
   # them — see #preserve_github_poll_state for why they are merged back in.
   GITHUB_POLL_STATE_KEYS = %w[seen_items seen_missing_counts last_issue_at seen_issue_keys].freeze
 
+  # The same problem on the Slack side, and worse: these keys are every cursor the
+  # Slack poller owns, so a plain "save" in the UI — which submits only the rendered
+  # fields — would reset a live condition to un-baselined. For a passive-listening
+  # condition that means losing which threads Zimmer is in and re-backfilling up to
+  # THREAD_BACKFILL_HORIZON of replies on the next poll.
+  #
+  # allowed_user_ids rides along for a different reason: it is user-facing but the
+  # form does not render it, so without this a UI save would silently widen a
+  # condition's allow-list back to the deployment default (which may be EVERYONE).
+  # Preserving is keyed on ABSENCE, so an API caller can still clear it by sending
+  # an explicit empty array.
+  SLACK_POLL_STATE_KEYS = %w[
+    channel_timestamps thread_timestamps bot_activity_timestamps
+    participating_threads dm_timestamps allowed_user_ids
+  ].freeze
+
   belongs_to :trigger
 
   validates :condition_type, presence: true, inclusion: { in: CONDITION_TYPES }
@@ -65,6 +85,7 @@ class TriggerCondition < ApplicationRecord
 
   before_validation :normalize_github_configuration, if: :github_condition?
   before_validation :preserve_github_poll_state, if: :github_condition?
+  before_validation :preserve_slack_poll_state, if: -> { condition_type == "slack" }
 
   scope :slack, -> { where(condition_type: "slack") }
   scope :schedule, -> { where(condition_type: "schedule") }
@@ -124,7 +145,7 @@ class TriggerCondition < ApplicationRecord
     condition_type == "slack" && DEPRECATED_EVENT_TYPES.include?(event_type)
   end
 
-  # The deployment-wide allow-list for bot_mention and passive_listen conditions: a comma-separated
+  # The deployment-wide allow-list for bot_mention and passive-listening conditions: a comma-separated
   # list of Slack user IDs in SLACK_BOT_MENTION_ALLOWED_USER_IDS, resolved from
   # encrypted credentials first and process ENV second (the same order
   # SlackService#slack_bot_token and AlertService#channel_id use).
@@ -210,9 +231,10 @@ class TriggerCondition < ApplicationRecord
   #
   # This is the channel-engagement signal, and it is a cursor like the two above
   # rather than a second source of truth: the poller learns Zimmer's activity from
-  # the same history and thread fetches it already makes, and remembers the newest
-  # it has seen so a channel stays "engaged" through polls where nothing in the
-  # thread it spoke in has moved. See SlackTriggerPollerJob::CHANNEL_ENGAGEMENT_WINDOW.
+  # the channel history it already fetches — its own TOP-LEVEL posts, only — and
+  # remembers the newest it has seen, so a channel stays "engaged" for the whole
+  # window even once that post scrolls out of the history slice. See
+  # SlackTriggerPollerJob::CHANNEL_ENGAGEMENT_WINDOW.
   def bot_activity_timestamps
     configuration["bot_activity_timestamps"] || {}
   end
@@ -542,6 +564,22 @@ class TriggerCondition < ApplicationRecord
   # scope would look new against the old seen-set and fire at once. Dropping the state
   # instead re-baselines the condition on the next tick, which keeps the guarantee that
   # matters: an item labelled before you asked to watch it does not fire retroactively.
+  # Merge the Slack poller's cursors back in whenever the incoming configuration
+  # omits them. Unlike the GitHub equivalent there is no scope-change branch that
+  # drops them: every Slack cursor is keyed by channel or by thread, so a condition
+  # that changes channel or event type simply stops consulting the entries that no
+  # longer apply rather than being re-baselined by them.
+  def preserve_slack_poll_state
+    return if new_record?
+    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
+    return unless configuration_changed?
+
+    SLACK_POLL_STATE_KEYS.each do |key|
+      next if configuration.key?(key)
+      configuration[key] = configuration_was[key] if configuration_was.key?(key)
+    end
+  end
+
   def preserve_github_poll_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
