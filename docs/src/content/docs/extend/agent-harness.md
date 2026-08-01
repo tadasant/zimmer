@@ -114,17 +114,20 @@ normal_completion_exit?(status)
 context_length_error?(stderr_log_path:)
 failed_resume_recovery_needed?(stderr_log_path:)
 api_error_for_retry?(working_dir:)
-auth_recovery_needed?(working_dir:)          # ← the one the docs forget
+auth_recovery_needed?(working_dir:)
 ```
 
-:::danger[The documented interface is incomplete, and so is the contract test]
-`runtime_cli_adapter.rb`'s own docstring lists four predicates. The contract test checks
-three. But `ProcessLifecycleManager` calls five, including `auth_recovery_needed?`.
+All five are declared in `runtime_cli_adapter.rb`'s contract docstring and asserted by
+`test/support/runtime_cli_adapter_contract.rb`
+(`RuntimeCliAdapterContractAssertions::RETRY_STRATEGY_PREDICATES`). Implement fewer than five and
+the contract test fails by name — which is the point: the auth-recovery path is reached only on a
+session that is already failing, so a missing predicate used to surface as a production
+`NoMethodError` at the worst possible moment (#56).
 
-A new runtime that implements exactly what the docs say will `NoMethodError` on the auth-recovery
-path, at runtime, in production, on a session that was already failing.
-Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
-:::
+`auth_recovery_needed?` is the one to notice. It is what routes an exit into
+`AuthRecoveryCoordinator` (adopt → rotate → park) rather than into a plain failure, so a runtime
+that returns a flat `false` is not "safely defaulting" — it is opting out of credential recovery
+entirely. See the Codex note under [What the existing runtimes get wrong](#what-the-existing-runtimes-get-wrong).
 
 ### `TranscriptSource`
 
@@ -136,16 +139,21 @@ read(path)
 parse_events(serialized)
 discover_subagent_files(working_directory:, session_id:)
 mcp_log_paths(working_directory:)
-find_main_transcript(transcript_directory:, session:)  # ← NOT on the base class
+find_main_transcript(transcript_directory:, session:)
 ```
 
-:::danger[`find_main_transcript` is required but not declared]
-`TranscriptPollerService` calls it on every poll. Both concrete sources implement it. It is absent
-from the abstract base class.
+`find_main_transcript` is declared on the abstract base class and raises `NotImplementedError`
+there, like the rest of the required surface. `TranscriptPollerService` calls it on every poll, so a
+source that skipped it used to `NoMethodError` on its first poll instead of failing at the seam
+(#56).
 
-A new source that implements only the documented and abstract methods will `NoMethodError` on its
-first poll.
-:::
+For Claude Code it delegates to `TranscriptFileLocator`, which prefers
+`<session_id>.jsonl`. Before the runtime has minted that id there is no id to match on, so it falls
+back to the most recently modified non-`agent-*.jsonl` file **that was written after the session
+started** — the mtime floor is what stops a working directory still holding an earlier session's
+transcript from handing this session someone else's conversation (#57). If your runtime needs a
+fallback of its own, scope it the same way; returning `nil` means "not written yet", which callers
+already treat as a waiting state.
 
 ### `TranscriptNormalizer`
 
