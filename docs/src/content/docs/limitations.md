@@ -414,7 +414,7 @@ The `/supervisor` Administrate panel is the exception, and the reason is its bla
 tokens), `mcp_oauth_credentials`, `x_oauth_credentials`, and `runtime_login_attempts` as *editable*
 resources. It now sits behind an HTTP Basic realm keyed on `SUPERVISOR_PASSWORD` (with an optional
 `SUPERVISOR_USERNAME`, default `supervisor`), compared in constant time, and it **fails closed**: with
-the variable unset, every dashboard returns 401. An unconfigured deployment gets no panel rather than an
+the variable unset or blank, every dashboard returns 401 and the refusal is logged. An unconfigured deployment gets no panel rather than an
 open one.
 
 Two things that follow, in both directions:

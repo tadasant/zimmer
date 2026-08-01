@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "delegate"
 
 class HealthActionCooldownTest < ActiveSupport::TestCase
   setup do
@@ -104,12 +105,22 @@ class HealthActionCooldownTest < ActiveSupport::TestCase
     assert cooldown.limited?("cleanup_processes")
   end
 
-  test "the probe is memoized, so a usable store is checked once per instance" do
+  test "the probe is memoized, so a usable store is probed once per instance" do
     cooldown = HealthActionCooldown.new("abc")
+    probes = 0
+    counting = Class.new(SimpleDelegator) do
+      define_method(:write) do |*args, **kwargs|
+        probes += 1 if args.first == HealthActionCooldown::PROBE_KEY
+        __getobj__.write(*args, **kwargs)
+      end
+    end
+    Rails.cache = counting.new(Rails.cache)
 
     assert cooldown.store_usable?
     assert cooldown.store_usable?
     assert_not cooldown.limited?("cleanup_processes")
+
+    assert_equal 1, probes, "expected the canary to be written once, not once per call"
   end
 
   # Mimics ActiveSupport::Cache::RedisCacheStore with an error_handler in front

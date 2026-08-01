@@ -56,7 +56,7 @@ module Mcp
         action = require_arg(args, :action)
         raise ToolError, "Unknown action \"#{action}\". Valid actions: #{ACTIONS.join(', ')}" unless ACTIONS.include?(action)
 
-        raise ToolError, rate_limit_message if rate_limited?(action)
+        raise ToolError, rate_limit_message(action) if rate_limited?(action)
 
         result = case action
         when "cleanup_processes" then cleanup_processes
@@ -122,9 +122,12 @@ module Mcp
       # A null cache cannot enforce the cooldown, so `limited?` reports true and
       # the action is refused rather than run unthrottled. Say which it was —
       # "wait 30 seconds" is a lie the caller would act on by waiting forever.
-      def rate_limit_message
+      def rate_limit_message(action)
         unless cooldown.store_usable?
-          return "Rate limiting unavailable: no usable cache store is configured, so the " \
+          # The model reads the raised message; an operator reads the log. Both
+          # need to know this was a refusal, not a cooldown they can wait out.
+          Rails.logger.error("[mcp action_health] refusing #{action}: the cache cannot enforce the cooldown")
+          return "Rate limiting unavailable: the cache is unavailable, so the " \
             "#{HealthActionCooldown::COOLDOWN.to_i}-second cooldown cannot be enforced. " \
             "Refusing to run health maintenance actions."
         end

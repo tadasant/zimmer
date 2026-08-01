@@ -67,7 +67,8 @@ perimeter at all". Set `SUPERVISOR_PASSWORD`; `SUPERVISOR_USERNAME` is optional 
 `supervisor`. Both halves are compared with `ActiveSupport::SecurityUtils.secure_compare`, the same
 constant-time primitive `Api::BaseController#authenticate_api_key` uses.
 
-**It fails closed.** With `SUPERVISOR_PASSWORD` unset, every request to every dashboard gets a 401.
+**It fails closed.** With `SUPERVISOR_PASSWORD` unset — or blank, which is what a trailing space in
+an env file gets you — every request to every dashboard gets a 401, and the refusal is logged.
 An unconfigured deployment gets no admin panel rather than an anonymous one — so on a fresh deploy
 you must set the variable before `/supervisor` will open for you either.
 
@@ -187,7 +188,7 @@ controls are the only control, and the admin panel bypasses them.
 | Var | Used for |
 | --- | --- |
 | `API_KEYS` | REST API auth (comma-separated) |
-| `SUPERVISOR_PASSWORD` | The `/supervisor` HTTP Basic realm. **Unset means the panel is closed**, not open. |
+| `SUPERVISOR_PASSWORD` | The `/supervisor` HTTP Basic realm. **Unset or blank means the panel is closed**, not open. |
 | `SUPERVISOR_USERNAME` | Optional; defaults to `supervisor`. |
 | `APP_HOST` | The MCP OAuth **redirect URI**. Defaults to `localhost:3000`, and picks `http` iff the host string contains "localhost". |
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |

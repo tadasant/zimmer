@@ -13,8 +13,8 @@ module Supervisor
     # as *editable* resources, and those hold plaintext OAuth access and refresh
     # tokens, so it is the one surface that gets a second wall behind the tailnet.
     #
-    # The realm fails closed: with SUPERVISOR_PASSWORD unset, every request is
-    # rejected. An unconfigured deployment gets no admin panel, not an anonymous
+    # The realm fails closed: with SUPERVISOR_PASSWORD unset or blank, every
+    # request is rejected. An unconfigured deployment gets no admin panel, not an anonymous
     # one — the opposite of the stub this replaced.
     USERNAME_ENV = "SUPERVISOR_USERNAME"
     PASSWORD_ENV = "SUPERVISOR_PASSWORD"
