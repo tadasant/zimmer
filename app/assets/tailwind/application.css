@@ -357,3 +357,18 @@
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   }
 }
+
+/* The session drawer's panel slides in under `transition-transform duration-300`.
+   Honor prefers-reduced-motion by removing the motion outright.
+
+   This is load-bearing beyond taste: session_drawer_controller.js holds the panel
+   inert while it slides and lifts that gate from the panel's *computed*
+   transition duration, so zeroing the transition here collapses the inert window
+   to a single tick. Keying the gate on `transitionend` alone would instead leave
+   a reduced-motion user waiting on an event a zero-duration transition never
+   fires — a permanently dead drawer. */
+@media (prefers-reduced-motion: reduce) {
+  [data-session-drawer-target="panel"] {
+    transition: none;
+  }
+}

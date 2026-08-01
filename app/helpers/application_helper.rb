@@ -137,6 +137,21 @@ module ApplicationHelper
     nil
   end
 
+  # When the broadcast circuit breaker is open, the time it is expected to close
+  # — otherwise nil, so shared/_live_updates_paused_banner renders nothing.
+  def live_updates_paused_until
+    BroadcastService.paused_until
+  end
+
+  # "in about a minute" reads as vague hand-waving for a 60-second window, so say
+  # the number of seconds while there are seconds worth saying.
+  def live_updates_resume_phrase(resume_at, now: Time.current)
+    seconds = (resume_at - now).round
+    return "in a moment" if seconds <= 5
+
+    "in about #{seconds} seconds"
+  end
+
   private
 
   # Memoize the markdown parser for better performance

@@ -285,7 +285,10 @@ actual server, and exits non-zero when they don't fit. Run it in the container, 
 Stream must not kill the agent job that emitted it (`app/services/broadcast_service.rb:265`), and a
 circuit breaker opens after five failures. That is the right call for the job, but it means the
 `cable` pool is the one pool whose exhaustion produces no error: the symptom is UI updates that stop
-arriving while the session itself runs fine.
+arriving while the session itself runs fine. The UI at least admits it now — an open breaker lights
+the "Live updates paused" banner (see
+[Background jobs](/operate/background-jobs/#the-circuit-breaker-on-the-ui)) — but the banner reports
+the breaker, not the pool, so diagnosing *why* still means reading the logs.
 
 The pool is sized at 3 because `solid_cable` leases per `INSERT` and returns the connection, and only
 ~2% of broadcasts also run an autotrim transaction (`SolidCable::TrimJob`, a SKIP-LOCKED delete of ≤100
@@ -1328,7 +1331,8 @@ Also:
   `fetch`. The disconnect flush is best-effort, so an abrupt close can drop the last sub-debounce
   keystrokes — not the note.
 - The Turbo circuit breaker stops UI updates for 60 seconds when it trips (`THRESHOLD = 5`,
-  `RESET_TIME = 60`), with no banner telling you.
+  `RESET_TIME = 60`). A polled "Live updates paused" banner says so while it lasts, but the updates
+  dropped during the window are gone — the page catches up on its next reload, not retroactively.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 - Push notifications don't work on anything without the Push API (iOS Safari outside standalone PWA).
 - The OAuth login poller gives up after N consecutive failed polls — a transient blip abandons the

@@ -28,6 +28,13 @@
   <body>
     <%= render "shared/network_health_banner" %>
 
+    <%# "Live updates paused" — polled rather than broadcast, because the state it
+        reports is broadcasting being down. Empty while broadcasts are flowing. %>
+    <div data-controller="live-updates-status"
+         data-live-updates-status-url-value="<%= live_updates_status_path %>">
+      <%= render "shared/live_updates_paused_banner" %>
+    </div>
+
     <%= render "shared/flash", messages: flash %>
 
     <%= yield %>

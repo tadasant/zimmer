@@ -19,6 +19,15 @@ class BroadcastService
   CIRCUIT_BREAKER_THRESHOLD = 5
   CIRCUIT_BREAKER_RESET_TIME = 60 # seconds
 
+  # Shared (Redis) cache key mirroring an open circuit breaker, holding the time
+  # it is expected to close. The breaker's own state is a class ivar in whichever
+  # process broadcast — in production that is the GoodJob worker
+  # (`execution_mode = :external`), a *different process* from the one rendering
+  # the page. A banner that read only the ivar would therefore never light up in
+  # production, which is precisely the silence issue #86 is about. Written on
+  # open, deleted on reset, and read by `.paused_until` for the UI.
+  CIRCUIT_BREAKER_CACHE_KEY = "broadcast_service:circuit_open_until"
+
   # Retry settings
   MAX_RETRIES = 3
   RETRY_BASE_DELAY = 0.1 # seconds
@@ -45,6 +54,47 @@ class BroadcastService
 
     def circuit_breaker_opened_at=(value)
       @circuit_breaker_opened_at = value
+    end
+
+    # When live updates are paused, the time the breaker is expected to close —
+    # otherwise nil. Reads the shared cache (another process's breaker) and this
+    # process's own ivar, so it is right under every GoodJob execution mode:
+    # `:external` (web and worker are separate processes), `:async`, `:inline`.
+    # Never raises — a Redis hiccup must not break page rendering.
+    def paused_until
+      [ cached_open_until, local_open_until ].compact.select(&:future?).max
+    end
+
+    def live_updates_paused?
+      paused_until.present?
+    end
+
+    # Mirror an open breaker into the shared cache. The TTL matches the reset
+    # window, so a worker that dies mid-outage can't strand the banner on screen.
+    def publish_circuit_open(open_until)
+      Rails.cache.write(CIRCUIT_BREAKER_CACHE_KEY, open_until, expires_in: CIRCUIT_BREAKER_RESET_TIME)
+    rescue StandardError
+      nil
+    end
+
+    def clear_published_circuit_open
+      Rails.cache.delete(CIRCUIT_BREAKER_CACHE_KEY)
+    rescue StandardError
+      nil
+    end
+
+    private
+
+    def cached_open_until
+      value = Rails.cache.read(CIRCUIT_BREAKER_CACHE_KEY)
+      value.acts_like?(:time) ? value : nil
+    rescue StandardError
+      nil
+    end
+
+    def local_open_until
+      opened_at = circuit_breaker_opened_at
+      opened_at && opened_at + CIRCUIT_BREAKER_RESET_TIME
     end
   end
 
@@ -362,6 +412,7 @@ class BroadcastService
   def reset_circuit_breaker_unlocked
     self.class.circuit_breaker_failures = 0
     self.class.circuit_breaker_opened_at = nil
+    self.class.clear_published_circuit_open
   end
 
   # Parse timestamp from string
@@ -448,6 +499,9 @@ class BroadcastService
       # Open circuit breaker if threshold exceeded
       if self.class.circuit_breaker_failures >= CIRCUIT_BREAKER_THRESHOLD
         self.class.circuit_breaker_opened_at = Time.current
+        # Publish to the shared cache so the web process can tell the user their
+        # page has stopped updating, instead of freezing it and looking fine.
+        self.class.publish_circuit_open(self.class.circuit_breaker_opened_at + CIRCUIT_BREAKER_RESET_TIME)
         @logger.warn("Circuit breaker opened due to repeated failures", failures: self.class.circuit_breaker_failures)
       end
     end
