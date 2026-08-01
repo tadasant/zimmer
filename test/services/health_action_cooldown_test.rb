@@ -91,4 +91,44 @@ class HealthActionCooldownTest < ActiveSupport::TestCase
 
     assert_nothing_raised { HealthActionCooldown.new("abc").record("cleanup_processes") }
   end
+
+  # The failure that matters in production. :redis_cache_store is configured with
+  # an error_handler that logs and swallows, so a dead Redis does not raise: the
+  # store is not a NullStore, `write` returns nil, and `read` returns nil. A
+  # limiter that only asked `is_a?(NullStore)` would answer "not limited" forever.
+  test "a store whose writes silently fail is treated as unusable" do
+    Rails.cache = BrokenStore.new
+    cooldown = HealthActionCooldown.new("abc")
+
+    assert_not cooldown.store_usable?
+    assert cooldown.limited?("cleanup_processes")
+  end
+
+  test "the probe is memoized, so a usable store is checked once per instance" do
+    cooldown = HealthActionCooldown.new("abc")
+
+    assert cooldown.store_usable?
+    assert cooldown.store_usable?
+    assert_not cooldown.limited?("cleanup_processes")
+  end
+
+  # Mimics ActiveSupport::Cache::RedisCacheStore with an error_handler in front
+  # of an unreachable Redis: never raises, never stores, reads back nothing.
+  class BrokenStore < ActiveSupport::Cache::Store
+    def write(*, **)
+      nil
+    end
+
+    def read(*, **)
+      nil
+    end
+
+    def delete(*, **)
+      false
+    end
+
+    def clear(**)
+      nil
+    end
+  end
 end

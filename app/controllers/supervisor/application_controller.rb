@@ -26,8 +26,11 @@ module Supervisor
     private
 
     def authenticate_supervisor
+      # `blank?`, not `empty?`: a password of "   " is a misconfiguration (a
+      # trailing space in an env file, a secret that resolved to whitespace), and
+      # treating it as a usable credential would open the panel to one space.
       expected_password = ENV[PASSWORD_ENV].to_s
-      return request_http_basic_authentication(REALM) if expected_password.empty?
+      return refuse_unconfigured if expected_password.blank?
 
       expected_username = ENV[USERNAME_ENV].presence || DEFAULT_USERNAME
 
@@ -36,6 +39,14 @@ module Supervisor
         # the same as a wrong password and neither leaks which one was wrong.
         secure_compare(username, expected_username) & secure_compare(password, expected_password)
       end
+    end
+
+    # Without the log line an operator sees a browser prompt that never accepts
+    # anything and nothing at all in the log, which is a miserable thing to
+    # debug — the whole point of failing closed is lost if nobody can tell why.
+    def refuse_unconfigured
+      Rails.logger.warn("[supervisor] refusing #{request.path}: #{PASSWORD_ENV} is unset or blank, so the admin panel is closed")
+      request_http_basic_authentication(REALM)
     end
 
     # Constant-time comparison, mirroring Api::BaseController#authenticate_api_key.

@@ -118,15 +118,16 @@ also reports `bursting`, true while the trigger is inside a burst and spawning n
 
 :::caution[The only rate limit in the API lives here]
 The three `POST`s share `HealthActionCooldown::COOLDOWN = 30.seconds` — and share it with the MCP
-`action_health` tool — keyed in `Rails.cache` as
+`action_health` tool and the `/health` web dashboard — keyed in `Rails.cache` as
 `health_api_rate_limit:<action>:<digest>`, where `<digest>` is a SHA-256 of the presented
 `X-API-Key`. The cooldown is therefore per action **and** per key — your cleanup does not throttle
 anyone else's — and the raw key never appears in a cache key. Exceeded →
 `429 {"error": "Rate limited", "retry_after": 30}`.
 
-The limiter fails closed. If `Rails.cache` is a null store the cooldown cannot be enforced, so the
-three `POST`s return `503 {"error": "Rate limiting unavailable"}` rather than running unthrottled.
-`GET /health` is unaffected. See
+The limiter fails closed. If the cache cannot enforce the cooldown — a null store, or a Redis that is
+down, which `:redis_cache_store`'s `error_handler` turns into silent nils rather than an exception —
+the three `POST`s return `503 {"error": "Rate limiting unavailable"}` rather than running
+unthrottled. `GET /health` is unaffected. See
 [the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
 :::
 

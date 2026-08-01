@@ -51,8 +51,11 @@ to a `resource` while state is ephemeral.
   `postgres` master database, so Rails' `db:prepare` cannot create the app databases
   on a cold cluster. Create them once (`CREATE DATABASE zimmer_production;` and
   `... _cable;`) before the first boot. Thereafter `db:prepare` only migrates.
-- **TLS is mandatory.** The app sets `DATABASE_SSLMODE=require`. The compose Postgres
-  used by staging speaks no TLS, which is why the default is `prefer`.
+- **TLS is mandatory.** `DATABASE_SSLMODE` defaults to `require`, so a deployment that
+  says nothing gets TLS or no connection — a silent downgrade to plaintext is not on the
+  table. Environments that genuinely speak no TLS opt down explicitly and visibly: the
+  compose Postgres accessory used by staging sets `prefer`, and `development`/`test`
+  default to `prefer` via the `local_default` anchor in `config/database.yml`.
 - **The app connects over the private VPC host** (`private_host`), so credentials
   never cross the public internet. `private_host` is only routable from inside the
   cluster's VPC, so `main.tf` pins the droplet's `vpc_uuid` to the cluster's

@@ -16,10 +16,9 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
 
   def teardown
     Mocha::Mockery.instance.teardown
-    # Clear rate limiting cache
-    Rails.cache.delete("health_controller_rate_limit:cleanup_processes")
-    Rails.cache.delete("health_controller_rate_limit:retry_sessions")
-    Rails.cache.delete("health_controller_rate_limit:archive_old")
+    # Clear rate limiting cache. The cooldown keys are built by
+    # HealthActionCooldown now, so clear the store rather than naming them.
+    Rails.cache.clear
     # Restore original cache
     Rails.cache = @original_cache
   end
@@ -97,7 +96,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
 
   test "cleanup_processes is rate limited" do
     # Pre-populate cache to simulate a recent action
-    Rails.cache.write("health_controller_rate_limit:cleanup_processes", Time.current, expires_in: 31.seconds)
+    HealthActionCooldown.new(nil).record("cleanup_processes")
 
     # Request should be rate limited
     post cleanup_processes_health_url
@@ -107,7 +106,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
 
   test "cleanup_processes rate limit returns json error" do
     # Pre-populate cache to simulate a recent action
-    Rails.cache.write("health_controller_rate_limit:cleanup_processes", Time.current, expires_in: 31.seconds)
+    HealthActionCooldown.new(nil).record("cleanup_processes")
 
     # Request should be rate limited
     post cleanup_processes_health_url, headers: { "Accept" => "application/json" }
@@ -162,7 +161,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
 
   test "retry_sessions is rate limited" do
     # Pre-populate cache to simulate a recent action
-    Rails.cache.write("health_controller_rate_limit:retry_sessions", Time.current, expires_in: 31.seconds)
+    HealthActionCooldown.new(nil).record("retry_sessions")
 
     # Request should be rate limited
     post retry_sessions_health_url
@@ -225,12 +224,45 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
 
   test "archive_old is rate limited" do
     # Pre-populate cache to simulate a recent action
-    Rails.cache.write("health_controller_rate_limit:archive_old", Time.current, expires_in: 31.seconds)
+    HealthActionCooldown.new(nil).record("archive_old")
 
     # Request should be rate limited
     post archive_old_health_url
     assert_redirected_to health_dashboard_path
     assert_match /Please wait/, flash[:alert]
+  end
+
+  # === Fail closed when the cooldown cannot be enforced ===
+  #
+  # This surface used to no-op its limiter under a dead cache and run the action
+  # anyway. It now refuses. The dashboard itself keeps rendering — only the
+  # destructive actions are gated.
+
+  test "cleanup_processes is refused when the cache cannot enforce the cooldown" do
+    Rails.cache = ActiveSupport::Cache::NullStore.new
+    HealthMonitorService.any_instance.expects(:cleanup_orphaned_processes).never
+
+    post cleanup_processes_health_url
+
+    assert_redirected_to health_dashboard_path
+    assert_match(/cooldown cannot be enforced/, flash[:alert])
+  end
+
+  test "the refusal is a 503 for json callers" do
+    Rails.cache = ActiveSupport::Cache::NullStore.new
+
+    post archive_old_health_url, headers: { "Accept" => "application/json" }
+
+    assert_response :service_unavailable
+    assert_equal "Rate limiting unavailable", JSON.parse(response.body)["error"]
+  end
+
+  test "the dashboard still renders when the cache is unusable" do
+    Rails.cache = ActiveSupport::Cache::NullStore.new
+
+    get health_dashboard_url
+
+    assert_response :success
   end
 
   # === Export Diagnostics Tests ===

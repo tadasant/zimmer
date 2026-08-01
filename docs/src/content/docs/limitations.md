@@ -1203,23 +1203,36 @@ noted rather than fixed at the source.
 
 `HealthActionCooldown::COOLDOWN = 30.seconds` is the whole of Zimmer's rate limiting. It is keyed in
 `Rails.cache` as `health_api_rate_limit:<action>:<digest of the API key>`, so it is per-caller — one
-client's cleanup no longer locks everyone else out — and the raw key never lands in a cache key.
-`Api::V1::HealthController` and the MCP `action_health` tool share that one object, so alternating
-surfaces does not buy a second run.
+client's cleanup no longer locks everyone else out — and the raw key never lands in a cache key. All
+three surfaces that can run these actions share that one object — the `/health` web dashboard,
+`Api::V1::HealthController`, and the MCP `action_health` tool — so switching surfaces does not buy a
+second run.
 
-The cooldown is only as real as the store behind it. Under a null cache store every write is dropped
-and every read misses, so the limiter would silently never limit. It **fails closed** instead: the
-three mutating endpoints return `503 {"error": "Rate limiting unavailable"}` and log the refusal,
-rather than running unthrottled. `GET /api/v1/health` is unaffected — it has no cooldown to enforce.
+The web dashboard is the exception to "per caller", and unavoidably so: it has no authentication, so
+there is no key to fingerprint and every visitor lands in one shared anonymous bucket. That is the
+global cooldown it has always had.
 
-The consequence to know: an instance whose Redis is down (or which is misconfigured to
-`:null_store`) cannot run `cleanup_processes`, `retry_sessions`, or `archive_old` over the API at
-all. That is deliberate — those are destructive maintenance actions — but it is a hard stop, not a
-degradation. `Rails.cache` is `:redis_cache_store` in development, staging, and production;
-`:null_store` only in the test environment.
+The cooldown is only as real as the store behind it, and it can be unreal in two ways. A null store
+drops every write and misses every read. A **dead Redis** does the same thing without being a null
+store: `:redis_cache_store` is configured with an `error_handler` that logs the exception and
+swallows it, so `write` returns nil and `read` returns nil rather than raising. Either way a naive
+limiter answers "not limited" forever. So the cooldown writes a canary to the store and checks what
+came back, and **fails closed** when it cannot: the three mutating API endpoints return
+`503 {"error": "Rate limiting unavailable"}`, the MCP tool raises `Rate limiting unavailable`, and
+the dashboard's buttons refuse with a flash. All of them log it. `GET /api/v1/health` and the
+dashboard page itself are unaffected — they have no cooldown to enforce.
 
-Per-caller is not per-identity: `API_KEYS` entries are still opaque strings with no owner, so the
-bucket separates keys, not people.
+The consequence to know: an instance whose Redis is down cannot run `cleanup_processes`,
+`retry_sessions`, or `archive_old` on any surface. That is deliberate — these are destructive
+maintenance actions and the throttle is the only thing standing in front of them — but it is a hard
+stop, not a degradation, and it arrives during a Redis outage, which is exactly when someone may be
+reaching for those buttons.
+
+Two things per-caller bucketing does *not* give you. It is not per-identity: `API_KEYS` entries are
+opaque strings with no owner, so the bucket separates keys, not people. And it raises the
+**aggregate** ceiling — the total rate of destructive actions now scales with the number of valid
+keys, where one global bucket capped it at one per 30 seconds for the whole instance. With
+`API_KEYS` holding a handful of strings that is the right trade, but it is a trade.
 
 Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
 
