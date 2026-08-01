@@ -47,8 +47,13 @@ Only these are Terraform's:
 | `TF_VAR_deploy_ssh_pubkey` | Public half of the Kamal deploy keypair, authorized for root by cloud-init |
 | `TF_VAR_ssh_host_ed25519_key` | Optional pinned SSH host **private** key (stable host identity across rebuilds); its public half is `TF_VAR_ssh_host_ed25519_key_pub` |
 
-`admin_ssh_pubkeys` (break-glass operator keys) is a public key, not a secret; in
-CI it's supplied through the committed `staging.tfvars`, not a `TF_VAR_` secret.
+`admin_ssh_pubkeys` (break-glass operator keys) holds public keys, not secrets —
+but it is still **not** in the committed `staging.tfvars.example`, because that
+file is copied verbatim by the deploy and this repo is public, so a key in it
+would be authorized for root on every fork's droplet. CI supplies it as
+`TF_VAR_admin_ssh_pubkeys` from the `ADMIN_SSH_PUBKEYS` Actions *variable*
+(a JSON list of strings); unset falls through to the `[]` default. Locally,
+export the same `TF_VAR_`.
 
 ### Backend (Spaces) credentials — passed at `init`, not as `TF_VAR_*`
 
@@ -71,6 +76,7 @@ cp staging.tfvars.example staging.tfvars   # edit non-secret values
 
 export TF_VAR_do_token=...  TF_VAR_tailscale_auth_key=...  TF_VAR_deploy_ssh_pubkey=...
 export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...     # Spaces keys, for the backend
+export TF_VAR_admin_ssh_pubkeys='["ssh-ed25519 AAAA... you@laptop"]'  # optional; [] otherwise
 
 terraform init -backend-config=backend.staging.hcl
 terraform apply -var-file=staging.tfvars

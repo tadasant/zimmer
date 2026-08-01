@@ -262,7 +262,7 @@ on production**:
 
 | Environment | Declared in | Converged by |
 | --- | --- | --- |
-| staging | `infra/terraform/staging.tfvars.example` → `admin_ssh_pubkeys` (**this** repo) | cloud-init, at droplet creation |
+| staging | the `ADMIN_SSH_PUBKEYS` Actions **variable** on **this** repo → `TF_VAR_admin_ssh_pubkeys` | cloud-init, at droplet creation |
 | production | `zimmer/admin_authorized_keys.pub` (the [private companion repo](/operate/companion-repo/)) | its `authorize-admin-keys-prod` workflow, live over Tailscale SSH — and re-asserted by the prod deploy, so it self-heals across a rebuild |
 
 The two environments do not merely hold different lists — they use **different mechanisms**, and this
@@ -280,30 +280,46 @@ is the detail that makes the exclusion hold:
 The only Terraform variables file in this repo is `staging.tfvars.example`, and the only workflows
 that consume it are `deploy-staging` and `teardown-staging`. Production's Terraform state, tfvars, and
 key list are all private. **Nothing in this repository authorizes a key on production.** So the
-operator key sitting in `staging.tfvars.example` authorizes it on **staging and nothing else** — which
-is intended: a session reaching *staging* is the point, it is disposable, and a session that destroys
-it costs a rebuild.
+operator key on staging is authorized on **staging and nothing else** — which is intended: a session
+reaching *staging* is the point, it is disposable, and a session that destroys it costs a rebuild.
 
 ## Operator keys
 
-Edit the staging list in **`infra/terraform/staging.tfvars.example`**, not in `staging.tfvars`. That is not a typo:
-`deploy-staging.yml` runs `cp staging.tfvars.example staging.tfvars` verbatim before every apply, and
-`*.tfvars` is gitignored. The example file *is* the tfvars.
+Staging's list is the **`ADMIN_SSH_PUBKEYS` Actions variable** (Settings → Secrets and variables →
+Actions → Variables), a JSON list of strings that `deploy-staging.yml` exports as
+`TF_VAR_admin_ssh_pubkeys`:
 
-```hcl
-# infra/terraform/staging.tfvars.example — what is actually committed
-admin_ssh_pubkeys = [
-  "ssh-ed25519 AAAA...FEp3 zimmer-production-operator",      # Zimmer's agent sessions
-  "ssh-ed25519 AAAA...EmRa agent-orchestrator-prod-hetzner", # the orchestrator, off-box
-  "ssh-ed25519 AAAA...y3Zn root@local",                      # the maintainer's laptop, break-glass
+```json
+[
+  "ssh-ed25519 AAAA...FEp3 zimmer-production-operator",
+  "ssh-ed25519 AAAA...EmRa agent-orchestrator-prod-hetzner",
+  "ssh-ed25519 AAAA...y3Zn root@local"
 ]
 ```
 
-:::danger[Forking: those are real keys, not placeholders]
-The committed example is not a template with a dummy value in it — it holds the upstream author's three
-real public keys, and `deploy-staging.yml` copies the file verbatim. Deploy it unchanged and you have
-authorized **him** for `root` on **your** droplet. Replace all three with your own, or set `[]`.
+A *variable*, not a secret: public keys are not secret, and GitHub masks a secret's value everywhere
+in a log — which would blank out the "who did this apply authorize" line the deploy prints. The deploy
+fails fast if the value is set but is not a JSON list of strings.
+
+:::caution[Not `staging.tfvars.example` — and do not put it back there]
+`deploy-staging.yml` runs `cp staging.tfvars.example staging.tfvars` verbatim before every apply, and
+`*.tfvars` is gitignored, so **the example file *is* the tfvars every deploy applies**. This repo is
+public, so a key committed there is a key authorized for `root` on the droplet of whoever runs the
+workflow — a fork's box, with someone else's key on it. The file therefore assigns
+`admin_ssh_pubkeys` nowhere, and `test/infra/staging_tfvars_example_test.rb` fails the build if key
+material or an active assignment reappears.
+
+Uncommenting the assignment does not *add* to the variable's keys, either: a `-var-file` value beats
+`TF_VAR_*` in Terraform's [precedence
+order](https://developer.hashicorp.com/terraform/language/values/variables#variable-definition-precedence),
+so it silently replaces them. Set it locally, in your own gitignored `staging.tfvars`, only.
 :::
+
+**Unset is a working droplet, not a brick.** `var.admin_ssh_pubkeys` defaults to `[]`, and nothing
+else depends on it: the Kamal deploy key is its own variable, so CI still deploys, and humans on the
+tailnet still reach the box over Tailscale SSH on `:22`. What an empty list costs is the publickey
+door on `:2222` — no `ssh-*` MCP server can attach, and there is no OpenSSH break-glass login for when
+the tailnet identity path is itself what is broken.
 
 Do **not** reach for `ssh_key_fingerprints` (DigitalOcean-registered keys) instead. It is `ForceNew` on
 `digitalocean_droplet`, so adding a key there makes the deploy's auto-approved `terraform apply`

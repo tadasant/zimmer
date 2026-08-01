@@ -103,10 +103,58 @@ jobs:
           TF_VAR_deploy_ssh_pubkey: ${{ secrets.KAMAL_SSH_PUBKEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          # Operator/tooling public keys cloud-init authorizes for root, as a JSON list of
+          # strings: ["ssh-ed25519 AAAA... op@host"]. An Actions VARIABLE (repo or the
+          # `staging` environment) -- public keys are not secrets, and GitHub would mask a
+          # secret's value out of the accounting printed below. Deliberately NOT the
+          # committed staging.tfvars.example: this repo is public and the step copies that
+          # file verbatim, so a key sitting in it is a key authorized for root on every
+          # FORK's droplet. Unset is the safe fall-through -- var.admin_ssh_pubkeys
+          # defaults to [] and the box authorizes nothing beyond the Kamal deploy key.
+          ADMIN_SSH_PUBKEYS: ${{ vars.ADMIN_SSH_PUBKEYS }}
         run: |
           set -euo pipefail
           terraform init -input=false -backend-config=backend.staging.hcl
           cp staging.tfvars.example staging.tfvars
+          # Report who this apply would authorize for root, on EVERY deploy. The list is
+          # now an Actions variable: invisible state that nothing else in the run would
+          # surface, and that takes effect only at droplet CREATION (cloud-init) -- so an
+          # unset variable is otherwise discovered as "the rebuilt box locked me out".
+          # staging.tfvars.example deliberately assigns nothing, because a -var-file value
+          # BEATS TF_VAR_* in Terraform's precedence order: an assignment there would not
+          # add to this list, it would silently replace it.
+          keys=0
+          if [ -n "${ADMIN_SSH_PUBKEYS:-}" ]; then
+            if ! jq -e 'type == "array" and all(type == "string")' >/dev/null 2>&1 <<<"$ADMIN_SSH_PUBKEYS"; then
+              echo "::error::ADMIN_SSH_PUBKEYS is set but is not a JSON list of strings."
+              echo "::error::Terraform reads it as list(string), so write it as:"
+              echo "::error::  [\"ssh-ed25519 AAAA... op@host\", \"ssh-ed25519 AAAA... you@laptop\"]"
+              exit 1
+            fi
+            keys=$(jq -r length <<<"$ADMIN_SSH_PUBKEYS")
+          fi
+          # An explicit `[]` is the same outcome as unset -- a box nobody is authorized on --
+          # so it takes the same warning path rather than a green tick over an empty list.
+          if [ "$keys" -gt 0 ]; then
+            export TF_VAR_admin_ssh_pubkeys="$ADMIN_SSH_PUBKEYS"
+            # Comment field = everything after the type and the body. Split on runs of
+            # whitespace and drop empties: a double space, a leading space, or a multi-word
+            # comment must not silently print the key body (or the type) as the identity.
+            echo "✅ admin_ssh_pubkeys: $keys key(s) authorized for root on :2222 --" \
+                 "$(jq -r '[.[] | split(" ") | map(select(. != "")) | if length > 2 then .[2:] | join(" ") else "(no comment)" end] | join(", ")' <<<"$ADMIN_SSH_PUBKEYS")"
+          else
+            # Never inherit one from the runner's ambient environment: the log below asserts
+            # that nothing is authorized, and a leaked value would make that assertion a lie.
+            unset TF_VAR_admin_ssh_pubkeys
+            echo "::warning::ADMIN_SSH_PUBKEYS is unset or empty, so admin_ssh_pubkeys=[] and this apply authorizes NO"
+            echo "::warning::operator key for root. The deploy itself is unaffected (Kamal has its own key) and"
+            echo "::warning::humans still reach the box over Tailscale SSH on :22 -- what is gone is the publickey"
+            echo "::warning::door on :2222, so every ssh-* MCP server in a session fails its startup health check."
+            if [ "${{ inputs.recreate_droplet }}" = "true" ]; then
+              echo "::warning::recreate_droplet=true, which is the moment this bites: cloud-init runs at creation"
+              echo "::warning::ONLY, so the replacement droplet comes up with an empty /root/.ssh/admin_keys.pub."
+            fi
+          fi
           replace=""
           if [ "${{ inputs.recreate_droplet }}" = "true" ]; then
             echo "::warning::recreate_droplet=true — replacing the droplet (bootstrap change)."
