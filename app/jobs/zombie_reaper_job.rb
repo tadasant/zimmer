@@ -7,32 +7,27 @@
 # accumulated under the worker over ~2 days, degrading session startup until the
 # worker container was restarted.
 #
-# This job used to describe itself as "defense in depth alongside the tini init
-# shim (`init: true` in deploy*.yml)", implying it should normally find nothing.
-# That premise was wrong, and it is why the reaps in #273 looked mysterious: tini
-# only reaps processes REPARENTED to pid 1. A direct child of the Ruby worker is
-# never reparented while the worker is alive, so tini can never collect it. Every
-# child this process spawns and does not wait on is permanently this job's
-# problem — the init shim covers grandchildren orphaned by an exiting `gh`/`air`
-# /`claude`, nothing more.
+# The tini init shim (`init: true` in deploy*.yml) does NOT cover this. It reaps
+# processes REPARENTED to pid 1 — grandchildren orphaned when a `gh`, `air` or
+# `claude` exits. A direct child of the Ruby worker is never reparented while the
+# worker is alive, so tini can never collect it. Every child this process spawns
+# and does not wait on is permanently this job's problem.
 #
-# == Why this job is pid-aware (#273)
+# == Why this job reaps named pids (#273)
 #
 # This cron runs in the SAME process as AgentSessionJob's monitoring loop and the
-# pollers. It used to call `Process.waitpid(-1, Process::WNOHANG)` in a loop,
-# which reaps *any* child — including one another thread is actively waiting on —
-# and consumes its exit status. Two things broke as a result:
+# pollers, so `Process.waitpid(-1, …)` here is not an option: it reaps *any*
+# child, including one another thread is actively waiting on, and consumes its
+# exit status. Two things break when that happens:
 #
-#   1. `Open3.capture3`'s wait thread got `Errno::ECHILD` and `wait_thr.value`
-#      returned nil, so a `gh` result already in hand was thrown away (#271).
-#   2. `ProcessLifecycleManager#wait_nonblock` got `Errno::ECHILD` on a tracked
-#      agent pid, so AgentSessionJob fell through to its signal-based fallback
-#      (search "Fallback process detection using signal 0") and called
+#   1. `Open3.capture3`'s wait thread gets `Errno::ECHILD` and `wait_thr.value`
+#      returns nil, throwing away a `gh` result already in hand (#271).
+#   2. `ProcessLifecycleManager#wait_nonblock` gets `Errno::ECHILD` on a tracked
+#      agent pid, so AgentSessionJob falls through to its signal-based fallback
+#      (search "Fallback process detection using signal 0") and calls
 #      `session.pause!` directly — bypassing handle_exit's SIGTERM retry,
 #      /compact retry, API-error backoff and failure_reason mapping. A session
-#      that should have auto-retried landed in needs_input with no explanation.
-#
-# So this job now reaps *named* pids, and only ones nothing else is waiting on.
+#      that should have auto-retried lands in needs_input with no explanation.
 #
 # == How a pid qualifies for reaping
 #
@@ -58,12 +53,18 @@
 # case condition (c) already rejected a moment earlier. Re-checking narrows the
 # window; nothing can reuse the pid to widen it.
 #
-# *Orphaned waiters.* A claim whose waiter died without reaping must NOT protect
-# its pid forever, or zombies accumulate again exactly as they did in the original
-# incident. That is what the heartbeat in ChildWaiterRegistry is for: a live
-# monitoring loop calls wait every 0.5s, so a claim that has gone quiet for
-# LIVE_WAITER_STALE_AFTER is orphaned and gets reaped — and logged loudly, with
-# the command, because an orphaned claim is a real upstream leak worth naming.
+# *Orphaned waiters.* A claim whose waiter is gone must NOT protect its pid
+# forever, or zombies accumulate again exactly as they did in the original
+# incident. That is what the heartbeat in ChildWaiterRegistry is for: an actively
+# supervising loop calls wait every 0.5s, so a claim that has gone quiet for
+# LIVE_WAITER_STALE_AFTER has nobody left to collect it and gets reaped.
+#
+# Such a claim is logged at warn level with the command, because it is the lead
+# that identifies where children are being abandoned. It is a lead and not a
+# verdict: a supervising loop can also stop calling wait deliberately — the
+# elicitation keep-alive branch in AgentSessionJob skips wait_nonblock for the
+# length of an elicitation — and that produces the same quiet claim without any
+# code being at fault.
 class ZombieReaperJob < ApplicationJob
   queue_as :default
 
@@ -129,10 +130,15 @@ class ZombieReaperJob < ApplicationJob
         if Process.waitpid(pid, Process::WNOHANG)
           reaped << pid
           orphaned << waiter if waiter
+          registry.release(pid)
         end
+        # A nil return means the pid is alive after all, which for something we
+        # just saw defunct twice means its real waiter collected it and the
+        # kernel handed the number to a new process. Leave that new process's
+        # claim alone — releasing it here would strip a fresh, legitimate waiter.
       rescue Errno::ECHILD, Errno::ESRCH
-        # Something else collected it between our two passes. Nothing to do.
-      ensure
+        # Something else collected it between our two passes. The claim, if any,
+        # is for a pid that is no longer ours, so drop it.
         registry.release(pid)
       end
     end
@@ -146,9 +152,9 @@ class ZombieReaperJob < ApplicationJob
     end
 
     orphaned.each do |waiter|
-      Rails.logger.warn "[ZombieReaperJob] Reaped pid #{waiter.pid} whose waiter went quiet " \
-        "#{waiter.idle_seconds.round}s ago (claimed for: #{waiter.command || 'unknown command'}). " \
-        "Something spawned this child and stopped waiting on it — this is an upstream leak, not a reaper problem."
+      Rails.logger.warn "[ZombieReaperJob] Reaped pid #{waiter.pid}, claimed for '#{waiter.command || 'unknown command'}', " \
+        "whose waiter last checked in #{waiter.idle_seconds.round}s ago. Something spawned this child and stopped " \
+        "waiting on it — start here when looking for where children are abandoned."
     end
 
     if reaped.any?

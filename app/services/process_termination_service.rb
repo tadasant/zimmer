@@ -169,27 +169,12 @@ class ProcessTerminationService
       return result if result
     end
 
-    # Final check.
-    #
-    # Reap BEFORE asking whether the process is still running, because for our own
-    # child those two questions are not independent. `process_running?` is
-    # `Process.kill(0, pid)`, and an unreaped child holds its pid as a zombie after
-    # it exits — so signal 0 keeps succeeding and every liveness check above this
-    # point answers "still running" for a process that died on the first SIGTERM.
-    # Left unreaped here, `terminate` reported `:error` ("could not be terminated")
-    # for a process it had successfully killed AND left the zombie behind for
-    # ZombieReaperJob to collect minutes later. That is the upstream leak behind
-    # the every-5-minutes reaps in #273: this is the one path a terminated agent
-    # child reaches, and it never collected it.
-    #
-    # For a process we did not spawn, the wait raises ECHILD, reap_process swallows
-    # it, and `process_running?` stays the correct answer — so an unkillable
-    # foreign process still reports :error.
-    reap_process
-
+    # Final check
     if process_running?
       TerminationResult.new(status: :error, message: "Process #{process_pid} could not be terminated")
     else
+      # Reap to prevent zombie
+      reap_process
       TerminationResult.new(status: :terminated, message: "Process #{process_pid} terminated")
     end
   rescue Errno::EPERM => e
