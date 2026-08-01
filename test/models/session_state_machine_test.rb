@@ -1517,6 +1517,20 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal :failed, session.status.to_sym
   end
 
+  # These rescues run inside AASM `after` blocks, so an exception escaping the
+  # reporter would abort the transition mid-flight — the exact wedge the bare
+  # rescues exist to prevent.
+  test "a broken logger cannot wedge a transition through the reporter" do
+    session = sessions(:running)
+    session.update!(status: :running, running_job_id: "job-123")
+    session.stubs(:update_column).raises(StandardError, "database is unhappy")
+    Rails.logger.stubs(:error).raises(StandardError, "logger is broken")
+    AlertService.stubs(:raise_alert).returns(true)
+
+    assert_nothing_raised { session.pause! }
+    assert_equal :needs_input, session.status.to_sym
+  end
+
   private
 
   def create_blocking_elicitation(session)

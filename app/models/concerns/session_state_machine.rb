@@ -409,10 +409,18 @@ module SessionStateMachine
       dedup_key: "session_state_machine_side_effect_#{operation}"
     )
   rescue => reporting_error
-    # Reporting must never become a new way for a transition to blow up.
-    Rails.logger.error(
-      "[SessionStateMachine] Failed to report swallowed side effect #{operation}: #{reporting_error.message}"
-    )
+    # Reporting must never become a new way for a transition to blow up. This
+    # runs inside an AASM `after` block, so an exception escaping here would
+    # abort the transition mid-flight — the exact wedge these rescues exist to
+    # prevent. The inner rescue covers the case where the logger itself is what
+    # is broken, which is also the most likely reason the line above raised.
+    begin
+      Rails.logger.error(
+        "[SessionStateMachine] Failed to report swallowed side effect #{operation}: #{reporting_error.message}"
+      )
+    rescue StandardError
+      nil
+    end
   end
 
   # Reset the elapsed time counter by updating last_timeline_entry_at to current time
