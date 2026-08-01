@@ -183,6 +183,94 @@ class AlertBatcherTest < ActiveSupport::TestCase
       "aggregated details must fit Slack's 3000-char section limit"
   end
 
+  # === Log snippets through the batcher ===
+
+  def poller_error(message)
+    error = RuntimeError.new(message)
+    error.set_backtrace([ "#{Rails.root}/app/jobs/slack_trigger_poller_job.rb:126:in 'perform'" ])
+    error
+  end
+
+  test "a single batched alert keeps its snippet as its own fenced block" do
+    captured = nil
+    @mock_client.expects(:chat_postMessage).once.with do |args|
+      captured = args
+      true
+    end.returns(true)
+
+    AlertBatcher.with_batch do
+      AlertService.raise_alert("Poller error", details: "Condition 1 failed.", source: "S",
+                               dedup_key: "k1", error: poller_error("channel_not_found"))
+    end
+
+    snippet_block = captured[:blocks].find { |b| b[:text].is_a?(Hash) && b[:text][:text].to_s.start_with?("```") }
+    assert_not_nil snippet_block, "a single-event flush should render the snippet like an unbatched alert"
+    assert_includes snippet_block[:text][:text], "RuntimeError: channel_not_found"
+    assert_includes captured[:text], "channel_not_found"
+  end
+
+  test "an aggregate keeps each occurrence's own snippet" do
+    captured = nil
+    @mock_client.expects(:chat_postMessage).once.with do |args|
+      captured = args
+      true
+    end.returns(true)
+
+    AlertBatcher.with_batch do
+      AlertService.raise_alert("Poller error", details: "Condition 1 failed.", source: "S",
+                               dedup_key: "k1", error: poller_error("channel_not_found"))
+      AlertService.raise_alert("Poller error", details: "Condition 2 failed.", source: "S",
+                               dedup_key: "k2", error: poller_error("ratelimited"))
+    end
+
+    body = captured[:blocks].find { |b| b[:type] == "section" }[:text][:text]
+    # Same title, different failures — an aggregate that showed only one would
+    # actively mislead.
+    assert_includes body, "channel_not_found"
+    assert_includes body, "ratelimited"
+    assert_equal 2, body.scan(/```/).length / 2, "each occurrence gets its own fenced block"
+  end
+
+  test "aggregated snippets are clamped and the message stays inside Slack's section limit" do
+    captured = nil
+    @mock_client.expects(:chat_postMessage).once.with do |args|
+      captured = args
+      true
+    end.returns(true)
+
+    AlertBatcher.with_batch do
+      20.times do |i|
+        error = RuntimeError.new("failure #{i}: " + ("y" * 5_000))
+        error.set_backtrace(Array.new(50) { |f| "#{Rails.root}/app/services/deep.rb:#{f}:in 'step'" })
+        AlertService.raise_alert("Poller error", details: "Condition #{i} failed.", source: "S",
+                                 dedup_key: "k#{i}", error: error)
+      end
+    end
+
+    body = captured[:blocks].find { |b| b[:type] == "section" }[:text][:text]
+    assert_operator body.length, :<=, 3000, "aggregated body must fit Slack's 3000-char section limit"
+    assert_includes body, "failure 0"
+    assert_equal 0, body.scan("```").length % 2,
+      "truncation must not leave an unterminated fence (Slack would render the rest as code)"
+  end
+
+  test "snippets do not reach the aggregate dedup key" do
+    # Same burst signature in both rounds, different snippets each time. The
+    # aggregate key is built from the per-event dedup keys only, so round two
+    # must be suppressed — if snippet text leaked in, this would post twice and
+    # a wedged poller would fill the channel once per tick.
+    @mock_client.expects(:chat_postMessage).once.returns(true)
+
+    2.times do |round|
+      AlertBatcher.with_batch do
+        2.times do |i|
+          AlertService.raise_alert("Poller error", details: "Condition #{i} failed.", source: "S",
+                                   dedup_key: "k#{i}", error: poller_error("attempt #{round}-#{i} at 10:0#{round}:33"))
+        end
+      end
+    end
+  end
+
   # === Passthrough when no batch is open ===
 
   test "raise_alert behaves normally when no batch is open" do

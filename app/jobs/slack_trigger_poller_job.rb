@@ -126,9 +126,10 @@ class SlackTriggerPollerJob < ApplicationJob
         Rails.logger.error "[SlackTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
         AlertService.raise_alert(
           "Slack trigger poller error",
-          details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) failed:\n#{e.message}",
+          details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) failed.",
           source: "SlackTriggerPollerJob",
-          dedup_key: "slack_trigger_condition_#{condition.id}"
+          dedup_key: "slack_trigger_condition_#{condition.id}",
+          error: e
         )
       end
     end
