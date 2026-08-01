@@ -59,14 +59,18 @@ export default class extends Controller {
 
     for (const mutation of mutations) {
       if (mutation.type === "attributes") {
-        this.watch(mutation.target)
-      } else {
+        // attributeFilter narrows to `connected`, but nothing guarantees only a
+        // stream source carries it.
+        if (this.isSource(mutation.target)) this.watch(mutation.target)
+      } else if (this.touchesSource(mutation)) {
         sourcesChanged = true
       }
     }
 
     // A childList change can add sources (a frame swap) or drop the ones we were
-    // holding timers for. Re-read the set and forget anything detached.
+    // holding timers for. Re-read the set and forget anything detached. Gated on
+    // touchesSource because this element also contains the timeline, which Turbo
+    // appends to continuously — a blanket re-scan would run on every log line.
     if (sourcesChanged) {
       const live = this.sources
       this.timers.forEach((_timer, source) => {
@@ -74,6 +78,21 @@ export default class extends Controller {
       })
       live.forEach((source) => this.watch(source))
     }
+  }
+
+  isSource(node) {
+    return node.nodeType === Node.ELEMENT_NODE &&
+      node.tagName === "TURBO-CABLE-STREAM-SOURCE"
+  }
+
+  touchesSource(mutation) {
+    const nodes = [ ...mutation.addedNodes, ...mutation.removedNodes ]
+
+    return nodes.some((node) =>
+      this.isSource(node) ||
+      (node.nodeType === Node.ELEMENT_NODE &&
+        node.querySelector("turbo-cable-stream-source") !== null)
+    )
   }
 
   // Schedule a re-subscribe for a disconnected source; cancel any pending one for
@@ -110,9 +129,16 @@ export default class extends Controller {
       return
     }
 
+    // The detach and the re-attach are what run the element's own
+    // disconnectedCallback/connectedCallback pair. try/finally so a throw inside
+    // either callback cannot leave the source orphaned outside the document,
+    // where nothing would ever find it again to retry.
     const placeholder = document.createComment("turbo-cable-stream-source")
-    source.replaceWith(placeholder)
-    placeholder.replaceWith(source)
+    try {
+      source.replaceWith(placeholder)
+    } finally {
+      placeholder.replaceWith(source)
+    }
 
     // Still down? watch() schedules the next attempt at the next backoff step.
     // A successful subscribe sets `connected`, which cancels it via the observer.

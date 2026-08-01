@@ -227,6 +227,12 @@ Two actions stream a card as well, because a broadcast cannot reach one:
   Uncategorized, `#category_grid_<id>` for a category). Its own restore broadcast is a `replace`,
   and there is nothing left in the DOM to replace.
 
+`#unarchive` and `#pause` stream one more thing: the session page's own status badge and header
+actions. `Session#broadcast_status_change` already pushes both over the cable, but a broadcast is
+fire-and-forget and this whole change exists because a cable can be silently dead. The direct
+reply to the user's click cannot be lost, so a status-changing action carries its chrome rather
+than trusting the socket.
+
 Every one of these actions keeps its `format.html` branch, which still redirects with a real
 flash. That is what a non-Turbo client — and most of the controller test suite — gets.
 
@@ -237,6 +243,14 @@ turbo-rails sets and clears, and re-subscribes any source still dark after a gra
 five-second timing window whether or not the cable had actually dropped — and, being a
 top-level navigation, dismissed the session drawer along with the user's place in it.
 `Session#recently_recovered?` now only decides whether to *show* the recovery banner.
+
+It does not replace `stream-visibility-recovery`, which still reloads the page — the two answer
+different failures. A page that was hidden (backgrounded PWA, bfcache restore) and came back with
+a dead socket has *missed content*, and re-subscribing would not bring it back, so that one
+reloads and fires first (1.5s grace against cable-reconnect's 3s). A socket that dies while the
+page stays visible has missed nothing, so cable-reconnect re-subscribes in place. What the meta
+refresh contributed and nothing replaced was the *unconditional* reload, on elapsed time, whether
+or not the cable had dropped at all.
 
 What a refresh *does* depends on the session's state:
 
