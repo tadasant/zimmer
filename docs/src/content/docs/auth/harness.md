@@ -128,12 +128,19 @@ it:
   and leaves `mcpOAuth` exactly as found. It also stamps the owner marker *inside* the lock, so the
   marker can never end up naming an account whose tokens two interleaved writes replaced.
 
-That last rule runs in both directions. `mcpOAuth` on disk always wins, including when it is absent:
+`mcpOAuth` is the only block carved out, and it runs in both directions — on disk it wins even when
+it is absent:
 `sync_tokens_from_filesystem!` captures the *whole* file into `oauth_config`, so an account's DB copy
 carries a snapshot of whatever MCP entries existed at capture time. Writing that copy back would
 clobber entries authorized since and resurrect entries `McpOauthCredential` deliberately deleted —
 which is exactly the resurrection `ClaudeMcpCredentialWriter#delete_credentials` exists to prevent.
 MCP state belongs to the MCP writer, which re-injects it on every spawn.
+
+For any *other* key present in both, the account's copy wins. That direction is deliberate: the write
+exists to make the file describe the incoming account, and deferring to disk for some future
+account-scoped block would leave the outgoing account's data there — the contamination the marker
+exists to prevent. A host-scoped block Zimmer doesn't know about is the milder mistake, and the fix
+is to name it in `credentials_blob_for_disk` alongside `mcpOAuth`.
 
 Until [#60](https://github.com/tadasant/zimmer/issues/60), the account writer did a whole-file
 overwrite instead, so rotating accounts dropped every MCP OAuth credential on the box — and the user
