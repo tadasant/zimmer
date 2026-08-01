@@ -8453,7 +8453,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     )
     log_buffer.flush
 
-    log = @session.logs.reload.find { |entry| entry.content.include?("did not finish within 120.0s") }
+    log = @session.logs.reload.find { |entry| entry.content.include?("had not finished after waiting 120.0s") }
     assert log, "Expected a warning that the gate gave up, got: #{@session.logs.map(&:content).inspect}"
     assert_equal "warning", log.level
     assert_includes log.content, "Codex"

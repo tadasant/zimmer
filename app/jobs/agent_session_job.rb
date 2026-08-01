@@ -1021,6 +1021,17 @@ class AgentSessionJob < ApplicationJob
           clone_path: clone_path
         )
 
+        # Wait out the container's background boot tasks before touching the runtime.
+        # bin/docker-entrypoint updates the runtime CLI in the background so Rails can
+        # boot immediately, which leaves a window right after a deploy where the binary
+        # on disk is still the previous version (issue #122). This sits as close to the
+        # spawn as possible on purpose: the clone, AIR prepare and MCP setup above have
+        # already overlapped with the update, so in the common case there is nothing
+        # left to wait for. It goes *before* credential injection so the identity is
+        # written for the CLI that is actually about to run. See BootTasksReadiness for
+        # why the wait is bounded.
+        report_boot_tasks_readiness(BootTasksReadiness.await, log_buffer, runtime_label)
+
         # Ensure the runtime's login credentials are active on disk before spawning,
         # and record WHICH identity this process is being started with. A later
         # "Not logged in" needs that to tell "the pool rotated out from under me"
@@ -1028,15 +1039,6 @@ class AgentSessionJob < ApplicationJob
         # (rotate). See AuthRecoveryCoordinator.
         spawn_identity = RuntimeAuthProvider.for(session.agent_runtime).inject_for_session!(session, working_directory)
         AuthRecoveryCoordinator.record_identity!(session, spawn_identity)
-
-        # Wait out the container's background boot tasks before launching the CLI.
-        # bin/docker-entrypoint updates the runtime CLI in the background so Rails can
-        # boot immediately, which leaves a window right after a deploy where the binary
-        # on disk is still the previous version (issue #122). This sits as close to the
-        # spawn as possible on purpose: the clone, AIR prepare and MCP setup above have
-        # already overlapped with the update, so in the common case there is nothing
-        # left to wait for. See BootTasksReadiness for why the wait is bounded.
-        report_boot_tasks_readiness(BootTasksReadiness.await, log_buffer, runtime_label)
 
         # Use ProcessLifecycleManager to spawn the process
         # Images are passed for follow-up prompts with attachments
@@ -1995,8 +1997,9 @@ class AgentSessionJob < ApplicationJob
       log_buffer.add(message, level: "warning")
       Rails.logger.warn("[BootTasksReadiness] #{message}")
     when :timed_out
-      message = "Container boot tasks did not finish within #{waited}s — spawning #{runtime_label} against " \
-                "whatever CLI is on disk, which may be the previous deploy's version."
+      message = "Container boot tasks had not finished after waiting #{waited}s (readiness deadline reached) — " \
+                "spawning #{runtime_label} against whatever CLI is on disk, which may be the previous deploy's " \
+                "version."
       log_buffer.add(message, level: "warning")
       Rails.logger.warn("[BootTasksReadiness] #{message}")
     when :ready
