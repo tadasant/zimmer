@@ -6,10 +6,16 @@
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
 
-    <link rel="manifest" href="/manifest.json">
-    <meta name="theme-color" content="#4f46e5">
-    <link rel="icon" href="/icons/icon-192x192.png" type="image/png">
-    <link rel="apple-touch-icon" href="/icons/icon-192x192.png">
+    <%# ?v=2 busts the copy anyone still holds from when public/ was served with a %>
+    <%# one-year max-age. The manifest's own icon srcs carry it for the same reason. %>
+    <link rel="manifest" href="/manifest.json?v=2">
+    <meta name="theme-color" content="#031942">
+    <%# The .ico carries 16/32/48 face-crop renders for the tab; the PNGs let a %>
+    <%# browser that prefers them skip the container. %>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="16x16 32x32 48x48">
+    <link rel="icon" href="/icons/favicon-32x32.png" type="image/png" sizes="32x32">
+    <link rel="icon" href="/icons/favicon-16x16.png" type="image/png" sizes="16x16">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" sizes="180x180">
     <% if WebpushConfig.configured? %>
       <meta name="vapid-public-key" content="<%= WebpushConfig.public_key %>">
     <% end %>

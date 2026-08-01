@@ -3,15 +3,20 @@ require "test_helper"
 # Routing misses (404s) must NOT be logged at ERROR. Rails' default behavior raises
 # ActionController::RoutingError for an unmatched path, which DebugExceptions logs at
 # ERROR — and a single ERROR line trips the critical "Zimmer ERROR logs
-# present" Grafana alert. The favicon route + bottom catch-all route convert these into
-# quiet, non-ERROR responses. See GitHub issue #4307.
+# present" Grafana alert. The bottom catch-all route converts these into quiet,
+# non-ERROR responses. See GitHub issue #4307.
 class Routing404Test < ActionDispatch::IntegrationTest
-  test "GET /favicon.ico returns 204 and does not log at ERROR" do
+  # Browsers request /favicon.ico at the root regardless of what <link rel="icon">
+  # advertises. The app ships a real one in public/, so the static file server
+  # answers before the router is ever consulted — no RoutingError, no ERROR line,
+  # and the tab actually gets an icon.
+  test "GET /favicon.ico serves the icon and does not log at ERROR" do
     log = capture_log_output do
       get "/favicon.ico"
     end
 
-    assert_response :no_content
+    assert_response :success
+    assert_equal "\x00\x00\x01\x00".b, response.body.byteslice(0, 4).b, "should be an ICO container"
     assert_no_error_logged(log)
   end
 

@@ -30,8 +30,14 @@ Rails.application.configure do
   # Full error reports are disabled.
   config.consider_all_requests_local = false
 
-  # Cache assets for far-future expiry since they are all digest stamped.
-  config.public_file_server.headers = { "cache-control" => "public, max-age=#{1.year.to_i}" }
+  # These headers cover public/ — 404.html, manifest.json, service-worker.js, the
+  # icons — and NOT the digest-stamped build output, which Propshaft serves under
+  # /assets with its own far-future headers. Nothing in public/ is digest stamped,
+  # so a far-future max-age here pins a stale copy of a file whose URL never
+  # changes: replacing an icon or editing the manifest would not reach anyone who
+  # had already loaded the old one. An hour is long enough to matter and short
+  # enough that a redeploy is visible the same day.
+  config.public_file_server.headers = { "cache-control" => "public, max-age=#{1.hour.to_i}" }
 
   # Enable serving of images, stylesheets, and JavaScripts from an asset server.
   # config.asset_host = "http://assets.example.com"
