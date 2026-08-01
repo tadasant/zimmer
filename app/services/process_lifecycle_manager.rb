@@ -574,11 +574,9 @@ class ProcessLifecycleManager
 
     next_attempt = retry_count + 1
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "signal_death_retry_count" => next_attempt,
-          "last_signal_death_at" => Time.current.iso8601
-        )
+      session.merge_metadata!(
+        "signal_death_retry_count" => next_attempt,
+        "last_signal_death_at" => Time.current.iso8601
       )
     end
 
@@ -824,12 +822,7 @@ class ProcessLifecycleManager
 
     # Update session metadata with new process PID and re-set runtime_started
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "process_pid" => new_pid,
-          "runtime_started" => true
-        )
-      )
+      session.merge_metadata!("process_pid" => new_pid, "runtime_started" => true)
     end
 
     # Update our state to reflect the new process

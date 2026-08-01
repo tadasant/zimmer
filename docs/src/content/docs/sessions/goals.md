@@ -104,12 +104,15 @@ automated nudge prompt and resumes it — the "keep working toward your goal" lo
 It deliberately skips sessions that are blocked on an elicitation or that have pending enqueued
 messages, because resuming those would spawn a second process against the same clone.
 
-The nudge goes out through `Session#deliver_follow_up!`, the one place the immediate-delivery
-sequence lives. Every entry point that hands a prompt straight to an idle session runs it: the web
+The nudge goes out through `Session#deliver_follow_up!`. Five entry points share it: the web
 follow-up form, triggers, the GitHub comment and merge-conflict pollers, and this sweep. The method
 clears the stale per-turn metadata, transitions the session to running, stamps the prompt where the
 recovery paths look for it, enqueues `AgentSessionJob`, and records `running_job_id` so the session
 is never "running with no job."
+
+Two direct-delivery paths deliberately stay outside it: the REST API's `follow_up` (which never
+stamped a pending prompt, and would change behaviour if it started) and `EnqueuedMessageProcessorService`
+(which delivers a message it has already claimed from a queue, under different locking).
 
 The heartbeat is the one caller that passes `stamp_pending_prompt: false`. A user's message is worth
 replaying after a SIGTERM retry; a drumbeat is not — replaying one would deliver a beat for a moment

@@ -685,16 +685,27 @@ class Session < ApplicationRecord
 
   # Deliver a follow-up prompt to an idle (waiting / needs_input) session.
   #
-  # This is the one copy of the sequence every immediate-delivery entry point runs:
-  # drop the stale per-turn state, transition to running, stamp the prompt where the
-  # recovery paths look for it, enqueue the agent job, and record the job id. It lived
-  # in five near-identical copies — the web follow-up form, triggers, the GitHub comment
-  # and merge-conflict pollers, and the heartbeat sweep — so every fix to the delivery
-  # path had to be made five times. The heartbeat sweep said so in a comment.
+  # Drop the stale per-turn state, transition to running, stamp the prompt where the
+  # recovery paths look for it, enqueue the agent job, and record the job id. That
+  # sequence lived in five near-identical copies — the web follow-up form, triggers, the
+  # GitHub comment and merge-conflict pollers, and the heartbeat sweep — so every fix to
+  # the delivery path had to be made five times. The heartbeat sweep said so in a comment.
+  # Those five now share this one copy.
+  #
+  # Two direct-delivery paths deliberately do NOT route here, and it is worth knowing
+  # which: `Api::V1::SessionsController#follow_up` (which never stamped
+  # `pending_follow_up_prompt` and would change behaviour if it started) and
+  # `EnqueuedMessageProcessorService` (which delivers a message it has already claimed
+  # from a queue, under different locking). #105 is not fully closed by this method.
   #
   # Callers keep what is genuinely theirs (validation, logging, broadcasting) and pass
   # only what differs. The prompt is stamped AFTER the state transition, so a reader who
   # sees `pending_follow_up_prompt` is guaranteed to also see `running`.
+  #
+  # The sequence is not atomic end to end: `resume!` runs state-machine callbacks that
+  # rewrite `metadata` whole-column (`clear_pending_sleep`, `clear_paused_by_metadata`),
+  # between the two merges here. Each individual write is atomic; a key another writer
+  # sets during the transition itself can still be lost.
   #
   # @param prompt [String] the prompt to deliver
   # @param clear_metadata_keys [Array<String>] stale metadata keys to drop first
@@ -707,8 +718,12 @@ class Session < ApplicationRecord
   # @param files [Array, nil] file paths forwarded to the job
   # @return [ActiveJob::Base] the enqueued job
   def deliver_follow_up!(prompt, clear_metadata_keys: [], metadata_updates: {}, stamp_pending_prompt: true, images: nil, files: nil)
-    stale = Array(clear_metadata_keys).select { |key| metadata&.dig(key).present? }
-    remove_metadata!(stale) if stale.any?
+    # Clear the whole set once any member of it is present, rather than clearing only
+    # the present members. That is what the five call sites did, and the difference is
+    # real: a key held as `false`, `""` or `[]` is not `present?`, so per-key filtering
+    # would leave it behind for the next turn to read.
+    stale = Array(clear_metadata_keys)
+    remove_metadata!(stale) if stale.any? { |key| metadata&.dig(key).present? }
 
     resume! if may_resume?
 
@@ -721,9 +736,22 @@ class Session < ApplicationRecord
     # a window in which a delayed or dead job leaves the session stuck with no feedback,
     # and orphan detection has nothing to look at.
     job = AgentSessionJob.enqueue_with_prompt(id, prompt, images: images, files: files)
-    # `try`: ActiveJob returns false when a callback aborts the enqueue, and there is no
-    # job to point the session at in that case.
-    update!(running_job_id: job.try(:job_id)) if job.try(:job_id).present?
+    job_id = job.try(:job_id)
+
+    if job_id.present?
+      update!(running_job_id: job_id)
+    else
+      # ActiveJob's contract lets `perform_later` return false when a callback aborts
+      # the enqueue. No job registers such a callback today, so this is unreachable
+      # rather than tolerated — but if it ever fires, the session is left `running` with
+      # a stamped prompt, no job, and nothing for orphan detection to find. Say so
+      # loudly instead of returning quietly; no caller inspects the return value.
+      Rails.logger.error(
+        "[Session#deliver_follow_up!] Session #{id} was resumed but AgentSessionJob.enqueue_with_prompt " \
+        "returned no job id — the session is running with no tracked job"
+      )
+    end
+
     job
   end
 

@@ -1062,14 +1062,18 @@ Tracked in [#281](https://github.com/tadasant/zimmer/issues/281).
 
 ### Not every session `metadata` writer is atomic
 
-The writers on the hot paths — the monitoring loop, follow-up delivery, the interrupt flag, the GitHub
-pollers, the transcript hooks — merge in PostgreSQL as one statement and so cannot erase keys they did
-not name. See [Metadata races](/sessions/spawning/#metadata-races).
+Most writers — follow-up delivery, the interrupt flag, the spawn and respawn `process_pid` writes,
+the retry counters, the GitHub pollers, the transcript hooks — merge in PostgreSQL as one statement
+and so cannot erase keys they did not name. See [Metadata races](/sessions/spawning/#metadata-races).
 
-The terminal failure paths (`failure_reason`, `exit_status`, and friends) still rebuild the whole
-column from a snapshot. Nothing correctness-critical is lost there — the session is being failed at
-that point — but the shape remains, so a key written concurrently with a session failing can still
-disappear. And no amount of atomic merging serializes two writers of the *same* key.
+Three groups still rebuild the whole column from a snapshot. The terminal failure paths
+(`failure_reason`, `exit_status`, and friends) — nothing correctness-critical is lost there, since the
+session is being failed at that point. The `resume!` state-machine callbacks, which use
+`update_column` and fire no callbacks today. And `TranscriptPollerService`, which batches `metadata`
+in with `transcript` and `last_timeline_entry_at` on every poll of a live turn — the most frequent
+metadata writer there is, and the reason `interrupt_terminate_pid` is harder to lose than it was
+rather than impossible to lose. No amount of atomic merging serializes two writers of the *same* key
+either.
 
 Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
 

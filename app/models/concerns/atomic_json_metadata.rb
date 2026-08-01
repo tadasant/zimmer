@@ -32,6 +32,11 @@
 #     recording why it failed.
 #   - `after_update_commit` broadcast callbacks do not fire on their own, so this
 #     concern re-dispatches the same two broadcasts explicitly, after commit.
+#
+# One thing a caller must know: unsaved changes to the column being merged are
+# DISCARDED. The row is rewritten from what PostgreSQL holds, and the in-memory
+# attribute is then overwritten with the result. Pass every change you want kept in
+# `updates` — do not assign the column and then merge.
 module AtomicJsonMetadata
   extend ActiveSupport::Concern
 
@@ -78,8 +83,16 @@ module AtomicJsonMetadata
 
     updates = (updates || {}).stringify_keys
     remove = Array(remove).map(&:to_s).uniq
-    before = public_send(column) || {}
-    return before if updates.empty? && remove.empty?
+    return public_send(column) || {} if updates.empty? && remove.empty?
+
+    # The broadcast baseline is the value as the DATABASE handed it over, not the
+    # attribute reader. They are not the same thing: a caller that mutates the stored
+    # hash in place before merging — McpStatusPersisting does exactly this, editing
+    # `custom_metadata["mcp_servers_status"]` and then passing it back — has already
+    # changed what the reader returns, so comparing against it reports "nothing
+    # changed" and swallows the broadcast. `attribute_in_database` re-deserializes the
+    # value this object was loaded with, which in-place mutation cannot reach.
+    before = attribute_in_database(name) || {}
 
     touched_at = Time.current
     merged = execute_json_merge(name, updates, remove, touched_at)

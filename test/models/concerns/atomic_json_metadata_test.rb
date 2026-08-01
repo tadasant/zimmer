@@ -163,6 +163,25 @@ class AtomicJsonMetadataTest < ActiveSupport::TestCase
     @session.merge_custom_metadata!("github_pull_request_urls" => [ "https://github.com/o/r/pull/1" ])
   end
 
+  # The before/after comparison that decides whether to broadcast has to be measured
+  # against the DATABASE's value, not the attribute reader. McpStatusPersisting edits
+  # `custom_metadata["mcp_servers_status"]` in place and then passes the same object
+  # back, so a reader-based comparison sees "nothing changed" and eats the broadcast —
+  # the MCP indicators on an open session page then freeze until a manual reload.
+  test "merging a hash the caller mutated in place still broadcasts" do
+    @session.update!(custom_metadata: { "mcp_servers_status" => { "a" => { "status" => "pending" } } })
+
+    status = @session.custom_metadata["mcp_servers_status"]
+    status["a"] = { "status" => "connected" }
+
+    @session.expects(:broadcast_update_to_sessions_index).once
+    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: true).once
+
+    @session.merge_custom_metadata!("mcp_servers_status" => status)
+
+    assert_equal({ "a" => { "status" => "connected" } }, @session.reload.custom_metadata["mcp_servers_status"])
+  end
+
   test "merging mcp_servers_status flags the status change for the header broadcast" do
     @session.expects(:broadcast_update_to_sessions_index).once
     @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: true).once

@@ -3802,7 +3802,7 @@ class SessionTest < ActiveSupport::TestCase
       "running_job_id closes the window where a session is running with no tracked job"
   end
 
-  test "deliver_follow_up! clears only the stale keys that are actually present" do
+  test "deliver_follow_up! clears the stale keys and leaves everything else alone" do
     session = sessions(:needs_input)
     session.update!(metadata: {
       "sigterm_retry_count" => 2,
@@ -3816,6 +3816,27 @@ class SessionTest < ActiveSupport::TestCase
     assert_nil session.metadata["sigterm_retry_count"]
     assert_nil session.metadata["last_sigterm_at"]
     assert_equal "/tmp/clone", session.metadata["clone_path"], "unrelated metadata must survive"
+  end
+
+  # The call sites this replaced cleared the WHOLE stale set once any member was
+  # present. Filtering to the `present?` members instead would strand a key held as
+  # `[]`, `false` or `""` — not present, but very much still there for the next turn to
+  # read back.
+  test "deliver_follow_up! clears blank-but-set stale keys along with the rest" do
+    session = sessions(:needs_input)
+    session.update!(metadata: {
+      "sigterm_retry_count" => 2,
+      "sigterm_retry_timestamps" => [],
+      "clone_path" => "/tmp/clone"
+    })
+
+    session.deliver_follow_up!("please continue", clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+
+    session.reload
+    refute session.metadata.key?("sigterm_retry_timestamps"),
+      "an empty-array retry list is still stale state and must go with the counter"
+    assert_nil session.metadata["sigterm_retry_count"]
+    assert_equal "/tmp/clone", session.metadata["clone_path"]
   end
 
   test "deliver_follow_up! merges extra metadata alongside the prompt" do
