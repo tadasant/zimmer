@@ -247,11 +247,22 @@ class ClaudeAccount < ApplicationRecord
     return nil unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 
     config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-    oauth_account = config["oauthAccount"]
-    return nil if oauth_account.blank?
-    oauth_account.is_a?(Hash) ? oauth_account["emailAddress"] : oauth_account
+    extract_oauth_email(config["oauthAccount"])
   rescue JSON::ParserError
     nil
+  end
+
+  # Extracts the email from a ~/.claude.json `oauthAccount` value, which the CLI
+  # writes either as a plain string (legacy format) or as a Hash carrying
+  # "emailAddress" (current format).
+  #
+  # The single implementation of that shape check: AccountRotationService and
+  # ClaudeLoginDriver call this rather than keeping their own copies, so a third CLI
+  # format can never be handled by two of the three and missed by the last.
+  def self.extract_oauth_email(oauth_account)
+    return nil if oauth_account.blank?
+
+    oauth_account.is_a?(Hash) ? oauth_account["emailAddress"] : oauth_account
   end
 
   def has_valid_config?
@@ -591,10 +602,10 @@ class ClaudeAccount < ApplicationRecord
   # tokens be grafted onto another account's row.
   #
   # When no marker exists yet (the brief window after a deploy, before Zimmer has
-  # written credentials once) we fall back to the legacy ~/.claude.json identity
-  # check so token capture keeps working during the transition. The completeness
-  # guard below runs in BOTH cases, so a refresh-token-less set can never be
-  # adopted regardless of which gate authorized the identity.
+  # written credentials once) the sync is skipped outright — there is deliberately
+  # no fallback to the container-local ~/.claude.json, which is the very file whose
+  # cross-container divergence caused the contamination. Zimmer converges the marker
+  # into existence on the next credential write, and the sync resumes then.
   #
   # Rejects filesystem credentials missing accessToken or refreshToken: the
   # Claude CLI rewrites this file to manage MCP OAuth state, and on rare occasions
@@ -621,22 +632,38 @@ class ClaudeAccount < ApplicationRecord
   # then stamps the credentials-owner marker so every later reader knows whose
   # tokens are on disk.
   #
+  # This account's stored blob is merged into what is already on disk rather than
+  # replacing it, under the shared credential-store lock — ~/.claude/.credentials.json
+  # has more than one writer and this one owns only the login tokens. See
+  # ClaudeCredentialStore and #credentials_blob_for_disk.
+  #
   # Refuses to write an incomplete credential set: clobbering the shared file with
   # a refresh-token-less blob would erase the refresh token from disk and, on the
   # next sync, from the DB — exactly the failure that bricked the pool.
+  #
+  # @return [Boolean] true when credentials were written, false when refused
   def write_credentials_to_filesystem!
     credentials_json = oauth_config&.dig("credentials_json")
-    return unless credentials_json.present?
+    return false unless credentials_json.present?
 
     unless self.class.complete_claude_oauth?(credentials_json)
       Rails.logger.warn "[ClaudeAccount] Refusing to write incomplete credentials to filesystem for #{email} (missing accessToken or refreshToken)"
-      return
+      return false
     end
 
-    credentials_dir = File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
-    FileUtils.mkdir_p(credentials_dir)
-    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.pretty_generate(credentials_json))
-    self.class.write_credentials_owner_marker!(email)
+    path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
+    ClaudeCredentialStore.with_lock(path) do
+      on_disk = ClaudeCredentialStore.read(path)
+      ClaudeCredentialStore.write_atomically(path, credentials_blob_for_disk(credentials_json, on_disk))
+      # Inside the lock: the marker must describe the tokens that are on disk. Two
+      # accounts written concurrently (the web and worker containers both converge
+      # the filesystem) could otherwise land credentials A, credentials B, marker B,
+      # marker A — a marker naming an account whose tokens are not there, which is
+      # how one account's tokens get grafted onto another's row.
+      self.class.write_credentials_owner_marker!(email)
+    end
+
+    true
   end
 
   # --- Codex identity accessors (used by CodexAuthProvider for fs reconciliation) ---
@@ -708,6 +735,41 @@ class ClaudeAccount < ApplicationRecord
     TRANSIENT_REFRESH_ERRORS.any? { |klass| error.is_a?(klass) }
   end
 
+  # The blob to write to the shared credentials file: this account's stored
+  # credentials layered over whatever is on disk, with the `mcpOAuth` map left
+  # exactly as found.
+  #
+  # ClaudeMcpCredentialWriter owns that map. It is per-host MCP OAuth state, not
+  # per-account login state, and this account's DB copy of it is nothing more than
+  # whatever happened to be on disk the last time sync_tokens_from_filesystem! ran
+  # (that method captures the whole file). Writing the DB copy back would drop
+  # every entry authorized since — the user meets this as "the agent says it needs
+  # to authorize this server again" after a rotation — and could resurrect entries
+  # McpOauthCredential deliberately deleted (see
+  # ClaudeMcpCredentialWriter#delete_credentials).
+  #
+  # `mcpOAuth` is the only block carved out. On-disk keys the DB copy does not
+  # carry survive because this is a merge rather than a replacement, but for a key
+  # present in both, the account's copy wins: the point of the write is to make the
+  # file describe THIS account, and guessing the other way for a future
+  # account-scoped block would leave the previous account's data on disk — the
+  # contamination the owner marker exists to prevent. A host-scoped block Zimmer
+  # does not know about is the milder mistake, and the fix is to name it here.
+  #
+  # @param stored [Hash] credentials_json from oauth_config
+  # @param on_disk [Hash] the current parsed contents of the credentials file
+  def credentials_blob_for_disk(stored, on_disk)
+    merged = on_disk.merge(stored)
+
+    if on_disk.key?("mcpOAuth")
+      merged["mcpOAuth"] = on_disk["mcpOAuth"]
+    else
+      merged.delete("mcpOAuth")
+    end
+
+    merged
+  end
+
   # True when the shared ~/.claude/.credentials.json belongs to this account,
   # per the shared credentials-owner marker.
   #
@@ -724,13 +786,6 @@ class ClaudeAccount < ApplicationRecord
 
     Rails.logger.info "[ClaudeAccount] Skipping filesystem sync for #{email}: shared credentials owner is #{owner.inspect}"
     false
-  end
-
-  # Extracts the email from an oauthAccount value, which can be a plain string
-  # (legacy CLI format) or a Hash with "emailAddress" (current CLI format).
-  def extract_oauth_email(oauth_account)
-    return nil if oauth_account.blank?
-    oauth_account.is_a?(Hash) ? oauth_account["emailAddress"] : oauth_account
   end
 
   # Standard OAuth error codes that indicate the refresh token is permanently invalid

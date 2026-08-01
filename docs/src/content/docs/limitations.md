@@ -700,34 +700,6 @@ Tracked in [#58](https://github.com/tadasant/zimmer/issues/58). None of this can
 no public API to fix it against — so the issue asks for a canary that fails loudly when one of these
 facts stops being true.
 
-### The owner-marker "legacy fallback" doesn't exist
-
-`docs/AUTH_ROTATION_ARCHITECTURE.html` (invariant I2) and the docstring on
-`ClaudeAccount#sync_tokens_from_filesystem!` both describe a *"legacy `~/.claude.json` fallback while no
-marker exists yet."*
-
-`filesystem_credentials_owned_by_self?` has no fallback (no marker means refuse to sync), and its
-own comment says so, contradicting the docstring 100 lines above it.
-
-Tracked in [#59](https://github.com/tadasant/zimmer/issues/59).
-
-### One credential file, two writers
-
-`ClaudeAccount#write_credentials_to_filesystem!` whole-file overwrites `.credentials.json`;
-`ClaudeMcpCredentialWriter` read-merges `mcpOAuth` into the same file. An account rotation drops any
-`mcpOAuth` entries written after the incoming account's blob was captured. It self-heals on the next
-spawn, but it's an undeclared coupling.
-
-Tracked in [#60](https://github.com/tadasant/zimmer/issues/60).
-
-### `extract_oauth_email` exists four times
-
-`ClaudeAccount.filesystem_oauth_email` (class), `ClaudeAccount#extract_oauth_email` (dead code —
-nothing calls it, yet `CLAUDE_CODE_OAUTH_ASSUMPTIONS.md` pointed readers at it),
-`AccountRotationService#extract_oauth_email`, `ClaudeLoginDriver#extract_email`.
-
-Tracked in [#59](https://github.com/tadasant/zimmer/issues/59).
-
 ### The rotation safety check fails open
 
 `account_rotation_service.rb:437` — `return true if stored_config.blank? # Can't verify, assume ok`.
