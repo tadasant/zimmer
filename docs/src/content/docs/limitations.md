@@ -985,6 +985,20 @@ Step away for a coffee and the agent's approval request dies. Not configurable.
 
 Tracked in [#75](https://github.com/tadasant/zimmer/issues/75).
 
+### A session's slug is claimed by retry, not by construction
+
+`Session#generate_slug_from_title!` builds `title-yyyymmdd-hhmm` and, when that is taken, appends
+`-1`, `-2`, and so on. The timestamp is minute-granular and a session with no transcript yet takes its
+title from the prompt, so every session a trigger spawns in the same minute computes a byte-identical
+base slug. Picking a free suffix by reading first is check-then-act, so the losing writer finds out
+from `index_sessions_on_slug`; it advances the counter and re-attempts, up to `MAX_SLUG_ATTEMPTS`
+(10).
+
+That bound is the sharp edge. Ten simultaneous same-minute writers is far past anything observed — the
+worst real burst was two — but a session that exhausts it keeps a `nil` slug, so it is addressable
+only by numeric id, and `SessionTitleJob#apply_title` aborts before writing its title-generation log
+entry. Nothing retries it later.
+
 ### Orphaned clones linger for up to 48 hours
 
 `OrphanCloneFilesystemCleanupJob` — `AGE_THRESHOLD = 48.hours`, `BATCH_LIMIT = 20`.
