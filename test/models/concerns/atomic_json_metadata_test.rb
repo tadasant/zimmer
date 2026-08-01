@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 # Every test here is a lost-update scenario: one writer holds a snapshot of the row
 # taken BEFORE another writer set a key, then writes. The old whole-column
@@ -135,6 +136,45 @@ class AtomicJsonMetadataTest < ActiveSupport::TestCase
     assert_equal "kept", @session.metadata[hostile]
     assert_nil @session.metadata["doomed"]
     assert_equal 111, @session.metadata["process_pid"]
+  end
+
+  # A raw UPDATE fires no after_update_commit, so the concern re-dispatches the
+  # broadcasts by hand. Missing one is invisible in a unit test and shows up as a card
+  # that silently stops updating in someone's browser — GithubPrTrackingTest caught
+  # exactly that for the index card. These pin all three.
+  test "merging metadata re-broadcasts the session card on the index" do
+    @session.expects(:broadcast_update_to_sessions_index).once
+    @session.expects(:broadcast_metadata_change).never
+
+    @session.merge_metadata!("process_pid" => 888)
+  end
+
+  test "merging a displayed metadata field also re-broadcasts the metadata partial" do
+    @session.expects(:broadcast_update_to_sessions_index).once
+    @session.expects(:broadcast_metadata_change).once
+
+    @session.merge_metadata!("failure_reason" => "spawn_failed")
+  end
+
+  test "merging custom_metadata re-broadcasts the index card and the header actions" do
+    @session.expects(:broadcast_update_to_sessions_index).once
+    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: false).once
+
+    @session.merge_custom_metadata!("github_pull_request_urls" => [ "https://github.com/o/r/pull/1" ])
+  end
+
+  test "merging mcp_servers_status flags the status change for the header broadcast" do
+    @session.expects(:broadcast_update_to_sessions_index).once
+    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: true).once
+
+    @session.merge_custom_metadata!("mcp_servers_status" => { "a" => { "status" => "connected" } })
+  end
+
+  test "a merge that changes nothing broadcasts nothing" do
+    @session.expects(:broadcast_update_to_sessions_index).never
+    @session.expects(:broadcast_custom_metadata_change).never
+
+    @session.merge_metadata!("process_pid" => 111)
   end
 
   test "merge rejects a column that is not a mergeable JSON column" do

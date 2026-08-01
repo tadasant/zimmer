@@ -120,19 +120,33 @@ module AtomicJsonMetadata
     value.is_a?(String) ? JSON.parse(value) : (value || {})
   end
 
-  # A raw UPDATE skips `after_update_commit`, so re-dispatch the two broadcasts those
-  # callbacks own — with the before/after pair passed explicitly, since
-  # `saved_change_to_*` knows nothing about a write that didn't go through the model.
+  # A raw UPDATE fires no `after_update_commit`, so re-dispatch every broadcast Session
+  # hangs off a JSON-column change. There are three, and missing one is invisible until a
+  # card silently stops updating in someone's browser:
+  #
+  #   1. the session card on the index — `should_broadcast_to_index?` treats ANY
+  #      `metadata` / `custom_metadata` change as broadcast-worthy;
+  #   2. the metadata partial on the detail page — only when a displayed field changed;
+  #   3. the header actions on the detail page (the GitHub PR link) — any
+  #      `custom_metadata` change.
+  #
+  # The before/after pair is passed explicitly because `saved_change_to_*` knows nothing
+  # about a write that did not go through the model.
+  #
+  # If a future `after_update_commit` keys on either column, it belongs here too.
   def broadcast_json_merge(column, before, after)
     return if before == after
 
-    if column == :metadata
-      return unless metadata_display_fields_changed?(before, after)
+    metadata_column = column == :metadata
+    display_changed = metadata_column && metadata_display_fields_changed?(before, after)
+    mcp_status_changed = !metadata_column &&
+      before&.dig("mcp_servers_status") != after&.dig("mcp_servers_status")
 
-      ActiveRecord.after_all_transactions_commit { broadcast_metadata_change }
-    else
-      mcp_status_changed = before&.dig("mcp_servers_status") != after&.dig("mcp_servers_status")
-      ActiveRecord.after_all_transactions_commit do
+    ActiveRecord.after_all_transactions_commit do
+      broadcast_update_to_sessions_index
+      if metadata_column
+        broadcast_metadata_change if display_changed
+      else
         broadcast_custom_metadata_change(mcp_status_changed: mcp_status_changed)
       end
     end
