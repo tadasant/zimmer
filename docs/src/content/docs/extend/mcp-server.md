@@ -157,6 +157,22 @@ The action tools are verb-multiplexers: `action_session` takes an `action` enum 
 `create` / `update` / `delete` / `toggle`, and so on. `tools/list` carries the full schema for each —
 ask the server rather than trusting this table.
 
+`action_trigger` reaches parity with the conditions the triggers form and the REST API can express.
+A Trigger ORs its conditions, and a single `trigger_type` + `configuration` pair can only describe
+one of them — so a trigger that must fire on more than one thing (a Slack passive listener carrying
+both `passive_listen_thread` and `passive_listen_channel`, say) also accepts a `conditions` array of
+`{trigger_type, configuration}` objects. The flat pair still works unchanged for the
+single-condition case; sending both is rejected rather than guessed at.
+
+On `update`, `conditions` **upserts**: an element with an `id` edits that condition, one without
+appends, and an existing condition the array does not mention is left alone. Deleting one is
+explicit (`{"id": 123, "remove": true}`). That asymmetry is deliberate — a Slack condition's
+`configuration` holds the poller's only copy of its cursors
+(`TriggerCondition::SLACK_POLL_STATE_KEYS`), which `preserve_slack_poll_state` keeps by merging back
+the keys an incoming configuration omits. Replace semantics would destroy the row and its cursors
+with it, silently re-baselining a live trigger. `search_triggers` prints each condition's id, which
+is what the array addresses.
+
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
 `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`, `set_blocked`,

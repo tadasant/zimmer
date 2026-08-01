@@ -4,12 +4,27 @@ module Mcp
   module Tools
     # Mirrors POST/PATCH/DELETE /api/v1/triggers and POST /api/v1/triggers/:id/toggle.
     #
-    # The REST endpoint only accepts conditions in the nested
-    # `trigger_conditions_attributes` shape; this tool keeps the flatter
-    # `trigger_type` + `configuration` contract the model-facing schema has always
-    # exposed and folds it into a single condition. On update the existing
-    # condition's id is resolved first so `accepts_nested_attributes_for` modifies
-    # it in place instead of appending a duplicate.
+    # Two ways to express a trigger's conditions, because a Trigger ORs its
+    # conditions and the flat contract can only describe one of them:
+    #
+    # - Flat: `trigger_type` + `configuration`, folded into a single condition. This
+    #   is what the schema has always exposed and what live callers send, so it must
+    #   keep behaving exactly as it did. On update the existing condition's id is
+    #   resolved first so `accepts_nested_attributes_for` modifies it in place
+    #   instead of appending a duplicate.
+    # - `conditions`: an array, reaching the parity the UI and the REST API already
+    #   have. On update it is an UPSERT, never a replace — an element carrying an
+    #   `id` edits that row, one without appends, and an existing row the array does
+    #   not mention is left alone unless it is explicitly sent with `remove: true`.
+    #
+    # The upsert semantics are not a stylistic choice. Every Slack condition carries
+    # live poller cursors inside its `configuration`
+    # (TriggerCondition::SLACK_POLL_STATE_KEYS: channel_timestamps,
+    # thread_timestamps, bot_activity_timestamps, participating_threads,
+    # dm_timestamps — plus allowed_user_ids), which `preserve_slack_poll_state`
+    # keeps only by merging back the keys an incoming configuration OMITS. A replace
+    # would destroy the row and take its cursors with it, silently re-baselining a
+    # live trigger; an omitted-means-untouched upsert cannot.
     class ActionTrigger < Tool
       ACTIONS = %w[create update delete toggle].freeze
       TRIGGER_TYPES = %w[slack schedule github_label github_issue].freeze
@@ -25,6 +40,23 @@ module Mcp
         - **update**: Update an existing trigger (requires "id")
         - **delete**: Delete a trigger (requires "id")
         - **toggle**: Enable/disable a trigger (requires "id")
+
+        **Conditions (OR semantics):** a trigger fires when ANY of its conditions matches.
+        Two ways to say so:
+        - **One condition:** send `trigger_type` + `configuration` at the top level, as always.
+        - **Several conditions:** send `conditions` — an array of `{trigger_type, configuration}`
+          objects. Use this for a trigger that must fire on more than one thing, e.g. a Slack
+          passive listener carrying both `passive_listen_thread` and `passive_listen_channel`.
+          `conditions` and the flat `trigger_type`/`configuration` pair are mutually exclusive.
+
+        On **update**, `conditions` is an upsert, not a replacement:
+        - An element with an `id` updates that condition. Omit `configuration` to leave it
+          untouched; send one to replace it (keys the Slack poller owns — cursors and
+          `allowed_user_ids` — survive an update that omits them).
+        - An element without an `id` adds a new condition.
+        - An existing condition the array does not mention is **left alone**. To delete one,
+          send `{"id": 123, "remove": true}`.
+        Use search_triggers to read a trigger's existing condition ids.
 
         **Trigger types:**
         - **slack**: Triggered by Slack events (requires configuration with channel_id)
@@ -90,7 +122,38 @@ module Mcp
           },
           configuration: {
             type: "object",
-            description: "Type-specific configuration (schedule, Slack channel, etc.)."
+            description: "Type-specific configuration (schedule, Slack channel, etc.). " \
+                         "For a single-condition trigger; use \"conditions\" for several."
+          },
+          conditions: {
+            type: "array",
+            description: "Conditions for a trigger that fires on more than one thing (OR semantics). " \
+                         "Mutually exclusive with the top-level trigger_type/configuration pair. " \
+                         "On update this UPSERTS: an element with an id edits that condition, one " \
+                         "without adds a condition, and an existing condition missing from the array " \
+                         "is left untouched (send remove: true to delete one).",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "number",
+                  description: "Existing condition id to update or remove. Omit to add a new condition."
+                },
+                trigger_type: {
+                  type: "string",
+                  enum: TRIGGER_TYPES,
+                  description: "Condition type. Required when adding a condition."
+                },
+                configuration: {
+                  type: "object",
+                  description: "Type-specific configuration. Omit on an update to leave the existing one as is."
+                },
+                remove: {
+                  type: "boolean",
+                  description: "Delete this condition. Requires id."
+                }
+              }
+            }
           }
         },
         required: [ "action" ]
@@ -109,14 +172,21 @@ module Mcp
       private
 
       def create(args)
-        %w[name trigger_type agent_root_name prompt_template].each do |key|
+        # trigger_type describes the trigger's ONE condition, so it is required only
+        # when the caller is using the flat single-condition contract; a conditions
+        # array carries a type per element instead.
+        required = %w[name agent_root_name prompt_template]
+        required << "trigger_type" if args["conditions"].blank?
+
+        required.each do |key|
           if args[key].blank?
-            raise ToolError, '"name", "trigger_type", "agent_root_name", and "prompt_template" ' \
-                             'are required for the "create" action.'
+            raise ToolError, '"name", "agent_root_name", and "prompt_template" are required for the ' \
+                             '"create" action, plus either "trigger_type" or a "conditions" array.'
           end
         end
 
         enforce_allowed_root!(args["agent_root_name"])
+        reject_conflicting_condition_args!(args)
 
         trigger = Trigger.new(
           name: args["name"],
@@ -127,9 +197,7 @@ module Mcp
           reuse_session: args.fetch("reuse_session", false),
           max_sessions_per_minute: args["max_sessions_per_minute"].presence,
           mcp_servers: args["mcp_servers"] || [],
-          trigger_conditions_attributes: [
-            { condition_type: args["trigger_type"], configuration: args["configuration"] || {} }
-          ]
+          trigger_conditions_attributes: created_condition_attributes(args)
         )
         trigger.save!
 
@@ -142,6 +210,8 @@ module Mcp
           - **Status:** #{trigger.status}
           - **Agent Root:** #{trigger.agent_root_name}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
+
+          #{condition_detail(trigger)}
         TEXT
       end
 
@@ -166,11 +236,16 @@ module Mcp
         # "no opinion", never "clear the trigger's servers".
         attributes[:mcp_servers] = args["mcp_servers"] if args["mcp_servers"].is_a?(Array)
 
-        if args["trigger_type"].present? || args["configuration"].present?
+        reject_conflicting_condition_args!(args)
+
+        if args["conditions"].present?
+          attributes[:trigger_conditions_attributes] = upserted_condition_attributes(trigger, args["conditions"])
+        elsif args["trigger_type"].present? || args["configuration"].present?
           attributes[:trigger_conditions_attributes] = updated_condition_attributes(trigger, args)
         end
 
         trigger.update!(attributes)
+        trigger.trigger_conditions.reload
 
         <<~TEXT.strip
           ## Trigger Updated
@@ -179,6 +254,8 @@ module Mcp
           - **Name:** #{trigger.name}
           - **Status:** #{trigger.status}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
+
+          #{condition_detail(trigger)}
         TEXT
       end
 
@@ -205,6 +282,69 @@ module Mcp
           - **Name:** #{trigger.name}
           - **New Status:** #{trigger.status}
         TEXT
+      end
+
+      # The flat pair and the array describe the same thing two different ways, so
+      # accepting both would mean guessing which one the caller meant.
+      def reject_conflicting_condition_args!(args)
+        return if args["conditions"].blank?
+        return if args["trigger_type"].blank? && args["configuration"].blank?
+
+        raise ToolError, '"conditions" cannot be combined with the top-level "trigger_type"/' \
+                         '"configuration" pair — send one or the other.'
+      end
+
+      def created_condition_attributes(args)
+        return [ { condition_type: args["trigger_type"], configuration: args["configuration"] || {} } ] if args["conditions"].blank?
+
+        args["conditions"].map.with_index do |condition, index|
+          type = condition["trigger_type"].presence
+          raise ToolError, "conditions[#{index}] is missing \"trigger_type\"." if type.nil?
+
+          { condition_type: type, configuration: condition["configuration"] || {} }
+        end
+      end
+
+      # Fold an incoming conditions array into nested attributes, as an upsert.
+      #
+      # An element with an id edits that row, an element without one appends, and a
+      # row the array never mentions is simply not in the result — so
+      # accepts_nested_attributes_for leaves it alone. Removal is explicit
+      # (`remove: true`) because omission has to stay safe: these rows hold the Slack
+      # poller's only copy of its cursors.
+      #
+      # `configuration` is likewise assigned only when the caller sent one. Omitting
+      # it means "leave this condition's configuration as it is", which keeps the
+      # narrowest possible write — the same reason preserve_slack_poll_state merges
+      # on absence rather than on a sentinel.
+      def upserted_condition_attributes(trigger, conditions)
+        existing_ids = trigger.trigger_conditions.map(&:id)
+
+        conditions.map.with_index do |condition, index|
+          id = condition["id"].presence&.to_i
+
+          if id && !existing_ids.include?(id)
+            raise ToolError, "conditions[#{index}] references condition #{id}, which does not belong " \
+                             "to trigger #{trigger.id} (its conditions are: #{existing_ids.join(', ')})."
+          end
+
+          if condition["remove"]
+            raise ToolError, "conditions[#{index}] sets \"remove\" without an \"id\"." if id.nil?
+            next { id: id, _destroy: true }
+          end
+
+          type = condition["trigger_type"].presence
+          if id.nil? && type.nil?
+            raise ToolError, "conditions[#{index}] is missing \"trigger_type\" — it is required when " \
+                             "adding a condition (send an \"id\" to update an existing one)."
+          end
+
+          attributes = {}
+          attributes[:id] = id if id
+          attributes[:condition_type] = type if type
+          attributes[:configuration] = condition["configuration"] if condition.key?("configuration")
+          attributes
+        end
       end
 
       # Resolve which existing condition the flat trigger_type/configuration pair
@@ -256,6 +396,17 @@ module Mcp
       def condition_types_summary(trigger)
         types = trigger.trigger_conditions.map(&:condition_type).uniq
         types.any? ? types.join(", ") : "(none)"
+      end
+
+      # Condition ids and descriptions, so a caller can address a specific condition
+      # on its next update without a round trip through search_triggers.
+      def condition_detail(trigger)
+        conditions = trigger.trigger_conditions.to_a
+        return "" if conditions.empty?
+
+        lines = [ "### Conditions" ]
+        conditions.each { |condition| lines << "- **[id #{condition.id}] #{condition.condition_type}** — #{condition.description}" }
+        lines.join("\n")
       end
     end
   end
