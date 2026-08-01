@@ -19,6 +19,17 @@ Rails.application.config.after_initialize do
   # Only check in server or worker contexts
   next unless defined?(Rails::Server) || ENV["GOOD_JOB_EXECUTION_MODE"] == "external"
 
+  # An instance that isn't allowed to page the alert channel has no alert
+  # configuration to be wrong about — the environment gate, not a missing
+  # credential, is why it stays quiet. Say which, so the two are never confused.
+  unless AlertService.enabled?
+    Rails.logger.info(
+      "[AlertServiceHealthCheck] Alerting is disabled in #{Rails.env} — alerts are logged, not posted. " \
+      "Set #{AlertService::ALERTS_ENABLED_ENV_VAR}=true to page from this instance."
+    )
+    next
+  end
+
   unless AlertService.configured?
     details = AlertService.missing_configuration_details
 

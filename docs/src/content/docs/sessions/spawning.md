@@ -78,7 +78,7 @@ Shared scrubbing (`CliSpawnEnv`):
 - Loads a per-clone `.env` file if present (1 MB cap).
 - Clears inherited env vars — `DATABASE_*`, `RAILS_ENV`, `GEM_*`, `RUBY*`, and a sweep of
   everything prefixed `BUNDLE*`. Without this the agent would inherit Zimmer's own database
-  credentials and Ruby toolchain. Three secrets are cleared for their own reasons:
+  credentials and Ruby toolchain. Four values are cleared for their own reasons:
   `ZIMMER_OPERATOR_SSH_KEY` (the agent gets the key's *path*, not its material),
   `ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (the
   [Parameter Store](/operate/secrets-parameter-store/) resolver credential — Zimmer resolves
@@ -86,7 +86,10 @@ Shared scrubbing (`CliSpawnEnv`):
   itself never needs a key that reads every production secret value), and
   `SENTRY_DSN_BACKEND` (the production error DSN — an agent running `bin/rails` in a clone
   would otherwise report that clone's exceptions as
-  [production errors](/operate/observability/#only-production-and-staging-may-report)).
+  [production errors](/operate/observability/#only-production-and-staging-may-report)), and
+  `ALERTS_ENABLED` (the explicit opt-in that overrides
+  [`AlertService`'s environment gate](/operate/background-jobs/#who-is-allowed-to-page) — an
+  instance that sets it to page must not hand that permission to every agent it spawns).
   A value in the clone's `.env` always wins.
 
   **This list is a denylist, not an allowlist.** Sessions are plain child processes of the

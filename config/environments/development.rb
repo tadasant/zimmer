@@ -99,11 +99,15 @@ Rails.application.configure do
       class: "StaleCloneCleanupJob",
       description: "Clean up stale clone directories from archived sessions"
     },
-    elicitation_endpoint_health_check: {
-      cron: "*/5 * * * *", # Every 5 minutes
-      class: "ElicitationEndpointHealthCheckJob",
-      description: "Probe the MCP approval (elicitation) endpoint agents are pointed at"
-    },
+    # ElicitationEndpointHealthCheckJob is deliberately NOT registered here (it
+    # runs in production and staging). Locally the endpoint it probes is
+    # http://localhost:PORT, so the probe measures whether this process happens
+    # to also be serving HTTP — a console, a bare worker, or a test harness fails
+    # it on every tick forever. Worse than the noise: the recorded "unreachable"
+    # status is what OrchestratorSystemPromptBuilder reads, so every locally
+    # spawned agent gets told the approval gate is down when it isn't.
+    # Unprobed reads as healthy, which is the honest default here. Run the job by
+    # hand (`ElicitationEndpointHealthCheckJob.new.perform`) to exercise it.
     github_comment_poller: {
       cron: "*/30 * * * * *", # Every 30 seconds
       class: "GithubCommentPollerJob",

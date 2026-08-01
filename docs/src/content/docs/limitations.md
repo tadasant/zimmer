@@ -112,6 +112,24 @@ alone matches staging records identically to production ones. Zimmer emits the l
 cannot enforce that the alert rules on the other side filter by it. Those rules live in a separate
 repository.
 
+### Every agent-session clone carries the Slack bot token and the alert channel id
+
+`AgentSessionJob#inject_secrets_to_env_file` writes `SecretsLoader.all` — the whole credential bundle
+— into each clone's `.env`, and that bundle includes `SLACK_BOT_TOKEN` and
+`ENG_ALERTS_SLACK_CHANNEL_ID`. Anything an agent runs inside its clone can therefore post to the real
+alert channel as the real bot. An agent's shell also has no `RAILS_ENV`, so a clone that boots Zimmer
+boots it as `development`.
+
+That combination is what fired in [#272](https://github.com/tadasant/zimmer/issues/272): a clone
+registered development's cron table, probed the approval endpoint at `http://localhost:3000` where
+nothing was listening, and paged the production channel every five minutes. Every suppressor that
+should have capped it at one message is cache-backed and swallows its own failures, so an unreachable
+cache silently removed all of them at once.
+[Only the deployed environments may page](/operate/background-jobs/#who-is-allowed-to-page), which
+closes that path. But the gate is Zimmer's own restraint, exercised by code that happens to be
+Zimmer's; it is not a scope on the credential. The token is still in the file, and nothing stops other
+code from using it.
+
 ### SSH hardening only reaches a droplet that is rebuilt
 
 SSH is now [tailnet-only](/operate/ssh-access/#ssh-is-tailnet-only): the firewall opens no public
