@@ -15,7 +15,7 @@ Conditions on a trigger are ORed. Any one firing fires the trigger.
 ```mermaid
 flowchart LR
     subgraph conditions["TriggerCondition"]
-        SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention | passive_listen)"]
+        SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention |<br/>passive_listen_thread | passive_listen_channel)"]
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
         AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived"]
         GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
@@ -37,8 +37,8 @@ flowchart LR
 
 ### `slack`
 
-Polls a channel for `new_message`, `bot_mention`, or `passive_listen`. Optionally scoped to a
-thread (`thread_ts`) and an allowlist of user IDs.
+Polls a channel for `new_message`, `bot_mention`, or one of the two passive-listening event types.
+Optionally scoped to a thread (`thread_ts`) and an allowlist of user IDs.
 
 #### Picking the channel
 
@@ -51,7 +51,7 @@ API error, or a workspace the bot isn't in — the form falls back to a manual c
 trigger can still be created, and a saved channel that is no longer in the accessible list is kept
 selected rather than silently blanked.
 
-#### Who may trigger a `bot_mention` (or a `passive_listen`)
+#### Who may trigger a `bot_mention` (or a passive listener)
 
 Three layers, most specific first:
 
@@ -77,57 +77,73 @@ workspace is larger than the circle of trust.
 :::caution[`thread_ts` doesn't work for bot mentions]
 `TriggerCondition` explicitly rejects it: *"thread_ts is not supported for bot_mention
 conditions."* You can watch a thread for new messages, but not for bot mentions. The same
-applies to `passive_listen` — both walk threads themselves.
+applies to the passive-listening types — they walk threads themselves.
 Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
 :::
 
-#### Passive listening (`passive_listen`)
+#### Passive listening (`passive_listen_thread`, `passive_listen_channel`)
 
-An @mention is how you *start* a conversation with Zimmer. `passive_listen` is how it stays in one:
+An @mention is how you *start* a conversation with Zimmer. Passive listening is how it stays in one:
 it fires on messages that continue a conversation Zimmer is already part of, with no mention
 required.
 
-It sweeps channels exactly like `bot_mention` — one channel if `channel_id` is set, otherwise every
-channel the bot is a member of — and keeps the same cursors: per-channel in `channel_timestamps`,
+It is **two** event types rather than one, because a Trigger ORs its conditions. Carry one, the
+other, or both:
+
+| Event type | Fires on | Requires | Bounded by |
+| --- | --- | --- | --- |
+| `passive_listen_thread` | A new reply in a thread | Zimmer has spoken in that thread | Nothing time-based. `RECHECK_HORIZON` (45 days) only bounds how far back a thread whose parent has scrolled out of recent history keeps being re-visited |
+| `passive_listen_channel` | A new top-level message in a channel | Zimmer has posted **at the top level** of that channel within `CHANNEL_ENGAGEMENT_WINDOW` | 6 hours |
+
+Thread replies are deliberately *not* time-bounded. A reply to a thread you are in is addressed to
+that conversation whenever it lands. A top-level message in a busy channel is not, which is why
+"recently involved" there has to be bounded by something explicit — otherwise one message months ago
+would make Zimmer a permanent listener on every message in the channel.
+
+:::note[A thread reply is not channel engagement]
+`passive_listen_channel` counts only Zimmer's **top-level** posts. A reply it left inside a thread
+makes it party to *that thread* — which is exactly what `passive_listen_thread` follows — not to
+everything else said in the channel. This is the narrower of the two readings available, chosen
+because the cost of under-firing is a message Zimmer misses and the cost of over-firing is noise in
+a channel nobody asked it into.
+:::
+
+Both sweep channels exactly like `bot_mention` — one channel if `channel_id` is set, otherwise every
+channel the bot is a member of — and keep the same cursors: per-channel in `channel_timestamps`,
 per-thread in `thread_timestamps` (`"channel_id:thread_ts" => last_reply_ts`), advanced for
-everything it fetched whether or not it fired, so a quiet spell never replays as a burst. Aged-out
-threads are re-visited under the same `MAX_TRACKED_THREAD_RECHECKS` (20 per channel per poll) and
-`RECHECK_HORIZON` (45 days) caps, reading only the tail since each thread's cursor. What changes is
-the filter: participation instead of mention.
+everything fetched whether or not it fired, so a quiet spell never replays as a burst. Aged-out
+threads are re-visited under the same `MAX_TRACKED_THREAD_RECHECKS` (20 per channel per poll) cap,
+reading only the tail since each thread's cursor. What changes is the filter: participation instead
+of mention.
+
+A `passive_listen_channel` condition never reads threads at all, and a `passive_listen_thread`
+condition never reads or writes the channel-engagement signal. Each pays only for the thread and
+history calls its own signal needs — both still sweep top-level messages per channel per poll, since
+that cursor is what a first-sight thread falls back to.
 
 Participation is answered without ever re-reading a thread's history. The first time a thread is
 seen there is no cursor, so the read returns the whole thread — that read decides participation.
 After that, every reply Zimmer has not already inspected is in the tail, and a thread it has spoken
 in is remembered in `participating_threads`, so the tail alone is enough from then on.
 
-Two sources fire:
-
-| Source | Fires when | Bounded by |
-| --- | --- | --- |
-| A new reply in a thread | Zimmer has already spoken in that thread | `RECHECK_HORIZON` (45 days) for threads whose parent has scrolled out of the recent-history window |
-| A new top-level message in a channel | Zimmer has spoken in that channel within `CHANNEL_ENGAGEMENT_WINDOW` | 24 hours |
-
-Thread replies are deliberately *not* subject to the 24-hour window. A reply to a thread you are in
-is addressed to that conversation whenever it lands. A top-level message in a busy channel is not,
-which is why "recently involved" there has to be bounded by something explicit — otherwise one
-message months ago would make Zimmer a permanent listener on every message in the channel.
-
 Channel engagement is learned from what the poll already fetches: Zimmer's own posts in the last 50
-top-level messages, and Zimmer's own messages in the threads walked that tick. The newest of those
-is remembered per channel in `bot_activity_timestamps` and only ever moves forward, so a channel
-stays engaged for the full window even through polls where nothing has moved, and a tick that
-happens to observe *older* activity can't wind it back and disengage early.
+top-level messages. The newest is remembered per channel in `bot_activity_timestamps` and only ever
+moves forward, so a channel stays engaged for the full window even through polls where nothing has
+moved, and a tick that happens to observe *older* activity can't wind it back and disengage early.
 
 The alert channel (`ENG_ALERTS_SLACK_CHANNEL_ID`) is excluded from that signal. `AlertService` posts
 there with the same token and therefore the same user ID, so one automated alert would otherwise
-mark the channel engaged and turn the next 24 hours of it into a session per message — in the one
+mark the channel engaged and turn the whole window of it into a session per message — in the one
 channel guaranteed to be noisy when things are going wrong. Threads there are unaffected: if Zimmer
-actually replied in one, that is a conversation and passive listening still follows it.
+actually replied in one, that is a conversation and `passive_listen_thread` still follows it.
 
 A thread seen for the first time has no cursor of its own and falls back to the channel's, which
 tracks *top-level* messages — in a channel whose conversation lives in threads that can be weeks
-old. It is clamped to the engagement window, so meeting a thread late costs at most a day of
-catch-up rather than the entire backlog.
+old. It is clamped to `THREAD_BACKFILL_HORIZON` (24 hours), so meeting a thread late costs at most a
+day of catch-up rather than the entire backlog. That is deliberately its **own** constant and not
+`CHANNEL_ENGAGEMENT_WINDOW`: it bounds a one-off backfill on discovery, which has nothing to do with
+how long a channel stays engaged, and tying the two together would silently retune first-discovery
+behaviour every time the channel window is adjusted.
 
 Passive listening never fires on:
 
@@ -154,10 +170,39 @@ respond, so the reaction is a commitment rather than an acknowledgement. See
 [the draft template](#a-passive-listening-prompt-template).
 :::
 
+:::note[`passive_listen` is deprecated, not removed]
+The original single event type fired on both signals at once. It still works — a deploy of the split
+must not strand a trigger that names it — and behaves as though both new conditions were present,
+including the 6-hour window and the top-level-only engagement rule. The triggers form offers it only
+on a condition that already carries it; the REST API still accepts it, since it is a member of
+`EVENT_TYPES` like any other. Removal is tracked in
+[#253](https://github.com/tadasant/zimmer/issues/253).
+
+**Replacing it means two fresh condition rows, and a fresh condition starts with empty
+bookkeeping.** Carry the old condition's cursors across, or the two new ones are worse than the one
+they replace in both directions at once:
+
+- **They over-fire.** A fresh condition baselines its *channel* cursor on the first poll, which is
+  the newest top-level message — in a thread-heavy channel that can be weeks old. On the second poll
+  every thread is a first-sight thread, so each replays back to `THREAD_BACKFILL_HORIZON` (24 hours).
+  Every reply from the last day in every thread Zimmer is in fires at once, bounded only by the
+  trigger's `max_sessions_per_minute` (above which the rest are dropped).
+- **They also under-fire, permanently.** A thread is only ever discovered through its parent
+  appearing in the last 50 top-level messages, or through an existing `thread_timestamps` entry. A
+  thread whose parent has already scrolled past that window and has no entry is invisible — and
+  stays invisible, even after Zimmer next speaks in it.
+
+Copy `thread_timestamps` and `participating_threads` onto the thread condition,
+`bot_activity_timestamps` onto the channel condition, and `channel_timestamps` onto **both** (a
+first-sight thread falls back to that cursor). Editing `configuration` directly is the only way:
+the trigger form does not render these keys, and `TriggerCondition::SLACK_POLL_STATE_KEYS` exists
+precisely so that saving the form does not *destroy* them.
+:::
+
 :::note[No stall detection]
-`SlackTriggerHealthCheckJob` skips `passive_listen` for the same reason it skips `bot_mention`:
-the condition fans out across many channels, each with its own cursor, so there is no single
-"newest message" to compare against.
+`SlackTriggerHealthCheckJob` skips every passive-listening event type for the same reason it skips
+`bot_mention`: the condition fans out across many channels, each with its own cursor, so there is no
+single "newest message" to compare against.
 :::
 
 #### A passive-listening prompt template
@@ -168,7 +213,7 @@ A starting point for the trigger's `prompt_template`, tuned for restraint. `{{te
 ```text
 A message landed in #{{channel}}, in a Slack conversation you are already part of.
 Nobody @mentioned you. You are here because you have spoken in this thread before,
-or you were active in this channel recently.
+or you posted in this channel within the last few hours.
 
 Author: {{author}}
 Message: {{text}}

@@ -403,7 +403,7 @@ export default class extends Controller {
               <p class="mt-1 text-xs text-gray-500">Enter the channel ID directly. Find it in the channel's details in Slack, or in the channel URL.</p>
             </div>
             <button type="button" data-action="click->trigger-form#toggleChannelManual" class="mt-1 text-xs text-indigo-600 hover:text-indigo-500">Enter channel ID manually</button>
-            <p class="mt-1 text-xs text-gray-500">For "Bot mention" and "Passive listen", leave the channel blank to monitor all channels the bot is in (plus DMs, for "Bot mention").</p>
+            <p class="mt-1 text-xs text-gray-500">For "Bot mention" and the passive-listening types, leave the channel blank to monitor all channels the bot is in (plus DMs, for "Bot mention").</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Event Type</label>
@@ -411,9 +411,10 @@ export default class extends Controller {
                     class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
               <option value="new_message">New message - All messages in channel</option>
               <option value="bot_mention">Bot mention - @mentions and DMs from allowed users</option>
-              <option value="passive_listen">Passive listen - Replies in threads Zimmer is already in, no @mention needed</option>
+              <option value="passive_listen_thread">Passive listen: threads - Replies in threads Zimmer has joined, no @mention needed</option>
+              <option value="passive_listen_channel">Passive listen: channels - Messages in channels Zimmer posted in recently</option>
             </select>
-            <p class="mt-1 text-xs text-gray-500">Choose how this Slack condition fires. "Bot mention" and "Passive listen" only process messages from authorized users. "Passive listen" fires on new replies in threads Zimmer has already spoken in, and on top-level messages in channels it has been active in within the last 24 hours — never on its own or another app's messages.</p>
+            <p class="mt-1 text-xs text-gray-500">Choose how this Slack condition fires. "Bot mention" and the passive-listening types only process messages from authorized users, and never fire on Zimmer's own or another app's messages. The two passive types are separate so a trigger can carry either or both — its conditions are ORed. "Threads" has no time limit; "channels" applies while Zimmer has posted at the top level of that channel within the last 6 hours.</p>
           </div>
         </div>
 
