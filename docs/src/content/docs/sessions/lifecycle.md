@@ -159,8 +159,8 @@ never renders the flash toast, so there is no toast and no Undo affordance — e
 
 ## Side effects are swallowed by design — but no longer silently
 
-Every callback in the state machine is wrapped in a bare `rescue`. That part is deliberate and
-unchanged: a broken notification service should not be able to wedge a session in `running`,
+Almost every callback in the state machine is wrapped in a bare `rescue` (`preserve_debug_info` is
+the exception — it only logs). That part is deliberate and unchanged: a broken notification service should not be able to wedge a session in `running`,
 so a failed side effect never aborts the transition. The consequence is still real — cleanup
 can not happen while the state advances anyway.
 
@@ -191,7 +191,7 @@ still swallowed, never re-raised into the middle of a transition.
 
 :::note
 A failed one-time scheduled wake is still destroyed silently — that is a separate path from
-these callbacks and is tracked in [Limitations](/limitations/).
+these callbacks and is tracked in [Limitations](/limitations/#a-failed-one-time-wake-is-gone-forever).
 :::
 
 ## Who else moves sessions around

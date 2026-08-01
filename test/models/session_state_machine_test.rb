@@ -1465,6 +1465,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.update!(status: :running, running_job_id: "job-123")
 
     session.stubs(:update_column).raises(StandardError, "database is unhappy")
+    run_deferred_commit_callbacks_inline
 
     alerted = []
     AlertService.stubs(:raise_alert).with do |title, opts|
@@ -1485,6 +1486,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
   # The dedup key must key on the callback, not the session: a sick database
   # hits this for every session in flight and must collapse to one alert.
   test "the alert dedup key is per-callback, not per-session" do
+    run_deferred_commit_callbacks_inline
     keys = []
     AlertService.stubs(:raise_alert).with do |_title, opts|
       keys << opts[:dedup_key]
@@ -1509,6 +1511,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session = sessions(:running)
     session.update!(status: :running)
 
+    run_deferred_commit_callbacks_inline
     SendPushNotificationJob.stubs(:perform_later).raises(StandardError, "queue is down")
     AlertService.expects(:raise_alert).never
 
@@ -1531,7 +1534,29 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal :needs_input, session.status.to_sym
   end
 
+  # An alert that cannot be posted must not become a second way for the
+  # transition to blow up. This covers the AlertService half; the test above
+  # covers the logger half.
+  test "a broken AlertService cannot wedge a transition" do
+    session = sessions(:running)
+    session.update!(status: :running, running_job_id: "job-123")
+    session.stubs(:update_column).raises(StandardError, "database is unhappy")
+    run_deferred_commit_callbacks_inline
+    AlertService.stubs(:raise_alert).raises(StandardError, "slack is on fire")
+
+    assert_nothing_raised { session.pause! }
+    assert_equal :needs_input, session.status.to_sym
+  end
+
   private
+
+  # The alert is posted from an after_all_transactions_commit block so the Slack
+  # round trip happens outside the transition's transaction. Transactional tests
+  # never commit, so the block would never run — this makes it run inline, which
+  # is exactly what production does when no transaction is open.
+  def run_deferred_commit_callbacks_inline
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+  end
 
   def create_blocking_elicitation(session)
     Elicitation.create!(

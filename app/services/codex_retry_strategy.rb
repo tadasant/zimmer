@@ -112,9 +112,20 @@ class CodexRetryStrategy
   end
 
   # No transcript error envelope to mine for unmatched prose, for the same
-  # reason as the two classifiers above. The unclassified failure alert still
-  # fires for a Codex session — it just carries the stderr tail alone.
+  # reason as the two classifiers above.
   def unclassified_error_text(working_dir:)
     nil
+  end
+
+  # Codex classifies nothing but a missing rollout, so an ordinary Codex failure
+  # is ALWAYS an exit no classifier matched — that is this strategy's documented
+  # design, not an anomaly. Alerting on it would turn the expected shape of a
+  # Codex failure into a standing hourly page, which is how a channel gets
+  # ignored. ProcessLifecycleManager asks this before raising the unclassified
+  # alert; the loud log still happens, so the signal is not lost, it just is not
+  # paged. Flip this to true once Codex's transcript envelope is characterized
+  # (#3779) and its classifiers can actually answer.
+  def classifies_exits?
+    false
   end
 end

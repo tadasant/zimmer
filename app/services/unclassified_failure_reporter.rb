@@ -33,6 +33,38 @@ class UnclassifiedFailureReporter
   # the operative error visible without dumping a whole stderr log.
   MAX_OUTPUT_CHARS = 1200
 
+  # Secret shapes scrubbed from the unmatched output before it leaves the box.
+  #
+  # This is the first code path that routes raw agent-process stderr and
+  # transcript text to Slack — session logs already carry both, but they stay
+  # inside Zimmer's own UI. A failing stdio MCP server whose stderr echoes its
+  # spawn command or request headers would otherwise put an injected credential
+  # in #eng-alerts verbatim. Truncation is not redaction, so scrub first.
+  #
+  # Deliberately shape-based rather than value-based: the reporter has no list
+  # of the session's secrets to match against, and the interesting case is a
+  # credential Zimmer never knew about.
+  SECRET_PATTERNS = [
+    /\bsk-[A-Za-z0-9_\-]{8,}/,
+    /\bgh[pousr]_[A-Za-z0-9]{8,}/,
+    /\bxox[abeoprs]-[A-Za-z0-9-]{8,}/,
+    /\bAIza[A-Za-z0-9_\-]{8,}/,
+    /\b(?:ya29|1\/\/)[A-Za-z0-9_\-.]{8,}/,
+    /(?<=[Bb]earer )\S+/,
+    /(?<=[Aa]uthorization: )\S+/,
+    /(?<=-----BEGIN )[A-Z ]*(?=PRIVATE KEY-----)/
+  ].freeze
+
+  # Key=value / key: value shapes whose VALUE is replaced, keeping the key so
+  # the reader still learns which credential was involved.
+  SECRET_ASSIGNMENT_PATTERN =
+    /((?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd|credential)["']?\s*[:=]\s*["']?)([^\s"',;}]+)/i
+
+  # Credentials embedded in a URL: https://user:pass@host
+  URL_CREDENTIAL_PATTERN = %r{(?<=://)[^\s/:@]+:[^\s/@]+(?=@)}
+
+  REDACTED = "[REDACTED]"
+
   class << self
     # Report a failure that no classifier recognized.
     #
@@ -48,7 +80,7 @@ class UnclassifiedFailureReporter
     # @param logger [StructuredLogger, nil] logger for the loud log line
     # @return [Boolean] whether the alert was sent
     def report(kind:, summary:, source:, session: nil, output: nil, logger: nil)
-      trimmed = output.to_s.strip.truncate(MAX_OUTPUT_CHARS).presence
+      trimmed = redact(output).truncate(MAX_OUTPUT_CHARS).presence
 
       log_loudly(kind: kind, summary: summary, source: source, session: session, output: trimmed, logger: logger)
 
@@ -58,6 +90,24 @@ class UnclassifiedFailureReporter
         source: source,
         dedup_key: dedup_key(kind, summary)
       )
+    rescue => e
+      # Self-guarding, like SessionStateMachine#report_swallowed_side_effect.
+      # Announcing a failure must never become a second way for that failure to
+      # blow up, and callers must not have to know that.
+      Rails.logger.error("[UnclassifiedFailureReporter] Failed to report unclassified #{kind}: #{e.message}")
+      false
+    end
+
+    # Strip credential-shaped substrings from output bound for Slack.
+    # @param output [String, nil]
+    # @return [String] always a String, possibly empty
+    def redact(output)
+      text = output.to_s.strip
+      return text if text.empty?
+
+      SECRET_PATTERNS.each { |pattern| text = text.gsub(pattern, REDACTED) }
+      text = text.gsub(SECRET_ASSIGNMENT_PATTERN) { "#{Regexp.last_match(1)}#{REDACTED}" }
+      text.gsub(URL_CREDENTIAL_PATTERN, REDACTED)
     end
 
     private
