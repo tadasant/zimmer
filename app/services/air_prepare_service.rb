@@ -356,7 +356,9 @@ class AirPrepareService
   # does not prepare once: every resume, unarchive, and mid-run clone recreation
   # re-runs `air prepare`, so an in-memory-only scrub re-discovers the same stale
   # id and re-raises the same alert forever. Writing the pruned list back makes
-  # the drop a one-time event per session, which is what "self-heal" means.
+  # the drop a one-time event per session, which is what "self-heal" means —
+  # except while the catalog is degraded, where the drop stays in memory (see
+  # persist_scrubbed_catalog_skills).
   #
   # Named for the transformation rather than as a bare query because it is
   # side-effecting on the drop path (persist + WARN log + self-heal alert),
@@ -396,8 +398,17 @@ class AirPrepareService
   # A write failure must not be able to brick a prepare that the scrub exists to
   # keep alive, so a DB error degrades to a warning: the in-memory scrub still
   # applies and the next prepare simply tries the heal again.
+  #
+  # Nothing is written while the catalog is degraded. A failed resolve does not
+  # leave SkillsConfig empty — AirCatalogService serves a last-known-good tree,
+  # which is non-empty and can predate a rename, so a skill that is perfectly
+  # valid today (`open-pr`) looks stale against it. Dropping it in memory costs
+  # one prepare; writing that drop back would erase a valid id permanently and
+  # undo the very backfill that repointed it. The scrub still runs, so a stale
+  # id cannot brick `air prepare` during an outage.
   def persist_scrubbed_catalog_skills(valid, stale)
     return unless session.persisted?
+    return if AirCatalogService.degraded?
 
     session.update_column(:catalog_skills, valid)
   rescue StandardError => e

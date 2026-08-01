@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Repoints stored `catalog_skills` references from the old `pr` skill id to
-# `open-pr`, which the catalog now registers instead.
+# `open-pr`, the id the catalog registers instead.
 #
 # Sessions and triggers freeze their skill ids at creation time, so every row
 # created before the rename still asks for `pr`. The runtime self-heals
@@ -25,13 +25,23 @@ class BackfillRenamedOpenPrSkillId < ActiveRecord::Migration[8.0]
     rename_catalog_skill(OLD_ID, NEW_ID)
   end
 
+  # Reverts the mapping. This also repoints rows that only ever held `open-pr`,
+  # which is inherent to reversing a rename: the two ids are indistinguishable
+  # after the fact.
   def down
     rename_catalog_skill(NEW_ID, OLD_ID)
   end
 
   private
 
+  # `quote` is reached through the connection rather than Migration's
+  # method_missing, which would rewrite the first argument via proper_table_name
+  # and wrap each call in its own say_with_time line.
   def rename_catalog_skill(from, to)
+    quoted_from = connection.quote(from.to_json)
+    quoted_to = connection.quote(to.to_json)
+    quoted_match = connection.quote([ from ].to_json)
+
     %w[sessions triggers].each do |table|
       execute(<<~SQL.squish)
         UPDATE #{table} AS t
@@ -42,8 +52,8 @@ class BackfillRenamedOpenPrSkillId < ActiveRecord::Migration[8.0]
                    (
                      SELECT jsonb_agg(deduped.skill ORDER BY deduped.position)
                      FROM (
-                       SELECT CASE WHEN element.value = #{quote(from.to_json)}::jsonb
-                                   THEN #{quote(to.to_json)}::jsonb
+                       SELECT CASE WHEN element.value = #{quoted_from}::jsonb
+                                   THEN #{quoted_to}::jsonb
                                    ELSE element.value
                               END AS skill,
                               MIN(element.position) AS position
@@ -55,7 +65,7 @@ class BackfillRenamedOpenPrSkillId < ActiveRecord::Migration[8.0]
                    '[]'::jsonb
                  ) AS skills
           FROM #{table} AS inner_t
-          WHERE inner_t.catalog_skills @> #{quote([ from ].to_json)}::jsonb
+          WHERE inner_t.catalog_skills @> #{quoted_match}::jsonb
         ) AS renamed
         WHERE t.id = renamed.id
       SQL
