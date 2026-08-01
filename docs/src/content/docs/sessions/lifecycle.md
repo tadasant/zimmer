@@ -194,6 +194,38 @@ The state machine is not the only actor:
   is instead resumed by `ProcessLifecycleManager#handle_signal_death`
   (`MAX_SIGNAL_DEATH_RETRIES = 3`) — see [Spawning](/sessions/spawning/#when-the-process-exits).
 
+## How a process actually gets terminated
+
+Pausing, archiving, following up and recovery all end in the same place:
+`ProcessTerminationService#terminate`, given the session's `process_pid`. It walks a ladder and
+stops at the first rung that works.
+
+1. **SIGTERM to the process group** (`-pid`). Agent children are spawned with `pgroup: true`, so
+   this reaches the leader and every grandchild it started — MCP servers, `node`, `gh`.
+2. **SIGTERM to the leader alone**, if the group could not be signalled (no such group, or not
+   ours).
+3. **SIGKILL**, group first and then the leader, if it is still alive after its SIGTERM grace.
+4. **A group SIGKILL sweep**, once the leader is confirmed dead.
+
+Two details are load-bearing.
+
+**Liveness is answered by reaping, not by signal 0.** `Process.kill(0, pid)` succeeds for a child
+of ours that has already exited — an unreaped child holds its pid as a zombie until someone waits
+on it. So the service asks `waitpid(pid, WNOHANG)` instead: a status back means the child had
+exited and is now collected, `nil` means it is genuinely still running, and `ECHILD` means it is
+not our child, where signal 0 is the right answer and is used as the fallback. Once a pid is
+reaped it is never probed again — it belongs to the OS and can be recycled.
+
+Before this, every liveness check answered "still running" for a child that died on the first
+SIGTERM: termination burned ~15–25s of `sleep` in a GoodJob thread, sent two redundant SIGTERMs
+and two SIGKILLs, and then reported `:error` for a kill that had worked.
+
+**The group SIGKILL sweep is deliberate.** Grandchildren are reparented to init when the leader
+dies; nothing else cleans them up. They received the group SIGTERM in step 1, so the sweep gives
+the group one more second to drain, then SIGKILLs it — and skips silently when the group is
+already empty, which is the common case. A group we may not signal, or a sweep that fails, never
+downgrades the result: the leader is dead either way, and that is what the caller acted on.
+
 ## Manual refresh
 
 The dashboard's refresh controls are the human counterpart to those background actors. There
