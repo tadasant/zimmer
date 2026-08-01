@@ -29,7 +29,7 @@ module Mcp
         - **github_label**: Triggers fired when a watched label is added to a PR/issue in a watched repo
         - **github_issue**: Triggers fired when a new issue is opened in a watched repo
 
-        A trigger may have multiple conditions (OR semantics) — filtering by trigger_type returns triggers that have at least one condition of that type.
+        A trigger may have multiple conditions (OR semantics) — filtering by trigger_type returns triggers that have at least one condition of that type. Fetching a trigger by id lists each condition with its own id, which is what action_trigger's `conditions` array uses to address one of them.
 
         **Use cases:**
         - View configured automations (scheduled tasks, Slack integrations, GitHub watchers, ao_event waiters)
@@ -100,7 +100,9 @@ module Mcp
         if conditions.any?
           lines.push("", "### Conditions")
           conditions.each do |condition|
-            lines << "- **#{condition.condition_type}** — #{condition.description}"
+            # The id is what action_trigger's `conditions` array addresses when
+            # editing one condition of a multi-condition trigger.
+            lines << "- **[id #{condition.id}] #{condition.condition_type}** — #{condition.description}"
             next if condition.configuration.blank?
 
             lines << "  ```json"

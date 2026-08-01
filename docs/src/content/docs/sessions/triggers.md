@@ -157,9 +157,28 @@ Passive listening never fires on:
   fire.
 - **DMs.** Every DM to the bot is already directed at it, and a `bot_mention` condition covers DMs
   unconditionally; firing passively there would double-spawn.
+- **Anything that @mentions Zimmer.** Mentions belong to `bot_mention`; the passive types own
+  everything else. See below.
 
 The allowlist is the same three layers as `bot_mention` above, including
 `SLACK_BOT_MENTION_ALLOWED_USER_IDS`.
+
+:::note[Mentions belong to `bot_mention`, on both passive types]
+A mention posted inside a thread Zimmer is in is *both* a mention and a reply in a participated
+thread; a mention in an engaged channel is *both* a mention and a top-level message there. Both
+conditions matched, so one Slack message spawned **two concurrent sessions on identical text** —
+observed in production, one per matching trigger, on every mention. `passive_candidate?` therefore
+excludes any message that mentions the bot, using the same `mentions_bot?` predicate `bot_mention`
+filters on; two different notions of "is a mention" would leave a gap that double-fires again.
+
+The exclusion is unconditional: it does not check that a `bot_mention` condition would in fact pick
+the message up, because conditions are polled independently and none can see the others. So a
+mention falls through the gap entirely if the deployment has no `bot_mention` condition, if that
+condition is disabled or scoped to a different channel than the passive one, or if the two carry
+different `allowed_user_ids`. That is the intended division of labour — being addressed directly is
+what `bot_mention` is for — but it is a silent drop, so the poller logs one line at `info` naming
+the message and the condition that declined it.
+:::
 
 :::caution[Restraint belongs in the prompt, not just the poller]
 The poller decides which messages Zimmer *sees*. It cannot decide which deserve a reply — a
