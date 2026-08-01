@@ -1460,13 +1460,20 @@ from production, which does run them.
 `bin/rails db:schema:verify` (`lib/tasks/schema_verify.rake`) is the check: it migrates a scratch
 database from zero, loads the committed schema into another, dumps both, and diffs. It drops and
 recreates databases, so it refuses to run outside `RAILS_ENV=test` and is deliberately not wired into
-the merge gate. Run it on any PR that adds a migration. What *does* run in CI is the cheap half,
-`test/migrations/schema_dump_test.rb`: the dumps are in the running Active Record version's format,
-and `schema.rb` is at the newest migration on disk.
+the merge gate. What *does* run in CI is the cheap half, `test/migrations/schema_dump_test.rb`: the
+dumps are in the running Active Record version's format, and `schema.rb` is at the newest migration
+on disk.
 
-The format half of this is fixed — `db/schema.rb` was an `ActiveRecord::Schema[8.0]` dump under Rails
-8.1, so every `db:migrate` reformatted all ~450 lines (the 8.1 dumper alphabetizes) and every
-migration PR carried an unreviewable whole-file diff. It is an 8.1 dump now.
+**And it already found one.** 🔴 `db/migrate/` is not replayable from zero:
+`20260613193000_add_session_maintenance_indexes` builds a partial index on `sessions.transcript`, and
+nothing in `db/migrate/` ever creates that column — `db/schema.rb` declares it, so every environment
+got it from a schema load. A from-zero `db:migrate` dies there with `PG::UndefinedColumn`. That is the
+exact divergence this section warns about, sitting in the tree unnoticed because nothing migrates from
+zero.
+
+The format half is fixed. `db/schema.rb` was an `ActiveRecord::Schema[8.0]` dump under Rails 8.1, so
+every `db:migrate` reformatted all ~450 lines (the 8.1 dumper alphabetizes) and every migration PR
+carried an unreviewable whole-file diff. It is an 8.1 dump now.
 
 Tracked in [#182](https://github.com/tadasant/zimmer/issues/182).
 

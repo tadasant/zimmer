@@ -158,12 +158,6 @@ class AirCatalogService
       @resolve_failure
     end
 
-    # True when the most recent resolve in this process failed, whether or not a
-    # last-known-good catalog was available to serve in its place.
-    def resolve_failed?
-      @resolve_failure.present?
-    end
-
     # Pull latest provider caches (github clones) via `air update`, then reload
     # the in-memory entry tree. This is the "pull latest catalog" operation
     # invoked by CatalogRefreshJob and the manual refresh endpoint.
@@ -173,6 +167,12 @@ class AirCatalogService
       run_air_update!
       reload!
       true
+    rescue CatalogError => e
+      # A refresh that dies before reload! never reaches load!'s rescue, so record
+      # the failure here too — otherwise "Refresh catalogs" can fail while the
+      # session form still shows a healthy catalog.
+      @resolve_failure = { message: e.message, at: Time.current }
+      raise
     end
 
     # Wall-clock time of the last provider-cache refresh. Derived from FETCH_HEAD

@@ -564,7 +564,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
 
   test "records resolve_failure when a resolve fails with no last-known-good fallback" do
     assert_nil CatalogSnapshot.latest
-    refute AirCatalogService.resolve_failed?
+    assert_nil AirCatalogService.resolve_failure
 
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
@@ -577,7 +577,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     # The facades rescue that CatalogError to [], so this flag is the only thing
     # left that can tell an empty picker from a broken catalog.
     refute AirCatalogService.degraded?, "no fallback was served, so degraded? stays false"
-    assert AirCatalogService.resolve_failed?
+    assert AirCatalogService.resolve_failure
     assert_match(/boom/, AirCatalogService.resolve_failure[:message])
     assert_kind_of Time, AirCatalogService.resolve_failure[:at]
   end
@@ -595,7 +595,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     end
 
     assert AirCatalogService.degraded?
-    assert AirCatalogService.resolve_failed?
+    assert AirCatalogService.resolve_failure
     assert_match(/cross-scope shortname collision/, AirCatalogService.resolve_failure[:message])
   end
 
@@ -607,14 +607,13 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
       AirCatalogService.stub(:air_binary, @fake_binary) do
         Open3.stub(:capture3, ->(*) { [ "", "boom", fake_status(1) ] }) do
           AirCatalogService.entries_for(:roots)
-          assert AirCatalogService.resolve_failed?
+          assert AirCatalogService.resolve_failure
         end
 
         fresh = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), "", fake_status(0) ] }
         Open3.stub(:capture3, fresh) do
           AirCatalogService.reload!
 
-          refute AirCatalogService.resolve_failed?
           assert_nil AirCatalogService.resolve_failure
         end
       end
@@ -626,7 +625,6 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
       AirCatalogService.entries_for(:roots)
     end
 
-    refute AirCatalogService.resolve_failed?
     assert_nil AirCatalogService.resolve_failure
   end
 

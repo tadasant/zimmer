@@ -34,8 +34,11 @@
             previous catalog is cached to fall back on — so every picker below is empty. This is a
             resolution failure, not an empty catalog. Session creation will fail until it is repaired.
           <% end %>
-          Try <span class="font-medium">Refresh catalogs</span> above; if it keeps failing, check
-          <%= link_to "health details", health_dashboard_path, class: "underline font-medium" %>.
+          <%# No link to the health dashboard: it reports egress, jobs and logins, and says nothing
+              about catalog resolution, so sending an operator there is a dead end. The resolve error
+              below is the actionable part. %>
+          Try <span class="font-medium">Refresh catalogs</span> above; the error is verbatim from
+          <code>air resolve</code>.
         </p>
         <p class="mt-2 text-xs font-mono break-words <%= degraded ? "text-amber-800" : "text-red-800" %>">
           <%= truncate(failure[:message].to_s, length: 400) %>
