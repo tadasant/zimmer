@@ -97,9 +97,9 @@ Pages are under `docs/src/content/docs/`:
 
 **Two hard sync requirements — treat these as non-negotiable:**
 
-- **`docs/src/content/docs/extend/rest-api.md` must stay in sync with
-  `app/views/api_docs/show.html.erb`.** Any endpoint, parameter, or response-shape
-  change means editing *both*. Nothing tests that they agree, so they drift silently.
+- **`docs/src/content/docs/extend/rest-api.md` is the only REST API reference.** Any
+  endpoint, parameter, or response-shape change belongs there. Nothing tests that it
+  matches the controllers, so verify against `config/routes.rb` and the permit-lists.
 - **`docs/src/content/docs/sessions/lifecycle.md`** documents the AASM states and
   events in `app/models/concerns/session_state_machine.rb`. Any transition, guard, or
   callback change belongs there — including the state diagram.
@@ -185,8 +185,8 @@ boundaries.
    - Commands and code samples in the docs are real (they exist in `bin/`,
      `scripts/`, `lib/tasks/`, or `.github/workflows/`).
    - Internal links and file paths still resolve.
-   - If you touched `docs/src/content/docs/extend/rest-api.md`, confirm
-     `app/views/api_docs/show.html.erb` says the same thing.
+   - If you touched `docs/src/content/docs/extend/rest-api.md`, confirm it matches
+     `config/routes.rb` and the controllers' permit-lists.
    - **The site still builds:** `cd docs && npm run build`. This is what the
      `docs_site` CI job runs — a bad frontmatter field or a page missing from the
      sidebar fails the PR.
