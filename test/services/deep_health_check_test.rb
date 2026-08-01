@@ -115,6 +115,45 @@ class DeepHealthCheckTest < ActiveSupport::TestCase
     assert_match(/\[redacted\]@redis\.internal/, error)
   end
 
+  # Passwords are not tidy. A base64 secret contains `/`, and `@` is legal in a
+  # password -- and both are cases a "not a slash, not an at-sign" userinfo match
+  # gets wrong in the leaking direction.
+  test "a password containing a slash or an at-sign is still redacted" do
+    {
+      "postgres://user:pa/ss@db.internal:5432/zimmer" => "pa/ss",
+      "redis://default:sec@ret@redis.internal:6379" => "sec@ret"
+    }.each do |url, password|
+      ENV["REDIS_URL"] = url
+      Redis.stubs(:new).raises(RuntimeError, "Error connecting to #{url}")
+
+      error = DeepHealthCheck.new.call[:checks][:redis][:error]
+
+      refute_includes error, password, "leaked a password containing #{password.include?("/") ? "a slash" : "an at-sign"}"
+      assert_match(/\[redacted\]@/, error)
+    end
+  end
+
+  test "several credentialed URLs in one message are each redacted" do
+    ENV["REDIS_URL"] = "redis://a:secret1@h1:6379"
+    Redis.stubs(:new).raises(RuntimeError, "tried redis://a:secret1@h1:6379 then postgres://b:secret2@h2:5432")
+
+    error = DeepHealthCheck.new.call[:checks][:redis][:error]
+
+    refute_includes error, "secret1"
+    refute_includes error, "secret2"
+    assert_includes error, "h1"
+    assert_includes error, "h2"
+  end
+
+  test "a message carrying no URL is left alone" do
+    ENV["REDIS_URL"] = "redis://localhost:6379"
+    Redis.stubs(:new).raises(RuntimeError, "Connection refused - connect(2) for 127.0.0.1:6379")
+
+    error = DeepHealthCheck.new.call[:checks][:redis][:error]
+
+    assert_includes error, "Connection refused - connect(2) for 127.0.0.1:6379"
+  end
+
   test "an unreachable Redis at REDIS_URL is an error" do
     ENV["REDIS_URL"] = "redis://localhost:6399"
     Redis.stubs(:new).returns(FakeRedis.new(raising: RuntimeError.new("Connection refused")))

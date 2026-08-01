@@ -49,7 +49,15 @@ class DeepHealthCheck
   # unauthenticated, so what it echoes from a backing service must never be a
   # credential -- and a connection-refused error is the single most likely place
   # for a URL carrying one to surface.
-  URL_CREDENTIALS = %r{([a-z][a-z0-9+.\-]*://)[^/\s@]*@}i
+  #
+  # The userinfo half is matched as `\S*` -- anything up to the LAST `@` in the
+  # run of non-space characters -- rather than as a tidier "not a slash, not an
+  # at-sign". Passwords are not tidy: a base64 secret contains `/`, and a
+  # password containing `@` is legal. Against `[^/\s@]*@` the first leaks whole
+  # (no match at all) and the second leaks its tail (the match stops at the
+  # first `@`). Being greedy here can over-redact a URL whose *path* contains an
+  # `@`, which costs a hostname in a log line; being precise costs a password.
+  URL_CREDENTIALS = %r{([a-z][a-z0-9+.\-]*://)\S*@}i
 
   OK = "ok"
   ERROR = "error"
