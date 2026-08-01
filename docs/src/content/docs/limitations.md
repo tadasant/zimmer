@@ -1299,15 +1299,6 @@ keys, where one global bucket capped it at one per 30 seconds for the whole inst
 
 Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
 
-### The in-app API docs page is still stale
-
-`app/views/api_docs/show.html.erb` omits triggers, notifications, health, clis, and transcript_archive —
-even though `app/controllers/api/AGENTS.md` requires both doc surfaces to be updated with every endpoint
-change.
-
-Tracked in [#34](https://github.com/tadasant/zimmer/issues/34) (removing the page) and
-[#95](https://github.com/tadasant/zimmer/issues/95) (nothing tests that the two surfaces agree).
-
 ---
 
 ## Hardcoded values that shouldn't be

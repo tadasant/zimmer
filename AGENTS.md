@@ -30,7 +30,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | --- | --- |
 | `app/models/concerns/session_state_machine.rb` | `sessions/lifecycle.md` |
 | `app/jobs/agent_session_job.rb`, the CLI adapters | `sessions/spawning.md` |
-| `config/routes.rb`, `app/controllers/api/**` | `extend/rest-api.md` **and** `app/views/api_docs/show.html.erb` |
+| `config/routes.rb`, `app/controllers/api/**` | `extend/rest-api.md` |
 | `air.json`, `roots.json`, `mcp.json`, `skills/`, `plugins/`, `hooks/` | `air/*.md` |
 | `RuntimeRegistry`, a new runtime | `extend/agent-harness.md` |
 | `app/extensions/**` | `extend/extensions.md` |

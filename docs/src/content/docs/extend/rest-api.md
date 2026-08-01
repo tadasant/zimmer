@@ -1,6 +1,6 @@
 ---
 title: The REST API
-description: Every endpoint, re-derived from routes.rb and the controllers — including the six resources the old reference omitted.
+description: Every endpoint, re-derived from routes.rb and the controllers. The one reference for the REST API.
 sidebar:
   order: 1
 ---
@@ -19,6 +19,105 @@ A key is an opaque string. Any valid key can do anything to any session, trigger
 memoized per request from ENV, so rotation requires a restart. There is no record of which key did what.
 :::
 
+## Quick start
+
+Every snippet below assumes these two:
+
+```bash
+API_KEY="your_api_key"
+BASE_URL="https://your-zimmer-host/api/v1"
+```
+
+```bash
+# Create a session on a configured agent root
+curl -X POST "$BASE_URL/sessions" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"agent_root": "zimmer", "prompt": "Fix the auth bug"}'
+
+# Create one on an arbitrary repo instead
+curl -X POST "$BASE_URL/sessions" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"prompt": "Fix the auth bug", "git_root": "https://github.com/example/repo.git"}'
+
+# List running sessions, search across transcripts, read one with its transcript
+curl "$BASE_URL/sessions?status=running" -H "X-API-Key: $API_KEY"
+curl "$BASE_URL/sessions/search?q=authentication&search_contents=true" -H "X-API-Key: $API_KEY"
+curl "$BASE_URL/sessions/1?include_transcript=true" -H "X-API-Key: $API_KEY"
+
+# Follow up, then archive (moves to trash)
+curl -X POST "$BASE_URL/sessions/1/follow_up" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"prompt": "Now add tests"}'
+curl -X POST "$BASE_URL/sessions/1/archive" -H "X-API-Key: $API_KEY"
+```
+
+Spawn and poll, in Python:
+
+```python
+import requests, time
+
+API_KEY = "your_api_key"
+BASE_URL = "https://your-zimmer-host/api/v1"
+headers = {"X-API-Key": API_KEY}
+
+resp = requests.post(f"{BASE_URL}/sessions", headers=headers, json={
+    "agent_root": "zimmer",
+    "prompt": "Fix the auth bug",
+})
+session = resp.json()["session"]
+
+while True:
+    resp = requests.get(f"{BASE_URL}/sessions/{session['id']}", headers=headers)
+    if resp.json()["session"]["status"] in ("needs_input", "failed", "archived"):
+        break
+    time.sleep(5)
+```
+
+And in JavaScript:
+
+```javascript
+const API_KEY = "your_api_key";
+const BASE_URL = "https://your-zimmer-host/api/v1";
+const headers = { "X-API-Key": API_KEY, "Content-Type": "application/json" };
+
+const resp = await fetch(`${BASE_URL}/sessions`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({ agent_root: "zimmer", prompt: "Fix the auth bug" }),
+});
+const { session } = await resp.json();
+
+await fetch(`${BASE_URL}/sessions/${session.id}/follow_up`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({ prompt: "Now add tests" }),
+});
+```
+
+## Pagination
+
+List endpoints take `page` and `per_page` (default 25, max 100) and answer with a `pagination` object
+alongside the collection:
+
+```jsonc
+{
+  "pagination": { "page": 1, "per_page": 25, "total_count": 312, "total_pages": 13 }
+}
+```
+
+## Terminology
+
+**Archived is "trash" in the UI, `archived` on the wire.** The status enum value is `archived` and
+the column is `archived_at`; filters and status values never take `trash`. Only the prose moves —
+archiving answers `"Session moved to trash"` and a `trash_after` timestamp saying when the clone gets
+cleaned up.
+
+**`git_root` is a string; `agent_root` is a catalog name.** `git_root` is a free-form repository URL
+or local path stored on the session. `agent_root` names a preconfigured [agent
+root](/air/agent-roots/) — `zimmer`, say — that resolves to a `git_root` plus defaults for `branch`,
+`subdirectory`, `mcp_servers`, `catalog_skills`, `catalog_hooks`, `catalog_plugins`, and `model`.
+Passing `agent_root` is the recommended way to spawn on a configured root.
+
 ## Sessions
 
 `:id` resolves slug first, then numeric id.
@@ -31,24 +130,29 @@ memoized per request from ENV, so rotation requires a restart. There is no recor
 | `POST` | `/sessions` | → 201. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `custom_metadata` |
 | `DELETE` | `/sessions/:id` | → 204 |
-| `POST` | `/sessions/:id/archive` | → `{session, message, trash_after}` |
-| `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}` |
-| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal`, `force_immediate`. 202 if the session is running (queued); 200 otherwise |
-| `POST` | `/sessions/:id/pause` | running only |
+| `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}` |
+| `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off |
+| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal`, `force_immediate`. 202 if the session is running (queued); 200 otherwise. An omitted or empty `goal` keeps the session's existing one — clear it with `PATCH /sessions/:id` |
+| `POST` | `/sessions/:id/pause` | running only → `needs_input` |
 | `POST` | `/sessions/:id/sleep` | `needs_input` → sleeps; `running` → sets `pending_sleep` |
-| `POST` | `/sessions/:id/restart` | |
+| `POST` | `/sessions/:id/restart` | clears stale retry metadata and re-queues the job; re-runs the whole setup pipeline if setup never finished (a failed clone, say) |
 | `POST` | `/sessions/:id/fork` | `message_index` required → 201 |
-| `POST` | `/sessions/:id/refresh` | re-read transcript from disk |
-| `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues |
-| `POST` | `/sessions/bulk_archive` | `session_ids[]` |
+| `POST` | `/sessions/:id/refresh` | re-read transcript from disk. A shorter filesystem transcript never overwrites a longer stored one — that happens when the clone was recreated at a new path, and the stored history wins |
+| `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. Sessions in a frozen category are parked and excluded |
+| `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors` |
 | `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog |
 | `PATCH` | `/sessions/:id/catalog_skills` · `/catalog_hooks` · `/catalog_plugins` | max 100 / 100 / 50 |
 | `PATCH` | `/sessions/:id/model` | validated against `ModelCatalog` for the session's runtime |
-| `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000 |
-| `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400) |
-| `PATCH` | `/sessions/:id/set_category` | blank clears |
-| `POST` | `/sessions/:id/toggle_favorite` | |
+| `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000; empty string clears |
+| `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
+| `PATCH` | `/sessions/:id/set_category` | `category_id`; blank or omitted clears. Unknown id → 404 |
+| `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
+
+`force_immediate: true` on `follow_up` interrupts a running session and delivers the prompt now,
+through the same race-free interrupt backend as the web UI's "Send Now" — exactly-once and
+FIFO-ordered. When the interrupt can't be dispatched the staged message is discarded rather than
+left half-queued, and the call answers 404, 409, 422, or 500.
 
 ### Creating a session
 
@@ -81,6 +185,18 @@ for the resolved runtime — a root pinning `opus` on a `codex` spawn, say — s
 default for that runtime rather than persisting something the harness can't run. `config.model` is
 always explicitly set on the created session.
 
+`agent_runtime` must name a registered runtime; an unregistered value → 422.
+
+Valid models are a property of the runtime, not the root (`ModelCatalog::MODELS`):
+
+| Runtime | Models |
+| --- | --- |
+| `claude_code` | `opus` (default) · `sonnet` · `haiku` |
+| `codex` | `gpt-5.5` (default, needs a ChatGPT login) · `gpt-5.4` · `gpt-5.4-mini` · `gpt-5.3-codex` · `gpt-5.2-codex` (deprecated) |
+
+`PATCH /sessions/:id/model` validates against the list for the session's own runtime; anything else
+→ `422 {"error": "Invalid model"}` with a message naming the valid ones.
+
 ### `session_json`
 
 `id`, `slug`, `title`, `status`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
@@ -93,6 +209,15 @@ always explicitly set on the created session.
 Every response with a `session` key renders it through the same serializer
 (`ApiSessionSerialization`), including `POST /enqueued_messages/:id/interrupt` — `session` means one
 shape everywhere on the surface.
+
+Three of those fields are easy to misread:
+
+- **`all_mcp_servers` is the effective set** — selected + plugin-bundled + auto-injected. Read this
+  one to learn what a session actually has wired.
+- **`injected_mcp_servers` is only what Zimmer adds itself** (`zimmer-self-session`; `zimmer` for
+  subagent roots). A strict subset, and not evidence of what is available.
+- **`is_autonomous`** governs whether the session fires broadcast (unscoped) event triggers. It
+  defaults to true; set it false for user-driven sessions that shouldn't trip global automation.
 
 ## Triggers
 
@@ -153,17 +278,49 @@ The first two skip auth because the MCP child process has no API key. See
 
 Note the parameter is `action_type`, not `action` — `action` is a Rails reserved param.
 
+`respond` is the authenticated counterpart to a human clicking the button in the web UI: it lets a
+script or agent resolve the request, which unblocks the owning session (`needs_input` → `running`).
+It answers 200 with the poll response — `action`, `content`, and a `_meta` carrying
+`com.pulsemcp/request-id` and `com.pulsemcp/responded-at` — or 404 when nothing matches the
+identifier, 422 when the elicitation is already resolved or `action_type` is not one of the two.
+
+## Categories
+
+Organizational buckets for the dashboard. Full CRUD at `/categories[/:id]` plus
+`POST /categories/reorder`.
+
+A category is `{id, name, description, position, is_frozen, session_count, created_at, updated_at}`.
+`name` is required, unique case-insensitively, ≤100 chars, and whitespace-stripped; `description` is
+≤1000 chars and stored as null when blank. New categories append to the end of the stack. Deleting
+one nullifies its sessions' `category_id` — the sessions themselves survive as Uncategorized.
+
+A **frozen** category (`is_frozen: true`) is a parked bucket: its sessions are excluded from
+refresh-all and from recovery.
+
+`PATCH /categories/:id` is a genuine partial update — sending only `is_frozen` leaves `name` and
+`description` alone.
+
+`POST /categories/reorder` takes `ids`, an ordered array top to bottom; each listed category's
+`position` becomes its index, and any category you leave out keeps the position it had. The string
+sentinel `"uncategorized"` positions the Uncategorized section, which is stored on `AppSetting`
+rather than as a row — so it is not in the category list the call returns.
+
+```bash
+curl -X POST "$BASE_URL/categories/reorder" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"ids": [5, "uncategorized", 3, 8]}'
+```
+
 ## The rest
 
 | Resource | Endpoints |
 | --- | --- |
-| **Logs** | Full CRUD at `/sessions/:session_id/logs[/:id]`, `level` filter |
-| **Subagent transcripts** | Full CRUD at `/sessions/:session_id/subagent_transcripts[/:id]` |
-| **Enqueued messages** | CRUD + `PATCH :id/reorder` + `POST :id/interrupt` |
-| **Categories** | CRUD + `POST /categories/reorder` |
+| **Logs** | Full CRUD at `/sessions/:session_id/logs[/:id]`. `content` and `level` are required on create; `level` ∈ `info · error · debug · warning · verbose`, and doubles as the index filter |
+| **Subagent transcripts** | Full CRUD at `/sessions/:session_id/subagent_transcripts[/:id]`. `agent_id` required on create; index filters on `status` and `subagent_type`; `include_transcript=true` on show returns the full JSONL |
+| **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt`. `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent`. Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status` |
-| **Config (read-only)** | `GET /configs` · `GET /mcp_servers` · `GET /skills` |
+| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, goals}` · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
 
 One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{name, description}]}`,
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind
@@ -206,9 +363,8 @@ oversized search `q`.
 
 ## Keeping this page honest
 
-`app/controllers/api/AGENTS.md` requires that both doc surfaces — this page and
-`app/views/api_docs/show.html.erb` (the in-app `/api_docs` page) — be updated with every endpoint
-change. Both had drifted. `app/views/api_docs/show.html.erb` is still missing triggers,
-notifications, health, clis, and transcript_archive.
+This is the only reference for the REST API. Zimmer used to render a second one in the app itself at
+`/api_docs`, kept in sync by hand; it drifted, and it is gone.
 
-There is no generated OpenAPI spec. If you change a route, change this page in the same PR.
+There is no generated OpenAPI spec. If you change a route, change this page in the same PR —
+`app/controllers/api/AGENTS.md` says so, and there is one page to change.
