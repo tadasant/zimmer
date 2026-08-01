@@ -51,6 +51,40 @@ six-field entries suggest it's the Slack one.
 Tracked in [#106](https://github.com/tadasant/zimmer/issues/106).
 :::
 
+## The zombie reaper only takes what nobody is waiting for
+
+`ZombieReaperJob` runs every 5 minutes in the same process as `AgentSessionJob`'s monitoring loop
+and the pollers. That matters: reaping a child consumes its exit status, and in a shared process
+the wrong reaper wins the race. When the reaper collected a pid the monitoring loop was waiting
+on, `wait_nonblock` got `ECHILD`, the loop fell through to signal-based detection, and the session
+was paused into `needs_input` — skipping the SIGTERM retry, `/compact` retry and API-error backoff
+that `handle_exit` owns.
+
+So the job reaps named pids, not "whatever `waitpid(-1)` hands back". A pid is collected only if
+all three hold:
+
+1. it is defunct and a direct child of this process;
+2. it is *still* defunct a couple of seconds later — anything with a thread blocked in `waitpid`
+   (every `Open3.capture3` wait thread) is reaped by that thread within microseconds, so surviving
+   the second look means no such waiter exists;
+3. `ChildWaiterRegistry` has no live waiter for it. `SystemProcessManager` claims a pid when it
+   spawns it and heartbeats the claim on every `wait` call, so a claim that has gone quiet for
+   five minutes belongs to a waiter that died and no longer protects its pid.
+
+Rule 3's heartbeat is what keeps the job honest in both directions. Without it, a claim left by a
+dead waiter would shield its zombie forever and they would pile up again — which is what the job
+was built for after 6,032 of them accumulated under the worker over two days.
+
+An orphaned claim is logged at warn level with the command that was spawned. That line means a
+real upstream leak: something started a child and stopped waiting on it.
+
+:::note[tini does not cover this]
+`init: true` in `deploy*.yml` reaps processes *reparented to PID 1* — grandchildren orphaned when
+a `gh`, `air` or `claude` process exits. A direct child of the Ruby worker is never reparented
+while the worker is alive, so tini can never collect it. Any child Zimmer spawns and does not wait
+on is this job's problem, permanently.
+:::
+
 ## What the PR comment poller acts on
 
 `GithubCommentPollerJob` records every new comment on a tracked PR in the session's
