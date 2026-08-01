@@ -270,6 +270,38 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type='submit']"
   end
 
+  # The config facades rescue CatalogError to [], so a broken catalog renders the
+  # form with empty pickers and no explanation. These three cover the banner that
+  # tells the two states apart.
+  test "new session form shows no catalog banner when the catalog resolves" do
+    AirCatalogService.stubs(:resolve_failure).returns(nil)
+
+    get new_session_url
+    assert_response :success
+    assert_select "[role=alert]", text: /Catalog resolution failed/, count: 0
+  end
+
+  test "new session form warns that empty pickers are a catalog failure" do
+    AirCatalogService.stubs(:resolve_failure).returns({ message: "air resolve failed (exit 1): boom", at: Time.current })
+    AirCatalogService.stubs(:degraded?).returns(false)
+
+    get new_session_url
+    assert_response :success
+    assert_match(/Catalog resolution failed — the lists below are empty/, response.body)
+    assert_match(/air resolve failed \(exit 1\): boom/, response.body)
+  end
+
+  test "new session form warns that pickers are stale when a last-known-good catalog is served" do
+    AirCatalogService.stubs(:resolve_failure).returns({ message: "air resolve failed (exit 1): boom", at: Time.current })
+    AirCatalogService.stubs(:degraded?).returns(true)
+    AirCatalogService.stubs(:last_known_good_at).returns(2.hours.ago)
+
+    get new_session_url
+    assert_response :success
+    assert_match(/Catalog resolution failed — showing the last catalog that worked/, response.body)
+    assert_match(/2 hours ago/, response.body)
+  end
+
   # Test create action - success cases
   test "should create session" do
     assert_difference("Session.count") do

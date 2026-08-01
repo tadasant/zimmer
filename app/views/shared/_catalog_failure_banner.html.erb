@@ -1,0 +1,46 @@
+<%# Shown on the session form when the last catalog resolve in this process failed.
+
+    Every config facade — AgentRootsConfig, ServersConfig, SkillsConfig,
+    HooksConfig, PluginsConfig, ReferencesConfig — rescues CatalogError to an
+    empty array, so a broken catalog degrades the form to empty pickers instead
+    of a 500. That is the right call, but on its own it makes a broken catalog
+    look exactly like a fresh install with nothing configured. This banner is the
+    missing half: it says the pickers are empty (or stale) *because* resolution
+    failed. Renders nothing when the catalog resolved cleanly. %>
+<% if (failure = AirCatalogService.resolve_failure) %>
+  <% degraded = AirCatalogService.degraded? %>
+  <div role="alert"
+       class="mb-6 rounded-lg border p-4 <%= degraded ? "border-amber-200 bg-amber-50" : "border-red-200 bg-red-50" %>">
+    <div class="flex items-start gap-3">
+      <svg class="h-5 w-5 flex-shrink-0 mt-0.5 <%= degraded ? "text-amber-600" : "text-red-600" %>"
+           xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+      </svg>
+      <div class="min-w-0">
+        <p class="font-medium <%= degraded ? "text-amber-800" : "text-red-800" %>">
+          <% if degraded %>
+            Catalog resolution failed — showing the last catalog that worked
+          <% else %>
+            Catalog resolution failed — the lists below are empty
+          <% end %>
+        </p>
+        <p class="mt-1 text-sm <%= degraded ? "text-amber-700" : "text-red-700" %>">
+          <% if degraded %>
+            Agent roots, MCP servers, skills, hooks and plugins below come from the last
+            successful resolve<%= " (#{time_ago_in_words(AirCatalogService.last_known_good_at)} ago)" if AirCatalogService.last_known_good_at %>,
+            not from the current catalog. Anything added or changed since then is missing here.
+          <% else %>
+            Agent roots, MCP servers, skills, hooks and plugins could not be resolved, and no
+            previous catalog is cached to fall back on — so every picker below is empty. This is a
+            resolution failure, not an empty catalog. Session creation will fail until it is repaired.
+          <% end %>
+          Try <span class="font-medium">Refresh catalogs</span> above; if it keeps failing, check
+          <%= link_to "health details", health_dashboard_path, class: "underline font-medium" %>.
+        </p>
+        <p class="mt-2 text-xs font-mono break-words <%= degraded ? "text-amber-800" : "text-red-800" %>">
+          <%= truncate(failure[:message].to_s, length: 400) %>
+        </p>
+      </div>
+    </div>
+  </div>
+<% end %>

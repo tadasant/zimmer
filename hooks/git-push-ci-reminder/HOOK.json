@@ -1,0 +1,7 @@
+{
+  "event": "post_tool_call",
+  "matcher": "Bash",
+  "command": "node",
+  "args": ["./git-push-ci-reminder.mjs"],
+  "timeout_seconds": 10
+}

@@ -94,29 +94,47 @@ catalog already uses the externalized form.
 A lifecycle script registered into the agent's *own* settings — `.claude/settings.json`, tagged with
 `_airHookId` so AIR knows which entries it owns. Fired on agent events (a tool call, a git push).
 
-Zimmer's catalog declares exactly one: `git-push-ci-reminder`.
+Zimmer's catalog declares exactly one: `git-push-ci-reminder`. `hooks/hooks.json` registers it, and
+`hooks/git-push-ci-reminder/` holds the body:
 
-:::danger[The one hook that ships has no body]
-`hooks/hooks.json` declares:
+```
+hooks/git-push-ci-reminder/
+├── HOOK.json                  # when it fires and what it runs
+└── git-push-ci-reminder.mjs   # the script
+```
+
+`HOOK.json` is what the Claude adapter reads to write the `.claude/settings.json` entry:
 
 ```json
-"git-push-ci-reminder": {
-  "title": "Git Push CI Reminder",
-  "description": "Reminder to monitor CI status after git push.",
-  "path": "git-push-ci-reminder"
+{
+  "event": "post_tool_call",
+  "matcher": "Bash",
+  "command": "node",
+  "args": ["./git-push-ci-reminder.mjs"],
+  "timeout_seconds": 10
 }
 ```
 
-But `hooks/` contains only `hooks.json` — there is no `hooks/git-push-ci-reminder/` directory.
+`event` is an AIR lifecycle name (`session_start`, `pre_tool_call`, `post_tool_call`, `stop`, …) or
+the Claude event name directly (`PostToolUse`); an unrecognized one is warned about and skipped.
+`matcher` filters by tool name. A `./`-prefixed `command` or arg is rewritten at install time to
+`"$CLAUDE_PROJECT_DIR/.claude/hooks/<id>/…"`, so it resolves no matter where the agent has `cd`'d to.
 
-And `plugins/ci-workflow/.plugin/plugin.json` bundles this hook, and `ci-workflow` is
-`default_in_roots: ["agent-orchestrator"]`. So every session on the `agent-orchestrator` root
-activates a hook whose body doesn't exist.
-Tracked in [#65](https://github.com/tadasant/zimmer/issues/65).
+This hook reads the PostToolUse payload on stdin, and when the Bash command that just ran was a
+`git push` (a `--dry-run` isn't), returns `additionalContext` reminding the agent to confirm CI
+before calling the work done. Everything else is a no-op, and it always exits 0 — a hook must never
+fail the tool call it observes.
 
-This slips past resolve-time validation (a missing *body* is not a dangling *reference*, so it
-doesn't trip Zimmer's stderr marker check), and surfaces at `air prepare` when the adapter tries to
-copy a directory that isn't there. See [Known limitations](/limitations/#the-only-hook-in-the-catalog-has-no-body).
+`plugins/ci-workflow/.plugin/plugin.json` bundles this hook alongside `zimmer-run-tests`, and
+`ci-workflow` is `default_in_roots: ["agent-orchestrator"]`, so sessions on that root get it
+automatically.
+
+:::caution[A missing body is not a dangling reference]
+AIR validates references *between* entries, but never checks that a hook's (or skill's) `path`
+exists on disk. A registered artifact with no body resolves clean, slips past Zimmer's stderr marker
+check, and is silently skipped at `air prepare` with a warning nobody reads. Always create the body.
+`HooksConfig`'s test suite asserts every registered hook has a `HOOK.json`, and that any
+`./`-prefixed command it names really ships in the directory.
 :::
 
 Don't confuse these with [transcript hooks](/extend/transcript-hooks/), which are a Ruby-side
