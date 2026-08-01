@@ -8253,10 +8253,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     mock_fs.mkdir_p(clone_path)
     mock_fs.mkdir_p(working_directory)
-    # The adapter writes stderr under the working directory; the resume path
-    # reconstructs the path under the clone root (issue #187). Provide both, so
-    # this fixture takes no position on which of the two is correct.
-    mock_fs.write(File.join(clone_path, "claude_stderr.log"), "")
+    # The adapter writes stderr under the working directory, and the resume path
+    # rebuilds that same path — the clone root deliberately holds no stderr log,
+    # so a regression back to it would surface here.
     mock_fs.write(File.join(working_directory, "claude_stderr.log"), "")
 
     # A resumable conversation exists — but only under the *working directory's*
@@ -8267,7 +8266,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     current_pid = first_pid
     mock_cli_adapter.resume_hook = ->(_opts) do
       current_pid = second_pid
-      { pid: second_pid, stderr_log_path: File.join(clone_path, "claude_stderr.log") }
+      { pid: second_pid, stderr_log_path: File.join(working_directory, "claude_stderr.log") }
     end
 
     wait_call_count = 0
@@ -8329,17 +8328,16 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     mock_fs.mkdir_p(clone_path)
     mock_fs.mkdir_p(working_directory)
-    # The adapter writes stderr under the working directory; the resume path
-    # reconstructs the path under the clone root (issue #187). Provide both, so
-    # this fixture takes no position on which of the two is correct.
-    mock_fs.write(File.join(clone_path, "claude_stderr.log"), "")
+    # The adapter writes stderr under the working directory, and the resume path
+    # rebuilds that same path — the clone root deliberately holds no stderr log,
+    # so a regression back to it would surface here.
     mock_fs.write(File.join(working_directory, "claude_stderr.log"), "")
     write_transcript_with_assistant_message(mock_fs, working_directory, session_uuid)
 
     current_pid = first_pid
     mock_cli_adapter.resume_hook = ->(_opts) do
       current_pid = second_pid
-      { pid: second_pid, stderr_log_path: File.join(clone_path, "claude_stderr.log") }
+      { pid: second_pid, stderr_log_path: File.join(working_directory, "claude_stderr.log") }
     end
 
     wait_call_count = 0

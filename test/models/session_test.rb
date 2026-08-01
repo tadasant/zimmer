@@ -24,6 +24,55 @@ class SessionTest < ActiveSupport::TestCase
     assert_match(/status.+NOT IN \(3, 4\)/, Session.with_github_prs.to_sql)
   end
 
+  # ===========================================================================
+  # #stderr_log_path / #working_directory (#187)
+  # ===========================================================================
+  #
+  # The single helper every caller that reconnects to a process it did not spawn
+  # rebuilds the stderr path from. Two things it must get right: the directory
+  # (an agent-root session spawns in a subdirectory of the clone, and writes its
+  # log there) and the filename (per runtime).
+
+  test "stderr_log_path uses the working directory, not the clone root" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :running,
+      agent_runtime: "claude_code",
+      metadata: { "clone_path" => "/tmp/clone", "working_directory" => "/tmp/clone/apps/web" }
+    )
+
+    assert_equal "/tmp/clone/apps/web/claude_stderr.log", session.stderr_log_path
+  end
+
+  test "stderr_log_path falls back to the clone root when no working directory is recorded" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :running,
+      agent_runtime: "claude_code",
+      metadata: { "clone_path" => "/tmp/clone" }
+    )
+
+    assert_equal "/tmp/clone/claude_stderr.log", session.stderr_log_path
+  end
+
+  test "stderr_log_path names the file after the session's own runtime" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :running,
+      agent_runtime: "codex",
+      metadata: { "clone_path" => "/tmp/clone", "working_directory" => "/tmp/clone" }
+    )
+
+    assert_equal "/tmp/clone/codex_stderr.log", session.stderr_log_path
+  end
+
+  test "stderr_log_path is nil before the session establishes a working directory" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :waiting
+    )
+
+    assert_nil session.working_directory
+    assert_nil session.stderr_log_path,
+      "A relative path built from an empty clone root is worse than nothing — callers guard on nil"
+  end
+
   # Test clone-only sessions (prompt is optional)
   test "should allow creation without prompt (clone-only session)" do
     session = Session.new(

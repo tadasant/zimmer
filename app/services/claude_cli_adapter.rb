@@ -24,26 +24,23 @@ class ClaudeCliAdapter
 
   class ClaudeCliError < StandardError; end
 
-  # Refuse to spawn without a working directory. Process.spawn would otherwise
-  # reject a nil chdir deep inside the C call with "no implicit conversion of nil
-  # into String", which tells an operator nothing about which argument was nil.
-  #
-  # A nil working_dir is always a caller bug, and it has two possible causes: the
-  # session never established a clone (it died during its first spawn, before
-  # metadata was written), or a caller failed to load the established one from
-  # session metadata. The message names both — naming only the first sends an
-  # operator hunting for a missing clone that may be sitting intact on disk.
-  #
-  # A class method so the test double enforces the identical contract: a double
-  # that spawns happily with a nil working dir hides this class of bug from the
-  # suite.
-  def self.validate_working_dir!(working_dir)
-    return unless working_dir.nil? || (working_dir.is_a?(String) && working_dir.strip.empty?)
+  # The stderr log Claude Code's process writes inside its working directory.
+  # Part of the RuntimeCliAdapter contract — every caller that rebuilds a stderr
+  # path (Session#stderr_log_path) reads it from here rather than hardcoding it.
+  STDERR_LOG_FILENAME = "claude_stderr.log"
 
-    raise ClaudeCliError,
-      "Cannot spawn Claude CLI: working directory is missing (got #{working_dir.inspect}). " \
-      "Either the session never established a clone/working directory, or the caller did not " \
-      "load session.metadata[\"working_directory\"] before spawning."
+  def self.stderr_log_filename
+    STDERR_LOG_FILENAME
+  end
+
+  # Keep the runtime's own error type for the shared spawn guards
+  # (RuntimeCliAdapter::ClassMethods#validate_working_dir!).
+  def self.spawn_error_class
+    ClaudeCliError
+  end
+
+  def self.cli_label
+    "Claude CLI"
   end
 
   # Tools that Zimmer-spawned Claude Code sessions must never invoke.
@@ -415,7 +412,7 @@ class ClaudeCliAdapter
     validate_spawn_args!(command, working_dir)
     @logger.info "Spawning Claude CLI with stream-json: #{command.join(' ')}"
 
-    stderr_log_path = File.join(working_dir, "claude_stderr.log")
+    stderr_log_path = self.class.stderr_log_path(working_dir)
 
     # For mock testing, handle stderr differently
     stderr_file = if !@file_system.is_a?(RealFileSystemAdapter)
@@ -509,7 +506,7 @@ class ClaudeCliAdapter
     validate_spawn_args!(command, working_dir)
     @logger.info "Spawning Claude CLI: #{command.join(' ')}"
 
-    stderr_log_path = File.join(working_dir, "claude_stderr.log")
+    stderr_log_path = self.class.stderr_log_path(working_dir)
 
     # For mock testing, handle stderr differently
     # Check if we're using a mock file system by checking if it's NOT a RealFileSystemAdapter

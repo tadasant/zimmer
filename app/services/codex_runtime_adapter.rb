@@ -62,6 +62,25 @@ class CodexRuntimeAdapter
 
   class CodexCliError < StandardError; end
 
+  # The stderr log the Codex process writes inside its working directory. Part of
+  # the RuntimeCliAdapter contract — callers that rebuild a stderr path
+  # (Session#stderr_log_path, CodexMcpStatusDetector) read it from here.
+  STDERR_LOG_FILENAME = "codex_stderr.log"
+
+  def self.stderr_log_filename
+    STDERR_LOG_FILENAME
+  end
+
+  # Keep the runtime's own error type for the shared spawn guards
+  # (RuntimeCliAdapter::ClassMethods#validate_working_dir!).
+  def self.spawn_error_class
+    CodexCliError
+  end
+
+  def self.cli_label
+    "Codex CLI"
+  end
+
   attr_accessor :process_manager, :file_system, :zimmer_session_id
 
   def initialize(logger: Rails.logger)
@@ -89,6 +108,11 @@ class CodexRuntimeAdapter
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
               append_system_prompt: nil, model: nil, auto_compact_window: nil)
+    # Before anything touches working_dir — AGENTS.md delivery and the
+    # --output-last-message path both join onto it, so the guard has to run here
+    # rather than at spawn time to keep its actionable message.
+    self.class.validate_working_dir!(working_dir)
+
     write_system_prompt(working_dir, append_system_prompt)
 
     command = build_command(
@@ -115,6 +139,8 @@ class CodexRuntimeAdapter
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
              append_system_prompt: nil, model: nil, auto_compact_window: nil)
+    self.class.validate_working_dir!(working_dir)
+
     write_system_prompt(working_dir, append_system_prompt)
 
     command = build_resume_command(
@@ -243,9 +269,11 @@ class CodexRuntimeAdapter
   # stdin/stdout are detached (the transcript pipeline reads Codex's rollout file
   # rather than stdout).
   def spawn_process(command, working_dir:)
+    self.class.validate_working_dir!(working_dir)
+
     @logger.info "Spawning Codex CLI: #{command.join(' ')}"
 
-    stderr_log_path = File.join(working_dir, "codex_stderr.log")
+    stderr_log_path = self.class.stderr_log_path(working_dir)
 
     # For mock testing, create the file in the mock file system and redirect the
     # real process's stderr to /dev/null; otherwise open the real log file.

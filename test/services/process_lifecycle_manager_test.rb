@@ -642,6 +642,11 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     # Recovery used execute (fresh start), dropping the dead resume id.
     assert_equal 2, codex_adapter.executed_commands.size
     assert_equal session.prompt, codex_adapter.executed_commands.last[:prompt]
+    # ...and the stderr log it now tails is the Codex one, so the NEXT failed
+    # resume is still detectable (#187).
+    assert_equal stderr_path, manager.stderr_log_path
+    assert_not_includes manager.stderr_log_path, "claude_stderr.log",
+      "A Codex session must never be handed a Claude stderr filename"
   end
 
   test "Codex exit 1 with unrelated stderr fails and surfaces stderr to the user" do
@@ -2190,6 +2195,42 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "This park is not a quota park — a string sniff would miss it"
     assert @session.reload.metadata["auth_outage_reason"].present?,
       "The marker must be set before AgentSessionJob inspects it"
+  end
+
+  # ===========================================================================
+  # Rebuilt stderr log path (#187)
+  # ===========================================================================
+  #
+  # After a recovery spawn, the manager rebuilds the stderr path it tails from
+  # session state. Building it from the clone root, or with a hardcoded Claude
+  # filename, points a recovered session at a file that does not exist — and
+  # both context-length and failed-resume recovery are DETECTED by reading that
+  # file, so the next recovery silently never fires.
+
+  test "recovery rebuilds the stderr path under the working directory, not the clone root" do
+    clone_path = "/tmp/agent-root-clone"
+    working_dir = "/tmp/agent-root-clone/apps/web"
+    stderr_path = File.join(working_dir, "claude_stderr.log")
+    @mock_file_system.mkdir_p(working_dir)
+    @session.update!(metadata: @session.metadata.merge(
+      "clone_path" => clone_path, "working_directory" => working_dir
+    ))
+
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: working_dir)
+
+    # A failed-resume signature routes through the recovery path, which resets
+    # the manager's stderr path after respawning.
+    @mock_file_system.write(stderr_path, "No conversation found with session ID: some-uuid\n")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: working_dir)
+
+    assert_equal :continue, decision.action
+    assert_equal stderr_path, manager.stderr_log_path,
+      "The rebuilt path must be the working directory's log — the clone root's does not exist"
+    refute_equal File.join(clone_path, "claude_stderr.log"), manager.stderr_log_path
   end
 
   # The quota signature ApiErrorRetryService classifies as :quota_exceeded.

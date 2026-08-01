@@ -1402,7 +1402,7 @@ class SessionsController < ApplicationController
 
       # Set up the manager with the existing process PID for termination
       # We use resume_monitoring to establish the manager state, then terminate
-      stderr_log_path = File.join(@session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+      stderr_log_path = @session.stderr_log_path
       resume_result = lifecycle_manager.resume_monitoring(
         pid: process_pid,
         stderr_log_path: stderr_log_path
@@ -3059,7 +3059,7 @@ class SessionsController < ApplicationController
       )
 
       # Set up the manager with the existing process PID for termination
-      stderr_log_path = File.join(@session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+      stderr_log_path = @session.stderr_log_path
       resume_result = lifecycle_manager.resume_monitoring(
         pid: process_pid,
         stderr_log_path: stderr_log_path

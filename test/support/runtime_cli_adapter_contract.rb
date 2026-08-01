@@ -45,6 +45,9 @@ module RuntimeCliAdapterContractAssertions
     assert_kind_of Array, adapter.disallowed_tools
     assert_kind_of Hash, adapter.runtime_env_vars
 
+    assert_runtime_cli_adapter_stderr_log_path(klass)
+    assert_runtime_cli_adapter_working_dir_guard(klass)
+
     execute_missing = EXECUTE_KEYWORDS - runtime_cli_adapter_keyword_parameters(klass, :execute)
     assert_empty execute_missing, "#{klass}#execute is missing keyword(s): #{execute_missing.inspect}"
 
@@ -60,6 +63,41 @@ module RuntimeCliAdapterContractAssertions
     %i[context_length_error? failed_resume_recovery_needed? api_error_for_retry?].each do |method_name|
       assert_respond_to strategy, method_name
     end
+  end
+
+  # Every runtime names its own stderr log, and every caller that reconnects to a
+  # process it did not spawn rebuilds the path from here (Session#stderr_log_path).
+  # A runtime that skipped this would be handed another runtime's filename and tail
+  # a file that never exists — which silently disables the recovery paths that are
+  # detected by reading it (#187).
+  def assert_runtime_cli_adapter_stderr_log_path(klass)
+    filename = klass.stderr_log_filename
+    assert_kind_of String, filename
+    assert_predicate filename, :present?
+    assert_equal File.basename(filename), filename,
+      "#{klass}.stderr_log_filename must be a bare filename, not a path: #{filename.inspect}"
+
+    assert_equal File.join("/tmp/contract-test", filename), klass.stderr_log_path("/tmp/contract-test")
+    assert_nil klass.stderr_log_path(nil),
+      "#{klass}.stderr_log_path(nil) must be nil, not a relative path rooted at nothing"
+    assert_nil klass.stderr_log_path("")
+  end
+
+  # The nil/blank working-directory guard is part of the shared contract, not one
+  # runtime's private check: every runtime is spawned by the same recovery paths,
+  # and a nil chdir otherwise fails deep inside Process.spawn with a message that
+  # names no argument (#187).
+  def assert_runtime_cli_adapter_working_dir_guard(klass)
+    [ nil, "", "   " ].each do |bad|
+      error = assert_raises(StandardError, "#{klass} must refuse to spawn with working_dir #{bad.inspect}") do
+        klass.validate_working_dir!(bad)
+      end
+      assert_match(/working directory is missing/, error.message)
+      refute_match(/no implicit conversion of nil into String/, error.message)
+    end
+
+    assert_nil klass.validate_working_dir!("/tmp/contract-test"),
+      "#{klass} must accept a present working directory"
   end
 
   private
