@@ -8,19 +8,24 @@
 # extraction its own comment called for, so GithubCommentAuthorshipHook could ask
 # the same questions without a second copy of the shape handling.
 #
-# Two questions are answered:
+# Three questions are answered:
 #   - #tool_call_ids_matching(pattern) — the ids of shell invocations whose command
 #     matches a pattern (Claude tool_use ids / Codex call_ids).
 #   - #tool_results — every tool result as { id:, text:, is_error: }.
+#   - #assistant_texts — the agent's own prose, message by message.
 #
 # Shape notes:
 #   - Claude Code: tool_use/tool_result blocks; a shell command lives in a Bash
 #     tool_use's `input.command`; a result's failure is its own `is_error` flag.
+#     Assistant prose is a `type: "assistant"` line whose content is a String or
+#     an array of `type: "text"` blocks.
 #   - Codex: response_item function_call/local_shell_call (shell argv) and
 #     function_call_output (result text); a shell's exit code lives on a separate
 #     `exec_command_end` event_msg line, correlated by call_id. The OpenTranscripts
 #     normalizer intentionally drops those UI-side event_msg lines, so exit codes
 #     are read straight from the rollout rather than from normalized events.
+#     Assistant prose is a response_item `message` payload with role "assistant"
+#     and `output_text` content blocks (plus the UI-side `agent_message` event).
 class TranscriptHooks::ToolCallParser
   # @param session [Session] the session whose runtime selects the shape
   # @param parsed_transcript [Array<Hash>] JSONL transcript lines, already parsed
@@ -54,6 +59,14 @@ class TranscriptHooks::ToolCallParser
   # Every shell invocation in the transcript.
   # @return [Array<Hash>] each { id: String, command: String }
   def shell_calls
+    raise NotImplementedError
+  end
+
+  # The agent's own prose, one entry per assistant message. Kept separate from
+  # tool results because the two carry different weight: a tool result is the
+  # world talking, an assistant message is the session talking about what it did.
+  # @return [Array<String>]
+  def assistant_texts
     raise NotImplementedError
   end
 end
