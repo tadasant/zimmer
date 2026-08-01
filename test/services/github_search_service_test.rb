@@ -4,13 +4,15 @@ require "test_helper"
 require "mocha/minitest"
 
 class GithubSearchServiceTest < ActiveSupport::TestCase
-  # A stand-in for Process::Status with a controllable #success?.
-  Status = Struct.new(:success?)
+  # A stand-in for Process::Status with a controllable #success?. Built from the
+  # shared helper so it answers #exitstatus and #signaled? too: the failure path
+  # formats those, and a real Process::Status always has them.
+  def status(success) = fake_process_status(exitstatus: success ? 0 : 1)
 
   test "configured? is true when gh auth status exits 0" do
     BoundedSubprocess.expects(:run)
       .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
-      .returns([ "", "Logged in", Status.new(true) ])
+      .returns([ "", "Logged in", status(true) ])
     assert GithubSearchService.configured?
   end
 
@@ -18,7 +20,7 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     # This is the staging failure mode: gh present but no credential.
     BoundedSubprocess.expects(:run)
       .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
-      .returns([ "", "You are not logged into any GitHub hosts. To get started with GitHub CLI, please run: gh auth login", Status.new(false) ])
+      .returns([ "", "You are not logged into any GitHub hosts. To get started with GitHub CLI, please run: gh auth login", status(false) ])
     assert_not GithubSearchService.configured?
   end
 
@@ -52,7 +54,7 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
   end
 
   test "search_issues raises SearchError on a non-zero gh exit" do
-    BoundedSubprocess.stubs(:run).returns([ "", "API rate limit exceeded", Status.new(false) ])
+    BoundedSubprocess.stubs(:run).returns([ "", "API rate limit exceeded", status(false) ])
 
     error = assert_raises(GithubSearchService::SearchError) do
       GithubSearchService.search_issues("is:open is:pr repo:owner/a")

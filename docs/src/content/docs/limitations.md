@@ -1084,10 +1084,10 @@ Two consequences, one handled and one not:
 
 - **A lost exit status is handled.** `Open3.capture3`'s `wait_thr` is a `Process.detach` thread; when
   the reaper gets there first, that thread's `waitpid` gets `ECHILD` and `wait_thr.value` returns
-  nil, so `capture3` returns `[stdout, stderr, nil]`. Every call site reads that status through
-  `SubprocessStatus`, which treats nil as a failure — the caller retries on its next tick rather than
-  crashing or, worse, treating an unverifiable result as a success. What is still lost is the work:
-  a poll tick throws away a `gh` result it already has in hand, because it cannot vouch for it.
+  nil, so `capture3` returns `[stdout, stderr, nil]`. Call sites read that status through
+  `SubprocessStatus`, which treats nil as a failure — the caller retries rather than crashing or,
+  worse, treating an unverifiable result as a success. What is still lost is the work: a poll tick
+  throws away a `gh` result it already has in hand, because it cannot vouch for it.
 - **A lost `handle_exit` is not.** `ProcessLifecycleManager#wait_nonblock` calls `waitpid` on a
   specific pid to route the child's exit through `handle_exit`, which owns SIGTERM retry, `/compact`
   retry on context-length errors, API server-error backoff, and `failure_reason` mapping. If the

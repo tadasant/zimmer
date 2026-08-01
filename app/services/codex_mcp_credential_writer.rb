@@ -330,8 +330,9 @@ class CodexMcpCredentialWriter
       stdin_command = "add-generic-password -U -a \"#{credential.credential_key}\" -s \"#{KEYCHAIN_SERVICE_NAME}\" -w \"#{blob}\"\n"
       result = Open3.capture3("security", "-i", stdin_data: stdin_command)
 
-      unless result[2].success?
-        Rails.logger.warn "[CodexMcpCredentialWriter] Failed to write #{credential.credential_key} to macOS Keychain: #{result[1]}"
+      unless SubprocessStatus.success?(result[2])
+        Rails.logger.warn "[CodexMcpCredentialWriter] Failed to write #{credential.credential_key} to macOS Keychain: " \
+          "#{SubprocessStatus.describe_failure(result[2], result[1])}"
       end
     end
 

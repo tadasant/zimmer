@@ -79,6 +79,9 @@ class AirPrepareService
   # always retried). Reuses GitCloneService's transient git patterns and adds the
   # signatures AIR's own clone wrapper emits (`spawnSync git ETIMEDOUT`,
   # `Failed to clone …`).
+  # Inherits GitCloneService's transient set, which already carries
+  # SubprocessStatus::REAPED_DESCRIPTION — an `air prepare` whose exit code was
+  # never read is retryable for the same reason a clone is.
   TRANSIENT_AIR_PREPARE_PATTERNS = Regexp.union(
     GitCloneService::TRANSIENT_CLONE_ERROR_PATTERNS,
     /ETIMEDOUT/,

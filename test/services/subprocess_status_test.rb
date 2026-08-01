@@ -6,8 +6,8 @@ class SubprocessStatusTest < ActiveSupport::TestCase
   # such a status is a *failure*, never a success, and never raises.
 
   test "success? is true only for a status that exited zero" do
-    assert SubprocessStatus.success?(status_double(success: true, exitstatus: 0))
-    assert_not SubprocessStatus.success?(status_double(success: false, exitstatus: 1))
+    assert SubprocessStatus.success?(fake_process_status(exitstatus: 0))
+    assert_not SubprocessStatus.success?(fake_process_status(exitstatus: 1))
   end
 
   test "success? treats a nil status as a failure rather than raising" do
@@ -23,7 +23,7 @@ class SubprocessStatusTest < ActiveSupport::TestCase
   end
 
   test "exit_code returns the exit status when known and nil when it is not" do
-    assert_equal 8, SubprocessStatus.exit_code(status_double(success: false, exitstatus: 8))
+    assert_equal 8, SubprocessStatus.exit_code(fake_process_status(exitstatus: 8))
 
     assert_nothing_raised do
       assert_nil SubprocessStatus.exit_code(nil)
@@ -37,7 +37,7 @@ class SubprocessStatusTest < ActiveSupport::TestCase
   end
 
   test "describe_failure names the exit code when it is known" do
-    description = SubprocessStatus.describe_failure(status_double(success: false, exitstatus: 3))
+    description = SubprocessStatus.describe_failure(fake_process_status(exitstatus: 3))
 
     assert_equal "exit status 3", description
   end
@@ -53,7 +53,7 @@ class SubprocessStatusTest < ActiveSupport::TestCase
   test "describe_failure appends stderr when present" do
     assert_equal(
       "exit status 1: HTTP 502",
-      SubprocessStatus.describe_failure(status_double(success: false, exitstatus: 1), "HTTP 502\n")
+      SubprocessStatus.describe_failure(fake_process_status(exitstatus: 1), "HTTP 502\n")
     )
   end
 
@@ -68,11 +68,25 @@ class SubprocessStatusTest < ActiveSupport::TestCase
     assert_equal SubprocessStatus::REAPED_DESCRIPTION, SubprocessStatus.describe_failure(nil, nil)
   end
 
-  private
+  test "describe_failure names the signal for a signaled child rather than a blank exit code" do
+    # A real Process::Status for a signaled child has a nil #exitstatus, and
+    # BoundedSubprocess SIGKILLs whole process groups on timeout — so interpolating
+    # it blindly would print "exit status " on the very path this module exists to
+    # keep readable.
+    description = SubprocessStatus.describe_failure(fake_process_status(signal: 9), "killed")
 
-  def status_double(success:, exitstatus:)
-    Struct.new(:success, :exitstatus) do
-      def success? = success
-    end.new(success, exitstatus)
+    assert_equal "killed by signal 9: killed", description
+    assert_not_includes description, "exit status "
+    # Still a failure, and still not the reaped case.
+    assert_not SubprocessStatus.success?(fake_process_status(signal: 9))
+    assert_not_includes description, SubprocessStatus::REAPED_DESCRIPTION
+  end
+
+  test "unknown? is true only when we never learned how the command ended" do
+    # Retrying callers (GitCloneService, AirPrepareService) classify on this: a lost
+    # race is transient, a real non-zero exit is not.
+    assert SubprocessStatus.unknown?(nil)
+    assert_not SubprocessStatus.unknown?(fake_process_status(exitstatus: 1))
+    assert_not SubprocessStatus.unknown?(fake_process_status(exitstatus: 0))
   end
 end

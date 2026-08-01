@@ -14,6 +14,27 @@
 #     assert_equal 0, status.exitstatus
 #   end
 module ProcessStatusHelpers
+  # A faithful stand-in for Process::Status: answers every predicate the real
+  # object answers, in the combinations the real object produces.
+  #
+  # Prefer this over a double that stubs only the one method the code under test
+  # happens to call today. A real Process::Status never raises NoMethodError, so
+  # a partial double turns any new read — a failure message that wants the exit
+  # code, say — into a test failure that describes nothing about the code.
+  #
+  # @param exitstatus [Integer] exit code; ignored when signal is given, because
+  #   a signaled child's real #exitstatus is nil
+  # @param signal [Integer, nil] termsig for a child killed by a signal
+  # @return [Struct] quacks like Process::Status
+  def fake_process_status(exitstatus: 0, signal: nil)
+    FakeProcessStatus.new(signal ? nil : exitstatus, signal)
+  end
+
+  FakeProcessStatus = Struct.new(:exitstatus, :termsig) do
+    def success? = !exitstatus.nil? && exitstatus.zero?
+    def signaled? = !termsig.nil?
+  end
+
   # Create mock successful status
   # @param exit_code [Integer] Exit code (default: 0)
   # @return [Minitest::Mock] Mock status object that reports success

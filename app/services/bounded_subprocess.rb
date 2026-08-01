@@ -33,7 +33,10 @@ module BoundedSubprocess
   # @param env [Hash] extra environment for the child
   # @param cwd [String, nil] working directory for the child
   # @param timeout [Numeric] wall-clock seconds before the process group is killed
-  # @return [Array(String, String, Process::Status)] stdout, stderr, status
+  # @return [Array(String, String, Process::Status, nil)] stdout, stderr, status —
+  #   the status is nil when the child was reaped by something else before
+  #   `wait_thr`'s own waitpid ran (ECHILD). Read it through SubprocessStatus,
+  #   which treats that case as a failure rather than dereferencing nil.
   # @raise [TimeoutError] if the deadline is exceeded
   def run(command_array, timeout:, env: {}, cwd: nil)
     spawn_opts = { pgroup: true }
