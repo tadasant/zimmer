@@ -1048,6 +1048,49 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/<turbo-stream\s+action="prepend"\s+target="category_grid_#{category.id}"/, response.body)
   end
 
+  test "undo_archive turbo_stream sends a categorized card to the flat grid in a flat view" do
+    # The flat sort views render one #sessions_grid and no per-category grids, so
+    # prepending to category_grid_<id> there would drop the card silently.
+    category = Category.create!(name: "Flat view target")
+    session = sessions(:failed)
+    session.update!(category_id: category.id, status: :archived, archived_at: 1.second.ago)
+
+    cookies[SessionsController::VIEW_MODE_COOKIE] = SessionsController::VIEW_MODE_LAST_TOUCHED
+    post undo_archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="prepend"\s+target="sessions_grid"/, response.body)
+    assert_no_match(/target="category_grid_#{category.id}"/, response.body)
+  end
+
+  test "undo_archive turbo_stream sends a categorized card to the flat grid while searching" do
+    category = Category.create!(name: "Search view target")
+    session = sessions(:failed)
+    session.update!(category_id: category.id, status: :archived, archived_at: 1.second.ago)
+
+    cookies[SessionsController::VIEW_MODE_COOKIE] = SessionsController::VIEW_MODE_CATEGORIES
+    post undo_archive_session_url(session),
+      headers: { "HTTP_REFERER" => root_url(q: "anything") },
+      as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="prepend"\s+target="sessions_grid"/, response.body)
+    assert_no_match(/target="category_grid_#{category.id}"/, response.body)
+  end
+
+  test "a flash message containing a pipe is shown whole, not truncated at it" do
+    # "text|action|id" is how the archive notice attaches its Undo button. A
+    # message whose own prose contains a pipe must not be parsed as one.
+    category = Category.create!(name: "Design|Research")
+    session = sessions(:running)
+
+    patch set_category_session_url(session), params: { category_id: category.id }, as: :turbo_stream
+
+    assert_response :success
+    assert_match(/Moved to &quot;Design\|Research&quot;\./, response.body)
+    assert_no_match(/>Undo</, response.body)
+  end
+
   test "undo_archive turbo_stream streams the expiry alert instead of redirecting" do
     session = sessions(:failed)
     session.update!(status: :archived, archived_at: 6.seconds.ago)

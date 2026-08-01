@@ -835,21 +835,48 @@ class SessionsController < ApplicationController
     )
   end
 
-  # Re-inserts a session's card at the top of the grid it belongs to:
-  # "sessions_grid" for the Uncategorized bucket, "category_grid_<id>" for a
-  # category section. Turbo de-duplicates by element id on prepend, so this is
-  # safe if the card somehow never left. A missing target (the session's own
-  # page, a collapsed-away section) makes the stream a silent no-op.
+  # Re-inserts a session's card at the top of the grid it belongs to. Turbo
+  # de-duplicates by element id on prepend, so this is safe if the card somehow
+  # never left; on the session's own page neither target exists and the stream
+  # is a silent no-op.
   def restored_card_stream(session)
-    target = session.category_id ? "category_grid_#{session.category_id}" : "sessions_grid"
-
     turbo_stream.prepend(
-      target,
+      restored_card_target(session),
       partial: "sessions/session_card_frame",
       locals: { agent_session: session }
     )
   end
   private :restored_card_stream
+
+  # Which grid that is depends on the dashboard view the Undo was clicked from,
+  # because only the categories view renders per-category grids. The flat sort
+  # views and an active search render everything into one "sessions_grid", so a
+  # categorized card has to go there — prepending to a "category_grid_<id>" that
+  # is not in the DOM drops the card silently, and Undo looks like it failed.
+  #
+  # Both signals travel with this POST: the view mode lives in the
+  # VIEW_MODE_COOKIE the browser sends, and the search lives in the query string
+  # of the dashboard page the Undo form sits on, i.e. this request's referer.
+  def restored_card_target(session)
+    return "sessions_grid" if session.category_id.nil?
+    return "sessions_grid" unless resolve_view_mode == VIEW_MODE_CATEGORIES
+    return "sessions_grid" if referer_search_active?
+
+    "category_grid_#{session.category_id}"
+  end
+  private :restored_card_target
+
+  # True when the referring dashboard had a search or agent-root filter applied,
+  # which collapses the category sections into a single flat results grid.
+  def referer_search_active?
+    return false if request.referer.blank?
+
+    query = Rack::Utils.parse_nested_query(URI.parse(request.referer).query.to_s)
+    query["q"].to_s.strip.present? || query["agent_root"].to_s.strip.present?
+  rescue URI::InvalidURIError
+    false
+  end
+  private :referer_search_active?
 
   def bulk_archive
     # TODO: Add authorization check to ensure user can only archive their own sessions
