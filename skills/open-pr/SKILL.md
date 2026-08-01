@@ -1,5 +1,5 @@
 ---
-name: pr
+name: open-pr
 description: >
   Push working state to a PR — commit all changes, push to branch, open PR,
   self-review, subagent review, and wait for CI. Generic workflow usable

@@ -51,7 +51,7 @@ The catalog's own description states the intent: *"resolves fully offline (no pr
 catalogs, no network), so the app's config services always resolve non-empty data."*
 
 **What's in it:** 9 skills, all default-on for the `zimmer` root — 6 Zimmer-specific ones
-(`category: zimmer`) plus 3 vendored generic workflow skills (`category: workflow`: `pr`,
+(`category: zimmer`) plus 3 vendored generic workflow skills (`category: workflow`: `open-pr`,
 `wait-for-ci`, `recover-from-compaction-thrashing`) — 14 MCP servers (only `playwright-custom`
 default-on), 10 roots, 4 plugins, 1 hook, 5 references.
 
@@ -184,14 +184,26 @@ Requested **skill** ids get one more guard, *before* the invocation. A session's
 are validated against the catalog when the session is created, but the catalog moves on
 independently: a local skill renamed (`pr` → `open-pr`) or removed leaves a stale id in a
 long-lived session's stored config. `air prepare` hard-rejects an unknown skill id with exit 1
-(`Error: Unknown skill ID "pr". …`), which would brick startup. So `AirPrepareService#valid_catalog_skills`
+(`Error: Unknown skill ID "pr". …`), which would brick startup. So `AirPrepareService#scrubbed_catalog_skills`
 drops any id not in the live catalog, logs a warning, and raises a deduped "Session self-healed:
 stale catalog skill(s) removed" alert — then prepares with the survivors. This mirrors
 `Trigger#heal_stale_catalog_skills!` (which self-heals the *trigger* path) and gives an unknown
-*skill* the same non-fatal degradation an unknown *root* already gets. It does **not** persist the
-cleaned list — a session prepares once, so the scrub is in-memory only; if the catalog itself failed
-to load (so every id would look stale), the guard leaves the list untouched rather than stripping
-everything.
+*skill* the same non-fatal degradation an unknown *root* already gets. The pruned list is
+**persisted** (`update_column`, so no validation or `updated_at` touch): a session does not prepare
+once — every resume, unarchive, and mid-run clone recreation re-runs `air prepare`, so an
+in-memory-only scrub would re-discover the same stale id and re-alert forever. If the catalog itself
+failed to load (so every id would look stale), the guard leaves the list untouched rather than
+stripping everything, and a failed write degrades to a warning so the scrub can still keep the
+prepare alive.
+
+Renaming a skill in the catalog is what creates those stale ids in the first place, so a rename
+should ship with a **data backfill** that repoints existing `catalog_skills` rows (sessions *and*
+triggers) from the old id to the new one — the heal alone only drops the id, which silently strips
+the skill from long-lived sessions and from every session a trigger spawns.
+`db/migrate/20260801120000_backfill_renamed_open_pr_skill_id.rb` is the worked example for the
+`pr` → `open-pr` rename. Keep such a migration pinned to the one known rename: the catalog is a
+runtime dependency that can resolve differently at migration time, so pruning against it is not
+deterministic. General staleness stays the runtime heal's job.
 
 ## The AIR CLI is installed lazily, at runtime
 
