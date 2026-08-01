@@ -311,9 +311,9 @@ class AirPrepareService
     # skills were valid when the session was created, but the catalog evolves
     # independently, so a renamed/removed local skill (e.g. `pr` → `open-pr`)
     # leaves a stale id that `air prepare` would hard-reject with exit 1 —
-    # bricking startup. scrubbed_catalog_skills drops such ids with a warning +
-    # self-heal alert instead. See its comment for the full rationale.
-    # scrubbed_catalog_skills logs + alerts when it drops a stale id (see below).
+    # bricking startup. scrubbed_catalog_skills drops such ids — persisting the
+    # pruned list, with a warning log and a one-per-session self-heal alert —
+    # instead. See its comment for the full rationale.
     skills = scrubbed_catalog_skills
     cmd += skills.flat_map { |id| [ "--skill", id ] } if skills.present?
     effective_mcp_servers = session.user_selected_mcp_servers
@@ -351,13 +351,18 @@ class AirPrepareService
   # already guards the trigger path, and gives an unknown *skill* the same
   # non-fatal degradation an unknown *root* already gets (RootResolutionError).
   #
-  # Unlike the trigger heal, this does NOT persist the cleaned list: a session
-  # prepares once and AirPrepareService has no mandate to mutate the session
-  # record. Operational cleanup of the stored config is handled separately.
+  # Like the trigger heal, the cleaned list is PERSISTED (update_column, so no
+  # validation/callback runs on a config the user didn't just edit). A session
+  # does not prepare once: every resume, unarchive, and mid-run clone recreation
+  # re-runs `air prepare`, so an in-memory-only scrub re-discovers the same stale
+  # id and re-raises the same alert forever. Writing the pruned list back makes
+  # the drop a one-time event per session, which is what "self-heal" means —
+  # except while the catalog is degraded, where the drop stays in memory (see
+  # persist_scrubbed_catalog_skills).
   #
   # Named for the transformation rather than as a bare query because it is
-  # side-effecting on the drop path (WARN log + self-heal alert), matching the
-  # codebase convention that a plain-noun reader is pure.
+  # side-effecting on the drop path (persist + WARN log + self-heal alert),
+  # matching the codebase convention that a plain-noun reader is pure.
   def scrubbed_catalog_skills
     requested = Array(session.catalog_skills).reject(&:blank?)
     return requested if requested.empty?
@@ -373,12 +378,44 @@ class AirPrepareService
     return requested if stale.empty?
 
     valid = requested - stale
+    persist_scrubbed_catalog_skills(valid, stale)
     Rails.logger.warn(
       "[AirPrepareService] Dropping stale skill(s) #{stale.inspect} not in the AIR catalog " \
       "before `air prepare` for session #{session.id}. Remaining skills: #{valid.inspect}"
     )
     alert_stale_skills_dropped(stale, valid)
     valid
+  end
+
+  # Write the pruned skill list back to the session so the drop happens once
+  # rather than on every prepare.
+  #
+  # update_column mirrors Trigger#heal_stale_catalog_skills!: this is a repair of
+  # stored config, not a user edit, so it must not run validations (the session
+  # may legitimately fail an unrelated validation) or touch updated_at (which
+  # feeds staleness detection and the UI's "last activity" read).
+  #
+  # A write failure must not be able to brick a prepare that the scrub exists to
+  # keep alive, so a DB error degrades to a warning: the in-memory scrub still
+  # applies and the next prepare simply tries the heal again.
+  #
+  # Nothing is written while the catalog is degraded. A failed resolve does not
+  # leave SkillsConfig empty — AirCatalogService serves a last-known-good tree,
+  # which is non-empty and can predate a rename, so a skill that is perfectly
+  # valid today (`open-pr`) looks stale against it. Dropping it in memory costs
+  # one prepare; writing that drop back would erase a valid id permanently and
+  # undo the very backfill that repointed it. The scrub still runs, so a stale
+  # id cannot brick `air prepare` during an outage.
+  def persist_scrubbed_catalog_skills(valid, stale)
+    return unless session.persisted?
+    return if AirCatalogService.degraded?
+
+    session.update_column(:catalog_skills, valid)
+  rescue StandardError => e
+    Rails.logger.warn(
+      "[AirPrepareService] Failed to persist scrubbed skill list for session #{session.id} " \
+      "(stale: #{stale.inspect}): #{e.class}: #{e.message}. Proceeding with the in-memory scrub."
+    )
   end
 
   # Surface a dropped stale skill the same way the trigger self-heal does: a

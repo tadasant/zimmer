@@ -63,12 +63,33 @@ directly from app code** — go through `AirCatalogService`.
 
 3. **Vendor generic skills too — this catalog is the only source.** A standalone
    Zimmer install inherits nothing from an outside orchestrator, so generic
-   workflow skills (`pr`, `wait-for-ci`, `recover-from-compaction-thrashing`) are
+   workflow skills (`open-pr`, `wait-for-ci`, `recover-from-compaction-thrashing`) are
    vendored here just like the Zimmer-specific ones. Group them with
    `"category": "workflow"` so the skill picker keeps them distinct from the
    `zimmer` ones. Everything resolves under a single `@local/` scope, so there is
    no cross-scope shortname collision to worry about — just never register the
    same id twice.
+
+## Renaming a skill
+
+A skill id is stored, not just referenced. Sessions and triggers freeze their
+`catalog_skills` at creation time, so the old id outlives the rename in the
+database. A rename is therefore four moves, not one:
+
+1. Rename the directory and flip **both** ids — `skills/skills.json` (`id` *and*
+   `path`) and the `name` in the body's frontmatter. They must agree.
+2. Sweep the cross-references: `default_in_roots` stays as-is, but prose that
+   names the skill (`air.json`'s description, `AGENTS.md`, `references/*.md`,
+   `references/references.json`, `docs/`) goes stale silently.
+3. Add a data backfill that repoints stored `catalog_skills` on **sessions and
+   triggers** from the old id to the new one —
+   `db/migrate/20260801120000_backfill_renamed_open_pr_skill_id.rb` is the worked
+   example. Without it the runtime self-heals by *dropping* the unknown id
+   (`AirPrepareService#scrubbed_catalog_skills`,
+   `Trigger#heal_stale_catalog_skills!`), which silently strips the skill from
+   long-lived sessions and from every session the trigger spawns.
+4. Verify with `air resolve` before pushing (see below) — a half-done rename is a
+   dangling reference, and that fails the whole test suite.
 
 ## `default_in_roots` — how an artifact becomes default-on
 
