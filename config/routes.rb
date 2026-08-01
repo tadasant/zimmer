@@ -193,9 +193,6 @@ Rails.application.routes.draw do
   post "quotas/login/:attempt_id/code", to: "quotas#submit_login_code", as: :submit_login_code_quotas
   post "quotas/login/:attempt_id/cancel", to: "quotas#cancel_login", as: :cancel_login_quotas
 
-  # API documentation page
-  get "api_docs", to: "api_docs#show", as: :api_docs
-
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the
   # list renders before any probe resolves.

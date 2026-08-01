@@ -44,7 +44,7 @@ has an obvious answer:
 | --- | --- |
 | `app/models/concerns/session_state_machine.rb` | [The session lifecycle](/sessions/lifecycle/) |
 | `app/jobs/agent_session_job.rb`, the CLI adapters | [Spawning and monitoring](/sessions/spawning/) |
-| `config/routes.rb`, `app/controllers/api/**` | [The REST API](/extend/rest-api/) — and `app/views/api_docs/show.html.erb` |
+| `config/routes.rb`, `app/controllers/api/**` | [The REST API](/extend/rest-api/) |
 | `air.json`, `roots.json`, `mcp.json`, `skills/`, `plugins/`, `hooks/` | The [AIR section](/air/overview/) |
 | `RuntimeRegistry`, a new runtime | [Adding an agent harness](/extend/agent-harness/) |
 | `app/extensions/**` | [Extensions](/extend/extensions/) |
