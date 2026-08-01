@@ -15,6 +15,19 @@ class HealthController < ApplicationController
     @health_report = @health_service.full_health_report
   end
 
+  # GET /up/deep
+  #
+  # The strict sibling of `/up`. `/up` answers 200 for a process that booted;
+  # this answers 200 only when the database, the cache, and Redis each responded
+  # to a real round trip, and 503 naming the one that did not. DeepHealthCheck
+  # carries the reasoning, including why this is deliberately not behind the
+  # HealthActionCooldown that guards the maintenance actions below.
+  def deep
+    report = DeepHealthCheck.new.call
+
+    render json: report, status: report[:status] == "ok" ? :ok : :service_unavailable
+  end
+
   def refresh
     @health_service = HealthMonitorService.new
     @health_report = @health_service.full_health_report
