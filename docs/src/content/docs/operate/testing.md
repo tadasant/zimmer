@@ -62,6 +62,17 @@ diffs. Run it on any PR that adds a migration. `test/migrations/schema_dump_test
 half in CI — that the dumps are in the running Active Record version's format, and that `schema.rb`
 is at the newest migration on disk.
 
+**It does not pass today, and that is the finding.** `db/migrate/` is not replayable from zero:
+`20260613193000_add_session_maintenance_indexes` builds a partial index on `sessions.transcript`, and
+no migration in the directory ever creates that column — `db/schema.rb` declares it, so every
+environment got it from a schema load rather than from the migrations. A from-zero `db:migrate` dies
+there with `PG::UndefinedColumn`. Nothing noticed because nothing has migrated from zero since.
+
+The task takes some care to see this at all: `db:migrate` against a database with no
+`schema_migrations` table does **not** run the migrations — it loads `db/schema.rb` and stamps every
+version as applied. So the from-zero pass moves the schema files out of the way first. Without that,
+both passes just re-dump the committed schema and the check reports OK for any drift.
+
 ## Tests that skip themselves
 
 Several tests `skip` when a credential or file is absent — which in CI means they never run at all:

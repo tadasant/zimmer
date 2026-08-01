@@ -37,6 +37,9 @@ class SchemaDumpTest < ActiveSupport::TestCase
     end
   end
 
+  # Scoped to db/schema.rb alone: db/cable_schema.rb belongs to the solid_cable
+  # database, whose migrations_paths (db/cable_migrate) is not a directory in this
+  # repo, so it has no "newest migration" to be at.
   test "db/schema.rb is dumped at the newest migration on disk" do
     newest = Dir.children(Rails.root.join("db/migrate"))
       .filter_map { |name| name[/\A(\d{14})_/, 1] }

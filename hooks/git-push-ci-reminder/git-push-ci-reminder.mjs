@@ -25,16 +25,34 @@ const REMINDER = [
 ].join("\n");
 
 // Matches a push subcommand with any leading git options — `git push`,
-// `git -C /repo push`, `git --no-pager push`. Deliberately does not try to
-// parse compound shell lines beyond finding the invocation.
+// `git -C /repo push`, `git --no-pager push`. Deliberately does not try to parse
+// compound shell lines beyond finding the invocation, and it does not track
+// quoting: `echo "git push"` matches and `bash -c "git push"` does not. Both are
+// acceptable, because the worst a false positive costs is one extra paragraph of
+// context.
 const GIT_PUSH = /(^|[;&|(\s])git\s+(?:-{1,2}[^\s]+(?:\s+[^\s-][^\s]*)?\s+)*push(\s|$|;|&|\||\))/;
 
-// A dry run pushes nothing, so there is no CI to wait for.
-const DRY_RUN = /(^|\s)--dry-run(\s|$)/;
+// A dry run pushes nothing, so there is no CI to wait for. Tested against the
+// push invocation's own arguments rather than the whole command line, so an
+// unrelated `--dry-run` later in a compound command cannot suppress the reminder
+// for a push that really happened.
+const DRY_RUN = /(^|\s)(--dry-run|-n)(\s|$)/;
+
+// Everything from the matched `push` to the end of that command — i.e. up to the
+// next shell separator.
+const PUSH_ARGS = /[;&|)]/;
 
 function isPushCommand(command) {
   if (typeof command !== "string" || command.length === 0) return false;
-  return GIT_PUSH.test(command) && !DRY_RUN.test(command);
+
+  const match = GIT_PUSH.exec(command);
+  if (!match) return false;
+
+  const afterPush = command.slice(match.index + match[0].length);
+  const separator = afterPush.search(PUSH_ARGS);
+  const args = separator === -1 ? afterPush : afterPush.slice(0, separator);
+
+  return !DRY_RUN.test(args);
 }
 
 async function readStdin() {
@@ -65,4 +83,8 @@ async function main() {
   );
 }
 
-main().catch(() => {}).finally(() => process.exit(0));
+// No process.exit(): stdout is a pipe under Claude Code, writes to it are
+// asynchronous, and exiting does not flush them. Once main() settles there is
+// nothing left on the event loop, so Node exits 0 on its own after the payload
+// has actually been written.
+main().catch(() => {});
