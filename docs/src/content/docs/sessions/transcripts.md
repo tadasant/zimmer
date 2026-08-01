@@ -101,11 +101,23 @@ all key off — so if the hook misses, none of the GitHub integration works for 
 `TranscriptArchiveJob` rebuilds a `latest.zip` of all transcripts every 10 minutes (temp file +
 atomic rename). It's served by `GET /api/v1/transcript_archive/download`.
 
-## Rendering caveats
+## Rendering to plain text
 
-The API's `#transcript` renderer handles only `user`, `assistant`, `tool_use`, and `tool_result`
-entry types and silently drops everything else — thinking blocks, system entries. It also
-assumes `content` is a string. Tracked in [#83](https://github.com/tadasant/zimmer/issues/83).
+`TranscriptTextRenderer` turns a parsed transcript into a reading copy. One class serves both
+surfaces that need one — `GET /api/v1/sessions/:id/transcript` and the `get_session` MCP tool's
+`transcript_format: "text"` — because they previously carried separate copies of the same `case`
+and drifted apart.
+
+`user`, `assistant`, `tool_use` and `tool_result` get a labelled section each. Every other entry
+type is labelled and dumped rather than dropped, so the text never quietly disagrees with the raw
+transcript — this matters most for Codex, whose rollout lines are all `session_meta` /
+`response_item` / `event_msg` / `turn_context` and would otherwise render as nothing at all.
+
+Content that arrives as an array of blocks is rendered block by block: `text`, `thinking`, `image`,
+`tool_use`, `tool_result`, and pretty JSON for anything unrecognized.
+
+Two truncations keep this a summary rather than a second copy of the file: tool results at 500
+characters, unrecognized entries at 1,000.
 
 :::danger[Transcripts have no authorization check]
 `app/controllers/sessions_controller.rb:1475` carries a live TODO:

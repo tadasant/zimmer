@@ -761,20 +761,28 @@ module Mcp
 
         # Everything not restarted or continued still gets its transcript re-read
         # from disk — that is what "refreshed" counts, and reporting a hardcoded 0
-        # made the tool disagree with the web bulk refresh it mirrors.
-        sessions.where.not(status: [ :failed, :needs_input ]).where.not(id: restarted_ids).each do |session|
-          refreshed += 1 if refresh_transcript_from_disk(session)
-        rescue StandardError => e
-          errors += 1
-          Rails.logger.error "[Mcp::Tools::ActionSession] Failed to refresh session #{session.id}: #{e.message}"
-        end
+        # made the tool disagree with the web bulk refresh it mirrors. Capped at
+        # the same limit as the restart passes: each iteration is a whole-file read
+        # plus a broadcasting UPDATE, so an instance with hundreds of live sessions
+        # would otherwise make one tool call an unbounded fan-out.
+        sessions
+          .where.not(status: [ :failed, :needs_input ])
+          .where.not(id: restarted_ids)
+          .limit(REFRESH_ALL_LIMIT)
+          .each do |session|
+            refreshed += 1 if refresh_transcript_from_disk(session)
+          rescue StandardError => e
+            errors += 1
+            Rails.logger.error "[Mcp::Tools::ActionSession] Failed to refresh session #{session.id}: #{e.message}"
+          end
 
         refresh_all_result("Refresh complete", refreshed, restarted, continued, errors)
       end
 
       # Re-read one session's transcript from disk. Returns true only when the
-      # stored transcript was actually replaced — nothing to read, or a shorter
-      # filesystem copy (clone recreated at a new path), is not a refresh.
+      # stored transcript actually changed — nothing to read, a byte-identical
+      # copy, or a shorter filesystem copy (clone recreated at a new path) is not
+      # a refresh.
       def refresh_transcript_from_disk(session)
         transcript_dir = transcript_directory(session)
         return false if transcript_dir.nil? || !Dir.exist?(transcript_dir)
@@ -783,6 +791,8 @@ module Mcp
         return false unless transcript_file
 
         content = File.read(transcript_file)
+        return false if session.transcript == content
+
         message_count = count_transcript_messages(content)
 
         if Session.transcript_regression?(session.transcript, content)

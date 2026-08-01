@@ -21,6 +21,16 @@ class TranscriptTextRenderer
   # this rendering is for reading, not for reconstructing them.
   TOOL_RESULT_TRUNCATION = 500
 
+  # How much of an unrecognized entry to keep. Rendering these instead of dropping
+  # them is the point of this class, but they must not be rendered *whole*: a Codex
+  # rollout is entirely `session_meta` / `response_item` / `event_msg` /
+  # `turn_context` envelopes, so every one of its entries lands here, and Claude
+  # Code's `file-history-snapshot` entries embed entire files. Pretty-printing
+  # those in full would make this "readable summary" larger than the raw
+  # transcript, and it feeds `get_session`'s text format straight into an agent's
+  # context window.
+  UNKNOWN_ENTRY_TRUNCATION = 1_000
+
   class << self
     # @param entries [Array] the output of Session#parsed_transcript
     # @return [String] the plain-text rendering
@@ -47,7 +57,8 @@ class TranscriptTextRenderer
       else
         label = type.presence || "Entry"
         role = message["role"].presence
-        [ "--- #{label.titleize}#{role ? " (#{role})" : ''} ---", content_text(content.nil? ? entry : content), "" ]
+        body = content_text(content.nil? ? entry : content).truncate(UNKNOWN_ENTRY_TRUNCATION)
+        [ "--- #{label.titleize}#{role ? " (#{role})" : ''} ---", body, "" ]
       end
     end
 

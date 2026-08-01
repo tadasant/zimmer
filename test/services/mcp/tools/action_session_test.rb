@@ -466,17 +466,53 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
   end
 
   test "refresh_all reports zero refreshed when nothing is readable from disk" do
+    session = sessions(:running)
+    Session.where.not(id: session.id).update_all(status: Session.statuses[:archived])
+
     @tool.stubs(:transcript_directory).returns(nil)
 
     assert_includes @tool.call("action" => "refresh_all"), "- **Refreshed:** 0"
+    assert_nil session.reload.transcript
   end
 
+  test "refresh_all does not count a transcript identical to the stored one" do
+    session = sessions(:running)
+    Session.where.not(id: session.id).update_all(status: Session.statuses[:archived])
+
+    stored = JSON.generate({ type: "user", message: { role: "user", content: "unchanged" } })
+    session.update!(transcript: stored)
+
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "main.jsonl")
+      File.write(file, stored)
+
+      @tool.stubs(:transcript_directory).returns(dir)
+      TranscriptFileLocator.stubs(:find_main_transcript).returns(file)
+
+      assert_no_difference "session.logs.count" do
+        assert_includes @tool.call("action" => "refresh_all"), "- **Refreshed:** 0"
+      end
+    end
+  end
+
+  # Readable content is staged on disk on purpose: without the restarted_ids
+  # guard this session WOULD be re-read, so the test fails if the guard goes.
   test "refresh_all does not re-read a session it just restarted" do
     failed = sessions(:failed)
     Session.where.not(id: failed.id).update_all(status: Session.statuses[:archived])
 
-    @tool.expects(:refresh_transcript_from_disk).never
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "main.jsonl")
+      File.write(file, JSON.generate({ type: "user", message: { role: "user", content: "from disk" } }))
 
-    assert_includes @tool.call("action" => "refresh_all"), "- **Refreshed:** 0"
+      @tool.stubs(:transcript_directory).returns(dir)
+      TranscriptFileLocator.stubs(:find_main_transcript).returns(file)
+
+      result = @tool.call("action" => "refresh_all")
+
+      assert_includes result, "- **Restarted:** 1"
+      assert_includes result, "- **Refreshed:** 0"
+      assert_nil failed.reload.transcript, "the restarted session's transcript must be left for its new job"
+    end
   end
 end
