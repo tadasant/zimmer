@@ -1365,7 +1365,9 @@ Heuristics have two failure directions and neither announces itself:
 
 - **Too loose** and a PR gets attributed to a session that had nothing to do with it. The prose path
   is the exposed edge here — an agent that writes "opened the PR at `<url>`" about someone else's
-  same-repo PR would be believed.
+  same-repo PR would be believed. Requiring an inflected verb keeps the common "the open PR:
+  `<url>`" reference out, but a genuine first-person claim about someone else's PR is
+  indistinguishable from a true one.
 - **Too tight** and a session's own PR is never recorded, so `GitHubPullRequestPollerJob`,
   `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` all quietly do nothing for it. A PR
   opened through a path the hook can't see — an MCP GitHub tool, the web UI — and never mentioned in

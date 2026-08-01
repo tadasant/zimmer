@@ -85,6 +85,25 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/other/proj/pull/42" ], tracked_urls
   end
 
+  test "records only the created repo's PR when the create command is chained with another repo's list" do
+    # A command is a whole shell line, so one result can hold URLs the create had
+    # nothing to do with. The repo the create names bounds what it vouches for.
+    run_hook claude_pr_create(
+      "https://github.com/other/proj/pull/10\nhttps://github.com/third/party/pull/99",
+      command: "gh pr create --repo other/proj && gh pr list --repo third/party --json url"
+    )
+
+    assert_equal [ "https://github.com/other/proj/pull/10" ], tracked_urls
+  end
+
+  test "records an upstream PR when the create names no repo" do
+    # `gh pr create` from a fork clone opens against the parent repo without ever
+    # naming it, so a create with no --repo keeps vouching for any repo.
+    run_hook claude_pr_create("https://github.com/upstream/proj/pull/10")
+
+    assert_equal [ "https://github.com/upstream/proj/pull/10" ], tracked_urls
+  end
+
   test "records a cross-repo gh pr create PR even when git_root is not a GitHub URL" do
     @session.update!(git_root: "https://gitlab.com/group/proj.git")
 
@@ -214,6 +233,30 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     run_hook claude_assistant_text("I'm creating a plan to review https://github.com/owner/repo/pull/999 before touching it.")
 
     assert_nil tracked_urls
+  end
+
+  test "ignores a same-repo PR described as an open PR" do
+    # "open" is an adjective as often as a verb, and this is how prose refers to
+    # someone else's PR — so only inflected verbs read as a creation claim.
+    [
+      "There are two open PRs: https://github.com/owner/repo/pull/1 and one more.",
+      "I reviewed the open PR: https://github.com/owner/repo/pull/1 and left comments.",
+      "I will open the PR after https://github.com/owner/repo/pull/1 lands.",
+      "Changed files: https://github.com/owner/repo/pull/1",
+      "Opening https://github.com/owner/repo/pull/1 to read the discussion."
+    ].each do |text|
+      @session.update!(custom_metadata: {})
+
+      run_hook claude_assistant_text(text)
+
+      assert_nil tracked_urls, "expected #{text.inspect} not to read as a creation claim"
+    end
+  end
+
+  test "records a same-repo PR claimed on the line above the URL" do
+    run_hook claude_assistant_text("I've opened the pull request:\n\nhttps://github.com/owner/repo/pull/276")
+
+    assert_equal [ "https://github.com/owner/repo/pull/276" ], tracked_urls
   end
 
   test "ignores a same-repo PR referenced without any creation claim" do
@@ -631,6 +674,25 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
 
     assert_no_difference -> { @session.logs.count } do
       TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session.reload)
+    end
+  end
+
+  test "reads the shipped goal catalog the way the catalog means it" do
+    # The read-only goal mentions PRs precisely to forbid them ("do not create
+    # files, PRs, or branches"), so a bare "does the goal say PR" would warn on
+    # every codebase-question session. Assert against the real descriptions.
+    GoalsConfig.all.each do |goal|
+      @session.update!(goal: goal.description, custom_metadata: {})
+      @session.logs.destroy_all
+
+      TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session)
+      warned = @session.logs.where(level: "warning").any?
+
+      if goal.id == "codebase-question"
+        assert_not warned, "goal #{goal.id} forbids PRs; it must not warn about a missing one"
+      else
+        assert warned, "goal #{goal.id} asks for a PR; a missing one must warn"
+      end
     end
   end
 

@@ -67,17 +67,19 @@ of evidence count:
 
 | Evidence | What it looks like | Repo guard |
 | --- | --- | --- |
-| **Created** | The URL is in the output of a *successful* `gh pr create` | None — any repo |
+| **Created** | The URL is in the output of a *successful* `gh pr create` | Any repo — bounded by the create's own `--repo` when it names one |
 | **Re-created** | The URL is in a *failed* `gh pr create`, next to "already exists" (the PR for the branch we just pushed) | Must match `git_root` |
 | **Claimed** | The agent's own prose says it opened the PR — "Opened PR: `<url>`" | Must match `git_root` |
 
 The claimed path is what catches creation routes that aren't `gh pr create`: a wrapper script, an
-MCP tool, the GitHub web UI. It requires a creation phrase adjacent to the URL, so an agent
-narrating work *about* a PR ("reviewing `<url>`") doesn't trip it.
+MCP tool, the GitHub web UI. It requires a creation phrase adjacent to the URL — an inflected verb
+running into the URL ("I've opened `<url>`"), or a verb, a PR noun and then the URL ("Created the
+draft PR at `<url>`"). Only inflected verbs count: "open" is an adjective as often as a verb, and
+"the open PR: `<url>`" is how prose refers to *someone else's* PR.
 
 Two things are deliberately **not** evidence:
 
-- **A same-repo URL sitting in any old tool result.** This used to be a fast path, and it is how a
+- **A same-repo URL sitting in an unrelated tool result.** Matching on the repo alone is how a
   session that merely ran `gh pr view` — a merge gate, a reviewer, anything reading the repo's PR
   list — was handed someone else's PR as its own, and then received that PR's comments and
   merge-conflict notifications ([#214](https://github.com/tadasant/zimmer/issues/214)).
@@ -94,9 +96,11 @@ Claiming too much misroutes another session's PR here; claiming too little leave
 Zimmer never learns about, with every GitHub integration quietly switched off for it. Nothing about
 either is visible in the UI.
 
-The backstop for the second direction: when a session whose **goal mentions a pull request** finishes
-a turn (`pause`) with an empty list, the hook writes one `warning` log into the session timeline
-saying no PR URL was captured. Once per session, not once per turn.
+The backstop for the second direction: when a session whose **goal asks for a pull request to be
+opened** finishes a turn (`pause`) with an empty list, the hook writes one `warning` log into the
+session timeline saying no PR URL has been captured. Once per session, not once per turn — and the
+goal match is a phrase match ("open a PR", "the PR is open", the `open-pr` skill), not a bare
+mention, because the catalog's read-only goal says *"do not create files, PRs, or branches"*.
 :::
 
 ### `GithubCommentAuthorshipHook`

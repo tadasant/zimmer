@@ -23,11 +23,11 @@
 #
 # What is deliberately NOT evidence:
 #
-#   - A same-repo URL sitting in any old tool result. This was the original
-#     "same-repo fast path", and it is how a session that merely ran `gh pr view`
-#     (a merge gate, a reviewer, anything reading the repo's PR list) got handed
-#     someone else's PR as its own — and then received that PR's comments and
-#     merge-conflict notifications (#214).
+#   - A same-repo URL sitting in an unrelated tool result. Matching on the repo
+#     alone hands a session that merely ran `gh pr view` (a merge gate, a
+#     reviewer, anything reading the repo's PR list) someone else's PR as its
+#     own — and with it that PR's comments and merge-conflict notifications
+#     (#214).
 #   - A URL in a user message. Zimmer's own trigger prompts carry PR URLs
 #     ("comment on your PR <url>"), so adopting them would let one misrouted
 #     notification bootstrap a permanent wrong association.
@@ -58,10 +58,13 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # heuristic — it correctly handles common shapes (`cd ... && gh pr create`,
   # env-var prefixes like `FOO=bar gh pr create`, and Codex argv arrays joined
   # into `bash -lc cd ... && gh pr create`) but is not airtight (a `gh pr create`
-  # literal embedded in a heredoc body would also match). Consequence of a false
-  # positive is just relaxed filtering for that single tool call, so this is
-  # acceptable.
+  # literal embedded in a heredoc body would also match). A false positive costs
+  # the same-repo guard on that one tool result, which is why the repo a command
+  # names (REPO_FLAG_PATTERN) bounds what its result can vouch for.
   GH_PR_CREATE_PATTERN = /\bgh\s+pr\s+create\b/
+
+  # The `--repo owner/name` (or `-R owner/name`) a `gh` command targets.
+  REPO_FLAG_PATTERN = /(?:--repo|-R)[=\s]+["']?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/
 
   # `gh pr create` exits non-zero when the branch already has a PR, printing
   # "a pull request for branch \"x\" into branch \"main\" already exists: <url>".
@@ -73,21 +76,29 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # A creation claim in the agent's own prose. Two shapes are accepted, both
   # requiring the claim to sit immediately before the URL with no sentence break
   # in between:
-  #   - a creation verb running straight into the URL ("I've opened <url>")
+  #   - a completed creation verb running straight into the URL ("I've opened <url>")
   #   - a creation verb, a PR noun, then the URL ("Created the draft PR at <url>")
+  #
+  # Only inflected verbs count, never the bare stem. "Open" is an adjective as
+  # often as it is a verb, and "the open PR: <url>" or "two open PRs: <url>" is
+  # exactly how prose refers to *someone else's* PR — the reading this hook exists
+  # to reject. For the same reason the adjacent-to-URL shape takes past tense only:
+  # "Opening <url>" is what an agent says about a page it is about to read.
+  #
   # The PR noun is what keeps "creating a plan to review <url>" out: an agent
-  # narrating work *about* a PR does not use this shape.
-  # Both are case-insensitive in their own right: an interpolated Regexp keeps its
-  # own flags, so the outer /xi would not reach them ("Opened" would never match a
-  # lowercase-only verb list).
-  CREATION_VERB = /(?:open(?:s|ed|ing)?|creat(?:e|es|ed|ing)|submit(?:s|ted|ting)?|rais(?:e|es|ed|ing)|fil(?:e|es|ed|ing))/i
+  # narrating work *about* a PR does not use that shape.
+  #
+  # All three are case-insensitive in their own right: an interpolated Regexp
+  # keeps its own flags, so an outer /i would not reach them ("Opened" would never
+  # match a lowercase-only verb list).
+  COMPLETED_CREATION_VERB = /(?:opened|created|submitted|raised|filed)/i
+  CREATION_VERB = /(?:open(?:ed|ing)|creat(?:ed|ing)|submit(?:ted|ting)|rais(?:ed|ing)|fil(?:ed|ing))/i
   PR_NOUN = /(?:PRs?|pull\s+requests?)/i
   CREATION_CLAIM_PATTERN = /
-    \b#{CREATION_VERB}\b
     (?:
-      [\s:\-—>*_`"']*                                          # verb runs into the URL
+      \b#{COMPLETED_CREATION_VERB}\b[\s:\-—>*_`"']*             # verb runs into the URL
       |
-      [^.!?\n]{0,30}\b#{PR_NOUN}\b[^.!?\n]{0,25}                # verb ... PR ... URL
+      \b#{CREATION_VERB}\b[^.!?\n]{0,30}\b#{PR_NOUN}\b[^.!?]{0,25}   # verb ... PR ... URL
     )
     \z
   /x
@@ -97,31 +108,45 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # that an unrelated earlier sentence cannot vouch for the URL.
   CLAIM_WINDOW = 160
 
-  # A goal that talks about pull requests. Goals are free text (the goal
-  # catalog's description is copied onto the session), so this is a phrase match,
-  # not an id lookup. Case-sensitive for the "PR" abbreviation so that prose like
-  # "pr" inside another word does not count.
-  PR_GOAL_PATTERNS = [ /\bPRs?\b/, /\bpull\s+requests?\b/i ].freeze
+  # A goal that asks for a pull request to be *opened*. Goals are free text (the
+  # goal catalog's description is copied onto the session), so this is a phrase
+  # match, not an id lookup — and it has to be a phrase match rather than a bare
+  # "does the goal say PR", because the catalog's read-only goal says "do not
+  # create files, PRs, or branches", which mentions PRs precisely to forbid them.
+  PR_GOAL_PATTERNS = [
+    /\bopen-pr\b/i,                                                            # the skill that opens one
+    /\b#{PR_NOUN}\b[^.\n]{0,25}\bis\s+open/i,                                  # "the PR is open"
+    # "open a reviewed, green PR". Not the "file" stem: "files, PRs" is a noun.
+    /\b(?:open|creat|submit|rais)\w*[,\s]+
+     (?:(?:a|an|the|your|one|another|new|draft|reviewed|green|unmerged)[,\s]+)*
+     #{PR_NOUN}\b/xi
+  ].freeze
 
   # The warning a PR-flavored goal gets when nothing was recorded. Its opening
   # clause doubles as the marker that keeps a session pausing ten times from
   # warning ten times — deduplicating on the log itself rather than on a
   # custom_metadata flag keeps this path out of the way of the hook's own
   # concurrent writes to that column.
-  MISSING_PR_URL_WARNING = "[GitHub] No pull request URL was captured for this session, but its goal is about " \
-                           "opening a PR. Zimmer only records a PR it can see this session open (a `gh pr create` " \
+  MISSING_PR_URL_WARNING = "[GitHub] This session's goal asks for a pull request, and no PR URL has been captured " \
+                           "for it yet. Zimmer records only a PR it can see the session open (a `gh pr create` " \
                            "result, or the agent saying it opened one), so GitHub comment and merge-conflict " \
                            "notifications are not running here."
-  MISSING_PR_URL_WARNING_MARKER = "[GitHub] No pull request URL was captured"
+  MISSING_PR_URL_WARNING_MARKER = "[GitHub] This session's goal asks for a pull request"
 
   # Warn — once, in the session's own timeline — when a session whose goal is
   # about opening a pull request finishes a turn with no PR recorded. The whole
   # GitHub integration hangs off github_pull_request_urls, and its failure mode
   # is silence, so this is the one place that says the quiet part out loud.
   #
-  # Called from the session state machine's `pause` (turn completion). Never
-  # raises: a warning that breaks a state transition would be worse than the
-  # thing it warns about.
+  # Called from the session state machine's `pause` (turn completion), which is
+  # every hand-back to the user, not only the last one — so the warning is
+  # phrased as of that moment ("no PR URL yet") and is written once per session.
+  # A session that pauses to ask a question mid-task and opens its PR afterwards
+  # gets one accurate-when-written note; the alternative, re-checking on every
+  # pause, is timeline spam for the same fact.
+  #
+  # Never raises: a warning that breaks a state transition would be worse than
+  # the thing it warns about.
   #
   # @param session [Session]
   # @return [void]
@@ -182,20 +207,27 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # A successful create vouches for any repo; a failed one vouches only for an
   # "already exists" URL on the session's own repo.
   #
+  # When the command names its target with `--repo`, that name bounds what the
+  # result can vouch for. A command is a whole shell line — `gh pr create --repo
+  # a/b && gh pr list --repo c/d` puts both repos' URLs in one result — and
+  # without the bound the second repo's PRs would be adopted on the strength of
+  # the first repo's create.
+  #
   # For Claude the failure flag is the result's own is_error; for Codex it is
   # derived from the shell's exit code (see TranscriptHooks::CodexToolCallParser).
   def urls_from_pr_create_results
-    pr_create_ids = collect_pr_create_tool_use_ids
-    return [] if pr_create_ids.empty?
+    return [] if pr_create_commands.empty?
 
     tool_results.flat_map do |result|
-      next [] unless pr_create_ids.include?(result[:id])
-      next [] if result[:text].blank?
+      command = pr_create_commands[result[:id]]
+      next [] if command.nil? || result[:text].blank?
+
+      target_repo = repo_named_by(command)
 
       pr_urls_with_context(result[:text]).filter_map do |url, preceding|
-        if !result[:is_error]
-          url
-        elsif preceding.match?(PR_ALREADY_EXISTS_PATTERN) && same_repo?(url)
+        if result[:is_error]
+          url if preceding.match?(PR_ALREADY_EXISTS_PATTERN) && same_repo?(url)
+        elsif target_repo.nil? || same_repo?(url) || url_owner_repo(url) == target_repo
           url
         end
       end
@@ -234,9 +266,8 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     results
   end
 
-  # Whether +url+ points at the session's own repo. This is the original
-  # false-positive guard, now used to qualify the weaker two kinds of evidence
-  # rather than to stand in for evidence on its own.
+  # Whether +url+ points at the session's own repo. This qualifies the two weaker
+  # kinds of evidence; it never stands in for evidence on its own.
   def same_repo?(url)
     return false if target_owner_repo.nil?
 
@@ -258,13 +289,30 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     @parser ||= TranscriptHooks::ToolCallParser.for(session: session, parsed_transcript: parsed_transcript)
   end
 
-  # Collect the tool-call ids for any invocation whose command contains `gh pr
-  # create`. The corresponding tool result is what we treat as authoritative for
-  # "this session opened this PR".
+  # The `gh pr create` invocations in this transcript, keyed by tool-call id
+  # (Claude tool_use ids / Codex call_ids). Their results are what this hook
+  # treats as authoritative for "this session opened this PR", and their command
+  # text is what bounds the repo a result can vouch for.
   #
-  # @return [Array<String>] tool-call ids (Claude tool_use ids / Codex call_ids)
-  def collect_pr_create_tool_use_ids
-    parser.tool_call_ids_matching(GH_PR_CREATE_PATTERN)
+  # @return [Hash{String => String}] tool-call id => shell command
+  def pr_create_commands
+    @pr_create_commands ||= parser.shell_calls.each_with_object({}) do |call, commands|
+      commands[call[:id]] = call[:command] if call[:command].match?(GH_PR_CREATE_PATTERN)
+    end
+  end
+
+  # The `owner/repo` a command targets explicitly, or nil when it targets the
+  # clone it runs in (the fork-and-upstream case, where the PR lands on a repo
+  # the command never names).
+  def repo_named_by(command)
+    match = command.match(REPO_FLAG_PATTERN)
+    match && match[1].downcase.delete_suffix(".git")
+  end
+
+  # The `owner/repo` a PR URL belongs to.
+  def url_owner_repo(url)
+    match = url.match(%r{github\.com/([^/]+/[^/]+)/pull/\d+})
+    match && match[1].downcase.delete_suffix(".git")
   end
 
   # Every tool result in the transcript, so extract_pr_urls stays runtime-agnostic.
