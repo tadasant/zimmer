@@ -56,6 +56,14 @@
 #   and file system (important for test doubles) and knows the Zimmer session id for
 #   MCP elicitation callbacks.
 #
+# == Required class methods (see ClassMethods) ==
+#
+# .stderr_log_filename -> String
+#   The name of the file the spawned process's stderr is redirected into, inside
+#   the working directory. Every runtime writes a differently-named log, so this
+#   is the single source of truth callers rebuild a stderr path from — see
+#   .stderr_log_path and Session#stderr_log_path.
+#
 # == Optional hooks (sensible defaults provided here) ==
 #
 # disallowed_tools -> Array<String>
@@ -72,6 +80,92 @@
 # The shared contract is exercised by
 # test/contracts/runtime_cli_adapter_contract_test.rb against every adapter.
 module RuntimeCliAdapter
+  # Raised when a spawn is attempted without a working directory and the adapter
+  # declares no runtime-specific error class of its own.
+  class SpawnError < StandardError; end
+
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+
+  # Class-level surface of the contract. These are class methods because callers
+  # that never spawn — a monitoring loop rebuilding a stderr path, a test double
+  # enforcing the same guard — need them without instantiating an adapter.
+  module ClassMethods
+    # The stderr log file this runtime's process writes inside its working
+    # directory ("claude_stderr.log", "codex_stderr.log", …).
+    #
+    # @return [String]
+    def stderr_log_filename
+      raise NotImplementedError, "#{name} must define .stderr_log_filename"
+    end
+
+    # The stderr log path for a working directory, in this runtime's own naming.
+    #
+    # Callers rebuild this path when they reconnect to a process they did not
+    # spawn (job resume, interrupt, controller-driven termination). It is built
+    # from the WORKING directory — the directory the adapter spawned in, which is
+    # the clone root only for sessions without an agent root — and named by the
+    # runtime, so a Codex session is never handed a Claude filename.
+    #
+    # @param working_dir [String, nil]
+    # @return [String, nil] nil when there is no working directory to join onto
+    def stderr_log_path(working_dir)
+      return nil if working_dir.blank?
+
+      File.join(working_dir, stderr_log_filename)
+    end
+
+    # The error class this runtime raises when a spawn precondition fails.
+    # Override to keep a runtime's own error type (ClaudeCliError, CodexCliError).
+    def spawn_error_class
+      SpawnError
+    end
+
+    # Human-readable name of the CLI, for operator-facing error messages.
+    def cli_label
+      name
+    end
+
+    # Refuse to spawn without a working directory. Process.spawn would otherwise
+    # reject a nil chdir deep inside the C call with "no implicit conversion of nil
+    # into String", which tells an operator nothing about which argument was nil.
+    #
+    # A nil working_dir is always a caller bug, and it has two possible causes: the
+    # session never established a clone (it died during its first spawn, before
+    # metadata was written), or a caller failed to load the established one from
+    # session metadata. The message names both — naming only the first sends an
+    # operator hunting for a missing clone that may be sitting intact on disk.
+    #
+    # Part of the shared contract rather than one runtime's private guard: every
+    # runtime is spawned by the same recovery paths, so every runtime needs the
+    # same legible failure. Test doubles enforce it too — a double that spawns
+    # happily with a nil working dir hides this class of bug from the suite.
+    def validate_working_dir!(working_dir)
+      return unless working_dir.nil? || (working_dir.is_a?(String) && working_dir.strip.empty?)
+
+      raise spawn_error_class,
+        "Cannot spawn #{cli_label}: working directory is missing (got #{working_dir.inspect}). " \
+        "Either the session never established a clone/working directory, or the caller did not " \
+        "load session.metadata[\"working_directory\"] before spawning."
+    end
+  end
+
+  # @see ClassMethods#stderr_log_filename
+  def stderr_log_filename
+    self.class.stderr_log_filename
+  end
+
+  # @see ClassMethods#stderr_log_path
+  def stderr_log_path(working_dir)
+    self.class.stderr_log_path(working_dir)
+  end
+
+  # @see ClassMethods#validate_working_dir!
+  def validate_working_dir!(working_dir)
+    self.class.validate_working_dir!(working_dir)
+  end
+
   # Tool identifiers the runtime must refuse to invoke. Override for runtimes
   # with a tool-blocking flag (see ClaudeCliAdapter#disallowed_tools).
   def disallowed_tools

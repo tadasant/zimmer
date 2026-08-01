@@ -62,6 +62,25 @@ class CodexRuntimeAdapter
 
   class CodexCliError < StandardError; end
 
+  # The stderr log the Codex process writes inside its working directory. Part of
+  # the RuntimeCliAdapter contract — callers that rebuild a stderr path
+  # (Session#stderr_log_path, CodexMcpStatusDetector) read it from here.
+  STDERR_LOG_FILENAME = "codex_stderr.log"
+
+  def self.stderr_log_filename
+    STDERR_LOG_FILENAME
+  end
+
+  # Keep the runtime's own error type for the shared spawn guards
+  # (RuntimeCliAdapter::ClassMethods#validate_working_dir!).
+  def self.spawn_error_class
+    CodexCliError
+  end
+
+  def self.cli_label
+    "Codex CLI"
+  end
+
   attr_accessor :process_manager, :file_system, :zimmer_session_id
 
   def initialize(logger: Rails.logger)
@@ -243,9 +262,11 @@ class CodexRuntimeAdapter
   # stdin/stdout are detached (the transcript pipeline reads Codex's rollout file
   # rather than stdout).
   def spawn_process(command, working_dir:)
+    self.class.validate_working_dir!(working_dir)
+
     @logger.info "Spawning Codex CLI: #{command.join(' ')}"
 
-    stderr_log_path = File.join(working_dir, "codex_stderr.log")
+    stderr_log_path = self.class.stderr_log_path(working_dir)
 
     # For mock testing, create the file in the mock file system and redirect the
     # real process's stderr to /dev/null; otherwise open the real log file.

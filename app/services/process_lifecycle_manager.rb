@@ -520,7 +520,7 @@ class ProcessLifecycleManager
         # Reload session to get the PID stored by retry service
         session.reload
         @current_pid = session.metadata&.dig("process_pid")
-        @stderr_log_path = File.join(session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+        @stderr_log_path = session.stderr_log_path
         @state = :running
       end
       ExitDecision.new(action: :continue)
@@ -625,7 +625,7 @@ class ProcessLifecycleManager
         # Reload session to get the PID stored by compact service
         session.reload
         @current_pid = session.metadata&.dig("process_pid")
-        @stderr_log_path = File.join(session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+        @stderr_log_path = session.stderr_log_path
         @state = :running
       end
       ExitDecision.new(action: :continue)
@@ -691,8 +691,8 @@ class ProcessLifecycleManager
     # Guard: the session's clone directory can be removed out from under us by the
     # clone GC (DeferredCloneCleanupJob/StaleCloneCleanupJob) once the session is
     # torn down — a routine, expected condition. If that has happened, resuming is
-    # impossible (the CLI adapter would raise Errno::ENOENT opening claude_stderr.log
-    # under the deleted path, wrapped as ClaudeCliError). That is NOT broken system
+    # impossible (the CLI adapter would raise Errno::ENOENT opening its stderr log
+    # under the deleted path, wrapped as its own spawn error). That is NOT broken system
     # behavior, so we terminate gracefully at warn level rather than tripping the
     # error-log alert. Genuine spawn failures — where the directory exists but the
     # CLI still fails to launch — fall through to the rescue below and stay at error.
@@ -738,7 +738,7 @@ class ProcessLifecycleManager
     # Update our state to reflect the new process
     @mutex.synchronize do
       @current_pid = new_pid
-      @stderr_log_path = File.join(session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+      @stderr_log_path = session.stderr_log_path
       @state = :running
     end
 
@@ -841,7 +841,7 @@ class ProcessLifecycleManager
     # Update our state to reflect the new process
     @mutex.synchronize do
       @current_pid = new_pid
-      @stderr_log_path = File.join(session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+      @stderr_log_path = session.stderr_log_path
       @state = :running
     end
 
@@ -959,7 +959,7 @@ class ProcessLifecycleManager
       @mutex.synchronize do
         session.reload
         @current_pid = session.metadata&.dig("process_pid")
-        @stderr_log_path = File.join(session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+        @stderr_log_path = session.stderr_log_path
         @state = :running
       end
       ExitDecision.new(action: :continue)
@@ -1016,7 +1016,7 @@ class ProcessLifecycleManager
       @mutex.synchronize do
         session.reload
         @current_pid = session.metadata&.dig("process_pid")
-        @stderr_log_path = File.join(session.metadata&.dig("clone_path") || "", "claude_stderr.log")
+        @stderr_log_path = session.stderr_log_path
         @state = :running
       end
       ExitDecision.new(action: :continue)

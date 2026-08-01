@@ -329,6 +329,33 @@ class Session < ApplicationRecord
     RuntimeRegistry.for(agent_runtime)
   end
 
+  # The directory the runtime CLI is (or was) spawned in: the recorded working
+  # directory, which is the clone root for a session without an agent root and a
+  # subdirectory of it for one with. Falls back to the clone root for rows written
+  # before a working directory was recorded.
+  #
+  # @return [String, nil] nil until the session establishes a clone
+  def working_directory
+    metadata&.dig("working_directory").presence || metadata&.dig("clone_path").presence
+  end
+
+  # Where this session's spawned process writes its stderr.
+  #
+  # Every caller that reconnects to a process it did not spawn — the job resuming
+  # monitoring, ProcessLifecycleManager after a recovery spawn, the interrupt and
+  # termination paths — has to rebuild this path from session state. It must be
+  # built from the WORKING directory (an agent-root session spawns in a
+  # subdirectory of the clone, and its log lives there) and named by the session's
+  # own runtime (a Codex session writes codex_stderr.log, not claude_stderr.log).
+  # Rebuilding it any other way points the monitoring loop at a file that does not
+  # exist, which silently disables context-length and failed-resume recovery —
+  # both of which are detected by reading this log.
+  #
+  # @return [String, nil] nil until the session establishes a working directory
+  def stderr_log_path
+    RuntimeRegistry.cli_adapter_class_for(agent_runtime).stderr_log_path(working_directory)
+  end
+
   # Whether this session's heartbeat is due to beat again. Mirrors the
   # `heartbeat_due` scope so HeartbeatSweepJob can re-check a single session
   # under lock (guarding against two overlapping sweeps beating twice).

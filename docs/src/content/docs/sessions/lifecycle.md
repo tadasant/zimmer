@@ -86,13 +86,15 @@ the marker won't match and the deferred job no-ops.
 
 ### `resume` — `waiting | needs_input | failed → running`
 
-Unguarded (`can_resume?` returns `true` unconditionally — the job handles preconditions).
-Tracked in [#107](https://github.com/tadasant/zimmer/issues/107).
+Unguarded, deliberately. The preconditions for resuming — a clone on disk, a runtime
+session id to resume into, a live process to reattach to — are established or validated by
+`AgentSessionJob`, which recovers what it can and fails the session with a specific
+`failure_reason` when it cannot. The state machine does not re-check them, so a resume you
+ask for is a resume the job gets to attempt.
 Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
 `blocked_on_elicitation` marker, any `pending_sleep`, and, importantly, it
 cancels pending one-time wake-up triggers targeting this session, so a scheduled wake
 doesn't fire on a session you already resumed by hand.
-Tracked in [#107](https://github.com/tadasant/zimmer/issues/107).
 
 ### `sleep` — `needs_input → waiting`
 
