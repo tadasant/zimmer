@@ -2,6 +2,9 @@ require "test_helper"
 
 module Supervisor
   class SessionsControllerTest < ActionDispatch::IntegrationTest
+    include SupervisorAuthTestHelper
+    include SupervisorAuthTestHelper::AutoBasicAuth
+
     setup do
       @session = sessions(:running)
     end

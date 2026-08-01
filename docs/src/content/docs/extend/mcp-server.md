@@ -152,6 +152,14 @@ production.
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health` |
 
+`action_health`'s three destructive actions (`cleanup_processes`, `retry_sessions`, `archive_old`)
+share a 30-second cooldown with `Api::V1::HealthController` — the same `HealthActionCooldown`
+object, bucketed by a digest of the connection's API key. Alternating surfaces does not buy a second
+run, and one client's cleanup does not throttle anyone else's. If `Rails.cache` cannot enforce the
+cooldown (a null store), the tool refuses with `Rate limiting unavailable` rather than running
+unthrottled; `cli_refresh` and `cli_clear_cache` only enqueue a job and are never throttled. See
+[the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
+
 The action tools are verb-multiplexers: `action_session` takes an `action` enum (`follow_up`,
 `pause`, `restart`, `archive`, `unarchive`, `fork`, `change_model`, …), `action_trigger` takes
 `create` / `update` / `delete` / `toggle`, and so on. `tools/list` carries the full schema for each —

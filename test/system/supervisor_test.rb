@@ -1,9 +1,12 @@
 require "application_system_test_case"
 
 class SupervisorTest < ApplicationSystemTestCase
+  include SupervisorAuthTestHelper
+
   setup do
     @session = sessions(:running)
     @log = logs(:info_log)
+    present_supervisor_credential
   end
 
   test "visiting the sessions index shows supervisor button" do
@@ -42,5 +45,21 @@ class SupervisorTest < ApplicationSystemTestCase
     visit supervisor_log_url(@log)
     assert_text @log.content
     assert_text @log.level
+  end
+
+  private
+
+  # Chrome has no Capybara-level hook for request headers, and the panel is
+  # behind an HTTP Basic realm — an unauthenticated `visit` lands on a 401, not
+  # a dashboard. Push the credential in over CDP so every request the browser
+  # makes for the rest of the test carries it. This is the browser-side
+  # equivalent of SupervisorAuthTestHelper::AutoBasicAuth.
+  def present_supervisor_credential
+    browser = page.driver.browser
+    browser.execute_cdp("Network.enable")
+    browser.execute_cdp(
+      "Network.setExtraHTTPHeaders",
+      headers: { "Authorization" => supervisor_basic_credentials }
+    )
   end
 end

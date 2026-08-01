@@ -116,13 +116,18 @@ also reports `bursting`, true while the trigger is inside a burst and spawning n
 `POST /health/cleanup_processes` · `POST /health/retry_sessions` ·
 `POST /health/archive_old` (`days`, clamped 1–365, default 7).
 
-:::caution[The only rate limit in the API lives here — and it's global]
-The three `POST`s share a `CLEANUP_COOLDOWN = 30.seconds`, keyed in `Rails.cache` as
-`health_api_rate_limit:<action>`. That key is not scoped to an API key, so one client's cleanup
-locks out every other client for 30 seconds. Exceeded → `429 {"error": "Rate limited", "retry_after": 30}`.
+:::caution[The only rate limit in the API lives here]
+The three `POST`s share `HealthActionCooldown::COOLDOWN = 30.seconds` — and share it with the MCP
+`action_health` tool — keyed in `Rails.cache` as
+`health_api_rate_limit:<action>:<digest>`, where `<digest>` is a SHA-256 of the presented
+`X-API-Key`. The cooldown is therefore per action **and** per key — your cleanup does not throttle
+anyone else's — and the raw key never appears in a cache key. Exceeded →
+`429 {"error": "Rate limited", "retry_after": 30}`.
 
-It also silently no-ops if `Rails.cache` is a null store.
-Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
+The limiter fails closed. If `Rails.cache` is a null store the cooldown cannot be enforced, so the
+three `POST`s return `503 {"error": "Rate limiting unavailable"}` rather than running unthrottled.
+`GET /health` is unaffected. See
+[the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
 :::
 
 ## Elicitations
@@ -186,7 +191,7 @@ of responses carry an extra top-level key alongside these — `retry_after` on t
 
 **Status codes in use:** 200 · 201 · 202 (follow-up queued) · 204 · 400 (search only) · 401 · 404 ·
 409 (follow-up position collision, interrupt races) · 422 · 429 (health cooldown) · 500 · 503 (Slack
-unconfigured).
+unconfigured; health maintenance refused because no usable cache store is configured).
 
 :::note[Missing required params return 422]
 `follow_up` without a prompt, `fork` without `message_index`, `bulk_archive` without `session_ids`,
