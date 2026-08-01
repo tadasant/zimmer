@@ -17,7 +17,22 @@
     cable-reconnect is exempt from that concern and runs in both contexts: it
     binds nothing global and only observes the stream sources inside this
     element, so a drawer copy and the dashboard root cannot contend over the
-    same subscription. %>
+    same subscription.
+
+    cable-reconnect and stream-visibility-recovery both key on the `connected`
+    attribute, but they answer different failures and do not overlap:
+
+    - The page was hidden (backgrounded PWA, bfcache restore) and came back with
+      a dead socket. Everything broadcast while it was away is gone — a
+      subscription alone would not bring it back — so stream-visibility-recovery
+      reloads. It fires first by design; its 1.5s grace is shorter than
+      cable-reconnect's 3s.
+    - The socket died while the page stayed visible. No content was missed, so
+      cable-reconnect re-subscribes in place and nothing the user typed is lost.
+
+    A reload is therefore still reachable on this page. What is gone is the
+    unconditional one: the meta refresh below fired on elapsed time whether or
+    not the cable had actually dropped. %>
 <% detail_controllers = "session-scroll auto-scroll log-level-filter page-header-offset cable-reconnect" %>
 <% detail_controllers += " pull-to-refresh stream-visibility-recovery" unless in_drawer %>
 <div class="<%= in_drawer ? "min-h-full pb-32" : "min-h-screen" %> bg-gray-50" data-controller="<%= detail_controllers %>"

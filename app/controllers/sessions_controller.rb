@@ -780,7 +780,9 @@ class SessionsController < ApplicationController
       # No card stream: the session's card is still in the dashboard's DOM (the
       # trash view lists archived and live sessions together), and unarchiving
       # fires broadcast_update_to_sessions_index, which replaces it in place.
-      respond_with_flash(notice: notice, location: @session)
+      # The session page's own chrome rides along in this response rather than
+      # waiting on the broadcast — see #session_chrome_streams.
+      respond_with_flash(notice: notice, location: @session, streams: session_chrome_streams(@session))
     else
       respond_with_flash(alert: "Failed to restore session: #{result.error}", location: @session)
     end
@@ -847,6 +849,30 @@ class SessionsController < ApplicationController
     )
   end
   private :restored_card_stream
+
+  # The two bits of session-page chrome that encode a session's status: the badge
+  # and the header's action buttons (Restore vs Pause/Trash). Session#broadcast_
+  # status_change pushes both over the cable on every status change, so an action
+  # that changes status could rely on that alone — but a broadcast is
+  # fire-and-forget, and this whole PR exists because a cable can be silently
+  # dead. The direct HTTP reply to the user's own click cannot be lost, so a
+  # status-changing action carries its own chrome. Both targets are absent when
+  # the click came from a dashboard card, where the streams are a no-op.
+  def session_chrome_streams(session)
+    [
+      turbo_stream.replace(
+        "session_#{session.id}_status_badge",
+        partial: "sessions/status_badge",
+        locals: { agent_session: session }
+      ),
+      turbo_stream.replace(
+        "session_#{session.id}_header_actions",
+        partial: "sessions/session_header_actions",
+        locals: { agent_session: session }
+      )
+    ]
+  end
+  private :session_chrome_streams
 
   # Which grid that is depends on the dashboard view the Undo was clicked from,
   # because only the categories view renders per-category grids. The flat sort
@@ -1542,11 +1568,15 @@ class SessionsController < ApplicationController
         )
       end
 
-      # The pause flips the session to needs_input, and broadcast_status_change
-      # re-renders the status badge, header actions and follow-up form over the
-      # session_<id>_status channel — the redirect was only ever carrying this
-      # sentence.
-      respond_with_flash(notice: "Session paused successfully. You can now send a follow-up prompt to redirect the agent.", location: @session)
+      # The pause flips the session to needs_input; broadcast_status_change also
+      # re-renders the follow-up form and running loader over the cable, but the
+      # badge and header actions ride back in this response so they land even if
+      # the socket is down (see #session_chrome_streams).
+      respond_with_flash(
+        notice: "Session paused successfully. You can now send a follow-up prompt to redirect the agent.",
+        location: @session,
+        streams: session_chrome_streams(@session)
+      )
     rescue => e
       Rails.logger.error "Error pausing session: #{e.message}"
       with_db_retry do
