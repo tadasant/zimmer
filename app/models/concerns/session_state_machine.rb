@@ -157,7 +157,8 @@ module SessionStateMachine
       # force-archiving a stuck session)
       #
       # The clone is deleted after the undo window (10 seconds) by DeferredCloneCleanupJob.
-      # If unpushed artifacts exist, they are preserved for 14 days before deletion.
+      # If unpushed artifacts exist, they are preserved for TRASH_RETENTION_PERIOD (4 days)
+      # before deletion.
       # Clean clones are deleted immediately with no retention period.
       event :archive do
         transitions from: [ :waiting, :running, :needs_input, :failed ], to: :archived

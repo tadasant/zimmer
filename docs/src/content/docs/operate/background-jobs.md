@@ -43,12 +43,16 @@ From `config.good_job.cron`:
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
 | — | `ZombieReaperJob`, `DeferredCloneCleanupJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
 
-:::note[Sub-minute cron: the config contradicts itself]
-The `*/30 * * * * *` entries are six-field cron (with seconds), which fugit supports. But
-`SlackTriggerPollerJob`'s own comment says *"GoodJob/fugit doesn't support seconds"* and settles for a
-one-minute cron. Both forms are in the same config file. One of those two comments is wrong; the
-six-field entries suggest it's the Slack one.
-Tracked in [#106](https://github.com/tadasant/zimmer/issues/106).
+:::note[Sub-minute cron works]
+The `*/30 * * * * *` entries are six-field cron, with a leading seconds field, and they do what they
+look like: fugit parses the field, and `GoodJob::CronEntry#next_at` hands straight through to
+`Fugit::Cron#next_time` with no minute floor, so those three jobs fire every 30 seconds.
+
+A five-field expression is the same thing with the seconds field pinned to `0`. So a one-minute
+cadence anywhere in the table is a choice about how often the job should run, not a limit on how
+often it could. `test/config/cron_schedule_test.rb` pins this — it parses every expression in the
+three environment files and asserts the six-field ones are 30 seconds apart, so a fugit upgrade that
+changed the behavior would fail CI rather than silently slow the pollers down.
 :::
 
 ## What the PR comment poller acts on

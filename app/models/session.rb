@@ -246,8 +246,15 @@ class Session < ApplicationRecord
   # The agent root used for routing freeform user requests from the dashboard
   ROUTER_AGENT_ROOT = "zimmer-router"
 
-  # Execution providers
-  EXECUTION_PROVIDERS = %w[local_filesystem remote_sandbox].freeze
+  # Execution providers a session may declare.
+  #
+  # Local filesystem is the only one. A "remote_sandbox" value used to be accepted here and
+  # advertised through the REST API and the MCP start_session tool, but the provider behind it
+  # (lib/execution/providers/remote_sandbox.rb) is a stub whose every method returns
+  # Result.failure("not yet implemented") — so the enum offered a choice that could not work.
+  # Agents run unsandboxed on the app host; see docs limitations.md and
+  # https://github.com/tadasant/zimmer/issues/49.
+  EXECUTION_PROVIDERS = %w[local_filesystem].freeze
 
   # Character limits for prompts and goals
   # These limits are set to allow for large prompts while staying well within
