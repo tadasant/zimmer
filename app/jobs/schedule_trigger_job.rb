@@ -30,9 +30,10 @@ class ScheduleTriggerJob < ApplicationJob
         Rails.logger.error "[ScheduleTriggerJob] Error processing condition #{condition.id}: #{e.message}"
         AlertService.raise_alert(
           "Schedule trigger error",
-          details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) failed:\n#{e.message}",
+          details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) failed.",
           source: "ScheduleTriggerJob",
-          dedup_key: "schedule_trigger_condition_#{condition.id}"
+          dedup_key: "schedule_trigger_condition_#{condition.id}",
+          error: e
         )
       end
     end
@@ -137,15 +138,13 @@ class ScheduleTriggerJob < ApplicationJob
 
     Rails.logger.error "[ScheduleTriggerJob] Failed to create session for condition #{condition.id} on trigger #{trigger_id} (#{trigger_name}): #{e.message}\n#{backtrace}"
 
-    details_body = "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to create session:\n#{e.class}: #{e.message}"
-    details_body += "\n\nBacktrace:\n#{backtrace}" if backtrace.present?
-    details_body += "\n\nlast_triggered_at advanced to prevent infinite retries. #{retry_note}"
-
     AlertService.raise_alert(
       "Schedule trigger session creation failed",
-      details: details_body,
+      details: "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to create a session.\n\n" \
+               "last_triggered_at advanced to prevent infinite retries. #{retry_note}",
       source: "ScheduleTriggerJob",
-      dedup_key: "schedule_trigger_session_#{trigger_id}"
+      dedup_key: "schedule_trigger_session_#{trigger_id}",
+      error: e
     )
   end
 end
