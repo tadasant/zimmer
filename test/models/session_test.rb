@@ -1450,6 +1450,127 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
+  # Regression for issue #261: the uniqueness read and the write are not atomic.
+  # Two SessionTitleJobs for sessions created in the same minute compute the same
+  # base slug, both read it as free, and the loser's write is rejected by
+  # index_sessions_on_slug — leaving that session permanently slug-less.
+  test "generate_slug_from_title! retries when the write loses the uniqueness race" do
+    travel_to Time.zone.local(2025, 6, 15, 14, 30) do
+      session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Same Title")
+
+      original_update = session.method(:update!)
+      writes = 0
+      raising_update = lambda do |*args, **kwargs|
+        writes += 1
+        # The concurrent winner commits between our read and our write.
+        raise ActiveRecord::RecordNotUnique, 'duplicate key value violates unique constraint "index_sessions_on_slug"' if writes == 1
+
+        original_update.call(*args, **kwargs)
+      end
+
+      session.stub(:update!, raising_update) do
+        session.generate_slug_from_title!
+      end
+
+      assert_equal 2, writes, "should have advanced the counter and re-attempted the write"
+      assert_equal "same-title-20250615-1430-1", session.slug
+      assert_equal "same-title-20250615-1430-1", session.reload.slug
+    end
+  end
+
+  # The same interleaving surfaces as a validation failure when the winner
+  # commits between our read and the uniqueness validator's read.
+  test "generate_slug_from_title! retries when the pre-check reports a taken slug as free" do
+    travel_to Time.zone.local(2025, 6, 15, 14, 30) do
+      Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Same Title", slug: "same-title-20250615-1430")
+      loser = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Same Title")
+
+      # Every pre-check reports the candidate free; the conflicting row is real.
+      Session.stub(:exists?, false) do
+        loser.generate_slug_from_title!
+      end
+
+      assert_equal "same-title-20250615-1430-1", loser.reload.slug
+    end
+  end
+
+  test "generate_slug_from_title! gives up after a bounded number of attempts" do
+    travel_to Time.zone.local(2025, 6, 15, 14, 30) do
+      session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Same Title")
+
+      writes = 0
+      always_conflicting = lambda do |*_args, **_kwargs|
+        writes += 1
+        raise ActiveRecord::RecordNotUnique, 'duplicate key value violates unique constraint "index_sessions_on_slug"'
+      end
+
+      session.stub(:update!, always_conflicting) do
+        assert_raises(ActiveRecord::RecordNotUnique) { session.generate_slug_from_title! }
+      end
+
+      assert_equal Session::MAX_SLUG_ATTEMPTS, writes
+      assert_nil session.slug, "should not leave behind a slug the index already refused"
+    end
+  end
+
+  # The narrowest form of the race, driven end-to-end against the real unique
+  # index: the winner claims the slug after our read *and* after the uniqueness
+  # validator's read, so only PostgreSQL catches it. Because a test case runs
+  # inside a transaction, this also proves the write's savepoint keeps the
+  # aborted statement from poisoning the caller's transaction — without it the
+  # retry dies with "current transaction is aborted".
+  test "generate_slug_from_title! recovers when the unique index rejects the write" do
+    travel_to Time.zone.local(2025, 6, 15, 14, 30) do
+      winner = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Same Title")
+      loser = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Same Title")
+
+      # valid? runs after the uniqueness pre-check and before the UPDATE, so
+      # claiming the slug here lands the winner's row inside that window.
+      original_valid = loser.method(:valid?)
+      claimed = false
+      racing_validation = lambda do |*args|
+        result = original_valid.call(*args)
+        unless claimed
+          claimed = true
+          winner.update_column(:slug, "same-title-20250615-1430")
+        end
+        result
+      end
+
+      loser.stub(:valid?, racing_validation) do
+        Session.transaction { loser.generate_slug_from_title! }
+      end
+
+      assert claimed, "the winner should have claimed the base slug mid-write"
+      assert_equal "same-title-20250615-1430-1", loser.reload.slug
+    end
+  end
+
+  test "generate_slug_from_title! does not swallow unrelated validation errors" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Valid Title")
+    session.branch = nil # validates presence, and has nothing to do with the slug
+
+    assert_raises(ActiveRecord::RecordInvalid) { session.generate_slug_from_title! }
+  end
+
+  # sessions carries other unique indexes; a collision on one of those is a
+  # different bug and must surface immediately rather than burn 10 writes.
+  test "generate_slug_from_title! does not retry a collision on another unique index" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Valid Title")
+
+    writes = 0
+    other_index_conflict = lambda do |*_args, **_kwargs|
+      writes += 1
+      raise ActiveRecord::RecordNotUnique, 'duplicate key value violates unique constraint "index_sessions_on_session_id"'
+    end
+
+    session.stub(:update!, other_index_conflict) do
+      assert_raises(ActiveRecord::RecordNotUnique) { session.generate_slug_from_title! }
+    end
+
+    assert_equal 1, writes
+  end
+
   test "generate_slug_from_title! should handle Unicode characters" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Add support for emoji 🚀 and unicode ñ")
 
