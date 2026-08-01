@@ -577,7 +577,10 @@ Claude Code reads `~/.claude/.credentials.json` and its negative-auth cache
 a worker shares them. Two consequences the credential writer handles: (1) a plain read-modify-write
 of `.credentials.json` races when two spawns overlap (last writer wins, silently dropping the
 other's freshly-authorized token), so `ClaudeMcpCredentialWriter` serializes the read and the write
-under a `flock` on a sibling lock file; (2) one session's auth failure poisons the needs-auth cache
+under a `flock` on a sibling lock file — the same `ClaudeCredentialStore` lock the account writer
+takes for the `claudeAiOauth` block of that file, since an account rotation is a third racer
+([one credential file, three writers](/auth/harness/#one-credential-file-three-writers));
+(2) one session's auth failure poisons the needs-auth cache
 for *every* later session — the entry makes Claude Code skip the connection outright, so a
 freshly-injected token stays invisible until the entry is removed. Injecting credentials and
 completing an authorize both clear the relevant cache entries. Codex re-reads its store on every

@@ -496,7 +496,7 @@ class AccountRotationService
     return nil unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 
     fs_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-    fs_email = extract_oauth_email(fs_config["oauthAccount"])
+    fs_email = ClaudeAccount.extract_oauth_email(fs_config["oauthAccount"])
     return nil if fs_email.blank?
 
     ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).find_by(email: fs_email)
@@ -512,15 +512,9 @@ class AccountRotationService
     stored_config = account.oauth_config.fetch("claude_json", {})
     return true if stored_config.blank? # Can't verify, assume ok
 
-    extract_oauth_email(current_config["oauthAccount"]) == extract_oauth_email(stored_config["oauthAccount"])
+    ClaudeAccount.extract_oauth_email(current_config["oauthAccount"]) ==
+      ClaudeAccount.extract_oauth_email(stored_config["oauthAccount"])
   rescue JSON::ParserError, Errno::ENOENT
     false
-  end
-
-  # Extracts the email from an oauthAccount value, which can be a plain string
-  # (legacy CLI format) or a Hash with "emailAddress" (current CLI format).
-  def extract_oauth_email(oauth_account)
-    return nil if oauth_account.blank?
-    oauth_account.is_a?(Hash) ? oauth_account["emailAddress"] : oauth_account
   end
 end

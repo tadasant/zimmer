@@ -101,16 +101,42 @@ wrong container. That is the root cause of the 2026-06-11 cross-account token-co
 The fix: a marker file, `~/.claude/.ao-credentials-owner.json`, written next to the shared tokens,
 recording which account they belong to. `filesystem_credentials_owned_by_self?` gates the sync.
 
-:::caution[The docs and the method's own docstring both describe a fallback that doesn't exist]
-`docs/AUTH_ROTATION_ARCHITECTURE.html` (invariant I2) and the docstring on
-`ClaudeAccount#sync_tokens_from_filesystem!` both claim there is a *"legacy `~/.claude.json` fallback
-while no marker exists yet."*
+There is no fallback when the marker is absent. `filesystem_credentials_owned_by_self?` returns
+`false` and the sync is skipped — deliberately, because the only other identity available is the
+container-local `~/.claude.json`, the file whose cross-container divergence caused the outage in the
+first place. A skipped sync loses at most one round of runtime-rotated tokens; a wrong answer grafts
+one account's tokens onto another's row. Zimmer stamps the marker on its next credential write
+(`ensure_active_account!`, every `write_config!`), and the sync resumes from there.
 
-There isn't. `filesystem_credentials_owned_by_self?` returns `false` when the marker is absent and
-refuses to sync, and its own comment says so, explicitly contradicting the docstring 100 lines above
-it. The private method is correct; the doc and the docstring are stale.
-Tracked in [#59](https://github.com/tadasant/zimmer/issues/59).
-:::
+## One credential file, three writers
+
+`~/.claude/.credentials.json` is not owned by any one component. Zimmer writes the `claudeAiOauth`
+block (the subscription tokens, from `ClaudeAccount#write_credentials_to_filesystem!`) and the
+`mcpOAuth` map (per-server MCP tokens, from `ClaudeMcpCredentialWriter`), and the Claude Code CLI
+rewrites both at runtime. So no writer may write the whole file from its own snapshot — a plain
+`File.write` of one block's blob discards whatever is in the other.
+
+`ClaudeCredentialStore` is the discipline that makes that safe, and both Zimmer writers go through
+it:
+
+- **one lock file** — `~/.claude/.zimmer-credential-store.lock`, `flock`-held across the whole
+  read-modify-write, derived from the credentials path's directory. It serializes overlapping
+  sessions' MCP injections *and* an account rotation landing in the middle of one.
+- **one atomic write** — temp file + `rename`, mode `0600`, so a concurrent reader never sees a
+  half-written store.
+- **read-merge, never overwrite** — the account writer layers its stored blob over what is on disk
+  and leaves `mcpOAuth` exactly as found.
+
+That last rule runs in both directions. `mcpOAuth` on disk always wins, including when it is absent:
+`sync_tokens_from_filesystem!` captures the *whole* file into `oauth_config`, so an account's DB copy
+carries a snapshot of whatever MCP entries existed at capture time. Writing that copy back would
+clobber entries authorized since and resurrect entries `McpOauthCredential` deliberately deleted —
+which is exactly the resurrection `ClaudeMcpCredentialWriter#delete_credentials` exists to prevent.
+MCP state belongs to the MCP writer, which re-injects it on every spawn.
+
+Until [#60](https://github.com/tadasant/zimmer/issues/60), the account writer did a whole-file
+overwrite instead, so rotating accounts dropped every MCP OAuth credential on the box — and the user
+met it as *"the agent says it needs to authorize this server again."*
 
 ## Rotation on quota
 
@@ -421,15 +447,4 @@ login breaks wholesale.
 
 Codex is the same story, with `codex login --device-auth` and a device-code regex
 (`/\b([A-Z0-9]{4}-[A-Z0-9]{4,8})\b/`) tuned to an *observed* 4–5 character split.
-:::
-
-:::caution[One credential file, two writers]
-`ClaudeAccount#write_credentials_to_filesystem!` does a whole-file overwrite of
-`~/.claude/.credentials.json`. `ClaudeMcpCredentialWriter` read-merges an `mcpOAuth` map into the
-*same* file.
-
-So an account rotation replaces the file with account B's stored blob — dropping any `mcpOAuth`
-entries written after B's blob was last captured. It self-heals (the injector rewrites `mcpOAuth`
-on the next spawn), but it's an undeclared coupling between two subsystems that don't know about each
-other.
 :::
