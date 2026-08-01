@@ -26,6 +26,11 @@ class McpOauthPendingFlow < ApplicationRecord
   # Pending flows expire after 24 hours
   EXPIRATION_DURATION = 24.hours
 
+  # Hosts that count as a loopback redirect target, compared against the parsed URI
+  # host exactly. RFC 8252 §7.3 names only these two addresses (plus the `localhost`
+  # name), so `127.0.0.2` and IPv4-mapped forms are deliberately not loopback here.
+  LOOPBACK_HOSTS = [ "localhost", "127.0.0.1", "::1" ].freeze
+
   belongs_to :session, optional: true
 
   validates :server_name, presence: true
@@ -139,10 +144,16 @@ class McpOauthPendingFlow < ApplicationRecord
     nil
   end
 
-  # Returns true if this is a localhost OAuth flow
-  # (redirect_uri points to localhost)
+  # Returns true if this is a localhost OAuth flow (redirect_uri points to loopback).
+  # A substring test would accept `localhost.evil.com` and any URL merely carrying
+  # `127.0.0.1` in its query string, so the host is parsed out and compared exactly.
+  # `hostname` (not `host`) unwraps the brackets of an IPv6 literal.
   def localhost_flow?
-    redirect_uri.present? && (redirect_uri.include?("localhost") || redirect_uri.include?("127.0.0.1"))
+    return false if redirect_uri.blank?
+
+    LOOPBACK_HOSTS.include?(URI.parse(redirect_uri).hostname&.downcase)
+  rescue URI::Error
+    false
   end
 
   # Computes the PKCE code challenge (S256 method)
