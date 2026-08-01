@@ -196,7 +196,7 @@ class AccountRotationService
     current = ClaudeAccount.current_account
 
     if current&.active? && current&.has_valid_config?
-      if config_file_matches?(current)
+      if config_file_matches?(current) || adopt_own_filesystem_identity(current)
         # The container-local identity file agrees this is the current account,
         # so it owns the shared credentials. Bootstrap the shared owner marker if
         # it's missing (the post-deploy transition window) so the marker-gated
@@ -235,11 +235,11 @@ class AccountRotationService
       return current
     end
 
-    # Pick the first available account
-    account = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).first
+    # Pick the first available account whose credentials we can prove work
+    account = first_usable_available_account
 
     unless account
-      # No current and no available. The usual cause is DB records were
+      # No current and nothing usable. The usual cause is DB records were
       # added via `claude_accounts:add` but `capture_tokens` was skipped,
       # so every account has an empty oauth_config. If the filesystem
       # holds freshly-minted tokens from a recent `claude /login`, adopt
@@ -247,13 +247,10 @@ class AccountRotationService
       bootstrapped = ClaudeAccount.sync_from_filesystem!
       if bootstrapped&.has_valid_config?
         @logger.info("Bootstrapped account from filesystem", email: bootstrapped.email)
-        account = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).first
+        account = first_usable_available_account
       end
       return nil unless account
     end
-
-    # Refresh if needed before writing config
-    ensure_fresh_tokens!(account)
 
     # Write config to filesystem BEFORE marking current in the DB
     write_config!(account)
@@ -360,6 +357,17 @@ class AccountRotationService
       return { success: false, reason: "no_available_accounts" }
     end
 
+    # An account whose latest reading says its weekly allowance is spent cannot
+    # serve the session we are rotating for. QuotaSnapshotService marks such an
+    # account as each reading lands, so `available` normally excludes it already;
+    # this catches the account whose evidence predates that marking, and marks it
+    # so the pool stops offering it until QuotaResetCheckerJob restores it (#248).
+    if quota_capped?(next_account)
+      @logger.warn("Account's 7-day window is spent, skipping during rotation", email: next_account.email)
+      next_account.mark_quota_exceeded!
+      return activate_next_account(exclude_ids: exclude_ids + [ next_account.id ])
+    end
+
     # Validate the account's tokens by calling refresh_token! before writing
     # them to the filesystem. The previous date-only check (token_expired?
     # / token_expiring_soon?) lets through bogus credentials with sentinel
@@ -382,6 +390,72 @@ class AccountRotationService
 
     @logger.info("Rotated to account", email: next_account.email, priority: next_account.priority)
     { success: true, account: next_account }
+  end
+
+  # The first available account we can prove a session could actually use, or nil
+  # when the pool has none.
+  #
+  # Bootstrap was the one activation path that took `available.first` on faith.
+  # #ensure_fresh_tokens! swallows its own failure by design, so an account with a
+  # dead refresh token became current anyway and every session on the instance
+  # failed to authenticate until a human intervened (#239) — while the other three
+  # activation paths (rotation, manual switch, filesystem adoption) all validate
+  # before promoting.
+  #
+  # The probe is QuotaCheckService's rather than refresh_token!'s precisely
+  # because this runs over candidates we may not end up using: a refresh spends a
+  # SINGLE-USE token, and spending one per candidate is how a healthy pool drains
+  # itself (#242). Reading the rate-limit headers off a one-token request costs
+  # nothing and cannot invalidate anything.
+  def first_usable_available_account
+    ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).find do |account|
+      if quota_capped?(account)
+        @logger.warn("Account's 7-day window is spent, skipping during bootstrap", email: account.email)
+        account.mark_quota_exceeded!
+        next false
+      end
+
+      # Refresh a stale access token first, so the probe tests the credentials
+      # this account can actually present rather than an expiry date a refresh
+      # would have fixed.
+      ensure_fresh_tokens!(account)
+
+      if QuotaCheckService.token_rejected?(access_token_for(account))
+        @logger.warn("Account's tokens were rejected by Anthropic, skipping during bootstrap", email: account.email)
+        next false
+      end
+
+      true
+    end
+  end
+
+  # True when the account's most recent quota reading says its weekly allowance is
+  # gone. No snapshot means no evidence, which is not the same as bad evidence —
+  # an account nobody has probed yet stays eligible.
+  def quota_capped?(account)
+    snapshot = account.latest_snapshot
+    !snapshot.nil? && snapshot.seven_day_window_spent?
+  end
+
+  # The OAuth access token this account would present, from its DB copy.
+  def access_token_for(account)
+    account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+  end
+
+  # Adopt the on-disk ~/.claude.json identity into the account's stored config
+  # when the file already names this account, and report whether that happened.
+  #
+  # This is the converge step #config_file_matches? needs now that it fails closed
+  # (#61): an account holding credentials but no stored identity — a fresh install,
+  # or a row bootstrapped from credentials alone — can never satisfy the check, so
+  # without this every session start would take the mismatch branch, rewrite the
+  # filesystem, and arrive at the same unverifiable state next time. Adopting the
+  # identity that is already on disk makes the check answerable from then on.
+  def adopt_own_filesystem_identity(account)
+    return false unless account.backfill_identity_from_filesystem!
+
+    @logger.info("Adopted the on-disk identity into the stored config", email: account.email)
+    true
   end
 
   # Write the shared owner marker for an account only if no marker exists yet.
@@ -460,7 +534,7 @@ class AccountRotationService
 
   # Take a quota snapshot for an account using its DB-stored OAuth token
   def take_snapshot(account, trigger:)
-    token = account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+    token = access_token_for(account)
     return unless token.present?
 
     result = QuotaCheckService.check_with_token(token)
@@ -504,16 +578,27 @@ class AccountRotationService
     nil
   end
 
-  # Check if the current ~/.claude.json matches the account's stored config
+  # Check if the current ~/.claude.json matches the account's stored config.
+  #
+  # Fails closed. A missing stored identity used to answer "true — can't verify,
+  # assume ok" (#61), which is the one answer a safety check must not give: both
+  # callers use it to decide whether the filesystem can be left alone, and an
+  # account with no stored identity is exactly the case where the credentials on
+  # disk could belong to anyone. Unverifiable is a mismatch.
+  #
+  # A mismatch is not a dead end for either caller. #ensure_active_account! first
+  # tries to adopt the on-disk identity when it already names this account
+  # (#adopt_own_filesystem_identity), which converges the unverifiable case
+  # instead of repeating it, and otherwise writes the DB-current account to disk;
+  # #reconcile_with_filesystem! goes on to its own adoption gates.
   def config_file_matches?(account)
     return false unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 
-    current_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-    stored_config = account.oauth_config.fetch("claude_json", {})
-    return true if stored_config.blank? # Can't verify, assume ok
+    stored_email = ClaudeAccount.extract_oauth_email(account.oauth_config&.dig("claude_json", "oauthAccount"))
+    return false if stored_email.blank?
 
-    ClaudeAccount.extract_oauth_email(current_config["oauthAccount"]) ==
-      ClaudeAccount.extract_oauth_email(stored_config["oauthAccount"])
+    current_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
+    ClaudeAccount.extract_oauth_email(current_config["oauthAccount"]) == stored_email
   rescue JSON::ParserError, Errno::ENOENT
     false
   end

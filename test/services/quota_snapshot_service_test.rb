@@ -53,4 +53,52 @@ class QuotaSnapshotServiceTest < ActiveSupport::TestCase
     assert_nil snapshot.subscription_type
     assert_nil snapshot.utilization_7d
   end
+
+  # Ingestion marking (#248): mark_quota_exceeded! used to fire only on the
+  # account that was current when a session hit a wall, so an account that filled
+  # its weekly window while idle stayed in ClaudeAccount.available.
+
+  test "save_snapshot marks an account quota_exceeded when its weekly window is spent" do
+    account = claude_accounts(:secondary)
+    hits_before = account.quota_hit_count
+
+    QuotaSnapshotService.save_snapshot(account, spent_week_result, trigger: "page_view")
+
+    account.reload
+    assert account.quota_exceeded?
+    assert_equal hits_before + 1, account.quota_hit_count
+    assert_not_includes ClaudeAccount.available, account
+  end
+
+  test "save_snapshot leaves an account active when its weekly window has cleared" do
+    account = claude_accounts(:secondary)
+
+    QuotaSnapshotService.save_snapshot(
+      account, spent_week_result(reset_7d: 1.minute.ago), trigger: "page_view"
+    )
+
+    assert account.reload.active?
+  end
+
+  test "save_snapshot does not relabel a needs_reauth account as quota_exceeded" do
+    # The two states drive different recoveries — the quota checker restores one,
+    # only a human restores the other — so a spent window must not hide dead auth.
+    account = claude_accounts(:secondary)
+    account.update!(status: :needs_reauth)
+
+    QuotaSnapshotService.save_snapshot(account, spent_week_result, trigger: "scheduled")
+
+    assert account.reload.needs_reauth?
+  end
+
+  private
+
+  def spent_week_result(reset_7d: 2.days.from_now)
+    QuotaCheckService::Result.new(
+      success: true,
+      utilization_5h: 0.29, utilization_7d: 1.0,
+      status_5h: "allowed", status_7d: "rejected",
+      reset_5h: 1.hour.from_now, reset_7d: reset_7d
+    )
+  end
 end

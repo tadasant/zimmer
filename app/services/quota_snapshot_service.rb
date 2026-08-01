@@ -5,14 +5,48 @@
 # This bridges QuotaCheckService::Result (live API probe) and
 # ClaudeAccountQuotaSnapshot (database record) so quota data persists
 # across page loads and account rotations.
+#
+# It is also where an account's status learns about its own weekly window.
+# `mark_quota_exceeded!` only ever fired on the account that was CURRENT when a
+# session hit a wall, so an account that filled its 7-day window while sitting
+# idle in the pool stayed `active`, stayed in `ClaudeAccount.available`, and was
+# the next thing rotation reached for — activate, fail on the first request,
+# rotate again (#248). A reading that says the week is spent marks the account
+# here, as it lands, whichever path took it.
 class QuotaSnapshotService
-  # Save a QuotaCheckService::Result as a snapshot for the given account.
+  # Save a QuotaCheckService::Result as a snapshot for the given account, and
+  # mark the account quota_exceeded when the reading says its weekly allowance
+  # is gone.
   #
   # @param account [ClaudeAccount] the account to save the snapshot for
   # @param result [QuotaCheckService::Result] the quota check result
   # @param trigger [String] why the snapshot was taken ("rotation", "page_view", "scheduled")
   # @return [ClaudeAccountQuotaSnapshot] the created snapshot
   def self.save_snapshot(account, result, trigger:)
+    snapshot = create_snapshot(account, result, trigger)
+    mark_capped(account, snapshot)
+    snapshot
+  end
+
+  # Take an account out of the rotation pool when its own quota reading says it
+  # cannot serve. Only ever moves an `active` account: `needs_reauth` is a
+  # different failure with a different recovery (a human), and relabelling it
+  # would make an unusable pool look merely throttled — the same reasoning
+  # AccountRotationService#rotate_under_lock applies.
+  #
+  # QuotaResetCheckerJob restores the account once the window clears, reading the
+  # same predicate, so this cannot strand an account whose week has since reset.
+  def self.mark_capped(account, snapshot)
+    return unless account.active?
+    return unless snapshot.seven_day_window_spent?
+
+    account.mark_quota_exceeded!
+    Rails.logger.info "[QuotaSnapshotService] Marked #{account.email} quota_exceeded: " \
+      "the 7-day window is spent (utilization #{snapshot.utilization_7d.inspect}, status #{snapshot.status_7d.inspect})"
+  end
+  private_class_method :mark_capped
+
+  def self.create_snapshot(account, result, trigger)
     account.quota_snapshots.create!(
       subscription_type: result.subscription_type,
       rate_limit_tier: result.rate_limit_tier,
@@ -27,4 +61,5 @@ class QuotaSnapshotService
       trigger: trigger
     )
   end
+  private_class_method :create_snapshot
 end

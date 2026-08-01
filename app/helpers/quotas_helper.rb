@@ -46,33 +46,16 @@ module QuotasHelper
   # because the sliding window has cleared — showing stale high values would
   # be misleading.
   def effective_utilization(utilization, reset_time)
-    return utilization if utilization.nil? || reset_time.nil?
-    return 0.0 if reset_time <= Time.current
-
-    utilization
+    ClaudeAccountQuotaSnapshot.effective_utilization(utilization, reset_time)
   end
 
-  # The `anthropic-ratelimit-unified-*-status` values that mean the window is
-  # still serving. "allowed_warning" is an account approaching its cap, not one
-  # past it. Anything else — "rejected", or a value Anthropic adds later — is
-  # read as blocking, so an unknown status errs toward reporting exhaustion.
-  SERVING_QUOTA_STATUSES = %w[allowed allowed_warning].freeze
-
-  # True when an account's weekly allowance is gone: the API is rejecting on the
-  # 7-day window, or its counter has reached the cap. Either way the account
-  # cannot serve a request until that window resets.
-  #
-  # A status, like a number, holds only until its reset time passes — after that
-  # the sliding window has cleared, the same rule #effective_utilization applies.
+  # True when an account's weekly allowance is gone. The rule itself lives on
+  # ClaudeAccountQuotaSnapshot, because rotation and the quota-reset checker act
+  # on the same reading — see ClaudeAccountQuotaSnapshot#seven_day_window_spent?.
   def seven_day_window_spent?(snapshot)
     return false if snapshot.nil?
 
-    blocked = snapshot.status_7d.present? && SERVING_QUOTA_STATUSES.exclude?(snapshot.status_7d)
-    return false if blocked && snapshot.reset_7d && snapshot.reset_7d <= Time.current
-    return true if blocked
-
-    eff_7d = effective_utilization(snapshot.utilization_7d, snapshot.reset_7d)
-    !eff_7d.nil? && eff_7d >= 1.0
+    snapshot.seven_day_window_spent?
   end
 
   # The 5-hour utilization an account contributes to the pool view.
