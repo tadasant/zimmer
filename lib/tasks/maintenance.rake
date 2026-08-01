@@ -94,7 +94,7 @@ namespace :maintenance do
           require "open3"
           ps_output, status = Open3.capture2("ps", "ax", "-o", "pid,command")
 
-          if status.success?
+          if SubprocessStatus.success?(status)
             claude_processes = []
             ps_output.each_line do |line|
               # Look for claude command processes

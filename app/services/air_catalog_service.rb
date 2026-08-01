@@ -107,7 +107,7 @@ class AirCatalogService
       return nil unless File.directory?(File.join(clone_dir, ".git"))
 
       stdout, _stderr, status = Open3.capture3("git", "-C", clone_dir, "rev-parse", "HEAD")
-      status.success? ? stdout.strip.presence : nil
+      SubprocessStatus.success?(status) ? stdout.strip.presence : nil
     end
 
     # The directory containing air.json — preserved for callers that still
@@ -325,8 +325,8 @@ class AirCatalogService
       ensure_air_cli!
 
       stdout, stderr, status = Open3.capture3(air_env, air_binary, "resolve", "--json", "--no-scope", "--git-protocol", "https")
-      unless status.success?
-        raise CatalogError, "air resolve failed (exit #{status.exitstatus}): #{stderr.presence || stdout}"
+      unless SubprocessStatus.success?(status)
+        raise CatalogError, "air resolve failed (#{SubprocessStatus.describe_failure(status)}): #{stderr.presence || stdout}"
       end
 
       # A resolve can exit 0 yet be structurally incomplete. When a catalog
@@ -369,8 +369,8 @@ class AirCatalogService
       ensure_air_cli!
 
       stdout, stderr, status = Open3.capture3(air_env, air_binary, "update", "--git-protocol", "https")
-      unless status.success?
-        raise CatalogError, "air update failed (exit #{status.exitstatus}): #{stderr.presence || stdout}"
+      unless SubprocessStatus.success?(status)
+        raise CatalogError, "air update failed (#{SubprocessStatus.describe_failure(status)}): #{stderr.presence || stdout}"
       end
       Rails.logger.info "[AirCatalogService] air update: #{stdout.strip}" if stdout.present?
     end

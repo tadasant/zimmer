@@ -83,7 +83,7 @@ class DockerCleanupJob < ApplicationJob
       "--filter", "status=running",
       "--format", '{{.Label "com.docker.compose.project"}}\t{{.CreatedAt}}'
     )
-    return [] unless status.success?
+    return [] unless SubprocessStatus.success?(status)
 
     cutoff = MAX_DEV_SERVER_AGE.ago
     stale_projects = Set.new
@@ -112,7 +112,7 @@ class DockerCleanupJob < ApplicationJob
       "down", "-v", "--remove-orphans", "--timeout", "30"
     )
 
-    if status.success?
+    if SubprocessStatus.success?(status)
       Rails.logger.info "[DockerCleanupJob] Stopped stale dev-server: #{project_name}"
     else
       Rails.logger.warn "[DockerCleanupJob] Failed to stop #{project_name}: #{stderr.to_s.truncate(200)}"
@@ -125,7 +125,7 @@ class DockerCleanupJob < ApplicationJob
 
   def prune_stopped_containers
     stdout, stderr, status = run_command("docker", "container", "prune", "-f")
-    if status.success?
+    if SubprocessStatus.success?(status)
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.info "[DockerCleanupJob] Container prune: #{reclaimed}" if reclaimed.present?
     else
@@ -138,7 +138,7 @@ class DockerCleanupJob < ApplicationJob
       "docker", "image", "prune", "-a", "-f",
       "--filter", "until=#{IMAGE_AGE_FILTER}"
     )
-    if status.success?
+    if SubprocessStatus.success?(status)
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.info "[DockerCleanupJob] Image prune: #{reclaimed}" if reclaimed.present?
     else
@@ -148,7 +148,7 @@ class DockerCleanupJob < ApplicationJob
 
   def prune_dangling_volumes
     stdout, stderr, status = run_command("docker", "volume", "prune", "-f")
-    if status.success?
+    if SubprocessStatus.success?(status)
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.info "[DockerCleanupJob] Volume prune: #{reclaimed}" if reclaimed.present?
     else
@@ -163,14 +163,14 @@ class DockerCleanupJob < ApplicationJob
   def emergency_cleanup
     # Aggressively prune ALL unused images (not just old ones)
     stdout, _stderr, status = run_command("docker", "image", "prune", "-a", "-f")
-    if status.success?
+    if SubprocessStatus.success?(status)
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.warn "[DockerCleanupJob] Emergency image prune: #{reclaimed}" if reclaimed.present?
     end
 
     # Prune build cache
     stdout, _stderr, status = run_command("docker", "builder", "prune", "-f", "--all")
-    if status.success?
+    if SubprocessStatus.success?(status)
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.warn "[DockerCleanupJob] Emergency builder prune: #{reclaimed}" if reclaimed.present?
     end
@@ -182,7 +182,7 @@ class DockerCleanupJob < ApplicationJob
 
   def disk_usage_percent
     stdout, _stderr, status = run_command("df", "--output=pcent", "/")
-    return 0 unless status.success?
+    return 0 unless SubprocessStatus.success?(status)
 
     # Output is like: "Use%\n 84%\n"
     match = stdout.match(/(\d+)%/)
@@ -191,7 +191,7 @@ class DockerCleanupJob < ApplicationJob
 
   def log_disk_usage
     stdout, _stderr, status = run_command("df", "-h", "/")
-    return unless status.success?
+    return unless SubprocessStatus.success?(status)
 
     usage_line = stdout.lines[1]&.strip
     Rails.logger.info "[DockerCleanupJob] Disk usage after cleanup: #{usage_line}" if usage_line.present?

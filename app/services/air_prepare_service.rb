@@ -163,7 +163,7 @@ class AirPrepareService
 
       Timeout.timeout(10) do
         _stdout, _stderr, status = Open3.capture3(binary, "--version")
-        status.success?
+        SubprocessStatus.success?(status)
       end
     rescue StandardError, Timeout::Error
       false
@@ -186,8 +186,8 @@ class AirPrepareService
       Rails.logger.info "[AirPrepareService] Installing AIR packages: #{packages.join(', ')}"
       _stdout, stderr, status = Open3.capture3(*install_cmd)
 
-      unless status.success?
-        raise AirPrepareError, "Failed to install AIR packages: #{stderr}"
+      unless SubprocessStatus.success?(status)
+        raise AirPrepareError, "Failed to install AIR packages: #{SubprocessStatus.describe_failure(status, stderr)}"
       end
 
       unless air_binary_healthy?(binary)
@@ -480,10 +480,10 @@ class AirPrepareService
         stdout, stderr, status =
           BoundedSubprocess.run(cmd, env: env, timeout: AIR_PREPARE_TIMEOUT_SECONDS)
 
-        return if status.success?
+        return if SubprocessStatus.success?(status)
 
         error = AirPrepareError.new(
-          "AIR prepare failed (exit #{status.exitstatus}): #{stderr.presence || stdout}"
+          "AIR prepare failed (#{SubprocessStatus.describe_failure(status)}): #{stderr.presence || stdout}"
         )
         transient = transient_air_failure?(error.message)
         root_not_found = ROOT_NOT_FOUND_PATTERN.match?(error.message)
@@ -575,11 +575,11 @@ class AirPrepareService
       env: env,
       timeout: AIR_PREPARE_TIMEOUT_SECONDS
     )
-    return true if status.success?
+    return true if SubprocessStatus.success?(status)
 
     Rails.logger.warn(
-      "[AirPrepareService] catalog cache refresh failed (exit #{status.exitstatus}): " \
-      "#{stderr.to_s.truncate(500)}"
+      "[AirPrepareService] catalog cache refresh failed " \
+      "(#{SubprocessStatus.describe_failure(status)}): #{stderr.to_s.truncate(500)}"
     )
     false
   rescue BoundedSubprocess::TimeoutError => e

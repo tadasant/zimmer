@@ -364,7 +364,7 @@ class ClaudeMcpCredentialWriter
       "-w"
     )
 
-    return nil unless status.success? && output.present?
+    return nil unless SubprocessStatus.success?(status) && output.present?
 
     JSON.parse(output.strip)
   rescue JSON::ParserError => e

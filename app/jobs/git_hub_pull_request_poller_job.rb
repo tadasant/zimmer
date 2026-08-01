@@ -117,8 +117,10 @@ class GitHubPullRequestPollerJob < ApplicationJob
 
     stdout, stderr, status = Open3.capture3(*command)
 
-    unless status.success?
-      Rails.logger.warn "[GitHubPullRequestPollerJob] gh command failed: #{stderr}"
+    # A nil status (this `gh` child reaped by ZombieReaperJob before capture3's waiter
+    # got to it) is a failed call, not a successful one — see SubprocessStatus.
+    unless SubprocessStatus.success?(status)
+      Rails.logger.warn "[GitHubPullRequestPollerJob] gh command failed: #{SubprocessStatus.describe_failure(status, stderr)}"
       return nil
     end
 
@@ -151,9 +153,10 @@ class GitHubPullRequestPollerJob < ApplicationJob
 
     stdout, stderr, status = Open3.capture3(*command)
 
-    # Exit code 8 means checks are pending (not an error)
-    unless status.success? || status.exitstatus == 8
-      Rails.logger.warn "[GitHubPullRequestPollerJob] gh pr checks command failed: #{stderr}"
+    # Exit code 8 means checks are pending (not an error). A nil status has no exit code
+    # to compare, so it correctly falls through to the failure branch rather than raising.
+    unless SubprocessStatus.success?(status) || SubprocessStatus.exit_code(status) == 8
+      Rails.logger.warn "[GitHubPullRequestPollerJob] gh pr checks command failed: #{SubprocessStatus.describe_failure(status, stderr)}"
       return nil
     end
 

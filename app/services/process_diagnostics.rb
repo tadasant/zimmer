@@ -161,7 +161,7 @@ class ProcessDiagnostics
       "-p", pid.to_s
     )
 
-    unless status.success? && output.strip.present?
+    unless SubprocessStatus.success?(status) && output.strip.present?
       return { exists: false }
     end
 
@@ -194,7 +194,7 @@ class ProcessDiagnostics
     # Use pgrep to find children (works on both macOS and Linux)
     output, status = Open3.capture2("pgrep", "-P", pid.to_s)
 
-    return [] unless status.success?
+    return [] unless SubprocessStatus.success?(status)
 
     output.strip.split("\n").filter_map do |child_pid_str|
       child_pid = child_pid_str.to_i

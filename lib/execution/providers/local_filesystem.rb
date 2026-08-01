@@ -60,22 +60,24 @@ module Execution
         begin
           output, error, status = run_claude_code_command
 
-          if status.success?
+          if SubprocessStatus.success?(status)
             log_info("Execution completed successfully")
             Result.success(
               output: output,
               metadata: {
-                exit_status: status.exitstatus,
+                exit_status: SubprocessStatus.exit_code(status),
                 working_directory: clone_path.to_s
               },
               provider_type: provider_type
             )
           else
-            log_error("Execution failed with exit status #{status.exitstatus}")
+            # A nil status lands here too, and reaches the caller as exit_status: nil —
+            # "the command failed and we never learned its exit code". See SubprocessStatus.
+            log_error("Execution failed (#{SubprocessStatus.describe_failure(status)})")
             Result.failure(
               error: error,
               output: output,
-              exit_status: status.exitstatus,
+              exit_status: SubprocessStatus.exit_code(status),
               metadata: { working_directory: clone_path.to_s },
               provider_type: provider_type
             )
@@ -186,8 +188,8 @@ module Execution
           clone_path.to_s
         )
 
-        unless status.success?
-          raise "Failed to clone repository: #{stderr}"
+        unless SubprocessStatus.success?(status)
+          raise "Failed to clone repository: #{SubprocessStatus.describe_failure(status, stderr)}"
         end
 
         log_debug("Successfully cloned repository to #{clone_path}")
