@@ -142,6 +142,12 @@ class ConnectorStatusProbe
     # The stored credential's expiry, when there is one to show.
     def expires_at = credential&.expires_at
 
+    # True when the server issued this credential without a refresh token, so
+    # re-authorizing by hand is a recurring chore rather than a one-off. Said on
+    # the row for every state that has such a credential — including :ready,
+    # which is exactly where the surprise is otherwise stored up.
+    def requires_periodic_reauth? = !!credential&.requires_periodic_reauth?
+
     private
 
     # Ready has two shapes: an OAuth flow that has been completed, and a server
@@ -152,6 +158,9 @@ class ConnectorStatusProbe
 
       if credential.expires_at.nil?
         "OAuth is complete and the credential is saved. It does not expire."
+      elsif credential.requires_periodic_reauth?
+        "OAuth is complete and the credential is saved. The access token expires in " \
+        "#{distance_of_time_in_words(Time.current, credential.expires_at)} and cannot be renewed."
       else
         "OAuth is complete and the credential is saved. The access token expires in " \
         "#{distance_of_time_in_words(Time.current, credential.expires_at)}" \

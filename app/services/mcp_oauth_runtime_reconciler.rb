@@ -69,7 +69,11 @@ class McpOauthRuntimeReconciler
       credential.update!(
         access_token: snapshot.access_token,
         refresh_token: snapshot.refresh_token,
-        expires_at: snapshot.expires_at
+        expires_at: snapshot.expires_at,
+        # The runtime captured a refresh token from this server, which settles the
+        # question the issuance-time flag was answering. Recording it keeps a later
+        # invalidate_refresh_token! from resurrecting a claim this token disproved.
+        refresh_token_unsupported: snapshot.refresh_token.blank? && credential.refresh_token_unsupported?
       )
       adopted = true
     end

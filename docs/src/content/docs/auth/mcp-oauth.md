@@ -375,6 +375,12 @@ order, so a connector reported **Ready** is one that will actually connect:
 | **No credential required** | The catalog entry configures no credential at all |
 | **Probe failed** | Anything unexpected, isolated to that one row |
 
+One line cuts across the states rather than being one of them: a credential whose
+server issued **no refresh token** carries an amber note on its row saying so, in
+every state including **Ready**. Nothing can renew that credential, so the
+re-authorization is permanent and periodic — see
+[Servers without `offline_access`](#known-problems) below.
+
 A credential filed under a *different* credential key than the catalog currently
 computes is deliberately not matched — the injector would not find it either, so
 counting it would report Ready for a server that cannot connect. Those show up
@@ -496,11 +502,21 @@ made by comparing the redirect against `build_redirect_uri`, below. The predicat
 the first caller inherits a correct answer, not because it gates anything today.
 :::
 
-:::caution[Servers without `offline_access` become one-shot credentials]
+:::note[Servers without `offline_access` issue one-shot credentials — and Zimmer says so]
 Scope acquisition just joins whatever the server advertises in `scopes_supported`. If a server
-doesn't advertise `offline_access`, no refresh token is issued, and the credential silently becomes
-single-use — `requires_reauth?` once it lapses, with no way to refresh.
-Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
+doesn't advertise `offline_access`, no refresh token is issued and the credential is single-use:
+nothing can renew it, so it becomes `requires_reauth?` the moment it lapses.
+
+That is a permanent property of the server, and it is knowable the instant the token response
+arrives. A token response with no refresh token sets `refresh_token_unsupported` on the credential,
+and `McpOauthCredential#requires_periodic_reauth?` (the flag, plus a still-absent refresh token —
+so one that arrives later settles the question) drives an amber line on the Connectors row saying
+the credential cannot be renewed and will need authorizing again. It is said while the row is still
+green, which is the only time saying it helps ([#64](https://github.com/tadasant/zimmer/issues/64)).
+
+What has *not* changed: Zimmer does not ask for `offline_access` a server did not advertise, and the
+re-authorization is still manual. The fix is that a permanent limitation is stated once, up front,
+instead of resurfacing as "the agent randomly needs me to authorize this server again".
 :::
 
 :::note[client_id resolution order]
@@ -561,13 +577,25 @@ parked session stays parked until you click Authorize on its own banner (which t
 the already-have-a-credential branch: re-inject, clear the runtime needs-auth cache, resume).
 :::
 
-:::caution[A server that fails before it connects disappears from the status instead of showing "failed"]
+:::note[A server that fails before it connects is listed as `pending`, not omitted]
 `mcp_servers_status` is built by `McpLogPollerService` from the per-server log directories Claude Code
 creates under `~/.cache/claude-cli-nodejs/<project>/mcp-logs-<name>/`. A server that never gets far
 enough to create a log directory (e.g. an OAuth-blocked streamable-http server stripped from the
-launch) produces no key at all, and `McpStatusPersisting` merges rather than replaces, so it is simply
-absent — not `failed`, not `disconnected`. In the UI a broken server then looks unconfigured rather
-than broken. Tracked in [#196](https://github.com/tadasant/zimmer/issues/196).
+launch) produces no key of its own.
+
+`McpStatusPersisting` seeds a `pending` placeholder for every server in `session.all_mcp_servers` that
+the detector said nothing about, so such a server is at least *listed*. It used to be skipped outright.
+The session views already read an absent key as pending, but the JSON consumers do not — the REST API
+and the `get_session` MCP tool hand back `custom_metadata` verbatim, so a broken server simply was not
+in it, and absent there reads as "not configured" when the truth was "configured and broken". The
+placeholder is written only when the key is absent, so it is a floor and never a correction: a real
+status, from this poll or any earlier one, is never overwritten by it. `pending` is still not `failed`
+— the log directory is the only evidence there is, and it does not exist — but the server no longer
+vanishes ([#196](https://github.com/tadasant/zimmer/issues/196)).
+
+One consumer treats it specially: `McpServerBackfill#detect_lost_mcp_servers` skips `pending` entries
+when it looks for servers a regenerated config dropped, since a placeholder is the absence of evidence
+rather than a server the session ever connected to.
 :::
 
 :::note[The runtime credential stores are host-global and shared across sessions]

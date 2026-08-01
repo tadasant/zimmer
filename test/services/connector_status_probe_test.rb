@@ -239,6 +239,59 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
     assert status.authorizable?, "nothing renews this credential but a fresh flow"
   end
 
+  # --- one-shot credentials (no refresh token was ever issued) ---------------
+
+  # The whole point of recording this at issuance: a ready row is the moment the
+  # user is looking, and it is the last moment before the limitation bites.
+  test "a ready credential the server issued without a refresh token says so up front" do
+    with_catalog("notion", OAUTH_SERVER) do
+      create_credential("notion", OAUTH_SERVER, expires_at: 2.hours.from_now,
+        refresh_token: nil, refresh_token_unsupported: true)
+    end
+
+    status = probe("notion", OAUTH_SERVER)
+
+    assert_equal :ready, status.state
+    assert status.requires_periodic_reauth?, "a one-shot credential is flagged while it still works"
+    assert_match "cannot be renewed", status.summary
+    assert_no_match(/refreshed automatically/, status.summary)
+  end
+
+  test "a credential with a refresh token is not flagged for periodic re-auth" do
+    with_catalog("notion", OAUTH_SERVER) do
+      create_credential("notion", OAUTH_SERVER, expires_at: 2.hours.from_now,
+        refresh_token: "refresh", token_endpoint: "https://mcp.notion.example.com/token")
+    end
+
+    status = probe("notion", OAUTH_SERVER)
+
+    assert_equal :ready, status.state
+    assert_not status.requires_periodic_reauth?
+    assert_match "refreshed automatically", status.summary
+  end
+
+  # A refresh token acquired later (a runtime-captured rotation, a re-auth
+  # against a server that changed its mind) settles the question — the recorded
+  # flag must not keep warning about a limitation that no longer applies.
+  test "a refresh token that arrives later clears the periodic re-auth warning" do
+    with_catalog("notion", OAUTH_SERVER) do
+      create_credential("notion", OAUTH_SERVER, expires_at: 2.hours.from_now,
+        refresh_token: "arrived-later", refresh_token_unsupported: true,
+        token_endpoint: "https://mcp.notion.example.com/token")
+    end
+
+    status = probe("notion", OAUTH_SERVER)
+
+    assert_not status.requires_periodic_reauth?
+  end
+
+  test "a server with no credential at all is not flagged for periodic re-auth" do
+    status = probe("notion", OAUTH_SERVER)
+
+    assert_equal :needs_authorization, status.state
+    assert_not status.requires_periodic_reauth?, "no credential means no claim either way"
+  end
+
   test "a credential stored under a different credential key does not count as ready" do
     with_catalog("notion", OAUTH_SERVER) do
       McpOauthCredential.create!(

@@ -928,6 +928,42 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_nil @session.custom_metadata["should_fail_session"]
   end
 
+  # Issue #196, end to end through the real poller: a configured server whose
+  # process died before it ever created a log directory produces no detected
+  # status at all. It used to be skipped by the caller AND by the persister, and
+  # so vanished from mcp_servers_status — where absent reads as "not configured"
+  # rather than "configured and broken". It is now listed as pending.
+  test "poll_and_broadcast lists a configured server that never created a log directory" do
+    @session.update!(
+      mcp_servers: [ "context7" ],
+      metadata: { "working_directory" => "/tmp/test-clone" },
+      custom_metadata: {}
+    )
+
+    home_dir = File.expand_path("~")
+    transcript_dir = File.join(home_dir, ".claude", "projects", "-tmp-test-clone")
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write("#{transcript_dir}/test-session.jsonl",
+      '{"type":"user","message":{"role":"user","content":"Hello"}}')
+
+    # Deliberately no mcp-logs-context7 directory: the server never got that far.
+
+    mock_broadcast_service = mock("BroadcastService")
+    mock_broadcast_service.stubs(:remove_empty_timeline_message)
+    mock_broadcast_service.stubs(:timeline_message)
+    mock_broadcast_service.stubs(:running_loader)
+    mock_broadcast_service.expects(:timeline_mcp_log).never
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system, broadcast_service: mock_broadcast_service)
+    service.poll_and_broadcast
+
+    @session.reload
+    assert_equal "pending", @session.custom_metadata.dig("mcp_servers_status", "context7", "status"),
+      "a server with no log directory must still be listed, not silently absent"
+    assert_nil @session.custom_metadata["should_fail_session"],
+      "pending is not a failure — nothing here escalates the session"
+  end
+
   test "poll_and_broadcast skips MCP polling when no mcp_servers configured" do
     # Configure session without MCP servers
     @session.update!(

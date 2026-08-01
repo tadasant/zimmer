@@ -68,11 +68,19 @@ module ParameterStore
 
     def probed? = @probed
 
-    # Either read path counts. Parameter Manager's `:render` dereferences a
-    # `__REF__` as the PARAMETER's principal rather than the caller's, so a
-    # credential holding render alone can still come back with a value.
+    # Render is the read path — the only one. `GcpClient#resolve` lists a
+    # namespace and calls `:render` on each parameter, and never touches Secret
+    # Manager directly, so `secretmanager.versions.access` alone resolves exactly
+    # nothing. (Render is also sufficient on its own: it dereferences a `__REF__`
+    # as the PARAMETER's principal rather than the caller's, which is why the
+    # credential can come back with a value it holds no `access` on.)
+    #
+    # ORing the two reported a credential that could read secrets but not render
+    # parameters as healthy least-privilege while every `${VAR}` silently
+    # resolved to nothing — the exact green-banner-nothing-works state this class
+    # exists to prevent.
     def read_secret_values?
-      held.include?(READ_SECRET_VALUE) || held.include?(RENDER_PARAMETER)
+      held.include?(RENDER_PARAMETER)
     end
 
     # The permissions Zimmer's resolver must NOT hold. Their absence is the

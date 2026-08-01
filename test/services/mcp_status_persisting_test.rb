@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # Focused unit test for the shared McpStatusPersisting module, independent of
 # either runtime's detector. The behavior under test is the LEVEL at which a
@@ -72,6 +73,80 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
 
     assert_empty @logger.calls.select { |c| c[:level] == :error },
       "detection path must not emit any .error log (terminal .error lives in AgentSessionJob)"
+  end
+
+  # --- placeholder seeding (issue #196) --------------------------------------
+
+  # A server whose process died before it ever created a log directory produces
+  # no status at all. Skipping it left it absent from mcp_servers_status, and
+  # absent reads as "not configured" everywhere — the API, the MCP tools, the
+  # session row. Configured-and-broken is the truth; pending is how it is said.
+  test "a server the detector said nothing about is seeded pending, not dropped" do
+    @session.update!(mcp_servers: [ "context7", "playwright-custom" ])
+
+    @host.update_session_mcp_status("context7" => { status: "connected" })
+
+    @session.reload
+    statuses = @session.custom_metadata["mcp_servers_status"]
+    assert_equal "connected", statuses.dig("context7", "status")
+    assert_equal "pending", statuses.dig("playwright-custom", "status"),
+      "a server with no detected status is still listed"
+  end
+
+  # The failure this fixes is exactly the single-server session whose only server
+  # never got far enough to log: the detector returns {} and the server used to
+  # vanish entirely.
+  test "an empty status hash still lists every trackable server" do
+    any_failed = @host.update_session_mcp_status({})
+
+    refute any_failed
+    @session.reload
+    assert_equal "pending", @session.custom_metadata.dig("mcp_servers_status", "context7", "status")
+  end
+
+  test "a session with no trackable servers writes nothing" do
+    @session.update!(mcp_servers: [], custom_metadata: {})
+
+    refute @host.update_session_mcp_status({})
+
+    @session.reload
+    assert_nil @session.custom_metadata["mcp_servers_status"]
+  end
+
+  # The placeholder is a floor, never a correction: a real status already on the
+  # record survives a later poll that has nothing to say about that server.
+  test "the placeholder never overwrites a status already recorded" do
+    @host.update_session_mcp_status("context7" => { status: "failed", error: "Connection closed" })
+
+    @host.update_session_mcp_status({})
+
+    @session.reload
+    assert_equal "failed", @session.custom_metadata.dig("mcp_servers_status", "context7", "status")
+    assert_equal "Connection closed", @session.custom_metadata.dig("mcp_servers_status", "context7", "error")
+  end
+
+  # Polls are frequent and mostly say nothing new. An unconditional write would
+  # re-run Session's full validation set — including the AIR-catalog-backed
+  # artifact validators — several times a minute per live session, for no write.
+  test "a poll with nothing new to say does not write the session at all" do
+    @host.update_session_mcp_status("context7" => { status: "connected" })
+
+    Session.any_instance.expects(:update!).never
+
+    @host.update_session_mcp_status("context7" => { status: "connected" })
+  end
+
+  # And it is a floor in the other direction too: seeding pending first must not
+  # stop the real status from landing when the detector finally sees the server.
+  test "a seeded placeholder is replaced by the real status when it arrives" do
+    @host.update_session_mcp_status({})
+    assert_equal "pending", @session.reload.custom_metadata.dig("mcp_servers_status", "context7", "status")
+
+    any_failed = @host.update_session_mcp_status("context7" => { status: "failed", error: "boom" })
+
+    assert any_failed, "escalation still fires after a placeholder was seeded"
+    @session.reload
+    assert_equal "failed", @session.custom_metadata.dig("mcp_servers_status", "context7", "status")
   end
 
   test "an injected (non-configured) server failure neither escalates nor logs" do

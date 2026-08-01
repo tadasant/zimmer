@@ -164,7 +164,7 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 | --- | --- |
 | `roles/parametermanager.parameterViewer` | `parameters.list` + `parameterVersions.list` — the two calls `GcpClient#resolve` makes before it renders anything. |
 | `roles/parametermanager.parameterAccessor` | `parameterVersions.render`. **`parameterViewer` does not grant this** — with viewer alone the lists succeed and every render 403s, which looks like a working credential right up until nothing resolves. |
-| `roles/secretmanager.secretAccessor` | `secretmanager.versions.access`, so the resolver can read a rendered secret value. No create, no update, no destroy, no policy read. |
+| `roles/secretmanager.secretAccessor` | `secretmanager.versions.access`. Not the read path — `:render` dereferences as the *parameter's* principal, so the resolver never calls Secret Manager itself. This is what the [seeding flow](#adding-a-secret) and the audit below assert against. No create, no update, no destroy, no policy read. |
 
 Deliberately **not** granted:
 
@@ -243,6 +243,18 @@ Zimmer runs the same probe continuously: the Connectors page's secret-store
 banner reports **least privilege**, **also holds write permissions** (naming
 them), **cannot read secret values**, or **could not confirm** — the last being a
 distinct state, never reported as a denial.
+
+**"Can read" means `parametermanager.parameterVersions.render`, and only that.**
+`GcpClient` lists a namespace and calls `:render` on each parameter; it never
+calls Secret Manager directly, so `secretmanager.versions.access` on its own
+resolves exactly nothing. The banner requires `render` before it will say a
+credential can read — the two used to be ORed, which reported an
+access-but-no-render credential as healthy least privilege while every `${VAR}`
+came back empty. Render is also *sufficient* on its own: it dereferences a
+`__REF__` as the parameter's principal rather than the caller's, which is why the
+credential can return a value it holds no `access` on. `versions.access` stays in
+the intended grant because [seeding a secret](#adding-a-secret) and the audit
+above both depend on it, not because the resolver reads through it.
 
 ### 5. Deliver the key to Zimmer
 
@@ -624,7 +636,7 @@ The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
 | Symptom | Cause |
 | --- | --- |
 | `400 SECRET_REFERENCE_ERROR` on `:render` | The parameter's own principal lacks `secretmanager.secretAccessor` on the secret — step 3 of the seeding flow was skipped. The store banner will still be green; it probes the resolver, not the parameter. |
-| `403` on `:render`, lists succeed | The resolver holds `parameterViewer` but not `parameterAccessor`. |
+| `403` on `:render`, lists succeed | The resolver holds `parameterViewer` but not `parameterAccessor`. The banner reports this as **cannot read secret values**, naming `parameterVersions.render` — holding `secretmanager.versions.access` without it resolves nothing. |
 | Banner says "could not confirm what this credential may do" | `cloudresourcemanager.googleapis.com` is not enabled on the project. |
 | Every variable reads `Unresolved`, no error | The namespace is empty, or the parameters lack the `managed-by=zimmer` label, or their envelope `path` falls outside `/zimmer/{env}/mcp/static/`. |
 
