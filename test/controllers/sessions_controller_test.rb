@@ -988,6 +988,182 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Session is not in trash.", flash[:alert]
   end
 
+  # === Turbo Stream responses for the dashboard's mutating actions ===
+  #
+  # These actions used to redirect purely to carry a flash, which meant a full
+  # page render for every trash / refresh / pause. They now stream the message
+  # into the layout's #flash target instead; the HTML branch still redirects for
+  # non-Turbo clients, which the tests above cover.
+
+  test "archive turbo_stream carries the Undo affordance into the flash target" do
+    session = sessions(:failed)
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html; charset=utf-8", response.content_type
+    # The card goes away...
+    assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
+    # ...and the toast that offers to bring it back arrives with it.
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Session moved to trash\./, response.body)
+    assert_match %r{action="#{Regexp.escape(undo_archive_session_path(session))}"}, response.body
+    assert_match(/>Undo</, response.body)
+  end
+
+  test "archive turbo_stream for an already-archived session still explains itself" do
+    session = sessions(:archived)
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Session is already in trash\./, response.body)
+  end
+
+  test "undo_archive turbo_stream puts the card back and does not redirect" do
+    session = sessions(:failed)
+    session.update!(status: :archived, archived_at: 1.second.ago)
+
+    post undo_archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_not session.reload.archived?
+    # Uncategorized sessions land in the Uncategorized grid.
+    assert_match(/<turbo-stream\s+action="prepend"\s+target="sessions_grid"/, response.body)
+    assert_match(/id="session_#{session.id}"/, response.body)
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Session restored from trash\./, response.body)
+  end
+
+  test "undo_archive turbo_stream returns a categorized card to its own category grid" do
+    category = Category.create!(name: "Turbo stream target")
+    session = sessions(:failed)
+    session.update!(category_id: category.id, status: :archived, archived_at: 1.second.ago)
+
+    post undo_archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="prepend"\s+target="category_grid_#{category.id}"/, response.body)
+  end
+
+  test "undo_archive turbo_stream streams the expiry alert instead of redirecting" do
+    session = sessions(:failed)
+    session.update!(status: :archived, archived_at: 6.seconds.ago)
+
+    post undo_archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert session.reload.archived?
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/The undo window has expired/, response.body)
+  end
+
+  test "bulk_archive turbo_stream streams the count into the flash target" do
+    session = sessions(:failed)
+
+    post bulk_archive_sessions_url, params: { session_ids: [ session.id ] }, as: :turbo_stream
+
+    assert_response :success
+    assert session.reload.archived?
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/1 session\(s\) moved to trash\./, response.body)
+  end
+
+  test "bulk_archive turbo_stream streams the empty-selection alert" do
+    post bulk_archive_sessions_url, params: { session_ids: [] }, as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/No sessions selected\./, response.body)
+  end
+
+  test "refresh_all turbo_stream streams its summary instead of redirecting" do
+    # Nothing to refresh keeps the action off the restart/continue paths that
+    # would reach for real processes; the response shape is what is under test.
+    Session.where.not(status: :archived).update_all(status: :archived)
+
+    post refresh_all_sessions_url, as: :turbo_stream
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html; charset=utf-8", response.content_type
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/No non-archived sessions to refresh/, response.body)
+  end
+
+  test "refresh_category turbo_stream streams the unknown-category alert" do
+    post refresh_category_sessions_url, params: { category_id: 999_999 }, as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Category not found/, response.body)
+  end
+
+  test "refresh_category turbo_stream streams the frozen-category refusal" do
+    category = Category.create!(name: "Parked", is_frozen: true)
+
+    post refresh_category_sessions_url, params: { category_id: category.id }, as: :turbo_stream
+
+    assert_response :success
+    assert_match(/Frozen categories are excluded from refresh/, response.body)
+  end
+
+  test "pause turbo_stream streams the not-running refusal" do
+    session = sessions(:needs_input)
+
+    post pause_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Cannot pause session that is not running/, response.body)
+  end
+
+  test "unarchive turbo_stream streams the not-in-trash refusal" do
+    session = sessions(:running)
+
+    post unarchive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Session is not in trash\./, response.body)
+  end
+
+  test "set_category turbo_stream confirms the move" do
+    category = Category.create!(name: "Streamed move")
+    session = sessions(:running)
+
+    patch set_category_session_url(session), params: { category_id: category.id }, as: :turbo_stream
+
+    assert_response :success
+    assert_equal category.id, session.reload.category_id
+    assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Moved to &quot;Streamed move&quot;\./, response.body)
+  end
+
+  test "set_category turbo_stream confirms a move back to Uncategorized" do
+    category = Category.create!(name: "Streamed move back")
+    session = sessions(:running)
+    session.update!(category_id: category.id)
+
+    patch set_category_session_url(session), params: { category_id: "" }, as: :turbo_stream
+
+    assert_response :success
+    assert_nil session.reload.category_id
+    assert_match(/Moved to Uncategorized\./, response.body)
+  end
+
+  test "a streamed flash is not also replayed on the next page load" do
+    session = sessions(:failed)
+
+    post archive_session_url(session), as: :turbo_stream
+    assert_response :success
+
+    get root_url
+    assert_response :success
+    assert_no_match(/Session moved to trash/, response.body)
+  end
+
   test "should create log entry when undoing archive" do
     session = sessions(:failed)
     session.update!(status: :archived, archived_at: 1.second.ago)

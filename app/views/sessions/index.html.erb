@@ -177,7 +177,7 @@
                 API Docs
               <% end %>
               <div class="border-t border-gray-100 my-1"></div>
-              <%= button_to refresh_all_sessions_path, method: :post, class: "flex items-center w-full px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md text-left", title: "Refresh transcripts and restart failed sessions", form: { data: { turbo: false } } do %>
+              <%= button_to refresh_all_sessions_path, method: :post, class: "flex items-center w-full px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md text-left", title: "Refresh transcripts and restart failed sessions" do %>
                 <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
                 </svg>
@@ -263,7 +263,7 @@
           </svg>
           API Docs
         <% end %>
-        <%= button_to refresh_all_sessions_path, method: :post, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full 2xl:justify-center", title: "Refresh transcripts and restart failed sessions", "aria-label" => "Refresh all sessions", form: { data: { turbo: false } } do %>
+        <%= button_to refresh_all_sessions_path, method: :post, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full 2xl:justify-center", title: "Refresh transcripts and restart failed sessions", "aria-label" => "Refresh all sessions" do %>
           <svg class="h-5 w-5 2xl:mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
           </svg>

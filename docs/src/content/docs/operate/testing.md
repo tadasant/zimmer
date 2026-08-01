@@ -133,8 +133,14 @@ so a test clicking an option mid-scroll is still aiming at a moving target.
 
 The rule: **never wait out an animation to make a click land — remove the motion.** And when a system
 test fails only on the runner, look at the screenshot: `test-system` uploads `tmp/capybara/` (that is
-where `capybara/rails` points `Capybara.save_path`) as the `system-test-screenshots` artifact on
-failure. The picture of the wrong page is usually the whole diagnosis.
+where `capybara/rails` points `Capybara.save_path`) as the `system-test-screenshots` artifact. The
+picture of the wrong page is usually the whole diagnosis.
+
+The upload runs on success too, and that is deliberate. A test may deliberately
+`page.save_screenshot` a UI it has just driven — `test/system/dashboard_turbo_actions_test.rb` writes
+`proof-*.png` this way — so a PR can show the change working. Zimmer's own agent sessions have no
+local Postgres to run the app against, which makes CI's Chrome the only place a screenshot for a PR
+can come from.
 
 ## The catalog coupling — read this before you debug
 
