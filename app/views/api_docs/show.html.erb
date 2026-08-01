@@ -129,7 +129,7 @@
                   <tr><td class="py-1 pr-3 font-mono">git_root</td><td class="py-1 pr-3">string</td><td class="py-1">Repository URL or local path</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">branch</td><td class="py-1 pr-3">string</td><td class="py-1">Git branch name</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">subdirectory</td><td class="py-1 pr-3">string</td><td class="py-1">Subdirectory within the repository</td></tr>
-                  <tr><td class="py-1 pr-3 font-mono">execution_provider</td><td class="py-1 pr-3">string</td><td class="py-1"><code>local_filesystem</code> or <code>remote_sandbox</code></td></tr>
+                  <tr><td class="py-1 pr-3 font-mono">execution_provider</td><td class="py-1 pr-3">string</td><td class="py-1">Always <code>local_filesystem</code> — the only provider Zimmer has</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">goal</td><td class="py-1 pr-3">string</td><td class="py-1">Goal for the session</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1">MCP server names explicitly selected for the session</td></tr>
                   <tr><td class="py-1 pr-3 font-mono">all_mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1"><strong>The effective set</strong> — selected + plugin-bundled + auto-injected. Read this to determine what the session actually has wired.</td></tr>
@@ -262,7 +262,7 @@
                       <tr><td class="py-1 pr-3 font-mono">title</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Session title</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">slug</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">URL-friendly identifier</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">goal</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1">Goal for the session</td></tr>
-                      <tr><td class="py-1 pr-3 font-mono">execution_provider</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1"><code>local_filesystem</code> or <code>remote_sandbox</code></td></tr>
+                      <tr><td class="py-1 pr-3 font-mono">execution_provider</td><td class="py-1 pr-3">string</td><td class="py-1 pr-3">No</td><td class="py-1"><code>local_filesystem</code> is the only accepted value; anything else is rejected with 422. Agents run unsandboxed on the Zimmer host.</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">mcp_servers</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">No</td><td class="py-1">List of MCP server names (overrides agent root defaults)</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">catalog_skills</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">No</td><td class="py-1">List of skill names (overrides agent root defaults)</td></tr>
                       <tr><td class="py-1 pr-3 font-mono">catalog_hooks</td><td class="py-1 pr-3">array</td><td class="py-1 pr-3">No</td><td class="py-1">List of hook names (overrides agent root defaults)</td></tr>
