@@ -489,10 +489,22 @@ Tracked in [#48](https://github.com/tadasant/zimmer/issues/48).
 
 ### Agents run unsandboxed on the app host
 
-`lib/execution/providers/remote_sandbox.rb:6` — the remote sandbox provider is a stub. Every method
-returns `Result.failure("not yet implemented")`. Local filesystem is the only real provider. Agents run
-as the app user, on the app host, with the app's git and `gh` credentials, spawned with
-`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`.
+Agents run as the app user, on the app host, with the app's git and `gh` credentials, spawned with
+`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`. There is no sandbox,
+and nothing in the product offers one.
+
+Zimmer used to *say* otherwise. `Session::EXECUTION_PROVIDERS` accepted `remote_sandbox`, the MCP
+`start_session` tool listed it in its enum and described it as "runs in isolated sandbox," and the
+REST API docs repeated the pair. The provider behind the name
+(`lib/execution/providers/remote_sandbox.rb`) is a stub: every method returns
+`Result.failure("not yet implemented")`. An agent reading the tool schema could reasonably have
+picked it. So the advertisement is gone — `local_filesystem` is the only accepted value and anything
+else is a `422`. That removes the false claim; it does not add a sandbox.
+
+Building one is a real project — a new runner, new images, credential brokering, cloud provisioning
+— and it is backlog, not in flight. `lib/execution/` still holds the stub and its provider
+abstraction, unwired from `app/`; whether to build against that seam or delete it is
+[#172](https://github.com/tadasant/zimmer/issues/172).
 
 Tracked in [#49](https://github.com/tadasant/zimmer/issues/49).
 
@@ -1026,13 +1038,6 @@ Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
 "follow-up jobs silently skip execution because they see a stale 'running' job."
 
 Tracked in [#71](https://github.com/tadasant/zimmer/issues/71).
-
-### The trash retention comment contradicts the constant
-
-The `archive` event's comment says artifacts are "preserved for 14 days." The
-`TRASH_RETENTION_PERIOD` constant that governs it is `4.days`.
-
-Tracked in [#72](https://github.com/tadasant/zimmer/issues/72).
 
 ### State-machine side effects fail without surfacing
 
@@ -1585,8 +1590,5 @@ Things the code doesn't answer, flagged here rather than guessed at:
   repo this documentation can't see. ([#67](https://github.com/tadasant/zimmer/issues/67))
 - Is `config_preparer_class` (a `RuntimeRegistry::Bundle` slot) meant to do something? It's `nil` for
   every runtime and nothing reads it. ([#97](https://github.com/tadasant/zimmer/issues/97))
-- Which of the two contradictory GoodJob-cron comments is right about sub-minute cron support? The
-  config contains both six-field (`*/30 * * * * *`) entries *and* a comment saying seconds aren't
-  supported. ([#106](https://github.com/tadasant/zimmer/issues/106))
 - Does the macOS Keychain path in `CodexMcpCredentialWriter` work? It has never been runtime-verified
   — every worker is Linux. ([#63](https://github.com/tadasant/zimmer/issues/63))

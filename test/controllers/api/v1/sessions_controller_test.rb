@@ -183,6 +183,24 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes json["messages"].join(" "), "must reference an existing session"
   end
 
+  # `execution_provider` is a permitted create param, so the REST surface has to reject a
+  # provider that cannot run — not just decline to advertise it, the way the MCP tool's enum
+  # does. Otherwise an API caller can still store a value no code path can honor.
+  test "should reject create with the stub remote_sandbox execution provider" do
+    assert_no_difference("Session.count") do
+      post api_v1_sessions_path, params: {
+        agent_runtime: "claude_code",
+        git_root: "https://github.com/test/repo.git",
+        branch: "main",
+        execution_provider: "remote_sandbox"
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_includes json["messages"].join(" "), "remote_sandbox is not a valid execution provider"
+  end
+
   test "should create session with prompt and queue job" do
     assert_enqueued_with(job: AgentSessionJob) do
       post api_v1_sessions_path, params: {

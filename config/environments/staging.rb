@@ -146,7 +146,10 @@ Rails.application.configure do
       description: "Refresh catalog repo (skills, servers, agent roots) from tadasant/zimmer-catalog"
     },
     slack_trigger_poller: {
-      cron: "* * * * *", # Every minute (GoodJob/fugit doesn't support seconds)
+      # Every minute. GoodJob/fugit do support second-granularity cron — the six-field
+      # "*/30 * * * * *" entries above really do fire every 30s — so this cadence is a
+      # deliberate choice for Slack polling, not a platform limit.
+      cron: "* * * * *",
       class: "SlackTriggerPollerJob",
       description: "Poll Slack channels for triggers and create sessions"
     },

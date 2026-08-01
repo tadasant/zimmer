@@ -61,6 +61,10 @@ Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`,
 `branch`, `subdirectory` and the catalog defaults, and is recorded as `metadata.agent_root_key`. An
 invalid one → `422 {"error": "Invalid agent_root"}`.
 
+`execution_provider` accepts exactly one value, `local_filesystem`; anything else is a `422`. It is a
+column with one legal setting rather than a choice — every agent runs on the Zimmer host itself,
+unsandboxed. See [Agents run unsandboxed on the app host](/limitations/#agents-run-unsandboxed-on-the-app-host).
+
 The `AgentSessionJob` is enqueued only if `prompt` is present.
 
 #### Which runtime and model you get

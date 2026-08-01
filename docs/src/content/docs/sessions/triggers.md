@@ -268,8 +268,10 @@ before you have decided to. Then do the work and reply in the thread.
 ### `schedule`
 
 Either recurring (`interval` + `unit`, or `time` + `day_of_week` + `timezone`) or one-time
-(`scheduled_at`). `ScheduleTriggerJob` runs every minute — GoodJob/fugit can't do sub-minute
-cron, so a schedule is minute-resolution at best.
+(`scheduled_at`). `ScheduleTriggerJob` is scheduled `* * * * *`, so a schedule is
+minute-resolution. That is the cadence chosen for the job, not a platform limit — six-field
+cron with a seconds field works, and three other pollers use it
+([Background jobs](/operate/background-jobs/)).
 
 :::danger[A failed one-time wake is unrecoverable]
 `ScheduleTriggerJob` always advances `last_triggered_at` on error, to avoid an infinite retry

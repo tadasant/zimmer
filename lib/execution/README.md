@@ -293,7 +293,7 @@ New columns added by execution layer:
 ```ruby
 t.string :repository_url              # Git repository URL
 t.string :branch, default: "main"     # Branch to checkout
-t.string :execution_provider,         # Provider: "local_filesystem" or "remote_sandbox"
+t.string :execution_provider,         # Provider: "local_filesystem" (the only value Session accepts)
          default: "local_filesystem"
 t.index :execution_provider
 ```

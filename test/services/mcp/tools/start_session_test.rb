@@ -97,6 +97,37 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_includes result, "## Session Started Successfully"
   end
 
+  # The tool schema is what an agent reads to decide what to send, so a value it offers has
+  # to be one the model accepts and a provider can run. Deriving the enum from the model
+  # constant rather than restating it is what holds that true without a second edit.
+  test "the execution_provider enum is exactly what the model accepts" do
+    enum = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :execution_provider, :enum)
+
+    assert_equal Session::EXECUTION_PROVIDERS, enum
+    refute_includes enum, "remote_sandbox"
+  end
+
+  test "the execution_provider description does not promise a sandbox" do
+    description = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :execution_provider, :description)
+
+    refute_includes description, "remote_sandbox"
+    refute_includes description, "isolated sandbox"
+    assert_includes description, "unsandboxed"
+  end
+
+  test "a session cannot be started against the stub sandbox provider" do
+    assert_no_difference "Session.count" do
+      assert_raises(ActiveRecord::RecordInvalid) do
+        @tool.call(
+          "agent_root" => "zimmer",
+          "prompt" => "Fix the thing",
+          "title" => "Sandbox please",
+          "execution_provider" => "remote_sandbox"
+        )
+      end
+    end
+  end
+
   private
 
   def restricted_tool

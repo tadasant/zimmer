@@ -6,9 +6,9 @@
 # to allow the user to click "Undo" within the 5-second window.
 #
 # Before deleting the clone, the job checks for unpushed state (uncommitted changes
-# or unpushed commits). If found, lightweight artifacts are preserved for 14 days
-# so they can be restored on unarchive. Clean clones are deleted immediately with
-# no retention period.
+# or unpushed commits). If found, lightweight artifacts are preserved for
+# SessionStateMachine::TRASH_RETENTION_PERIOD (4 days) so they can be restored on
+# unarchive. Clean clones are deleted immediately with no retention period.
 #
 # The job checks that:
 # 1. The session is still archived (not undone)

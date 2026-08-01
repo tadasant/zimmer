@@ -27,7 +27,7 @@ module Mcp
 
       GOAL_DESC = 'Goal ID from get_configs (e.g. "pr_merged"). The description is automatically resolved and passed to the agent as context.'
 
-      EXECUTION_PROVIDER_DESC = 'Execution environment. Options: "local_filesystem" (runs locally), "remote_sandbox" (runs in isolated sandbox). Default: "local_filesystem"'
+      EXECUTION_PROVIDER_DESC = 'Execution environment. Only option: "local_filesystem" — the agent runs on the Zimmer host itself, unsandboxed, with the host\'s git and gh credentials. Default: "local_filesystem"'
 
       MCP_SERVERS_DESC = 'List of MCP server names to enable for this session. Example: ["github-development", "slack"]'
 
@@ -83,7 +83,7 @@ module Mcp
           goal: { type: "string", description: GOAL_DESC },
           execution_provider: {
             type: "string",
-            enum: [ "local_filesystem", "remote_sandbox" ],
+            enum: Session::EXECUTION_PROVIDERS,
             description: EXECUTION_PROVIDER_DESC
           },
           mcp_servers: { type: "array", items: { type: "string" }, description: MCP_SERVERS_DESC },
