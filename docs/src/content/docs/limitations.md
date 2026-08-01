@@ -966,6 +966,36 @@ of the three to `zimmer`. Same root cause as [#67](https://github.com/tadasant/z
 
 ## Sessions
 
+### Terminating a session's process leaks a zombie, takes ~15–25 seconds, and always escalates to SIGKILL
+
+`ProcessTerminationService` decides whether a process is still alive with `Process.kill(0, pid)`. For
+a child we spawned ourselves that keeps succeeding after the child dies, because an unreaped child
+holds its pid as a zombie. Every liveness gate in the termination ladder therefore answers "still
+running" for a process that exited on the first SIGTERM: it receives a second SIGTERM and two
+SIGKILLs, the ladder burns its full sequence of 3-second waits in a GoodJob thread, and it returns
+`:error` — *"could not be terminated"* — for a process it killed successfully, leaving the child
+defunct.
+
+This is the leak `ZombieReaperJob` keeps collecting. The reaper now picks it up within a couple of
+cron ticks and names the command in a warn line, so it is bounded and self-reporting rather than
+unbounded and silent — but the defect is upstream and unfixed. It is not fixed in place because the
+obvious repair (reaping to make the liveness check truthful) consumes an exit status that
+`AgentSessionJob`'s monitoring loop is still waiting for on the "Prompt is too long" recovery path,
+which would send that session to `needs_input` instead of compaction. The fix has to make liveness
+zombie-aware without stealing the status, and it has to keep the group SIGKILL that currently cleans
+up grandchildren (MCP servers, `node`, `gh`) as a side effect of the bug.
+
+Tracked in [#280](https://github.com/tadasant/zimmer/issues/280).
+
+### A headless `claude -p` call that times out leaves its child defunct
+
+`NativeClaudePrintRunner#terminate_process` sends SIGTERM and returns; the `Timeout` has already
+unwound the only `wait`, so nothing collects the child. `ZombieReaperJob` picks it up on its next
+tick and now names the command in a warn-level line, so it is self-reporting rather than silent —
+but it is still a leak. Latent: the timeout path has no production hits.
+
+Tracked in [#281](https://github.com/tadasant/zimmer/issues/281).
+
 ### Session `metadata` is a lost-update hazard, by design
 
 `agent_session_job.rb:1073-1078` says it out loud: *"This uses a read-modify-write pattern which is not
