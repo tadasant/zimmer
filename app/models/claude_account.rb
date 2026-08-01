@@ -631,11 +631,13 @@ class ClaudeAccount < ApplicationRecord
   # Adopt the on-disk ~/.claude.json identity into this account's stored config,
   # but only when that file already names this account.
   #
-  # Identity-only and one-directional: it fills a gap, never overwrites a stored
-  # identity, and never touches credentials — an account that already carries a
-  # claude_json, or whose email the file does not match, is left alone. That makes
-  # it safe on the shared worker, where ~/.claude.json is whoever the CLI last
-  # wrote: the guard is the same email match every other adoption path applies.
+  # One-directional: it fills a gap and never overwrites a stored identity, so an
+  # account that already carries a claude_json, or whose email the file does not
+  # match, is left alone. That makes it safe on the shared worker, where
+  # ~/.claude.json is whoever the CLI last wrote: the guard is the same email
+  # match every other adoption path applies. It adopts the file verbatim — as
+  # .sync_from_filesystem! does, because write_config! writes this blob back and a
+  # trimmed copy would drop the CLI's own state — and touches no credentials.
   #
   # Exists so AccountRotationService#config_file_matches? can fail closed (#61)
   # without stranding an account that holds credentials but no identity — a fresh
@@ -648,7 +650,7 @@ class ClaudeAccount < ApplicationRecord
 
     fs_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
     fs_email = extract_oauth_email(fs_config["oauthAccount"])
-    return false unless fs_email.present? && fs_email.casecmp?(email)
+    return false unless email.present? && fs_email.present? && fs_email.casecmp?(email)
 
     updated = (oauth_config || {}).deep_dup
     updated["claude_json"] = fs_config

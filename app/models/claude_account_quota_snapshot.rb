@@ -4,10 +4,11 @@
 #
 # Snapshots are taken:
 # - On account rotation (captures state of outgoing and incoming accounts)
+# - When bootstrap validates a candidate before making it current
 # - On quotas page load (live probe of current account)
 # - By periodic cron (future extension)
 #
-# The trigger field records why the snapshot was taken: "rotation",
+# The trigger field records why the snapshot was taken: "rotation", "bootstrap",
 # "manual_refresh", "page_view", or "scheduled".
 class ClaudeAccountQuotaSnapshot < ApplicationRecord
   belongs_to :claude_account
