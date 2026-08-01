@@ -86,10 +86,10 @@ class Api::V1::HealthController < Api::BaseController
 
   def render_rate_limited
     unless cooldown.store_usable?
-      Rails.logger.error("[health_api] refusing #{action_name}: Rails.cache is a NullStore, so the cooldown cannot be enforced")
+      Rails.logger.error("[health_api] refusing #{action_name}: the cache cannot enforce the cooldown")
       return render_api_error(
         "Rate limiting unavailable",
-        "No usable cache store is configured, so the #{HealthActionCooldown::COOLDOWN.to_i}-second cooldown cannot be enforced. Refusing to run health maintenance actions.",
+        "The cache is unavailable, so the #{HealthActionCooldown::COOLDOWN.to_i}-second cooldown cannot be enforced. Refusing to run health maintenance actions.",
         status: :service_unavailable
       )
     end
