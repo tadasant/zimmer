@@ -323,7 +323,9 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   end
 
   test "does not match when git_root is blank" do
-    @session.update!(git_root: nil, status: :waiting)
+    # Session validates git_root's presence, so this state only arises for a row
+    # written before that validation — update_column reproduces it.
+    @session.update_column(:git_root, nil)
 
     run_hook claude_assistant_text("Opened PR: https://github.com/owner/repo/pull/1")
 

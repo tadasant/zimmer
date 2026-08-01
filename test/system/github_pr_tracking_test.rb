@@ -220,7 +220,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     assert PollBackoff.should_poll?(@session, job_key: "pr_status", base_interval: 30)
   end
 
-  test "full flow: session without PR gets PR URL extracted from tool result" do
+  test "full flow: session without PR gets the PR URL it opened extracted from the transcript" do
     # Start with a session with no PR metadata
     assert_nil @session.custom_metadata["github_pull_request_urls"]
 
@@ -233,10 +233,12 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     end
 
     # Simulate what happens when TranscriptPollerService runs hooks:
-    # 1. A tool result with PR URL appears in transcript
-    # 2. GithubPrUrlHook extracts it and updates custom_metadata
-    # Note: PR URL must match the session's git_root (test/repo) for the hook to extract it
+    # 1. The agent runs `gh pr create` and its result carries the PR URL
+    # 2. GithubPrUrlHook records it and updates custom_metadata
+    # The invocation line matters: the hook records a PR the transcript shows this
+    # session opening, not any PR URL that happens to appear in a tool result.
     transcript_content = <<~JSONL
+      {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_123","name":"Bash","input":{"command":"gh pr create --fill"}}]}}
       {"type":"user","message":{"content":[{"tool_use_id":"toolu_123","type":"tool_result","content":"https://github.com/test/repo/pull/999","is_error":false}]}}
     JSONL
 
