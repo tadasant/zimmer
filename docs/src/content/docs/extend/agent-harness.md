@@ -80,9 +80,30 @@ disallowed_tools    # default []
 runtime_env_vars    # default {}
 ```
 
+Plus a class-level half, because callers that never spawn still need it:
+
+```ruby
+self.stderr_log_filename   # → "<runtime>_stderr.log". REQUIRED — the default raises NotImplementedError
+self.spawn_error_class     # → your error class; defaults to RuntimeCliAdapter::SpawnError
+self.cli_label             # → "Codex CLI", for operator-facing errors; defaults to the class name
+self.stderr_log_path(dir)  # provided: dir + stderr_log_filename, nil for a blank dir
+self.validate_working_dir!(dir)  # provided: refuses nil/blank, raising spawn_error_class
+```
+
+`stderr_log_filename` is what `Session#stderr_log_path` reads, so skipping it doesn't fail
+quietly — it raises `NotImplementedError` the first time a session on your runtime is resumed,
+interrupted, or terminated. Build your spawn-time path from it too (`self.class.stderr_log_path`),
+so the name your process writes and the name every caller reads cannot drift.
+
+`validate_working_dir!` must run at the top of `execute` and `resume`, before anything joins onto
+`working_dir`. A nil working directory does reach adapters — that was #183 — and without the guard
+it dies inside `Process.spawn` with a message that names no argument.
+
 Enforced by `test/contracts/runtime_cli_adapter_contract_test.rb`, which asserts keyword-set
-equality via `instance_method(:execute).parameters`. Add your adapter (and a mock) to
-`RuntimeCliAdapterContractTest::ADAPTERS`.
+equality via `instance_method(:execute).parameters`, the stderr-filename shape, and the
+working-dir guard's accept/reject behavior. Add your adapter (and a mock) to
+`RuntimeCliAdapterContractTest::ADAPTERS`. An adapter provided by an extension lives outside that
+list, so call `assert_runtime_cli_adapter_contract` from the extension's own test instead.
 
 Also `include CliSpawnEnv` — don't reimplement env scrubbing.
 
@@ -163,7 +184,8 @@ Tracked in [#96](https://github.com/tadasant/zimmer/issues/96).
 1. `RuntimeRegistry` — new `Bundle`, add to `BUNDLES` and `LABELS`.
 2. `ModelCatalog::MODELS["<runtime>"]` — exactly one entry with `default: true`.
 3. CLI adapter — `include RuntimeCliAdapter` + `CliSpawnEnv`. Identical kwargs.
-   `<runtime>_stderr.log`, `pgroup: true`, NULL stdin/stdout.
+   Declare `self.stderr_log_filename` (`<runtime>_stderr.log`) and guard `execute`/`resume`
+   with `validate_working_dir!`. `pgroup: true`, NULL stdin/stdout.
 4. Retry strategy — all five predicates.
 5. Transcript source + normalizer — including `find_main_transcript` and `mints_own_session_id?`.
 6. Prompt contribution → register in `RuntimePromptContribution.for`.

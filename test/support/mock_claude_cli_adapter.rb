@@ -15,6 +15,20 @@
 class MockClaudeCliAdapter
   include RuntimeCliAdapter
 
+  # RuntimeCliAdapter contract — delegate to the real adapter so the double's
+  # stderr filename, spawn guard and error type can never drift from production.
+  def self.stderr_log_filename
+    ClaudeCliAdapter.stderr_log_filename
+  end
+
+  def self.spawn_error_class
+    ClaudeCliAdapter.spawn_error_class
+  end
+
+  def self.cli_label
+    ClaudeCliAdapter.cli_label
+  end
+
   attr_accessor :execute_hook, :resume_hook
   attr_reader :executed_commands, :resumed_sessions
   attr_accessor :process_manager, :file_system, :zimmer_session_id
@@ -33,7 +47,7 @@ class MockClaudeCliAdapter
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
               append_system_prompt: nil, model: nil, dangerously_skip_permissions: true, debug: false,
               auto_compact_window: ClaudeCliAdapter::DEFAULT_AUTO_COMPACT_WINDOW)
-    ClaudeCliAdapter.validate_working_dir!(working_dir)
+    validate_working_dir!(working_dir)
 
     command_info = {
       prompt: prompt,
@@ -55,7 +69,7 @@ class MockClaudeCliAdapter
       @next_pid += 1
       {
         pid: pid,
-        stderr_log_path: File.join(working_dir, "claude_stderr.log")
+        stderr_log_path: self.class.stderr_log_path(working_dir)
       }
     end
   end
@@ -66,7 +80,7 @@ class MockClaudeCliAdapter
   def resume(session_id:, prompt: nil, working_dir:, images: nil, mcp_config_path: nil,
              append_system_prompt: nil, model: nil, dangerously_skip_permissions: true, debug: false,
              auto_compact_window: ClaudeCliAdapter::DEFAULT_AUTO_COMPACT_WINDOW)
-    ClaudeCliAdapter.validate_working_dir!(working_dir)
+    validate_working_dir!(working_dir)
 
     resume_info = {
       session_id: session_id,
@@ -88,7 +102,7 @@ class MockClaudeCliAdapter
       @next_pid += 1
       {
         pid: pid,
-        stderr_log_path: File.join(working_dir, "claude_stderr.log")
+        stderr_log_path: self.class.stderr_log_path(working_dir)
       }
     end
   end

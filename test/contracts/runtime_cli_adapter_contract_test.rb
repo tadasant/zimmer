@@ -69,4 +69,24 @@ class RuntimeCliAdapterContractTest < ActiveSupport::TestCase
     assert_kind_of Integer, result[:pid]
     assert_equal File.join("/tmp/contract-test", "codex_stderr.log"), result[:stderr_log_path]
   end
+
+  # The guard must be WIRED INTO the spawn entrypoints, not merely defined. The
+  # doubles are the ones that can be invoked directly here; the real adapters'
+  # wiring is asserted in their own tests (claude_cli_adapter_test,
+  # codex_runtime_adapter_test).
+  [ MockClaudeCliAdapter, MockCodexRuntimeAdapter ].each do |klass|
+    test "#{klass}#execute refuses a nil working directory" do
+      error = assert_raises(StandardError) do
+        klass.new.execute(prompt: "hello", session_id: SecureRandom.uuid, working_dir: nil)
+      end
+      assert_match(/working directory is missing/, error.message)
+    end
+
+    test "#{klass}#resume refuses a nil working directory" do
+      error = assert_raises(StandardError) do
+        klass.new.resume(session_id: SecureRandom.uuid, working_dir: nil)
+      end
+      assert_match(/working directory is missing/, error.message)
+    end
+  end
 end

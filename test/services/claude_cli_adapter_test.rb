@@ -917,6 +917,29 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_match(/session\.metadata\["working_directory"\]/, error.message)
   end
 
+  # The public entrypoints, not just the private spawn helpers — the recovery
+  # paths call #execute/#resume, and that is where a nil working directory
+  # actually arrives (#183/#187).
+  test "execute refuses a nil working directory" do
+    error = assert_raises(ClaudeCliAdapter::ClaudeCliError) do
+      @adapter.execute(prompt: "hello", session_id: SecureRandom.uuid, working_dir: nil)
+    end
+
+    refute_match(/no implicit conversion of nil into String/, error.message)
+    assert_match(/working directory is missing/, error.message)
+    assert_empty @mock_process_manager.spawned_processes
+  end
+
+  test "resume refuses a nil working directory" do
+    error = assert_raises(ClaudeCliAdapter::ClaudeCliError) do
+      @adapter.resume(session_id: SecureRandom.uuid, working_dir: nil)
+    end
+
+    refute_match(/no implicit conversion of nil into String/, error.message)
+    assert_match(/working directory is missing/, error.message)
+    assert_empty @mock_process_manager.spawned_processes
+  end
+
   test "spawn_process raises an actionable ClaudeCliError when working_dir is blank" do
     command = [ "claude", "test" ]
 

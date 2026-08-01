@@ -13,6 +13,20 @@
 class MockCodexRuntimeAdapter
   include RuntimeCliAdapter
 
+  # RuntimeCliAdapter contract — delegate to the real adapter so the double's
+  # stderr filename, spawn guard and error type can never drift from production.
+  def self.stderr_log_filename
+    CodexRuntimeAdapter.stderr_log_filename
+  end
+
+  def self.spawn_error_class
+    CodexRuntimeAdapter.spawn_error_class
+  end
+
+  def self.cli_label
+    CodexRuntimeAdapter.cli_label
+  end
+
   attr_accessor :execute_hook, :resume_hook
   attr_reader :executed_commands, :resumed_sessions
   attr_accessor :process_manager, :file_system, :zimmer_session_id
@@ -31,6 +45,8 @@ class MockCodexRuntimeAdapter
   # but unused by Codex — recorded so tests can assert it flowed through.
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
               append_system_prompt: nil, model: nil, auto_compact_window: nil)
+    validate_working_dir!(working_dir)
+
     command_info = {
       prompt: prompt,
       session_id: session_id,
@@ -50,7 +66,7 @@ class MockCodexRuntimeAdapter
       @next_pid += 1
       {
         pid: pid,
-        stderr_log_path: File.join(working_dir, "codex_stderr.log")
+        stderr_log_path: self.class.stderr_log_path(working_dir)
       }
     end
   end
@@ -59,6 +75,8 @@ class MockCodexRuntimeAdapter
   # auto_compact_window accepted for contract symmetry (see #execute); unused.
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
              append_system_prompt: nil, model: nil, auto_compact_window: nil)
+    validate_working_dir!(working_dir)
+
     resume_info = {
       session_id: session_id,
       prompt: prompt,
@@ -78,7 +96,7 @@ class MockCodexRuntimeAdapter
       @next_pid += 1
       {
         pid: pid,
-        stderr_log_path: File.join(working_dir, "codex_stderr.log")
+        stderr_log_path: self.class.stderr_log_path(working_dir)
       }
     end
   end

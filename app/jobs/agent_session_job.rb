@@ -420,7 +420,7 @@ class AgentSessionJob < ApplicationJob
         process_pid = session.metadata&.dig("process_pid")
         clone_path = session.metadata&.dig("clone_path")
         working_directory = session.metadata&.dig("working_directory") || clone_path
-        stderr_log_path = File.join(clone_path, "claude_stderr.log") if clone_path
+        stderr_log_path = session.stderr_log_path
 
         unless process_pid && clone_path
           raise "Cannot resume monitoring: missing process_pid or clone_path in session metadata"
@@ -1358,7 +1358,7 @@ class AgentSessionJob < ApplicationJob
               # Update local variables from session metadata (retry service stored new PID there)
               session.reload
               process_pid = session.metadata&.dig("process_pid")
-              stderr_log_path = File.join(clone_path, "claude_stderr.log") if clone_path
+              stderr_log_path = session.stderr_log_path
               # Update retry timestamps to track successful run duration for reset logic
               last_sigterm_retry_at = Time.current
               last_api_error_retry_at = Time.current
@@ -2789,7 +2789,7 @@ class AgentSessionJob < ApplicationJob
         break unless process_running?(process_pid)
 
         # Stream stderr
-        if @file_system.exists?(stderr_log_path)
+        if stderr_log_path && @file_system.exists?(stderr_log_path)
           File.open(stderr_log_path, "r") do |file|
             file.seek(stderr_position)
             while (line = file.gets)
@@ -2813,7 +2813,7 @@ class AgentSessionJob < ApplicationJob
       end
 
       # Read any remaining logs after process exits
-      if @file_system.exists?(stderr_log_path)
+      if stderr_log_path && @file_system.exists?(stderr_log_path)
         File.open(stderr_log_path, "r") do |file|
           file.seek(stderr_position)
           while (line = file.gets)

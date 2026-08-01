@@ -23,6 +23,59 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
 
   # ===== CONTRACT BASICS =====
 
+  # The nil-working-directory guard is enforced on the real spawn entrypoint, not
+  # just declared: the recovery paths that spawn Codex are the same ones that
+  # spawned Claude with a nil working dir in #183, and a nil chdir otherwise dies
+  # inside Process.spawn naming no argument (#187).
+  test "spawn_process refuses a nil working directory with an actionable error" do
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: nil)
+    end
+
+    refute_match(/no implicit conversion of nil into String/, error.message)
+    assert_match(/working directory is missing/, error.message)
+    assert_match(/never established a clone/, error.message)
+    assert_empty @mock_process_manager.spawned_processes,
+      "The guard must fire before anything is spawned"
+  end
+
+  # The entrypoints, not just the private spawn: #execute/#resume join onto
+  # working_dir (AGENTS.md delivery, --output-last-message) before they ever
+  # reach spawn_process, so a guard only at spawn time would be dead code.
+  test "execute refuses a nil working directory before touching it" do
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.execute(prompt: "hello", session_id: SecureRandom.uuid, working_dir: nil)
+    end
+
+    refute_match(/no implicit conversion of nil into String/, error.message)
+    assert_match(/working directory is missing/, error.message)
+    assert_empty @mock_process_manager.spawned_processes
+  end
+
+  test "resume refuses a nil working directory before touching it" do
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.resume(session_id: SecureRandom.uuid, working_dir: nil)
+    end
+
+    refute_match(/no implicit conversion of nil into String/, error.message)
+    assert_match(/working directory is missing/, error.message)
+    assert_empty @mock_process_manager.spawned_processes
+  end
+
+  test "spawn_process refuses a blank working directory" do
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: "   ")
+    end
+
+    assert_match(/working directory is missing/, error.message)
+  end
+
+  test "the stderr log it writes is named by the runtime, not hardcoded per caller" do
+    assert_equal "codex_stderr.log", CodexRuntimeAdapter.stderr_log_filename
+    assert_equal "/tmp/wd/codex_stderr.log", CodexRuntimeAdapter.stderr_log_path("/tmp/wd")
+  end
+
+
   test "binary_name is codex" do
     assert_equal "codex", @adapter.binary_name
   end
