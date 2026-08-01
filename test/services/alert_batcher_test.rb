@@ -228,7 +228,28 @@ class AlertBatcherTest < ActiveSupport::TestCase
     # actively mislead.
     assert_includes body, "channel_not_found"
     assert_includes body, "ratelimited"
-    assert_equal 2, body.scan(/```/).length / 2, "each occurrence gets its own fenced block"
+    assert_equal 4, body.scan("```").length, "each occurrence gets its own fenced block"
+  end
+
+  test "a large burst keeps every occurrence listed, dropping snippets instead" do
+    captured = nil
+    @mock_client.expects(:chat_postMessage).once.with do |args|
+      captured = args
+      true
+    end.returns(true)
+
+    AlertBatcher.with_batch do
+      25.times do |i|
+        AlertService.raise_alert("Poller error", details: "Condition #{i} on trigger 'feed-#{i}' failed.",
+                                 source: "S", dedup_key: "k#{i}", error: poller_error("failure #{i}"))
+      end
+    end
+
+    body = captured[:blocks].find { |b| b[:type] == "section" }[:text][:text]
+    # Naming the affected triggers is why the batcher exists — snippets must not
+    # push the tail of the occurrence list off the end of the message.
+    25.times { |i| assert_includes body, "Condition #{i} on trigger 'feed-#{i}'" }
+    assert_operator body.length, :<=, 3000
   end
 
   test "aggregated snippets are clamped and the message stays inside Slack's section limit" do
@@ -239,7 +260,7 @@ class AlertBatcherTest < ActiveSupport::TestCase
     end.returns(true)
 
     AlertBatcher.with_batch do
-      20.times do |i|
+      4.times do |i|
         error = RuntimeError.new("failure #{i}: " + ("y" * 5_000))
         error.set_backtrace(Array.new(50) { |f| "#{Rails.root}/app/services/deep.rb:#{f}:in 'step'" })
         AlertService.raise_alert("Poller error", details: "Condition #{i} failed.", source: "S",

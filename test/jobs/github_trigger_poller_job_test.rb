@@ -273,7 +273,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     # touch the condition's seen-set.
     BoundedSubprocess.stubs(:run).returns([ "", "", nil ])
 
-    # The gh failure now rides on error: (rendered into the alert's log snippet)
+    # The gh failure rides on error: (rendered into the alert's log snippet)
     # rather than being hand-copied into details.
     snippets = []
     AlertService.stubs(:raise_alert).with do |*args, **kwargs|

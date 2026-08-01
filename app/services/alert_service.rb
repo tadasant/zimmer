@@ -37,6 +37,10 @@ class AlertService
   # Upper bound on the details section block. Slack's section text limit is 3000.
   DETAILS_SECTION_MAX_CHARS = 2800
 
+  # Floor for title + source + details in the `text:` field, so a large snippet
+  # can never squeeze the framing down to nothing.
+  MIN_FRAMING_TEXT_CHARS = 400
+
   class << self
     # Raise an operational alert to #eng-alerts
     #
@@ -174,7 +178,8 @@ class AlertService
     # carry the diagnostic body so block-blind consumers see more than just
     # the title.
     def build_fallback_text(title, details: nil, source: nil, log_snippet: nil)
-      snippet_block = log_snippet.present? ? "\n#{AlertSnippet.fenced(log_snippet)}" : ""
+      snippet = bounded_snippet(log_snippet)
+      snippet_block = snippet ? "\n#{AlertSnippet.fenced(snippet)}" : ""
 
       parts = [ title ]
       parts << "Source: #{source}" if source.present?
@@ -182,9 +187,18 @@ class AlertService
 
       # The snippet is the highest-signal part of the message and must not be
       # what gets cut: bound the framing text against whatever budget the
-      # (already bounded) snippet leaves, then append the snippet whole.
-      head = parts.join("\n").truncate(FALLBACK_TEXT_MAX_CHARS - snippet_block.length)
-      "#{head}#{snippet_block}"
+      # snippet leaves, then append the snippet whole. Floored so the title
+      # always survives.
+      budget = [ FALLBACK_TEXT_MAX_CHARS - snippet_block.length, MIN_FRAMING_TEXT_CHARS ].max
+      "#{parts.join("\n").truncate(budget)}#{snippet_block}"
+    end
+
+    # `emit` is public, so a caller can reach the Slack payload with a snippet
+    # AlertSnippet never bounded. Enforce the cap here rather than trusting it.
+    def bounded_snippet(log_snippet)
+      return nil if log_snippet.blank?
+
+      AlertSnippet.clamp(log_snippet.to_s, AlertSnippet::MAX_CHARS)
     end
 
     # Build Slack Block Kit blocks for a well-formatted alert message
@@ -209,11 +223,12 @@ class AlertService
 
       # Log snippet, in a section of its own so a fenced code block renders as
       # one — monospaced and un-wrapped — rather than smeared into the prose.
-      # Already capped at AlertSnippet::MAX_CHARS, well inside Slack's 3000.
-      if log_snippet.present?
+      # Capped at AlertSnippet::MAX_CHARS, well inside Slack's 3000.
+      snippet = bounded_snippet(log_snippet)
+      if snippet
         blocks << {
           type: "section",
-          text: { type: "mrkdwn", text: AlertSnippet.fenced(log_snippet) }
+          text: { type: "mrkdwn", text: AlertSnippet.fenced(snippet) }
         }
       end
 
