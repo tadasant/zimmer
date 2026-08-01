@@ -31,7 +31,7 @@ class Api::V1::CategoriesController < Api::BaseController
     if @category.save
       render json: { category: category_json(@category, session_count: 0) }, status: :created
     else
-      render json: { error: "Validation failed", messages: @category.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @category.errors.full_messages, status: :unprocessable_entity)
     end
   end
 
@@ -47,7 +47,7 @@ class Api::V1::CategoriesController < Api::BaseController
     if @category.update(category_params)
       render json: { category: category_json(@category, session_count: @category.sessions.count) }
     else
-      render json: { error: "Validation failed", messages: @category.errors.full_messages }, status: :unprocessable_entity
+      render_api_error("Validation failed", @category.errors.full_messages, status: :unprocessable_entity)
     end
   end
 

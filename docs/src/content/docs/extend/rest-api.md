@@ -39,7 +39,7 @@ memoized per request from ENV, so rotation requires a restart. There is no recor
 | `POST` | `/sessions/:id/restart` | |
 | `POST` | `/sessions/:id/fork` | `message_index` required → 201 |
 | `POST` | `/sessions/:id/refresh` | re-read transcript from disk |
-| `POST` | `/sessions/refresh_all` | max 50 sessions |
+| `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues |
 | `POST` | `/sessions/bulk_archive` | `session_ids[]` |
 | `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog |
 | `PATCH` | `/sessions/:id/catalog_skills` · `/catalog_hooks` · `/catalog_plugins` | max 100 / 100 / 50 |
@@ -48,26 +48,34 @@ memoized per request from ENV, so rotation requires a restart. There is no recor
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400) |
 | `PATCH` | `/sessions/:id/set_category` | blank clears |
 | `POST` | `/sessions/:id/toggle_favorite` | |
-| `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain` |
+| `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
 
 ### Creating a session
 
-Permitted params: `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`, `title`, `slug`,
-`goal`, `execution_provider`, `is_autonomous`, `parent_session_id`, `auto_compact_window`,
-`mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`, `catalog_plugins[]`, `config{}`,
-`custom_metadata{}`.
+Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
+`title`, `slug`, `goal`, `execution_provider`, `is_autonomous`, `parent_session_id`,
+`auto_compact_window`, `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`, `catalog_plugins[]`,
+`config{}`, `custom_metadata{}`.
 
-One more: `agent_root`, which is read directly from `params`, *outside* the strong-params permit list.
-An invalid one → `422 {"error": "Invalid agent_root"}`.
-Tracked in [#81](https://github.com/tadasant/zimmer/issues/81).
+`agent_root` is not a Session column — it names a catalog entry that expands into `git_root`,
+`branch`, `subdirectory` and the catalog defaults, and is recorded as `metadata.agent_root_key`. An
+invalid one → `422 {"error": "Invalid agent_root"}`.
 
 The `AgentSessionJob` is enqueued only if `prompt` is present.
 
-:::caution[Without `agent_root`, the Settings-page defaults are silently ignored]
-With no `agent_root`, `resolve_agent_root_defaults!` returns early: the runtime falls back to the DB
-column default (`claude_code`) and the model goes straight to `ModelCatalog.default_for(runtime)`.
-`AppSetting`'s global defaults are never consulted.
-:::
+#### Which runtime and model you get
+
+One chain, whether or not you name an `agent_root`:
+
+```
+request param  →  agent root's declared value  →  AppSetting (the Settings page)  →  hardcoded default
+```
+
+With no `agent_root` there is simply no root tier and the chain falls through to `AppSetting`, so a
+rootless API spawn honors the global defaults the Settings page presents. A model that isn't valid
+for the resolved runtime — a root pinning `opus` on a `codex` spawn, say — self-heals to the global
+default for that runtime rather than persisting something the harness can't run. `config.model` is
+always explicitly set on the created session.
 
 ### `session_json`
 
@@ -78,10 +86,9 @@ column default (`claude_code`) and the model goes straight to `ModelCatalog.defa
 `category_id`, `category{}`, `session_id`, `job_id`, `running_job_id`, `archived_at`, `trash_after`,
 `created_at`, `updated_at`, `session_notes`, `session_notes_updated_at`, `favorited`.
 
-:::note[`session` doesn't always mean the same shape]
-`POST /enqueued_messages/:id/interrupt` returns a six-field subset under the same `session` key.
-The `session` key returns a different shape from each.
-:::
+Every response with a `session` key renders it through the same serializer
+(`ApiSessionSerialization`), including `POST /enqueued_messages/:id/interrupt` — `session` means one
+shape everywhere on the surface.
 
 ## Triggers
 
@@ -123,7 +130,13 @@ Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
 - `POST /elicitations` — **UNAUTHENTICATED**. Requires `_meta["com.pulsemcp/request-id"]` and
   `message`. → 201.
 - `GET /elicitations/:request_id` — **UNAUTHENTICATED**. Auto-expires past `expires_at`.
-- `PATCH /elicitations/:request_id/respond` — authenticated. `action_type` ∈ `accept | decline`.
+- `PATCH /elicitations/:id/respond` — authenticated. `action_type` ∈ `accept | decline`, optional
+  `content`. `:id` is either the `request_id` or the numeric primary key, so the identifier you
+  already hold — from a poll response or from the web UI's own `/elicitations/:id/respond` route —
+  works here too.
+
+`show` stays `request_id`-only on purpose: it is unauthenticated for the poll protocol, and
+accepting a primary key there would turn it into a sequential-id enumeration of every elicitation.
 
 The first two skip auth because the MCP child process has no API key. See
 [Elicitation](/sessions/elicitation/).
@@ -146,18 +159,30 @@ One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{n
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind
 the same `X-API-Key` gate as everything else.
 
+### The plain-text transcript
+
+`transcript_text` is a rendered reading copy, not the raw transcript — for that, use
+`GET /sessions/:id?include_transcript=true`.
+
+Every entry is rendered. Entries the renderer has no special layout for (`system`, `result`,
+`summary`, anything a future harness emits) are labeled and dumped rather than dropped. Content that
+arrives as an array of blocks is rendered block by block — `text`, `thinking`, `image`, `tool_use`,
+`tool_result`, and pretty JSON for anything else. Tool results are truncated to 500 characters.
+
 ## Errors
 
-Three shapes, inconsistently applied:
+One shape, everywhere:
 
 ```jsonc
-{"error": "Not Found", "message": "The requested resource was not found"}   // string
-{"error": "Validation failed", "messages": ["Title can't be blank"]}        // plural key, array
-{"error": "...", "message": ["..."]}                                        // singular key, ARRAY value
+{
+  "error":    "Validation failed",                              // short label
+  "message":  "Title can't be blank, Slug is invalid",          // always a String
+  "messages": ["Title can't be blank", "Slug is invalid"]       // always an Array of String
+}
 ```
 
-That third one comes from `Api::BaseController#unprocessable_entity` (the `RecordInvalid` rescue).
-Parse defensively. Tracked in [#82](https://github.com/tadasant/zimmer/issues/82).
+`message` is `messages.join(", ")`. Read whichever suits you; neither needs a type check. A handful
+of responses carry an extra top-level key alongside these — `retry_after` on the health 429.
 
 **Status codes in use:** 200 · 201 · 202 (follow-up queued) · 204 · 400 (search only) · 401 · 404 ·
 409 (follow-up position collision, interrupt races) · 422 · 429 (health cooldown) · 500 · 503 (Slack

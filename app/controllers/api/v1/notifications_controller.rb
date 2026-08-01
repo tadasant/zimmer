@@ -65,7 +65,7 @@ class Api::V1::NotificationsController < Api::BaseController
     deleted_count = Notification.where(id: @notification.id, read: true).delete_all
 
     if deleted_count == 0
-      render json: { error: "Cannot dismiss", message: "Cannot dismiss unread notification" }, status: :unprocessable_entity
+      render_api_error("Cannot dismiss", "Cannot dismiss unread notification", status: :unprocessable_entity)
     else
       head :no_content
     end
@@ -89,12 +89,12 @@ class Api::V1::NotificationsController < Api::BaseController
   # A Notification record is created for in-app tracking.
   def push
     unless params[:session_id].present?
-      render json: { error: "Missing parameter", message: "session_id is required" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "session_id is required", status: :unprocessable_entity)
       return
     end
 
     unless params[:message].present?
-      render json: { error: "Missing parameter", message: "message is required" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "message is required", status: :unprocessable_entity)
       return
     end
 

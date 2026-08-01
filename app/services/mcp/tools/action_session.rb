@@ -719,6 +719,7 @@ module Mcp
           return refresh_all_result("No non-archived sessions to refresh", 0, 0, 0, 0)
         end
 
+        refreshed = 0
         restarted = 0
         continued = 0
         errors = 0
@@ -729,6 +730,12 @@ module Mcp
           .where(status: :needs_input)
           .where("metadata->>'paused_by' IS NULL OR metadata->>'paused_by' != 'user'")
           .limit(remaining_limit)
+          .load
+
+        # Captured before the loops below flip these sessions to :running, so the
+        # transcript pass cannot pick one up again and overwrite a transcript its
+        # freshly enqueued job is about to rewrite.
+        restarted_ids = (failed_sessions + needs_input_sessions).map(&:id)
 
         failed_sessions.each do |session|
           if session.may_resume?
@@ -752,7 +759,45 @@ module Mcp
           Rails.logger.warn "[Mcp::Tools::ActionSession] Failed to continue session #{session.id}: #{e.message}"
         end
 
-        refresh_all_result("Refresh complete", 0, restarted, continued, errors)
+        # Everything not restarted or continued still gets its transcript re-read
+        # from disk — that is what "refreshed" counts, and reporting a hardcoded 0
+        # made the tool disagree with the web bulk refresh it mirrors.
+        sessions.where.not(status: [ :failed, :needs_input ]).where.not(id: restarted_ids).each do |session|
+          refreshed += 1 if refresh_transcript_from_disk(session)
+        rescue StandardError => e
+          errors += 1
+          Rails.logger.error "[Mcp::Tools::ActionSession] Failed to refresh session #{session.id}: #{e.message}"
+        end
+
+        refresh_all_result("Refresh complete", refreshed, restarted, continued, errors)
+      end
+
+      # Re-read one session's transcript from disk. Returns true only when the
+      # stored transcript was actually replaced — nothing to read, or a shorter
+      # filesystem copy (clone recreated at a new path), is not a refresh.
+      def refresh_transcript_from_disk(session)
+        transcript_dir = transcript_directory(session)
+        return false if transcript_dir.nil? || !Dir.exist?(transcript_dir)
+
+        transcript_file = TranscriptFileLocator.find_main_transcript(session, transcript_dir)
+        return false unless transcript_file
+
+        content = File.read(transcript_file)
+        message_count = count_transcript_messages(content)
+
+        if Session.transcript_regression?(session.transcript, content)
+          Rails.logger.warn "[Mcp::Tools::ActionSession] Skipped transcript regression for session #{session.id} " \
+                            "(stored #{Session.transcript_line_count(session.transcript)} events, filesystem #{message_count}); preserving stored transcript"
+          return false
+        end
+
+        session.update!(
+          transcript: content,
+          metadata: (session.metadata || {}).merge("broadcast_message_count" => message_count)
+        )
+        session.logs.create!(content: "Transcript refreshed via MCP bulk refresh (#{message_count} messages)", level: "info")
+
+        true
       end
 
       def update_notes(session, args)

@@ -22,12 +22,30 @@ class Api::BaseController < ActionController::API
 
   private
 
+  # The one error envelope for the whole API surface.
+  #
+  # Every error response carries both `message` (a String) and `messages` (an
+  # Array of the same content), so a consumer can read either key without
+  # type-checking the value. Pass a String or an Array — `Array()` normalizes
+  # both, and the String form is the Array joined with ", ".
+  #
+  # Extra top-level keys (e.g. `retry_after`) ride along via **extra.
+  def render_api_error(error, message, status:, **extra)
+    messages = Array(message).map(&:to_s)
+
+    render json: {
+      error: error,
+      message: messages.join(", "),
+      messages: messages
+    }.merge(extra), status: status
+  end
+
   def authenticate_api_key
     api_key = api_key_from_request
 
     # Use constant-time comparison to prevent timing attacks
     unless api_key.present? && valid_api_keys.any? { |valid_key| ActiveSupport::SecurityUtils.secure_compare(valid_key, api_key) }
-      render json: { error: "Unauthorized", message: "Invalid or missing API key" }, status: :unauthorized
+      render_api_error("Unauthorized", "Invalid or missing API key", status: :unauthorized)
     end
   end
 
@@ -46,11 +64,11 @@ class Api::BaseController < ActionController::API
   end
 
   def not_found
-    render json: { error: "Not Found", message: "The requested resource was not found" }, status: :not_found
+    render_api_error("Not Found", "The requested resource was not found", status: :not_found)
   end
 
   def unprocessable_entity(exception)
-    render json: { error: "Unprocessable Entity", message: exception.record.errors.full_messages }, status: :unprocessable_entity
+    render_api_error("Unprocessable Entity", exception.record.errors.full_messages, status: :unprocessable_entity)
   end
 
   # Pagination helper with validation

@@ -14,8 +14,10 @@
 # consumer (script, agent, or tool) resolve a pending elicitation, so it goes
 # through standard API-key auth.
 #
-# :id refers to the elicitation's request_id (the MCP-facing identifier), not the
-# DB primary key — consistent with show.
+# On show, :id is the elicitation's request_id (the MCP-facing identifier). On
+# respond it is either the request_id or the DB primary key, so the identifier a
+# consumer already holds — from a poll response or from the web UI's own
+# /elicitations/:id/respond route — works on both surfaces.
 class Api::V1::ElicitationsController < Api::BaseController
   # create/show are called by MCP servers without an API key. respond is a
   # programmatic action and must be authenticated, so it is NOT skipped here.
@@ -27,12 +29,12 @@ class Api::V1::ElicitationsController < Api::BaseController
     request_id = meta["com.pulsemcp/request-id"]
 
     unless request_id.present?
-      render json: { error: "Missing parameter", message: "_meta[com.pulsemcp/request-id] is required" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "_meta[com.pulsemcp/request-id] is required", status: :unprocessable_entity)
       return
     end
 
     unless params[:message].present?
-      render json: { error: "Missing parameter", message: "message is required" }, status: :unprocessable_entity
+      render_api_error("Missing parameter", "message is required", status: :unprocessable_entity)
       return
     end
 
@@ -50,7 +52,7 @@ class Api::V1::ElicitationsController < Api::BaseController
       else
         Rails.logger.info "[Api::V1::ElicitationsController] Elicitation POST for unknown session-id: #{session_identifier} (request_id: #{request_id})"
       end
-      render json: { error: "Session not found", message: "Could not find session for session-id: #{session_identifier}" }, status: :not_found
+      render_api_error("Session not found", "Could not find session for session-id: #{session_identifier}", status: :not_found)
       return
     end
 
@@ -95,7 +97,7 @@ class Api::V1::ElicitationsController < Api::BaseController
 
     render json: elicitation.to_poll_response
   rescue ActiveRecord::RecordNotFound
-    render json: { error: "Not Found", message: "Elicitation not found for request_id: #{params[:id]}" }, status: :not_found
+    render_api_error("Not Found", "Elicitation not found for request_id: #{params[:id]}", status: :not_found)
   end
 
   # PATCH /api/v1/elicitations/:id/respond
@@ -104,16 +106,16 @@ class Api::V1::ElicitationsController < Api::BaseController
   # path (ElicitationsController#respond_to_elicitation) but is authenticated and
   # returns the elicitation poll response as JSON.
   def respond
-    elicitation = Elicitation.find_by!(request_id: params[:id])
+    elicitation = find_elicitation_for_respond!
 
     unless elicitation.pending?
-      render json: { error: "Unprocessable Entity", message: "Elicitation has already been resolved (status: #{elicitation.status})" }, status: :unprocessable_entity
+      render_api_error("Unprocessable Entity", "Elicitation has already been resolved (status: #{elicitation.status})", status: :unprocessable_entity)
       return
     end
 
     action_type = params[:action_type]
     unless Elicitation::RESOLVE_ACTIONS.include?(action_type)
-      render json: { error: "Unprocessable Entity", message: "action_type must be one of: #{Elicitation::RESOLVE_ACTIONS.join(', ')}" }, status: :unprocessable_entity
+      render_api_error("Unprocessable Entity", "action_type must be one of: #{Elicitation::RESOLVE_ACTIONS.join(', ')}", status: :unprocessable_entity)
       return
     end
 
@@ -123,10 +125,30 @@ class Api::V1::ElicitationsController < Api::BaseController
 
     render json: elicitation.to_poll_response
   rescue ActiveRecord::RecordNotFound
-    render json: { error: "Not Found", message: "Elicitation not found for request_id: #{params[:id]}" }, status: :not_found
+    render_api_error("Not Found", "Elicitation not found for: #{params[:id]}", status: :not_found)
   end
 
   private
+
+  # `respond` resolves the same elicitation the web path resolves, so it takes
+  # the same identifiers: the `request_id` (what `show` and the poll response
+  # speak) or the numeric primary key (what `PATCH /elicitations/:id/respond`
+  # in the UI speaks). Without this, an API consumer holding the id it read off
+  # the web page could not act on it.
+  #
+  # Only `respond` is widened. `show` stays request_id-only on purpose — it is
+  # unauthenticated for the MCP poll protocol, and accepting a primary key there
+  # would turn it into a sequential-id enumeration of every elicitation.
+  def find_elicitation_for_respond!
+    identifier = params[:id].to_s
+
+    by_request_id = Elicitation.find_by(request_id: identifier)
+    return by_request_id if by_request_id
+
+    return Elicitation.find(identifier) if identifier.match?(/\A\d+\z/)
+
+    raise ActiveRecord::RecordNotFound, "Elicitation not found for: #{identifier}"
+  end
 
   # Parse the optional content param into a plain Hash for storage. Accepts a
   # nested JSON object (ActionController::Parameters) or a JSON string.
