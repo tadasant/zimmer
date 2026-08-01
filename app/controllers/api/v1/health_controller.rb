@@ -4,8 +4,6 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::HealthController < Api::BaseController
-  # Rate limiting cooldown period
-  CLEANUP_COOLDOWN = 30.seconds
   # Bounds for archive days
   MAX_ARCHIVE_DAYS = 365
   MIN_ARCHIVE_DAYS = 1
@@ -72,20 +70,35 @@ class Api::V1::HealthController < Api::BaseController
 
   private
 
-  def rate_limited?(action)
-    cache_key = "health_api_rate_limit:#{action}"
-    last_time = Rails.cache.read(cache_key)
-    return false unless last_time
+  # The cooldown object is shared with the native MCP server's action_health
+  # tool, so the two surfaces throttle each other for the same caller.
+  def cooldown
+    @cooldown ||= HealthActionCooldown.new(HealthActionCooldown.fingerprint(api_key_from_request))
+  end
 
-    Time.current - last_time < CLEANUP_COOLDOWN
+  def rate_limited?(action)
+    cooldown.limited?(action)
   end
 
   def record_action(action)
-    cache_key = "health_api_rate_limit:#{action}"
-    Rails.cache.write(cache_key, Time.current, expires_in: CLEANUP_COOLDOWN + 1.second)
+    cooldown.record(action)
   end
 
   def render_rate_limited
-    render_api_error("Rate limited", "Please wait #{CLEANUP_COOLDOWN.to_i} seconds between actions", status: :too_many_requests, retry_after: CLEANUP_COOLDOWN.to_i)
+    unless cooldown.store_usable?
+      Rails.logger.error("[health_api] refusing #{action_name}: the cache cannot enforce the cooldown")
+      return render_api_error(
+        "Rate limiting unavailable",
+        "The cache is unavailable, so the #{HealthActionCooldown::COOLDOWN.to_i}-second cooldown cannot be enforced. Refusing to run health maintenance actions.",
+        status: :service_unavailable
+      )
+    end
+
+    render_api_error(
+      "Rate limited",
+      "Please wait #{HealthActionCooldown::COOLDOWN.to_i} seconds between actions",
+      status: :too_many_requests,
+      retry_after: HealthActionCooldown::COOLDOWN.to_i
+    )
   end
 end

@@ -120,10 +120,12 @@ Two truncations keep this a summary rather than a second copy of the file: tool 
 characters, unrecognized entries at 1,000.
 
 :::danger[Transcripts have no authorization check]
-`app/controllers/sessions_controller.rb:1475` carries a live TODO:
-`# TODO: Add authorization check here - transcript contains sensitive conversation data`.
+There is none to have. Sessions have no owner and Zimmer has no `User` model, so there is no
+principal to check a transcript against — `SessionsController#transcript` says as much in place of
+the TODO it used to carry.
 
-Since [the web UI has no authentication at all](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows),
-anyone who can reach the host can read every transcript.
+Since [the web UI has no authentication at all](/limitations/#the-web-ui-has-no-login-by-design-and-the-sharp-edge-that-follows)
+outside the `/supervisor` panel, anyone who can reach the host can read every transcript. Guarding
+that is the perimeter's job.
 Tracked in [#44](https://github.com/tadasant/zimmer/issues/44).
 :::

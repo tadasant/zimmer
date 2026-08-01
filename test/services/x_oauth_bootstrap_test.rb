@@ -15,6 +15,14 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
     [ result, captured ]
   end
 
+  def with_env(key, value)
+    original = ENV[key]
+    value.nil? ? ENV.delete(key) : ENV[key] = value
+    yield
+  ensure
+    original.nil? ? ENV.delete(key) : ENV[key] = original
+  end
+
   # --- authorize_url ---
 
   test "authorize_url includes PKCE S256 challenge, scopes, redirect, and state" do
@@ -34,6 +42,44 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
 
     expected_challenge = Base64.urlsafe_encode64(Digest::SHA256.digest(verifier)).delete("=")
     assert_equal expected_challenge, params["code_challenge"]
+  end
+
+  # --- redirect URI ---
+
+  test "default_redirect_uri falls back to the registered localhost callback" do
+    with_env(XOauthBootstrap::REDIRECT_URI_ENV, nil) do
+      assert_equal XOauthBootstrap::DEFAULT_REDIRECT_URI, XOauthBootstrap.default_redirect_uri
+    end
+  end
+
+  test "X_OAUTH_REDIRECT_URI overrides the callback on the consent URL" do
+    with_env(XOauthBootstrap::REDIRECT_URI_ENV, "https://zimmer.example.com/x/callback") do
+      url = XOauthBootstrap.authorize_url(
+        client_id: "CID", verifier: XOauthBootstrap.generate_verifier, state: XOauthBootstrap.generate_state
+      )
+      params = URI.decode_www_form(URI(url).query).to_h
+
+      assert_equal "https://zimmer.example.com/x/callback", params["redirect_uri"]
+    end
+  end
+
+  # X compares the redirect_uri on the token exchange against the one on the
+  # consent request, so the override has to reach both call sites or the
+  # exchange fails with an opaque invalid_request.
+  test "X_OAUTH_REDIRECT_URI overrides the callback on the token exchange" do
+    with_env(XOauthBootstrap::REDIRECT_URI_ENV, "https://zimmer.example.com/x/callback") do
+      _result, request = with_token_endpoint(code: 200, body: {
+        access_token: "AT", refresh_token: "RT", expires_in: 7200, scope: XOauthCredential::OAUTH_SCOPES
+      }) do
+        XOauthBootstrap.complete!(
+          account_key: "acct", env_var: "X_OAUTH_ACCESS_TOKEN", code: "the-code",
+          verifier: "the-verifier", client_id: "CID", client_secret: "SECRET"
+        )
+      end
+
+      body = URI.decode_www_form(request.body).to_h
+      assert_equal "https://zimmer.example.com/x/callback", body["redirect_uri"]
+    end
   end
 
   test "verifier and state are unpadded base64url of the right length" do
