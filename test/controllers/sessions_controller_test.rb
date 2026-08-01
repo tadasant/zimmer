@@ -1072,7 +1072,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "bulk_archive turbo_stream streams the empty-selection alert" do
-    post bulk_archive_sessions_url, params: { session_ids: [] }, as: :turbo_stream
+    # No `session_ids` at all: form-encoding an empty array sends `session_ids[]=`,
+    # which arrives as [""] and is not empty. The existing HTML test for this
+    # branch omits the param the same way.
+    post bulk_archive_sessions_url, as: :turbo_stream
 
     assert_response :success
     assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
