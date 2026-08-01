@@ -34,28 +34,44 @@
 class SlackTriggerPollerJob < ApplicationJob
   # Runs on the dedicated `pollers` queue (like every other *PollerJob), NOT on
   # `default`. A single poll is a long, external-API-bound unit of work: it makes
-  # many Slack calls, and SlackService retries rate-limited calls with blocking
-  # `sleep`s (up to MAX_RETRIES per call), so a rate-limited run can hold its
-  # worker thread for minutes. On the shared `default` queue those minutes-long
-  # runs starved the latency-sensitive periodic jobs that also live there
-  # (HeartbeatSweepJob every 30s, the cleanup/refresh crons), collapsing
+  # many Slack calls, each of which may absorb a short blip with a blocking
+  # `sleep` (SlackService::MAX_RETRIES per call). On the shared `default` queue a
+  # run that slow starves the latency-sensitive periodic jobs that live there
+  # (HeartbeatSweepJob every 30s, the cleanup/refresh crons) and collapses
   # background throughput. The `pollers` queue is isolated for exactly this kind
   # of slow, self-contained polling job.
   queue_as :pollers
 
   # Singleton pattern: at most one poll unfinished (running or queued) at a time,
   # matching every other poller (GithubCommentPollerJob, CliStatusRefreshJob, …).
-  # The cron enqueues a poll every minute, but a rate-limited run can take several
-  # minutes; without this cap those runs pile up — each holding a worker thread in
-  # a Slack-rate-limit `sleep` — until they saturate the queue's whole thread pool
-  # and no other polling work can run. total_limit: 1 makes an enqueue while a
-  # poll is still in flight a no-op, so a slow poll can never stack against itself.
-  # Polling is idempotent (timestamps only advance on success), so a skipped tick
-  # is simply picked up by the next cron run.
+  # The cron enqueues a poll every minute, but a poll can outrun a minute; without
+  # this cap those runs pile up — each holding a worker thread — until they
+  # saturate the queue's whole thread pool and no other polling work can run.
+  # total_limit: 1 makes an enqueue while a poll is still in flight a no-op, so a
+  # slow poll can never stack against itself. Polling is idempotent (timestamps
+  # only advance on success), so a skipped tick is simply picked up by the next
+  # cron run.
+  #
+  # The flip side, and the reason for #defer_poll below: while this job is in
+  # flight it IS Slack polling for the whole instance. A run that parks itself in
+  # a long `sleep` waiting out a Slack rate limit does not just delay itself — it
+  # rejects every cron tick that lands in that window, for every trigger. So a
+  # transient Slack failure must end the run, not be waited out inside it.
   good_job_control_concurrency_with(
     key: -> { "slack_trigger_poller" },
     total_limit: 1
   )
+
+  # How many times a single poll may reschedule itself before giving up and
+  # letting the ordinary cron cadence take over.
+  MAX_DEFERRALS = 5
+
+  # Deferral backoff when Slack is unavailable and told us nothing more specific:
+  # 30s, 60s, 120s, 240s, 480s — about 15 minutes across the five, capped at
+  # MAX_DEFERRAL_DELAY. A rate limit that carries a `retry_after` uses that value
+  # instead when it is longer.
+  DEFERRAL_BASE_DELAY = 30
+  MAX_DEFERRAL_DELAY = 10.minutes.to_i
 
   # Cap on how many aged-out tracked threads to re-check per channel per poll,
   # bounding the extra conversations.replies calls. Prioritized by most-recent
@@ -122,6 +138,12 @@ class SlackTriggerPollerJob < ApplicationJob
         .includes(:trigger)
         .find_each do |condition|
         process_condition(condition)
+      rescue SlackService::TransientError
+        # Slack itself is throttling us or unreachable. That is not a defect in
+        # THIS condition, and every remaining condition is about to hit the same
+        # wall — so don't alert once per condition and don't keep grinding through
+        # the sweep. Abort it and let #perform defer the whole poll.
+        raise
       rescue => e
         Rails.logger.error "[SlackTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
         AlertService.raise_alert(
@@ -133,9 +155,93 @@ class SlackTriggerPollerJob < ApplicationJob
         )
       end
     end
+
+    defer_poll(@transient_error) if @transient_error
+  rescue SlackService::TransientError => e
+    defer_poll(e)
+  end
+
+  # How many times this run has already been deferred, carried across reschedules
+  # in the job's own serialized params.
+  #
+  # Deliberately not `executions`, which counts every attempt including retries
+  # this job knows nothing about — ApplicationJob retries ActiveRecord::StatementTimeout
+  # five times, and GoodJob's concurrency module retries ConcurrencyExceededError.
+  # Reading those as deferrals would inflate the backoff and make the give-up alert
+  # claim a Slack outage that never happened.
+  def serialize
+    super.merge("deferrals" => deferral_count)
+  end
+
+  def deserialize(job_data)
+    super
+    @deferrals = job_data["deferrals"] || 0
   end
 
   private
+
+  def deferral_count
+    @deferrals || 0
+  end
+
+  # Remember that Slack itself failed somewhere in this sweep.
+  #
+  # The per-unit rescues that call this deliberately swallow, because each unit
+  # (channel, thread, DM) owns a cursor that is only advanced for units that
+  # finished — aborting the sweep outright would skip the batched cursor writes for
+  # the units that already succeeded and replay them as duplicate sessions. So the
+  # sweep runs to completion and does its bookkeeping, and the failure is answered
+  # at the end with a deferral rather than a "success" the cron re-hammers 60
+  # seconds later.
+  def note_transient(error)
+    @transient_error ||= error if error.is_a?(SlackService::TransientError)
+  end
+
+  # Slack is unavailable or throttling us. Give the slot back.
+  #
+  # Rescheduling THIS job (rather than returning, or sleeping it out) is what
+  # makes the deferral honest. `retry_job` re-enqueues the same job_id, which
+  # GoodJob's concurrency control lets through — and because the row stays
+  # unfinished, the singleton key is still held, so the cron ticks in between are
+  # still no-ops and the deferred run is the *next* poll rather than an extra one.
+  # The worker thread, meanwhile, is free the whole time.
+  #
+  # After MAX_DEFERRALS we stop deferring and alert: at that point Slack has been
+  # unavailable across roughly a quarter of an hour, which is worth a human
+  # knowing about, and the ordinary once-a-minute cron takes over from a clean
+  # slate.
+  def defer_poll(error)
+    spent = deferral_count
+    if spent >= MAX_DEFERRALS
+      # warn, not error: ApplicationJob documents that a single ERROR line trips the
+      # "any Zimmer ERROR → critical" Grafana rule, and the alert below is already
+      # the deliberate, deduplicated way to page a human about this.
+      Rails.logger.warn "[SlackTriggerPollerJob] Slack still unavailable after #{MAX_DEFERRALS} deferrals: #{error.message}"
+      AlertService.raise_alert(
+        "Slack trigger poller deferred repeatedly",
+        details: "Slack has been unavailable across #{MAX_DEFERRALS} deferred polls. Latest error:\n#{error.message}",
+        source: "SlackTriggerPollerJob",
+        dedup_key: "slack_trigger_poller_deferred"
+      )
+      return
+    end
+
+    wait = deferral_delay(error)
+    Rails.logger.warn(
+      "[SlackTriggerPollerJob] #{error.message} — deferring poll #{wait}s " \
+      "(deferral #{spent + 1}/#{MAX_DEFERRALS})"
+    )
+    @deferrals = spent + 1
+    retry_job(wait: wait)
+  end
+
+  # Exponential backoff, floored by whatever Slack itself asked for on a 429 and
+  # capped so a deferral can never swallow more than MAX_DEFERRAL_DELAY of polling.
+  def deferral_delay(error)
+    backoff = DEFERRAL_BASE_DELAY * (2**deferral_count)
+    retry_after = error.is_a?(SlackService::RateLimitedError) ? error.retry_after.to_i : 0
+    [ [ backoff, retry_after ].max, MAX_DEFERRAL_DELAY ].min
+  end
 
   def process_condition(condition)
     case condition.event_type
@@ -283,6 +389,7 @@ class SlackTriggerPollerJob < ApplicationJob
       # since replies to old threads won't appear in conversations.history)
       check_thread_replies_for_mentions(condition, channel.id, all_messages, bot_id: bot_id)
     rescue => e
+      note_transient(e)
       Rails.logger.error "[SlackTriggerPollerJob] Error polling channel #{channel.id} for mentions: #{e.message}"
     end
 
@@ -368,6 +475,7 @@ class SlackTriggerPollerJob < ApplicationJob
       newest_reply_ts = replies.map { |r| r.ts }.max
       thread_ts_updates[thread_key] = newest_reply_ts
     rescue => e
+      note_transient(e)
       Rails.logger.error "[SlackTriggerPollerJob] Error checking thread #{parent.ts} in #{channel_id}: #{e.message}"
     end
 
@@ -416,6 +524,7 @@ class SlackTriggerPollerJob < ApplicationJob
       channel_ts_updates[channel_id] = result[:channel_ts] if result[:channel_ts].present?
       bot_activity_updates[channel_id] = result[:bot_activity_ts] if result[:bot_activity_ts].present?
     rescue => e
+      note_transient(e)
       Rails.logger.error "[SlackTriggerPollerJob] Error passively polling channel #{channel_id}: #{e.message}"
     end
 
@@ -590,6 +699,7 @@ class SlackTriggerPollerJob < ApplicationJob
         process_message(condition, reply, channel_id: channel_id, prior_ts: effective_prior_ts)
       end
     rescue => e
+      note_transient(e)
       Rails.logger.error "[SlackTriggerPollerJob] Error passively checking thread #{parent.ts} in #{channel_id}: #{e.message}"
     end
 
@@ -688,6 +798,7 @@ class SlackTriggerPollerJob < ApplicationJob
   def fetch_recent_history(channel_id)
     SlackService.get_channel_history(channel_id, limit: RECENT_HISTORY_LIMIT)
   rescue => e
+    note_transient(e)
     Rails.logger.error "[SlackTriggerPollerJob] Error fetching recent history for #{channel_id}: #{e.message}"
     []
   end
@@ -723,6 +834,7 @@ class SlackTriggerPollerJob < ApplicationJob
       newest_ts = messages.map { |m| m.ts }.max
       condition.update_dm_timestamp!(user_id, newest_ts)
     rescue => e
+      note_transient(e)
       Rails.logger.error "[SlackTriggerPollerJob] Error polling DMs for user #{user_id}: #{e.message}"
     end
   end
@@ -790,7 +902,7 @@ class SlackTriggerPollerJob < ApplicationJob
     return if relevant_ts.blank?
 
     # Get message details for the prompt
-    permalink = SlackService.get_message_permalink(channel_id, message.ts)
+    permalink = get_message_permalink(channel_id, message.ts)
     author_name = get_author_name(message)
     message_text = message.text || ""
 
@@ -820,7 +932,22 @@ class SlackTriggerPollerJob < ApplicationJob
 
     Rails.logger.info "[SlackTriggerPollerJob] Created session #{session.id} for trigger #{trigger.id} from #{dm ? 'DM' : 'channel'} message #{message.ts}"
   rescue => e
+    note_transient(e)
     Rails.logger.error "[SlackTriggerPollerJob] Failed to create session for message #{message.ts}: #{e.message}"
+  end
+
+  # The message's Slack link, or nil when Slack won't give us one.
+  #
+  # Degrading rather than raising, for the same reason #get_author_name and
+  # #resolve_channel_name do: every caller of #process_message advances its cursor
+  # past this message whether or not a session came out of it, so an exception
+  # escaping here does not defer the message — it deletes it. A prompt missing its
+  # link is a worse prompt; a trigger that silently never fires is a lost message.
+  def get_message_permalink(channel_id, message_ts)
+    SlackService.get_message_permalink(channel_id, message_ts)
+  rescue SlackService::SlackError => e
+    Rails.logger.warn "[SlackTriggerPollerJob] No permalink for #{message_ts} in #{channel_id}: #{e.message}"
+    nil
   end
 
   def resolve_channel_name(channel_id)
