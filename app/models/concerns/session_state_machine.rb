@@ -411,11 +411,13 @@ module SessionStateMachine
         "Session state-machine side effect failed",
         details: "`#{operation}` raised during a state transition and was swallowed, so the " \
                  "transition completed with this side effect missing.\n\n" \
-                 "*Session:* #{session_id}\n" \
-                 "*Error:* #{error.class}: #{error.message}\n\n" \
+                 "*Session:* #{session_id}\n\n" \
                  "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
         source: "SessionStateMachine##{operation}",
-        dedup_key: "session_state_machine_side_effect_#{operation}"
+        dedup_key: "session_state_machine_side_effect_#{operation}",
+        # The exception itself, not a hand-copied `e.message`: the backtrace is
+        # the high-signal part and it is sitting right here at the rescue.
+        error: error
       )
     rescue => alert_error
       # Runs post-commit, outside the outer rescue's reach.

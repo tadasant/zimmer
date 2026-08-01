@@ -2263,8 +2263,8 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert alert, "an unclassified exit must page"
     assert_equal "Unclassified failure: process exit", alert[0]
     assert_match(/exit code: 2/, alert[1][:details])
-    assert_match(/brand new way to die/, alert[1][:details],
-      "the alert must carry the output no pattern matched")
+    assert_match(/brand new way to die/, alert[1][:error],
+      "the alert must carry the output no pattern matched, via error: so AlertSnippet redacts it")
     assert_equal "ProcessLifecycleManager#handle_exit", alert[1][:source]
   end
 
@@ -2319,7 +2319,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
 
     assert alert, "an unclassified exit must page"
-    assert_match(/cool-down mode/, alert[:details])
+    assert_match(/cool-down mode/, alert[:error])
   end
 
   # A classifier said a recovery path applied and the recovery service then said
