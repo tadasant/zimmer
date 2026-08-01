@@ -1073,33 +1073,28 @@ entry. Nothing retries it later.
 
 Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 
-### The zombie reaper steals exit statuses from live waiters
+### A reaped subprocess loses a result Zimmer already had
 
-`ZombieReaperJob` reaps **any** child — `Process.waitpid(-1, Process::WNOHANG)` — every 5 minutes,
-in the same worker process that runs the pollers and `AgentSessionJob`. It is not pid-aware, so it
-cannot tell a leaked zombie from a child another thread is currently waiting on. In production it
-reaps 1–2 children every 5 minutes, so it wins that race constantly.
+`Open3.capture3` hands back `[stdout, stderr, status]`, and that status is nil whenever the child
+was reaped by something other than `capture3`'s own `Process.detach` wait thread — the thread's
+`waitpid` gets `ECHILD` and `wait_thr.value` returns nil. `ZombieReaperJob` is careful not to be
+that something (see
+[Background jobs](/operate/background-jobs/#the-zombie-reaper-only-takes-what-nobody-is-waiting-for)),
+but its protection for waiters it cannot see in `ChildWaiterRegistry` is rule 2 — "still defunct a
+couple of seconds later" — which is a timing argument, not a guarantee, and nothing stops future
+code from reaping more bluntly.
 
-Two consequences, one handled and one not:
+Every call site reads that status through `SubprocessStatus`, which treats nil as a **failure**: a
+result nobody can vouch for is not a result. Nothing crashes, and nothing is mistaken for success.
+What is lost is the work. On the reaped path stdout and stderr are usually sitting right there and
+the command very likely succeeded — only the exit code is missing — yet the caller throws the whole
+response away. A poller retries on its next tick, so the cost is one wasted `gh` round trip;
+`GitCloneService` and `AirPrepareService` have no next tick, so they classify it transient and
+retry the clone outright.
 
-- **A lost exit status is handled.** `Open3.capture3`'s `wait_thr` is a `Process.detach` thread; when
-  the reaper gets there first, that thread's `waitpid` gets `ECHILD` and `wait_thr.value` returns
-  nil, so `capture3` returns `[stdout, stderr, nil]`. Call sites read that status through
-  `SubprocessStatus`, which treats nil as a failure — the caller retries rather than crashing or,
-  worse, treating an unverifiable result as a success. What is still lost is the work: a poll tick
-  throws away a `gh` result it already has in hand, because it cannot vouch for it.
-- **A lost `handle_exit` is not.** `ProcessLifecycleManager#wait_nonblock` calls `waitpid` on a
-  specific pid to route the child's exit through `handle_exit`, which owns SIGTERM retry, `/compact`
-  retry on context-length errors, API server-error backoff, and `failure_reason` mapping. If the
-  reaper reaps that child first, `wait_nonblock` raises `ECHILD` and `AgentSessionJob` falls through
-  to its signal-based fallback, which calls `session.pause!` directly — bypassing every one of those
-  recovery branches. A session that should have auto-retried lands in `needs_input` instead, with no
-  explanation.
-
-Tracked in [#273](https://github.com/tadasant/zimmer/issues/273), along with the upstream question:
-with the tini init shim in place this loop is supposed to find nothing, so something is spawning
-children nobody waits on.
-
+Reading the pipes when the exit code is unknown would mean deciding a command succeeded on the
+evidence of its output alone. That is the trade being made deliberately, and it is the cheaper
+error.
 ---
 
 ## Triggers

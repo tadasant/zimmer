@@ -8,11 +8,18 @@
 # Open3's `wait_thr` is a `Process.detach` thread. If anything else reaps the
 # child before that thread's own `waitpid` runs, the waitpid gets `ECHILD` and
 # `wait_thr.value` returns nil, so `capture3` returns `[stdout, stderr, nil]`.
-# In Zimmer that "anything else" is `ZombieReaperJob`, which runs
-# `Process.waitpid(-1, Process::WNOHANG)` in a loop — a blanket reaper, on the
-# `*/5 * * * *` cron, in the same worker process as the GitHub pollers, which
-# shell out to `gh` every 30 s. The two collide, and before this helper existed
-# the collision crashed the tick with `undefined method 'success?' for nil`.
+# In Zimmer that "anything else" was `ZombieReaperJob` reaping `waitpid(-1)` on
+# the `*/5 * * * *` cron, in the same worker process as the GitHub pollers, which
+# shell out to `gh` every 30 s. The two collided and crashed the tick with
+# `undefined method 'success?' for nil` (#271).
+#
+# ZombieReaperJob now reaps named pids and leaves claimed ones alone (#273), so
+# that particular collision is rare. This module is not thereby obsolete: the
+# reaper's protection for waiters it cannot see in `ChildWaiterRegistry` rests on
+# a two-second confirmation delay, which is a timing argument rather than a
+# guarantee, and a nil `wait_thr.value` is part of Open3's contract regardless of
+# who does the reaping. Reading a status is the wrong place to assume nobody ever
+# will.
 #
 # Two distinctions this helper exists to preserve:
 #
