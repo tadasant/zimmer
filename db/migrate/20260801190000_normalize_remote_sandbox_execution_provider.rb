@@ -31,9 +31,10 @@ class NormalizeRemoteSandboxExecutionProvider < ActiveRecord::Migration[8.0]
     say "Rewrote #{normalized} session(s) from #{STUB_PROVIDER} to #{REAL_PROVIDER}"
   end
 
-  # Irreversible by intent, not by omission. The rewritten rows are indistinguishable
-  # from rows that always held `local_filesystem`, and restoring them would recreate
-  # values the model no longer accepts.
+  # Deliberately a no-op rather than a raise, so rolling back a later migration is not
+  # blocked by this one. There is nothing to restore in any case: a rewritten row is
+  # indistinguishable from one that always held `local_filesystem`, and re-creating the
+  # value would put back something the model rejects.
   def down
     say "No-op: #{STUB_PROVIDER} is not a value the model accepts, so there is nothing to restore"
   end

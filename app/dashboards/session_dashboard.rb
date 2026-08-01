@@ -12,7 +12,10 @@ class SessionDashboard < Administrate::BaseDashboard
     agent_runtime: Field::String,
     branch: Field::String,
     config: Field::String.with_options(searchable: false),
-    execution_provider: Field::String,
+    # A select rather than a text box: the model accepts exactly one value, and the admin
+    # form is the third surface (with the REST API and the MCP start_session tool) that
+    # advertises what a caller may set. All three read Session::EXECUTION_PROVIDERS.
+    execution_provider: Field::Select.with_options(collection: Session::EXECUTION_PROVIDERS),
     logs: Field::HasMany,
     subagent_transcripts: Field::HasMany,
     mcp_server_env: Field::String.with_options(searchable: false),
