@@ -161,7 +161,9 @@ class Api::V1::SessionsController < Api::BaseController
   #
   # Request body:
   #   - prompt: The follow-up prompt text (required)
-  #   - goal: Optional goal override
+  #   - goal: Optional goal override. A non-blank goal is applied to the session on every
+  #     branch; a blank or absent one preserves whatever goal the session already has
+  #     (use PATCH /api/v1/sessions/:id to clear a goal).
   #   - force_immediate: When true, sends immediately even if session is running (default: false)
   def follow_up
     prompt = params[:prompt].to_s.strip
@@ -177,6 +179,15 @@ class Api::V1::SessionsController < Api::BaseController
     end
 
     goal = params[:goal].to_s.strip.presence
+
+    # Rejected up front, before any branch mutates state, so an over-long goal
+    # fails the same way whether the message is queued, interrupted in, or sent
+    # directly — and never after the prompt has already been delivered.
+    if goal && goal.length > Session::GOAL_MAX_LENGTH
+      render_api_error("Validation failed", "goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)", status: :unprocessable_entity)
+      return
+    end
+
     force_immediate = params[:force_immediate] == true || params[:force_immediate] == "true"
 
     # When force_immediate is set, send immediately regardless of session state.
@@ -268,7 +279,17 @@ class Api::V1::SessionsController < Api::BaseController
     end
 
     ActiveRecord::Base.transaction do
-      @session.update!(prompt: prompt)
+      # The goal is applied here, on the session itself — the other two branches
+      # carry it on the EnqueuedMessage and EnqueuedMessageProcessorService applies
+      # it when it claims the message. Same rule in all three places: a non-blank
+      # goal overwrites, a blank or absent one leaves the session's goal alone
+      # (clearing a goal is PATCH /api/v1/sessions/:id).
+      if goal && goal != @session.goal
+        @session.update!(prompt: prompt, goal: goal)
+        @session.logs.create!(content: "Goal updated from follow-up", level: "info")
+      else
+        @session.update!(prompt: prompt)
+      end
       @session.resume! if @session.may_resume?
       job = AgentSessionJob.enqueue_with_prompt(@session.id, prompt)
       @session.update!(running_job_id: job.job_id)

@@ -811,6 +811,159 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "PR is merged", enqueued.goal
   end
 
+  test "should preserve session goal on queued follow-up when goal param is omitted" do
+    session = sessions(:running)
+    session.update!(goal: "existing goal")
+
+    post follow_up_api_v1_session_path(session.id), params: {
+      prompt: "No goal change"
+    }, headers: @headers
+
+    assert_response :accepted
+    assert_nil session.enqueued_messages.last.goal
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  # Goal on the direct (immediate) path — waiting/needs_input sessions.
+  # These three branches (direct, force_immediate, running) must agree on goal
+  # handling: a non-blank goal is applied, a blank or absent one preserves
+  # whatever goal the session already has.
+  test "should apply goal on direct follow-up to needs_input session" do
+    session = sessions(:needs_input)
+    session.update!(goal: "old condition")
+
+    post follow_up_api_v1_session_path(session.id), params: {
+      prompt: "Follow-up prompt",
+      goal: "new condition"
+    }, headers: @headers
+
+    assert_response :success
+    assert_equal "new condition", session.reload.goal
+    assert_equal "new condition", JSON.parse(response.body)["session"]["goal"]
+  end
+
+  test "should log a goal change on direct follow-up" do
+    session = sessions(:needs_input)
+    session.update!(goal: "old condition")
+
+    assert_difference -> { session.logs.where(content: "Goal updated from follow-up").count }, 1 do
+      post follow_up_api_v1_session_path(session.id), params: {
+        prompt: "Goal changed",
+        goal: "new condition"
+      }, headers: @headers
+    end
+
+    assert_response :success
+  end
+
+  test "should not log a goal change on direct follow-up when the goal is unchanged" do
+    session = sessions(:needs_input)
+    session.update!(goal: "same goal")
+
+    assert_no_difference -> { session.logs.where(content: "Goal updated from follow-up").count } do
+      post follow_up_api_v1_session_path(session.id), params: {
+        prompt: "Goal unchanged",
+        goal: "same goal"
+      }, headers: @headers
+    end
+
+    assert_response :success
+    assert_equal "same goal", session.reload.goal
+  end
+
+  test "should apply goal on direct follow-up to waiting session" do
+    session = sessions(:waiting)
+
+    post follow_up_api_v1_session_path(session.id), params: {
+      prompt: "Follow-up prompt",
+      goal: "PR is merged"
+    }, headers: @headers
+
+    assert_response :success
+    assert_equal "PR is merged", session.reload.goal
+  end
+
+  test "should preserve session goal on direct follow-up when goal param is omitted" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    post follow_up_api_v1_session_path(session.id), params: {
+      prompt: "No goal change"
+    }, headers: @headers
+
+    assert_response :success
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  test "should preserve session goal on direct follow-up when goal param is blank" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    post follow_up_api_v1_session_path(session.id), params: {
+      prompt: "Blank goal",
+      goal: "   "
+    }, headers: @headers
+
+    assert_response :success
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  test "should reject direct follow-up with goal exceeding max length without touching the session" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+    original_prompt = session.prompt
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      post follow_up_api_v1_session_path(session.id), params: {
+        prompt: "Follow-up prompt",
+        goal: "x" * (Session::GOAL_MAX_LENGTH + 1)
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "Validation failed", json["error"]
+    assert_includes json["message"], "goal is too long"
+
+    session.reload
+    assert_equal "existing goal", session.goal
+    assert_equal original_prompt, session.prompt
+    assert_equal "needs_input", session.status
+  end
+
+  test "should reject queued follow-up with goal exceeding max length" do
+    session = sessions(:running)
+
+    assert_no_difference "EnqueuedMessage.count" do
+      post follow_up_api_v1_session_path(session.id), params: {
+        prompt: "Follow-up prompt",
+        goal: "x" * (Session::GOAL_MAX_LENGTH + 1)
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "Validation failed", json["error"]
+    assert_includes json["message"], "goal is too long"
+  end
+
+  test "should reject force_immediate follow-up with goal exceeding max length" do
+    session = sessions(:running)
+
+    assert_no_difference "EnqueuedMessage.count" do
+      post follow_up_api_v1_session_path(session.id), params: {
+        prompt: "Follow-up prompt",
+        goal: "x" * (Session::GOAL_MAX_LENGTH + 1),
+        force_immediate: true
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "Validation failed", json["error"]
+    assert_includes json["message"], "goal is too long"
+  end
+
   # force_immediate follow-up tests
   test "should send follow-up immediately to running session with force_immediate" do
     session = sessions(:running)
