@@ -52,6 +52,87 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/"prompt" parameter is required/, error.message)
   end
 
+  # A follow_up goal must behave the same on all three delivery branches — sent
+  # directly, queued, or interrupted in — matching POST /api/v1/sessions/:id/follow_up.
+  test "follow_up applies a goal when it sends the prompt immediately" do
+    session = sessions(:needs_input)
+    session.update!(goal: "old condition")
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Keep going", "goal" => "new condition")
+
+    assert_equal "new condition", session.reload.goal
+  end
+
+  test "follow_up preserves the session goal when the goal is omitted" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "No goal change")
+
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  test "follow_up preserves the session goal when the goal is blank" do
+    session = sessions(:waiting)
+    session.update!(goal: "existing goal")
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Blank goal", "goal" => "  ")
+
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  test "follow_up applies the goal when force_immediate interrupts a running session" do
+    session = sessions(:running)
+    session.update!(goal: "old condition")
+
+    @tool.call(
+      "action" => "follow_up",
+      "session_id" => session.id,
+      "prompt" => "Urgent work",
+      "goal" => "new condition",
+      "force_immediate" => true
+    )
+
+    assert_equal "new condition", session.reload.goal
+  end
+
+  test "follow_up carries the goal on the message it queues for a running session" do
+    session = sessions(:running)
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Queued work", "goal" => "PR is merged")
+
+    assert_equal "PR is merged", session.enqueued_messages.last.goal
+  end
+
+  test "follow_up rejects a goal that is too long without sending the prompt" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    error = nil
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      error = assert_raises(Mcp::ToolError) do
+        @tool.call(
+          "action" => "follow_up",
+          "session_id" => session.id,
+          "prompt" => "Keep going",
+          "goal" => "x" * (Session::GOAL_MAX_LENGTH + 1)
+        )
+      end
+    end
+
+    assert_match(/goal is too long/, error.message)
+    session.reload
+    assert_equal "existing goal", session.goal
+    assert_equal "needs_input", session.status
+  end
+
+  test "the goal parameter documents its follow_up behavior in the tool schema" do
+    properties = Mcp::Tools::ActionSession.to_h.deep_symbolize_keys.dig(:inputSchema, :properties)
+
+    assert properties[:goal].present?, "action_session should accept a goal parameter"
+    assert_match(/follow_up/, properties[:goal][:description])
+  end
+
   test "pause pauses a running session and marks it user-paused" do
     session = sessions(:running)
 

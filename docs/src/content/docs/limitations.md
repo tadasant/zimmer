@@ -1310,20 +1310,21 @@ keys, where one global bucket capped it at one per 30 seconds for the whole inst
 
 Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
 
-### `follow_up` accepts a `goal` it sometimes throws away
+### A follow-up `goal` can set but never clear
 
-`POST /api/v1/sessions/:id/follow_up` takes a `goal`, and `Api::V1::SessionsController#follow_up`
-only ever hands it to `enqueued_messages.create!`. The two paths that queue a message — a `running`
-session, and any `force_immediate` — therefore honor it, because
-`EnqueuedMessageProcessorService` applies a non-blank message goal when it claims the message. The
-direct path for a `waiting` or `needs_input` session updates `prompt`, spawns the job, and never
-reads `goal` again.
+`POST /api/v1/sessions/:id/follow_up` and the MCP `action_session` `follow_up` action apply a
+non-blank `goal` to the session and treat a blank or omitted one as "leave the current goal alone".
+There is deliberately no value that means "erase it" — the API has no way to distinguish a caller
+who omitted the field from one who wants the goal gone, and silently clearing a session's stop
+condition on every goal-less follow-up would be the worse failure. Clearing is
+`PATCH /api/v1/sessions/:id` with `goal: ""`, or the `change_goal` action.
 
-The request answers 200 either way, so the caller cannot tell. Whether the goal you sent applies
-depends on what state the session happened to be in when your call landed. The MCP
-`follow_up_session` tool routes through the same code and inherits it.
-
-Tracked in [#290](https://github.com/tadasant/zimmer/issues/290).
+The HTML endpoint behind the web follow-up form reads a blank goal the other way: `params.key?(:goal)`
+decides, so an *explicitly sent* empty string clears, and only an absent key preserves. That
+divergence is latent rather than user-visible — `app/views/sessions/_follow_up_form.html.erb` renders
+no goal field at all, so nothing in the shipped UI ever sends the key. The only web surface that
+edits a goal alongside a message is the enqueued-message editor. A hand-crafted POST to the HTML
+route is the one caller that can tell the two rules apart.
 
 ---
 
