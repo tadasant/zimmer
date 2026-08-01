@@ -584,12 +584,18 @@ enough to create a log directory (e.g. an OAuth-blocked streamable-http server s
 launch) produces no key of its own.
 
 `McpStatusPersisting` seeds a `pending` placeholder for every server in `session.all_mcp_servers` that
-the detector said nothing about, so such a server is at least *listed*. It used to be skipped outright,
-and an absent key reads as "not configured" to every consumer — the API, the MCP tools, the session
-row — when the truth was "configured and broken". The placeholder is written with `||=`, so it is a
-floor and never a correction: a real status, from this poll or any earlier one, is never overwritten
-by it. `pending` is still not `failed` — the log directory is the only evidence there is, and it does
-not exist — but the server no longer vanishes ([#196](https://github.com/tadasant/zimmer/issues/196)).
+the detector said nothing about, so such a server is at least *listed*. It used to be skipped outright.
+The session views already read an absent key as pending, but the JSON consumers do not — the REST API
+and the `get_session` MCP tool hand back `custom_metadata` verbatim, so a broken server simply was not
+in it, and absent there reads as "not configured" when the truth was "configured and broken". The
+placeholder is written only when the key is absent, so it is a floor and never a correction: a real
+status, from this poll or any earlier one, is never overwritten by it. `pending` is still not `failed`
+— the log directory is the only evidence there is, and it does not exist — but the server no longer
+vanishes ([#196](https://github.com/tadasant/zimmer/issues/196)).
+
+One consumer treats it specially: `McpServerBackfill#detect_lost_mcp_servers` skips `pending` entries
+when it looks for servers a regenerated config dropped, since a placeholder is the absence of evidence
+rather than a server the session ever connected to.
 :::
 
 :::note[The runtime credential stores are host-global and shared across sessions]
