@@ -160,7 +160,12 @@ class McpOauthCredential < ApplicationRecord
       update!(
         access_token: tokens["access_token"],
         refresh_token: tokens["refresh_token"] || self.refresh_token,
-        expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil
+        expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil,
+        # A refresh that succeeded is proof the server supports refreshing,
+        # whatever was recorded at issuance. The column holds the last observed
+        # truth, so a later invalidate_refresh_token! cannot resurrect a
+        # "this server issued no refresh token" claim this refresh just disproved.
+        refresh_token_unsupported: false
       )
       Rails.logger.info "[McpOauthCredential] Token refresh succeeded for #{server_name}"
       true

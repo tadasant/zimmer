@@ -19,9 +19,13 @@ module ParameterStore
   #   * A Secret Manager secret holding the bytes.
   #
   # `GET .../versions/{v}:render` dereferences the `__REF__` server-side and hands
-  # back the envelope with the real value in it. That single verb is why the
-  # credential needs both `parametermanager.parameterVersions.render` and
-  # `secretmanager.versions.access`, and nothing else.
+  # back the envelope with the real value in it. That single verb is the whole read
+  # path: this client calls Parameter Manager (and Cloud Resource Manager, to probe
+  # its own permissions) and never calls Secret Manager, so the caller needs
+  # `parametermanager.parameterVersions.render` and the dereference is authorized as
+  # the PARAMETER's principal, not the caller's. `secretmanager.versions.access` on
+  # the resolver is what the seeding flow and the provisioning audit assert against —
+  # nothing here reads through it.
   #
   # Because a rendered payload contains a secret, no response body is ever logged
   # or interpolated into an error message.

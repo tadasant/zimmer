@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # Focused unit test for the shared McpStatusPersisting module, independent of
 # either runtime's detector. The behavior under test is the LEVEL at which a
@@ -122,6 +123,17 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
     @session.reload
     assert_equal "failed", @session.custom_metadata.dig("mcp_servers_status", "context7", "status")
     assert_equal "Connection closed", @session.custom_metadata.dig("mcp_servers_status", "context7", "error")
+  end
+
+  # Polls are frequent and mostly say nothing new. An unconditional write would
+  # re-run Session's full validation set — including the AIR-catalog-backed
+  # artifact validators — several times a minute per live session, for no write.
+  test "a poll with nothing new to say does not write the session at all" do
+    @host.update_session_mcp_status("context7" => { status: "connected" })
+
+    Session.any_instance.expects(:update!).never
+
+    @host.update_session_mcp_status("context7" => { status: "connected" })
   end
 
   # And it is a floor in the other direction too: seeding pending first must not

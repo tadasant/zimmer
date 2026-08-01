@@ -20,8 +20,8 @@
     <% if status.requires_periodic_reauth? %>
       <p class="mt-2 text-xs text-amber-700" data-connector-no-refresh-token="<%= status.server_name %>">
         This server issued no refresh token, so Zimmer cannot renew this credential on its own.
-        You will have to authorize it again periodically — once the access token expires this row
-        offers a Re-authorize button. That is how this server works, not a fault in this connection.
+        You will have to authorize it again every time the access token expires — this row's
+        Re-authorize button is what does it. That is how this server works, not a fault here.
       </p>
     <% end %>
 

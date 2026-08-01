@@ -135,6 +135,28 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_not credential.requires_periodic_reauth?
   end
 
+  # Plenty of servers mint a refresh token on first consent and omit it when
+  # re-authorizing a grant that is still live. Claiming "this server issues no
+  # refresh token" off that response would assert a permanent property about a
+  # server we have already seen issue one.
+  test "a re-authorization that omits the refresh token does not label the server one-shot" do
+    McpOauthCredential.create!(
+      server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
+      client_id: "c", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
+      refresh_token: "issued-on-first-consent", expires_at: 1.hour.from_now
+    )
+    flow = pending_flow_for("server-a", CONFIG_A, state: "reconsent-a")
+
+    stub_token_exchange(token_response) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    credential = McpOauthCredential.for_credential_key(@key_a).first
+    assert_not credential.refresh_token_unsupported?,
+      "a server that has issued a refresh token before is not one-shot"
+    assert_not credential.requires_periodic_reauth?
+  end
+
   # Re-authorizing against a server that has since started issuing refresh
   # tokens must clear the flag, not leave a stale warning on a credential that
   # can now be renewed.
