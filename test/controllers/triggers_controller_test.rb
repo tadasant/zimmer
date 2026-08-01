@@ -26,13 +26,25 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "New Trigger"
   end
 
-  test "new form offers passive listening as a Slack event type" do
+  test "new form offers the two passive-listening event types, and not the deprecated one" do
     get new_trigger_path
     assert_response :success
 
     assert_select "select[name=?]", "trigger[trigger_conditions_attributes][0][configuration][event_type]" do
-      assert_select "option[value=passive_listen]", 1
+      assert_select "option[value=passive_listen_thread]", 1
+      assert_select "option[value=passive_listen_channel]", 1
+      # The combined type still works for triggers that already name it, but a new
+      # condition should never be created with it.
+      assert_select "option[value=passive_listen]", 0
     end
+  end
+
+  test "the edit form keeps the deprecated event type selectable for a condition that has it" do
+    trigger = triggers(:passive_listen_all_channels_trigger)
+    get edit_trigger_path(trigger)
+    assert_response :success
+
+    assert_select "option[value=passive_listen][selected]", 1
   end
 
   test "new form renders the lazy-loaded channel dropdown instead of free-text name and ID inputs" do
@@ -165,7 +177,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "bot_mention", condition.event_type
   end
 
-  test "should create slack trigger with passive_listen event type and no channel" do
+  test "should create slack trigger with a passive-listening event type and no channel" do
     assert_difference("Trigger.count") do
       post triggers_path, params: {
         trigger: {
@@ -180,7 +192,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
               configuration: {
                 channel_id: "",
                 channel_name: "",
-                event_type: "passive_listen"
+                event_type: "passive_listen_thread"
               }
             }
           ]
@@ -192,8 +204,9 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to trigger_path(trigger)
     condition = trigger.trigger_conditions.first
     assert_equal "slack", condition.condition_type
-    assert_equal "passive_listen", condition.event_type
-    assert condition.passive_listen?
+    assert_equal "passive_listen_thread", condition.event_type
+    assert condition.passive_threads?
+    assert_not condition.passive_channel?
   end
 
   test "should create trigger with browser-style hash-indexed nested attributes" do

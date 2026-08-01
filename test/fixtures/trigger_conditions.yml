@@ -47,7 +47,10 @@ bot_mention_all_channels_condition:
     event_type: bot_mention
   last_message_ts:
 
-# Conditions for passive_listen_all_channels_trigger (no specific channel — monitors all)
+# Conditions for passive_listen_all_channels_trigger (no specific channel — monitors
+# all). Carries the DEPRECATED combined event type on purpose: it is what an existing
+# trigger looks like across the split, and tests override event_type when they want
+# one of the two halves.
 passive_listen_all_channels_condition:
   trigger: passive_listen_all_channels_trigger
   condition_type: slack

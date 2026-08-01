@@ -91,7 +91,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
     SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
   end
 
-  test "skips passive_listen conditions (no single monitored source)" do
+  test "skips every passive-listening condition (no single monitored source)" do
     SlackService.stubs(:configured?).returns(true)
     condition = trigger_conditions(:passive_listen_all_channels_condition)
 
@@ -99,7 +99,10 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
     SlackService.expects(:get_thread_replies).never
     AlertService.expects(:raise_alert).never
 
-    SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
+    %w[passive_listen_thread passive_listen_channel passive_listen].each do |event_type|
+      condition.configuration["event_type"] = event_type
+      SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
+    end
   end
 
   test "ignores thread replies when finding the newest top-level message" do
