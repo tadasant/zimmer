@@ -34,11 +34,10 @@ class ClaudeMcpCredentialWriter
   # a perfectly good token. A freshly-injected credential is invisible until the
   # entry is removed, which is why #clear_needs_auth_cache is part of injecting.
   #
-  # It lives alongside .credentials.json, and the lock file below guards the
-  # read-modify-write of both — all three derive from the credentials directory
+  # It lives alongside .credentials.json, and ClaudeCredentialStore's lock guards
+  # the read-modify-write of both — all three derive from the credentials directory
   # so a test that relocates CLAUDE_CREDENTIALS_PATH relocates the whole set.
   NEEDS_AUTH_CACHE_FILENAME = "mcp-needs-auth-cache.json"
-  CREDENTIAL_STORE_LOCK_FILENAME = ".zimmer-credential-store.lock"
 
   # Persists the resolved credentials to Claude Code's credential stores.
   # On macOS, writes to both the Keychain (primary) and the file (fallback).
@@ -172,33 +171,19 @@ class ClaudeMcpCredentialWriter
 
   # Reads and parses ~/.claude/.credentials.json, or {} if absent/corrupt.
   def read_credentials_from_file
-    return {} unless File.exist?(CLAUDE_CREDENTIALS_PATH)
-
-    JSON.parse(File.read(CLAUDE_CREDENTIALS_PATH))
-  rescue JSON::ParserError => e
-    Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to parse existing credentials: #{e.message}"
-    {}
+    read_json_file(CLAUDE_CREDENTIALS_PATH)
   end
 
   # Parses a JSON file, or returns {} when it is absent or corrupt. A store we
   # cannot read means "nothing recorded", never an error.
   def read_json_file(path)
-    return {} unless File.exist?(path)
-
-    JSON.parse(File.read(path))
-  rescue JSON::ParserError => e
-    Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to parse #{path}: #{e.message}"
-    {}
+    ClaudeCredentialStore.read(path)
   end
 
   # Writes JSON through a temp file + rename so a reader never observes a
-  # half-written store. The temp path is process-unique because the same
-  # host-global path is written by every session on the worker.
+  # half-written store.
   def write_json_atomically(path, data)
-    temp_path = "#{path}.#{Process.pid}.tmp"
-    File.write(temp_path, JSON.pretty_generate(data))
-    File.chmod(0o600, temp_path)
-    File.rename(temp_path, path)
+    ClaudeCredentialStore.write_atomically(path, data)
   end
 
   # The ~/.claude directory that holds the credential file, the needs-auth cache,
@@ -212,20 +197,12 @@ class ClaudeMcpCredentialWriter
     File.join(claude_dir, NEEDS_AUTH_CACHE_FILENAME)
   end
 
-  def credential_store_lock_path
-    File.join(claude_dir, CREDENTIAL_STORE_LOCK_FILENAME)
-  end
-
   # Serializes read-modify-write access to the host-global credential stores
-  # (~/.claude/.credentials.json and the needs-auth cache) across every session
-  # on the worker. A dedicated lock file is used so the lock is never the file
-  # being atomically replaced by rename.
-  def with_credential_store_lock
-    FileUtils.mkdir_p(claude_dir)
-    File.open(credential_store_lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
-      lock.flock(File::LOCK_EX)
-      yield
-    end
+  # (~/.claude/.credentials.json and the needs-auth cache) across every session on
+  # the worker — and against ClaudeAccount#write_credentials_to_filesystem!, which
+  # writes the subscription-token block of the same file under the same lock.
+  def with_credential_store_lock(&block)
+    ClaudeCredentialStore.with_lock(CLAUDE_CREDENTIALS_PATH, &block)
   end
 
   # Converts Claude Code's millisecond-epoch expiresAt to a Time, or nil.
