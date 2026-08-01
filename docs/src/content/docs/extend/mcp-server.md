@@ -197,10 +197,12 @@ interrupt. `action_session` `follow_up` queues the prompt when the session is `r
 straight through when the session is `waiting` or `needs_input`. `force_immediate: true` interrupts
 instead. A `failed` or `archived` session is rejected either way. `manage_enqueued_messages` makes
 the same choice by action name: `create` queues, `send_now` stages and interrupts in one step,
-`interrupt` promotes a message already in the queue. Both tools take an optional `goal` alongside the
-prompt, and it means the same thing on every delivery path: a non-blank goal becomes the session's
-new definition of done, a blank or omitted one leaves the existing goal untouched (use `change_goal`
-to clear one). All three interrupt paths run through
+`interrupt` promotes a message already in the queue. `action_session` `follow_up` takes an optional
+`goal` alongside the prompt, and it means the same thing on all three of its delivery paths: a
+non-blank goal becomes the session's new definition of done, a blank or omitted one leaves the
+existing goal untouched (use `change_goal` to clear one). `manage_enqueued_messages` takes a `goal`
+too, but it is the *message's* goal — `update` with a blank one clears it on the row, and neither it
+nor `create`/`send_now` length-check it before the insert. All three interrupt paths run through
 `Sessions::InterruptService`, the same backend the web UI's "Send Now" button uses, so they inherit
 its per-session advisory lock and exactly-once delivery. An interrupt jumps its own message to the
 front of the queue; the messages still pending keep their order behind it.

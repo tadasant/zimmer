@@ -235,7 +235,7 @@ module Mcp
           # EnqueuedMessageProcessorService apply it on claim. Same rule
           # everywhere: a non-blank goal overwrites, a blank or absent one leaves
           # the session's goal alone (clearing it is the "change_goal" action).
-          if goal.present? && goal != session.goal
+          if goal && goal != session.goal
             session.update!(prompt: prompt, goal: goal)
             session.logs.create!(content: "Goal updated from follow-up", level: "info")
           else

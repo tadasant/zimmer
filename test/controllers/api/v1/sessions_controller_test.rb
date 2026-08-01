@@ -842,6 +842,35 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "new condition", JSON.parse(response.body)["session"]["goal"]
   end
 
+  test "should log a goal change on direct follow-up" do
+    session = sessions(:needs_input)
+    session.update!(goal: "old condition")
+
+    assert_difference -> { session.logs.where(content: "Goal updated from follow-up").count }, 1 do
+      post follow_up_api_v1_session_path(session.id), params: {
+        prompt: "Goal changed",
+        goal: "new condition"
+      }, headers: @headers
+    end
+
+    assert_response :success
+  end
+
+  test "should not log a goal change on direct follow-up when the goal is unchanged" do
+    session = sessions(:needs_input)
+    session.update!(goal: "same goal")
+
+    assert_no_difference -> { session.logs.where(content: "Goal updated from follow-up").count } do
+      post follow_up_api_v1_session_path(session.id), params: {
+        prompt: "Goal unchanged",
+        goal: "same goal"
+      }, headers: @headers
+    end
+
+    assert_response :success
+    assert_equal "same goal", session.reload.goal
+  end
+
   test "should apply goal on direct follow-up to waiting session" do
     session = sessions(:waiting)
 
