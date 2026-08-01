@@ -133,7 +133,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `DELETE` | `/sessions/:id` | → 204 |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}` |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off |
-| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal`, `force_immediate`. 202 if the session is running (queued); 200 otherwise. `goal` only takes effect on the queued paths — see below |
+| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal` (≤50,000), `force_immediate`. 202 if the session is running (queued); 200 otherwise. `goal` takes effect on every path — see below |
 | `POST` | `/sessions/:id/pause` | running only → `needs_input` |
 | `POST` | `/sessions/:id/sleep` | `needs_input` → sleeps; `running` → sets `pending_sleep` |
 | `POST` | `/sessions/:id/restart` | clears stale retry metadata and re-queues the job; re-runs the whole setup pipeline if setup never finished (a failed clone, say) |
@@ -155,13 +155,8 @@ through the same race-free interrupt backend as the web UI's "Send Now" — exac
 FIFO-ordered. When the interrupt can't be dispatched the staged message is discarded rather than
 left half-queued, and the call answers 404, 409, 422, or 500.
 
-:::caution[`goal` on `follow_up` only lands when the message is queued]
-`goal` rides on the enqueued message, and the message processor applies it when it claims one. The
-two paths that queue — a `running` session, or any `force_immediate` — therefore honor it. The
-direct path does not: for a `waiting` or `needs_input` session the controller updates `prompt` and
-spawns the job, and the `goal` you sent is dropped. Use `PATCH /sessions/:id` to set a goal you need
-to stick.
-:::
+`goal` on `follow_up` lands on every path — see
+[Following up, and the `goal` that rides along](#following-up-and-the-goal-that-rides-along) below.
 
 ### Creating a session
 
@@ -208,6 +203,32 @@ Valid models are a property of the runtime, not the root (`ModelCatalog::MODELS`
 
 `PATCH /sessions/:id/model` validates against the list for the session's own runtime; anything else
 → `422 {"error": "Invalid model"}` with a message naming the valid ones.
+
+### Following up, and the `goal` that rides along
+
+`POST /sessions/:id/follow_up` has three delivery paths, and which one a request takes depends on
+the session's status at the moment it arrives:
+
+| Session status | What happens | Response |
+| --- | --- | --- |
+| `waiting` / `needs_input` | prompt is written to the session and `AgentSessionJob` is enqueued | 200 |
+| `running` | prompt becomes a pending `EnqueuedMessage`, delivered when the turn ends | 202 |
+| any of the three, with `force_immediate: true` | staged as an `EnqueuedMessage` and delivered through `Sessions::InterruptService`, terminating the running turn | 200 |
+
+`goal` behaves identically on all three: **a non-blank goal is applied to the session, a blank or
+omitted one leaves the session's existing goal alone.** The queued and interrupted paths carry it on
+the `EnqueuedMessage` and `EnqueuedMessageProcessorService` applies it when it claims the message;
+the direct path writes it alongside the prompt. A goal over `GOAL_MAX_LENGTH` (50,000) is rejected
+with a 422 before anything is delivered, on every path.
+
+There is no way to *clear* a goal through `follow_up` — a blank one means "leave it", not "remove
+it". Use `PATCH /sessions/:id` with `goal: ""` for that. (The HTML endpoint behind the web follow-up
+form reads a blank goal as a clear and an *absent* one as "leave it", a distinction the JSON API does
+not draw. Nothing in the shipped UI sends the key either way; see
+[the limitations page](/limitations/#a-follow-up-goal-can-set-but-never-clear).)
+
+The MCP `action_session` tool's `follow_up` action takes the same `goal` parameter with the same
+semantics.
 
 ### `session_json`
 

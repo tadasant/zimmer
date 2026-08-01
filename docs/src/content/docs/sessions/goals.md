@@ -85,7 +85,12 @@ Precedence, in order:
 3. Nothing — the column is nullable, and the goal suffix is simply not appended.
 
 It can be changed after the fact: `PATCH /api/v1/sessions/:id` accepts `goal`, and a follow-up
-prompt can carry a new one.
+prompt can carry a new one — through `POST /api/v1/sessions/:id/follow_up`, the MCP `action_session`
+`follow_up` action, or the enqueued-message editor, the one web surface with a goal field on a
+message. A follow-up goal is applied whether the prompt is sent straight through, queued behind a
+running turn, or interrupted in; a blank one preserves the goal the session already has rather than
+clearing it (see
+[the REST API reference](/extend/rest-api/#following-up-and-the-goal-that-rides-along)).
 
 The column is validated on length only (`GOAL_MAX_LENGTH`). Any string is a legal goal.
 Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
@@ -102,7 +107,9 @@ messages, because resuming those would spawn a second process against the same c
 :::note[The sweep's own code flags a duplication]
 `HeartbeatSweepJob`'s comment: *"That 4-line sequence is duplicated across several callers — a
 future refactor could extract a shared `Session#deliver_follow_up!`."* The
-follow-up-delivery logic exists in at least three places.
+follow-up-delivery logic exists in at least three places. So does the rule for applying a follow-up
+goal, which now has four copies — the two API controllers, the MCP tool, and
+`EnqueuedMessageProcessorService` — each writing its own wording of the same log line.
 Tracked in [#105](https://github.com/tadasant/zimmer/issues/105).
 :::
 
