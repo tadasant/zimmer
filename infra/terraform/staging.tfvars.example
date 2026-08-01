@@ -11,8 +11,9 @@ droplet_size         = "s-2vcpu-4gb"
 ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: this argument is
 # ForceNew on the droplet, so adding one here makes the deploy workflow's auto-approved
 # `terraform apply` destroy and recreate the box without reaping the tailnet node. Authorize
-# operator keys through admin_ssh_pubkeys below instead -- it rides cloud-init, which is under
-# `ignore_changes`, so it can never force-replace the droplet.
+# operator keys through admin_ssh_pubkeys instead -- the ADMIN_SSH_PUBKEYS Actions variable,
+# see below -- because it rides cloud-init, which is under `ignore_changes`, so it can never
+# force-replace the droplet.
 
 # Admin/tooling SSH public keys authorized for root, on top of the Kamal deploy key.
 # cloud-init appends them to /root/.ssh/authorized_keys, and they are reachable ONLY over
