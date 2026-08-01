@@ -1230,11 +1230,11 @@ Also:
   `RESET_TIME = 60`), with no banner telling you.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 - Push notifications don't work on anything without the Push API (iOS Safari outside standalone PWA).
-- The OAuth login poller still gives up after 10 consecutive failed polls, but those 10 attempts now
-  back off (2s, 4s, 8s, 16s, then 30s each) and so span about three minutes rather than twenty
-  seconds. A deploy or a wifi handover no longer abandons a login that would have completed; an
-  outage longer than three minutes still does, and you have to start over. The panel says so rather
-  than freezing on its last frame. ([#101](https://github.com/tadasant/zimmer/issues/101))
+- The OAuth login poller gives up after 10 consecutive failed polls. Those 10 attempts back off (2s,
+  4s, 8s, 16s, then 30s each) and so span about three minutes, which covers a deploy or a wifi
+  handover — but an outage longer than that abandons the login and you have to start over. The panel
+  says so rather than freezing on its last frame.
+  ([#101](https://github.com/tadasant/zimmer/issues/101))
 - A UI login whose job never dequeued — a dead or badly backed-up worker, so the CLI was never
   spawned and no heartbeat was ever stamped — has no liveness signal to go stale, and waits out the
   full 14-minute `expires_at` window before the panel reports anything. Attempts created before the
