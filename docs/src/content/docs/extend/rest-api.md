@@ -96,8 +96,9 @@ await fetch(`${BASE_URL}/sessions/${session.id}/follow_up`, {
 
 ## Pagination
 
-List endpoints take `page` and `per_page` (default 25, max 100) and answer with a `pagination` object
-alongside the collection:
+Most list endpoints take `page` and `per_page` (default 25, max 100) and answer with a `pagination`
+object alongside the collection. `GET /categories` is the exception — it ignores both and returns
+every category.
 
 ```jsonc
 {
@@ -132,7 +133,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `DELETE` | `/sessions/:id` | → 204 |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}` |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off |
-| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal`, `force_immediate`. 202 if the session is running (queued); 200 otherwise. An omitted or empty `goal` keeps the session's existing one — clear it with `PATCH /sessions/:id` |
+| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal`, `force_immediate`. 202 if the session is running (queued); 200 otherwise. `goal` only takes effect on the queued paths — see below |
 | `POST` | `/sessions/:id/pause` | running only → `needs_input` |
 | `POST` | `/sessions/:id/sleep` | `needs_input` → sleeps; `running` → sets `pending_sleep` |
 | `POST` | `/sessions/:id/restart` | clears stale retry metadata and re-queues the job; re-runs the whole setup pipeline if setup never finished (a failed clone, say) |
@@ -154,12 +155,25 @@ through the same race-free interrupt backend as the web UI's "Send Now" — exac
 FIFO-ordered. When the interrupt can't be dispatched the staged message is discarded rather than
 left half-queued, and the call answers 404, 409, 422, or 500.
 
+:::caution[`goal` on `follow_up` only lands when the message is queued]
+`goal` rides on the enqueued message, and the message processor applies it when it claims one. The
+two paths that queue — a `running` session, or any `force_immediate` — therefore honor it. The
+direct path does not: for a `waiting` or `needs_input` session the controller updates `prompt` and
+spawns the job, and the `goal` you sent is dropped. Use `PATCH /sessions/:id` to set a goal you need
+to stick.
+:::
+
 ### Creating a session
 
 Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
 `title`, `slug`, `goal`, `execution_provider`, `is_autonomous`, `parent_session_id`,
 `auto_compact_window`, `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`, `catalog_plugins[]`,
 `config{}`, `custom_metadata{}`.
+
+`execution_provider` is `local_filesystem` or `remote_sandbox` — the second one is
+[a stub](/limitations/), so `local_filesystem` is the only value that runs anything. `branch`
+defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents` default to
+false wherever they appear.
 
 `agent_root` is not a Session column — it names a catalog entry that expands into `git_root`,
 `branch`, `subdirectory` and the catalog defaults, and is recorded as `metadata.agent_root_key`. An
@@ -210,7 +224,7 @@ Every response with a `session` key renders it through the same serializer
 (`ApiSessionSerialization`), including `POST /enqueued_messages/:id/interrupt` — `session` means one
 shape everywhere on the surface.
 
-Three of those fields are easy to misread:
+Five of those fields are easy to misread:
 
 - **`all_mcp_servers` is the effective set** — selected + plugin-bundled + auto-injected. Read this
   one to learn what a session actually has wired.
@@ -218,6 +232,12 @@ Three of those fields are easy to misread:
   subagent roots). A strict subset, and not evidence of what is available.
 - **`is_autonomous`** governs whether the session fires broadcast (unscoped) event triggers. It
   defaults to true; set it false for user-driven sessions that shouldn't trip global automation.
+- **`category` is a four-key summary**, not the category resource below: `{id, name, position,
+  is_frozen}`, or `null` when the session is Uncategorized.
+- **`metadata` is Zimmer's own bookkeeping** — `clone_path`, `exit_status`, `agent_root_key`, and
+  friends. `custom_metadata` is the one you own.
+
+`heartbeat_enabled` defaults to false.
 
 ## Triggers
 
@@ -316,11 +336,11 @@ curl -X POST "$BASE_URL/categories/reorder" \
 | Resource | Endpoints |
 | --- | --- |
 | **Logs** | Full CRUD at `/sessions/:session_id/logs[/:id]`. `content` and `level` are required on create; `level` ∈ `info · error · debug · warning · verbose`, and doubles as the index filter |
-| **Subagent transcripts** | Full CRUD at `/sessions/:session_id/subagent_transcripts[/:id]`. `agent_id` required on create; index filters on `status` and `subagent_type`; `include_transcript=true` on show returns the full JSONL |
-| **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt`. `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent`. Deleting one re-numbers the positions behind it |
+| **Subagent transcripts** | Full CRUD at `/sessions/:session_id/subagent_transcripts[/:id]`. `agent_id` required on create; `PATCH` takes every field but `id` and `session_id`; index filters on `status` and `subagent_type`; `include_transcript=true` on show returns the full JSONL |
+| **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent`. Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status` |
-| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, goals}` · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
+| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
 
 One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{name, description}]}`,
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind
@@ -363,8 +383,6 @@ oversized search `q`.
 
 ## Keeping this page honest
 
-This is the only reference for the REST API. Zimmer used to render a second one in the app itself at
-`/api_docs`, kept in sync by hand; it drifted, and it is gone.
-
-There is no generated OpenAPI spec. If you change a route, change this page in the same PR —
-`app/controllers/api/AGENTS.md` says so, and there is one page to change.
+There is no second copy of this reference and no generated OpenAPI spec. If you change a route,
+change this page in the same PR — `app/controllers/api/AGENTS.md` says so, and this is the one page
+to change.
