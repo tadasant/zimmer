@@ -331,8 +331,8 @@ class Session < ApplicationRecord
 
   # The directory the runtime CLI is (or was) spawned in: the recorded working
   # directory, which is the clone root for a session without an agent root and a
-  # subdirectory of it for one with. Falls back to the clone root for rows written
-  # before a working directory was recorded.
+  # subdirectory of it for one with. A session that has a clone but has not been
+  # spawned in yet records only the clone root, which is the correct answer for it.
   #
   # @return [String, nil] nil until the session establishes a clone
   def working_directory

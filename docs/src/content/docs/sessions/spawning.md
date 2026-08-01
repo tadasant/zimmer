@@ -31,7 +31,16 @@ codex exec --json --dangerously-bypass-approvals-and-sandbox \
 
 Both are spawned with `pgroup: true` (so the whole process group can be killed as a unit),
 stdin and stdout to `/dev/null`, and stderr to `claude_stderr.log` / `codex_stderr.log` inside
-the clone.
+the **working directory** — which is the clone root for a session without an agent root, and the
+agent root's subdirectory for one with.
+
+That distinction matters beyond spawn time. Everything that reconnects to a running process it
+did not spawn — a job resuming monitoring, `ProcessLifecycleManager` after a recovery spawn, the
+interrupt and terminate paths — has to rebuild this path, and both context-length recovery and
+failed-resume recovery are *detected* by reading the log. Rebuild it from the clone root, or with
+the wrong runtime's filename, and those recoveries quietly stop firing. So there is exactly one
+way to ask: `Session#stderr_log_path`, which resolves the working directory and gets the filename
+from the session's own adapter class (`RuntimeCliAdapter.stderr_log_filename`).
 
 ### Why those tools are disallowed
 

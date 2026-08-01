@@ -24,7 +24,6 @@ class SessionTest < ActiveSupport::TestCase
     assert_match(/status.+NOT IN \(3, 4\)/, Session.with_github_prs.to_sql)
   end
 
-
   # ===========================================================================
   # #stderr_log_path / #working_directory (#187)
   # ===========================================================================
