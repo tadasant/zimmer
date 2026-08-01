@@ -23,7 +23,9 @@ class NativeClaudePrintRunner
   # How long to poll for the child after each signal before escalating, and how
   # often to poll while doing so. The teardown reap runs after the run's own
   # Timeout budget is already spent, so it carries this bound of its own: a
-  # child that ignores SIGTERM costs the caller at most 2 * REAP_WINDOW.
+  # child that answers neither signal costs the caller at most
+  # 2 * (REAP_WINDOW + REAP_POLL_INTERVAL), since each window always makes one
+  # final poll after its deadline passes.
   REAP_WINDOW = 1.0
   REAP_POLL_INTERVAL = 0.02
 
@@ -103,6 +105,11 @@ class NativeClaudePrintRunner
   def terminate_process(pid)
     return unless pid
 
+    # Timeout delivers its exception at the next safe point, which can be after
+    # the blocking wait already collected the child. Check before signalling so
+    # we never fire at a pid we no longer own.
+    return if collected?(pid)
+
     signal(pid, "TERM")
     return if reap(pid)
 
@@ -112,32 +119,44 @@ class NativeClaudePrintRunner
     @logger.warn "[NativeClaudePrintRunner] process #{pid} still not collected after SIGKILL; " \
       "leaving it to ZombieReaperJob"
   rescue => e
+    # Teardown failure must not replace the Timeout::Error the caller is waiting
+    # for: HeadlessInferenceService distinguishes a timeout from a generic
+    # failure by class.
     @logger.warn "[NativeClaudePrintRunner] failed to terminate process #{pid}: #{e.message}"
   end
 
-  # Send a signal, tolerating a child that has already exited. ESRCH means the
-  # pid is gone entirely (a zombie still accepts signals), so there is nothing
-  # left to reap — but the caller polls anyway, which is harmless and keeps the
-  # ECHILD/"already reaped elsewhere" case on one path.
+  # Send a signal, tolerating the two ways it can fail on a child we still want
+  # to collect: ESRCH (the pid is gone entirely — a zombie still accepts
+  # signals) and EPERM. Either way the reap that follows is still worth doing.
   def signal(pid, name)
     @process_manager.kill(name, pid)
   rescue Errno::ESRCH
     # Process already terminated.
+  rescue Errno::EPERM => e
+    @logger.warn "[NativeClaudePrintRunner] cannot send SIG#{name} to process #{pid}: #{e.message}"
   end
 
   # Poll for the child with WNOHANG until it is collected or @reap_window expires.
   #
-  # @return [Boolean] true once the child has been collected (or was collected
-  #   by someone else — ZombieReaperJob's blanket `waitpid(-1)` races us here)
+  # @return [Boolean] true once the child has been collected
   def reap(pid)
     deadline = monotonic_now + @reap_window
 
     loop do
-      return true if @process_manager.wait(pid, Process::WNOHANG)
+      return true if collected?(pid)
       return false if monotonic_now >= deadline
 
       sleep @reap_poll_interval
     end
+  end
+
+  # One non-blocking wait.
+  #
+  # @return [Boolean] true if the child has been collected — by us, or by
+  #   someone else: ZombieReaperJob's blanket `waitpid(-1)` races us here, and
+  #   its win reaches us as ECHILD.
+  def collected?(pid)
+    !@process_manager.wait(pid, Process::WNOHANG).nil?
   rescue Errno::ECHILD
     true
   end
