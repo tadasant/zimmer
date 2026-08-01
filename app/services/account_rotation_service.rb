@@ -108,8 +108,14 @@ class AccountRotationService
       # the resulting pool state to decide whether a parked session should be
       # told "wait for reset" or "re-authenticate". Overwriting needs_reauth
       # here would make an unusable pool look like a merely throttled one.
+      #
+      # The snapshot above can already have done this: a reading that shows the
+      # weekly window spent marks the account as it lands. Marking twice would
+      # count the same wall as two quota hits on the page.
       if current.needs_reauth?
         @logger.info("Rotating away from account already marked needs_reauth", email: current.email)
+      elsif current.quota_exceeded?
+        @logger.info("Account was already marked quota_exceeded by its own quota reading", email: current.email)
       else
         current.mark_quota_exceeded!
         @logger.info("Marked account as quota_exceeded", email: current.email)
@@ -196,7 +202,7 @@ class AccountRotationService
     current = ClaudeAccount.current_account
 
     if current&.active? && current&.has_valid_config?
-      if config_file_matches?(current)
+      if config_file_matches?(current) || adopt_own_filesystem_identity(current)
         # The container-local identity file agrees this is the current account,
         # so it owns the shared credentials. Bootstrap the shared owner marker if
         # it's missing (the post-deploy transition window) so the marker-gated
@@ -235,11 +241,11 @@ class AccountRotationService
       return current
     end
 
-    # Pick the first available account
-    account = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).first
+    # Pick the first available account whose credentials we can prove work
+    account = first_usable_available_account
 
     unless account
-      # No current and no available. The usual cause is DB records were
+      # No current and nothing usable. The usual cause is DB records were
       # added via `claude_accounts:add` but `capture_tokens` was skipped,
       # so every account has an empty oauth_config. If the filesystem
       # holds freshly-minted tokens from a recent `claude /login`, adopt
@@ -247,13 +253,18 @@ class AccountRotationService
       bootstrapped = ClaudeAccount.sync_from_filesystem!
       if bootstrapped&.has_valid_config?
         @logger.info("Bootstrapped account from filesystem", email: bootstrapped.email)
-        account = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).first
+        account = first_usable_available_account
       end
       return nil unless account
     end
 
-    # Refresh if needed before writing config
-    ensure_fresh_tokens!(account)
+    # Capture whoever owns the credentials on disk before overwriting them. This
+    # path is reached whenever the current account stops being `active` — which a
+    # quota reading can do without any rotation running — and without the capture
+    # it drops any refresh token the CLI rotated for that account, bricking it the
+    # next time the pool selects it. Same guarantee #activate! gives the other
+    # activation paths.
+    capture_outgoing_filesystem_tokens(except: account)
 
     # Write config to filesystem BEFORE marking current in the DB
     write_config!(account)
@@ -360,6 +371,17 @@ class AccountRotationService
       return { success: false, reason: "no_available_accounts" }
     end
 
+    # An account whose latest reading says its weekly allowance is spent cannot
+    # serve the session we are rotating for. QuotaSnapshotService marks such an
+    # account as each reading lands, so `available` normally excludes it already;
+    # this catches the account whose evidence predates that marking, and marks it
+    # so the pool stops offering it until QuotaResetCheckerJob restores it (#248).
+    if quota_capped?(next_account)
+      @logger.warn("Account's 7-day window is spent, skipping during rotation", email: next_account.email)
+      next_account.mark_quota_exceeded!
+      return activate_next_account(exclude_ids: exclude_ids + [ next_account.id ])
+    end
+
     # Validate the account's tokens by calling refresh_token! before writing
     # them to the filesystem. The previous date-only check (token_expired?
     # / token_expiring_soon?) lets through bogus credentials with sentinel
@@ -380,8 +402,116 @@ class AccountRotationService
 
     activate!(next_account, snapshot_trigger: "rotation")
 
+    # The snapshot activate! just took is a live reading, and it may be the first
+    # evidence anyone has that this account's week is gone — in which case it has
+    # already been marked. Handing the session an account the pool declared
+    # unusable one line earlier would waste the rotation; move on to the next.
+    unless next_account.reload.active?
+      @logger.warn("Incoming account's fresh quota reading condemned it, rotating on",
+        email: next_account.email, status: next_account.status)
+      return activate_next_account(exclude_ids: exclude_ids + [ next_account.id ])
+    end
+
     @logger.info("Rotated to account", email: next_account.email, priority: next_account.priority)
     { success: true, account: next_account }
+  end
+
+  # The first available account we can prove a session could actually use, or nil
+  # when the pool has none.
+  #
+  # Bootstrap is the path that picks an identity when nothing is current, and it
+  # validates like the other three (rotation, manual switch, filesystem adoption)
+  # rather than taking `available.first` on faith. #ensure_fresh_tokens! swallows
+  # its own failure by design, so an unvalidated pick let an account with a dead
+  # refresh token become current and every session on the instance fail to
+  # authenticate until a human intervened (#239).
+  def first_usable_available_account
+    ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).find do |account|
+      if quota_capped?(account)
+        @logger.warn("Account's 7-day window is spent, skipping during bootstrap", email: account.email)
+        account.mark_quota_exceeded!
+        next false
+      end
+
+      usable_candidate?(account)
+    end
+  end
+
+  # Probe one candidate and decide whether a session can be handed to it.
+  #
+  # The probe is QuotaCheckService's rather than refresh_token!'s precisely
+  # because this runs over candidates we may not end up using: a refresh spends a
+  # SINGLE-USE token, and spending one per candidate is how a healthy pool drains
+  # itself (#242). Reading the rate-limit headers off a one-token request costs
+  # nothing and cannot invalidate anything — so a healthy candidate is never
+  # refreshed here, and only a candidate Anthropic actually refused is, since a
+  # stale access token is the one refusal a refresh can fix.
+  #
+  # The reading is not thrown away. A successful probe carries this account's live
+  # quota state, which is exactly the evidence rotation lacks for an account that
+  # has never been current (#248), so it is recorded — and recording it is what
+  # marks the account when its weekly window turns out to be spent.
+  #
+  # A probe that never reached Anthropic is not a verdict on the credential, and
+  # the candidate is promoted unvalidated. Reading a provider outage as "every
+  # account is dead" would park every session on the instance at once.
+  def usable_candidate?(account)
+    result = QuotaCheckService.check_with_token(access_token_for(account))
+
+    if !result.success? && !result.unreachable? && account.can_refresh_token?
+      @logger.info("Candidate's token was refused, refreshing before deciding", email: account.email)
+      account.refresh_token!
+      account.reload
+      result = QuotaCheckService.check_with_token(access_token_for(account))
+    end
+
+    if result.success?
+      snapshot = QuotaSnapshotService.save_snapshot(account, result, trigger: "bootstrap")
+      return true unless snapshot.seven_day_window_spent?
+
+      @logger.warn("Candidate's live reading shows its 7-day window is spent, skipping during bootstrap",
+        email: account.email)
+      return false
+    end
+
+    if result.unreachable?
+      @logger.warn("Could not reach Anthropic to validate the candidate, promoting it unvalidated",
+        email: account.email, error: result.error_message)
+      return true
+    end
+
+    @logger.warn("Candidate's tokens were rejected by Anthropic, skipping during bootstrap",
+      email: account.email, error: result.error_message)
+    false
+  end
+
+  # True when the account's most recent quota reading says its weekly allowance is
+  # gone. No snapshot means no evidence, which is not the same as bad evidence —
+  # an account nobody has probed yet stays eligible.
+  def quota_capped?(account)
+    snapshot = account.latest_snapshot
+    !snapshot.nil? && snapshot.seven_day_window_spent?
+  end
+
+  # The OAuth access token this account would present, from its DB copy.
+  def access_token_for(account)
+    account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+  end
+
+  # Adopt the on-disk ~/.claude.json identity into the account's stored config
+  # when the file already names this account, and report whether that happened.
+  #
+  # This is the converge step #config_file_matches? needs now that it fails closed
+  # (#61): an account holding credentials but no stored identity — a fresh install,
+  # or a row bootstrapped from credentials alone — can never satisfy the check, so
+  # without this every session start would take the mismatch branch, rewrite the
+  # filesystem, and arrive at the same unverifiable state next time. Adopting the
+  # identity that is already on disk makes the check answerable from then on.
+  def adopt_own_filesystem_identity(account)
+    return false unless account.backfill_identity_from_filesystem!
+
+    @logger.info("Adopted the on-disk identity into the stored config", email: account.email)
+    true
   end
 
   # Write the shared owner marker for an account only if no marker exists yet.
@@ -460,7 +590,7 @@ class AccountRotationService
 
   # Take a quota snapshot for an account using its DB-stored OAuth token
   def take_snapshot(account, trigger:)
-    token = account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+    token = access_token_for(account)
     return unless token.present?
 
     result = QuotaCheckService.check_with_token(token)
@@ -504,16 +634,27 @@ class AccountRotationService
     nil
   end
 
-  # Check if the current ~/.claude.json matches the account's stored config
+  # Check if the current ~/.claude.json matches the account's stored config.
+  #
+  # Fails closed: a missing stored identity is a mismatch, not "can't verify,
+  # assume ok" (#61). Answering ok is the one thing a safety check must not do
+  # when it cannot verify — both callers use this to decide whether the filesystem
+  # can be left alone, and an account with no stored identity is exactly the case
+  # where the credentials on disk could belong to anyone.
+  #
+  # A mismatch is not a dead end for either caller. #ensure_active_account! first
+  # tries to adopt the on-disk identity when it already names this account
+  # (#adopt_own_filesystem_identity), which converges the unverifiable case
+  # instead of repeating it, and otherwise writes the DB-current account to disk;
+  # #reconcile_with_filesystem! goes on to its own adoption gates.
   def config_file_matches?(account)
     return false unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 
-    current_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-    stored_config = account.oauth_config.fetch("claude_json", {})
-    return true if stored_config.blank? # Can't verify, assume ok
+    stored_email = ClaudeAccount.extract_oauth_email(account.oauth_config&.dig("claude_json", "oauthAccount"))
+    return false if stored_email.blank?
 
-    ClaudeAccount.extract_oauth_email(current_config["oauthAccount"]) ==
-      ClaudeAccount.extract_oauth_email(stored_config["oauthAccount"])
+    current_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
+    ClaudeAccount.extract_oauth_email(current_config["oauthAccount"]) == stored_email
   rescue JSON::ParserError, Errno::ENOENT
     false
   end

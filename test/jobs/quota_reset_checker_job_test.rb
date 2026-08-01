@@ -170,6 +170,55 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     assert_not QuotaResetCheckerJob.window_clear?(snapshot)
   end
 
+  test "window_clear? is false while the API is still rejecting for the week" do
+    # The healer and the marker must read the same evidence. Restoring an account
+    # the API is rejecting puts it straight back in front of rotation, which hands
+    # it to the next session (#248) — and the marker would exceed it again on the
+    # next reading, flipping the account on every sweep.
+    snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
+    snapshot.update!(
+      reset_5h: 1.hour.ago,
+      reset_7d: 2.days.from_now,
+      utilization_5h: 0.1,
+      utilization_7d: 0.9,
+      status_7d: "rejected"
+    )
+
+    assert_not QuotaResetCheckerJob.window_clear?(snapshot)
+  end
+
+  test "window_clear? is true once the rejecting weekly window has reset" do
+    snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
+    snapshot.update!(
+      reset_5h: 1.hour.ago,
+      reset_7d: 1.minute.ago,
+      utilization_5h: 1.0,
+      utilization_7d: 1.0,
+      status_7d: "rejected"
+    )
+
+    assert QuotaResetCheckerJob.window_clear?(snapshot)
+  end
+
+  test "a rejecting weekly window keeps the account out of the pool across a sweep" do
+    account = claude_accounts(:exceeded)
+    snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
+    snapshot.update!(reset_5h: 1.hour.ago, reset_7d: 2.days.from_now,
+      utilization_5h: 0.1, utilization_7d: 0.9, status_7d: "rejected")
+    # The fresh probe reports the same shape the stale snapshot did.
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(
+        success: true, utilization_5h: 0.1, utilization_7d: 0.9,
+        status_5h: "allowed", status_7d: "rejected",
+        reset_5h: 1.hour.from_now, reset_7d: 2.days.from_now
+      )
+    )
+
+    QuotaResetCheckerJob.perform_now
+
+    assert account.reload.quota_exceeded?
+  end
+
   # Fresh snapshot fetching tests
 
   test "fetches fresh snapshot via OAuth token and restores account" do

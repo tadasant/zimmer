@@ -71,6 +71,71 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
       JSON.generate(new_account.oauth_config.fetch("credentials_json", {})))
   end
 
+  # A quota reading from a healthy account — what the setup stub returns.
+  def healthy_probe
+    QuotaCheckService::Result.new(
+      success: true, subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 0.5, utilization_7d: 0.3, status_5h: "allowed", status_7d: "allowed",
+      reset_5h: 3.hours.from_now, reset_7d: 5.days.from_now
+    )
+  end
+
+  # Anthropic answering and refusing the token: a reachable API, no rate-limit
+  # headers. This is the only shape that condemns a credential.
+  def rejected_probe
+    QuotaCheckService::Result.new(
+      success: false, unreachable: false,
+      error_message: "No rate-limit headers in response (HTTP 401). Token may be expired or invalid."
+    )
+  end
+
+  def reject_token(account)
+    QuotaCheckService.stubs(:check_with_token).returns(healthy_probe)
+    QuotaCheckService.stubs(:check_with_token)
+      .with(account.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken"))
+      .returns(rejected_probe)
+  end
+
+  # A successful OAuth refresh returning a named token pair.
+  def refresh_response(access_token)
+    response = Net::HTTPSuccess.new("1.1", "200", "OK")
+    response.stubs(:code).returns("200")
+    response.stubs(:body).returns({
+      access_token: access_token, refresh_token: "#{access_token}-refresh", expires_in: 3600
+    }.to_json)
+    response
+  end
+
+  # Make every OAuth refresh fail with the given code. 503 is transient, so
+  # refresh_token! returns false without marking the account needs_reauth.
+  def fail_refresh_with(code)
+    response = Net::HTTPServiceUnavailable.new("1.1", code.to_s, "Service Unavailable")
+    response.stubs(:code).returns(code.to_s)
+    response.stubs(:body).returns("Service Unavailable")
+    Net::HTTP.any_instance.stubs(:request).returns(response)
+  end
+
+  # A reading whose 7-day window is spent: the API rejecting for the week, with
+  # the reset still ahead.
+  def capped_result(reset_7d: 2.days.from_now)
+    QuotaCheckService::Result.new(
+      success: true, utilization_5h: 0.29, utilization_7d: 1.0,
+      status_5h: "allowed", status_7d: "rejected",
+      reset_5h: 1.hour.from_now, reset_7d: reset_7d
+    )
+  end
+
+  # Record that reading against an account WITHOUT letting the ingestion marking
+  # fire, so the test exercises rotation's own pick-time check on evidence that
+  # predates the marking (the real "snapshot taken before this shipped" case).
+  def capped_snapshot(account, reset_7d: 2.days.from_now)
+    account.quota_snapshots.create!(
+      utilization_5h: 0.29, utilization_7d: 1.0,
+      status_5h: "allowed", status_7d: "rejected",
+      reset_5h: 1.hour.from_now, reset_7d: reset_7d, trigger: "page_view"
+    )
+  end
+
   test "activate! writes config to filesystem, marks current, and takes a snapshot" do
     secondary = claude_accounts(:secondary)
     initial_snapshot_count = secondary.quota_snapshots.count
@@ -770,6 +835,283 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     @service.ensure_active_account!
 
     assert_equal primary.email, ClaudeAccount.credentials_owner_email
+  end
+
+  # ── #248: rotation must not hand out an account already known to be capped ──
+
+  test "rotate! skips a candidate whose 7-day window is spent and marks it exceeded" do
+    secondary = claude_accounts(:secondary)
+    tertiary = claude_accounts(:tertiary)
+    capped_snapshot(secondary)
+
+    result = @service.rotate!
+
+    assert result[:success]
+    assert_equal tertiary, result[:account], "rotation must skip the account whose week is spent"
+    assert secondary.reload.quota_exceeded?, "the skipped account must leave the available pool"
+    assert_not secondary.is_current?
+  end
+
+  test "rotate! still picks a candidate whose spent window has since reset" do
+    secondary = claude_accounts(:secondary)
+    # Rejected on the 7-day window, but that window's reset time has passed — the
+    # sliding window has cleared, so the reading no longer says anything.
+    capped_snapshot(secondary, reset_7d: 1.minute.ago)
+
+    result = @service.rotate!
+
+    assert result[:success]
+    assert_equal secondary, result[:account]
+    assert secondary.reload.active?
+  end
+
+  test "rotate! reports no_available_accounts when every candidate is capped" do
+    ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).each do |account|
+      capped_snapshot(account) unless account.is_current?
+    end
+
+    result = @service.rotate!
+
+    assert_not result[:success]
+    assert_equal "no_available_accounts", result[:reason]
+  end
+
+  test "a snapshot showing a spent week takes the account out of the pool as it lands" do
+    secondary = claude_accounts(:secondary)
+
+    QuotaSnapshotService.save_snapshot(secondary, capped_result, trigger: "page_view")
+
+    assert secondary.reload.quota_exceeded?
+    assert_not_includes ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME), secondary
+  end
+
+  # ── #239: bootstrap must validate before promoting ─────────────────
+
+  test "ensure_active_account! skips an account whose token Anthropic rejects" do
+    ClaudeAccount.update_all(is_current: false)
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+
+    reject_token(primary)
+    # The refresh a refusal triggers fails too (503 is transient, so it does not
+    # condemn the account) — the #239 case is a candidate that stays unusable.
+    fail_refresh_with(503)
+
+    result = @service.ensure_active_account!
+
+    assert_equal secondary, result, "the first available account's token was rejected, so it must be skipped"
+    assert secondary.reload.is_current?
+    assert_not primary.reload.is_current?
+  end
+
+  test "ensure_active_account! does not refresh a candidate whose token already works" do
+    # The probe is non-consuming; a refresh spends a single-use token, and
+    # spending one per candidate is what drained the pool in #242.
+    ClaudeAccount.update_all(is_current: false)
+    Net::HTTP.any_instance.expects(:request).never
+
+    assert_equal claude_accounts(:primary), @service.ensure_active_account!
+  end
+
+  test "ensure_active_account! records the candidate's live reading" do
+    # The probe already carries this account's quota state — throwing it away
+    # would leave rotation with no evidence about an account never made current.
+    ClaudeAccount.update_all(is_current: false)
+    primary = claude_accounts(:primary)
+
+    assert_difference -> { primary.quota_snapshots.count }, 1 do
+      assert_equal primary, @service.ensure_active_account!
+    end
+    assert_equal "bootstrap", primary.latest_snapshot.trigger
+  end
+
+  test "ensure_active_account! skips a candidate whose live reading shows a spent week" do
+    # No stored snapshot, so the stale-evidence check cannot see this — only the
+    # live probe can.
+    ClaudeAccount.update_all(is_current: false)
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+    QuotaCheckService.stubs(:check_with_token).returns(healthy_probe)
+    QuotaCheckService.stubs(:check_with_token)
+      .with(primary.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken"))
+      .returns(capped_result)
+
+    result = @service.ensure_active_account!
+
+    assert_equal secondary, result
+    assert primary.reload.quota_exceeded?, "the live reading must take the capped account out of the pool"
+  end
+
+  test "ensure_active_account! captures the outgoing owner's tokens before overwriting them" do
+    # Reachable without any rotation: a quota reading can take the current account
+    # out of `active`, and the next spawn bootstraps over the shared credentials.
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+    cli_rotated = { "claudeAiOauth" => {
+      "accessToken" => "primary-cli-rotated", "refreshToken" => "primary-cli-rotated-refresh",
+      "expiresAt" => ((Time.current + 1.hour).to_f * 1000).to_i
+    } }
+    FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
+    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(cli_rotated))
+    ClaudeAccount.write_credentials_owner_marker!(primary.email)
+    primary.update!(status: :quota_exceeded)
+
+    result = @service.ensure_active_account!
+
+    assert_equal secondary, result
+    assert_equal "primary-cli-rotated",
+      primary.reload.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken"),
+      "the outgoing owner's CLI-rotated tokens must be captured before write_config! clobbers them"
+  end
+
+  test "rotate! counts one quota hit per rotation even when the snapshot marks the account" do
+    primary = claude_accounts(:primary)
+    QuotaCheckService.stubs(:check_with_token).returns(healthy_probe)
+    QuotaCheckService.stubs(:check_with_token)
+      .with(primary.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken"))
+      .returns(capped_result)
+    hits_before = primary.quota_hit_count
+
+    @service.rotate!
+
+    assert_equal hits_before + 1, primary.reload.quota_hit_count
+    assert primary.quota_exceeded?
+  end
+
+  test "rotate! rotates on when the incoming account's fresh reading condemns it" do
+    secondary = claude_accounts(:secondary)
+    tertiary = claude_accounts(:tertiary)
+    # Rotation validates by refreshing, so the snapshot that follows reads the
+    # POST-refresh token — give secondary's refresh a distinguishable one and cap
+    # that. Every other account keeps the setup's generic refresh.
+    Net::HTTP.any_instance.stubs(:request)
+      .with { |req| req.body.to_s.include?("test_refresh_token_2") }
+      .returns(refresh_response("secondary-rotated-token"))
+    QuotaCheckService.stubs(:check_with_token).returns(healthy_probe)
+    QuotaCheckService.stubs(:check_with_token).with("secondary-rotated-token").returns(capped_result)
+
+    result = @service.rotate!
+
+    assert result[:success]
+    assert_equal tertiary, result[:account],
+      "an account the activation snapshot just condemned must not be handed to the session"
+    assert secondary.reload.quota_exceeded?
+    assert tertiary.reload.is_current?
+  end
+
+  test "ensure_active_account! returns nil when every available account's token is rejected" do
+    ClaudeAccount.update_all(is_current: false)
+    QuotaCheckService.stubs(:check_with_token).returns(rejected_probe)
+
+    assert_nil @service.ensure_active_account!
+    assert_nil ClaudeAccount.current_account
+  end
+
+  test "ensure_active_account! still promotes when the probe cannot reach Anthropic" do
+    # A network failure is evidence about the network, not about the credentials.
+    # Reading it as a rejection would park every session on the instance at once.
+    ClaudeAccount.update_all(is_current: false)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(
+        success: false, unreachable: true,
+        error_message: "Cannot reach Anthropic API: getaddrinfo"
+      )
+    )
+
+    result = @service.ensure_active_account!
+
+    assert_equal claude_accounts(:primary), result
+    assert result.reload.is_current?
+  end
+
+  test "ensure_active_account! skips an account whose 7-day window is spent" do
+    ClaudeAccount.update_all(is_current: false)
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+    capped_snapshot(primary)
+
+    result = @service.ensure_active_account!
+
+    assert_equal secondary, result
+    assert primary.reload.quota_exceeded?
+  end
+
+  test "ensure_active_account! refreshes a refused candidate and re-probes it" do
+    # A stale access token is the one refusal a refresh can fix, so a refusal —
+    # and only a refusal — buys the candidate a refresh and a second probe.
+    ClaudeAccount.destroy_all
+    account = ClaudeAccount.create!(
+      email: "stale@example.com", priority: 0,
+      oauth_config: {
+        "claude_json" => { "oauthAccount" => "stale@example.com" },
+        "credentials_json" => { "claudeAiOauth" => {
+          "accessToken" => "stale-access", "refreshToken" => "stale-refresh", "expiresAt" => 1000000000000
+        } }
+      }
+    )
+
+    QuotaCheckService.stubs(:check_with_token).with("stale-access").returns(rejected_probe)
+    QuotaCheckService.stubs(:check_with_token).with("stubbed-access-token").returns(healthy_probe)
+
+    assert_equal account, @service.ensure_active_account!
+    assert account.reload.is_current?
+  end
+
+  # ── #61: the safety check fails closed, and converges ──────────────
+
+  test "config_file_matches? is false when the account has no stored identity" do
+    primary = claude_accounts(:primary)
+    @service.write_config!(primary)
+    primary.update!(oauth_config: primary.oauth_config.except("claude_json"))
+
+    assert_not @service.send(:config_file_matches?, primary),
+      "an unverifiable comparison must not answer 'matches'"
+  end
+
+  test "config_file_matches? is false when the stored config carries no identity" do
+    primary = claude_accounts(:primary)
+    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({ "numStartups" => 3 }))
+    primary.update!(oauth_config: primary.oauth_config.merge("claude_json" => { "numStartups" => 3 }))
+
+    assert_not @service.send(:config_file_matches?, primary),
+      "two missing identities must not compare equal"
+  end
+
+  test "ensure_active_account! adopts the on-disk identity for a current account that has none" do
+    primary = claude_accounts(:primary)
+    # A row bootstrapped from credentials alone: tokens but no stored identity.
+    primary.update!(oauth_config: primary.oauth_config.except("claude_json"))
+    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
+      JSON.generate({ "oauthAccount" => { "emailAddress" => primary.email }, "numStartups" => 7 }))
+
+    result = @service.ensure_active_account!
+
+    assert_equal primary, result
+    primary.reload
+    assert_equal primary.email, primary.oauth_config.dig("claude_json", "oauthAccount", "emailAddress")
+    assert_equal 7, primary.oauth_config.dig("claude_json", "numStartups"),
+      "the whole on-disk identity file is adopted, not a synthesized stub"
+    assert @service.send(:config_file_matches?, primary),
+      "the check must be answerable on the next run rather than failing closed forever"
+  end
+
+  test "ensure_active_account! writes DB-current to disk when the on-disk identity is someone else's" do
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+    primary.update!(oauth_config: primary.oauth_config.except("claude_json"), last_rotated_to_at: Time.current)
+    # The filesystem names a different account, so there is nothing to adopt: the
+    # blank stored identity must NOT be read as "can't verify, assume ok".
+    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
+      JSON.generate({ "oauthAccount" => { "emailAddress" => secondary.email } }))
+
+    result = @service.ensure_active_account!
+
+    assert_equal primary, result
+    assert primary.reload.is_current?
+    assert_equal primary.email, ClaudeAccount.credentials_owner_email,
+      "the DB-current account's credentials must be written to the shared file"
+    assert_nil primary.oauth_config.dig("claude_json"),
+      "another account's identity must never be adopted onto this row"
   end
 
   test "capture_outgoing identifies the owner by marker, ignoring a stale ~/.claude.json" do

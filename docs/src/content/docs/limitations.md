@@ -522,6 +522,40 @@ That is the deliberate trade: an unnecessary rotation costs one account for one 
 re-injecting a dead identity costs the user three visible auth failures and a park with the wrong
 instruction. Worth revisiting if Anthropic ever exposes a structured reason.
 
+### An Anthropic outage makes the account probes inconclusive, and they promote anyway
+
+🟡 Bootstrap, rotation and the UI login flow all validate an account before promoting it by probing
+Anthropic with its access token (`QuotaCheckService.token_rejected?`, see
+[Bootstrap validates before it promotes](/auth/harness/#bootstrap-validates-before-it-promotes)).
+The probe distinguishes three answers, and only *Anthropic answered and refused* condemns an account.
+A probe that never reached Anthropic — timeout, DNS failure, 5xx — is treated as no evidence, and the
+candidate is promoted unvalidated.
+
+That is the deliberate direction. The alternative reads a provider outage as "every credential in the
+pool is dead" and parks every session at once, which is a worse and much less recoverable failure than
+promoting one account that may or may not work. The consequence to know about: during an Anthropic
+outage, bootstrap gives you exactly the behaviour it had before this validation existed.
+
+The same asymmetry applies to `ClaudeLoginDriver#capture!` — a login completed while Anthropic is
+unreachable is stored rather than thrown away.
+
+### A capped account is marked from whichever reading happens to arrive first
+
+🟡 An account leaves the pool when a quota reading says its weekly window is spent
+([#248](https://github.com/tadasant/zimmer/issues/248)) — and readings arrive from unrelated places:
+a rotation snapshot, a `/quotas` page view, the 15-minute reset checker. So *when* a capped account
+gets marked depends on when someone last looked at it, not on when it filled its window. An idle pool
+that nobody has probed can still hand out an account whose week ran out an hour ago; rotation's own
+pick-time check only fires on evidence that already exists.
+
+The floor is `QuotaResetCheckerJob`'s 15-minute sweep, which probes `quota_exceeded` accounts — but
+not `active` ones. The two paths that actually hand an account to a session close the gap for
+themselves: bootstrap probes each candidate live before promoting it, and rotation snapshots the
+account it activates. What is left is the window in between, where `/quotas` can show an account as
+healthy on evidence that has gone stale. Making that deterministic would mean probing every active
+account on a schedule, which costs a request per account per sweep for a condition the paths that
+matter already check at the moment they matter.
+
 ### The quotas page can hold row-lock transactions across a token endpoint call
 
 🟡 `ClaudeAccount#refresh_token!` serializes on the account row and keeps that lock for the whole

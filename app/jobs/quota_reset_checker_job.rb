@@ -53,7 +53,20 @@ class QuotaResetCheckerJob < ApplicationJob
   # Check if both quota windows are clear based on reset times and utilization.
   # A window is clear if its reset time has passed OR its utilization has dropped
   # below the restore threshold.
+  #
+  # Except on the weekly window, where the status Anthropic reported outranks the
+  # counter. An account the API is rejecting for the week cannot serve a request
+  # no matter what its utilization reads, and restoring it puts it straight back
+  # in front of rotation, which hands it to the next session (#248). This is the
+  # same reading QuotaSnapshotService marks the account on, so the healer and the
+  # marker cannot disagree and flip an account between states every sweep.
+  #
+  # The 5-hour window keeps the counter-only rule: it is a genuinely sliding
+  # window that clears within the hour, so a dropped counter there is real
+  # headroom rather than a stale status.
   def self.window_clear?(snapshot)
+    return false if snapshot.seven_day_window_spent?
+
     five_hour_clear = window_dimension_clear?(snapshot.reset_5h, snapshot.utilization_5h)
     seven_day_clear = window_dimension_clear?(snapshot.reset_7d, snapshot.utilization_7d)
 
