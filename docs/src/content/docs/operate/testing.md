@@ -48,6 +48,20 @@ runners that need a Playwright browser the runner is not provisioned for, and
 `test-system` job covers the overlapping UI through the Ruby browser suite. Tracked in
 [#162](https://github.com/tadasant/zimmer/issues/162).
 
+Neither does CI ever run a **migration**. Both test jobs build the database with `bin/rails
+db:test:prepare`, which *loads* `db/schema.rb` — so a schema that disagrees with `db/migrate/` is
+green here and diverges from production, which does run them. `db:schema:verify` is the check, and
+it is deliberately outside the gate because it drops and recreates databases:
+
+```bash
+RAILS_ENV=test bin/rails db:schema:verify
+```
+
+It migrates a scratch database from zero, loads the committed schema into another, dumps both, and
+diffs. Run it on any PR that adds a migration. `test/migrations/schema_dump_test.rb` covers the cheap
+half in CI — that the dumps are in the running Active Record version's format, and that `schema.rb`
+is at the newest migration on disk.
+
 ## Tests that skip themselves
 
 Several tests `skip` when a credential or file is absent — which in CI means they never run at all:
