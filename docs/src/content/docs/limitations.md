@@ -1275,6 +1275,19 @@ run the migrations into another, and diff the introspected result).
 
 Tracked in [#182](https://github.com/tadasant/zimmer/issues/182).
 
+### Nothing checks the committed icons still match the master artwork
+
+🟡 Every favicon, PWA icon and apple-touch icon is generated from
+`docs/scripts/zimmer-icon-source.jpg` by `npm run icons`, and the *output* is what gets committed.
+`test/integration/app_icons_test.rb` checks the committed files exist, are the size they claim, and
+are wired into the manifest, the layout and the docs site — but not that re-running the generator
+would reproduce them. So editing the master and forgetting to re-run the script, or editing one
+generated PNG by hand, passes CI.
+
+The obvious fix — regenerate in CI and diff — is not safe to add: sharp/libvips PNG output is not
+byte-stable across versions, so the check would go red on an unrelated dependency bump. Re-run
+`npm run icons` and commit whatever it writes whenever the master changes.
+
 ---
 
 ## Development environment
