@@ -655,9 +655,14 @@ class ClaudeAccount < ApplicationRecord
     ClaudeCredentialStore.with_lock(path) do
       on_disk = ClaudeCredentialStore.read(path)
       ClaudeCredentialStore.write_atomically(path, credentials_blob_for_disk(credentials_json, on_disk))
+      # Inside the lock: the marker must describe the tokens that are on disk. Two
+      # accounts written concurrently (the web and worker containers both converge
+      # the filesystem) could otherwise land credentials A, credentials B, marker B,
+      # marker A — a marker naming an account whose tokens are not there, which is
+      # how one account's tokens get grafted onto another's row.
+      self.class.write_credentials_owner_marker!(email)
     end
 
-    self.class.write_credentials_owner_marker!(email)
     true
   end
 
