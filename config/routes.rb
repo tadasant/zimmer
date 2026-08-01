@@ -163,6 +163,11 @@ Rails.application.routes.draw do
   post "health/archive_old", to: "health#archive_old", as: :archive_old_health
   get "health/export_diagnostics", to: "health#export_diagnostics", as: :export_diagnostics_health
 
+  # Polled by every page for the "live updates paused" banner. Deliberately plain
+  # HTTP: the condition it reports is the broadcast circuit breaker being open,
+  # which is when Turbo Stream broadcasts are the thing that isn't working.
+  get "live_updates/status", to: "live_updates#status", as: :live_updates_status
+
   # Push notification subscriptions (for service worker)
   resources :push_subscriptions, only: [ :create, :destroy ]
 

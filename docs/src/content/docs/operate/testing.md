@@ -125,6 +125,15 @@ with `transition: none !important; animation-duration: 0s`. CSS-animated element
 position, so they are never moving targets. Waiting out the animation test-by-test would have fixed this
 one test and left the trap armed for the next one.
 
+The drawer itself has since been taught the same lesson, for the user's sake rather than the suite's:
+the panel carries `pointer-events: none` while it slides, so a click aimed at a control that is still
+travelling lands on nothing instead of on whatever slid into those coordinates. The gate lifts on
+`transitionend` **or** a timer read from the panel's own computed transition duration, whichever comes
+first — a zero-duration transition (this suite, or a `prefers-reduced-motion` user) never fires
+`transitionend` at all, and a gate keyed on it alone would leave those users an inert drawer forever.
+`test/contracts/session_drawer_timing_test.rb` pins that arrangement so the CSS duration and the JS
+timing cannot drift apart again.
+
 One gap survives, so know where it is: the injected CSS does **not** defeat a JS-driven
 `scrollIntoView({ behavior: "smooth" })` — per CSSOM-View, an explicit `behavior` in the options beats
 the CSS `scroll-behavior` property. The select/autocomplete controllers (`goal`, `mcp-server-select`,

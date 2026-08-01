@@ -263,9 +263,27 @@ cache in production — but nothing enforces that, and in development it silentl
 `BroadcastService` wraps Turbo broadcasts in a hand-rolled circuit breaker: `THRESHOLD = 5` failures,
 `RESET_TIME = 60` seconds, `MAX_RETRIES = 3`.
 
-When it trips, live UI updates stop for 60 seconds. The session keeps running; you can't
-see it. There's no banner telling you the breaker is open.
-Tracked in [#86](https://github.com/tadasant/zimmer/issues/86).
+When it trips, live UI updates stop for 60 seconds. The session keeps running; you can't see it.
+
+The UI says so while that lasts: a "Live updates paused" banner sits under the network-egress banner
+in the layout, on every page. It reports that broadcasts are failing, that your sessions are still
+running, and roughly when updates resume.
+
+Two details make it work, and both are load-bearing:
+
+- **It is polled, not broadcast.** `live_updates_status_controller.js` re-fetches
+  `GET /live_updates/status` every 15 seconds and swaps the fragment in. Announcing "broadcasting is
+  broken" over broadcasting would be self-defeating, and rendering the banner only at page load would
+  miss the case the issue is about — a page that freezes while the user sits and watches it.
+- **The breaker's state crosses processes through the shared cache.** `@circuit_breaker_opened_at` is
+  a class ivar in whichever process broadcast. In production that is the GoodJob worker
+  (`execution_mode = :external`), not the web process that renders the page. So opening the breaker
+  also writes `broadcast_service:circuit_open_until` to Redis with a 60-second TTL, and
+  `BroadcastService.paused_until` reads the cache *and* the local ivar — right under `:external`,
+  `:async` and `:inline` alike. A banner wired to the ivar alone would be correct in development and
+  never appear in production.
+
+The banner is display only. It does not raise an alert or change the breaker's behavior.
 
 ## Alerts
 
