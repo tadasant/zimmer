@@ -9,15 +9,46 @@ class SlackService
   class ConfigurationError < SlackError; end
   class ApiError < SlackError; end
 
+  # A failure that is expected to clear on its own: a network blip, or Slack
+  # telling us to come back later. Subclasses ApiError so every existing
+  # `rescue SlackService::ApiError` still catches it — what it adds is a signal
+  # a caller can act on. A caller holding a scarce resource (a job slot) should
+  # give that resource back and retry later rather than alerting a human, which
+  # is what SlackTriggerPollerJob does with it.
+  class TransientError < ApiError; end
+
+  # Slack said 429 and told us how long to wait. `retry_after` is that wait in
+  # seconds — the caller's cue for how far out to reschedule.
+  class RateLimitedError < TransientError
+    attr_reader :retry_after
+
+    def initialize(message, retry_after: nil)
+      super(message)
+      @retry_after = retry_after
+    end
+  end
+
   # Timeout configuration for Slack API calls
   # Keep these short to fail fast rather than hanging the UI
   OPEN_TIMEOUT = 5   # seconds to establish connection
   TIMEOUT = 10       # seconds for each request
 
-  # Retry configuration for transient network errors
-  # Use simple fixed delay retries - transient failures usually resolve quickly
-  MAX_RETRIES = 10
-  RETRY_DELAY = 1 # seconds, fixed delay between retries
+  # Retry configuration for transient failures.
+  #
+  # The budget is deliberately small, and it backs off. SlackService's hottest
+  # caller is SlackTriggerPollerJob, a `total_limit: 1` singleton on the
+  # `pollers` queue: while it sleeps, that thread *is* Slack polling for the
+  # whole instance, and the once-a-minute cron ticks that land in the sleep are
+  # rejected outright rather than queued. So a long in-process wait does not
+  # "ride out" anything — it silently skips minutes of polling for every trigger.
+  #
+  # The rule both rescue branches follow: absorb a blip here, hand anything
+  # longer back as a TransientError so the caller can yield its slot and come
+  # back later. A flat 1-second cadence also hammers an endpoint that is already
+  # failing, which is why the network branch doubles its wait each attempt.
+  MAX_RETRIES = 3
+  RETRY_BASE_DELAY = 1 # seconds, doubled per attempt: 1, 2, 4
+  RETRY_MAX_DELAY = 8  # seconds, ceiling on any single in-process sleep
 
   class << self
     # Get a configured Slack client instance
@@ -253,29 +284,45 @@ class SlackService
       begin
         yield
       rescue Slack::Web::Api::Errors::TooManyRequestsError => e
-        # Rate limited - use Slack's retry_after value if available, otherwise use fixed delay
+        # Rate limited - Slack tells us exactly how long to wait, so honor that value
+        # verbatim when it gives one, and back off like the network branch when it
+        # does not. What is bounded here is only WHERE we wait: a retry_after longer
+        # than a single in-process sleep is worth (RETRY_MAX_DELAY) is handed back as
+        # a RateLimitedError carrying that same value, so the caller reschedules for
+        # then instead of holding its slot asleep for the whole window.
         retries += 1
-        if retries <= MAX_RETRIES
-          delay = e.retry_after || RETRY_DELAY
+        delay = e.retry_after || backoff_delay(retries)
+        if retries <= MAX_RETRIES && delay <= RETRY_MAX_DELAY
           Rails.logger.warn("[SlackService] Rate limited (attempt #{retries}/#{MAX_RETRIES}). Retrying in #{delay}s...")
           sleep(delay)
           retry
         end
-        raise ApiError, "Slack rate limit exceeded: #{e.message}"
+        # retry_after stays whatever Slack actually said — nil when it said nothing,
+        # rather than a backoff figure we invented, so the caller can tell the two apart.
+        raise RateLimitedError.new("Slack rate limit exceeded: #{e.message}", retry_after: e.retry_after)
       rescue Slack::Web::Api::Errors::SlackError => e
         # SlackError inherits from Faraday::Error, so catch it before Faraday::Error
         # Don't retry API errors (invalid channel, permission denied, etc.)
         raise ApiError, "Slack API error: #{e.message}"
       rescue Faraday::Error => e
         # Retry transient network errors (timeouts, connection failures, server errors)
+        # with exponential backoff, so a genuinely-down endpoint is not hit at a
+        # flat 1s cadence for the whole budget.
         retries += 1
         if retries <= MAX_RETRIES
-          Rails.logger.warn("[SlackService] Network error (attempt #{retries}/#{MAX_RETRIES}): #{e.message}. Retrying in #{RETRY_DELAY}s...")
-          sleep(RETRY_DELAY)
+          delay = backoff_delay(retries)
+          Rails.logger.warn("[SlackService] Network error (attempt #{retries}/#{MAX_RETRIES}): #{e.message}. Retrying in #{delay}s...")
+          sleep(delay)
           retry
         end
-        raise ApiError, "Network error communicating with Slack: #{e.message}"
+        raise TransientError, "Network error communicating with Slack: #{e.message}"
       end
+    end
+
+    # Exponential backoff for in-process retries: RETRY_BASE_DELAY doubled per
+    # attempt, capped at RETRY_MAX_DELAY (1, 2, 4, 8, 8, …).
+    def backoff_delay(attempt)
+      [ RETRY_BASE_DELAY * (2**(attempt - 1)), RETRY_MAX_DELAY ].min
     end
   end
 end

@@ -1982,4 +1982,137 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     sessions = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).to_a
     assert_empty sessions.select { |s| s.metadata["burst_notice"] }
   end
+
+  # --- Deferral on transient Slack failures (#77) ----------------------------
+  #
+  # This job is a `total_limit: 1` singleton, so while it runs it IS Slack
+  # polling for the whole instance and every cron tick that lands meanwhile is
+  # rejected. Waiting out a Slack outage inside the run therefore drops ticks for
+  # every trigger; rescheduling the run gives the worker thread back instead.
+
+  test "a transient Slack failure reschedules the poll instead of alerting" do
+    SlackService.stubs(:configured?).returns(true)
+
+    job = SlackTriggerPollerJob.new
+    job.stubs(:process_condition)
+       .raises(SlackService::TransientError, "Network error communicating with Slack: timeout")
+
+    # Not a per-condition defect, so no alert — and the sweep stops rather than
+    # grinding every remaining condition into the same wall.
+    AlertService.expects(:raise_alert).never
+    job.expects(:retry_job).with(wait: 30)
+
+    job.perform_now
+  end
+
+  test "a non-transient condition error still alerts and does not defer" do
+    SlackService.stubs(:configured?).returns(true)
+
+    job = SlackTriggerPollerJob.new
+    job.stubs(:process_condition).raises(StandardError, "bad condition")
+
+    job.expects(:retry_job).never
+    AlertService.expects(:raise_alert).at_least_once
+
+    job.perform_now
+  end
+
+  test "deferral delay backs off exponentially and is capped" do
+    job = SlackTriggerPollerJob.new
+    error = SlackService::TransientError.new("boom")
+
+    delays = (0..5).map do |spent|
+      job.instance_variable_set(:@deferrals, spent)
+      job.send(:deferral_delay, error)
+    end
+
+    assert_equal [ 30, 60, 120, 240, 480, 600 ], delays
+    assert delays.all? { |d| d <= SlackTriggerPollerJob::MAX_DEFERRAL_DELAY }
+  end
+
+  test "a rate limit's retry_after floors the deferral delay" do
+    job = SlackTriggerPollerJob.new
+
+    long = SlackService::RateLimitedError.new("ratelimited", retry_after: 120)
+    assert_equal 120, job.send(:deferral_delay, long), "Slack's own wait should win when longer"
+
+    short = SlackService::RateLimitedError.new("ratelimited", retry_after: 5)
+    assert_equal 30, job.send(:deferral_delay, short), "backoff should win when longer"
+
+    unspecified = SlackService::RateLimitedError.new("ratelimited", retry_after: nil)
+    assert_equal 30, job.send(:deferral_delay, unspecified), "a nil retry_after must not blow up"
+  end
+
+  test "stops deferring and alerts once MAX_DEFERRALS is spent" do
+    job = SlackTriggerPollerJob.new
+    job.instance_variable_set(:@deferrals, SlackTriggerPollerJob::MAX_DEFERRALS)
+
+    job.expects(:retry_job).never
+    AlertService.expects(:raise_alert).once
+
+    job.send(:defer_poll, SlackService::TransientError.new("still down"))
+  end
+
+  # The deferral count rides in the job's own serialized params, NOT in
+  # `executions` — which also counts ActiveRecord::StatementTimeout retries from
+  # ApplicationJob and GoodJob's own ConcurrencyExceededError retries. Reading
+  # those as deferrals would inflate the backoff and make the give-up alert claim
+  # a Slack outage that never happened.
+  test "the deferral count survives a reschedule and ignores unrelated retries" do
+    job = SlackTriggerPollerJob.new
+    job.stubs(:retry_job)
+
+    job.send(:defer_poll, SlackService::TransientError.new("down"))
+    assert_equal 1, job.send(:deferral_count)
+    assert_equal 1, job.serialize["deferrals"]
+
+    revived = SlackTriggerPollerJob.new
+    revived.deserialize(job.serialize)
+    assert_equal 1, revived.send(:deferral_count)
+
+    # A retry that has nothing to do with Slack must not advance the backoff.
+    revived.executions = 9
+    assert_equal 60, revived.send(:deferral_delay, SlackService::TransientError.new("down"))
+  end
+
+  # The sweep's per-unit rescues swallow so the batched cursor writes for units
+  # that already succeeded still happen — but the poll must still end in a
+  # deferral rather than a "success" the cron re-hammers 60 seconds later.
+  test "a transient failure swallowed by an inner rescue still defers the poll" do
+    SlackService.stubs(:configured?).returns(true)
+
+    job = SlackTriggerPollerJob.new
+    # Stands in for the inner per-unit rescues: the failure is recorded, the sweep
+    # completes normally, and nothing propagates out of the condition loop.
+    job.define_singleton_method(:process_condition) do |_condition|
+      note_transient(SlackService::RateLimitedError.new("ratelimited", retry_after: nil))
+    end
+
+    job.expects(:retry_job).with(wait: 30)
+
+    job.perform_now
+  end
+
+  test "note_transient ignores errors that are not transient" do
+    job = SlackTriggerPollerJob.new
+
+    job.send(:note_transient, StandardError.new("unrelated"))
+    assert_nil job.instance_variable_get(:@transient_error)
+
+    job.send(:note_transient, SlackService::ApiError.new("channel_not_found"))
+    assert_nil job.instance_variable_get(:@transient_error)
+  end
+
+  # A transient failure fetching the permalink must NOT drop the message: every
+  # caller of #process_message advances its cursor past the message whether or not
+  # a session came out of it, so raising here would delete it rather than defer it.
+  test "a rate-limited permalink degrades to nil instead of losing the message" do
+    stub_slack_burst(alert_messages(1))
+    SlackService.stubs(:get_message_permalink)
+                .raises(SlackService::RateLimitedError.new("ratelimited", retry_after: 60))
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, @condition)
+    end
+  end
 end

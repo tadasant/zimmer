@@ -298,7 +298,9 @@ class SlackServiceTest < ActiveSupport::TestCase
       SlackService.get_channel("C123")
     end
     assert_includes error.message, "Network error communicating with Slack"
-    assert_equal 11, test_client.call_count # 1 initial + 10 retries
+    assert_equal 4, test_client.call_count # 1 initial + MAX_RETRIES (3)
+    # Transient, so a caller with a job slot can defer instead of alerting.
+    assert_kind_of SlackService::TransientError, error
   end
 
   test "with_error_handling does not retry Slack API errors" do
@@ -321,7 +323,7 @@ class SlackServiceTest < ActiveSupport::TestCase
     assert_equal 1, test_client.call_count # No retries for API errors
   end
 
-  test "retry uses fixed 1 second delay" do
+  test "network retries back off exponentially instead of a flat cadence" do
     mock_response = OpenStruct.new(channel: OpenStruct.new(id: "C123"))
 
     # Create a test client that fails 3 times then succeeds
@@ -339,22 +341,28 @@ class SlackServiceTest < ActiveSupport::TestCase
 
     SlackService.stubs(:client).returns(test_client)
 
-    # Track sleep calls to verify fixed 1 second delay
+    # Track sleep calls to verify the delay doubles per attempt
     sleep_delays = []
     SlackService.stubs(:sleep).with { |delay| sleep_delays << delay; true }
 
     SlackService.get_channel("C123")
-    assert_equal [ 1, 1, 1 ], sleep_delays
+    assert_equal [ 1, 2, 4 ], sleep_delays
   end
 
-  test "with_error_handling respects rate limit retry_after" do
+  test "backoff_delay doubles per attempt and is capped at RETRY_MAX_DELAY" do
+    delays = (1..6).map { |attempt| SlackService.send(:backoff_delay, attempt) }
+    assert_equal [ 1, 2, 4, 8, 8, 8 ], delays
+    assert delays.all? { |d| d <= SlackService::RETRY_MAX_DELAY }
+  end
+
+  test "with_error_handling respects a short rate limit retry_after in process" do
     mock_response = OpenStruct.new(channel: OpenStruct.new(id: "C123"))
 
     # Create a mock TooManyRequestsError with retry_after
     rate_limit_error = Slack::Web::Api::Errors::TooManyRequestsError.allocate
     rate_limit_error.instance_variable_set(:@response, nil)
     def rate_limit_error.retry_after
-      30 # Slack says wait 30 seconds
+      5 # Slack says wait 5 seconds - short enough to ride out in process
     end
     def rate_limit_error.message
       "ratelimited"
@@ -386,10 +394,52 @@ class SlackServiceTest < ActiveSupport::TestCase
     channel = SlackService.get_channel("C123")
     assert_equal "C123", channel.id
     assert_equal 2, test_client.call_count
-    assert_equal [ 30 ], sleep_delays # Used Slack's retry_after value
+    assert_equal [ 5 ], sleep_delays # Used Slack's retry_after value
   end
 
-  test "with_error_handling uses fixed delay when rate limit has no retry_after" do
+  # The #77 regression: a `total_limit: 1` poller that sleeps out a long
+  # rate-limit window IS Slack polling for the whole instance while it sleeps,
+  # and every cron tick that lands in that window is rejected outright. So a wait
+  # too long to be worth holding a thread for comes back as an exception carrying
+  # the wait, for the caller to reschedule against.
+  test "with_error_handling hands back a long rate limit wait instead of sleeping on it" do
+    rate_limit_error = Slack::Web::Api::Errors::TooManyRequestsError.allocate
+    rate_limit_error.instance_variable_set(:@response, nil)
+    def rate_limit_error.retry_after
+      60 # Slack says wait a full minute
+    end
+    def rate_limit_error.message
+      "ratelimited"
+    end
+
+    test_client = Object.new
+    test_client.instance_variable_set(:@call_count, 0)
+    test_client.instance_variable_set(:@rate_limit_error, rate_limit_error)
+    def test_client.conversations_info(channel:)
+      @call_count += 1
+      raise @rate_limit_error
+    end
+    def test_client.call_count
+      @call_count
+    end
+
+    SlackService.stubs(:client).returns(test_client)
+
+    sleep_delays = []
+    SlackService.stubs(:sleep).with { |delay| sleep_delays << delay; true }
+
+    error = assert_raises(SlackService::RateLimitedError) do
+      SlackService.get_channel("C123")
+    end
+
+    assert_equal 60, error.retry_after
+    assert_empty sleep_delays, "should not have slept in the caller's thread"
+    assert_equal 1, test_client.call_count, "should not have retried in process"
+    # Still an ApiError, so existing callers that rescue it keep working.
+    assert_kind_of SlackService::ApiError, error
+  end
+
+  test "with_error_handling uses the base delay when rate limit has no retry_after" do
     mock_response = OpenStruct.new(channel: OpenStruct.new(id: "C123"))
 
     # Create a mock TooManyRequestsError without retry_after
@@ -428,7 +478,7 @@ class SlackServiceTest < ActiveSupport::TestCase
     channel = SlackService.get_channel("C123")
     assert_equal "C123", channel.id
     assert_equal 2, test_client.call_count
-    assert_equal [ 1 ], sleep_delays # Used fixed RETRY_DELAY
+    assert_equal [ 1 ], sleep_delays # Used RETRY_BASE_DELAY
   end
 
   test "get_thread_replies calls Slack API and excludes parent message" do
