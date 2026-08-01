@@ -40,6 +40,18 @@ module SubprocessStatus
     status.success?
   end
 
+  # True when we never learned how the command ended. Callers that retry use this
+  # to classify the attempt as transient: a lost race is the most retryable
+  # failure there is, and on a path with no "next tick" (a clone, an `air
+  # prepare`) treating it as permanent fails a session over a result we simply
+  # did not read.
+  #
+  # @param status [Process::Status, nil]
+  # @return [Boolean]
+  def unknown?(status)
+    status.nil?
+  end
+
   # Nil-safe `#exitstatus`. Returns nil when the status is nil (unknown) — so
   # comparisons against a specific code (`exit_code(status) == 8`) correctly
   # fall through to the failure branch instead of raising.
@@ -53,12 +65,24 @@ module SubprocessStatus
   # One-line explanation of why a call is being treated as failed, suitable for
   # interpolating into a log line or an exception message.
   #
+  # Runs on the failure path, so it takes care not to add a failure of its own:
+  # a signaled child has a nil `#exitstatus` (BoundedSubprocess SIGKILLs whole
+  # process groups on timeout, so that is reachable), and interpolating it would
+  # print "exit status " and reproduce in miniature the unreadable log line this
+  # module exists to prevent.
+  #
   # @param status [Process::Status, nil]
   # @param stderr [String, nil] the command's stderr, appended when present
   # @return [String]
   def describe_failure(status, stderr = nil)
-    reason = status.nil? ? REAPED_DESCRIPTION : "exit status #{status.exitstatus}"
     detail = stderr.to_s.strip.presence
-    detail ? "#{reason}: #{detail}" : reason
+    detail ? "#{failure_reason(status)}: #{detail}" : failure_reason(status)
+  end
+
+  def failure_reason(status)
+    return REAPED_DESCRIPTION if unknown?(status)
+    return "killed by signal #{status.termsig}" if status.signaled?
+
+    "exit status #{status.exitstatus}"
   end
 end

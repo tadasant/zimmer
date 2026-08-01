@@ -236,10 +236,7 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
   test "fetch_mergeable_field returns nil on command failure" do
     job = GitHubMergeConflictPollerJob.new
 
-    fail_status = mock
-    fail_status.stubs(:success?).returns(false)
-
-    Open3.stubs(:capture3).returns([ "", "Error", fail_status ])
+    Open3.stubs(:capture3).returns([ "", "Error", fake_process_status(exitstatus: 1) ])
     assert_nil job.send(:fetch_mergeable_field, "owner", "repo", "123")
   end
 

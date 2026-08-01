@@ -449,15 +449,9 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
 
   test "fetch_ci_status still treats a real exit 8 as pending checks" do
     checks = [ { "bucket" => "pending", "state" => "IN_PROGRESS" } ].to_json
-    Open3.stubs(:capture3).returns([ checks, "", exit_status(8) ])
+    Open3.stubs(:capture3).returns([ checks, "", fake_process_status(exitstatus: 8) ])
 
     assert_equal "pending", GitHubPullRequestPollerJob.new.send(:fetch_ci_status, "owner", "repo", "42")
-  end
-
-  def exit_status(code)
-    Struct.new(:exitstatus) do
-      def success? = exitstatus.zero?
-    end.new(code)
   end
 
   class TestJobWithCIStatusPending < GitHubPullRequestPollerJob

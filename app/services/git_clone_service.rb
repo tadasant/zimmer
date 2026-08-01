@@ -64,7 +64,13 @@ class GitCloneService
     # so classifying them transient only ever costs a bounded, backed-off retry.
     /Operation too slow/,
     /invalid index-pack output/,
-    /bytes of body are still expected/
+    /bytes of body are still expected/,
+    # A clone whose exit code was never read, because ZombieReaperJob reaped the
+    # child before Open3's waiter did (see SubprocessStatus). "We never learned how
+    # it ended" is the most retryable failure there is: nothing suggests the repo,
+    # branch, or credential is wrong, and on this path there is no next tick — a
+    # permanent classification fails the session over a result we merely missed.
+    Regexp.new(Regexp.escape(SubprocessStatus::REAPED_DESCRIPTION))
   )
 
   CLONE_RETRY_DELAYS_SECONDS = [ 5, 10, 20 ].freeze
@@ -260,8 +266,10 @@ class GitCloneService
     # stalled clone from hanging the calling thread (and the AgentSessionJob it
     # runs in) forever.
     #
-    # Returns [stdout, stderr, Process::Status]. Raises GitTimeoutError (a
-    # GitError subclass, classified transient) if the deadline is exceeded.
+    # Returns [stdout, stderr, Process::Status] — with a nil status when the child
+    # was reaped elsewhere before its waiter ran, so read it through
+    # SubprocessStatus. Raises GitTimeoutError (a GitError subclass, classified
+    # transient) if the deadline is exceeded.
     def run_subprocess(command_array, cwd:, timeout:)
       BoundedSubprocess.run(command_array, env: GIT_STALL_ENV, cwd: cwd, timeout: timeout)
     rescue BoundedSubprocess::TimeoutError => e
