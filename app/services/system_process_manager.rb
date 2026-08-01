@@ -27,7 +27,9 @@ class SystemProcessManager < ProcessManager
   # @param args [Array] Command and options to pass to Process.spawn
   # @return [Integer] The process ID (PID)
   def spawn(*args, **options)
-    Process.spawn(*args, **options)
+    pid = Process.spawn(*args, **options)
+    claim_waiter(pid, args)
+    pid
   end
 
   # Spawn a new process with ownership tracking
@@ -37,6 +39,7 @@ class SystemProcessManager < ProcessManager
   # @return [Integer] The process ID (PID)
   def spawn_with_tracking(*args, correlation_id: nil, **options)
     pid = Process.spawn(*args, **options)
+    claim_waiter(pid, args)
 
     # Track the process with ownership information
     working_dir = options[:chdir]
@@ -70,15 +73,28 @@ class SystemProcessManager < ProcessManager
   # @param flags [Integer] Flags to pass to Process.wait2 (e.g., Process::WNOHANG)
   # @return [Array<Integer, Process::Status>, nil] Returns [pid, status] if process finished, nil if still running
   def wait(pid, flags = 0)
+    # Heartbeat first: this call IS the evidence that a live waiter owns this
+    # pid's exit status, and ZombieReaperJob reads that to decide whether it may
+    # reap. Recording it before the syscall means even a wait that blocks for a
+    # long time is preceded by a fresh check-in. See ChildWaiterRegistry (#273).
+    ChildWaiterRegistry.instance.heartbeat(pid)
+
     result = Process.wait2(pid, flags)
 
     # If process completed, untrack it
     if result
+      ChildWaiterRegistry.instance.release(pid)
       @registry.unregister(pid)
       log_operation(:wait_completed, pid, exit_status: result[1]&.exitstatus)
     end
 
     result
+  rescue Errno::ECHILD
+    # Not our child (any more). Nobody can be waiting on it, so drop the claim
+    # instead of leaving one behind that would shield a future pid from the
+    # reaper. Re-raised: callers depend on distinguishing this from "still running".
+    ChildWaiterRegistry.instance.release(pid)
+    raise
   end
 
   # Send a signal to a process using Process.kill
@@ -179,6 +195,19 @@ class SystemProcessManager < ProcessManager
   end
 
   private
+
+  # Tell the process-wide ChildWaiterRegistry that this process now owns `pid`'s
+  # exit status, so ZombieReaperJob does not reap it out from under whoever waits.
+  # Called immediately after Process.spawn — before the child can have exited —
+  # which is what makes the reaper's registry check free of a TOCTOU hole.
+  #
+  # Never allowed to break a spawn: a missing claim only costs the reaper's
+  # protection for one pid, whereas a raised exception costs the session.
+  def claim_waiter(pid, command)
+    ChildWaiterRegistry.instance.claim(pid, command: command)
+  rescue StandardError => e
+    @logger.warn("Could not record child waiter claim", pid: pid, error: e.message)
+  end
 
   def log_operation(operation, pid, **details)
     return unless log_operations_enabled?
