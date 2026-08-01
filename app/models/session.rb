@@ -1,6 +1,7 @@
 class Session < ApplicationRecord
   include ActionView::RecordIdentifier
   include SessionStateMachine
+  include AtomicJsonMetadata
 
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
@@ -149,10 +150,20 @@ class Session < ApplicationRecord
       .to_set
   end
 
+  # The SIGTERM retry counters alone. Follow-up delivery paths that only need to hand
+  # the session a fresh SIGTERM budget (triggers, the GitHub pollers) clear this subset
+  # rather than the full stale set, which would also discard state those paths have no
+  # business touching.
+  SIGTERM_RETRY_METADATA_KEYS = %w[
+    sigterm_retry_count
+    sigterm_retry_timestamps
+    last_sigterm_at
+  ].freeze
+
   # Metadata keys that should be cleared when restarting or resuming a session.
   # These track retry state and transcript polling state from previous execution
   # lifecycles and would cause false failures or silent transcripts if preserved
-  # across restarts.
+  # across restarts. Opens with SIGTERM_RETRY_METADATA_KEYS, the subset above.
   #
   # NOTE: api_error_last_checked_line is intentionally NOT included here.
   # It tracks the transcript scan position (which errors have already been handled)
@@ -178,10 +189,7 @@ class Session < ApplicationRecord
   # render an outage banner promising a retry that already happened, and would
   # keep matching AuthOutageParkService.parked_sessions, so a later ordinary
   # sleep could be force-resumed as if it were still parked.
-  STALE_RETRY_METADATA_KEYS = %w[
-    sigterm_retry_count
-    sigterm_retry_timestamps
-    last_sigterm_at
+  STALE_RETRY_METADATA_KEYS = (SIGTERM_RETRY_METADATA_KEYS + %w[
     failure_reason
     exit_status
     mcp_failed_servers
@@ -212,6 +220,16 @@ class Session < ApplicationRecord
     transcript_waiting_logged
     transcript_files_waiting_logged
     transcript_reading_started_logged
+  ]).freeze
+
+  # Metadata keys rendered by the session metadata partial. A change to any of them is
+  # what makes a metadata write worth broadcasting.
+  METADATA_DISPLAY_FIELDS = %w[
+    clone_path
+    full_clone_path
+    failure_reason
+    exit_status
+    exception_class
   ].freeze
 
   # Failure reasons that indicate the session failed before the initial prompt
@@ -662,9 +680,51 @@ class Session < ApplicationRecord
   # actions where the user explicitly engages with the session (follow-ups,
   # enqueueing, interrupting).
   def touch_user_activity!
-    update!(
-      metadata: (metadata || {}).merge("last_user_activity_at" => Time.current.iso8601)
-    )
+    merge_metadata!("last_user_activity_at" => Time.current.iso8601)
+  end
+
+  # Deliver a follow-up prompt to an idle (waiting / needs_input) session.
+  #
+  # This is the one copy of the sequence every immediate-delivery entry point runs:
+  # drop the stale per-turn state, transition to running, stamp the prompt where the
+  # recovery paths look for it, enqueue the agent job, and record the job id. It lived
+  # in five near-identical copies — the web follow-up form, triggers, the GitHub comment
+  # and merge-conflict pollers, and the heartbeat sweep — so every fix to the delivery
+  # path had to be made five times. The heartbeat sweep said so in a comment.
+  #
+  # Callers keep what is genuinely theirs (validation, logging, broadcasting) and pass
+  # only what differs. The prompt is stamped AFTER the state transition, so a reader who
+  # sees `pending_follow_up_prompt` is guaranteed to also see `running`.
+  #
+  # @param prompt [String] the prompt to deliver
+  # @param clear_metadata_keys [Array<String>] stale metadata keys to drop first
+  # @param metadata_updates [Hash] extra metadata stamped alongside the prompt
+  # @param stamp_pending_prompt [Boolean] whether to record `pending_follow_up_prompt`,
+  #   the marker SigtermRetryService and the pause path read to recover an undelivered
+  #   prompt. False for the heartbeat nudge, which is a system drumbeat: resurrecting it
+  #   after a SIGTERM would deliver a beat for a moment that has already passed.
+  # @param images [Array, nil] image paths forwarded to the job
+  # @param files [Array, nil] file paths forwarded to the job
+  # @return [ActiveJob::Base] the enqueued job
+  def deliver_follow_up!(prompt, clear_metadata_keys: [], metadata_updates: {}, stamp_pending_prompt: true, images: nil, files: nil)
+    stale = Array(clear_metadata_keys).select { |key| metadata&.dig(key).present? }
+    remove_metadata!(stale) if stale.any?
+
+    resume! if may_resume?
+
+    updates = metadata_updates.to_h
+    updates = updates.merge("pending_follow_up_prompt" => prompt) if stamp_pending_prompt
+    merge_metadata!(updates) if updates.any?
+
+    # Record running_job_id immediately rather than waiting for the job to record it
+    # itself. That closes the window where the session is "running" with no tracked job —
+    # a window in which a delayed or dead job leaves the session stuck with no feedback,
+    # and orphan detection has nothing to look at.
+    job = AgentSessionJob.enqueue_with_prompt(id, prompt, images: images, files: files)
+    # `try`: ActiveJob returns false when a callback aborts the enqueue, and there is no
+    # job to point the session at in that case.
+    update!(running_job_id: job.try(:job_id)) if job.try(:job_id).present?
+    job
   end
 
   # Records a human "view" of this session (opening its page or drawer in the
@@ -950,7 +1010,7 @@ class Session < ApplicationRecord
     remaining = status.except(*removed_servers)
     return if remaining == status
 
-    update!(custom_metadata: (custom_metadata || {}).merge("mcp_servers_status" => remaining))
+    merge_custom_metadata!("mcp_servers_status" => remaining)
   end
 
   # Plugin composition: returns a hash of { item_name => contributing_plugin_id }
@@ -1431,12 +1491,14 @@ class Session < ApplicationRecord
   def should_broadcast_metadata_change?
     return false unless saved_change_to_metadata?
 
-    old_metadata, new_metadata = saved_change_to_metadata
+    metadata_display_fields_changed?(*saved_change_to_metadata)
+  end
 
-    # Fields that are displayed in the session metadata partial
-    display_fields = %w[clone_path full_clone_path failure_reason exit_status exception_class]
-
-    display_fields.any? do |field|
+  # Same question, asked with an explicit before/after pair. AtomicJsonMetadata writes
+  # the column with a raw UPDATE, so it has no `saved_change_to_metadata` to consult and
+  # calls this directly.
+  def metadata_display_fields_changed?(old_metadata, new_metadata)
+    METADATA_DISPLAY_FIELDS.any? do |field|
       old_metadata&.dig(field) != new_metadata&.dig(field)
     end
   end
@@ -1461,7 +1523,9 @@ class Session < ApplicationRecord
     ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "metadata_change" })
   end
 
-  def broadcast_custom_metadata_change
+  # `mcp_status_changed` defaults to the dirty-tracking answer for the callback path;
+  # AtomicJsonMetadata passes it explicitly because a raw UPDATE leaves no dirty state.
+  def broadcast_custom_metadata_change(mcp_status_changed: custom_metadata_mcp_status_changed?)
     # Broadcast header actions update to session detail page
     # This includes the GitHub PR link button which depends on custom_metadata
     # Use SessionsController.render to ensure route helpers are available
@@ -1477,7 +1541,7 @@ class Session < ApplicationRecord
 
     # Also broadcast metadata partial if MCP status changed
     # This updates the MCP server status indicators in real-time
-    if custom_metadata_mcp_status_changed?
+    if mcp_status_changed
       metadata_html = SessionsController.render(
         partial: "sessions/session_metadata",
         locals: metadata_broadcast_locals

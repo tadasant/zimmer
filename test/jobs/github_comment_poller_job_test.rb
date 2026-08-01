@@ -250,7 +250,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     # Track if AgentSessionJob.enqueue_with_prompt is called
-    AgentSessionJob.expects(:enqueue_with_prompt).with(session_needs_input.id, "Test prompt for immediate send").once
+    AgentSessionJob.expects(:enqueue_with_prompt).with(session_needs_input.id, "Test prompt for immediate send", images: nil, files: nil).once
 
     job = TestJobWithWhitelistedComment.new
     job.send(:poll_comments_for_session, session_needs_input)

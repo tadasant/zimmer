@@ -89,16 +89,13 @@ class HeartbeatSweepJob < ApplicationJob
     nudge_needs_input(session)
   end
 
-  # Deliver the heartbeat nudge to an idle (needs_input) session. This mirrors
-  # the API follow_up direct-resume path (Api::V1::SessionsController#follow_up):
-  # stamp the prompt, fire the resume event, enqueue the agent job, and record
-  # the running job id. (That 4-line sequence is duplicated across several
-  # callers — a future refactor could extract a shared Session#deliver_follow_up!.)
+  # Deliver the heartbeat nudge to an idle (needs_input) session through the shared
+  # Session#deliver_follow_up!. The beat is NOT stamped as a pending follow-up: unlike a
+  # user's message it is a drumbeat, and replaying one after a SIGTERM retry would
+  # deliver a beat for a moment that has already passed.
   def nudge_needs_input(session)
     session.update!(prompt: AutomatedPrompts::HEARTBEAT, heartbeat_last_beat_at: Time.current)
-    session.resume! if session.may_resume?
-    job = AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::HEARTBEAT)
-    session.update!(running_job_id: job.job_id)
+    session.deliver_follow_up!(AutomatedPrompts::HEARTBEAT, stamp_pending_prompt: false)
     session.logs.create!(level: "info", content: "Heartbeat nudged session (needs_input → running).")
     Rails.logger.info "[HeartbeatSweepJob] Nudged needs_input session #{session.id}"
   end

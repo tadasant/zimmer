@@ -216,11 +216,7 @@ class GithubCommentPollerJob < ApplicationJob
   def persist_comments!(session, updated_comments, previous)
     return previous if updated_comments == previous
 
-    with_db_retry do
-      session.update!(
-        custom_metadata: (session.custom_metadata || {}).merge("github_comments" => updated_comments)
-      )
-    end
+    with_db_retry { session.merge_custom_metadata!("github_comments" => updated_comments) }
     Rails.logger.info "[GithubCommentPollerJob] Updated comments for session #{session.id}"
 
     updated_comments.deep_dup
@@ -595,35 +591,13 @@ class GithubCommentPollerJob < ApplicationJob
     comment_url = comment_info[:data]["url"]
     truncated_prompt = prompt.length > 200 ? "#{prompt[0..197]}..." : prompt
 
-    # Reset SIGTERM retry state for fresh execution
-    # (matches SessionsController#follow_up pattern)
-    if session.metadata&.dig("sigterm_retry_count").present?
-      session.update!(
-        metadata: (session.metadata || {}).except(
-          "sigterm_retry_count",
-          "sigterm_retry_timestamps",
-          "last_sigterm_at"
-        )
-      )
-    end
-
-    # Transition to running first (matches SessionsController order)
-    session.resume! if session.may_resume?
-
     # Log the immediate send
     session.logs.create!(
       content: "GitHub #{comment_type} from #{comment_info[:data]['author']} sent immediately (#{comment_url}): #{truncated_prompt}",
       level: "info"
     )
 
-    # Store pending prompt in metadata for recovery if job interrupted
-    # (stored after state transition to ensure state change is committed first)
-    session.update!(
-      metadata: (session.metadata || {}).merge("pending_follow_up_prompt" => prompt)
-    )
-
-    # Enqueue job to continue the session with the prompt
-    AgentSessionJob.enqueue_with_prompt(session.id, prompt)
+    session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
 
     Rails.logger.info "[GithubCommentPollerJob] Sent immediate follow-up prompt for session #{session.id} from GitHub #{comment_type} by #{comment_info[:data]['author']}"
   end

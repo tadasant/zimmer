@@ -1843,6 +1843,64 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal true, options[:pgroup]
   end
 
+  # The monitoring loop holds one Session object for the life of a turn and writes
+  # metadata from it every iteration. Before those writes became single-statement jsonb
+  # merges, each one rebuilt the whole column from that long-stale snapshot — erasing
+  # anything the web process had set since the turn began. The two keys where that is a
+  # correctness bug, not a cosmetic one, are covered here (issue #70).
+  #
+  # The interleaving is deterministic by construction: `worker_view` IS the stale
+  # snapshot, and the racing write goes through a separately-loaded object, exactly as it
+  # would from another container.
+  test "worker's SIGTERM counter reset keeps an interrupt request raised mid-turn" do
+    @session.update!(status: :running, metadata: {
+      "process_pid" => 4242,
+      "sigterm_retry_count" => 2,
+      "sigterm_retry_timestamps" => [ 10.minutes.ago.iso8601 ]
+    })
+    worker_view = Session.find(@session.id)
+
+    # The web process cannot reach the PID (separate container) and hands termination to
+    # the worker by raising the flag.
+    web_view = Session.find(@session.id)
+    Sessions::InterruptService
+      .new(session: web_view, enqueued_message: web_view.enqueued_messages.create!(content: "hi", position: 1))
+      .send(:request_worker_side_termination, 4242)
+
+    AgentSessionJob.new.send(
+      :check_and_reset_sigterm_retry_counter, worker_view, 10.minutes.ago, LogBuffer.new(worker_view)
+    )
+
+    @session.reload
+    assert_equal 4242, @session.metadata["interrupt_terminate_pid"],
+      "the counter reset must not erase the interrupt request the web process just raised"
+    assert_nil @session.metadata["sigterm_retry_count"], "the counter should still have been reset"
+    assert_equal 4242, @session.metadata["process_pid"]
+  end
+
+  test "worker's API-error counter reset keeps a follow-up prompt queued mid-turn" do
+    @session.update!(status: :needs_input, metadata: {
+      "api_error_retry_count" => 1,
+      "api_error_last_checked_line" => 12
+    })
+    worker_view = Session.find(@session.id)
+
+    # The web process stamps the user's follow-up while the worker is mid-turn.
+    web_view = Session.find(@session.id)
+    web_view.update!(metadata: web_view.metadata.merge("pending_follow_up_prompt" => "please fix the failing test"))
+
+    AgentSessionJob.new.send(
+      :check_and_reset_api_error_retry_counter, worker_view, 10.minutes.ago, LogBuffer.new(worker_view)
+    )
+
+    @session.reload
+    assert_equal "please fix the failing test", @session.metadata["pending_follow_up_prompt"],
+      "the counter reset must not erase the user's queued follow-up"
+    assert_nil @session.metadata["api_error_retry_count"], "the counter should still have been reset"
+    assert_equal 12, @session.metadata["api_error_last_checked_line"],
+      "the scan position must survive a counter reset"
+  end
+
   test "cleanup_on_failure calls appropriate cleanup methods" do
     job = AgentSessionJob.new
 

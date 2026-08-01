@@ -101,10 +101,11 @@ class GitHubPullRequestPollerJob < ApplicationJob
     updates["github_pull_request_statuses"] = updated_statuses if statuses_changed
     updates["github_pull_request_ci_statuses"] = updated_ci_statuses if ci_statuses_changed
 
-    # Update the statuses
-    session.update!(
-      custom_metadata: (session.custom_metadata || {}).merge(updates)
-    )
+    # Update the statuses. A poll cycle spans several seconds of GitHub API calls, so
+    # the session row this job read at the start is stale by now — a whole-column write
+    # here would erase whatever the session's own worker recorded in the meantime,
+    # `github_pull_request_urls` included.
+    session.merge_custom_metadata!(updates)
 
     Rails.logger.info "[GitHubPullRequestPollerJob] Updated PR statuses for session #{session.id}: #{updated_statuses}" if statuses_changed
     Rails.logger.info "[GitHubPullRequestPollerJob] Updated CI statuses for session #{session.id}: #{updated_ci_statuses}" if ci_statuses_changed

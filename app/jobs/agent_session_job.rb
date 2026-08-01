@@ -348,11 +348,8 @@ class AgentSessionJob < ApplicationJob
       #
       # job_started_at is used to filter out stale MCP log entries from previous runs
       # when restarting a session. See GitHub issue #716.
-      session.update!(
-        job_id: job_id,
-        running_job_id: job_id,
-        metadata: (session.metadata || {}).merge("job_started_at" => Time.current.iso8601)
-      )
+      session.update!(job_id: job_id, running_job_id: job_id)
+      session.merge_metadata!("job_started_at" => Time.current.iso8601)
 
       # Create initial log entry
       if clone_only
@@ -398,9 +395,7 @@ class AgentSessionJob < ApplicationJob
         # This prevents the SIGTERM retry service from using a stale prompt and signals to the
         # pause action that the message has been picked up for processing.
         if session.metadata&.dig("pending_follow_up_prompt").present?
-          session.update!(
-            metadata: session.metadata.except("pending_follow_up_prompt", "pending_follow_up_sent_at")
-          )
+          session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
         end
       else
         log_buffer.add(
@@ -1099,22 +1094,19 @@ class AgentSessionJob < ApplicationJob
         # Also mark that the runtime CLI has been started for this session (used to determine
         # whether to use --resume vs --session-id on subsequent runs)
         #
-        # NOTE: This uses a read-modify-write pattern which is not atomic. Concurrent metadata
-        # updates elsewhere could be lost. However, since we're SETTING runtime_started=true
-        # here, this is acceptable - the flag will be present even if we lose other updates.
-        # For a complete solution to metadata race conditions, consider using PostgreSQL's
-        # jsonb_set() for atomic JSON updates or moving critical flags to dedicated columns.
-        session.reload # Ensure we have latest metadata before merging
+        # The write is a single-statement jsonb merge (Session#merge_metadata!), so a key
+        # another writer set between this job's last read and this line survives. The
+        # reload is still needed — the may_start?/may_resume? branch below reads the
+        # session's STATUS, which an external actor may have moved while we spawned.
+        session.reload
         # Drop any stale interrupt_terminate_pid from a prior turn as we record
         # the new pid: it targeted a different (now-dead) process, and clearing
         # it here closes the theoretical window where the OS recycles that pid for
         # this fresh process and the worker loop mistakes the new turn for the
         # interrupted one.
-        session.update!(
-          metadata: (session.metadata || {}).except("interrupt_terminate_pid").merge(
-            "process_pid" => process_pid,
-            "runtime_started" => true
-          )
+        session.merge_metadata!(
+          { "process_pid" => process_pid, "runtime_started" => true },
+          [ "interrupt_terminate_pid" ]
         )
 
         # Now that process_pid is stored, transition to running (unless clone-only).
@@ -1971,7 +1963,7 @@ class AgentSessionJob < ApplicationJob
     # Clear the poller's regression marker now that the on-disk copy is whole again.
     if session.metadata&.dig("transcript_regression_detected")
       with_db_retry do
-        session.update!(metadata: session.metadata.except("transcript_regression_detected"))
+        session.remove_metadata!([ "transcript_regression_detected" ])
       end
     end
     true
@@ -2636,11 +2628,9 @@ class AgentSessionJob < ApplicationJob
     log_buffer.flush
 
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "prompt_too_long_hang_detected_at_line" => current_line_count,
-          "prompt_too_long_hang_detected" => true
-        )
+      session.merge_metadata!(
+        "prompt_too_long_hang_detected_at_line" => current_line_count,
+        "prompt_too_long_hang_detected" => true
       )
     end
 
@@ -2674,13 +2664,7 @@ class AgentSessionJob < ApplicationJob
     # Process has been running successfully for the threshold duration - reset counter
     previous_count = session.metadata["sigterm_retry_count"]
     with_db_retry do
-      session.update!(
-        metadata: session.metadata.except(
-          "sigterm_retry_count",
-          "sigterm_retry_timestamps",
-          "last_sigterm_at"
-        )
-      )
+      session.remove_metadata!(Session::SIGTERM_RETRY_METADATA_KEYS)
     end
 
     log_buffer.add(
@@ -2713,12 +2697,7 @@ class AgentSessionJob < ApplicationJob
     # The scan position tracks which errors have been handled; the retry count
     # tracks how many retries have been attempted. These are independent concerns.
     with_db_retry do
-      session.update!(
-        metadata: session.metadata.except(
-          "api_error_retry_count",
-          "last_api_error_retry_at"
-        )
-      )
+      session.remove_metadata!(%w[api_error_retry_count last_api_error_retry_at])
     end
 
     log_buffer.add(
@@ -2749,12 +2728,7 @@ class AgentSessionJob < ApplicationJob
 
     previous_count = session.metadata["signal_death_retry_count"]
     with_db_retry do
-      session.update!(
-        metadata: session.metadata.except(
-          "signal_death_retry_count",
-          "last_signal_death_at"
-        )
-      )
+      session.remove_metadata!(%w[signal_death_retry_count last_signal_death_at])
     end
 
     log_buffer.add(
@@ -2797,7 +2771,7 @@ class AgentSessionJob < ApplicationJob
       # Compare numerically: metadata round-trips through JSON and the flag may
       # be stored as an Integer or a String depending on the writer.
       if process_pid && flagged && flagged.to_i == process_pid.to_i
-        session.update!(metadata: metadata.except("interrupt_terminate_pid"))
+        session.remove_metadata!([ "interrupt_terminate_pid" ])
       end
     end
   rescue => e
@@ -3074,8 +3048,7 @@ class AgentSessionJob < ApplicationJob
   def store_injected_mcp_servers(session, injected_servers)
     return if injected_servers.blank?
 
-    merged = (session.custom_metadata || {}).merge("injected_mcp_servers" => injected_servers)
-    session.update!(custom_metadata: merged)
+    session.merge_custom_metadata!("injected_mcp_servers" => injected_servers)
   end
 
   # Fail a session gracefully after `air prepare` hit a session-*configuration*
