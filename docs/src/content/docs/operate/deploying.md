@@ -194,8 +194,13 @@ worker `npm install`s a different version at runtime.
 :::
 
 :::caution[`bin/docker-entrypoint` backgrounds `claude update`]
-It also backgrounds the Playwright browser install. Sessions started in the first ~30 seconds after a
-container boot silently run the old CLI and the old Chromium.
+It also backgrounds the Playwright browser install, so Rails can answer the health check instead of
+waiting behind a 30s+ network operation. The block writes a readiness marker when it finishes and
+exports `ZIMMER_BOOT_TASKS_MARKER`; the spawn path
+[waits on that marker](/sessions/spawning/#the-boot-tasks-readiness-gate) so a session started
+seconds after a deploy does not silently run the old CLI. The wait is bounded by
+`ZIMMER_BOOT_TASKS_TIMEOUT_SECONDS` (default 120) — a hung update degrades loudly rather than
+wedging the worker.
 :::
 
 ## The workflows
