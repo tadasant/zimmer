@@ -684,6 +684,17 @@ device-code regex tuned to an *observed* 4–5 character split.
 
 Tracked in [#58](https://github.com/tadasant/zimmer/issues/58).
 
+### A timed-out headless `claude -p` child gets ~2 seconds to die, then it is the reaper's problem
+
+`NativeClaudePrintRunner` (the backend behind `SessionTitleJob` and `SendPushNotificationJob`) reaps
+its child after a timeout, but on a bound: poll `waitpid(WNOHANG)` for `REAP_WINDOW` after SIGTERM,
+escalate to SIGKILL, poll once more. That bound is deliberate — the reap runs after the run's own
+`Timeout` budget is spent, and a blocking wait on a child that ignores SIGTERM would hang a GoodJob
+worker thread. The cost is that a child which survives SIGKILL (uninterruptible sleep, say) is left
+defunct until `ZombieReaperJob`'s next tick, with a WARN naming the pid. Both signal windows are the
+caller's latency: a timed-out call that has to escalate returns roughly two seconds later than one
+whose child exits on SIGTERM.
+
 ---
 
 ## Claude Code OAuth (inherited assumptions)
