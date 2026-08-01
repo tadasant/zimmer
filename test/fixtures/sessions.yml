@@ -67,16 +67,6 @@ failed:
   branch: "main"
   execution_provider: "local_filesystem"
 
-remote_sandbox_session:
-  agent_runtime: claude_code
-  status: 1
-  prompt: "Test remote sandbox"
-  mcp_servers: []
-  config: {}
-  git_root: "https://github.com/test/repo.git"
-  branch: "main"
-  execution_provider: "remote_sandbox"
-
 with_transcript:
   agent_runtime: claude_code
   status: 0
