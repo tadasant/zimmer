@@ -726,6 +726,16 @@ class Session < ApplicationRecord
     session_id.present? && metadata&.dig("clone_path").present?
   end
 
+  # How many slug candidates to try before giving up. Each rejected write costs
+  # one round trip; a session that cannot find a free suffix in this many tries
+  # is hitting something no amount of further spinning will resolve.
+  MAX_SLUG_ATTEMPTS = 10
+
+  # The unique index that arbitrates slug ownership. `sessions` carries other
+  # unique indexes, so a rejected write is only ours to retry when it names this
+  # one — a collision anywhere else must surface on the first attempt.
+  SLUG_UNIQUE_INDEX = "index_sessions_on_slug"
+
   # Generate slug from title + datetime
   # Called by SessionTitleJob after title is generated
   def generate_slug_from_title!
@@ -740,15 +750,35 @@ class Session < ApplicationRecord
     title_slug = title.parameterize.tr("_", "-").squeeze("-").delete_prefix("-").delete_suffix("-")
     base_slug = "#{title_slug}-#{timestamp}"
 
-    # Ensure uniqueness
-    final_slug = base_slug
-    counter = 1
-    while Session.exists?(slug: final_slug)
-      final_slug = "#{base_slug}-#{counter}"
-      counter += 1
-    end
+    # Picking a free suffix by reading first is check-then-act: two title jobs
+    # for sessions created in the same minute compute the same base_slug, both
+    # read it as free, and both write it. The read below only skips suffixes
+    # already visible; `index_sessions_on_slug` is the authority, so a lost race
+    # arrives as a rejected write — advance the counter and try the next suffix
+    # rather than leaving the losing session slug-less.
+    candidate_for = ->(n) { n.zero? ? base_slug : "#{base_slug}-#{n}" }
+    counter = 0
+    attempts = 0
 
-    update!(slug: final_slug)
+    begin
+      attempts += 1
+      counter += 1 while Session.exists?(slug: candidate_for.call(counter))
+      # requires_new so a rejected write unwinds to a savepoint rather than
+      # poisoning an enclosing transaction, which would strand the retry.
+      self.class.transaction(requires_new: true) { update!(slug: candidate_for.call(counter)) }
+    rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid => e
+      raise unless slug_collision?(e)
+
+      if attempts >= MAX_SLUG_ATTEMPTS
+        # Leave the caller a record whose slug is nil rather than one holding a
+        # value the index has already refused.
+        restore_attributes([ :slug ])
+        raise
+      end
+
+      counter += 1
+      retry
+    end
   end
 
   # Create a session from an agent root configuration and start it.
@@ -989,6 +1019,22 @@ class Session < ApplicationRecord
   end
 
   private
+
+  # Whether a rejected write is another session having claimed the slug we were
+  # about to take. The race has two shapes: the winner commits after the
+  # uniqueness validator's read (the index rejects us, as RecordNotUnique) or
+  # before it (the validator rejects us, as RecordInvalid). Anything else —
+  # another unique index, an unrelated validation — is not ours to retry.
+  #
+  # @param error [ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid]
+  # @return [Boolean]
+  def slug_collision?(error)
+    case error
+    when ActiveRecord::RecordInvalid then error.record.errors.of_kind?(:slug, :taken)
+    when ActiveRecord::RecordNotUnique then error.message.include?(SLUG_UNIQUE_INDEX)
+    else false
+    end
+  end
 
   # The runtime transcript source, used to parse the stored transcript into raw
   # event hashes. Parsing is pure (no IO), so the default file_system is fine.
