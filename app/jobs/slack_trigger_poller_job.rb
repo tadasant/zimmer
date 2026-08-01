@@ -18,11 +18,13 @@
 #   set, else the SLACK_BOT_MENTION_ALLOWED_USER_IDS allow-list, else EVERYONE (see
 #   TriggerCondition#allow_all_users?). The bot's own messages never trigger anything.
 #
-# For passive_listen conditions (see #process_passive_listen_condition):
+# For passive-listening conditions (see #process_passive_listen_condition):
 # - Same channel sweep and same per-channel/per-thread bookkeeping as bot_mention,
-#   but the filter is PARTICIPATION rather than @mention: a reply fires when Zimmer
-#   has already spoken in that thread, and a top-level message fires when Zimmer has
-#   been active in that channel within CHANNEL_ENGAGEMENT_WINDOW.
+#   but the filter is PARTICIPATION rather than @mention. The two signals are two
+#   separately selectable event types, because a Trigger ORs its conditions:
+#   passive_listen_thread fires on a reply in a thread Zimmer has spoken in, and
+#   passive_listen_channel fires on a top-level message in a channel Zimmer posted
+#   in within CHANNEL_ENGAGEMENT_WINDOW.
 # - Same allow-list, and the same rule that the bot's own messages never fire. Other
 #   apps' messages don't fire passively either — passive listening is for the
 #   conversation Zimmer is already in, not for feeds.
@@ -69,15 +71,25 @@ class SlackTriggerPollerJob < ApplicationJob
   # threads (and, for passive listening, for Zimmer's own recent posts).
   RECENT_HISTORY_LIMIT = 50
 
-  # How recently Zimmer must have spoken in a channel for passive listening to fire
-  # on that channel's TOP-LEVEL messages. "Recently involved in a conversation" has
-  # to be bounded by something explicit, or a single message months ago would make
-  # the bot a permanent listener on every message in the channel.
+  # How recently Zimmer must have posted in a channel for passive_listen_channel to
+  # fire on that channel's TOP-LEVEL messages. "Recently involved in a conversation"
+  # has to be bounded by something explicit, or a single message months ago would
+  # make the bot a permanent listener on every message in the channel.
   #
   # Threads are deliberately NOT bounded by this: a reply to a thread Zimmer is part
   # of is addressed to that conversation however old it is. Those are bounded by
   # RECHECK_HORIZON instead, via the tracked-thread recheck cap.
-  CHANNEL_ENGAGEMENT_WINDOW = 24.hours
+  CHANNEL_ENGAGEMENT_WINDOW = 6.hours
+
+  # How far back a thread that passive listening has no cursor for may be replayed.
+  #
+  # Deliberately its own constant rather than CHANNEL_ENGAGEMENT_WINDOW: this bounds
+  # a one-off backfill when a thread is first discovered, which has nothing to do
+  # with how long a channel stays engaged. Tying them together would silently
+  # re-tune first-discovery behaviour every time the channel window is adjusted —
+  # and "threads have no time limit" is the property the thread condition exists to
+  # preserve.
+  THREAD_BACKFILL_HORIZON = 24.hours
 
   # Message subtypes that are events about a channel rather than somebody talking
   # in it. They can carry a `user` and would otherwise look like a passive-listening
@@ -127,7 +139,7 @@ class SlackTriggerPollerJob < ApplicationJob
     case condition.event_type
     when "bot_mention"
       process_bot_mention_condition(condition)
-    when "passive_listen"
+    when *TriggerCondition::PASSIVE_EVENT_TYPES
       process_passive_listen_condition(condition)
     else
       process_new_message_condition(condition)
@@ -357,16 +369,19 @@ class SlackTriggerPollerJob < ApplicationJob
 
   # ── Passive listening ───────────────────────────────────────────────────────
 
-  # Process a passive_listen condition: fire on messages that continue a
+  # Process a passive-listening condition: fire on messages that continue a
   # conversation Zimmer is already part of, with no @mention required.
   #
-  # Two sources, both gated on participation rather than on being addressed:
-  # - Thread replies, when Zimmer has already spoken in that thread. Not bounded by
-  #   age — a reply to a thread you are in is addressed to that conversation
-  #   whenever it lands — beyond the RECHECK_HORIZON cap that already bounds how far
-  #   back tracked threads get re-visited.
-  # - Top-level channel messages, only while Zimmer has been active in that channel
-  #   within CHANNEL_ENGAGEMENT_WINDOW.
+  # Which of the two signals runs is the condition's event type, so a Trigger can
+  # carry one, the other, or both (its conditions are ORed):
+  # - passive_listen_thread — a reply in a thread Zimmer has spoken in. Not bounded
+  #   by age, beyond the RECHECK_HORIZON cap that already bounds how far back
+  #   tracked threads get re-visited.
+  # - passive_listen_channel — a top-level message in a channel Zimmer has POSTED in
+  #   within CHANNEL_ENGAGEMENT_WINDOW. Posted at the top level, specifically: a
+  #   reply Zimmer left inside a thread makes it party to that thread, not to
+  #   everything else said in the channel.
+  # - passive_listen — deprecated, both at once.
   #
   # Bookkeeping is bot_mention's: per-channel cursors in channel_timestamps,
   # per-thread cursors in thread_timestamps, both advanced for everything fetched
@@ -424,23 +439,22 @@ class SlackTriggerPollerJob < ApplicationJob
 
     history = fetch_recent_history(channel_id)
 
-    # Walking the threads both fires on engaged threads and reports when Zimmer last
-    # spoke inside one, which is half the channel-engagement signal.
-    thread_activity_ts = check_thread_replies_passively(condition, channel_id, history, bot_id: bot_id)
+    check_thread_replies_passively(condition, channel_id, history, bot_id: bot_id) if condition.passive_threads?
 
-    # The other half: Zimmer's own top-level posts in the recent window.
+    # A thread-only condition is done here: it neither reads nor writes the
+    # channel-engagement signal.
+    return { channel_ts: new_messages.map(&:ts).max, bot_activity_ts: nil } unless condition.passive_channel?
+
+    # Engagement is Zimmer's own TOP-LEVEL posts in the recent window, and only
+    # those. A reply it left inside a thread makes it party to that thread — which
+    # is what passive_listen_thread follows — not to everything else said in the
+    # channel.
     channel_activity_ts = history.select { |msg| msg.user == bot_id }.map(&:ts).max if engagement_channel?(channel_id)
 
     # Engagement only ever moves forward. Taking the max with what is already on
-    # record matters twice: it is what keeps a channel engaged for the full window
-    # once Zimmer's post scrolls out of the recent-history window, and it stops a
-    # tick that happens to observe OLDER activity — an old bot reply in a thread
-    # that just woke up — from winding the cursor backwards and disengaging early.
-    bot_activity_ts = [
-      thread_activity_ts,
-      channel_activity_ts,
-      condition.bot_activity_timestamps[channel_id]
-    ].compact.max
+    # record is what keeps a channel engaged for the full window once Zimmer's post
+    # scrolls out of the recent-history window.
+    bot_activity_ts = [ channel_activity_ts, condition.bot_activity_timestamps[channel_id] ].compact.max
 
     if channel_engaged?(bot_activity_ts)
       new_messages.each do |message|
@@ -453,7 +467,7 @@ class SlackTriggerPollerJob < ApplicationJob
     { channel_ts: new_messages.map(&:ts).max, bot_activity_ts: bot_activity_ts }
   end
 
-  # Whether Zimmer has spoken in a channel recently enough for that channel's
+  # Whether Zimmer has posted in a channel recently enough for that channel's
   # top-level messages to count as continuing a conversation it is part of.
   def channel_engaged?(bot_activity_ts)
     return false if bot_activity_ts.blank?
@@ -465,10 +479,10 @@ class SlackTriggerPollerJob < ApplicationJob
   #
   # They don't in the alert channel. AlertService posts there with the same token
   # and therefore the same user ID, so a single automated alert would otherwise mark
-  # the channel engaged and turn the next 24 hours of it into a session per message
-  # — in the one channel guaranteed to be noisy when things are going wrong. Threads
-  # are unaffected: if Zimmer actually replied in a thread there, that IS a
-  # conversation and passive listening still follows it.
+  # the channel engaged and turn the whole engagement window of it into a session
+  # per message — in the one channel guaranteed to be noisy when things are going
+  # wrong. Threads are unaffected: if Zimmer actually replied in a thread there,
+  # that IS a conversation and passive_listen_thread still follows it.
   def engagement_channel?(channel_id)
     channel_id != alert_channel_id
   end
@@ -484,11 +498,12 @@ class SlackTriggerPollerJob < ApplicationJob
   #
   # First sight of a thread falls back to the channel cursor, which tracks TOP-LEVEL
   # messages — and in a channel whose conversation lives in threads that cursor can
-  # be weeks old, which would fire every reply since. Clamping to the engagement
-  # window means meeting a thread late costs at most a day of catch-up instead of
-  # the whole backlog.
+  # be weeks old, which would fire every reply since. Clamping to
+  # THREAD_BACKFILL_HORIZON means meeting a thread late costs at most a day of
+  # catch-up instead of the whole backlog. It bounds the backfill only; once the
+  # thread has a cursor of its own, replies in it fire however old the thread is.
   def first_sight_baseline(channel_baseline_ts)
-    [ channel_baseline_ts, format("%.6f", CHANNEL_ENGAGEMENT_WINDOW.ago.to_f) ].max_by(&:to_f)
+    [ channel_baseline_ts, format("%.6f", THREAD_BACKFILL_HORIZON.ago.to_f) ].max_by(&:to_f)
   end
 
   # Check this channel's threads for replies that continue a conversation Zimmer is
@@ -504,9 +519,6 @@ class SlackTriggerPollerJob < ApplicationJob
   # thread — that read decides participation. From then on every reply Zimmer has
   # not already inspected is in the tail, and a thread it has spoken in is
   # remembered in participating_threads, so the tail alone is enough forever after.
-  #
-  # @return [String, nil] the newest timestamp at which Zimmer was seen speaking in
-  #   one of this channel's threads
   def check_thread_replies_passively(condition, channel_id, history, bot_id:)
     channel_baseline_ts = condition.channel_timestamps[channel_id]
     return nil if channel_baseline_ts.blank?
@@ -517,7 +529,6 @@ class SlackTriggerPollerJob < ApplicationJob
     known_participating = condition.participating_threads
     thread_ts_updates = {}
     participating_updates = []
-    bot_activity_ts = nil
 
     thread_parents.each do |parent|
       thread_key = "#{channel_id}:#{parent.ts}"
@@ -539,7 +550,6 @@ class SlackTriggerPollerJob < ApplicationJob
 
       participation_ts = replies.select { |reply| reply.user == bot_id }.map(&:ts).max
       participation_ts ||= parent.ts if parent.user == bot_id
-      bot_activity_ts = [ bot_activity_ts, participation_ts ].compact.max
 
       participating = participation_ts.present? || known_participating.include?(thread_key)
       participating_updates << thread_key if participation_ts.present?
@@ -567,8 +577,6 @@ class SlackTriggerPollerJob < ApplicationJob
         "participating_threads" => known_participating | participating_updates
       ))
     end
-
-    bot_activity_ts
   end
 
   # Whether a message may fire a passive_listen condition, given that the

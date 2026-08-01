@@ -7,8 +7,10 @@
 # Condition types:
 # - "slack": Fires when a new message is posted in a Slack channel. `event_type`
 #     picks the flavour: "new_message" (everything in one channel), "bot_mention"
-#     (@mentions + DMs), or "passive_listen" (replies in threads Zimmer is already
-#     part of, plus top-level messages in channels it was recently active in).
+#     (@mentions + DMs), "passive_listen_thread" (replies in threads Zimmer has
+#     participated in), or "passive_listen_channel" (top-level messages in channels
+#     Zimmer posted in recently). The last two are separate conditions on purpose:
+#     a Trigger ORs its conditions, so carrying both is how you get "either".
 # - "schedule": Fires on a time-based schedule (recurring or one-time)
 #     Recurring: { "unit" => "hours", "interval" => 2, "timezone" => "UTC" }
 #     One-time:  { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "America/New_York" }
@@ -23,12 +25,21 @@
 # state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
   CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
-  EVENT_TYPES = %w[new_message bot_mention passive_listen].freeze
+  # The passive-listening event types, in the order the UI offers them.
+  #
+  # "passive_listen" is the deprecated original, which fires on BOTH signals at
+  # once. It is kept working so a deploy of the split can't strand a trigger that
+  # still names it; new conditions should carry the two halves separately, which is
+  # what lets a Trigger enable one without the other.
+  PASSIVE_EVENT_TYPES = %w[passive_listen_thread passive_listen_channel passive_listen].freeze
+  DEPRECATED_EVENT_TYPES = %w[passive_listen].freeze
+
+  EVENT_TYPES = (%w[new_message bot_mention] + PASSIVE_EVENT_TYPES).freeze
 
   # Slack event types that monitor a whole workspace rather than one channel, so
   # channel_id is optional for them and their cursors live per-source inside
   # `configuration` instead of in last_message_ts.
-  ALL_CHANNEL_EVENT_TYPES = %w[bot_mention passive_listen].freeze
+  ALL_CHANNEL_EVENT_TYPES = (%w[bot_mention] + PASSIVE_EVENT_TYPES).freeze
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
   AO_EVENT_NAMES = %w[session_needs_input session_failed session_archived].freeze
@@ -88,12 +99,29 @@ class TriggerCondition < ApplicationRecord
     condition_type == "slack" && thread_ts.present?
   end
 
-  # True when this is a Slack condition that listens passively — firing on replies
-  # in threads Zimmer has already spoken in, and on top-level messages in channels
-  # it was recently active in, with no @mention required. See
-  # SlackTriggerPollerJob#process_passive_listen_condition for the exact rules.
+  # True when this is a Slack condition that listens passively — firing with no
+  # @mention required on messages that continue a conversation Zimmer is already
+  # part of. See SlackTriggerPollerJob#process_passive_listen_condition.
   def passive_listen?
-    condition_type == "slack" && event_type == "passive_listen"
+    condition_type == "slack" && PASSIVE_EVENT_TYPES.include?(event_type)
+  end
+
+  # True when this condition follows threads Zimmer has participated in. No time
+  # limit applies: a reply to a thread you are in is addressed to that conversation
+  # whenever it lands.
+  def passive_threads?
+    passive_listen? && event_type != "passive_listen_channel"
+  end
+
+  # True when this condition follows top-level messages in channels Zimmer posted
+  # in recently — "recently" being SlackTriggerPollerJob::CHANNEL_ENGAGEMENT_WINDOW.
+  def passive_channel?
+    passive_listen? && event_type != "passive_listen_thread"
+  end
+
+  # True when this condition names an event type kept only for compatibility.
+  def deprecated_event_type?
+    condition_type == "slack" && DEPRECATED_EVENT_TYPES.include?(event_type)
   end
 
   # The deployment-wide allow-list for bot_mention and passive_listen conditions: a comma-separated
@@ -381,8 +409,15 @@ class TriggerCondition < ApplicationRecord
       case event_type
       when "bot_mention"
         channel_name.present? ? "Slack: @mention in ##{channel_name} + DMs" : "Slack: @mention in all channels + DMs"
+      when "passive_listen_thread"
+        scope = channel_name.present? ? "in ##{channel_name}" : "in all channels"
+        "Slack: replies in threads Zimmer joined, #{scope}"
+      when "passive_listen_channel"
+        scope = channel_name.present? ? "##{channel_name}" : "all channels"
+        "Slack: messages in #{scope} Zimmer posted in recently"
       when "passive_listen"
-        channel_name.present? ? "Slack: passive listening in ##{channel_name}" : "Slack: passive listening in all channels"
+        scope = channel_name.present? ? "##{channel_name}" : "all channels"
+        "Slack: passive listening (deprecated: threads + channels) in #{scope}"
       else
         channel_name.present? ? "Slack: ##{channel_name}" : "Slack trigger"
       end
