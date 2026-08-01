@@ -36,16 +36,33 @@ fi
 # so the binary baked into the image gets shadowed by the volume's stale copy.
 # Playwright: MCP servers use playwright-stealth-mcp-server@latest which may
 # need a newer Chromium than what was installed at Docker build time.
-# Sessions that start before the updates finish use the prior version, which
-# is acceptable — it's the same version that was running on the previous deploy.
+#
+# Sessions that start before the updates finish would otherwise use the prior
+# version silently, so the block writes a readiness marker when it finishes and
+# exports the path. BootTasksReadiness (app/services/boot_tasks_readiness.rb)
+# reads it on the spawn path and waits, briefly and with a deadline, before
+# launching a runtime CLI. Exporting the variable here is what arms that gate:
+# processes that never run this entrypoint (dev, test, bin/dev) never wait.
+export ZIMMER_BOOT_TASKS_MARKER="${ZIMMER_BOOT_TASKS_MARKER:-/tmp/zimmer-boot-tasks-ready}"
+rm -f "$ZIMMER_BOOT_TASKS_MARKER" 2>/dev/null || true
+
 {
+  boot_tasks_status=""
+
   if command -v claude &>/dev/null; then
-    claude update 2>&1 || echo "Warning: Claude CLI update failed, continuing with existing version"
+    claude update 2>&1 || {
+      echo "Warning: Claude CLI update failed, continuing with existing version"
+      boot_tasks_status="${boot_tasks_status}claude-update-failed "
+    }
   fi
 
   if [ -x "./bin/ensure-playwright-browsers" ]; then
-    ./bin/ensure-playwright-browsers || true
+    ./bin/ensure-playwright-browsers || boot_tasks_status="${boot_tasks_status}playwright-install-failed "
   fi
+
+  # Always write the marker, including on failure: the gate must unblock either
+  # way. The contents are what tell the spawn path whether to warn.
+  echo "${boot_tasks_status:-ok}" > "$ZIMMER_BOOT_TASKS_MARKER" 2>/dev/null || true
 } &
 
 # If running the rails server then create or migrate existing database
