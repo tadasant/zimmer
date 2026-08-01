@@ -413,6 +413,53 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     end
   end
 
+  # ---- Nil subprocess status (ZombieReaperJob reaped the gh child) ----
+  #
+  # Open3.capture3 returns `[stdout, stderr, nil]` when something else reaps the child
+  # before its waiter thread does — in production, ZombieReaperJob's blanket
+  # `Process.waitpid(-1, WNOHANG)` in this same worker. A nil status is a failed call.
+
+  test "fetch_pr_status treats a nil status as a failure instead of raising" do
+    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+
+    job = GitHubPullRequestPollerJob.new
+
+    result = nil
+    assert_nothing_raised do
+      result = job.send(:fetch_pr_status, "owner", "repo", "42")
+    end
+
+    assert_nil result, "an unverifiable gh call must not report a PR state"
+  end
+
+  test "fetch_ci_status treats a nil status as a failure, not as the exit-8 pending code" do
+    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+
+    job = GitHubPullRequestPollerJob.new
+
+    result = nil
+    assert_nothing_raised do
+      result = job.send(:fetch_ci_status, "owner", "repo", "42")
+    end
+
+    # The success? / exitstatus == 8 line dereferenced the nil twice. Neither branch may
+    # be taken: an unknown exit code is not the "checks pending" code.
+    assert_nil result
+  end
+
+  test "fetch_ci_status still treats a real exit 8 as pending checks" do
+    checks = [ { "bucket" => "pending", "state" => "IN_PROGRESS" } ].to_json
+    Open3.stubs(:capture3).returns([ checks, "", exit_status(8) ])
+
+    assert_equal "pending", GitHubPullRequestPollerJob.new.send(:fetch_ci_status, "owner", "repo", "42")
+  end
+
+  def exit_status(code)
+    Struct.new(:exitstatus) do
+      def success? = exitstatus.zero?
+    end.new(code)
+  end
+
   class TestJobWithCIStatusPending < GitHubPullRequestPollerJob
     def fetch_pr_status(_owner, _repo, _pr_number)
       "open"

@@ -244,8 +244,9 @@ class GitCloneService
 
       stdout, stderr, status = run_subprocess(command_array, cwd: cwd, timeout: timeout)
 
-      unless status.success?
-        raise GitError, "Git command failed: #{command_array.join(' ')}\nStdout: #{stdout}\nStderr: #{stderr}"
+      unless SubprocessStatus.success?(status)
+        raise GitError, "Git command failed (#{SubprocessStatus.describe_failure(status)}): " \
+          "#{command_array.join(' ')}\nStdout: #{stdout}\nStderr: #{stderr}"
       end
 
       # Combine stdout and stderr for compatibility with existing code

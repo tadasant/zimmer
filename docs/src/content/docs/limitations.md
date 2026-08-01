@@ -1073,6 +1073,33 @@ entry. Nothing retries it later.
 
 Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 
+### The zombie reaper steals exit statuses from live waiters
+
+`ZombieReaperJob` reaps **any** child — `Process.waitpid(-1, Process::WNOHANG)` — every 5 minutes,
+in the same worker process that runs the pollers and `AgentSessionJob`. It is not pid-aware, so it
+cannot tell a leaked zombie from a child another thread is currently waiting on. In production it
+reaps 1–2 children every 5 minutes, so it wins that race constantly.
+
+Two consequences, one handled and one not:
+
+- **A lost exit status is handled.** `Open3.capture3`'s `wait_thr` is a `Process.detach` thread; when
+  the reaper gets there first, that thread's `waitpid` gets `ECHILD` and `wait_thr.value` returns
+  nil, so `capture3` returns `[stdout, stderr, nil]`. Every call site reads that status through
+  `SubprocessStatus`, which treats nil as a failure — the caller retries on its next tick rather than
+  crashing or, worse, treating an unverifiable result as a success. What is still lost is the work:
+  a poll tick throws away a `gh` result it already has in hand, because it cannot vouch for it.
+- **A lost `handle_exit` is not.** `ProcessLifecycleManager#wait_nonblock` calls `waitpid` on a
+  specific pid to route the child's exit through `handle_exit`, which owns SIGTERM retry, `/compact`
+  retry on context-length errors, API server-error backoff, and `failure_reason` mapping. If the
+  reaper reaps that child first, `wait_nonblock` raises `ECHILD` and `AgentSessionJob` falls through
+  to its signal-based fallback, which calls `session.pause!` directly — bypassing every one of those
+  recovery branches. A session that should have auto-retried lands in `needs_input` instead, with no
+  explanation.
+
+Tracked in [#273](https://github.com/tadasant/zimmer/issues/273), along with the upstream question:
+with the tini init shim in place this loop is supposed to find nothing, so something is spawning
+children nobody waits on.
+
 ---
 
 ## Triggers

@@ -74,15 +74,15 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
       GithubSearchService.search_issues("is:open is:pr repo:owner/a")
     end
     assert_includes error.message, "gh api search/issues failed"
-    assert_includes error.message, "without a status"
+    assert_includes error.message, SubprocessStatus::REAPED_DESCRIPTION
   end
 
   test "configured? is false on a nil gh auth status, without traversing the rescue" do
     # The same reaped-child race on the auth preflight. configured?'s broad `rescue => e`
     # already downgraded the old `nil.success?` NoMethodError to false, so a bare
     # `assert_not configured?` would pass against the unfixed code too. The observable delta
-    # the fix introduces is that a nil status is now handled inline (`status&.success? ||
-    # false`) instead of raising into the rescue and logging a misleading
+    # the fix introduces is that a nil status is now handled inline (SubprocessStatus.success?)
+    # instead of raising into the rescue and logging a misleading
     # "gh auth preflight failed: NoMethodError" WARN — so pin that: no WARN is emitted.
     BoundedSubprocess.expects(:run)
       .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)

@@ -53,7 +53,7 @@ class ClaudeCodeUpdateJob < ApplicationJob
     stdout, _stderr, status = Timeout.timeout(30) do
       Open3.capture3("claude", "--version")
     end
-    return nil unless status.success?
+    return nil unless SubprocessStatus.success?(status)
 
     # Extract semver from output like "2.1.87 (Claude Code)"
     match = stdout.strip.match(/(\d+\.\d+\.\d+)/)
