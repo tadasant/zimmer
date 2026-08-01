@@ -217,6 +217,22 @@ class AlertSnippetTest < ActiveSupport::TestCase
     assert_includes snippet, "db.example.com:5432/zimmer"
   end
 
+  # Added alongside UnclassifiedFailureReporter, which routes raw agent-process
+  # stderr through this seam: a Google OAuth token in a failing MCP server's
+  # output was the one credential shape the rules did not cover.
+  test "build redacts Google OAuth access and refresh tokens" do
+    access = "ya29." + "A0AVA9y1abcdefghijklmnopqrstuvwxyz0123456789"
+    refresh = "1//" + "0gLm3xAbCdEfGhIjKlMnOpQrStUvWxYz"
+    raw = "google auth failed\naccess_token used: #{access}\nrefresh: #{refresh}"
+
+    snippet = AlertSnippet.build(raw)
+
+    assert_not_includes snippet, access
+    assert_not_includes snippet, refresh
+    assert_includes snippet, "[REDACTED]"
+    assert_includes snippet, "google auth failed"
+  end
+
   test "build redacts a secret inside an exception message" do
     token = "xox" + "b-9999999999-ZZZZZZZZZZZZZZZZ"
     error = exception_with([], klass: RuntimeError, message: "auth failed for token #{token}")

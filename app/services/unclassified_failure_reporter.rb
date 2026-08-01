@@ -28,43 +28,6 @@
 # per session. A genuinely *new* failure mode has a different summary and pages
 # on its own.
 class UnclassifiedFailureReporter
-  # Cap on how much unmatched output travels into the alert. Slack truncates at
-  # 3000 chars per section and the alert also carries context lines; this keeps
-  # the operative error visible without dumping a whole stderr log.
-  MAX_OUTPUT_CHARS = 1200
-
-  # Secret shapes scrubbed from the unmatched output before it leaves the box.
-  #
-  # This is the first code path that routes raw agent-process stderr and
-  # transcript text to Slack — session logs already carry both, but they stay
-  # inside Zimmer's own UI. A failing stdio MCP server whose stderr echoes its
-  # spawn command or request headers would otherwise put an injected credential
-  # in #eng-alerts verbatim. Truncation is not redaction, so scrub first.
-  #
-  # Deliberately shape-based rather than value-based: the reporter has no list
-  # of the session's secrets to match against, and the interesting case is a
-  # credential Zimmer never knew about.
-  SECRET_PATTERNS = [
-    /\bsk-[A-Za-z0-9_\-]{8,}/,
-    /\bgh[pousr]_[A-Za-z0-9]{8,}/,
-    /\bxox[abeoprs]-[A-Za-z0-9-]{8,}/,
-    /\bAIza[A-Za-z0-9_\-]{8,}/,
-    /\b(?:ya29|1\/\/)[A-Za-z0-9_\-.]{8,}/,
-    /(?<=[Bb]earer )\S+/,
-    /(?<=[Aa]uthorization: )\S+/,
-    /(?<=-----BEGIN )[A-Z ]*(?=PRIVATE KEY-----)/
-  ].freeze
-
-  # Key=value / key: value shapes whose VALUE is replaced, keeping the key so
-  # the reader still learns which credential was involved.
-  SECRET_ASSIGNMENT_PATTERN =
-    /((?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd|credential)["']?\s*[:=]\s*["']?)([^\s"',;}]+)/i
-
-  # Credentials embedded in a URL: https://user:pass@host
-  URL_CREDENTIAL_PATTERN = %r{(?<=://)[^\s/:@]+:[^\s/@]+(?=@)}
-
-  REDACTED = "[REDACTED]"
-
   class << self
     # Report a failure that no classifier recognized.
     #
@@ -80,15 +43,24 @@ class UnclassifiedFailureReporter
     # @param logger [StructuredLogger, nil] logger for the loud log line
     # @return [Boolean] whether the alert was sent
     def report(kind:, summary:, source:, session: nil, output: nil, logger: nil)
-      trimmed = redact(output).truncate(MAX_OUTPUT_CHARS).presence
+      # Loud log first, so the unknown is greppable even if Slack is down.
+      log_loudly(
+        kind: kind, summary: summary, source: source, session: session,
+        output: AlertSnippet.build(output.presence), logger: logger
+      )
 
-      log_loudly(kind: kind, summary: summary, source: source, session: session, output: trimmed, logger: logger)
-
+      # The unmatched output goes through `error:`, not hand-pasted into
+      # `details`. AlertSnippet owns redaction, clamping, UTF-8 coercion, and
+      # fencing — and it has to: this output is raw agent-process stderr, which
+      # arrives as bytes and can end mid-multibyte-character when
+      # BoundedSubprocess kills a process group on deadline. Re-implementing any
+      # of that here would be a second, weaker copy of a security-relevant seam.
       AlertService.raise_alert(
         "Unclassified failure: #{kind}",
-        details: alert_details(kind: kind, summary: summary, session: session, output: trimmed),
+        details: alert_details(kind: kind, summary: summary, session: session),
         source: source,
-        dedup_key: dedup_key(kind, summary)
+        dedup_key: dedup_key(kind, summary),
+        error: output.presence
       )
     rescue => e
       # Self-guarding, like SessionStateMachine#report_swallowed_side_effect.
@@ -96,18 +68,6 @@ class UnclassifiedFailureReporter
       # blow up, and callers must not have to know that.
       Rails.logger.error("[UnclassifiedFailureReporter] Failed to report unclassified #{kind}: #{e.message}")
       false
-    end
-
-    # Strip credential-shaped substrings from output bound for Slack.
-    # @param output [String, nil]
-    # @return [String] always a String, possibly empty
-    def redact(output)
-      text = output.to_s.strip
-      return text if text.empty?
-
-      SECRET_PATTERNS.each { |pattern| text = text.gsub(pattern, REDACTED) }
-      text = text.gsub(SECRET_ASSIGNMENT_PATTERN) { "#{Regexp.last_match(1)}#{REDACTED}" }
-      text.gsub(URL_CREDENTIAL_PATTERN, REDACTED)
     end
 
     private
@@ -131,16 +91,15 @@ class UnclassifiedFailureReporter
       end
     end
 
-    def alert_details(kind:, summary:, session:, output:)
+    def alert_details(kind:, summary:, session:)
       lines = []
       lines << "No classifier matched this #{kind}, so the failure was handled by the generic path."
       lines << ""
       lines << "*What happened:* #{summary}"
-      lines << "*Unmatched output:*\n```\n#{output}\n```" if output
       lines << ""
       lines << "This usually means an upstream wording or exit-code change outran a pattern in " \
-               "the retry strategies. Compare the output above against the classifiers before " \
-               "assuming the session simply failed."
+               "the retry strategies. Compare the unmatched output below against the classifiers " \
+               "before assuming the session simply failed."
       if session
         lines << ""
         lines << "<#{AppUrl.base_url}/sessions/#{session.id}|View session #{session.id} in Zimmer>"

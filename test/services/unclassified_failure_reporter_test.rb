@@ -16,7 +16,9 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
     AlertService.expects(:raise_alert).with do |title, opts|
       assert_equal "Unclassified failure: process exit", title
       assert_match(/exit code: 2/, opts[:details])
-      assert_match(/Some brand new error wording/, opts[:details])
+      # The output travels as error:, which AlertService renders through
+      # AlertSnippet into its own fenced block — not pasted into details.
+      assert_match(/Some brand new error wording/, opts[:error])
       assert_equal "ProcessLifecycleManager#handle_exit", opts[:source]
       true
     end.returns(true)
@@ -112,8 +114,29 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
   end
 
   # This is the first path routing raw agent stderr and transcript text to Slack.
-  # Session logs already carry both, but they stay inside Zimmer's own UI.
-  test "redacts credential-shaped substrings out of the unmatched output" do
+  # Session logs already carry both, but they stay inside Zimmer's own UI. The
+  # output travels as `error:` so AlertSnippet redacts, clamps, and fences it —
+  # a second, weaker copy of that seam here would be the actual risk.
+  test "hands the unmatched output to AlertService as error: so it is redacted" do
+    captured = nil
+    AlertService.stubs(:raise_alert).with do |_title, opts|
+      captured = opts[:error]
+      true
+    end.returns(true)
+
+    UnclassifiedFailureReporter.report(
+      kind: "process exit", summary: "exit code: 2", source: "Test",
+      output: "spawn failed: npx -y some-mcp"
+    )
+
+    assert_equal "spawn failed: npx -y some-mcp", captured,
+      "the raw output must reach error:, not be pre-mangled into details"
+  end
+
+  # The complement: the raw output must NOT also be pasted into `details`, or
+  # redaction would be bypassed for the copy that reaches Slack first.
+  test "does not paste the unmatched output into details" do
+    token = "ghp_" + ("A" * 20)
     captured = nil
     AlertService.stubs(:raise_alert).with do |_title, opts|
       captured = opts[:details]
@@ -122,39 +145,22 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
 
     UnclassifiedFailureReporter.report(
       kind: "process exit", summary: "exit code: 2", source: "Test",
-      output: <<~OUT
-        spawn failed: npx -y some-mcp --key sk-abcdefghijklmnop1234
-        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig
-        env: GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAA API_KEY=super-secret-value
-        remote: https://alice:hunter2@github.com/org/repo.git
-      OUT
+      output: "env: GITHUB_TOKEN=#{token}"
     )
 
     assert captured
-    assert_no_match(/sk-abcdefghijklmnop1234/, captured)
-    assert_no_match(/eyJhbGciOiJIUzI1NiJ9/, captured)
-    assert_no_match(/ghp_AAAAAAAAAAAAAAAAAAAA/, captured)
-    assert_no_match(/super-secret-value/, captured)
-    assert_no_match(/hunter2/, captured)
-    # The surrounding diagnostic text must survive — redaction, not deletion.
-    assert_match(/spawn failed/, captured)
-    assert_match(/API_KEY=/, captured, "keep the key so the reader knows which credential it was")
+    assert_not_includes captured, token
+    assert_includes captured, "exit code: 2", "the summary still belongs in details"
   end
 
-  test "redaction leaves ordinary error prose untouched" do
-    captured = nil
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      captured = opts[:details]
-      true
-    end.returns(true)
+  # And the seam it delegates to really does redact that shape.
+  test "AlertSnippet redacts the credential shapes this reporter forwards" do
+    token = "ghp_" + ("A" * 20)
 
-    UnclassifiedFailureReporter.report(
-      kind: "process exit", summary: "exit code: 2", source: "Test",
-      output: "Error: the CLI invented a brand new way to die (code 7)"
-    )
+    snippet = AlertSnippet.build("env: GITHUB_TOKEN=#{token}")
 
-    assert_match(/the CLI invented a brand new way to die \(code 7\)/, captured)
-    assert_no_match(/REDACTED/, captured)
+    assert_not_includes snippet, token
+    assert_includes snippet, "[REDACTED]"
   end
 
   # Callers must not have to know that announcing a failure could itself fail.
