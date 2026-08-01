@@ -64,7 +64,7 @@ class Api::V1::SessionsControllerContractTest < ActionDispatch::IntegrationTest
   # A single-message error reads as a plain sentence, never as the stringified
   # array the old singular-key/array-value shape produced.
   test "a single-message error renders message as a sentence" do
-    post api_v1_session_follow_up_path(sessions(:needs_input)), params: {}, headers: @headers
+    post follow_up_api_v1_session_path(sessions(:needs_input)), params: {}, headers: @headers
 
     assert_response :unprocessable_entity
     json = assert_error_envelope(response.body)

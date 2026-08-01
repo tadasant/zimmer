@@ -117,45 +117,4 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     session = Session.order(:created_at).last
     assert_equal (root.default_mcp_servers || []).sort, session.mcp_servers.sort
   end
-
-  # Parity with POST /api/v1/sessions (#81): the Settings-page global defaults
-  # apply whether or not an agent_root is named. Without this, a rootless MCP
-  # spawn silently ran on the DB column default.
-  test "a spawn without an agent_root honors the global default runtime and model" do
-    AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
-
-    @tool.call("git_root" => "https://github.com/test/repo.git", "prompt" => "hi", "title" => "rootless")
-
-    session = Session.order(:id).last
-    assert_equal "codex", session.agent_runtime
-    assert_equal "gpt-5.4", session.config["model"]
-  end
-
-  test "an explicit runtime still beats the global default on a rootless spawn" do
-    AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
-
-    @tool.call(
-      "git_root" => "https://github.com/test/repo.git",
-      "prompt" => "hi",
-      "title" => "rootless",
-      "agent_runtime" => "claude_code"
-    )
-
-    session = Session.order(:id).last
-    assert_equal "claude_code", session.agent_runtime
-    assert ModelCatalog.valid_model?("claude_code", session.config["model"]),
-      "#{session.config['model'].inspect} is not a claude_code model"
-  end
-
-  test "a rootless spawn falls back to the hardcoded default with no global set" do
-    AppSetting.delete_all
-
-    @tool.call("git_root" => "https://github.com/test/repo.git", "prompt" => "hi", "title" => "rootless")
-
-    session = Session.order(:id).last
-    assert_equal RuntimeRegistry::DEFAULT_RUNTIME, session.agent_runtime
-    assert_equal ModelCatalog.default_for(RuntimeRegistry::DEFAULT_RUNTIME), session.config["model"]
-  end
 end

@@ -63,7 +63,7 @@ module Mcp
         - **MCP servers:** Start with `default_mcp_servers`. Drop servers the task doesn't need (least-privilege). Add extras when the task requires tools beyond the defaults. When this connection is restricted to specific agent roots, you cannot add servers beyond the defaults.
         - **Skills:** Start with `default_skills`. You can freely add skills beyond the defaults. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
 
-        **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku` for claude_code, `gpt-5.5`/`gpt-5.4` for codex). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults — the same chain the web form uses, and it applies whether or not you name an `agent_root`. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
+        **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku` for claude_code, `gpt-5.5`/`gpt-5.4` for codex). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
 
         **Use cases:**
         - Start a new agent task on a repository
@@ -105,7 +105,7 @@ module Mcp
 
         session = Session.new(session_attributes(args))
         apply_agent_root_defaults!(session, agent_root_name, explicit_runtime: args["agent_runtime"].present?) if agent_root_name
-        apply_global_defaults!(session, rooted: agent_root_name.present?, explicit_runtime: args["agent_runtime"].present?)
+        ensure_model!(session)
         session.save!
 
         if session.prompt.present?
@@ -195,30 +195,15 @@ module Mcp
         session.config = (session.config || {}).merge("model" => model)
       end
 
-      # The last two tiers of the shared resolution chain:
-      #
-      #   request param  →  agent root  →  AppSetting  →  hardcoded default
-      #
-      # apply_agent_root_defaults! covers the root tier and runs only when a root
-      # was named. This always runs, so a spawn with no agent_root still honors
-      # the global base defaults set on the Settings page instead of dropping
-      # straight to the column default — and the model is always explicit in
-      # config, so the spawn never depends on a runtime-side default.
-      def apply_global_defaults!(session, rooted:, explicit_runtime:)
-        app_setting = AppSetting.current
-
-        # A root's own default_runtime already folds the global in, so the runtime
-        # only needs filling when no root was named — otherwise Session.new leaves
-        # the column default standing and the Settings page is silently ignored.
-        if !rooted && !explicit_runtime
-          session.agent_runtime = app_setting.default_runtime.presence || RuntimeRegistry::DEFAULT_RUNTIME
-        end
-
+      # The model is always explicit in config so the spawn never depends on a
+      # runtime-side default. In practice apply_agent_root_defaults! has already
+      # filled it in: this tool has no git_root param, so every spawn it can
+      # complete names an agent_root (Session validates git_root presence, and
+      # the root is the only thing that supplies it).
+      def ensure_model!(session)
         return if session.config&.dig("model").present?
 
-        session.config = (session.config || {}).merge(
-          "model" => app_setting.resolved_default_model_for(session.agent_runtime)
-        )
+        session.config = (session.config || {}).merge("model" => ModelCatalog.default_for(session.agent_runtime))
       end
 
       def format_session(session)
