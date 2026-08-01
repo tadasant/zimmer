@@ -246,13 +246,11 @@ class Session < ApplicationRecord
   # The agent root used for routing freeform user requests from the dashboard
   ROUTER_AGENT_ROOT = "zimmer-router"
 
-  # Execution providers a session may declare.
-  #
-  # Local filesystem is the only one. A "remote_sandbox" value used to be accepted here and
-  # advertised through the REST API and the MCP start_session tool, but the provider behind it
-  # (lib/execution/providers/remote_sandbox.rb) is a stub whose every method returns
-  # Result.failure("not yet implemented") — so the enum offered a choice that could not work.
-  # Agents run unsandboxed on the app host; see docs limitations.md and
+  # Execution providers a session may declare. Local filesystem is the only one: agents run
+  # unsandboxed on the app host, and Zimmer has no sandboxed alternative to offer. The one
+  # other provider class that exists, lib/execution/providers/remote_sandbox.rb, is an unwired
+  # stub whose every method returns Result.failure("not yet implemented"), so this enum lists
+  # only what can actually run. See docs limitations.md and
   # https://github.com/tadasant/zimmer/issues/49.
   EXECUTION_PROVIDERS = %w[local_filesystem].freeze
 

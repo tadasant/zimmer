@@ -354,10 +354,10 @@ class SessionTest < ActiveSupport::TestCase
     assert session.valid?
   end
 
-  # Zimmer has exactly one execution provider and no sandbox. `remote_sandbox` was in
-  # this enum, and in the MCP start_session tool's schema described as "runs in isolated
-  # sandbox," while the class behind it returned `Result.failure("not yet implemented")`
-  # from every method. The enum is the advertisement; it now matches what exists.
+  # The enum is an advertisement — the REST API and the MCP start_session tool both offer
+  # its values to callers — so it must list only providers that can actually run. Zimmer has
+  # exactly one, and `Execution::Providers::RemoteSandbox` returns
+  # `Result.failure("not yet implemented")` from every method.
   test "local_filesystem is the only execution provider" do
     assert_equal [ "local_filesystem" ], Session::EXECUTION_PROVIDERS
   end

@@ -50,9 +50,10 @@ look like: fugit parses the field, and `GoodJob::CronEntry#next_at` hands straig
 
 A five-field expression is the same thing with the seconds field pinned to `0`. So a one-minute
 cadence anywhere in the table is a choice about how often the job should run, not a limit on how
-often it could. `test/config/cron_schedule_test.rb` pins this — it parses every expression in the
-three environment files and asserts the six-field ones are 30 seconds apart, so a fugit upgrade that
-changed the behavior would fail CI rather than silently slow the pollers down.
+often it could. `test/config/cron_schedule_test.rb` pins this: it scans every expression in the
+three environment files, and for each six-field one it asserts fugit still fires it more than once
+a minute — 30 seconds apart, for the `*/30 * * * * *` the whole config uses. A fugit upgrade that
+stopped reading the seconds field fails CI instead of silently slowing three pollers to a crawl.
 :::
 
 ## What the PR comment poller acts on

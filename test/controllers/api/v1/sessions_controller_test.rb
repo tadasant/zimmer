@@ -183,9 +183,9 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes json["messages"].join(" "), "must reference an existing session"
   end
 
-  # `execution_provider` is a permitted create param that used to accept `remote_sandbox`,
-  # a provider that has never existed. The REST surface has to reject it the same way the
-  # MCP tool's enum now refuses to offer it, or an API caller can still store the value.
+  # `execution_provider` is a permitted create param, so the REST surface has to reject a
+  # provider that cannot run — not just decline to advertise it, the way the MCP tool's enum
+  # does. Otherwise an API caller can still store a value no code path can honor.
   test "should reject create with the stub remote_sandbox execution provider" do
     assert_no_difference("Session.count") do
       post api_v1_sessions_path, params: {

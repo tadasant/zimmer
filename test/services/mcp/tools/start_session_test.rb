@@ -97,10 +97,9 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_includes result, "## Session Started Successfully"
   end
 
-  # The tool schema is what an agent reads to decide what to send. It advertised
-  # "remote_sandbox" — a provider whose every method returns not-implemented — so an
-  # agent could pick a value that could never work. The enum now derives from the model
-  # constant rather than restating it, which is what keeps the two from drifting again.
+  # The tool schema is what an agent reads to decide what to send, so a value it offers has
+  # to be one the model accepts and a provider can run. Deriving the enum from the model
+  # constant rather than restating it is what holds that true without a second edit.
   test "the execution_provider enum is exactly what the model accepts" do
     enum = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :execution_provider, :enum)
 
