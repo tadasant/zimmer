@@ -18,7 +18,7 @@ Terraform only provisions the **host**. The app image, its env, and the data sto
 | `region` / `droplet_size` | default `nyc3` / `s-2vcpu-4gb` |
 | `domain` | `""` by default. Set it to turn on [custom-domain HTTPS over the tailnet](/operate/deploying/#custom-domain-https-over-the-tailnet) — cloud-init runs a Caddy terminator on `:443` fronting kamal-proxy. Terraform does not create the DNS record; the `domain-cert` workflow owns the A record. |
 | `manage_project` | still `false`. Remote state fixes the case where Terraform *created* the project, but a **pre-existing** one (both envs have one) still 409s on its account-unique name. Turning it on needs a one-time `terraform import` first; a DO Project is just a console folder, so it isn't worth the failure mode. |
-| `admin_ssh_pubkeys` | Operator/tooling public keys cloud-init authorizes for `root`, on top of the Kamal deploy key. Per environment, and the environments are **[deliberately not the same](/operate/ssh-access/#who-is-authorized-where)** — do not reconcile them. `[]` by default: set it in `*.tfvars`, never as a module default, so a fork does not silently authorize someone else's key. It rides cloud-init, so a key added here [reaches only a rebuilt box](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet). |
+| `admin_ssh_pubkeys` | Operator/tooling public keys cloud-init authorizes for `root`, on top of the Kamal deploy key. Per environment, and the environments are **[deliberately not the same](/operate/ssh-access/#who-is-authorized-where)** — do not reconcile them. `[]` by default, and it is the one non-secret variable that does **not** come from the committed tfvars: staging reads it from the [`ADMIN_SSH_PUBKEYS` Actions variable](/operate/ssh-access/#operator-keys), because `staging.tfvars.example` is public and copied verbatim onto the runner, so a key there would authorize that key on every fork's droplet. It rides cloud-init, so a key added [reaches only a rebuilt box](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet). |
 | `ssh_key_fingerprints` | DigitalOcean-registered keys. **Leave it empty.** It is `ForceNew` on `digitalocean_droplet`, so adding a key makes the deploy workflow's auto-approved `terraform apply` *destroy and recreate the droplet* — skipping the tailnet-node reap that only runs behind `recreate_droplet`, which lands the replacement as `zimmer-<env>-1` and breaks the hostname the deploy resolves. Use `admin_ssh_pubkeys`: it rides cloud-init, which is under `ignore_changes`, so it can never force-replace the box. |
 | `managed_db_cluster_name` | `""` for staging (Kamal runs a throwaway Postgres accessory); set for production |
 | `app_required_backends` | Client backends the database must be able to serve. Not a free parameter — it is what `ConnectionBudget.required_backends` derives (see [the connection budget](/operate/deploying/#the-database-connection-budget)), and a test fails if the two drift. A `lifecycle.postcondition` on the managed cluster fails the plan when its plan slug cannot serve it. |
@@ -85,6 +85,15 @@ resize command.
 | `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | base64 of the `zimmer-secrets-staging` resolver service-account key — the first link of the `${VAR}` chain ([Parameter Store](/operate/secrets-parameter-store/#staging-gets-its-own-project-and-one-more-link-than-production)). Optional: without it the app boots fine and every `${VAR}` resolves from `staging.yml.enc` as before |
 | `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
 
+## GitHub Actions variables
+
+Not everything CI needs is a secret. One value is a **variable** (Settings → Secrets and variables →
+Actions → Variables, or `gh variable set`):
+
+| Variable | Used by |
+| --- | --- |
+| `ADMIN_SSH_PUBKEYS` | `deploy-staging.yml` → `TF_VAR_admin_ssh_pubkeys`. A JSON list of strings: `["ssh-ed25519 AAAA… op@host"]`. Optional — unset means `[]` and a droplet that authorizes no operator key ([Operator keys](/operate/ssh-access/#operator-keys)). Deliberately a variable and not a secret: public keys are not secret, and GitHub masks a secret's value everywhere in a log, which would blank out the accounting line the deploy prints |
+
 :::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
 A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own comment says so.
 `docs/DEPLOYING_ON_DIGITALOCEAN.md` told you to use `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; that was
@@ -141,7 +150,7 @@ One ed25519 keypair (comment `zimmer-production-operator`) fixes that, and it tr
 | Half | Where it lives | How it gets there |
 | --- | --- | --- |
 | private | the `ZIMMER_OPERATOR_SSH_KEY` env var, **base64-encoded** | a GitHub Actions secret (`STAGING_OPERATOR_SSH_KEY`; `PROD_OPERATOR_SSH_KEY` in the [private repo](/operate/companion-repo/)) → Kamal `env.secret` → `OperatorSshKeyProvisioner` decodes it to `~/.ssh/zimmer_operator_ed25519` (`0600`) at boot and at every spawn |
-| public | `admin_ssh_pubkeys` in `*.tfvars` | cloud-init → `/root/.ssh/authorized_keys`, reachable only over the tailnet on `:2222` |
+| public | the `ADMIN_SSH_PUBKEYS` Actions **variable** → `TF_VAR_admin_ssh_pubkeys` (never the committed tfvars — [why](/operate/ssh-access/#operator-keys)) | cloud-init → `/root/.ssh/authorized_keys`, reachable only over the tailnet on `:2222` |
 
 Four details are load-bearing:
 

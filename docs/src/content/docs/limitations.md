@@ -199,6 +199,24 @@ SSH](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet) — whi
 converges, since it cannot be casually rebuilt — but that is a separate action, not something the
 variable does.
 
+### Staging's admin key list is invisible state in an Actions variable
+
+Staging's `admin_ssh_pubkeys` comes from the `ADMIN_SSH_PUBKEYS` repository variable, not from the
+committed `staging.tfvars.example` — the file is copied verbatim into every deploy, and this repo is
+public, so a key in it would be [authorized for `root` on every fork's
+droplet](/operate/ssh-access/#operator-keys). The cost of moving it is that the list now lives
+somewhere no diff shows: a repository setting, editable by anyone with admin, reviewed by nobody.
+
+Unset, it falls through to `[]`, and that failure is silent in the direction that matters. The deploy
+still succeeds (Kamal carries its own key), health checks still pass, and the box is still reachable
+over Tailscale SSH on `:22` — only the publickey door on `:2222` is gone, which nothing exercises
+until an `ssh-*` MCP server inside a session fails to attach. And because the list rides cloud-init,
+an unset variable only bites on the rebuild that consumed it, long after it was unset.
+
+The deploy prints the effective list — key count and comments — on every run, and warns louder when
+`recreate_droplet` is on. That makes it a line in the log rather than a discovery, but it is still a
+log nobody reads on a green deploy.
+
 ### A rebuilt droplet has exactly one fallback door, and it is the DigitalOcean console
 
 The firewall now permits **zero public TCP**. On a `recreate_droplet` rebuild, if `tailscale up` fails
