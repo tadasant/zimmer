@@ -11,10 +11,19 @@
 <div id="flash" class="fixed top-4 right-4 z-50 space-y-2">
   <% messages.each do |type, message| %>
     <%
-      parts = message.to_s.split("|")
-      display_message = parts[0]
-      action = parts[1]
-      resource_id = parts[2]
+      # Parsed from the right, and only honored when the tail is the one action
+      # that exists with a numeric id behind it. Splitting from the left would
+      # truncate any message whose own prose contains a "|" — a category named
+      # "Design|Research" would show up as "Moved to "Design".
+      raw_message = message.to_s
+      head, _, resource_id = raw_message.rpartition("|")
+      display_message, _, action = head.rpartition("|")
+
+      unless action == "undo_archive" && resource_id.match?(/\A\d+\z/)
+        display_message = raw_message
+        action = nil
+        resource_id = nil
+      end
     %>
     <div data-controller="flash"
          data-flash-duration-value="5000"
