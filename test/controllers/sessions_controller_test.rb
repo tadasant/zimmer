@@ -1168,16 +1168,21 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "unarchive turbo_stream carries the session page's own chrome" do
     # A broadcast is fire-and-forget; the reply to the user's own click is not.
     # A status-changing action therefore re-renders the badge and header actions
-    # itself rather than trusting the cable to be up.
+    # itself rather than trusting the cable to be up. The restore service is
+    # stubbed because what is under test is the response's shape, not the clone
+    # and transcript work behind it (covered by UnarchiveSessionService's tests).
     session = sessions(:archived)
+    UnarchiveSessionService.stubs(:call).returns(
+      UnarchiveSessionService::Result.new(success?: true, session: session, clone_restored: false)
+    )
 
     post unarchive_session_url(session), as: :turbo_stream
 
     assert_response :success
-    assert_not session.reload.archived?
     assert_match(/<turbo-stream\s+action="replace"\s+target="session_#{session.id}_status_badge"/, response.body)
     assert_match(/<turbo-stream\s+action="replace"\s+target="session_#{session.id}_header_actions"/, response.body)
     assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
+    assert_match(/Session restored from trash\. Ready to continue\./, response.body)
   end
 
   test "unarchive turbo_stream streams the not-in-trash refusal" do
