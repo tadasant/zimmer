@@ -27,7 +27,8 @@
 #   in within CHANNEL_ENGAGEMENT_WINDOW.
 # - Same allow-list, and the same rule that the bot's own messages never fire. Other
 #   apps' messages don't fire passively either — passive listening is for the
-#   conversation Zimmer is already in, not for feeds.
+#   conversation Zimmer is already in, not for feeds — and neither do @mentions,
+#   which belong to bot_mention (see #passive_candidate?).
 # - No DM polling: every DM to the bot is already directed at it, and a bot_mention
 #   condition covers DMs unconditionally.
 class SlackTriggerPollerJob < ApplicationJob
@@ -215,10 +216,18 @@ class SlackTriggerPollerJob < ApplicationJob
   # self-loop is closed. Messages with no `user` at all (legacy webhooks) never fire
   # anything: there is no identity to check an allow-list against.
   def mention_for?(condition, message, bot_id)
-    return false unless message.text&.include?("<@#{bot_id}>")
+    return false unless mentions_bot?(message, bot_id)
     return false if message.user == bot_id
 
     condition.user_allowed?(message.user)
+  end
+
+  # The single notion of "this message @mentions Zimmer", shared by the bot_mention
+  # filter and the passive-listening exclusion. They MUST agree: two different
+  # notions would double-fire whatever fell between them, which is the exact bug the
+  # exclusion exists to close.
+  def mentions_bot?(message, bot_id)
+    message.text.to_s.include?("<@#{bot_id}>")
   end
 
   # Poll a single configured channel for @bot mentions from allowed users
@@ -601,11 +610,22 @@ class SlackTriggerPollerJob < ApplicationJob
   # webhooks) have no identity to check the allow-list against, and message
   # subtypes that aren't somebody talking — joins, topic changes, edits — never
   # count as a conversation continuing.
+  #
+  # An @mention never fires passively either, on EITHER passive event type. A
+  # mention posted inside a thread Zimmer is in is both a mention and a reply in a
+  # participated thread, and a mention in an engaged channel is both a mention and a
+  # top-level message there — so without this, one Slack message spawned two
+  # concurrent sessions on identical text, one per matching trigger. Mentions belong
+  # to bot_mention, which exists to catch being addressed directly; the passive
+  # types own everything else. A deployment running a passive condition with NO
+  # bot_mention condition therefore hears nothing when it is @mentioned — that is
+  # the intended division of labour, not an oversight.
   def passive_candidate?(condition, message, bot_id)
     return false if message.user.blank?
     return false if message.user == bot_id
     return false if message.bot_id.present?
     return false if PASSIVE_IGNORED_SUBTYPES.include?(message.subtype)
+    return false if mentions_bot?(message, bot_id)
 
     condition.user_allowed?(message.user)
   end

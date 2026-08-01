@@ -69,7 +69,7 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     assert_includes output, "- **Goal:** PR is merged"
     assert_includes output, "- **Sessions Created:** 5"
     assert_includes output, "### Prompt Template"
-    assert_includes output, "- **slack** — Slack: #eng-ci"
+    assert_match(/- \*\*\[id \d+\] slack\*\* — Slack: #eng-ci/, output)
     assert_includes output, '    "channel_id": "C0A6BF8T45R"'
     assert_includes output, "### Recent Sessions"
     assert_includes output, "- **##{session.id}**"

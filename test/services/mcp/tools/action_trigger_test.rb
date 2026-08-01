@@ -207,6 +207,192 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
       "the old slack condition must be gone — conditions are OR'd, so it would keep firing"
   end
 
+  # --- Multi-condition support ----------------------------------------------
+  #
+  # A Trigger ORs its conditions and both the web UI and the REST API can express
+  # several. Until the `conditions` array existed this tool could not, so the
+  # two-condition passive-listening trigger the feature was built for was
+  # unexpressible through MCP.
+
+  test "creates a trigger with two conditions" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "MCP Passive Listener",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "Something landed: {{link}}",
+      "conditions" => [
+        { "trigger_type" => "slack", "configuration" => { "event_type" => "passive_listen_thread" } },
+        { "trigger_type" => "slack", "configuration" => { "event_type" => "passive_listen_channel" } }
+      ]
+    )
+
+    trigger = Trigger.find_by!(name: "MCP Passive Listener")
+    assert_equal 2, trigger.trigger_conditions.count
+    assert_equal %w[passive_listen_channel passive_listen_thread],
+                 trigger.trigger_conditions.map(&:event_type).sort
+    # Each condition's id is surfaced so the next update can address one of them.
+    trigger.trigger_conditions.each { |condition| assert_includes output, "[id #{condition.id}]" }
+  end
+
+  test "create requires a trigger_type on every element of conditions" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Half Specified",
+        "agent_root_name" => "zimmer",
+        "prompt_template" => "x",
+        "conditions" => [
+          { "trigger_type" => "slack", "configuration" => {} },
+          { "configuration" => { "event_type" => "passive_listen_channel" } }
+        ]
+      )
+    end
+
+    assert_match(/conditions\[1\] is missing "trigger_type"/, error.message)
+  end
+
+  test "conditions and the flat trigger_type pair are mutually exclusive" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Ambiguous",
+        "trigger_type" => "slack",
+        "agent_root_name" => "zimmer",
+        "prompt_template" => "x",
+        "conditions" => [ { "trigger_type" => "slack", "configuration" => {} } ]
+      )
+    end
+
+    assert_match(/cannot be combined/, error.message)
+  end
+
+  test "update adds a second condition alongside the existing one" do
+    trigger = triggers(:enabled_slack_trigger)
+    existing = trigger.trigger_conditions.sole
+
+    output = @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "conditions" => [
+        { "id" => existing.id, "configuration" => { "event_type" => "passive_listen_thread", "channel_id" => "C123" } },
+        { "trigger_type" => "slack", "configuration" => { "event_type" => "passive_listen_channel", "channel_id" => "C123" } }
+      ]
+    )
+
+    trigger.reload
+    assert_equal 2, trigger.trigger_conditions.count
+    assert_equal %w[passive_listen_channel passive_listen_thread],
+                 trigger.trigger_conditions.map(&:event_type).sort
+    # The existing row was edited in place, not replaced.
+    assert_includes trigger.trigger_conditions.map(&:id), existing.id
+    assert_includes output, "[id #{existing.id}]"
+  end
+
+  # The whole reason update is an upsert: these keys are the Slack poller's only
+  # copy of its cursors, and a replace would take them with it.
+  test "update preserves poller cursors and the allow-list of a condition it edits" do
+    trigger = triggers(:enabled_slack_trigger)
+    existing = trigger.trigger_conditions.sole
+    existing.update!(configuration: existing.configuration.merge(
+      "channel_timestamps" => { "C123" => "1704067200.000000" },
+      "thread_timestamps" => { "C123:1704060000.000000" => "1704067100.000000" },
+      "bot_activity_timestamps" => { "C123" => "1704067000.000000" },
+      "participating_threads" => [ "C123:1704060000.000000" ],
+      "allowed_user_ids" => %w[U222]
+    ))
+
+    @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "conditions" => [
+        { "id" => existing.id, "configuration" => { "event_type" => "passive_listen_thread", "channel_id" => "C123" } }
+      ]
+    )
+
+    existing.reload
+    assert_equal "passive_listen_thread", existing.event_type
+    assert_equal({ "C123" => "1704067200.000000" }, existing.channel_timestamps)
+    assert_equal({ "C123:1704060000.000000" => "1704067100.000000" }, existing.thread_timestamps)
+    assert_equal({ "C123" => "1704067000.000000" }, existing.bot_activity_timestamps)
+    assert_equal [ "C123:1704060000.000000" ], existing.participating_threads
+    assert_equal %w[U222], existing.allowed_user_ids
+  end
+
+  test "update leaves a condition the conditions array does not mention alone" do
+    trigger = triggers(:multi_condition_trigger)
+    untouched = trigger.trigger_conditions.find { |c| c.condition_type == "schedule" }
+    edited = trigger.trigger_conditions.find { |c| c.condition_type == "slack" }
+    before = untouched.configuration
+
+    @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "conditions" => [ { "id" => edited.id, "configuration" => { "channel_id" => "C_NEW" } } ]
+    )
+
+    trigger.reload
+    assert_equal 3, trigger.trigger_conditions.count
+    assert_equal before, untouched.reload.configuration
+    assert_equal "C_NEW", edited.reload.channel_id
+  end
+
+  test "update omitting a condition's configuration leaves that configuration as it is" do
+    trigger = triggers(:enabled_slack_trigger)
+    existing = trigger.trigger_conditions.sole
+    before = existing.configuration
+
+    @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "conditions" => [ { "id" => existing.id } ]
+    )
+
+    assert_equal before, existing.reload.configuration
+  end
+
+  test "update removes a condition only when asked explicitly" do
+    trigger = triggers(:multi_condition_trigger)
+    doomed = trigger.trigger_conditions.find { |c| c.condition_type == "schedule" }
+
+    @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "conditions" => [ { "id" => doomed.id, "remove" => true } ]
+    )
+
+    trigger.reload
+    assert_equal 2, trigger.trigger_conditions.count
+    assert_nil TriggerCondition.find_by(id: doomed.id)
+  end
+
+  test "update rejects a remove without an id, and an id from another trigger" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id,
+                 "conditions" => [ { "trigger_type" => "slack", "remove" => true } ])
+    end
+    assert_match(/sets "remove" without an "id"/, error.message)
+
+    foreign = triggers(:multi_condition_trigger).trigger_conditions.first
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id,
+                 "conditions" => [ { "id" => foreign.id, "configuration" => {} } ])
+    end
+    assert_match(/does not belong to trigger/, error.message)
+  end
+
+  test "update rejects an added condition with no trigger_type" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id,
+                 "conditions" => [ { "configuration" => { "channel_id" => "C1" } } ])
+    end
+
+    assert_match(/conditions\[0\] is missing "trigger_type"/, error.message)
+  end
+
   test "deletes a trigger" do
     trigger = triggers(:new_slack_trigger)
 
