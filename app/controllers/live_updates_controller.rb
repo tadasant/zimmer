@@ -8,6 +8,6 @@
 # (live_updates_status_controller.js) and this action renders the current state.
 class LiveUpdatesController < ApplicationController
   def status
-    render partial: "shared/live_updates_paused_banner", layout: false
+    render partial: "shared/live_updates_paused_banner"
   end
 end
