@@ -38,8 +38,23 @@ const DOCS_PUBLIC = path.join(HERE, "..", "public");
 const APP_PUBLIC = path.join(HERE, "..", "..", "public");
 const APP_ICONS = path.join(APP_PUBLIC, "icons");
 
-// Centred on the mascot's face in the 1254x1254 master.
-const PORTRAIT = { left: 277, top: 120, width: 700, height: 700 };
+// The face crop, hand-tuned against a 1254x1254 master and rescaled to whatever
+// the master actually is. Replacing the artwork with a differently-sized render
+// keeps the same framing; replacing it with a differently-composed one still
+// needs these three numbers re-tuned by eye.
+const REFERENCE_MASTER = 1254;
+const PORTRAIT_AT_REFERENCE = { left: 277, top: 120, size: 700 };
+
+function portraitCrop(width) {
+  const scale = width / REFERENCE_MASTER;
+  const size = Math.round(PORTRAIT_AT_REFERENCE.size * scale);
+  return {
+    left: Math.round(PORTRAIT_AT_REFERENCE.left * scale),
+    top: Math.round(PORTRAIT_AT_REFERENCE.top * scale),
+    width: size,
+    height: size,
+  };
+}
 
 // Sampled from the master: the outer navy at the corners and the lighter navy
 // the radial background lifts to behind the mascot.
@@ -50,7 +65,18 @@ const NAVY_CORE = "#04204f";
 const MASKABLE_SCALE = 0.8;
 
 const full = () => sharp(SOURCE);
-const portrait = () => sharp(SOURCE).extract(PORTRAIT);
+
+// Every icon is square and `render()` resizes with fit: "fill", so a non-square
+// master would silently stretch the mascot rather than fail. Say so instead.
+async function readMaster() {
+  const { width, height } = await sharp(SOURCE).metadata();
+  if (width !== height) {
+    throw new Error(
+      `${path.basename(SOURCE)} is ${width}x${height}; the icon set needs a square master.`,
+    );
+  }
+  return width;
+}
 
 // Small renders lose local contrast to the resampler; a light unsharp mask puts
 // the glasses and the snout back. Larger renders are left alone.
@@ -109,7 +135,8 @@ async function maskable(size) {
 
 // A .ico is a directory of images; every modern browser and both desktop OSes
 // read PNG-compressed entries, which keeps the file a fraction of the size of
-// the equivalent BMP entries.
+// the equivalent BMP entries. Sizes must be 1-255: the directory stores each
+// dimension in a single byte.
 function ico(pngs) {
   const HEADER = 6;
   const ENTRY = 16;
@@ -121,12 +148,13 @@ function ico(pngs) {
   let offset = HEADER + ENTRY * pngs.length;
   const entries = pngs.map(({ size, data }) => {
     const entry = Buffer.alloc(ENTRY);
-    entry.writeUInt8(size === 256 ? 0 : size, 0); // 0 means 256
-    entry.writeUInt8(size === 256 ? 0 : size, 1);
+    entry.writeUInt8(size, 0); // one byte, so 256px would have to be written as 0
+    entry.writeUInt8(size, 1);
     entry.writeUInt8(0, 2); // palette size, 0 for truecolour
     entry.writeUInt8(0, 3); // reserved
     entry.writeUInt16LE(1, 4); // colour planes
-    entry.writeUInt16LE(32, 6); // bits per pixel
+    // Advisory only: readers take the real depth from each PNG's own IHDR.
+    entry.writeUInt16LE(32, 6);
     entry.writeUInt32LE(data.length, 8);
     entry.writeUInt32LE(offset, 12);
     offset += data.length;
@@ -145,6 +173,9 @@ async function main() {
     await writeFile(file, data);
     written.push(`${path.relative(path.join(HERE, "..", ".."), file)}  ${data.length} bytes`);
   };
+
+  const crop = portraitCrop(await readMaster());
+  const portrait = () => sharp(SOURCE).extract(crop);
 
   const favicon16 = await render(portrait(), 16);
   const favicon32 = await render(portrait(), 32);

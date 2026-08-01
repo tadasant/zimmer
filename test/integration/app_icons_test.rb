@@ -20,13 +20,14 @@ class AppIconsTest < ActionDispatch::IntegrationTest
     MANIFEST["icons"].each do |icon|
       expected = icon["sizes"].split("x").map(&:to_i)
 
-      assert_equal expected, png_dimensions(Rails.public_path.join(icon["src"].delete_prefix("/"))),
+      assert_equal expected, png_dimensions(public_file(icon["src"])),
                    "#{icon['src']} does not match its declared #{icon['sizes']}"
     end
   end
 
   test "manifest splits any and maskable rather than declaring one icon both" do
-    purposes = MANIFEST["icons"].map { |icon| icon["purpose"] }
+    # `purpose` is optional and defaults to "any", so read it the way a browser does.
+    purposes = MANIFEST["icons"].map { |icon| icon["purpose"] || "any" }
 
     assert_includes purposes, "any"
     assert_includes purposes, "maskable"
@@ -50,6 +51,22 @@ class AppIconsTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The docs site is built by Astro, which does not validate references into its
+  # own public/ directory — a renamed favicon there builds clean and ships a
+  # broken tab icon. Nothing else in CI would catch it, so check it from here.
+  DOCS = Rails.root.join("docs")
+
+  test "every icon the docs site references exists in docs/public" do
+    sources = [ DOCS.join("astro.config.mjs"), DOCS.join("src/components/Head.astro") ]
+    referenced = sources.flat_map { |file| file.read.scan(%r{["']/(favicon[\w.-]*|apple-touch-icon\.png)["']}) }.flatten.uniq
+
+    assert_operator referenced.size, :>=, 4, "expected the docs favicon set to be referenced"
+    referenced.each do |name|
+      assert_path_exists DOCS.join("public", name),
+                         "docs/#{name} is referenced by the docs site but missing from docs/public"
+    end
+  end
+
   test "favicon.ico carries the 16, 32 and 48 pixel renders" do
     ico = Rails.public_path.join("favicon.ico").binread
 
@@ -61,6 +78,11 @@ class AppIconsTest < ActionDispatch::IntegrationTest
   end
 
   private
+
+  # Icon srcs carry a ?v= cache buster; the file on disk does not.
+  def public_file(src)
+    Rails.public_path.join(src.split("?").first.delete_prefix("/"))
+  end
 
   # PNG puts an IHDR chunk with width and height at a fixed offset.
   def png_dimensions(path)
