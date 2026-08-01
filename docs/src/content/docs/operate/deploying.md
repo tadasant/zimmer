@@ -344,6 +344,9 @@ cd infra/terraform
 cp staging.tfvars.example staging.tfvars
 export TF_VAR_do_token=… TF_VAR_tailscale_auth_key=… TF_VAR_deploy_ssh_pubkey="$(cat ~/.ssh/kamal.pub)"
 export AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=…   # DO Spaces keys, for the state backend
+# Operator keys, if you want the publickey door on :2222. In CI this comes from the
+# ADMIN_SSH_PUBKEYS Actions variable; it is never committed. Unset means [].
+export TF_VAR_admin_ssh_pubkeys='["ssh-ed25519 AAAA… you@laptop"]'
 terraform init -input=false -backend-config=backend.staging.hcl
 terraform apply -input=false -auto-approve -var-file=staging.tfvars
 ```
