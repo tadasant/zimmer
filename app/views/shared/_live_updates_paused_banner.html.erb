@@ -1,0 +1,17 @@
+<%# "Live updates paused" — BroadcastService's circuit breaker is open, so Turbo
+    Stream broadcasts are being dropped and every page is frozen at whatever it
+    last rendered. Without this the freeze is indistinguishable from "nothing is
+    happening" and the user waits on a page that will never move (issue #86).
+    Renders nothing while broadcasts are flowing. %>
+<% resume_at = live_updates_paused_until %>
+<% if resume_at %>
+  <div role="status"
+       class="bg-amber-500 text-white text-sm px-4 py-2 text-center shadow-md">
+    <span class="font-semibold">⏸ Live updates paused.</span>
+    Broadcasts are failing, so this page has stopped updating on its own. Your sessions keep running.
+    <span class="opacity-90">
+      Updates resume automatically <%= live_updates_resume_phrase(resume_at) %>.
+    </span>
+    <%= link_to "Health details", health_dashboard_path, class: "underline font-medium" %>
+  </div>
+<% end %>

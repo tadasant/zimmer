@@ -830,8 +830,11 @@
       `translate` makes it the containing block for the detail view's `fixed`
       follow-up form — the form spans the drawer width and sticks to the drawer's
       bottom rather than escaping to the full viewport. %>
+  <%# Dismisses the drawer on click — via #overlayClick, not #close, so that a
+      click landing here while the panel is still sliding in is swallowed rather
+      than acted on (see the settle gate in session_drawer_controller.js). %>
   <div data-session-drawer-target="overlay"
-       data-action="click->session-drawer#close"
+       data-action="click->session-drawer#overlayClick"
        class="hidden fixed inset-0 bg-black/40 z-[60]"></div>
 
   <div data-session-drawer-target="panel"
