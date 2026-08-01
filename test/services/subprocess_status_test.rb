@@ -47,7 +47,8 @@ class SubprocessStatusTest < ActiveSupport::TestCase
 
     assert_equal SubprocessStatus::REAPED_DESCRIPTION, description
     assert_includes description, "reaped"
-    assert_not_includes description, "exit status "
+    # Must not read as an ordinary non-zero exit, which is the whole point.
+    assert_not_includes description, "exit status"
   end
 
   test "describe_failure appends stderr when present" do
@@ -76,10 +77,24 @@ class SubprocessStatusTest < ActiveSupport::TestCase
     description = SubprocessStatus.describe_failure(fake_process_status(signal: 9), "killed")
 
     assert_equal "killed by signal 9: killed", description
-    assert_not_includes description, "exit status "
+    assert_not_includes description, "exit status"
     # Still a failure, and still not the reaped case.
     assert_not SubprocessStatus.success?(fake_process_status(signal: 9))
     assert_not_includes description, SubprocessStatus::REAPED_DESCRIPTION
+  end
+
+  test "a status double that reports an exit code is never asked for its signal" do
+    # Existing suites stub Process::Status with bare Minitest::Mocks. Asking such a
+    # double for #signaled? / #termsig on the ordinary non-zero path turns an
+    # unrelated test red, so the signal branch must stay unreachable for them —
+    # and #nil? is off limits for the same reason (Minitest::Mock undefines it).
+    double = Minitest::Mock.new
+    double.expect(:success?, false)
+    double.expect(:exitstatus, 7)
+
+    assert_not SubprocessStatus.success?(double)
+    assert_equal "exit status 7", SubprocessStatus.describe_failure(double)
+    assert_mock double
   end
 
   test "unknown? is true only when we never learned how the command ended" do

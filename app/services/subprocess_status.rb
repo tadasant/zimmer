@@ -28,14 +28,18 @@
 module SubprocessStatus
   # Reason text for the nil-status case, kept in one place so log greps and
   # tests have a stable string to match.
-  REAPED_DESCRIPTION = "no exit status (child reaped before its waiter; exit code unknown)"
+  REAPED_DESCRIPTION = "no exit code (child reaped before its waiter, so the exit code was never read)"
 
   module_function
 
   # @param status [Process::Status, nil]
   # @return [Boolean] true only when the command demonstrably exited 0
   def success?(status)
-    return false if status.nil?
+    # Plain truthiness rather than `#nil?`: this is called with test doubles as
+    # well as real statuses, and a bare `Minitest::Mock` undefines `#nil?`, so
+    # asking would be an unexpected invocation on the one object that exists to
+    # stand in for a status. Truthiness needs no method at all.
+    return false unless status
 
     status.success?
   end
@@ -49,7 +53,12 @@ module SubprocessStatus
   # @param status [Process::Status, nil]
   # @return [Boolean]
   def unknown?(status)
-    status.nil?
+    # Asked from nil's side on purpose. `status.nil?` and `!status` both dispatch
+    # to the status object, and a bare Minitest::Mock — the shape much of the
+    # suite uses to stand in for a Process::Status — undefines `#nil?` and `#!`
+    # alike, so either would blow up on a double rather than answer a question
+    # about it. `nil.equal?` touches only nil.
+    nil.equal?(status)
   end
 
   # Nil-safe `#exitstatus`. Returns nil when the status is nil (unknown) — so
@@ -65,11 +74,7 @@ module SubprocessStatus
   # One-line explanation of why a call is being treated as failed, suitable for
   # interpolating into a log line or an exception message.
   #
-  # Runs on the failure path, so it takes care not to add a failure of its own:
-  # a signaled child has a nil `#exitstatus` (BoundedSubprocess SIGKILLs whole
-  # process groups on timeout, so that is reachable), and interpolating it would
-  # print "exit status " and reproduce in miniature the unreadable log line this
-  # module exists to prevent.
+  # Runs on the failure path, so it takes care not to add a failure of its own.
   #
   # @param status [Process::Status, nil]
   # @param stderr [String, nil] the command's stderr, appended when present
@@ -81,8 +86,17 @@ module SubprocessStatus
 
   def failure_reason(status)
     return REAPED_DESCRIPTION if unknown?(status)
-    return "killed by signal #{status.termsig}" if status.signaled?
 
-    "exit status #{status.exitstatus}"
+    code = status.exitstatus
+    return "exit status #{code}" if code
+
+    # A real Process::Status reports a nil #exitstatus only for a child killed by
+    # a signal — reachable here, since BoundedSubprocess SIGKILLs whole process
+    # groups on timeout. Interpolating it would print "exit status " and
+    # reproduce in miniature the unreadable log line this module exists to
+    # prevent. #termsig is asked for only on this branch, so a status double that
+    # reports a real exit code never has to answer it.
+    signal = status.termsig
+    signal ? "killed by signal #{signal}" : "no exit code reported"
   end
 end
