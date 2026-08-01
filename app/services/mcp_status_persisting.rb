@@ -19,8 +19,6 @@ module McpStatusPersisting
   # @param server_statuses [Hash] Server name => { status:, error:, connected_at:, failed_at: }
   # @return [Boolean] true if any configured server changed to failed
   def update_session_mcp_status(server_statuses)
-    return false if server_statuses.empty?
-
     configured_servers = @session.user_selected_mcp_servers
     trackable_servers = @session.all_mcp_servers
     return false if trackable_servers.empty?
@@ -37,7 +35,23 @@ module McpStatusPersisting
       # can show real connection state for every server in the runtime config.
       trackable_servers.each do |server_name|
         new_status = server_statuses[server_name]
-        next unless new_status
+
+        # A server the detector said nothing about is not a server that is not
+        # there. Claude Code writes a per-server log directory only once the
+        # process gets far enough to log; a server whose process died before that
+        # produces no status at all, and skipping it here left it absent from
+        # mcp_servers_status entirely — which every reader (the API, the MCP
+        # tools, a person looking at the row) takes as "not configured" rather
+        # than "configured and broken". Seed the same `pending` the UI already
+        # assumes so the server is at least listed.
+        #
+        # `||=` is the whole safety property: the placeholder is written only
+        # when nothing is recorded yet, so a real status — from this poll or any
+        # earlier one — is never overwritten by it.
+        if new_status.nil?
+          current_mcp_status[server_name] ||= { "status" => "pending" }
+          next
+        end
 
         current_status = current_mcp_status[server_name] || { "status" => "pending" }
 
