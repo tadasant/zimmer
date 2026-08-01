@@ -28,11 +28,11 @@ class SkillsConfigTest < ActiveSupport::TestCase
     # category "workflow", distinct from the Zimmer-specific ones under "zimmer".
     skill_names = SkillsConfig.names
 
-    assert_includes skill_names, "pr"
+    assert_includes skill_names, "open-pr"
     assert_includes skill_names, "wait-for-ci"
     assert_includes skill_names, "recover-from-compaction-thrashing"
 
-    %w[pr wait-for-ci recover-from-compaction-thrashing].each do |name|
+    %w[open-pr wait-for-ci recover-from-compaction-thrashing].each do |name|
       assert_equal "workflow", SkillsConfig.find(name).category,
         "#{name} should be grouped under the workflow category"
     end
@@ -41,11 +41,11 @@ class SkillsConfigTest < ActiveSupport::TestCase
     assert_not_includes skill_names, "analyze-agent-transcript"
   end
 
-  test "the pr skill bundles the git-workflow reference its links resolve against" do
-    # skills/pr/SKILL.md deep-links references/GIT_WORKFLOW.md; AIR bundles the
-    # reference into .claude/skills/pr/references/ at prepare time. Without this
+  test "the open-pr skill bundles the git-workflow reference its links resolve against" do
+    # skills/open-pr/SKILL.md deep-links references/GIT_WORKFLOW.md; AIR bundles the
+    # reference into .claude/skills/open-pr/references/ at prepare time. Without this
     # wiring those links are dead.
-    assert_includes SkillsConfig.find("pr").references, "git-workflow"
+    assert_includes SkillsConfig.find("open-pr").references, "git-workflow"
   end
 
   # Test finding skills

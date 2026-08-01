@@ -77,11 +77,11 @@
       "engineering-practices"
     ]
   },
-  "pr": {
-    "id": "pr",
+  "open-pr": {
+    "id": "open-pr",
     "title": "Push Working State to a PR",
     "description": "Push working state to a PR — commit all changes, push to a feature branch, open the PR, self-review, run a fresh-eyes subagent review, and wait for CI. Generic workflow usable across all repos. Its git conventions (branch naming, PR description format, verification/proof standards, wrong-branch recovery) live in the bundled `git-workflow` reference.",
-    "path": "pr",
+    "path": "open-pr",
     "category": "workflow",
     "user_invocable": false,
     "default_in_roots": [

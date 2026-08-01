@@ -92,7 +92,7 @@ Two rules worth internalizing before you touch them:
 - **The catalog is the only source of skills — vendor what you need.** Zimmer's
   catalog is self-contained and single-scope (everything resolves under `@local/`),
   so a standalone install inherits nothing from an outside orchestrator. Generic
-  workflow skills (`pr`, `wait-for-ci`, `recover-from-compaction-thrashing`) are
+  workflow skills (`open-pr`, `wait-for-ci`, `recover-from-compaction-thrashing`) are
   vendored into `skills/` under the `workflow` category, alongside the
   Zimmer-specific ones under `zimmer`. With one scope there is no cross-scope
   shortname collision to fear — but do not register the same id twice.

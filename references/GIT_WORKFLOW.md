@@ -1,7 +1,7 @@
 # Git Workflow Guide
 
 This document describes the standard git workflow for this repository. It is the
-shared reference the `pr` skill links to for branch naming, PR description format,
+shared reference the `open-pr` skill links to for branch naming, PR description format,
 and verification/proof standards.
 
 ## Branch Naming Convention

@@ -306,7 +306,7 @@ are ORed, not ANDed. Up to 20 repos.
 Labels are matched **case-insensitively**, because GitHub's `label:` search qualifier is. Typing
 `Ready To Merge` for a repo label named `ready to merge` works.
 
-The motivating flow: the `pr` skill applies `ready to merge` as its terminal act, and a
+The motivating flow: the `open-pr` skill applies `ready to merge` as its terminal act, and a
 `github_label` trigger on that label is what picks it up and fires the merge gate.
 
 ### `github_issue`
