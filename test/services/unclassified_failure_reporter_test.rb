@@ -111,6 +111,61 @@ class UnclassifiedFailureReporterTest < ActiveSupport::TestCase
     assert_match(/brand new wording/, logged)
   end
 
+  # This is the first path routing raw agent stderr and transcript text to Slack.
+  # Session logs already carry both, but they stay inside Zimmer's own UI.
+  test "redacts credential-shaped substrings out of the unmatched output" do
+    captured = nil
+    AlertService.stubs(:raise_alert).with do |_title, opts|
+      captured = opts[:details]
+      true
+    end.returns(true)
+
+    UnclassifiedFailureReporter.report(
+      kind: "process exit", summary: "exit code: 2", source: "Test",
+      output: <<~OUT
+        spawn failed: npx -y some-mcp --key sk-abcdefghijklmnop1234
+        Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig
+        env: GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAA API_KEY=super-secret-value
+        remote: https://alice:hunter2@github.com/org/repo.git
+      OUT
+    )
+
+    assert captured
+    assert_no_match(/sk-abcdefghijklmnop1234/, captured)
+    assert_no_match(/eyJhbGciOiJIUzI1NiJ9/, captured)
+    assert_no_match(/ghp_AAAAAAAAAAAAAAAAAAAA/, captured)
+    assert_no_match(/super-secret-value/, captured)
+    assert_no_match(/hunter2/, captured)
+    # The surrounding diagnostic text must survive — redaction, not deletion.
+    assert_match(/spawn failed/, captured)
+    assert_match(/API_KEY=/, captured, "keep the key so the reader knows which credential it was")
+  end
+
+  test "redaction leaves ordinary error prose untouched" do
+    captured = nil
+    AlertService.stubs(:raise_alert).with do |_title, opts|
+      captured = opts[:details]
+      true
+    end.returns(true)
+
+    UnclassifiedFailureReporter.report(
+      kind: "process exit", summary: "exit code: 2", source: "Test",
+      output: "Error: the CLI invented a brand new way to die (code 7)"
+    )
+
+    assert_match(/the CLI invented a brand new way to die \(code 7\)/, captured)
+    assert_no_match(/REDACTED/, captured)
+  end
+
+  # Callers must not have to know that announcing a failure could itself fail.
+  test "a failing alert never propagates out of report" do
+    AlertService.stubs(:raise_alert).raises(StandardError, "slack is on fire")
+
+    assert_nothing_raised do
+      UnclassifiedFailureReporter.report(kind: "process exit", summary: "exit code: 2", source: "Test")
+    end
+  end
+
   # A logger that blows up must not swallow the alert that follows it.
   test "still alerts when the loud log itself fails" do
     Rails.logger.stubs(:error).raises(StandardError, "logger is broken")

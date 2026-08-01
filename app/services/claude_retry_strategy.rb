@@ -140,6 +140,13 @@ class ClaudeRetryStrategy
     nil
   end
 
+  # Claude's classifiers answer real questions about a real exit, so an exit that
+  # matches none of them is genuinely unknown and worth paging on. See
+  # CodexRetryStrategy#classifies_exits? for the runtime where that is not true.
+  def classifies_exits?
+    true
+  end
+
   private
 
   # Check if stderr contains a context length error.

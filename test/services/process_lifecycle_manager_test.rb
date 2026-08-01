@@ -2349,6 +2349,94 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_match(/not_applicable/, alert[1][:details])
   end
 
+  # The largest noise risk in the change. CodexRetryStrategy classifies nothing
+  # but a missing rollout, so an ordinary Codex failure ALWAYS reaches the
+  # unclassified branch — that is its documented design, not news. Paging on it
+  # would be a standing hourly alert for expected behavior.
+  test "a runtime whose strategy classifies nothing logs but does not page" do
+    @session.update!(agent_runtime: "codex")
+    @mock_cli_adapter.stubs(:retry_strategy).returns(
+      CodexRetryStrategy.new(
+        cli_adapter: @mock_cli_adapter, session: @session, file_system: @mock_file_system,
+        process_manager: @mock_process_manager, rate_limit_tracker: nil, logger: Rails.logger
+      )
+    )
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action, "the session still fails — only the page is withheld"
+  end
+
+  # The summary IS the dedup key, so it must carry the runtime. Without it a
+  # routine failure on one runtime holds the key and suppresses a genuinely
+  # novel failure on another that happens to share its exit code.
+  test "the unclassified alert dedup key distinguishes runtimes sharing an exit code" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |_title, opts|
+      alert = opts
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+    manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert alert
+    assert_match(/claude_code/, alert[:details],
+      "the runtime must reach the alert, because the summary is the dedup key")
+  end
+
+  # A signal death that exhausts its resume budget IS classified — it returns
+  # before the general branch. Pinning it stops a future refactor from turning a
+  # known failure mode into a page.
+  test "an exhausted signal-death budget does not alert" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @session.update!(metadata: @session.metadata.merge(
+      "signal_death_retry_count" => ProcessLifecycleManager::MAX_SIGNAL_DEATH_RETRIES
+    ))
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/Signal death resume limit exhausted/, decision.error_message)
+  end
+
+  # The context-length arm of the same contradiction, so the branch is not
+  # covered only through the API-error handler.
+  test "a context length classifier that disagrees with its service also alerts" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    ClaudeRetryStrategy.any_instance.stubs(:context_length_error?).returns(true)
+    ContextLengthRetryService.any_instance.stubs(:attempt_recovery).returns(:not_applicable)
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_equal "Context length error recovery failed", decision.error_message
+    assert alert
+    assert_equal "Unclassified failure: recovery contradiction", alert[0]
+    assert_match(/handle_context_length_error/, alert[1][:details])
+  end
+
   # Alerting must never be able to change how the session itself is failed.
   test "a failing alert does not change the exit decision" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }

@@ -551,6 +551,13 @@ transcript text, so the next wording change surfaces as a Slack message rather t
 archaeology session. The same reporter fires when a classifier and its recovery service disagree
 about the same exit.
 
+Two gaps remain inside that, deliberately. The reporter sits on the *failure* branch, so an
+unrecognized error on a Claude exit 0 or 1 — which `normal_completion_exit?` reads as a finished
+turn — still reaches `needs_input` without a word. And `CodexRetryStrategy` classifies nothing but
+a missing rollout, so every ordinary Codex failure is by construction an exit no classifier
+matched; it answers `classifies_exits? => false` and gets the loud log without a page, because
+paging on a runtime's designed-for path is how a channel gets ignored.
+
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
 ### Auth recovery can rotate away from an account that was fine

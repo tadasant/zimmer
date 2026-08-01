@@ -398,16 +398,31 @@ module SessionStateMachine
     )
     return unless alert
 
-    AlertService.raise_alert(
-      "Session state-machine side effect failed",
-      details: "`#{operation}` raised during a state transition and was swallowed, so the " \
-               "transition completed with this side effect missing.\n\n" \
-               "*Session:* #{id}\n" \
-               "*Error:* #{error.class}: #{error.message}\n\n" \
-               "<#{AppUrl.base_url}/sessions/#{id}|View session in Zimmer>",
-      source: "SessionStateMachine##{operation}",
-      dedup_key: "session_state_machine_side_effect_#{operation}"
-    )
+    # Post AFTER the transaction commits. AASM runs `after` callbacks inside the
+    # transition's own transaction, and AlertService posts to Slack synchronously
+    # (5s connect / 10s read). Alerting inline would hold a transaction open on
+    # this row for a network round trip during precisely the incident — a sick
+    # database — where that hurts most. after_all_transactions_commit runs the
+    # block immediately when no transaction is open, so nothing is deferred that
+    # doesn't need to be.
+    session_id = id
+    ActiveRecord.after_all_transactions_commit do
+      AlertService.raise_alert(
+        "Session state-machine side effect failed",
+        details: "`#{operation}` raised during a state transition and was swallowed, so the " \
+                 "transition completed with this side effect missing.\n\n" \
+                 "*Session:* #{session_id}\n" \
+                 "*Error:* #{error.class}: #{error.message}\n\n" \
+                 "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
+        source: "SessionStateMachine##{operation}",
+        dedup_key: "session_state_machine_side_effect_#{operation}"
+      )
+    rescue => alert_error
+      # Runs post-commit, outside the outer rescue's reach.
+      Rails.logger.error(
+        "[SessionStateMachine] Failed to alert on swallowed side effect #{operation}: #{alert_error.message}"
+      )
+    end
   rescue => reporting_error
     # Reporting must never become a new way for a transition to blow up. This
     # runs inside an AASM `after` block, so an exception escaping here would
@@ -771,14 +786,18 @@ module SessionStateMachine
     session_id = id
     ActiveRecord.after_all_transactions_commit do
       AoEventTriggerJob.perform_later(event_name, session_id)
+    rescue => e
+      # The rescue belongs INSIDE the block. after_all_transactions_commit defers
+      # this body past the transition's transaction, so a method-level rescue
+      # would only ever catch a failure to *register* the callback — never the
+      # enqueue itself, which is the failure that matters and the one this
+      # callback already suffered silently once (see the NoMethodError note
+      # above). A swallowed enqueue means every watcher of this session misses
+      # the transition, with nothing to retry it.
+      report_swallowed_side_effect(__method__, e, alert: true)
     end
   rescue => e
-    # Don't raise - trigger failures shouldn't block state transitions. Alert:
-    # this is the callback that already failed silently once, when
-    # connection.after_transaction_commit raised NoMethodError on every call and
-    # no Zimmer event trigger fired in production at all (see the comment above).
-    # A swallowed enqueue here means every watcher of this session misses the
-    # transition, with nothing to retry it.
+    # Don't raise - trigger failures shouldn't block state transitions.
     report_swallowed_side_effect(__method__, e, alert: true)
   end
 

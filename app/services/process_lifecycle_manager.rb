@@ -911,8 +911,6 @@ class ProcessLifecycleManager
     exitstatus.present? && exitstatus > 128
   end
 
-  # Surface the tail of the process's stderr to the session log on a genuine
-  # failure so the user sees the actual error (e.g. a Codex "no rollout found"
   # The stderr log to tail after a retry service respawned the process out of
   # band. Those services hand back only a pid, so the path has to be rebuilt —
   # from the session's working directory, named by the adapter actually driving
@@ -922,6 +920,8 @@ class ProcessLifecycleManager
     @cli_adapter.class.stderr_log_path(session.working_directory)
   end
 
+  # Surface the tail of the process's stderr to the session log on a genuine
+  # failure so the user sees the actual error (e.g. a Codex "no rollout found"
   # message) instead of a blank turn. No-op when there is no stderr log or it is
   # empty. Failures here are non-fatal — they must never mask the failure itself.
   def surface_stderr_to_session_log
@@ -956,9 +956,26 @@ class ProcessLifecycleManager
   # Failures here are non-fatal — an alert that cannot be raised must never
   # change how the session itself is failed.
   def report_unclassified_exit(error_msg, working_dir)
+    runtime = session&.agent_runtime.presence || "unknown runtime"
+
+    # A runtime whose strategy classifies nothing (Codex, today) reaches this
+    # branch on EVERY ordinary failure. Paging on its designed-for path would be
+    # a standing hourly alert for expected behavior, so it logs and stops.
+    unless runtime_classifies_exits?
+      @logger.warn(
+        "Unclassified process exit on a runtime with no exit classifiers — logging without alerting",
+        runtime: runtime, exit: error_msg
+      )
+      return
+    end
+
     UnclassifiedFailureReporter.report(
       kind: "process exit",
-      summary: "Session process died with #{error_msg} and no recovery classifier matched",
+      # The runtime belongs in the summary because the summary IS the dedup key.
+      # Without it a routine failure on one runtime would hold the key for an
+      # hour and suppress a genuinely novel failure on another sharing its exit
+      # code.
+      summary: "#{runtime} session process died with #{error_msg} and no recovery classifier matched",
       source: "ProcessLifecycleManager#handle_exit",
       session: session,
       output: [ stderr_tail, unclassified_runtime_error_text(working_dir) ].compact.join("\n\n").presence,
@@ -966,6 +983,18 @@ class ProcessLifecycleManager
     )
   rescue => e
     @logger.error("Failed to report unclassified process exit", error: e.message)
+  end
+
+  # Whether this runtime's strategy answers real questions about an exit, so that
+  # "nothing matched" is genuinely informative. Strategies predating the question
+  # are assumed to classify — the conservative answer, since it keeps alerting.
+  def runtime_classifies_exits?
+    return true unless retry_strategy.respond_to?(:classifies_exits?)
+
+    retry_strategy.classifies_exits?
+  rescue => e
+    @logger.error("Failed to ask the retry strategy whether it classifies exits", error: e.message)
+    true
   end
 
   # A classifier said a recovery path applied, then that path's service reported
@@ -979,6 +1008,7 @@ class ProcessLifecycleManager
       summary: "#{handler} was selected by its classifier but the recovery service returned #{result}",
       source: "ProcessLifecycleManager##{handler}",
       session: session,
+      output: stderr_tail,
       logger: @logger
     )
   rescue => e
