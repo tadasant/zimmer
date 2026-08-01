@@ -151,16 +151,6 @@ module RuntimeCliAdapter
     end
   end
 
-  # @see ClassMethods#stderr_log_filename
-  def stderr_log_filename
-    self.class.stderr_log_filename
-  end
-
-  # @see ClassMethods#stderr_log_path
-  def stderr_log_path(working_dir)
-    self.class.stderr_log_path(working_dir)
-  end
-
   # @see ClassMethods#validate_working_dir!
   def validate_working_dir!(working_dir)
     self.class.validate_working_dir!(working_dir)

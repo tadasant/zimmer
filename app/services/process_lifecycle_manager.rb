@@ -520,7 +520,7 @@ class ProcessLifecycleManager
         # Reload session to get the PID stored by retry service
         session.reload
         @current_pid = session.metadata&.dig("process_pid")
-        @stderr_log_path = session.stderr_log_path
+        @stderr_log_path = rebuilt_stderr_log_path
         @state = :running
       end
       ExitDecision.new(action: :continue)
@@ -625,7 +625,7 @@ class ProcessLifecycleManager
         # Reload session to get the PID stored by compact service
         session.reload
         @current_pid = session.metadata&.dig("process_pid")
-        @stderr_log_path = session.stderr_log_path
+        @stderr_log_path = rebuilt_stderr_log_path
         @state = :running
       end
       ExitDecision.new(action: :continue)
@@ -738,7 +738,7 @@ class ProcessLifecycleManager
     # Update our state to reflect the new process
     @mutex.synchronize do
       @current_pid = new_pid
-      @stderr_log_path = session.stderr_log_path
+      @stderr_log_path = spawn_result[:stderr_log_path]
       @state = :running
     end
 
@@ -841,7 +841,7 @@ class ProcessLifecycleManager
     # Update our state to reflect the new process
     @mutex.synchronize do
       @current_pid = new_pid
-      @stderr_log_path = session.stderr_log_path
+      @stderr_log_path = spawn_result[:stderr_log_path]
       @state = :running
     end
 
@@ -900,6 +900,15 @@ class ProcessLifecycleManager
 
   # Surface the tail of the process's stderr to the session log on a genuine
   # failure so the user sees the actual error (e.g. a Codex "no rollout found"
+  # The stderr log to tail after a retry service respawned the process out of
+  # band. Those services hand back only a pid, so the path has to be rebuilt —
+  # from the session's working directory, named by the adapter actually driving
+  # this session (an extension override included). The recovery paths that spawn
+  # inline use the adapter's own answer (`spawn_result[:stderr_log_path]`) instead.
+  def rebuilt_stderr_log_path
+    @cli_adapter.class.stderr_log_path(session.working_directory)
+  end
+
   # message) instead of a blank turn. No-op when there is no stderr log or it is
   # empty. Failures here are non-fatal — they must never mask the failure itself.
   def surface_stderr_to_session_log
@@ -959,7 +968,7 @@ class ProcessLifecycleManager
       @mutex.synchronize do
         session.reload
         @current_pid = session.metadata&.dig("process_pid")
-        @stderr_log_path = session.stderr_log_path
+        @stderr_log_path = rebuilt_stderr_log_path
         @state = :running
       end
       ExitDecision.new(action: :continue)
@@ -1016,7 +1025,7 @@ class ProcessLifecycleManager
       @mutex.synchronize do
         session.reload
         @current_pid = session.metadata&.dig("process_pid")
-        @stderr_log_path = session.stderr_log_path
+        @stderr_log_path = rebuilt_stderr_log_path
         @state = :running
       end
       ExitDecision.new(action: :continue)

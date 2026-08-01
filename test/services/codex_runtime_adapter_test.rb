@@ -39,6 +39,29 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
       "The guard must fire before anything is spawned"
   end
 
+  # The entrypoints, not just the private spawn: #execute/#resume join onto
+  # working_dir (AGENTS.md delivery, --output-last-message) before they ever
+  # reach spawn_process, so a guard only at spawn time would be dead code.
+  test "execute refuses a nil working directory before touching it" do
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.execute(prompt: "hello", session_id: SecureRandom.uuid, working_dir: nil)
+    end
+
+    refute_match(/no implicit conversion of nil into String/, error.message)
+    assert_match(/working directory is missing/, error.message)
+    assert_empty @mock_process_manager.spawned_processes
+  end
+
+  test "resume refuses a nil working directory before touching it" do
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.resume(session_id: SecureRandom.uuid, working_dir: nil)
+    end
+
+    refute_match(/no implicit conversion of nil into String/, error.message)
+    assert_match(/working directory is missing/, error.message)
+    assert_empty @mock_process_manager.spawned_processes
+  end
+
   test "spawn_process refuses a blank working directory" do
     error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
       @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: "   ")

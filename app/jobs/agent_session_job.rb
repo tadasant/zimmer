@@ -2789,7 +2789,7 @@ class AgentSessionJob < ApplicationJob
         break unless process_running?(process_pid)
 
         # Stream stderr
-        if @file_system.exists?(stderr_log_path)
+        if stderr_log_path && @file_system.exists?(stderr_log_path)
           File.open(stderr_log_path, "r") do |file|
             file.seek(stderr_position)
             while (line = file.gets)
@@ -2813,7 +2813,7 @@ class AgentSessionJob < ApplicationJob
       end
 
       # Read any remaining logs after process exits
-      if @file_system.exists?(stderr_log_path)
+      if stderr_log_path && @file_system.exists?(stderr_log_path)
         File.open(stderr_log_path, "r") do |file|
           file.seek(stderr_position)
           while (line = file.gets)

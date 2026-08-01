@@ -642,6 +642,11 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     # Recovery used execute (fresh start), dropping the dead resume id.
     assert_equal 2, codex_adapter.executed_commands.size
     assert_equal session.prompt, codex_adapter.executed_commands.last[:prompt]
+    # ...and the stderr log it now tails is the Codex one, so the NEXT failed
+    # resume is still detectable (#187).
+    assert_equal stderr_path, manager.stderr_log_path
+    assert_not_includes manager.stderr_log_path, "claude_stderr.log",
+      "A Codex session must never be handed a Claude stderr filename"
   end
 
   test "Codex exit 1 with unrelated stderr fails and surfaces stderr to the user" do
@@ -2226,34 +2231,6 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal stderr_path, manager.stderr_log_path,
       "The rebuilt path must be the working directory's log — the clone root's does not exist"
     refute_equal File.join(clone_path, "claude_stderr.log"), manager.stderr_log_path
-  end
-
-  test "recovery rebuilds a Codex session's stderr path with the Codex filename" do
-    session = create_codex_session
-    stderr_path = "/tmp/codex-clone/codex_stderr.log"
-    codex_adapter = MockCodexRuntimeAdapter.new
-    codex_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: stderr_path } }
-
-    manager = ProcessLifecycleManager.new(
-      session: session,
-      cli_adapter: codex_adapter,
-      process_manager: @mock_process_manager,
-      log_buffer: LogBuffer.new(session),
-      file_system: @mock_file_system
-    )
-    manager.spawn(prompt: "Hello", working_dir: "/tmp/codex-clone")
-
-    @mock_file_system.write(
-      stderr_path,
-      "Error: stream error: no rollout found for thread id 0199c0f6-dead-beef - code -32600\n"
-    )
-
-    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/codex-clone")
-
-    assert_equal :continue, decision.action
-    assert_equal stderr_path, manager.stderr_log_path
-    assert_not_includes manager.stderr_log_path, "claude_stderr.log",
-      "A Codex session must never be handed a Claude stderr filename"
   end
 
   # The quota signature ApiErrorRetryService classifies as :quota_exceeded.

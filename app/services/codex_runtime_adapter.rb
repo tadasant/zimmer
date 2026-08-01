@@ -108,6 +108,11 @@ class CodexRuntimeAdapter
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
               append_system_prompt: nil, model: nil, auto_compact_window: nil)
+    # Before anything touches working_dir — AGENTS.md delivery and the
+    # --output-last-message path both join onto it, so the guard has to run here
+    # rather than at spawn time to keep its actionable message.
+    self.class.validate_working_dir!(working_dir)
+
     write_system_prompt(working_dir, append_system_prompt)
 
     command = build_command(
@@ -134,6 +139,8 @@ class CodexRuntimeAdapter
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
              append_system_prompt: nil, model: nil, auto_compact_window: nil)
+    self.class.validate_working_dir!(working_dir)
+
     write_system_prompt(working_dir, append_system_prompt)
 
     command = build_resume_command(
