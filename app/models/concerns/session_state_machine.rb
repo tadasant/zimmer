@@ -66,6 +66,7 @@ module SessionStateMachine
         transitions from: :running, to: :needs_input
         after do
           log_state_change("Session paused, waiting for input")
+          warn_if_pr_goal_captured_no_url
           cleanup_running_job
           clear_auth_recovery_budget
           fire_ao_event_triggers("session_needs_input")
@@ -387,6 +388,16 @@ module SessionStateMachine
     update_column(:archived_at, Time.current)
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to set archived_at: #{e.message}"
+  end
+
+  # Say so when a session whose goal is about opening a pull request finishes a
+  # turn with no PR recorded. Zimmer's GitHub integrations all key off
+  # custom_metadata["github_pull_request_urls"], and an empty list looks exactly
+  # like a session that had no PR to record — so the warning is the only thing
+  # that distinguishes "nothing to do" from "the association never happened".
+  # The rule and the wording live with the hook that populates the list.
+  def warn_if_pr_goal_captured_no_url
+    TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(self)
   end
 
   # Log state transition to database

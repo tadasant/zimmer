@@ -52,22 +52,55 @@ Three properties worth knowing:
 
 ### `GithubPrUrlHook`
 
-`GithubPrUrlHook` scrapes `https://github.com/{owner}/{repo}/pull/{n}` out of the transcript and
-writes it to `session.custom_metadata["github_pull_request_url"]`.
+`GithubPrUrlHook` records the pull requests **this session opened**, appending them to
+`session.custom_metadata["github_pull_request_urls"]` (an array) with a first-seen timestamp per URL
+in `github_pr_tracking_started_at`.
 
-That one field is load-bearing. It's what `GitHubPullRequestPollerJob` (CI status),
-`GithubCommentPollerJob` (review comments), and `GitHubMergeConflictPollerJob` all key off. If the hook
-misses the URL, none of Zimmer's GitHub integration works for that session — the agent's PR exists,
-but Zimmer doesn't know about it, so it can't tell the agent when CI goes red or when someone comments.
+That list is load-bearing, and it is provenance rather than a bookmark folder. It's what
+`GitHubPullRequestPollerJob` (CI status), `GithubCommentPollerJob` (review comments), and
+`GitHubMergeConflictPollerJob` all key off — so anything on it has GitHub activity routed back to
+this session, and anything missing from it is invisible to all three.
 
-:::caution[It only scans tool-result content]
-`GithubPrUrlHook` matches against tool-result content only — not assistant messages, not user
-messages.
+So the question the hook answers is not "did a PR URL appear in this transcript" but **"does this
+transcript show this session opening that PR"**. Reading about a PR is not opening one. Three kinds
+of evidence count:
 
-In practice that means the URL has to come back from a tool call, which it does when the agent runs
-`gh pr create` and the Bash tool result contains the URL. But an agent that opens a PR some other way,
-or that mentions the URL only in its own prose, leaves the field empty, and the GitHub pollers never
-engage. There's no warning when this happens.
+| Evidence | What it looks like | Repo guard |
+| --- | --- | --- |
+| **Created** | The URL is in the output of a *successful* `gh pr create` | Any repo — bounded by the create's own `--repo` when it names one |
+| **Re-created** | The URL is in a *failed* `gh pr create`, next to "already exists" (the PR for the branch we just pushed) | Must match `git_root` |
+| **Claimed** | The agent's own prose says it opened the PR — "Opened PR: `<url>`" | Must match `git_root` |
+
+The claimed path is what catches creation routes that aren't `gh pr create`: a wrapper script, an
+MCP tool, the GitHub web UI. It requires a creation phrase adjacent to the URL — an inflected verb
+running into the URL ("I've opened `<url>`"), or a verb, a PR noun and then the URL ("Created the
+draft PR at `<url>`"). Only inflected verbs count: "open" is an adjective as often as a verb, and
+"the open PR: `<url>`" is how prose refers to *someone else's* PR.
+
+Two things are deliberately **not** evidence:
+
+- **A same-repo URL sitting in an unrelated tool result.** Matching on the repo alone is how a
+  session that merely ran `gh pr view` — a merge gate, a reviewer, anything reading the repo's PR
+  list — was handed someone else's PR as its own, and then received that PR's comments and
+  merge-conflict notifications ([#214](https://github.com/tadasant/zimmer/issues/214)).
+- **A URL in a user message.** Zimmer's own trigger prompts carry PR URLs ("comments on your PR
+  `<url>`"), so adopting them would let one misrouted notification bootstrap a permanent wrong
+  association.
+
+Both runtimes are handled. Claude Code and Codex write different transcript shapes, so finding shell
+invocations, their results, whether a result failed, and the agent's own prose is dispatched on
+`session.agent_runtime` inside `TranscriptHooks::ToolCallParser`.
+
+:::caution[The failure mode is silence, in both directions]
+Claiming too much misroutes another session's PR here; claiming too little leaves a session whose PR
+Zimmer never learns about, with every GitHub integration quietly switched off for it. Nothing about
+either is visible in the UI.
+
+The backstop for the second direction: when a session whose **goal asks for a pull request to be
+opened** finishes a turn (`pause`) with an empty list, the hook writes one `warning` log into the
+session timeline saying no PR URL has been captured. Once per session, not once per turn — and the
+goal match is a phrase match ("open a PR", "the PR is open", the `open-pr` skill), not a bare
+mention, because the catalog's read-only goal says *"do not create files, PRs, or branches"*.
 :::
 
 ### `GithubCommentAuthorshipHook`
@@ -82,9 +115,9 @@ The hook correlates a comment-posting command (`gh pr comment`, `gh issue commen
 a `gh api` write to a comments endpoint) with the permalink that command printed, and writes an
 `AgentPostedGithubComment` row keyed by comment rather than by session.
 
-Like `GithubPrUrlHook` it reads tool results only, and it reads only the results of commands it
-recognizes as posting — an agent that *reads* a comment gets that comment's own `html_url` back, and
-recording that would suppress a human comment.
+It reads only the results of commands it recognizes as posting — an agent that *reads* a comment gets
+that comment's own `html_url` back, and recording that would suppress a human comment. Same principle
+as `GithubPrUrlHook`: what the transcript shows the session *doing*, not what it saw.
 
 
 ## Writing one

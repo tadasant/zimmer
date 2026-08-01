@@ -28,6 +28,25 @@ class TranscriptHooks::CodexToolCallParser < TranscriptHooks::ToolCallParser
     end
   end
 
+  # Codex writes the agent's prose twice: as a response_item `message` payload
+  # (role "assistant") and as a UI-side `agent_message` event. Both are read so a
+  # rollout that carries only one of them is not silently blind.
+  def assistant_texts
+    @assistant_texts ||= parsed_transcript.filter_map do |line|
+      payload = line["payload"]
+      next unless payload.is_a?(Hash)
+
+      text =
+        if line["type"] == "response_item" && payload["type"] == "message" && payload["role"] == "assistant"
+          output_text(payload["content"])
+        elsif line["type"] == "event_msg" && payload["type"] == "agent_message"
+          payload["message"]
+        end
+
+      text if text.is_a?(String) && text.present?
+    end
+  end
+
   private
 
   # Every response_item payload hash in the rollout.

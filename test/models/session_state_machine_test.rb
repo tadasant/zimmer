@@ -767,6 +767,42 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.running?, "Session should be running after resume from sleeping/waiting"
   end
 
+  # === Tests for warn_if_pr_goal_captured_no_url (pause callback) ===
+
+  test "pause warns when a session with a pull-request goal recorded no PR URL" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code",
+      branch: "main",
+      session_id: SecureRandom.uuid,
+      status: :waiting,
+      goal: "Open a PR, confirm CI is green, and stop."
+    )
+    session.start!
+
+    session.pause!
+
+    warning = session.logs.where(level: "warning").find { |log| log.content.include?(TranscriptHooks::GithubPrUrlHook::MISSING_PR_URL_WARNING_MARKER) }
+    assert_not_nil warning, "expected pause to warn about the missing PR URL"
+  end
+
+  test "pause does not warn when the session recorded a PR URL" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code",
+      branch: "main",
+      session_id: SecureRandom.uuid,
+      status: :waiting,
+      goal: "Open a PR, confirm CI is green, and stop.",
+      custom_metadata: { "github_pull_request_urls" => [ "https://github.com/test/repo/pull/1" ] }
+    )
+    session.start!
+
+    session.pause!
+
+    assert_empty session.logs.where(level: "warning").select { |log| log.content.include?(TranscriptHooks::GithubPrUrlHook::MISSING_PR_URL_WARNING_MARKER) }
+  end
+
   # === Tests for execute_pending_sleep (pause callback) ===
 
   test "pause executes pending sleep when pending_sleep flag is set" do
