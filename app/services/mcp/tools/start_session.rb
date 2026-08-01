@@ -12,7 +12,7 @@ module Mcp
       tool_name "start_session"
 
       AGENT_RUNTIME_DESC = <<~TEXT.strip
-        Per-spawn agent runtime override. Valid values are "claude_code" (Claude Code) and "codex" (OpenAI Codex CLI). When omitted, the session adopts the agent_root's default_runtime, falling back to "claude_code". Call get_configs to see each agent root's default_runtime. Pair with `config.model` to pick a model valid for the chosen runtime (e.g. "opus"/"sonnet"/"haiku" for claude_code, "gpt-5.5"/"gpt-5.4" for codex).
+        Per-spawn agent runtime override. Valid values are "claude_code" (Claude Code) and "codex" (OpenAI Codex CLI). When omitted, the session adopts the agent_root's default_runtime, then the global session default configured on the Settings page, then "claude_code". Call get_configs to see each agent root's default_runtime. Pair with `config.model` to pick a model valid for the chosen runtime (e.g. "opus"/"sonnet"/"haiku" for claude_code, "gpt-5.5"/"gpt-5.4" for codex).
       TEXT
 
       PROMPT_DESC = "Initial prompt for the agent. If provided, the agent job is automatically queued. Omit for a clone-only session."
@@ -36,7 +36,7 @@ module Mcp
       PLUGINS_DESC = 'List of plugin names to enable for this session. Plugins extend agent capabilities with additional integrations. Example: ["my-plugin"]'
 
       CONFIG_DESC = <<~TEXT.strip
-        Additional configuration as a JSON object. Use `config.model` to choose the agent model for this session (e.g. {"model": "gpt-5.4"} for a codex runtime, or {"model": "sonnet"} for claude_code). The model must be valid for the resolved agent_runtime; call get_configs to see each agent root's default_model. When omitted, the session uses the agent root's default_model (or the runtime's default model). An explicit config.model always takes precedence over the agent root's default_model.
+        Additional configuration as a JSON object. Use `config.model` to choose the agent model for this session (e.g. {"model": "gpt-5.4"} for a codex runtime, or {"model": "sonnet"} for claude_code). The model must be valid for the resolved agent_runtime; call get_configs to see each agent root's default_model. When omitted, the session uses the agent root's default_model, then the global session default configured on the Settings page, then the runtime's catalog default; a model that is not valid for the resolved runtime is replaced by that fallback. An explicit config.model always takes precedence.
       TEXT
 
       CUSTOM_METADATA_DESC = "User-defined metadata as a JSON object. Useful for tracking tickets, projects, etc."
@@ -63,7 +63,7 @@ module Mcp
         - **MCP servers:** Start with `default_mcp_servers`. Drop servers the task doesn't need (least-privilege). Add extras when the task requires tools beyond the defaults. When this connection is restricted to specific agent roots, you cannot add servers beyond the defaults.
         - **Skills:** Start with `default_skills`. You can freely add skills beyond the defaults. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
 
-        **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku` for claude_code, `gpt-5.5`/`gpt-5.4` for codex). Both are optional: when omitted, the session inherits the agent root's `default_runtime` and `default_model`. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
+        **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku` for claude_code, `gpt-5.5`/`gpt-5.4` for codex). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults — the same chain the web form uses, and it applies whether or not you name an `agent_root`. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
 
         **Use cases:**
         - Start a new agent task on a repository
@@ -105,7 +105,7 @@ module Mcp
 
         session = Session.new(session_attributes(args))
         apply_agent_root_defaults!(session, agent_root_name, explicit_runtime: args["agent_runtime"].present?) if agent_root_name
-        ensure_model!(session)
+        apply_global_defaults!(session, rooted: agent_root_name.present?, explicit_runtime: args["agent_runtime"].present?)
         session.save!
 
         if session.prompt.present?
@@ -195,12 +195,30 @@ module Mcp
         session.config = (session.config || {}).merge("model" => model)
       end
 
-      # The model is always explicit in config so the spawn never depends on a
-      # runtime-side default.
-      def ensure_model!(session)
+      # The last two tiers of the shared resolution chain:
+      #
+      #   request param  →  agent root  →  AppSetting  →  hardcoded default
+      #
+      # apply_agent_root_defaults! covers the root tier and runs only when a root
+      # was named. This always runs, so a spawn with no agent_root still honors
+      # the global base defaults set on the Settings page instead of dropping
+      # straight to the column default — and the model is always explicit in
+      # config, so the spawn never depends on a runtime-side default.
+      def apply_global_defaults!(session, rooted:, explicit_runtime:)
+        app_setting = AppSetting.current
+
+        # A root's own default_runtime already folds the global in, so the runtime
+        # only needs filling when no root was named — otherwise Session.new leaves
+        # the column default standing and the Settings page is silently ignored.
+        if !rooted && !explicit_runtime
+          session.agent_runtime = app_setting.default_runtime.presence || RuntimeRegistry::DEFAULT_RUNTIME
+        end
+
         return if session.config&.dig("model").present?
 
-        session.config = (session.config || {}).merge("model" => ModelCatalog.default_for(session.agent_runtime))
+        session.config = (session.config || {}).merge(
+          "model" => app_setting.resolved_default_model_for(session.agent_runtime)
+        )
       end
 
       def format_session(session)

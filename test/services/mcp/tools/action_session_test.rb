@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
+require "tmpdir"
 
 class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
@@ -435,5 +437,46 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_includes result, "## All Sessions Refreshed"
     assert_includes result, "- **Restarted:**"
     assert_includes result, "- **Errors:** 0"
+  end
+
+  # Parity with POST /api/v1/sessions/refresh_all (#80): the tool reported a
+  # hardcoded "Refreshed: 0" no matter how many transcripts it re-read.
+  test "refresh_all counts the sessions whose transcripts it re-read" do
+    session = sessions(:running)
+    Session.where.not(id: session.id).update_all(status: Session.statuses[:archived])
+
+    fresh = [
+      { type: "user", message: { role: "user", content: "one" } },
+      { type: "assistant", message: { role: "assistant", content: "two" } }
+    ].map { |e| JSON.generate(e) }.join("\n")
+
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "main.jsonl")
+      File.write(file, fresh)
+
+      @tool.stubs(:transcript_directory).returns(dir)
+      TranscriptFileLocator.stubs(:find_main_transcript).returns(file)
+
+      result = @tool.call("action" => "refresh_all")
+
+      assert_includes result, "- **Refreshed:** 1"
+      assert_equal fresh, session.reload.transcript
+      assert_equal 2, session.metadata["broadcast_message_count"]
+    end
+  end
+
+  test "refresh_all reports zero refreshed when nothing is readable from disk" do
+    @tool.stubs(:transcript_directory).returns(nil)
+
+    assert_includes @tool.call("action" => "refresh_all"), "- **Refreshed:** 0"
+  end
+
+  test "refresh_all does not re-read a session it just restarted" do
+    failed = sessions(:failed)
+    Session.where.not(id: failed.id).update_all(status: Session.statuses[:archived])
+
+    @tool.expects(:refresh_transcript_from_disk).never
+
+    assert_includes @tool.call("action" => "refresh_all"), "- **Refreshed:** 0"
   end
 end
