@@ -69,13 +69,18 @@ Guarded on `git_root` being present. Resets the elapsed-time counter and logs.
 ### `pause` — `running → needs_input`
 
 Fired when the agent's turn ends (the process exits normally). This is the workhorse
-transition, and it does five things beyond changing status:
+transition, and it does six things beyond changing status:
 
-1. `cleanup_running_job` — clears `running_job_id`.
-2. `fire_ao_event_triggers("session_needs_input")` — wakes anything watching this session.
-3. `enqueue_debounced_needs_input_push_notification` — see below.
-4. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
-5. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
+1. `warn_if_pr_goal_captured_no_url` — if the session's goal mentions a pull request and
+   `custom_metadata["github_pull_request_urls"]` is still empty, write one `warning` log to the
+   timeline. `GithubPrUrlHook` only records a PR it can see the session open, and an empty list is
+   otherwise indistinguishable from "no PR to record" — see
+   [transcript hooks](/extend/transcript-hooks/). Once per session, never raises.
+2. `cleanup_running_job` — clears `running_job_id`.
+3. `fire_ao_event_triggers("session_needs_input")` — wakes anything watching this session.
+4. `enqueue_debounced_needs_input_push_notification` — see below.
+5. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
+6. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
    sleep was deferred to here; now it fires.
 
 The debounce is worth understanding. Sessions sometimes flap `running → needs_input →

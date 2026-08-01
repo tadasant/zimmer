@@ -1352,13 +1352,30 @@ English.
 
 Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 
-### `GithubPrUrlHook` scans tool results only
+### PR ownership is a transcript heuristic, and both ways of being wrong are silent
 
-Not assistant messages, not user messages. An agent that opens a PR any other way leaves
-`custom_metadata["github_pull_request_url"]` empty — and then none of Zimmer's GitHub integration
-engages for that session. No warning.
+`GithubPrUrlHook` decides which PRs belong to a session by reading its transcript for evidence that
+the session *opened* one: a successful `gh pr create`, a failed one that says the branch's PR already
+exists, or the agent's own prose claiming it opened a PR on this repo. Everything else — a PR read
+with `gh pr view`, a PR URL arriving in a user message or a Zimmer notification — is ignored on
+purpose, because recording it is how one session ends up receiving another session's review comments
+and merge-conflict alerts.
 
-Tracked in [#89](https://github.com/tadasant/zimmer/issues/89).
+Heuristics have two failure directions and neither announces itself:
+
+- **Too loose** and a PR gets attributed to a session that had nothing to do with it. The prose path
+  is the exposed edge here — an agent that writes "opened the PR at `<url>`" about someone else's
+  same-repo PR would be believed.
+- **Too tight** and a session's own PR is never recorded, so `GitHubPullRequestPollerJob`,
+  `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` all quietly do nothing for it. A PR
+  opened through a path the hook can't see — an MCP GitHub tool, the web UI — and never mentioned in
+  the agent's prose lands here.
+
+The warning log a PR-flavored goal gets on `pause` covers the second case only, and only when the
+goal happens to mention pull requests. There is no check at all for the first.
+
+Narrowed in [#214](https://github.com/tadasant/zimmer/issues/214) and widened in
+[#89](https://github.com/tadasant/zimmer/issues/89).
 
 ---
 

@@ -89,10 +89,12 @@ A small Ruby plugin system that runs inside Zimmer (not inside the agent) whenev
 transcript messages are broadcast. Sequential, error-isolated per hook, run after the transcript
 is saved. Each hook writes into `session.custom_metadata`.
 
-Exactly one ships: `GithubPrUrlHook`, which scrapes `https://github.com/{owner}/{repo}/pull/{n}`
-out of tool-result content only and writes it to `custom_metadata["github_pull_request_url"]`.
-That single field is what the GitHub PR poller, the comment poller, and the merge-conflict poller
-all key off — so if the hook misses, none of the GitHub integration works for that session.
+`GithubPrUrlHook` records the pull requests a session *opened* — read out of `gh pr create` output
+or the agent's own "opened PR `<url>`" prose — into `custom_metadata["github_pull_request_urls"]`.
+That list is what the GitHub PR poller, the comment poller, and the merge-conflict poller all key
+off, so a PR missing from it is invisible to Zimmer, and a PR wrongly on it sends another session's
+comments here. `GithubCommentAuthorshipHook` ships alongside it, recording the comments a session
+posted so the comment poller never reads one back as if a human wrote it.
 
 → [Transcript hooks](/extend/transcript-hooks/) for the contract and how to write one.
 
