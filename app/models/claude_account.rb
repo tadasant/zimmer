@@ -649,7 +649,7 @@ class ClaudeAccount < ApplicationRecord
     return false unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 
     fs_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-    fs_email = extract_oauth_email(fs_config["oauthAccount"])
+    fs_email = self.class.extract_oauth_email(fs_config["oauthAccount"])
     return false unless email.present? && fs_email.present? && fs_email.casecmp?(email)
 
     updated = (oauth_config || {}).deep_dup
