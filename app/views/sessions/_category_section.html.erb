@@ -67,8 +67,7 @@
               params: { category_id: category.id },
               class: "text-gray-400 hover:text-indigo-600 p-1",
               title: "Refresh sessions in this category",
-              "aria-label": "Refresh sessions in this category",
-              form: { data: { turbo: false } } do %>
+              "aria-label": "Refresh sessions in this category" do %>
           <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
           </svg>
@@ -106,13 +105,15 @@
       disturbing other sections. The frame is the collapse body — CSS hides it (grid +
       pagination together) when the section is collapsed. %>
   <%= turbo_frame_tag "category_frame_#{category.id}", class: "category-collapse-body" do %>
-    <div class="category-grid grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center min-h-[5rem]"
+    <%# The id is the stream target SessionsController#restored_card_stream
+        prepends an undone trash into, so an Undo lands the card back in its own
+        category rather than the Uncategorized bucket. %>
+    <div id="category_grid_<%= category.id %>"
+         class="category-grid grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center min-h-[5rem]"
          data-category-dnd-target="list"
          data-category-id="<%= category.id %>">
       <% sessions.each do |session| %>
-        <%= turbo_frame_tag dom_id(session) do %>
-          <%= render "session_card", agent_session: session %>
-        <% end %>
+        <%= render "sessions/session_card_frame", agent_session: session %>
       <% end %>
     </div>
     <%= render "sessions/category_pagination", collection: sessions, page_key: category.id.to_s %>

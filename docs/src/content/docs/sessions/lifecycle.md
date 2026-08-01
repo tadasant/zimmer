@@ -209,6 +209,35 @@ category's parked flag.
 The per-card icon is hidden for a `running` session. A running session is already streaming into
 its card; there is nothing a refresh would tell you that the card does not.
 
+### How the dashboard answers
+
+Every mutating dashboard control — the four refresh buttons plus Trash, Undo, Restore, bulk
+trash, Pause and the category moves — responds to a Turbo request with a Turbo Stream, not a
+redirect. The stream replaces one element: `#flash`, the layout's single toast container
+(`app/views/shared/_flash.html.erb`). The cards themselves are not in the response, because they
+re-render on their own over the `sessions_index_individual` and `session_<id>_status` broadcast
+channels. The redirect existed only to carry the message.
+
+Two actions stream a card as well, because a broadcast cannot reach one:
+
+- **Trash** removes the card it just archived, and streams the "Session moved to trash." toast
+  carrying the **Undo** button. The toast needs the `#flash` target to land in — before that id
+  existed, the card vanished with no way to undo it.
+- **Undo** prepends the card back into the grid it belongs to (`#sessions_grid` for
+  Uncategorized, `#category_grid_<id>` for a category). Its own restore broadcast is a `replace`,
+  and there is nothing left in the DOM to replace.
+
+Every one of these actions keeps its `format.html` branch, which still redirects with a real
+flash. That is what a non-Turbo client — and most of the controller test suite — gets.
+
+The session detail page is on the same footing: it carries a `cable-reconnect` Stimulus
+controller that watches each `<turbo-cable-stream-source>` for the `connected` attribute
+turbo-rails sets and clears, and re-subscribes any source still dark after a grace window
+(backing off up to 30s). It replaced a `<meta http-equiv="refresh">` that fired on a
+five-second timing window whether or not the cable had actually dropped — and, being a
+top-level navigation, dismissed the session drawer along with the user's place in it.
+`Session#recently_recovered?` now only decides whether to *show* the recovery banner.
+
 What a refresh *does* depends on the session's state:
 
 - `failed` → restart it (`#resume_failed_session`, or `restart_with_continue_prompt` in bulk).
