@@ -86,7 +86,10 @@ module Mcp
         lines = [
           "## Elicitation #{action_type == 'accept' ? 'Accepted' : 'Declined'}",
           "",
-          "- **Request ID:** #{request_id}",
+          # The elicitation's own request_id, not the argument — the argument may
+          # be the primary key, and echoing that back under this label would name
+          # the wrong identifier.
+          "- **Request ID:** #{elicitation.request_id}",
           "- **Action:** #{poll_response[:action]}"
         ]
         lines << "- **Content:** #{poll_response[:content].to_json}" unless poll_response[:content].nil?
