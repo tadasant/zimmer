@@ -14,6 +14,14 @@
 # not an option — during that window it is the only way to find the transcript
 # at all, and a session with no transcript reads as dead when it is fine.
 class TranscriptFileLocator
+  # Filesystem mtimes are not necessarily as precise as the database timestamp
+  # they are compared against — some filesystems store whole seconds — so a
+  # transcript written in the same second the session row was created can read as
+  # fractionally older than it. The floor exists to exclude a previous occupant's
+  # transcript, which is older by minutes at least, so it can afford to give up a
+  # second rather than risk hiding a live session's own file.
+  MTIME_GRANULARITY_GRACE = 1.second
+
   # Find the main transcript file for a session
   #
   # @param session [Session] The session to find the transcript for
@@ -43,8 +51,8 @@ class TranscriptFileLocator
     # The runtime is spawned after the session row exists, so its transcript is
     # always written after session.created_at. Anything older belongs to a
     # previous occupant of this working directory.
-    started_at = session.created_at
-    candidates = candidates.select { |path| file_system.mtime(path) >= started_at } if started_at
+    floor = session.created_at&.-(MTIME_GRANULARITY_GRACE)
+    candidates = candidates.select { |path| file_system.mtime(path) >= floor } if floor
 
     candidates.max_by { |path| file_system.mtime(path) }
   end

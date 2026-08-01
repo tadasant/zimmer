@@ -10,10 +10,10 @@ class QuotaCheckService
   # this beta opt-in header on every Anthropic request. Anthropic rejects OAuth
   # tokens supplied via the x-api-key header with HTTP 401 "invalid x-api-key".
   OAUTH_BETA = "oauth-2025-04-20"
-  # The Messages API's floating alias for Haiku 4.5, not the dated snapshot
-  # (`-20251001`) this used to pin. The probe only needs *a* cheap model to read
-  # rate-limit headers off, and a snapshot pin is the thing
-  # ClaudeModelConfigurationAudit exists to warn every other caller against (#85).
+  # The Messages API's floating alias for Haiku 4.5, never a dated snapshot. The
+  # probe only needs *a* cheap model to read rate-limit headers off, and a
+  # snapshot pin is the thing ClaudeModelConfigurationAudit exists to warn every
+  # other caller against (#85).
   #
   # Not the bare CLI alias. `ClaudeModelConfigurationAudit::CONCRETE_CLAUDE_MODEL`
   # matches this string, because that audit reads ANTHROPIC_MODEL and

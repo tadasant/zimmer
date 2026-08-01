@@ -70,10 +70,9 @@ module RuntimeCliAdapterContractAssertions
       process_manager: nil,
       rate_limit_tracker: nil
     )
-    # All five predicates ProcessLifecycleManager calls, not the three that were
-    # historically checked here. A runtime that implements only the documented
-    # subset used to pass this test and then NoMethodError on the auth-recovery
-    # path — in production, on a session that was already failing (#56).
+    # Every predicate ProcessLifecycleManager calls, so a runtime that implements
+    # a subset fails here rather than raising NoMethodError on the auth-recovery
+    # path — in production, on a session that is already failing (#56).
     RETRY_STRATEGY_PREDICATES.each do |method_name|
       assert_respond_to strategy, method_name,
         "#{klass}'s retry strategy must implement #{method_name} — see the contract in runtime_cli_adapter.rb"
