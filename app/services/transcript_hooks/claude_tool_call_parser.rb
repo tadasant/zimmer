@@ -26,7 +26,30 @@ class TranscriptHooks::ClaudeToolCallParser < TranscriptHooks::ToolCallParser
     end
   end
 
+  def assistant_texts
+    @assistant_texts ||= parsed_transcript.filter_map do |message|
+      message_data = message["message"] || message
+      next unless message["type"] == "assistant" || message_data["role"] == "assistant"
+
+      text = assistant_text(message_data["content"])
+      text if text.present?
+    end
+  end
+
   private
+
+  # Assistant content is either a bare String or an array of content blocks, of
+  # which only `text` blocks are prose (tool_use blocks are handled separately).
+  def assistant_text(content)
+    case content
+    when String
+      content
+    when Array
+      content.filter_map { |block| block["text"] if block.is_a?(Hash) && block["type"] == "text" }.join("\n")
+    else
+      ""
+    end
+  end
 
   # Claude Code serializes a tool result either as a bare String or as an array of
   # content items ({ "type" => "text", "text" => ... }). Both shapes appear in real
