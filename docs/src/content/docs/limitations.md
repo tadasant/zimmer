@@ -1060,12 +1060,20 @@ but it is still a leak. Latent: the timeout path has no production hits.
 
 Tracked in [#281](https://github.com/tadasant/zimmer/issues/281).
 
-### Session `metadata` is a lost-update hazard, by design
+### Not every session `metadata` writer is atomic
 
-`agent_session_job.rb:1073-1078` says it out loud: *"This uses a read-modify-write pattern which is not
-atomic… consider using PostgreSQL's jsonb ops."* Correctness-adjacent flags live in it anyway
-(`interrupt_terminate_pid`, `pending_follow_up_prompt`), described as *"best-effort FAST PATH, not the
-correctness guarantee."*
+Most writers — follow-up delivery, the interrupt flag, the spawn and respawn `process_pid` writes,
+the retry counters, the GitHub pollers, the transcript hooks — merge in PostgreSQL as one statement
+and so cannot erase keys they did not name. See [Metadata races](/sessions/spawning/#metadata-races).
+
+Three groups still rebuild the whole column from a snapshot. The terminal failure paths
+(`failure_reason`, `exit_status`, and friends) — nothing correctness-critical is lost there, since the
+session is being failed at that point. The `resume!` state-machine callbacks, which use
+`update_column` and fire no callbacks today. And `TranscriptPollerService`, which batches `metadata`
+in with `transcript` and `last_timeline_entry_at` on every poll of a live turn — the most frequent
+metadata writer there is, and the reason `interrupt_terminate_pid` is harder to lose than it was
+rather than impossible to lose. No amount of atomic merging serializes two writers of the *same* key
+either.
 
 Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
 

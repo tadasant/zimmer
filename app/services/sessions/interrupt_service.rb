@@ -252,23 +252,26 @@ module Sessions
     # process pid every iteration and, on a match, terminates the process and
     # exits — the cross-container-safe way to end an interrupted turn.
     #
-    # This flag is a best-effort FAST PATH, not the correctness guarantee.
-    # session.metadata is a read-modify-write JSON blob and the still-running
-    # worker writes it too (retry timestamps, exit status) without coordinating
-    # on this service's advisory lock, so the flag can in principle be clobbered
-    # before the worker reads it. The guarantee that a superseded turn is never
-    # orphaned lives in the worker loop's running_job_id ownership backstop
-    # (AgentSessionJob branch 1c): once the interrupting job reclaims
-    # running_job_id, the old turn terminates itself regardless of whether this
-    # flag survived. An explicit row lock here would give a false sense of
-    # atomicity — the concurrent worker writes don't take it — so we don't bother
-    # with one; the whole interrupt already runs under Session.with_session_lock.
-    # Logged at info because in production this fires on every cross-container
+    # This flag is a FAST PATH, not the correctness guarantee. The guarantee that a
+    # superseded turn is never orphaned lives in the worker loop's running_job_id
+    # ownership backstop (AgentSessionJob branch 1c): once the interrupting job reclaims
+    # running_job_id, the old turn terminates itself regardless of whether this flag
+    # survived.
+    #
+    # The fast path is written with Session#merge_metadata!, a single-statement jsonb
+    # merge, and so are the worker's own retry-counter writes — so the writers that used
+    # to erase this flag most often no longer can. It is NOT proof against every writer:
+    # TranscriptPollerService still rewrites the whole `metadata` column on every poll
+    # iteration of a live turn (it batches metadata with `transcript` and
+    # `last_timeline_entry_at` in one update), and it is the worker's most frequent
+    # writer. A flag set in the window between that service's `reload` and its `update!`
+    # is still lost, which is exactly why the backstop above is the guarantee and this is
+    # not. Logged at info because in production this fires on every cross-container
     # interrupt and self-resolves within one worker loop iteration; it is not an
     # alertable condition.
     def request_worker_side_termination(process_pid)
       with_db_retry_safe do
-        @session.update!(metadata: (@session.metadata || {}).merge("interrupt_terminate_pid" => process_pid))
+        @session.merge_metadata!("interrupt_terminate_pid" => process_pid)
         @session.logs.create!(
           content: "Interrupt could not terminate PID #{process_pid} from the web process " \
             "(separate container/PID namespace); handed termination to the session worker",

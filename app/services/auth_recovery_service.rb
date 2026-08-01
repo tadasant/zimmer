@@ -393,9 +393,7 @@ class AuthRecoveryService
     )
 
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge("process_pid" => new_pid)
-      )
+      session.merge_metadata!("process_pid" => new_pid)
     end
 
     if verify_process_running(new_pid, retry_attempt)

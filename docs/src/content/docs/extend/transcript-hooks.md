@@ -145,12 +145,14 @@ Then register it:
 TranscriptHooks::Registry.register(TranscriptHooks::MyHook)
 ```
 
-:::caution[`custom_metadata` is a lost-update hazard]
-Hooks write to `session.custom_metadata` with a read-modify-write, which is not atomic — the same
-problem `AgentSessionJob` documents about session `metadata`. Two hooks (or a hook and the job) writing
-concurrently can clobber each other. Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
+:::caution[Keep hook writes to distinct keys]
+`update_custom_metadata` merges in PostgreSQL as a single statement, so a hook cannot erase a key
+another writer set while it was running — which matters most for `github_pull_request_urls`, since
+losing it means no GitHub integration ever engages for the session. See
+[Metadata races](/sessions/spawning/#metadata-races).
 
-Keep hooks fast and keep their writes to distinct keys.
+That protects *different* keys. Two hooks writing the *same* key still race, and the last one wins —
+so keep hooks fast and keep their writes to distinct keys.
 :::
 
 ## What a hook is good for

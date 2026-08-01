@@ -26,9 +26,10 @@ module McpStatusPersisting
     any_failed = false
     failed_servers = []
     # Whether this poll actually has something to persist. Polls are frequent and
-    # mostly say nothing new; an unconditional update! would re-run Session's full
-    # validation set — including the AIR-catalog-backed artifact validators — several
-    # times a minute per live session for no write.
+    # mostly say nothing new, and `updated_metadata` always names
+    # `mcp_servers_status`, so without this an unchanged poll would still issue an
+    # UPDATE and re-broadcast the session card several times a minute per live
+    # session.
     status_changed = false
 
     with_db_retry do
@@ -87,10 +88,9 @@ module McpStatusPersisting
         end
       end
 
-      # Update custom_metadata
-      updated_metadata = current_metadata.merge(
-        "mcp_servers_status" => current_mcp_status
-      )
+      # Only the keys this pass actually computed — a whole-column write from
+      # current_metadata would erase whatever landed since the reload above.
+      updated_metadata = { "mcp_servers_status" => current_mcp_status }
 
       # If any configured server failed, mark session for failure
       if any_failed && !current_metadata["mcp_connection_checked"]
@@ -117,7 +117,7 @@ module McpStatusPersisting
         @logger.info("MCP server(s) detected as failed; flagging session for retry/failure handling", failed_servers: failed_servers)
       end
 
-      @session.update!(custom_metadata: updated_metadata) if status_changed
+      @session.merge_custom_metadata!(updated_metadata) if status_changed
     end
 
     any_failed
