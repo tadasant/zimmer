@@ -143,6 +143,12 @@ module CliSpawnEnv
   #   the DSN here stops it at the process boundary, for every tool an agent session
   #   spawns — not just Rails ones. A clone that genuinely wants its own DSN (a
   #   non-Zimmer project, say) can still set one in its .env, which wins as always.
+  # - ALERTS_ENABLED: the same shape, one channel over (issue #272). It is the
+  #   explicit opt-in that overrides AlertService's environment gate, so an
+  #   instance that sets it to page would otherwise hand that permission to every
+  #   agent it spawns — and a clone boots Zimmer as development, where the gate is
+  #   the only thing standing between a false local alarm and the production
+  #   channel. Cleared here, the opt-in stays with the instance it was declared on.
   #
   # Bundler variables cleared (explicit list, plus a BUNDLE*-prefix sweep below):
   # - BUNDLE_PATH: Where Bundler looks for gems
@@ -208,6 +214,7 @@ module CliSpawnEnv
       ZIMMER_OPERATOR_SSH_KEY
       ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
       SENTRY_DSN_BACKEND
+      ALERTS_ENABLED
     ]
 
     # Set each inherited env var to nil to unset it in the child process
