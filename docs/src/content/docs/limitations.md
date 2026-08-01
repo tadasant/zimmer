@@ -1041,11 +1041,19 @@ destroys one-time triggers even when the fire failed. Nothing tells you.
 
 Tracked in [#76](https://github.com/tadasant/zimmer/issues/76).
 
-### A Slack rate-limit episode stalls all Slack polling
+### While Slack is rate-limiting you, Slack triggers fire late
 
-`SlackService` retries 10× with a fixed 1-second blocking `sleep` in a job thread.
-`SlackTriggerPollerJob` is confined to a `pollers` queue with `total_limit: 1` to stop it saturating the
-pool — so throttling means *no* Slack polling, and ticks are dropped.
+`SlackTriggerPollerJob` is a `total_limit: 1` singleton, so while it runs it *is* Slack polling for
+the whole instance. It no longer waits a throttle out on that slot: `SlackService` absorbs only a
+short blip in process (`MAX_RETRIES = 3`, backing off 1s, 2s, 4s), and hands anything longer back as
+a `TransientError`. The job then reschedules itself — 30s, 60s, 120s, 240s, 480s, or Slack's own
+`retry_after` if that is longer — and frees the worker thread meanwhile.
+
+What that fixes is the dropped ticks: the run is no longer parked in a `sleep` rejecting every cron
+tick that lands. What it does not fix is the delay. A `last_message_ts` cursor means nothing is
+*lost* — the next successful poll still sees the messages — but a trigger can fire minutes after the
+message that should have fired it. After five deferrals (about fifteen minutes) the job stops
+deferring, alerts, and lets the ordinary once-a-minute cron take over.
 
 Tracked in [#77](https://github.com/tadasant/zimmer/issues/77).
 
@@ -1222,9 +1230,11 @@ Also:
   `RESET_TIME = 60`), with no banner telling you.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 - Push notifications don't work on anything without the Push API (iOS Safari outside standalone PWA).
-- The OAuth login poller gives up after N consecutive failed polls — a transient blip abandons the
-  flow. The panel says so rather than freezing on its last frame, but the flow is still abandoned
-  and you have to start over. ([#101](https://github.com/tadasant/zimmer/issues/101))
+- The OAuth login poller still gives up after 10 consecutive failed polls, but those 10 attempts now
+  back off (2s, 4s, 8s, 16s, then 30s each) and so span about three minutes rather than twenty
+  seconds. A deploy or a wifi handover no longer abandons a login that would have completed; an
+  outage longer than three minutes still does, and you have to start over. The panel says so rather
+  than freezing on its last frame. ([#101](https://github.com/tadasant/zimmer/issues/101))
 - A UI login whose job never dequeued — a dead or badly backed-up worker, so the CLI was never
   spawned and no heartbeat was ever stamped — has no liveness signal to go stale, and waits out the
   full 14-minute `expires_at` window before the panel reports anything. Attempts created before the

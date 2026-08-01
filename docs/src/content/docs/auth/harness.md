@@ -516,7 +516,13 @@ Two client-side backstops close the loop, because a server that resolves an atte
 leaves a frozen panel if the browser never hears about it. The poller repaints the panel with an
 explanation when it gives up after 10 consecutive failed polls, or when it passes the attempt's
 `expires_at`; it never merely stops its timer, which would leave the last frame it rendered on
-screen looking like work still in progress. And `login_status` answers a poll for a row that no
+screen looking like work still in progress.
+
+Those 10 attempts back off — 2s, 4s, 8s, 16s, then 30s each — so the budget spans about three
+minutes instead of the twenty seconds a flat 2s cadence spent it in. A deploy, a lid closing, or a
+wifi handover is shorter than that, and a login that would have completed is no longer abandoned
+over one. The backoff never schedules past `expires_at`, so the deadline message stays as prompt as
+it was. And `login_status` answers a poll for a row that no
 longer exists (pruned after its retention window, or cascaded away with a deleted account) with a
 terminal panel rather than a `404` — a `404` reads to the poller as a network blip.
 
