@@ -731,6 +731,11 @@ class Session < ApplicationRecord
   # is hitting something no amount of further spinning will resolve.
   MAX_SLUG_ATTEMPTS = 10
 
+  # The unique index that arbitrates slug ownership. `sessions` carries other
+  # unique indexes, so a rejected write is only ours to retry when it names this
+  # one — a collision anywhere else must surface on the first attempt.
+  SLUG_UNIQUE_INDEX = "index_sessions_on_slug"
+
   # Generate slug from title + datetime
   # Called by SessionTitleJob after title is generated
   def generate_slug_from_title!
@@ -762,11 +767,14 @@ class Session < ApplicationRecord
       # poisoning an enclosing transaction, which would strand the retry.
       self.class.transaction(requires_new: true) { update!(slug: candidate_for.call(counter)) }
     rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid => e
-      # The same race surfaces as a validation failure when the winner commits
-      # between our read and the uniqueness validator's. Any other validation
-      # error is not ours to retry.
-      raise if e.is_a?(ActiveRecord::RecordInvalid) && !e.record.errors.of_kind?(:slug, :taken)
-      raise if attempts >= MAX_SLUG_ATTEMPTS
+      raise unless slug_collision?(e)
+
+      if attempts >= MAX_SLUG_ATTEMPTS
+        # Leave the caller a record whose slug is nil rather than one holding a
+        # value the index has already refused.
+        restore_attributes([ :slug ])
+        raise
+      end
 
       counter += 1
       retry
@@ -1011,6 +1019,22 @@ class Session < ApplicationRecord
   end
 
   private
+
+  # Whether a rejected write is another session having claimed the slug we were
+  # about to take. The race has two shapes: the winner commits after the
+  # uniqueness validator's read (the index rejects us, as RecordNotUnique) or
+  # before it (the validator rejects us, as RecordInvalid). Anything else —
+  # another unique index, an unrelated validation — is not ours to retry.
+  #
+  # @param error [ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid]
+  # @return [Boolean]
+  def slug_collision?(error)
+    case error
+    when ActiveRecord::RecordInvalid then error.record.errors.of_kind?(:slug, :taken)
+    when ActiveRecord::RecordNotUnique then error.message.include?(SLUG_UNIQUE_INDEX)
+    else false
+    end
+  end
 
   # The runtime transcript source, used to parse the stored transcript into raw
   # event hashes. Parsing is pure (no IO), so the default file_system is fine.
