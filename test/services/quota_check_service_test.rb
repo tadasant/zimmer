@@ -22,6 +22,13 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
     }.to_json
   end
 
+  # The probe model is a floating alias, never a dated snapshot (#85). A snapshot
+  # pin silently outlives the model it names; the alias follows.
+  test "PROBE_MODEL is not pinned to a dated snapshot" do
+    refute_match(/-\d{8}\z/, QuotaCheckService::PROBE_MODEL,
+      "PROBE_MODEL must be the floating alias, not a dated model snapshot")
+  end
+
   test "returns error when credentials file does not exist" do
     File.stubs(:exist?).with(QuotaCheckService::CREDENTIALS_PATH).returns(false)
 

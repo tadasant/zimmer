@@ -13,6 +13,30 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     Turbo::StreamsChannel.stubs(:broadcast_remove_to)
   end
 
+  # === Broadcast spacing is derived from the cable poll window (#108) ===
+
+  test "broadcast spacing is derived from the cable adapter's polling interval" do
+    TranscriptPollerService.stubs(:cable_polling_interval).returns(0.4)
+
+    assert_in_delta 0.6, TranscriptPollerService.broadcast_spacing, 0.0001,
+      "spacing must follow config/cable.yml, not a literal that happens to match it"
+  end
+
+  test "broadcast spacing always exceeds one cable poll window" do
+    [ 0.05, 0.1, 0.25, 1.0 ].each do |interval|
+      TranscriptPollerService.stubs(:cable_polling_interval).returns(interval)
+
+      assert_operator TranscriptPollerService.broadcast_spacing, :>, interval,
+        "a broadcast published inside one poll window can be coalesced with the previous one"
+    end
+  end
+
+  test "cable polling interval matches the value SolidCable itself polls on" do
+    # The point of the derivation: this is the same accessor the SolidCable
+    # subscription adapter sleeps on, so the two cannot drift.
+    assert_equal ::SolidCable.polling_interval.to_f, TranscriptPollerService.cable_polling_interval
+  end
+
   # === Tests for runtime-pluggable MCP status detector resolution (#3991) ===
 
   test "resolves the Claude Code MCP status detector for a claude_code session" do
@@ -285,10 +309,11 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     @mock_file_system.write(agent_file1, '{"type":"user"}')
     @mock_file_system.write(agent_file2, '{"type":"user"}')
 
-    # Make agent files more recent
-    @mock_file_system.set_mtime(main_file, 1.hour.ago)
-    @mock_file_system.set_mtime(agent_file1, 30.minutes.ago)
-    @mock_file_system.set_mtime(agent_file2, Time.current)
+    # Make agent files more recent (all written after the session started, so
+    # only the agent- prefix distinguishes them)
+    @mock_file_system.set_mtime(main_file, @session.created_at + 1.minute)
+    @mock_file_system.set_mtime(agent_file1, @session.created_at + 2.minutes)
+    @mock_file_system.set_mtime(agent_file2, @session.created_at + 3.minutes)
 
     service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
     result = service.send(:find_main_transcript_file, transcript_dir)

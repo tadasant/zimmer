@@ -7,6 +7,35 @@
 class TranscriptPollerService
   include DatabaseRetry
 
+  # A subscriber sees SolidCable messages only when its poll thread wakes, so two
+  # broadcasts published inside a single poll window can arrive coalesced — which
+  # is how a timeline ends up rendering messages out of order. Consecutive
+  # broadcasts are therefore spaced by a little more than one window.
+  #
+  # The window itself is read from config/cable.yml via SolidCable (which owns
+  # the parsing and the default) rather than restated as a literal here, so the
+  # spacing follows the config instead of matching it by coincidence.
+  BROADCAST_SPACING_MARGIN = 1.5
+  DEFAULT_CABLE_POLLING_INTERVAL = 0.1
+
+  class << self
+    # Seconds to wait between consecutive timeline broadcasts.
+    def broadcast_spacing
+      cable_polling_interval * BROADCAST_SPACING_MARGIN
+    end
+
+    # The cable adapter's poll window, in seconds. Memoized because SolidCable
+    # re-reads and re-parses config/cable.yml on every call and this is consulted
+    # once per broadcast. Falls back for adapters that do not poll (the test
+    # adapter) or a config that declares no interval.
+    def cable_polling_interval
+      @cable_polling_interval ||= begin
+        interval = defined?(::SolidCable) ? ::SolidCable.polling_interval.to_f : 0.0
+        interval.positive? ? interval : DEFAULT_CABLE_POLLING_INTERVAL
+      end
+    end
+  end
+
   attr_reader :file_system, :broadcast_service, :mcp_status_detector
 
   def initialize(session, file_system: nil, broadcast_service: nil, mcp_status_detector: nil)
@@ -300,8 +329,8 @@ class TranscriptPollerService
       # Delegate to BroadcastService for consistent error handling and retry logic
       @broadcast_service.timeline_message(@session, message)
 
-      # Delay must be longer than SolidCable's polling_interval (100ms)
-      sleep 0.15 if index < new_messages.length - 1
+      # Longer than one cable poll window — see BROADCAST_SPACING_MARGIN
+      sleep self.class.broadcast_spacing if index < new_messages.length - 1
     end
   end
 

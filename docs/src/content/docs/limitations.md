@@ -630,22 +630,6 @@ without.
 
 Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 
-### The retry-strategy interface is under-declared
-
-`ProcessLifecycleManager` calls five predicates. The base class docstring lists four. The
-contract test checks three. A new runtime that implements exactly what's documented will
-`NoMethodError` on the auth-recovery path — at runtime, in production, on an already-failing session.
-
-Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
-
-### `find_main_transcript` is required but not on the base class
-
-`TranscriptPollerService` calls it on every poll; both concrete sources implement it; it's absent from
-the abstract `TranscriptSource`. A new source implementing only the declared interface `NoMethodError`s
-on its first poll.
-
-Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
-
 ### The approval gate can only be verified as far as Zimmer's own doorstep
 
 `CliSpawnEnv#apply_elicitation_env` gives both runtimes `ELICITATION_REQUEST_URL` and
@@ -672,14 +656,6 @@ Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 runtime. `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
 
 Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
-
-### Transcript file selection falls back to mtime
-
-`transcript_file_locator.rb:26-38` — if `session_id` isn't set yet, the main transcript is chosen as the
-most recently modified non-`agent-*.jsonl` file. The code's own comment says it's "avoiding the pitfall
-of selecting by mtime" while doing exactly that as a fallback.
-
-Tracked in [#57](https://github.com/tadasant/zimmer/issues/57).
 
 ### The login flow screen-scrapes a TUI
 
@@ -1189,13 +1165,6 @@ Tracked in [#34](https://github.com/tadasant/zimmer/issues/34) (removing the pag
 
 ## Hardcoded values that shouldn't be
 
-### `QuotaCheckService` pins a concrete model version
-
-`PROBE_MODEL = "claude-haiku-4-5-20251001"` — in a codebase that ships `ClaudeModelConfigurationAudit`,
-a service whose only job is to warn you not to pin concrete model versions.
-
-Tracked in [#85](https://github.com/tadasant/zimmer/issues/85).
-
 ### Model IDs are a hardcoded Ruby array
 
 `ModelCatalog::MODELS`. A new model requires a code change and a deploy.
@@ -1271,12 +1240,6 @@ noted as having turned `main` red), [#5](https://github.com/tadasant/zimmer/issu
 `air_catalog_ref_rewriter_test.rb` (×2). Catalog pinning has zero CI coverage.
 
 Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
-
-### The contract test doesn't cover the whole contract
-
-It checks 3 of the retry strategy's 5 predicates.
-
-Tracked in [#56](https://github.com/tadasant/zimmer/issues/56).
 
 ### `db/schema.rb` is a Rails 8.0-format dump, and CI never runs the migrations
 
