@@ -154,9 +154,10 @@ class GithubTriggerPollerJob < ApplicationJob
         AlertService.raise_alert(
           "GitHub trigger poller error",
           details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' " \
-                   "(ID: #{condition.trigger_id}) failed:\n#{e.message}",
+                   "(ID: #{condition.trigger_id}) failed.",
           source: "GithubTriggerPollerJob",
-          dedup_key: "github_trigger_condition_#{condition.id}"
+          dedup_key: "github_trigger_condition_#{condition.id}",
+          error: e
         )
       end
     end

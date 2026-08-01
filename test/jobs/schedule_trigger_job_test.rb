@@ -126,26 +126,26 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       "Expected exactly one alert from the inner rescue, not a duplicate from the outer rescue"
   end
 
-  test "alert details include exception class and backtrace when session creation fails" do
+  test "alert carries the exception itself, so the snippet has class, message and frames" do
     @condition.update!(last_triggered_at: nil)
 
     boom = StandardError.new("agent root not found in catalog")
     boom.set_backtrace([ "app/models/trigger.rb:42:in `heal_stale_agent_root!'", "app/models/trigger.rb:99:in `create_session!'" ])
     Trigger.any_instance.stubs(:create_session!).raises(boom)
 
-    captured_details = nil
+    captured_error = nil
     AlertService.stubs(:raise_alert).with do |_title, **kwargs|
-      captured_details = kwargs[:details]
+      captured_error = kwargs[:error]
       true
     end
 
     ScheduleTriggerJob.perform_now
 
-    assert_not_nil captured_details, "alert details should be passed"
-    assert_includes captured_details, "StandardError", "details should include the exception class"
-    assert_includes captured_details, "agent root not found in catalog", "details should include the exception message"
-    assert_includes captured_details, "Backtrace:", "details should include a backtrace section"
-    assert_includes captured_details, "trigger.rb:42", "details should include backtrace frames"
+    assert_not_nil captured_error, "the rescued exception should be passed as error:"
+    snippet = AlertSnippet.build(captured_error)
+    assert_includes snippet, "StandardError", "snippet should include the exception class"
+    assert_includes snippet, "agent root not found in catalog", "snippet should include the exception message"
+    assert_includes snippet, "trigger.rb:42", "snippet should include backtrace frames"
   end
 
   test "auto-deletes trigger after one-time schedule fires" do
