@@ -152,12 +152,26 @@ class MockProcessManager < ProcessManager
   end
 
   # Simulate killing a process
+  #
+  # Signal 0 is not a signal, it is a liveness probe: the real kernel raises
+  # ESRCH when the target does not exist. The mock answers it from `running?`,
+  # passing the pid through UNCHANGED — so a negative pid (a process-group probe)
+  # reaches `running_hook` as a negative pid and a test can model "the leader is
+  # gone but its group still has members". With no hook and no explicit state,
+  # a negative pid is not in the spawned list, so a group reads as empty.
+  #
   # @param signal [String, Integer] The signal to send
-  # @param pid [Integer] The process ID to signal
+  # @param pid [Integer] The process ID to signal (negative for a process group)
   # @return [Integer] Returns 1 (number of processes signaled)
+  # @raise [Errno::ESRCH] for a signal-0 probe of a target that is not running
   def kill(signal, pid)
     @killed_processes << { signal: signal, pid: pid }
     kill_hook&.call(signal, pid) if kill_hook
+
+    if signal == 0
+      raise Errno::ESRCH unless running?(pid)
+    end
+
     1
   end
 
