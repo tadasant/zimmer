@@ -34,6 +34,12 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up" => "rails/health#show", as: :rails_health_check
 
+  # The deep check: 200 only when the database, the cache and Redis each answered
+  # a real round trip, 503 naming the one that did not. `/up` above cannot make
+  # that claim -- a container with a dead database boots and answers it 200 --
+  # so a deploy gate that asks only `/up` passes a fully broken deploy.
+  get "up/deep" => "health#deep", as: :deep_health_check
+
   # Zimmer's native MCP server (streamable HTTP). Scoped variants are selected
   # with query params: /mcp?tool_groups=self_session[&allowed_agent_roots=a,b].
   # The SDK's transport dispatches POST / GET / DELETE itself (GET and DELETE are

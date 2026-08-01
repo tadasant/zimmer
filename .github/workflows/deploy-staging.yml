@@ -385,6 +385,111 @@ jobs:
           echo "::error::Health check did not pass in time"
           exit 1
 
+      # `/up` above is a liveness ping, not a health check: Rails answers it 200 for
+      # any process that finished booting, so a container with a dead database, an
+      # unreachable Redis, or a cache store that silently drops every write walks
+      # straight through it. That is not hypothetical -- it is how a fully broken
+      # deploy got declared healthy.
+      #
+      # So assert what a user would hit inside one page load. Every check here is a
+      # HARD failure, unlike the telemetry probe below: a failure here is the app
+      # not working, not a degraded side channel.
+      #
+      #   1. /up/deep       -- touches the database, the cache and Redis, and names
+      #                        which one failed instead of collapsing them to one bit.
+      #   2. GET /          -- a real page render (views, assets, a DB query), not a
+      #                        200 from a controller that does nothing.
+      #   3. CSRF round trip -- the session cookie and secret_key_base survived the
+      #                        deploy. Without it every GET looks perfect while every
+      #                        form in the UI 422s.
+      #   4. /cable upgrade -- Turbo Streams can actually connect, which is how every
+      #                        live update in this app arrives.
+      - name: Smoke-test the deployed app (deep health, page render, CSRF, cable)
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+        run: |
+          set -euo pipefail
+          base="http://${STAGING_HOST}"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "${tmp}"' EXIT
+
+          # --- 1. the deep health endpoint ------------------------------------
+          code=$(curl -sS -o "${tmp}/deep.json" -w '%{http_code}' --max-time 20 "${base}/up/deep" || echo 000)
+          echo "--- GET /up/deep -> ${code} ---"
+          cat "${tmp}/deep.json" 2>/dev/null || true
+          echo
+          if [ "${code}" != "200" ]; then
+            echo "::error::/up/deep answered ${code}. The app booted, but something it cannot serve a page without did not:"
+            echo "::error::the \"failed\" list in the body above names the component (database, cache, redis)."
+            exit 1
+          fi
+          echo "✅ database, cache and Redis each answered a real round trip"
+
+          # --- 2. a real page render ------------------------------------------
+          code=$(curl -sS -o "${tmp}/home.html" -D "${tmp}/home.headers" -w '%{http_code}' --max-time 30 "${base}/" || echo 000)
+          if [ "${code}" != "200" ]; then
+            echo "::error::GET / answered ${code} -- the deployed app is serving errors on its own root page."
+            head -c 2000 "${tmp}/home.html" 2>/dev/null || true
+            exit 1
+          fi
+          echo "✅ GET / rendered (200)"
+
+          # --- 3. a CSRF round trip -------------------------------------------
+          # Rejected without a token, accepted with one. The target is a session id
+          # that cannot exist, so the authorized request reaches the controller and
+          # 404s having changed nothing.
+          token=$(sed -n 's/.*<meta name="csrf-token" content="\([^"]*\)".*/\1/p' "${tmp}/home.html" | head -1)
+          # name=value from each Set-Cookie, attributes and the header's CR dropped.
+          cookie=$(grep -i '^set-cookie:' "${tmp}/home.headers" \
+            | sed -E 's/^[Ss]et-[Cc]ookie: *([^;[:space:]]*).*/\1/' | paste -sd';' - || true)
+          if [ -z "${token}" ] || [ -z "${cookie}" ]; then
+            echo "::error::the root page came back without a CSRF token and/or a session cookie"
+            echo "::error::(token: $([ -n "${token}" ] && echo present || echo MISSING), cookie: $([ -n "${cookie}" ] && echo present || echo MISSING))."
+            echo "::error::Every form in the UI would 422. Check secret_key_base and the cookie store."
+            exit 1
+          fi
+
+          probe="${base}/sessions/0/follow_up"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${probe}" || echo 000)
+          if [ "${code}" != "422" ]; then
+            echo "::error::a POST with no CSRF token answered ${code}, expected 422 -- forgery protection is not enforcing."
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${probe}" \
+            -H "Cookie: ${cookie}" -H "X-CSRF-Token: ${token}" || echo 000)
+          if [ "${code}" != "404" ]; then
+            echo "::error::a POST carrying the page's own CSRF token answered ${code}, expected 404 (that session id does not exist)."
+            echo "::error::422 here means the token did not verify -- the session cookie is not surviving the round trip."
+            exit 1
+          fi
+          echo "✅ CSRF round trip: rejected without a token, verified with one"
+
+          # --- 4. the Action Cable upgrade ------------------------------------
+          # Origin has to equal the scheme+host Rails sees. Staging runs assume_ssl,
+          # so that is https:// even on this plaintext tailnet hop -- try both rather
+          # than hard-code which one is in force.
+          key=$(head -c 16 /dev/urandom | base64)
+          upgraded=""
+          out=""
+          for origin in "https://${STAGING_HOST}" "http://${STAGING_HOST}"; do
+            out=$(curl -sS -i --http1.1 --max-time 10 \
+              -H "Connection: Upgrade" -H "Upgrade: websocket" \
+              -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: ${key}" \
+              -H "Origin: ${origin}" "${base}/cable" 2>&1) || true
+            if grep -qi "^HTTP/1.1 101" <<<"${out}"; then
+              upgraded="${origin}"
+              break
+            fi
+          done
+          if [ -z "${upgraded}" ]; then
+            echo "::error::/cable did not upgrade to a WebSocket, so Turbo Streams cannot connect and every"
+            echo "::error::live update in the UI (timelines, status badges, notification counts) is dead."
+            echo "--- last /cable response ---"
+            echo "${out:-<none>}" | head -20
+            exit 1
+          fi
+          echo "✅ /cable upgraded to a WebSocket (origin ${upgraded})"
+
       # Prove the deployed container is ACTUALLY shipping logs, rather than trusting
       # that it must be because the secrets were set.
       #
