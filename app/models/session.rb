@@ -726,6 +726,11 @@ class Session < ApplicationRecord
     session_id.present? && metadata&.dig("clone_path").present?
   end
 
+  # How many slug candidates to try before giving up. Each rejected write costs
+  # one round trip; a session that cannot find a free suffix in this many tries
+  # is hitting something no amount of further spinning will resolve.
+  MAX_SLUG_ATTEMPTS = 10
+
   # Generate slug from title + datetime
   # Called by SessionTitleJob after title is generated
   def generate_slug_from_title!
@@ -740,15 +745,32 @@ class Session < ApplicationRecord
     title_slug = title.parameterize.tr("_", "-").squeeze("-").delete_prefix("-").delete_suffix("-")
     base_slug = "#{title_slug}-#{timestamp}"
 
-    # Ensure uniqueness
-    final_slug = base_slug
-    counter = 1
-    while Session.exists?(slug: final_slug)
-      final_slug = "#{base_slug}-#{counter}"
-      counter += 1
-    end
+    # Picking a free suffix by reading first is check-then-act: two title jobs
+    # for sessions created in the same minute compute the same base_slug, both
+    # read it as free, and both write it. The read below only skips suffixes
+    # already visible; `index_sessions_on_slug` is the authority, so a lost race
+    # arrives as a rejected write — advance the counter and try the next suffix
+    # rather than leaving the losing session slug-less.
+    candidate_for = ->(n) { n.zero? ? base_slug : "#{base_slug}-#{n}" }
+    counter = 0
+    attempts = 0
 
-    update!(slug: final_slug)
+    begin
+      attempts += 1
+      counter += 1 while Session.exists?(slug: candidate_for.call(counter))
+      # requires_new so a rejected write unwinds to a savepoint rather than
+      # poisoning an enclosing transaction, which would strand the retry.
+      self.class.transaction(requires_new: true) { update!(slug: candidate_for.call(counter)) }
+    rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid => e
+      # The same race surfaces as a validation failure when the winner commits
+      # between our read and the uniqueness validator's. Any other validation
+      # error is not ours to retry.
+      raise if e.is_a?(ActiveRecord::RecordInvalid) && !e.record.errors.of_kind?(:slug, :taken)
+      raise if attempts >= MAX_SLUG_ATTEMPTS
+
+      counter += 1
+      retry
+    end
   end
 
   # Create a session from an agent root configuration and start it.
