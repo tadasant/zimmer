@@ -284,7 +284,7 @@ class Api::V1::SessionsController < Api::BaseController
       # it when it claims the message. Same rule in all three places: a non-blank
       # goal overwrites, a blank or absent one leaves the session's goal alone
       # (clearing a goal is PATCH /api/v1/sessions/:id).
-      if goal.present? && goal != @session.goal
+      if goal && goal != @session.goal
         @session.update!(prompt: prompt, goal: goal)
         @session.logs.create!(content: "Goal updated from follow-up", level: "info")
       else

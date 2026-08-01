@@ -104,6 +104,35 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "PR is merged", session.enqueued_messages.last.goal
   end
 
+  test "follow_up leaves the queued message's goal empty when none is given" do
+    session = sessions(:running)
+    session.update!(goal: "existing goal")
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Queued work")
+
+    assert_nil session.enqueued_messages.last.goal
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  test "follow_up logs a goal change" do
+    session = sessions(:needs_input)
+    session.update!(goal: "old condition")
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Goal changed", "goal" => "new condition")
+
+    assert_equal 1, session.logs.where(content: "Goal updated from follow-up").count
+  end
+
+  test "follow_up does not log when the goal is unchanged" do
+    session = sessions(:needs_input)
+    session.update!(goal: "same goal")
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Goal unchanged", "goal" => "same goal")
+
+    assert_equal 0, session.logs.where(content: "Goal updated from follow-up").count
+    assert_equal "same goal", session.reload.goal
+  end
+
   test "follow_up rejects a goal that is too long without sending the prompt" do
     session = sessions(:needs_input)
     session.update!(goal: "existing goal")
