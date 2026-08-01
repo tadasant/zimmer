@@ -146,6 +146,26 @@ Until [#60](https://github.com/tadasant/zimmer/issues/60), the account writer di
 overwrite instead, so rotating accounts dropped every MCP OAuth credential on the box — and the user
 met it as *"the agent says it needs to authorize this server again."*
 
+### Does the filesystem agree with the DB?
+
+Before each session spawn, `AccountRotationService#ensure_active_account!` compares the identity in
+`~/.claude.json` against the identity stored on the DB-current account. Agreement means the worker is
+already set up for that account; disagreement means either the CLI was switched by hand (adopt it) or
+the DB moved and the disk has not caught up (write the DB-current account to disk).
+
+`config_file_matches?` **fails closed**: an account with no stored identity to compare answers "no
+match", not "can't verify, assume ok" ([#61](https://github.com/tadasant/zimmer/issues/61)). A guard
+that returns *ok* when it cannot verify is not a guard, and the unverifiable case — an account holding
+credentials but no identity — is exactly the one where the tokens on disk could belong to anyone.
+
+Failing closed alone would leave such an account rewriting the filesystem on every spawn and arriving
+at the same unanswerable question next time, so the check converges instead:
+`ClaudeAccount#backfill_identity_from_filesystem!` adopts the on-disk `~/.claude.json` **when that
+file already names this account**. Identity only, never credentials; it fills a gap and never
+overwrites a stored identity. From then on the comparison has something to compare. When the file
+names somebody else there is nothing to adopt, and the caller falls through to its existing
+adopt-or-write branches.
+
 ## Rotation on quota
 
 When an account hits its rate limit, Zimmer rotates to the next one by priority:
@@ -153,8 +173,9 @@ When an account hits its rate limit, Zimmer rotates to the next one by priority:
 1. Sync the outgoing account's tokens off disk.
 2. Snapshot its quota state.
 3. `mark_quota_exceeded!`.
-4. `activate_next_account` — which validates the candidate by calling `refresh_token!` before
-   activating it, so a broken account is skipped before it can brick the pool.
+4. `activate_next_account` — which skips a candidate whose latest snapshot says its weekly window is
+   spent, then validates the survivor by calling `refresh_token!` before activating it. A broken or
+   capped account is skipped before it can be handed to a session.
 5. Write the new account's config and credentials to disk, stamp the owner marker.
 6. Record an `AccountRotationEvent`.
 
@@ -205,9 +226,59 @@ The lock is re-entrant with the outer `account.with_lock` in
 `RuntimeAuthProvider#recover_needs_reauth` and in the sweep, so nesting is safe.
 
 `QuotaResetCheckerJob` (every 15 min, **Claude only**) restores `quota_exceeded` accounts when either
-window's reset time has passed, or utilization drops below 100%. It then calls
+window's reset time has passed, or utilization drops below 100% — except that a weekly window the API
+is still *rejecting* is never counted as clear, however far its counter has drifted. It then calls
 `AuthOutageParkService.wake_parked_sessions!` so the sessions that were blocked on those accounts
 resume in the same sweep — see [When the pool runs dry](#when-the-pool-runs-dry).
+
+### An account can be capped without ever having been current
+
+`mark_quota_exceeded!` used to fire only on the account that was current when a session hit a wall.
+An account that filled its weekly window while sitting idle in the pool was never marked: it stayed
+`active`, stayed in `ClaudeAccount.available`, and was the next thing rotation reached for — activate,
+fail on the first request, rotate again ([#248](https://github.com/tadasant/zimmer/issues/248)).
+
+Two changes close that, and they read the same predicate —
+`ClaudeAccountQuotaSnapshot#seven_day_window_spent?`:
+
+- **`QuotaSnapshotService` marks the account as the reading lands**, whichever path took it —
+  rotation, a `/quotas` page view, the reset checker's own probe. A reading that says the week is
+  gone takes the account out of `available` there and then. It only ever moves an `active` account:
+  `needs_reauth` is a different failure with a different recovery, and relabelling it would make an
+  unusable pool look merely throttled.
+- **Rotation and bootstrap refuse a capped candidate at pick time**, and mark it on the way past.
+  That is what covers evidence recorded before the ingestion marking existed.
+
+`QuotaResetCheckerJob` reads the same predicate to decide the account is *not* back yet, which is
+what keeps the healer and the marker from flipping an account between states on every sweep.
+
+### Bootstrap validates before it promotes
+
+`ensure_active_account!` picks an account when nothing is current — a fresh install, a restarted
+worker, a pool that has just been re-authenticated. It used to take `ClaudeAccount.available.first` on
+faith, and `ensure_fresh_tokens!` swallows its own failure by design, so an account with a dead
+refresh token became current anyway and every session on the instance failed to authenticate until a
+human intervened ([#239](https://github.com/tadasant/zimmer/issues/239)).
+
+It now walks the pool in priority order and takes the first candidate that is not capped and whose
+token Anthropic actually honours. The probe is `QuotaCheckService#check_with_token`, **not**
+`refresh_token!`: it reads the rate-limit headers off a one-token request, so it can be run over
+candidates that may be skipped without spending a single-use refresh token. A candidate Anthropic
+*refuses* is refreshed once and probed again — a stale access token is the one refusal a refresh can
+fix — so the single-use token is spent only where it might help, never on a candidate whose
+credentials already work. `ClaudeLoginDriver#capture!` applies the same probe through
+`QuotaCheckService.token_rejected?`, because a login that produces a complete-looking token pair is
+another way an unusable account enters the pool.
+
+The probe answers three ways, and only one of them condemns an account: Anthropic honoured the token,
+Anthropic answered and refused it, or **the probe never got an answer** (timeout, DNS failure, 5xx).
+The last is evidence about the network, not the credential, so it does not skip the account — reading
+an Anthropic outage as "every credential is dead" would park every session at once.
+
+A successful probe is a live quota reading, so it is recorded as a snapshot rather than reduced to a
+boolean. That is what lets bootstrap refuse an account whose weekly window is spent but which nothing
+has ever probed — the case stored evidence cannot cover — and it leaves rotation with evidence about
+an account that has never been current.
 
 ### What `/quotas` reports for the pool
 
@@ -226,17 +297,19 @@ weekly window subsumes the 5-hour one: an account at its 5-hour cap is idle for 
 serves again. A window whose reset time has passed reads as 0% on both axes, since the sliding window
 has cleared and the last number Zimmer recorded for it is stale.
 
-Two vocabularies of "spent" now coexist, and they disagree at one edge. `QuotasHelper` reads the API
-status (`allowed` and `allowed_warning` serve; anything else blocks); `QuotaResetCheckerJob.window_clear?`,
-which decides whether to restore a `quota_exceeded` account, ignores status and looks only at reset
-time and utilization. A snapshot with status `rejected` at 50% utilization is therefore *spent* to the
-page and *clear* to the healer. The healer governs account state; the page governs what you read.
+There is one definition of "spent", and it lives on the snapshot:
+`ClaudeAccountQuotaSnapshot#seven_day_window_spent?` — the API status is blocking (`allowed` and
+`allowed_warning` serve; anything else, including a value Anthropic adds later, blocks), or the
+counter has reached the cap, in both cases only until that window's reset time passes. The page reads
+it to decide what an account contributes, `QuotaSnapshotService` reads it to mark an account
+`quota_exceeded` as the reading lands, rotation reads it to refuse a candidate, and
+`QuotaResetCheckerJob` reads it to decide the account is not back yet. They used to disagree at the
+`rejected`-but-under-100% edge, which meant the page called an account spent while the healer called
+it clear.
 
 `pool_utilization_5h` itself is display-only — no scheduler or rotation path reads it. The underlying
-snapshot numbers are not: `QuotaResetCheckerJob` and `QuotasController#auto_heal_accounts` both flip
-accounts back to `active` from them. Rotation picks from `ClaudeAccount.available` (status `active`)
-and applies no quota test of its own, which is why an account that is 7-day-spent but was never
-current stays a rotation candidate — see [#248](https://github.com/tadasant/zimmer/issues/248).
+snapshot numbers are not: `QuotaResetCheckerJob` and `QuotasController#auto_heal_accounts` flip
+accounts back to `active` from them, and `QuotaSnapshotService` flips them out.
 
 :::danger[Rotation is triggered by matching an English error string]
 `ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN`:

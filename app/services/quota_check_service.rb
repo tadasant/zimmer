@@ -14,12 +14,18 @@ class QuotaCheckService
   REQUEST_TIMEOUT = 10
 
   Result = Struct.new(
-    :success, :error_message, :subscription_type, :rate_limit_tier, :email,
+    :success, :error_message, :unreachable, :subscription_type, :rate_limit_tier, :email,
     :utilization_5h, :utilization_7d, :status_5h, :status_7d,
     :reset_5h, :reset_7d, :overage_status, :overage_disabled_reason,
     keyword_init: true
   ) do
     def success? = success
+
+    # True when the probe never got an answer from Anthropic — a timeout, a DNS
+    # or connection failure, or a 5xx. Such a failure is evidence about the
+    # network, not about the token, so callers deciding whether a credential is
+    # dead must not read it as a refusal.
+    def unreachable? = !!unreachable
   end
 
   def self.check
@@ -28,6 +34,32 @@ class QuotaCheckService
 
   def self.check_with_token(token)
     new.check_with_token(token)
+  end
+
+  # True when Anthropic answered a probe of this access token and refused it.
+  #
+  # This is the pool's non-consuming validity test. Unlike ClaudeAccount#refresh_token!,
+  # which spends a SINGLE-USE refresh token to find out whether credentials work,
+  # this reads the rate-limit headers off a 1-token message — so it can be run
+  # over every candidate in the pool without burning anything (#242).
+  #
+  # It answers false when it cannot tell: a blank result from an unreachable API
+  # says nothing about the credential, and condemning the whole pool on an
+  # Anthropic blip would park every session at once. A blank token, on the other
+  # hand, is a refusal — there is nothing to present.
+  #
+  # @param token [String, nil] an OAuth access token (sk-ant-oat01-*)
+  # @return [Boolean] true only when the token was presented and rejected
+  def self.token_rejected?(token)
+    return true if token.blank?
+
+    result = check_with_token(token)
+    return false if result.success?
+
+    !result.unreachable?
+  rescue StandardError => e
+    Rails.logger.warn "[QuotaCheckService] Token probe raised, treating as inconclusive: #{e.message}"
+    false
   end
 
   def check
@@ -113,11 +145,14 @@ class QuotaCheckService
     response = http.request(request)
     parse_headers(response, account_info)
   rescue Net::OpenTimeout, Net::ReadTimeout => e
-    error_result("API request timed out: #{e.message}")
+    error_result("API request timed out: #{e.message}", unreachable: true)
   rescue SocketError, Errno::ECONNREFUSED, Errno::EHOSTUNREACH => e
-    error_result("Cannot reach Anthropic API: #{e.message}")
+    error_result("Cannot reach Anthropic API: #{e.message}", unreachable: true)
   rescue StandardError => e
-    error_result("API request failed: #{e.message}")
+    # Anything raised here happened on the way to Anthropic — a refusal arrives as
+    # a response, not an exception — so it is a transport failure, not a verdict
+    # on the token.
+    error_result("API request failed: #{e.message}", unreachable: true)
   end
 
   def parse_headers(response, account_info)
@@ -125,8 +160,12 @@ class QuotaCheckService
     utilization_7d = response["anthropic-ratelimit-unified-7d-utilization"]
 
     if utilization_5h.nil? && utilization_7d.nil?
+      # A 5xx is Anthropic failing, not the token failing. Flagging it unreachable
+      # keeps a provider outage from reading as "every credential in the pool is
+      # dead" to the callers that probe before activating an account.
       return error_result(
-        "No rate-limit headers in response (HTTP #{response.code}). Token may be expired or invalid."
+        "No rate-limit headers in response (HTTP #{response.code}). Token may be expired or invalid.",
+        unreachable: response.code.to_i >= 500
       )
     end
 
@@ -149,7 +188,7 @@ class QuotaCheckService
     )
   end
 
-  def error_result(message)
-    Result.new(success: false, error_message: message)
+  def error_result(message, unreachable: false)
+    Result.new(success: false, error_message: message, unreachable: unreachable)
   end
 end
