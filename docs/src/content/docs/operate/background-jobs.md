@@ -32,7 +32,7 @@ From `config.good_job.cron`:
 | 5m | `CleanupOrphanedSessionsJob` | Sessions marked `running` whose process is gone |
 | 5m | `RefreshRuntimeAuthTokensJob` | Refresh Anthropic/OpenAI OAuth tokens |
 | 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks |
-| 5m | `ElicitationEndpointHealthCheckJob` | Alert when MCP servers cannot reach the approval endpoint |
+| 5m | `ElicitationEndpointHealthCheckJob` | Alert when MCP servers cannot reach the approval endpoint (production and staging only — see below) |
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
@@ -273,3 +273,46 @@ derived from title + source only (and, for an aggregate, from the set of per-eve
 snippet text leaked into either, the hourly throttle would stop throttling and one wedged poller
 would fill `#eng-alerts` once per tick.
 :::
+
+### Who is allowed to page
+
+**`AlertService::ALERTING_ENVIRONMENTS` is `production` and `staging`.** Zimmer's two deployed
+environments page; a process running as anything else does not, however completely it is credentialed
+— the same boundary `config/initializers/sentry.rb` draws for the production error DSN. The check
+happens twice: at `raise_alert`, so a gated alert is never accumulated into an `AlertBatcher` flush
+that would drop it, and at `post_to_slack`, the one place every path into Slack passes through
+(`AlertBatcher`'s flush calls `emit` directly and never sees the first check). Either way the caller
+gets `false`, and the alert is logged at `warn` with its title, source, environment, and a truncated
+body — so a developer exercising alerting sees what would have been sent and why it wasn't, rather
+than silence.
+
+`ALERTS_ENABLED` overrides in both directions: `true` on an instance that should page anyway, `false`
+to mute one that otherwise would. Anything unrecognized is treated as unset — garbage must not read as
+*yes, page production*. Set it as deploy environment configuration, never in `mcp_secrets`: secret-store
+values are copied into every agent clone's `.env`, so an opt-in stored there would travel with the
+clones. `CliSpawnEnv#clear_inherited_env_vars` strips it from spawned agents for the same reason, so
+the opt-in stays with the instance it was declared on.
+
+The gate reads the environment and nothing else — deliberately not the dedup cache, which is
+best-effort by construction. `suppressed?` and `mark_sent` swallow their own failures, as does
+`ElicitationEndpoint.record`; when the cache is unreachable, every suppressor falls open at once and
+one incident becomes a message per tick. A throttle that fails open is not a containment boundary. See
+[the credential-scope limitation](/limitations/#every-agent-session-clone-carries-the-slack-bot-token-and-the-alert-channel-id)
+for the part of this that a code change cannot close.
+
+Every message is tagged with its environment — header, context block, and the `text:` fallback —
+production included, so that a channel of tagged messages has no ambiguous member. Tagging only the
+non-production ones would make an untagged message mean either "from production" or "from a build that
+predates the tag". The tag is applied at render time, so dedup keys and `AlertBatcher`'s
+`(title, source)` grouping stay keyed on the alert itself.
+
+### Why the elicitation probe doesn't run in development
+
+`ElicitationEndpointHealthCheckJob` is registered in `production.rb` and `staging.rb`, not
+`development.rb`. Locally `AppUrl.base_url` falls back to `http://localhost:PORT` (unless you set
+`ZIMMER_LOCAL_BASE_URL`), so the probe measures whether this particular process also happens to be
+serving HTTP — a console, a bare worker, or a test harness fails it on every tick, forever. And the
+recorded `unreachable` status is what `OrchestratorSystemPromptBuilder` reads, so every locally
+spawned agent would be told the approval gate is down when it isn't. Never-probed reads as healthy,
+which is the honest default here; run `ElicitationEndpointHealthCheckJob.new.perform` by hand to
+exercise it.

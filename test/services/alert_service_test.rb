@@ -10,6 +10,16 @@ class AlertServiceTest < ActiveSupport::TestCase
     @original_cache = Rails.cache
     @memory_cache = ActiveSupport::Cache::MemoryStore.new
     Rails.cache = @memory_cache
+    # The environment gate is closed in `test`. These cases are about formatting,
+    # dedup, and degradation once an instance *is* allowed to page; the gate
+    # itself is covered by AlertServiceEnvironmentGateTest below.
+    #
+    # Stubbing it also keeps the `ENV.stubs(:[]).with("ENG_ALERTS_SLACK_CHANNEL_ID")`
+    # calls below safe: a mocha partial stub turns every *other* ENV read into an
+    # unexpected invocation, and the real gate reads ENV["ALERTS_ENABLED"]. A test
+    # that wants the real gate belongs in the gate class, which mutates ENV
+    # directly instead of stubbing it.
+    AlertService.stubs(:enabled?).returns(true)
   end
 
   teardown do
@@ -219,8 +229,9 @@ class AlertServiceTest < ActiveSupport::TestCase
     )
 
     assert_not_nil text_sent
-    # Title still leads (preserves push-notification preview behavior)
-    assert text_sent.start_with?("Schedule trigger session creation failed"), "text: should start with the title"
+    # Environment tag, then the title (preserves push-notification preview behavior)
+    assert text_sent.start_with?("[test] Schedule trigger session creation failed"),
+           "text: should start with the environment-tagged title"
     # Source and details must be included so block-blind consumers see them
     assert_includes text_sent, "ScheduleTriggerJob"
     assert_includes text_sent, "Condition 42"
@@ -242,7 +253,7 @@ class AlertServiceTest < ActiveSupport::TestCase
 
     AlertService.raise_alert("Title only")
 
-    assert_equal "Title only", text_sent
+    assert_equal "[test] Title only", text_sent
   end
 
   test "raise_alert text: field truncates very long bodies" do
@@ -421,6 +432,41 @@ class AlertServiceTest < ActiveSupport::TestCase
            "the dedup key must be derived from title + source only"
   end
 
+  # === Environment tagging ===
+  #
+  # Every message says which instance sent it, production included. An alert
+  # that reaches the channel from somewhere unexpected has to identify itself;
+  # if only non-production messages were tagged, an untagged message would
+  # merely mean "tagging shipped after this one" (#272).
+
+  test "raise_alert tags the environment into the header, context, and fallback text" do
+    payload = capture_post
+
+    AlertService.raise_alert("Gate unreachable", details: "ECONNREFUSED", source: "TestJob")
+
+    assert_equal "[test] Gate unreachable", payload[:blocks][0][:text][:text]
+
+    env_element = payload[:blocks][2][:elements].find { |e| e[:text].include?("Environment") }
+    assert_not_nil env_element, "context block should carry the environment"
+    assert_includes env_element[:text], "test"
+
+    assert payload[:text].start_with?("[test] Gate unreachable")
+  end
+
+  test "environment tag does not change the dedup key" do
+    # The tag is applied at render time. If it leaked into the dedup key, the
+    # same alert would page once per environment name rather than once.
+    mock_client = mock("slack_client")
+    mock_client.expects(:chat_postMessage).once.returns(true)
+
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:client).returns(mock_client)
+    SecretsLoader.stubs(:get).with("ENG_ALERTS_SLACK_CHANNEL_ID").returns("C123")
+
+    assert AlertService.raise_alert("Same alert", source: "TestJob")
+    assert_not AlertService.raise_alert("Same alert", source: "TestJob")
+  end
+
   # === Graceful degradation ===
 
   test "raise_alert does not crash when Rails cache is unavailable" do
@@ -446,5 +492,188 @@ class AlertServiceTest < ActiveSupport::TestCase
 
     result = AlertService.raise_alert("Test alert")
     assert_not result
+  end
+end
+
+# The environment gate: which instances are allowed to page the alert channel.
+#
+# Regression cover for #272, where a fully-credentialed non-production instance
+# — an agent-session clone booting Zimmer as `development` with the production
+# Slack token and channel id in its `.env` — paged the production channel every
+# five minutes. Nothing here stubs `enabled?`; these tests drive the real gate.
+class AlertServiceEnvironmentGateTest < ActiveSupport::TestCase
+  setup do
+    AlertService.reset!
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    # Manipulate the real ENV rather than stubbing `ENV.[]`: a partial stub with
+    # `.with(...)` turns every unrelated lookup into an unexpected-invocation
+    # failure, and the gate reads its own key.
+    @original_alerts_enabled = ENV["ALERTS_ENABLED"]
+    ENV.delete("ALERTS_ENABLED")
+  end
+
+  teardown do
+    AlertService.reset!
+    Rails.cache = @original_cache
+    if @original_alerts_enabled.nil?
+      ENV.delete("ALERTS_ENABLED")
+    else
+      ENV["ALERTS_ENABLED"] = @original_alerts_enabled
+    end
+  end
+
+  def stub_env(name)
+    Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new(name))
+  end
+
+  def stub_fully_configured_slack
+    client = mock("slack_client")
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:client).returns(client)
+    SecretsLoader.stubs(:get).with("ENG_ALERTS_SLACK_CHANNEL_ID").returns("C123")
+    client
+  end
+
+  # === enabled? ===
+
+  test "enabled? is true in the deployed environments by default" do
+    stub_env("production")
+    assert AlertService.enabled?
+
+    stub_env("staging")
+    assert AlertService.enabled?
+  end
+
+  test "enabled? is false everywhere else by default" do
+    stub_env("development")
+    assert_not AlertService.enabled?
+
+    stub_env("test")
+    assert_not AlertService.enabled?
+  end
+
+  test "ALERTS_ENABLED opts an undeployed instance in" do
+    stub_env("development")
+    ENV["ALERTS_ENABLED"] = "true"
+    assert AlertService.enabled?
+  end
+
+  test "ALERTS_ENABLED mutes production" do
+    stub_env("production")
+    ENV["ALERTS_ENABLED"] = "false"
+    assert_not AlertService.enabled?
+  end
+
+  test "ALERTS_ENABLED accepts common truthy and falsy spellings" do
+    stub_env("development")
+    %w[1 true TRUE t yes y on].each do |value|
+      ENV["ALERTS_ENABLED"] = value
+      assert AlertService.enabled?, "#{value.inspect} should enable alerting"
+    end
+
+    stub_env("production")
+    %w[0 false FALSE f no n off].each do |value|
+      ENV["ALERTS_ENABLED"] = value
+      assert_not AlertService.enabled?, "#{value.inspect} should disable alerting"
+    end
+  end
+
+  test "an unrecognized ALERTS_ENABLED value falls back to the environment default" do
+    # Fails closed: garbage must not read as "yes, page production".
+    ENV["ALERTS_ENABLED"] = "maybe"
+
+    stub_env("development")
+    assert_not AlertService.enabled?
+
+    stub_env("production")
+    assert AlertService.enabled?
+  end
+
+  test "a blank ALERTS_ENABLED value is treated as unset" do
+    ENV["ALERTS_ENABLED"] = "   "
+    stub_env("development")
+    assert_not AlertService.enabled?
+  end
+
+  # === The gate at the emission site ===
+
+  test "raise_alert posts nothing from a fully-credentialed development instance" do
+    stub_env("development")
+    client = stub_fully_configured_slack
+    client.expects(:chat_postMessage).never
+
+    assert_not AlertService.raise_alert("MCP approval gate unreachable", details: "ECONNREFUSED", source: "ElicitationEndpointHealthCheckJob")
+  end
+
+  test "repeated ticks stay silent even when the cache cannot dedup" do
+    # `suppressed?` swallows cache failures and returns false, so an unreachable
+    # cache — the ordinary case in a clone — removes the throttle that would have
+    # capped this at one message. The gate must hold without it.
+    Rails.cache = ActiveSupport::Cache::NullStore.new
+    stub_env("development")
+    client = stub_fully_configured_slack
+    client.expects(:chat_postMessage).never
+
+    7.times do
+      assert_not AlertService.raise_alert(
+        "MCP approval gate unreachable",
+        details: "Errno::ECONNREFUSED: Failed to open TCP connection to localhost:3000",
+        source: "ElicitationEndpointHealthCheckJob",
+        dedup_key: "elicitation_endpoint_unreachable"
+      )
+    end
+  end
+
+  test "batched alerts are gated too, and report it to the caller" do
+    stub_env("development")
+    client = stub_fully_configured_slack
+    client.expects(:chat_postMessage).never
+
+    results = []
+    AlertBatcher.with_batch do
+      results << AlertService.raise_alert("Trigger firing error", details: "a", source: "ScheduleTriggerJob")
+      results << AlertService.raise_alert("Trigger firing error", details: "b", source: "ScheduleTriggerJob")
+    end
+
+    # AlertBatcher.record returns true unconditionally, so a gate applied only at
+    # the post would tell a batched caller its alert was accepted.
+    assert_equal [ false, false ], results
+  end
+
+  test "emit is gated even when reached directly" do
+    # AlertBatcher's flush calls emit, not raise_alert — the gate has to hold at
+    # the emission site too, not only at the entry point.
+    stub_env("development")
+    client = stub_fully_configured_slack
+    client.expects(:chat_postMessage).never
+
+    assert_not AlertService.emit("Trigger firing error", details: "a", source: "ScheduleTriggerJob", dedup_key: "k")
+  end
+
+  test "a suppressed alert does not consume its dedup window" do
+    # If a gated alert marked itself sent, the instance that *is* allowed to page
+    # could be throttled by one that isn't (they share no cache today, but the
+    # invariant is cheap to keep).
+    stub_env("development")
+    stub_fully_configured_slack
+    AlertService.raise_alert("Test alert", source: "TestJob")
+
+    assert_not Rails.cache.exist?("#{AlertService::CACHE_PREFIX}#{Digest::SHA256.hexdigest('Test alert:TestJob')[0..15]}")
+  end
+
+  test "an opted-in instance posts, tagged with its environment" do
+    stub_env("staging")
+    ENV["ALERTS_ENABLED"] = "true"
+    client = stub_fully_configured_slack
+
+    text_sent = nil
+    client.expects(:chat_postMessage).with do |args|
+      text_sent = args[:text]
+      true
+    end.returns(true)
+
+    assert AlertService.raise_alert("Disk almost full", source: "TestJob")
+    assert text_sent.start_with?("[staging] Disk almost full")
   end
 end
