@@ -100,6 +100,29 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     assert_equal expected, key
   end
 
+  # The `", "` → `","` munge is the fragile part of the reimplementation, and the two
+  # canaries above would pass with it deleted — their preimages have no spaces to munge.
+  # This one pins it: the munge reaches inside header *values*, so the hashed preimage is
+  # not the real compact JSON of the config. Ugly, but it is what Claude Code keys on.
+  test "compute_credential_key pins the compact-JSON munge reaching into header values" do
+    config = {
+      type: "http",
+      url: "https://mcp.example.com/v1/mcp",
+      headers: { "Accept" => "application/json, text/event-stream" }
+    }
+
+    key = McpOauthCredential.compute_credential_key("example", config)
+
+    munged = '{"type":"http","url":"https://mcp.example.com/v1/mcp","headers":{"Accept":"application/json,text/event-stream"}}'
+    honest = config.to_json
+
+    assert_equal "example|#{Digest::SHA256.hexdigest(munged)[0, 16]}", key,
+      "credential_key algorithm drifted; hashed preimage must be #{munged}"
+    assert_equal "example|c40efadd07652db1", key
+    assert_not_equal "example|#{Digest::SHA256.hexdigest(honest)[0, 16]}", key,
+      "the munge is lossy inside header values — hashing the config's real JSON gives a different key"
+  end
+
   test "active? returns true when expires_at is nil" do
     credential = mcp_oauth_credentials(:notion)
     credential.expires_at = nil

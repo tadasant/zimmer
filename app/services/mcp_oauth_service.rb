@@ -257,17 +257,7 @@ class McpOauthService
     # resource server. Required by servers that enforce audience binding (Notion).
     params[:resource] = pending_flow.resource if pending_flow.resource.present?
 
-    uri = URI(pending_flow.token_endpoint)
-    request = Net::HTTP::Post.new(uri.request_uri)
-    request.set_form_data(params)
-
-    response = Net::HTTP.start(
-      uri.host,
-      uri.port,
-      use_ssl: uri.scheme == "https",
-      open_timeout: REQUEST_TIMEOUT,
-      read_timeout: REQUEST_TIMEOUT
-    ) { |http| http.request(request) }
+    response = post_form(URI(pending_flow.token_endpoint), params)
 
     if response.code == "200"
       parse_token_response(response)
@@ -459,6 +449,19 @@ class McpOauthService
       client_secret: client_secret,
       resource: resource
     )
+  end
+
+  # Posts form-encoded params with the same timeouts every other outbound call here
+  # uses. `Net::HTTP.post_form` cannot be given timeouts, and an auth server that
+  # accepts the connection and then never answers would hold the thread forever.
+  def post_form(uri, params)
+    request = Net::HTTP::Post.new(uri.request_uri)
+    request.set_form_data(params)
+
+    Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https",
+      open_timeout: REQUEST_TIMEOUT, read_timeout: REQUEST_TIMEOUT) do |http|
+      http.request(request)
+    end
   end
 
   # Fetches JSON from a URL with timeout

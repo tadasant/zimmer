@@ -434,6 +434,16 @@ Rotation requires a restart. No record of which key did what.
 
 Tracked in [#46](https://github.com/tadasant/zimmer/issues/46).
 
+### The OAuth refresh grant has no timeout
+
+`McpOauthService` bounds every call it makes at 30 seconds, including the initial token exchange. The
+*refresh* grant does not: `McpOauthCredential#refresh!` still posts with a bare `Net::HTTP.post_form`.
+An auth server that accepts the connection and never answers pins whatever is refreshing —
+`McpOauthCredentialInjector` on the session-spawn path, or `RefreshMcpOauthTokensJob` on cron, where it
+holds a GoodJob worker.
+
+Tracked in [#48](https://github.com/tadasant/zimmer/issues/48).
+
 ### Agents run unsandboxed on the app host
 
 `lib/execution/providers/remote_sandbox.rb:6` — the remote sandbox provider is a stub. Every method

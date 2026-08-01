@@ -101,9 +101,25 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
     assert_not flow.localhost_flow?
   end
 
+  test "localhost_flow? returns true regardless of host casing" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+    flow.redirect_uri = "http://LOCALHOST:3118/callback"
+
+    assert flow.localhost_flow?
+  end
+
   test "localhost_flow? returns false for a malformed redirect_uri" do
     flow = mcp_oauth_pending_flows(:pending_notion)
     flow.redirect_uri = "http://local host:3000/callback"
+
+    assert_not flow.localhost_flow?
+  end
+
+  # A schemeless value parses to a nil host, so it is not a loopback redirect. The
+  # substring check this replaced said it was.
+  test "localhost_flow? returns false for a redirect_uri with no scheme" do
+    flow = mcp_oauth_pending_flows(:pending_notion)
+    flow.redirect_uri = "localhost:3000/callback"
 
     assert_not flow.localhost_flow?
   end

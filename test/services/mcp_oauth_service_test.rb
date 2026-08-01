@@ -403,7 +403,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     response.define_singleton_method(:body) { { access_token: "tok-123" }.to_json }
     response.define_singleton_method(:[]) { |_key| "application/json" }
 
-    Net::HTTP.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
+    @service.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
       @service.exchange_code_for_tokens(flow, "auth-code-abc")
     end
 
@@ -420,7 +420,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     response.define_singleton_method(:body) { { access_token: "tok-123" }.to_json }
     response.define_singleton_method(:[]) { |_key| "application/json" }
 
-    Net::HTTP.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
+    @service.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
       @service.exchange_code_for_tokens(flow, "auth-code-abc")
     end
 
@@ -565,7 +565,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     response.define_singleton_method(:body) { { access_token: "tok-123" }.to_json }
     response.define_singleton_method(:[]) { |_key| "application/json" }
 
-    Net::HTTP.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
+    @service.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
       @service.exchange_code_for_tokens(flow, "auth-code-abc")
     end
 
@@ -584,11 +584,35 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     response.define_singleton_method(:body) { { access_token: "tok-123" }.to_json }
     response.define_singleton_method(:[]) { |_key| "application/json" }
 
-    Net::HTTP.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
+    @service.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
       @service.exchange_code_for_tokens(flow, "auth-code-abc")
     end
 
     assert_equal "shh-secret", captured_params[:client_secret]
+  end
+
+  # --- the token exchange is bounded ---
+
+  # Every other test here stubs post_form, so nothing would notice if the timeouts
+  # came off it again. An unbounded exchange lets a hung auth server hold the thread.
+  test "post_form bounds the request with REQUEST_TIMEOUT and posts the form encoded" do
+    captured_kwargs = nil
+    captured_request = nil
+
+    response = Net::HTTPSuccess.new("1.1", "200", "OK")
+    fake_http = Object.new
+    fake_http.define_singleton_method(:request) { |req| captured_request = req; response }
+
+    Net::HTTP.stub(:start, ->(_host, _port, **kwargs, &block) { captured_kwargs = kwargs; block.call(fake_http) }) do
+      @service.send(:post_form, URI("https://auth.example.com/oauth/token?x=1"), { code: "abc", scope: "a b" })
+    end
+
+    assert_equal McpOauthService::REQUEST_TIMEOUT, captured_kwargs[:open_timeout]
+    assert_equal McpOauthService::REQUEST_TIMEOUT, captured_kwargs[:read_timeout]
+    assert_equal true, captured_kwargs[:use_ssl]
+    assert_equal "/oauth/token?x=1", captured_request.path
+    assert_equal "application/x-www-form-urlencoded", captured_request["Content-Type"]
+    assert_equal({ "code" => "abc", "scope" => "a b" }, URI.decode_www_form(captured_request.body).to_h)
   end
 
   # --- extract_tokens (nested Slack authed_user shape) ---
