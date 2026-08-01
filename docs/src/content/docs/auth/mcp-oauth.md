@@ -490,12 +490,10 @@ still falls back to the submitted `server_url`, and discovery will fetch it.
 
 :::note[The loopback check has no production caller]
 `McpOauthPendingFlow#localhost_flow?` parses `redirect_uri` and compares the **host** exactly against
-`localhost`, `127.0.0.1` and `::1` — a malformed URI is not a loopback. It used to be a substring
-test, which accepted `https://localhost.evil.com` and `https://evil.com/?x=127.0.0.1`; nothing in the
-app called it either before or after, so the predicate is correct-before-use rather than a gate that
-was standing open. Nothing routes on it today: the decision that actually matters — whether a flow
-can be completed automatically — is made by comparing the redirect against `build_redirect_uri`,
-below.
+`localhost`, `127.0.0.1` and `::1`; a malformed or schemeless URI is not a loopback. Nothing in the
+app calls it — the decision that actually matters, whether a flow can be completed automatically, is
+made by comparing the redirect against `build_redirect_uri`, below. The predicate is correct so that
+the first caller inherits a correct answer, not because it gates anything today.
 :::
 
 :::caution[Servers without `offline_access` become one-shot credentials]
