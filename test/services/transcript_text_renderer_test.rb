@@ -81,6 +81,30 @@ class TranscriptTextRendererTest < ActiveSupport::TestCase
     assert_includes text, "did the thing"
   end
 
+  # Rendering unknown entries is the point, but rendering them WHOLE is not: a
+  # Codex rollout is entirely unrecognized envelope types, so an untruncated dump
+  # would make this reading copy larger than the raw transcript — and it feeds
+  # get_session's text format into an agent's context window.
+  test "truncates an unrecognized entry rather than dumping it whole" do
+    text = TranscriptTextRenderer.render([
+      { "type" => "file-history-snapshot", "snapshot" => { "contents" => "y" * 50_000 } }
+    ])
+
+    assert_includes text, "--- File-History-Snapshot ---"
+    assert_operator text.length, :<, 1_200
+  end
+
+  test "truncates every entry of an all-unrecognized (Codex-shaped) transcript" do
+    entries = 20.times.map do |i|
+      { "timestamp" => "t#{i}", "type" => "response_item", "payload" => { "blob" => "z" * 5_000 } }
+    end
+
+    text = TranscriptTextRenderer.render(entries)
+
+    assert_includes text, "--- Response Item ---"
+    assert_operator text.length, :<, 25_000, "20 entries must not render ~100kB"
+  end
+
   test "names the role on an unknown type when the entry carries one" do
     text = TranscriptTextRenderer.render([
       { "type" => "progress", "role" => "assistant", "content" => "working" }

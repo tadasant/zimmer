@@ -215,27 +215,65 @@ class Api::V1::SessionsControllerContractTest < ActionDispatch::IntegrationTest
   end
 
   test "refresh_all does not count a session it could not read from disk" do
+    session = sessions(:running)
+    Session.where.not(id: session.id).update_all(status: Session.statuses[:archived])
+
     Api::V1::SessionsController.any_instance.stubs(:get_transcript_directory_for_session).returns(nil)
 
     post refresh_all_api_v1_sessions_path, headers: @headers
     assert_response :success
 
     assert_equal 0, JSON.parse(response.body)["refreshed"]
+    assert_nil session.reload.transcript
   end
 
+  test "refresh_all does not count a transcript identical to the stored one" do
+    session = sessions(:running)
+    Session.where.not(id: session.id).update_all(status: Session.statuses[:archived])
+
+    stored = JSON.generate({ type: "user", message: { role: "user", content: "unchanged" } })
+    session.update!(transcript: stored)
+
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "main.jsonl")
+      File.write(file, stored)
+
+      Api::V1::SessionsController.any_instance.stubs(:get_transcript_directory_for_session).returns(dir)
+      Api::V1::SessionsController.any_instance.stubs(:find_main_transcript_file_for_session).returns(file)
+
+      assert_no_difference "session.logs.count" do
+        post refresh_all_api_v1_sessions_path, headers: @headers
+      end
+      assert_response :success
+
+      assert_equal 0, JSON.parse(response.body)["refreshed"]
+    end
+  end
+
+  # The `restarted_ids` guard: a session the restart pass just flipped to
+  # :running must not then be picked up by the transcript pass, which would
+  # double-count it and clobber a transcript its new job is about to rewrite.
+  # Readable content is staged on disk on purpose — without the guard this
+  # session WOULD be refreshed, so the test fails if the guard is removed.
   test "refresh_all does not refresh a session it just restarted" do
     failed = sessions(:failed)
     Session.where.not(id: failed.id).update_all(status: Session.statuses[:archived])
 
-    Api::V1::SessionsController.any_instance
-      .expects(:refresh_transcript_from_disk)
-      .never
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "main.jsonl")
+      File.write(file, JSON.generate({ type: "user", message: { role: "user", content: "from disk" } }))
 
-    post refresh_all_api_v1_sessions_path, headers: @headers
-    assert_response :success
+      Api::V1::SessionsController.any_instance.stubs(:get_transcript_directory_for_session).returns(dir)
+      Api::V1::SessionsController.any_instance.stubs(:find_main_transcript_file_for_session).returns(file)
 
-    json = JSON.parse(response.body)
-    assert_equal 0, json["refreshed"]
+      post refresh_all_api_v1_sessions_path, headers: @headers
+      assert_response :success
+
+      json = JSON.parse(response.body)
+      assert_equal 1, json["restarted"]
+      assert_equal 0, json["refreshed"], "the restarted session must not also be counted as refreshed"
+      assert_nil failed.reload.transcript, "the restarted session's transcript must be left for its new job"
+    end
   end
 
   # ============================================================

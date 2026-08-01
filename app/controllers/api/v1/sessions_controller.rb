@@ -502,12 +502,21 @@ class Api::V1::SessionsController < Api::BaseController
     # Everything not restarted or continued above still gets its transcript
     # re-read from disk — that is what "refreshed" counts, and it is the pass
     # the API was missing entirely, which is why `refreshed` was always 0.
-    sessions.where.not(status: [ :failed, :needs_input ]).where.not(id: restarted_ids).each do |session|
-      refreshed_count += 1 if refresh_transcript_from_disk(session)
-    rescue => e
-      error_count += 1
-      Rails.logger.error "[API refresh_all] Failed to refresh session #{session.id}: #{e.message}"
-    end
+    #
+    # Capped at the same bulk_limit as the restart passes. Each iteration is a
+    # whole-file read plus an UPDATE that broadcasts, and this runs inside the
+    # request, so an instance with hundreds of live sessions would otherwise turn
+    # one POST into an unbounded synchronous fan-out.
+    sessions
+      .where.not(status: [ :failed, :needs_input ])
+      .where.not(id: restarted_ids)
+      .limit(bulk_limit)
+      .each do |session|
+        refreshed_count += 1 if refresh_transcript_from_disk(session)
+      rescue => e
+        error_count += 1
+        Rails.logger.error "[API refresh_all] Failed to refresh session #{session.id}: #{e.message}"
+      end
 
     render json: {
       message: "Refresh complete",
@@ -1075,13 +1084,15 @@ class Api::V1::SessionsController < Api::BaseController
 
   # Re-read one session's transcript from the filesystem and persist it.
   #
-  # Returns true only when the stored transcript was actually replaced — that is
-  # what `refresh_all` counts as "refreshed", matching the web bulk refresh.
-  # Returns false when there is nothing to read (no clone path, no transcript
-  # directory, no main transcript file) or when the filesystem copy is shorter
-  # than the stored one. That last case means the clone was recreated at a new
-  # path and started a fresh file; session.transcript is the only durable record,
-  # so the longer stored copy is kept rather than destroyed.
+  # Returns true only when the stored transcript actually changed — that is what
+  # `refresh_all` counts as "refreshed". Returns false when there is nothing to
+  # read (no clone path, no transcript directory, no main transcript file), when
+  # the filesystem copy is byte-identical to the stored one (nothing was
+  # refreshed, and writing anyway would append a log row to every session on
+  # every call), or when the filesystem copy is shorter than the stored one. That
+  # last case means the clone was recreated at a new path and started a fresh
+  # file; session.transcript is the only durable record, so the longer stored copy
+  # is kept rather than destroyed.
   def refresh_transcript_from_disk(session)
     transcript_dir = get_transcript_directory_for_session(session)
     return false if transcript_dir.nil? || !Dir.exist?(transcript_dir)
@@ -1090,6 +1101,8 @@ class Api::V1::SessionsController < Api::BaseController
     return false unless main_transcript_file
 
     transcript_content = File.read(main_transcript_file)
+    return false if session.transcript == transcript_content
+
     message_count = count_transcript_messages(transcript_content)
 
     if Session.transcript_regression?(session.transcript, transcript_content)
