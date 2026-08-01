@@ -1662,7 +1662,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Stub filesystem operations
     Dir.expects(:exist?).returns(true).at_least_once
     Dir.expects(:glob).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     post refresh_session_url(session)
@@ -1797,7 +1797,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Stub filesystem operations with the correctly sanitized path
     Dir.expects(:exist?).with(expected_transcript_dir).returns(true).at_least_once
     Dir.expects(:glob).with(File.join(expected_transcript_dir, "*.jsonl")).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     post refresh_session_url(session)
@@ -2086,7 +2086,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     Dir.expects(:exist?).returns(true).at_least_once
     Dir.expects(:glob).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     # Should not enqueue resume job
@@ -2121,7 +2121,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     Dir.expects(:exist?).returns(true).at_least_once
     Dir.expects(:glob).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     # Enqueue the restore job
@@ -2151,7 +2151,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     Dir.expects(:exist?).returns(true).at_least_once
     Dir.expects(:glob).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     # Refresh should succeed but not enqueue a restore job
@@ -2186,7 +2186,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     Dir.expects(:exist?).returns(true).at_least_once
     Dir.expects(:glob).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     post refresh_session_url(session)
@@ -2213,7 +2213,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     Dir.expects(:exist?).returns(true).at_least_once
     Dir.expects(:glob).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     post refresh_session_url(session)
@@ -3057,7 +3057,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     Dir.expects(:exist?).returns(true).at_least_once
     Dir.expects(:glob).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     post refresh_all_sessions_url
@@ -3309,7 +3309,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     fake_transcript_file = "/fake/.claude/projects/-fake-clone-path-#{running_session.id}/test-session.jsonl"
     Dir.expects(:exist?).with(anything).returns(true).at_least_once
     Dir.expects(:glob).returns([ fake_transcript_file ]).at_least_once
-    File.expects(:mtime).returns(1.hour.ago).at_least_once
+    File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
     post refresh_all_sessions_url
