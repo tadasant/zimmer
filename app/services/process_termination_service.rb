@@ -344,6 +344,15 @@ class ProcessTerminationService
   # always escalated to a group SIGKILL. Making liveness truthful removes that
   # accident, so the sweep is deliberate here instead.
   #
+  # The leader's pid is already reaped by the time this runs, which raises the
+  # obvious question the `:already_dead` branch above worries about: could the pid
+  # be recycled during the drain window, so that `-process_pid` names a stranger's
+  # group by the time we SIGKILL? No — a pid is not reusable while it is still in
+  # use as a process-group id (Linux keeps the id live for as long as the group
+  # has members, and the BSDs skip such pids when allocating). The loop below only
+  # reaches the SIGKILL if the group has never once looked empty, so the group it
+  # signals is necessarily the one the leader led.
+  #
   # Never raises: this runs after the leader is already confirmed dead.
   # @return [Symbol] :skipped, :empty, :drained, :swept, :survived, or :error
   def sweep_process_group
@@ -416,6 +425,20 @@ class ProcessTerminationService
   end
 
   # Reap the process to prevent zombies.
+  #
+  # This is now on the polling path rather than a one-shot at the end of the
+  # ladder, so it wins the `waitpid` race against another thread waiting on the
+  # same pid more often than it used to — concretely `ProcessLifecycleManager#
+  # wait_nonblock` in the monitoring loop, when a *different* job terminates the
+  # process it is watching (`SessionRecoveryService` on a hung session). That
+  # thread then gets ECHILD, which it already rescues: it falls through to the
+  # signal-0 detection path and the session still lands in `needs_input`.
+  #
+  # Collecting here is the point, not a side effect. This service is the one
+  # asked to end this pid, `handle_exit`'s recovery branches are for a process
+  # that died on its own rather than one we just killed, and the alternative is
+  # the leak this fixes — nobody collects, the zombie survives, and the caller is
+  # told the kill failed.
   #
   # @return [Array<Integer, Process::Status>, nil, Symbol] the wait2 result if the
   #   child had exited and was collected here, nil if it is our child and has NOT
