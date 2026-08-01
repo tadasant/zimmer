@@ -60,10 +60,25 @@ class SessionsController < ApplicationController
   # the choice is always overridable and persisted, so a coarse heuristic is fine.
   MOBILE_USER_AGENT = /Mobile|Android|iPhone|iPod|IEMobile|BlackBerry|Opera Mini/i
 
-  # TODO: Add proper authorization checks using a gem like Pundit or CanCanCan
-  # Currently, all actions are accessible to any user
-  # Recommended: Implement before_action :authorize_session for member actions
-  # to ensure users can only access/modify their own sessions
+  # No per-user authorization here, by design.
+  #
+  # Zimmer is a single circle of trust: everyone who can reach the host is the
+  # same "user". There is no User model, no login, and no owner column on
+  # Session — so there is no principal for a policy object to compare against
+  # and nothing an ACL could separate. The authentication boundary is the
+  # network perimeter (the tailnet, with port 80 closed at the firewall), not a
+  # permission check in this controller.
+  #
+  # This is the product's shape, not an unfinished task. Adding Pundit or
+  # CanCanCan here would invent a distinction Zimmer does not make, and would
+  # read as protection that isn't there. If you want a second wall, put it at
+  # the perimeter — that is where the one exception lives, the /supervisor admin
+  # panel's HTTP Basic realm (Supervisor::ApplicationController).
+  #
+  # See docs/src/content/docs/intro/philosophy.md and
+  # docs/src/content/docs/auth/overview.md — published at
+  # https://docs.zimmer.tadasant.com/intro/philosophy/ and
+  # https://docs.zimmer.tadasant.com/auth/overview/.
 
   before_action :load_form_data, only: %i[new create]
 
@@ -684,8 +699,8 @@ class SessionsController < ApplicationController
 
   def archive
     @session = find_session
-    # TODO: Add authorization check here
-    # Example: authorize @session (if using Pundit)
+    # No per-user authorization: single circle of trust, no owner to check
+    # against. See the authorization note at the top of this class.
 
     if @session.archived?
       respond_to do |format|
@@ -721,8 +736,8 @@ class SessionsController < ApplicationController
 
   def unarchive
     @session = find_session
-    # TODO: Add authorization check here
-    # Example: authorize @session (if using Pundit)
+    # No per-user authorization: single circle of trust, no owner to check
+    # against. See the authorization note at the top of this class.
 
     unless @session.archived?
       redirect_to @session, alert: "Session is not in trash."
@@ -748,8 +763,8 @@ class SessionsController < ApplicationController
 
   def undo_archive
     @session = find_session
-    # TODO: Add authorization check here
-    # Example: authorize @session (if using Pundit)
+    # No per-user authorization: single circle of trust, no owner to check
+    # against. See the authorization note at the top of this class.
 
     unless @session.archived?
       redirect_to root_path, alert: "Session is not in trash."
@@ -787,8 +802,8 @@ class SessionsController < ApplicationController
   end
 
   def bulk_archive
-    # TODO: Add authorization check to ensure user can only archive their own sessions
-    # Example: session_ids = policy_scope(Session).where(id: params[:session_ids])
+    # No per-user authorization: there is no "their own sessions" to scope to.
+    # See the authorization note at the top of this class.
 
     session_ids = params[:session_ids] || []
 
@@ -1554,8 +1569,9 @@ class SessionsController < ApplicationController
 
   def transcript
     @session = find_session
-    # TODO: Add authorization check here - transcript contains sensitive conversation data
-    # Example: authorize @session (if using Pundit)
+    # Transcripts do carry sensitive conversation data, and they are readable by
+    # anyone who can reach the host. Guarding that is the perimeter's job, not a
+    # per-user check here — see the authorization note at the top of this class.
 
     # Build formatted transcript for copying
     formatted = format_transcript_for_copy(@session)

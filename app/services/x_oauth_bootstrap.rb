@@ -19,13 +19,27 @@ require "digest"
 #   3. `complete!` exchanges that code (HTTP Basic client auth) for tokens and
 #      persists them onto an XOauthCredential row.
 #
-# The redirect URI must be registered on the X app. The ao-x-mcp-server app has
-# http://localhost:8080/callback registered (used to mint the read-only seed).
+# The redirect URI must be registered on the X app *before* this flow will work
+# — X rejects the consent request outright if it does not match, and the token
+# exchange must then present the identical value. The ao-x-mcp-server app has
+# http://localhost:8080/callback registered (used to mint the read-only seed),
+# which is why that is the fallback. Registering a different one is the
+# operator's step on X's developer portal; once registered, set
+# X_OAUTH_REDIRECT_URI so both call sites here use it.
 class XOauthBootstrap
   SCOPES = XOauthCredential::OAUTH_SCOPES
+  REDIRECT_URI_ENV = "X_OAUTH_REDIRECT_URI"
   DEFAULT_REDIRECT_URI = "http://localhost:8080/callback"
 
   class ExchangeError < StandardError; end
+
+  # Read at call time, not at load time: the constant is the fallback, not the
+  # answer. Both halves of the flow default to this, and they must agree — X
+  # compares the `redirect_uri` on the token exchange against the one on the
+  # consent request.
+  def self.default_redirect_uri
+    ENV.fetch(REDIRECT_URI_ENV, DEFAULT_REDIRECT_URI)
+  end
 
   # PKCE code_verifier: 32 random bytes, base64url (no padding).
   def self.generate_verifier
@@ -38,7 +52,7 @@ class XOauthBootstrap
   end
 
   # Build the X consent URL for the given PKCE verifier + state.
-  def self.authorize_url(client_id:, verifier:, state:, redirect_uri: DEFAULT_REDIRECT_URI)
+  def self.authorize_url(client_id:, verifier:, state:, redirect_uri: default_redirect_uri)
     challenge = base64url(Digest::SHA256.digest(verifier))
     uri = URI(XOauthCredential::AUTHORIZE_ENDPOINT)
     uri.query = URI.encode_www_form(
@@ -58,7 +72,7 @@ class XOauthBootstrap
   #
   # @raise [ExchangeError] if the token endpoint returns a non-2xx response
   def self.complete!(account_key:, env_var:, code:, verifier:,
-    redirect_uri: DEFAULT_REDIRECT_URI,
+    redirect_uri: default_redirect_uri,
     client_id: XOauthCredential.client_id,
     client_secret: XOauthCredential.client_secret)
     raise ExchangeError, "missing X_OAUTH_CLIENT_ID/X_OAUTH_CLIENT_SECRET" if client_id.blank? || client_secret.blank?

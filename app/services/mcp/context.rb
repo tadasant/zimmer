@@ -15,7 +15,7 @@ module Mcp
   # allowed_agent_roots restricts which agent roots start_session may spawn and
   # which sessions the cross-session wake tool may watch.
   class Context
-    attr_reader :tool_groups, :allowed_agent_roots, :base_url
+    attr_reader :tool_groups, :allowed_agent_roots, :base_url, :caller_fingerprint
 
     # The SDK wraps whatever is handed to `MCP::Server.new(server_context:)` in an
     # MCP::ServerContext (which carries progress/cancellation plumbing and
@@ -35,10 +35,14 @@ module Mcp
     # @param allowed_agent_roots [String, Array<String>, nil] comma-separated root names, or nil for no restriction
     # @param base_url [String, nil] the externally reachable base URL of this Zimmer instance,
     #   used to build absolute links (session URLs, transcript archive downloads) in tool output
-    def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil)
+    # @param caller_fingerprint [String, nil] an opaque digest of this connection's API key, used
+    #   only to give HealthActionCooldown a per-caller bucket. It grants nothing and scopes nothing
+    #   — tool_groups and allowed_agent_roots above are the only things that govern reach.
+    def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil)
       @tool_groups = Registry.parse_groups(tool_groups)
       @allowed_agent_roots = parse_list(allowed_agent_roots).presence
       @base_url = base_url.presence || SelfSessionInjector.new.self_target[:base_url]
+      @caller_fingerprint = caller_fingerprint.presence || HealthActionCooldown::ANONYMOUS
     end
 
     def tools

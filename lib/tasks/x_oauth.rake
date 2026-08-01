@@ -31,7 +31,7 @@ namespace :x_oauth do
     {
       account_key: ENV["ACCOUNT_KEY"].presence || "tadasayy",
       env_var: ENV["ENV_VAR"].presence || "X_OAUTH_ACCESS_TOKEN",
-      redirect_uri: ENV["REDIRECT_URI"].presence || XOauthBootstrap::DEFAULT_REDIRECT_URI
+      redirect_uri: ENV["REDIRECT_URI"].presence || XOauthBootstrap.default_redirect_uri
     }
   end
 
@@ -73,7 +73,7 @@ namespace :x_oauth do
       env_var: pending["env_var"],
       code: code,
       verifier: pending.fetch("verifier"),
-      redirect_uri: pending["redirect_uri"] || XOauthBootstrap::DEFAULT_REDIRECT_URI
+      redirect_uri: pending["redirect_uri"] || XOauthBootstrap.default_redirect_uri
     )
 
     File.delete(pending_path) if File.exist?(pending_path)

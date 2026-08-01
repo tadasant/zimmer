@@ -83,7 +83,8 @@ class McpController < Api::BaseController
       Mcp::Context.new(
         tool_groups: query["tool_groups"],
         allowed_agent_roots: query["allowed_agent_roots"],
-        base_url: request.base_url
+        base_url: request.base_url,
+        caller_fingerprint: HealthActionCooldown.fingerprint(api_key_from_request)
       )
     end
   end
