@@ -55,9 +55,9 @@ class SlackTriggerHealthCheckJob < ApplicationJob
   private
 
   def check_condition(condition)
-    # bot_mention and passive_listen conditions fan out across DMs and/or every
-    # member channel, each with its own per-source timestamp. There is no single
-    # "newest message" to compare against, so staleness here isn't meaningful.
+    # bot_mention and the passive-listening event types fan out across DMs and/or
+    # every member channel, each with its own per-source timestamp. There is no
+    # single "newest message" to compare against, so staleness isn't meaningful.
     return if TriggerCondition::ALL_CHANNEL_EVENT_TYPES.include?(condition.event_type)
 
     channel_id = condition.channel_id
