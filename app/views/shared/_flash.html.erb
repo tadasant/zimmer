@@ -1,0 +1,58 @@
+<%# The one flash container, rendered by the layout and replaceable over Turbo
+    Streams. Any controller action that responds with a turbo_stream instead of a
+    redirect delivers its notice/alert by replacing target "flash" (see
+    SessionsController#flash_stream) — without the id there is nowhere for a
+    stream to put the message, which is how the Undo affordance went missing.
+
+    `messages` is a hash of type => message. The layout passes the real `flash`;
+    a stream passes the one message it wants to show. A message may carry an
+    inline action in the form "text|action|resource_id" — currently only
+    "undo_archive", which renders the Undo button next to the text. %>
+<div id="flash" class="fixed top-4 right-4 z-50 space-y-2">
+  <% messages.each do |type, message| %>
+    <%
+      # Parsed from the right, and only honored when the tail is the one action
+      # that exists with a numeric id behind it. Splitting from the left would
+      # truncate any message whose own prose contains a "|" — a category named
+      # "Design|Research" would show up as "Moved to "Design".
+      raw_message = message.to_s
+      head, _, resource_id = raw_message.rpartition("|")
+      display_message, _, action = head.rpartition("|")
+
+      unless action == "undo_archive" && resource_id.match?(/\A\d+\z/)
+        display_message = raw_message
+        action = nil
+        resource_id = nil
+      end
+    %>
+    <div data-controller="flash"
+         data-flash-duration-value="5000"
+         class="bg-white shadow-lg rounded-lg px-6 py-4 max-w-md transform transition-all duration-300 ease-in-out <%= type.to_s == 'notice' ? 'border-l-4 border-green-500' : 'border-l-4 border-red-500' %>">
+      <div class="flex items-start">
+        <div class="flex-1">
+          <p class="text-sm font-medium text-gray-900">
+            <%= type.to_s.titleize %>
+          </p>
+          <p class="text-sm text-gray-600 mt-1">
+            <%= display_message %>
+          </p>
+          <% if action == "undo_archive" && resource_id.present? %>
+            <div class="mt-3">
+              <%= button_to "Undo", undo_archive_session_path(resource_id),
+                  method: :post,
+                  class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+            </div>
+          <% end %>
+        </div>
+        <button type="button"
+                data-action="click->flash#dismiss"
+                class="ml-4 text-gray-400 hover:text-gray-600 focus:outline-none">
+          <span class="sr-only">Dismiss</span>
+          <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  <% end %>
+</div>

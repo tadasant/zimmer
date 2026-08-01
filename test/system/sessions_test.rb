@@ -884,7 +884,7 @@ class SessionsTest < ApplicationSystemTestCase
     assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: additional_server.title
   end
 
-  # === Tests for session recovery auto-refresh (Issue #275) ===
+  # === Tests for the session recovery banner (Issue #275, #102) ===
 
   test "session show page displays recovery banner when recently recovered" do
     session = Session.create!(
@@ -903,7 +903,7 @@ class SessionsTest < ApplicationSystemTestCase
     visit session_path(session)
 
     # Should display the recovery warning banner
-    assert_text "Session connection recovered. Page will refresh in 3 seconds to restore live updates..."
+    assert_text "Session connection recovered. Live updates have been restored."
   end
 
   test "session show page does not display recovery banner when not recently recovered" do
@@ -923,10 +923,14 @@ class SessionsTest < ApplicationSystemTestCase
     visit session_path(session)
 
     # Should NOT display the recovery warning banner
-    assert_no_text "Session connection recovered. Page will refresh in 3 seconds to restore live updates..."
+    assert_no_text "Session connection recovered. Live updates have been restored."
   end
 
-  test "session show page has meta refresh tag when recently recovered" do
+  # The banner used to be paired with a <meta http-equiv="refresh">, which
+  # reloaded the page on a timing window whether or not the cable had actually
+  # dropped. The cable-reconnect controller replaced it: it re-subscribes from
+  # each stream source's own connection state, so no page load is ever scheduled.
+  test "session show page schedules no meta refresh when recently recovered" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git",
       prompt: "Test session",
@@ -942,11 +946,11 @@ class SessionsTest < ApplicationSystemTestCase
 
     visit session_path(session)
 
-    # Should have meta refresh tag with 3 second delay
-    assert_selector "meta[http-equiv='refresh'][content='3']", visible: false
+    assert_no_selector "meta[http-equiv='refresh']", visible: false
+    assert_selector "[data-controller~='cable-reconnect']", visible: false
   end
 
-  test "session show page does not have meta refresh tag when not recently recovered" do
+  test "session show page has no meta refresh tag when not recently recovered" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git",
       prompt: "Test session",
