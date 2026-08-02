@@ -44,6 +44,28 @@ requests, so that is what the log exporter is shaped around. It ships two kinds 
 - **`rails.logger`** — every WARN/ERROR/FATAL line, broadcast off `Rails.logger`. The
   catch-all, so a plain `Rails.logger.error` from anywhere in the app still lands.
 
+### Client-caused rejections are re-logged at INFO, not suppressed
+
+A request the *client* got wrong is not broken server behavior, but Rails logs several of
+them at ERROR — and one ERROR line pages `#alerts`. The convention in this codebase is to
+handle the exception and re-log the same event at INFO **with the request attached**, so the
+signal survives without paging anyone:
+
+| Condition | Handled by | Response | INFO line |
+| --- | --- | --- | --- |
+| Unmatched route | `ErrorsController#not_found` | 404 | `Unmatched route 404: <verb> <path>` |
+| Missing/stale CSRF token | `ApplicationController#invalid_authenticity_token` | 422 | `CSRF verification failed 422: <verb> <path> ip=… session_cookie=present\|absent user_agent="…"` |
+
+Neither one weakens the check it reports on. CSRF verification still runs on every
+`ApplicationController` descendant and still aborts the action; only the log level and the
+information content of the line change. `skip_forgery_protection` appears exactly once, in
+`ErrorsController`, where the response is a 404 that carries no state to protect.
+
+`session_cookie` is the field to read first on a CSRF record: **present** means a browser
+that has been here before — a stale form, an expired session, a tab left open across a
+deploy — and **absent** means an unauthenticated probe. A sustained rate of either is the
+real signal; a single record is not.
+
 ## How environments are told apart
 
 Every batch carries two resource attributes:
