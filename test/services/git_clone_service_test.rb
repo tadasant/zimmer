@@ -650,6 +650,18 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "transient_clone_error? treats a reaped clone as transient" do
+    # ZombieReaperJob reaps the git child before Open3's waiter does, so the exit code
+    # is never learned. Nothing here says the repo, branch, or credential is wrong, and
+    # this path has no "next tick" — a permanent classification would fail the session
+    # over a result we merely missed. The message is what run_git_command raises.
+    message = "Git command failed (#{SubprocessStatus::REAPED_DESCRIPTION}): " \
+      "git clone --branch main https://github.com/owner/repo /tmp/clone\nStdout: \nStderr: "
+
+    assert GitCloneService.transient_clone_error?(message)
+    assert GitCloneService.transient_clone_error?(GitCloneService::GitError.new(message))
+  end
+
   test "transient_clone_error? matches slow-transfer signatures added for session 9439" do
     [
       "error: RPC failed; curl 28 Operation too slow. Less than 1000 bytes/sec transferred",
@@ -825,19 +837,11 @@ class GitCloneServiceTest < ActiveSupport::TestCase
   private
 
   def mock_success_status
-    status = Object.new
-    def status.success?
-      true
-    end
-    status
+    fake_process_status(exitstatus: 0)
   end
 
   def mock_failure_status
-    status = Object.new
-    def status.success?
-      false
-    end
-    status
+    fake_process_status(exitstatus: 1)
   end
 
   # Build a fake structured logger that records calls so tests can assert on log

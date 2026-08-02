@@ -51,7 +51,7 @@ class BundleInstallJob < ApplicationJob
       chdir: working_directory
     )
 
-    if status.success?
+    if SubprocessStatus.success?(status)
       with_db_retry do
         session.logs.create!(
           content: "Background bundle install completed successfully",

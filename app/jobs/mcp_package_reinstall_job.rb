@@ -34,11 +34,11 @@ class McpPackageReinstallJob < ApplicationJob
     # Use Open3 to capture output for logging
     stdout, stderr, status = Open3.capture3(script_path.to_s)
 
-    if status.success?
+    if SubprocessStatus.success?(status)
       Rails.logger.info "[McpPackageReinstallJob] MCP package reinstall completed successfully"
       Rails.logger.debug "[McpPackageReinstallJob] Output: #{stdout}" if stdout.present?
     else
-      Rails.logger.error "[McpPackageReinstallJob] MCP package reinstall failed with exit code #{status.exitstatus}"
+      Rails.logger.error "[McpPackageReinstallJob] MCP package reinstall failed (#{SubprocessStatus.describe_failure(status)})"
       Rails.logger.error "[McpPackageReinstallJob] stderr: #{stderr}" if stderr.present?
       Rails.logger.error "[McpPackageReinstallJob] stdout: #{stdout}" if stdout.present?
     end

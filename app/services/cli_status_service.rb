@@ -247,7 +247,7 @@ class CliStatusService
       stdout, _stderr, status = Timeout.timeout(10) do
         Open3.capture3(*parts)
       end
-      if status.success? && stdout.present?
+      if SubprocessStatus.success?(status) && stdout.present?
         output = stdout.strip
         break
       end

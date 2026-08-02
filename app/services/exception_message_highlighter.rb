@@ -24,7 +24,7 @@ module ExceptionMessageHighlighter
   ERROR_LINE = /\A\s*(?:error\b|err!|fatal\b|✖|✗|panic\b)|(?:\bError:|\bfailed\b|could not resolve|not found|unresolved|cannot\b)/i
 
   # A warning clause embedded *inside* an otherwise-actionable line. AIR wraps its
-  # stderr as "AIR prepare failed (exit N): <first stderr line>", so when that
+  # stderr as "AIR prepare failed (exit status N): <first stderr line>", so when that
   # first stderr line is a `warning:` the whole composite line reads as an error
   # (it contains "failed") yet trails into warning text. We trim that trailing
   # warning clause off callout lines so the "Actionable Error" box never shows
