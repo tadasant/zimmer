@@ -31,6 +31,7 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
 
   teardown do
     ENV.delete("API_KEYS")
+    ENV.delete(User::ADMIN_ENV_KEY)
     Mocha::Mockery.instance.teardown
   end
 
@@ -349,6 +350,45 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
     assert_equal "please bump the version", event.content
     refute_includes event.content, "MACHINE PREAMBLE"
     assert_includes rendered, "MACHINE PREAMBLE"
+  end
+
+  # The admin is deployment configuration (ZIMMER_ADMIN_USER, defaulting to
+  # `tadasant`), and it must resolve to a real row. A value naming nobody is the
+  # same situation as an unmapped Slack ID: the actor could not be established,
+  # so nothing is recorded rather than something attributed to a guess.
+  test "web UI input records nothing when the configured admin names nobody" do
+    ENV[User::ADMIN_ENV_KEY] = "some-agent"
+    session = idle_session
+
+    assert_no_difference("HumanMessage.count") do
+      assert_nil HumanMessageCapture.record_web_ui_message(
+        session: session, content: "ship it", entry_point: "web_ui.follow_up"
+      )
+    end
+  end
+
+  test "web UI input records nothing when the roster is empty" do
+    session = idle_session
+    User.delete_all
+
+    assert_no_difference("HumanMessage.count") do
+      assert_nil HumanMessageCapture.record_web_ui_message(
+        session: session, content: "ship it", entry_point: "web_ui.follow_up"
+      )
+    end
+  end
+
+  # The other direction: the deployment can hand the web UI to somebody else,
+  # and capture follows the configuration rather than a hardcoded name.
+  test "web UI input is attributed to the human the admin env var names" do
+    ENV[User::ADMIN_ENV_KEY] = "juliehazz"
+    session = idle_session
+
+    event = HumanMessageCapture.record_web_ui_message(
+      session: session, content: "ship it", entry_point: "web_ui.follow_up"
+    )
+
+    assert_equal "juliehazz", event.author
   end
 
   # `user_allowed?` means "may fire this trigger" — not "is Tadas or Julie".

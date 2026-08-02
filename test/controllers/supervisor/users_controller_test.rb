@@ -23,6 +23,15 @@ module Supervisor
       assert_match "juliehazz", response.body
     end
 
+    # `slack_user_ids_list` is a plain Ruby method, not a column. The dashboard
+    # points its sort at the real array column so the header link does not
+    # produce `ORDER BY users.slack_user_ids_list` and a 500.
+    test "the index sorts by the virtual Slack column without erroring" do
+      get supervisor_users_url(order: "slack_user_ids_list", direction: "asc")
+
+      assert_response :success
+    end
+
     test "the show page names the human and their linkage" do
       get supervisor_user_url(@tadas)
 

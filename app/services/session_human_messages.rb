@@ -142,8 +142,7 @@ class SessionHumanMessages
   # Only humans present in `shown` are described, and only when a note exists,
   # so an empty roster column costs nothing in the prompt.
   private def people_lines(shown)
-    described = shown.filter_map { |entry| entry.author_notes.present? ? entry : nil }
-      .uniq(&:author)
+    described = shown.select { |entry| entry.author_notes.present? }.uniq(&:author)
     return [] if described.empty?
 
     lines = [ "" ]
