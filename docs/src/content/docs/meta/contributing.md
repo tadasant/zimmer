@@ -52,6 +52,7 @@ has an obvious answer:
 | `infra/`, `.github/workflows/**`, `Dockerfile*` | [Deploying](/operate/deploying/), [Provisioning](/operate/provisioning/) |
 | `config/goals.json` | [Goals and stop conditions](/sessions/goals/) |
 | Any cron job | [Background jobs](/operate/background-jobs/) |
+| `docs/scripts/generate-icons.mjs`, the icon master, `public/icons/**`, `public/manifest.json` | [Structure](#structure), below |
 
 The `sync-docs` skill (default-on for the `zimmer` root) runs this check as a pre-PR step.
 
@@ -66,6 +67,7 @@ npm run dev        # → http://localhost:4321
 ```bash
 npm run build      # astro check && astro build → docs/dist/
 npm run preview    # serve the built output
+npm run icons      # re-cut every icon from the master render (see Structure)
 ```
 
 The `docs_site` job in `.github/workflows/ci.yml` runs `npm ci && npm run build` on every PR, so a
