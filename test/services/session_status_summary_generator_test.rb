@@ -41,6 +41,12 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     SessionStatusSummaryGenerator.call(session: @session, file_system: @fs, **opts)
   end
 
+  # Found by its marker rather than by id order, which would depend on where the
+  # fixtures left the sequence.
+  def summary_fork
+    Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).sole
+  end
+
   # --- The fork-backed path -------------------------------------------------
 
   test "generation forks the session at its last transcript message and prompts the fork" do
@@ -219,10 +225,21 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     result = generate
 
     assert_equal :skipped, result.outcome
-    assert_nil result.fork_session
-    fork = Session.where.not(id: @session.id).order(:id).last
-    assert fork.archived?, "an abandoned fork must be archived so its copied clone is reclaimed"
+    assert summary_fork.archived?, "an abandoned fork must be archived so its copied clone is reclaimed"
     assert_nil @session.reload.status_summary, "an abandoned generation records nothing"
+  end
+
+  # A fork that is made and then never dispatched is invisible to every operator
+  # list and its clone is skipped by OrphanCloneFilesystemCleanupJob (a session
+  # row still claims it), so it would hold a full copy of a repository forever.
+  test "a fork that cannot be dispatched is archived rather than left holding a clone" do
+    Session.any_instance.stubs(:deliver_follow_up!).raises(RuntimeError, "spawn refused")
+
+    result = generate
+
+    assert_equal :failed, result.outcome
+    assert summary_fork.archived?
+    assert_equal "failed", @session.reload.status_summary.state
   end
 
   # The summarizer reads the transcript and is told not to run tools, so the

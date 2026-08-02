@@ -93,8 +93,13 @@ class FileSystemAdapter
   end
 
   # Copy a file or directory recursively
+  #
+  # +dest+ must NOT already exist. The two implementations disagree about what
+  # an existing destination means — an unfiltered copy nests the source inside
+  # it, a filtered one merges into it — so callers own that precondition.
+  #
   # @param src [String] The source path
-  # @param dest [String] The destination path
+  # @param dest [String] The destination path (must not exist)
   # @param exclude [Array<String>] fnmatch patterns tested against each entry's
   #   path relative to +src+ ("vendor/bundle", "**/node_modules"). A matching
   #   directory is skipped whole — not descended into.

@@ -646,6 +646,24 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert result.success?
     assert_includes removed, fs.copy_attempts.first,
       "a half-written destination must be cleared, not merged into by the next attempt"
+    # The effect, not just the call: the failing attempt wrote Gemfile.lock into
+    # the destination, and the fork that succeeded must not have inherited it.
+    assert_not fs.exists?(File.join(result.forked_session.metadata["clone_path"], "Gemfile.lock")),
+      "the successful attempt must start from an empty destination"
+  end
+
+  # rm_rf reports nothing when it removes only part of a tree, and cp_r given a
+  # destination that already exists copies INTO it — so a retry over a surviving
+  # partial tree would produce a nested clone instead of a failure.
+  test "a destination that survives the cleanup fails the fork instead of being retried into" do
+    ForkSessionService.any_instance.stubs(:sleep)
+    fs = failing_copy_adapter(@mock_fs, failures: 1)
+    fs.define_singleton_method(:rm_rf) { |_path| nil } # a cleanup that silently removes nothing
+
+    result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: fs)
+
+    assert_not result.success?
+    assert_equal 1, fs.copy_attempts.size, "no attempt may run against a destination that still exists"
   end
 
   test "an exhausted retry budget fails the fork and leaves no partial clone behind" do

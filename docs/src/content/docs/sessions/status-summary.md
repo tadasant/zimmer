@@ -84,7 +84,12 @@ Three things keep that from failing a fork:
   underneath it. A **user-initiated** fork excludes nothing; it is a working session and wants the
   tree it forked.
 - **A failed fork cleans up after itself.** The partial destination is removed rather than left for
-  `OrphanCloneFilesystemCleanupJob`, which ignores anything younger than 48 hours.
+  `OrphanCloneFilesystemCleanupJob`, which ignores anything younger than 48 hours. A retry only
+  proceeds once the destination is confirmed gone — `rm_rf` reports nothing when it removes part of a
+  tree, and a copy into a destination that still exists nests or merges rather than failing.
+
+A summary fork's clone is therefore **not a runnable checkout** — `.bundle/config` still points at the
+`vendor/bundle` that is no longer there. See [Limitations](/limitations/#a-status-summary-forks-clone-is-missing-its-installed-dependencies-and-does-not-know-it).
 
 The generator also re-checks that the session is still out of the trash **after** the copy, not just
 before it. The copy takes real time, and a session that archived during it would otherwise get a fork

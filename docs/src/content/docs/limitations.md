@@ -1100,6 +1100,38 @@ a generation already in flight is never duplicated, the copy leaves out installe
 on harvest so the clone copy is reclaimed on the normal trash path, and rendering the panel or reading
 the session over MCP/REST never generates.
 
+### A fork of a live clone is retried, so a fork that cannot be made now fails three times slower
+
+`ForkSessionService` copies a clone that other processes are still writing to, and a file that
+vanishes between enumeration and stat aborts the copy. That is retried — `COPY_RETRY_DELAYS` gives it
+three attempts — which fixes the failure but multiplies the *failure* path: a copy that used to die
+after one walk of the tree now walks it up to three times, plus 2.5 seconds of backoff, before giving
+up.
+
+The **user-initiated** fork paths (`SessionsController`, `Api::V1::SessionsController`, and the
+`action_session` MCP tool) all run the fork synchronously inside the request, so a fork that cannot be
+made holds a request thread for the whole of that and may hit a proxy timeout before it can return
+"Failed to fork session". The budget is deliberately small for exactly this reason. Automatic
+**summary** forks run in a GoodJob worker where the wait costs nothing but a thread, and they exclude
+the dependency trees that make the copy slow in the first place.
+
+The retry rides out a tree being *written to*, not a tree being *rebuilt*: a copy racing a
+`bundle install` that runs for half a minute can exhaust all three attempts and still fail.
+
+### A status-summary fork's clone is missing its installed dependencies, and does not know it
+
+Summary forks exclude `vendor/bundle` and `**/node_modules` from the copy, because the summarizer
+reads a conversation and never builds or boots anything. Two edges come with that:
+
+- `.bundle/config` **is** copied, and it points `BUNDLE_PATH` at the `vendor/bundle` that is now
+  absent, so any `bundle exec` or `bin/rails` inside a summary fork fails with "Could not find gem".
+  The prompt tells the fork not to run tools, but that is an instruction, not a constraint.
+- For a repository that *tracks* either directory in git (Zimmer's own does not), the pruned clone
+  reads as dirty to `CloneArtifactService`, so `DeferredCloneCleanupJob` preserves artifacts and holds
+  the clone for `TRASH_RETENTION_PERIOD` instead of deleting it immediately.
+
+Neither affects a user-initiated fork, which copies the tree whole.
+
 ### Terminating a session's process leaks a zombie, takes ~15–25 seconds, and always escalates to SIGKILL
 
 `ProcessTerminationService` decides whether a process is still alive with `Process.kill(0, pid)`. For

@@ -165,6 +165,8 @@ class MockFileSystemAdapter < FileSystemAdapter
   # every ancestor of the path as well as the path itself.
   def excluded?(src, path, patterns)
     return false if patterns.blank?
+    # The copy root itself has no path relative to itself to match against.
+    return false if path == src
 
     relative = path.delete_prefix("#{src}/")
     components = relative.split("/")
