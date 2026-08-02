@@ -489,6 +489,25 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     refute @session_with_pr.logs.where("content LIKE ?", "%PR merged:%").exists?
   end
 
+  test "poll_pr_statuses does not record a PR as notified when delivery failed" do
+    @session_with_pr.update!(status: :needs_input, custom_metadata: {
+      "github_pull_request_urls" => [ MERGED_PR_URL ],
+      "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
+    })
+
+    # Delivery blows up mid-transaction. The poller swallows it — one session that
+    # cannot take a message must not abort the sweep — but the marker must not then
+    # claim a notification that never left.
+    Session.any_instance.stubs(:deliver_follow_up!).raises(RuntimeError, "boom")
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, @session_with_pr)
+
+    @session_with_pr.reload
+    assert_nil @session_with_pr.custom_metadata["github_pull_request_merged_notified"]
+    refute @session_with_pr.logs.where("content LIKE ?", "%PR merged:%").exists?,
+      "The log entry is written inside the delivery transaction and must roll back with it"
+  end
+
   test "pr_merged_message names the PR and both outcomes" do
     message = AutomatedPrompts.pr_merged_message(MERGED_PR_URL)
 

@@ -25,6 +25,10 @@ module AutomatedSessionMessage
   # @param prompt [String] the AutomatedPrompts message to deliver
   # @param event_description [String] what happened, for the session log — e.g.
   #   "Merge conflict detected on https://github.com/owner/repo/pull/1"
+  # @return [Boolean] true when the message was delivered or queued, false when
+  #   it was not. A caller that records "this session has been told" should key
+  #   off this rather than off having tried, so its marker never claims a
+  #   delivery that did not happen.
   def deliver_automated_message(session, prompt, event_description:)
     with_db_retry do
       ActiveRecord::Base.transaction do
@@ -37,9 +41,12 @@ module AutomatedSessionMessage
         end
       end
     end
+
+    true
   rescue => e
     Rails.logger.error "[#{self.class.name}] Failed to deliver automated message to session #{session.id} " \
       "(#{event_description}): #{e.message}"
+    false
   end
 
   # Send prompt directly to the session, transitioning it to running

@@ -1273,6 +1273,26 @@ retry the clone outright.
 Reading the pipes when the exit code is unknown would mean deciding a command succeeded on the
 evidence of its output alone. That is the trade being made deliberately, and it is the cheaper
 error.
+
+### An automated poller message that fails to deliver is logged, not retried
+
+`AutomatedSessionMessage#deliver_automated_message` — the path both the merged-PR message and the
+merge-conflict message go through — swallows any exception raised while delivering, because one
+session that cannot take a message must not abort the poller's sweep of every other session.
+
+The state that triggered the message is written down regardless. `GitHubPullRequestPollerJob`
+records the PR as `merged`, so the `open` → `merged` transition it keys on is gone by the next
+poll; `GitHubMergeConflictPollerJob` records the conflict as confirmed, which suppresses
+re-notification the same way. Neither message is retried. What the failed delivery does *not* do is
+lie: the merged-PR marker is written only for PRs a message actually went out for, so
+`github_pull_request_merged_notified` never claims a delivery that didn't happen, and the session
+log entry is written inside the same transaction as the delivery and rolls back with it. The
+failure is in the Rails log, and nowhere else.
+
+A crash — as opposed to a swallowed exception — is the case the ordering does cover: messages go out
+before the markers are persisted, so a process that dies in between re-sends on the next poll rather
+than dropping the notification.
+
 ---
 
 ## Triggers
