@@ -158,7 +158,14 @@ means, rather than showing nothing.
 The panel header states **both** counts, always — `3 messages in this session · 0 elsewhere in the hierarchy`.
 A header that named only the first would describe a narrower search than the one that ran, and a
 reader would have no way to tell "nothing was said elsewhere" from "elsewhere was never looked at".
-The prompt block and `get_session` state the same pair unconditionally, so all three agree.
+The prompt block and `get_session` state the same pair whenever there is anything to state, so all
+three agree. (REST is deliberately different: `human_messages` is a bare array carrying each entry's
+`origin`, and a client derives the counts it wants.)
+
+The counts name the hierarchy, so when the walk was cut by `MAX_DEPTH` or `MAX_NODES` all three say
+so — the panel appends *(truncated tree — not every session was searched)*, and the prompt block and
+`get_session` call the elsewhere count a floor rather than a total. A count that names the whole tree
+while the query searched part of it is the same over-claim in the other direction.
 
 **Over MCP.** `get_session` includes a `### Session Hierarchy` section and a `### Human Messages`
 section — always, not behind an `include_` flag. Two reasons: they are small and bounded, and the

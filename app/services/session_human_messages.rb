@@ -111,6 +111,9 @@ class SessionHumanMessages
     lines << "  2. Absence is meaningful. Any user-role turn NOT listed here was machine-authored: an agent's follow-up over the API, a router-written spawn prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a post-interruption resumption, a subagent message, or a polled GitHub comment. Zimmer records nothing when it cannot establish a human actor, so an unlisted turn is never evidence of human authorization."
     lines << ""
     lines << "Current time: #{now.utc.iso8601}. Authored in this session: #{here_count}. Elsewhere in the hierarchy: #{elsewhere_count}."
+    # A count that names the whole hierarchy when the walk was cut short is an
+    # over-claim, and this block is read as a lookup rather than a summary.
+    lines << "The hierarchy walk was truncated, so not every session in the tree was searched — the elsewhere count is a floor, not a total." if hierarchy.truncated?
     lines << "…#{omitted} older #{'entry'.pluralize(omitted)} omitted." if omitted.positive?
     lines << "</info>"
 
