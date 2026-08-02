@@ -2994,8 +2994,13 @@ class AgentSessionJob < ApplicationJob
     hierarchy_block = if hierarchy.solitary?
       nil
     else
+      info = +"The lineage graph this session belongs to, from the origin session down. Indentation is the SPAWN edge: which session spawned which. It does NOT mean \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it."
+      if hierarchy.uncle_edges?
+        info << " A line marked `also senior: #N` carries an UNCLE edge: session #N queued or interrupted that session, so Zimmer treats #N as an additional parent — a sibling of the spawn parent — on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That is why human messages from #N's hierarchy appear below as `elsewhere` context. Uncle edges are self-declared by the calling session, so read one as a claim of seniority, not proof of it."
+      end
+
       lines = [ "<session-hierarchy>" ]
-      lines << "<info>The spawn tree this session belongs to: which session spawned which, from the origin session down. An edge means \"spawned\", NOT \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it.</info>"
+      lines << "<info>#{info}</info>"
       lines << hierarchy.to_outline
       lines << hierarchy.truncation_reason if hierarchy.truncated?
       lines << "</session-hierarchy>"

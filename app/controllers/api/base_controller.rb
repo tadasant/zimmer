@@ -22,6 +22,25 @@ class Api::BaseController < ActionController::API
 
   private
 
+  # Record the "uncle" lineage edge for a session-initiated queue/interrupt.
+  #
+  # The acting session is self-declared, via an `acting_session_id` on the
+  # request body, because nothing about an API request identifies the caller:
+  # one API key is shared by the whole fleet, so it establishes a caller but not
+  # a session. Omitting it records nothing — which is the right outcome for a
+  # script or a human with a curl command, neither of which is a session.
+  #
+  # Deliberately absent from the web UI controllers: a person clicking "Send
+  # Now" has no session on the other end, and the way to guarantee no edge is
+  # written for them is for that path to have no way to declare one.
+  def record_uncle_edge(session, source)
+    Sessions::RecordUncleEdge.call(
+      junior: session,
+      acting_session_id: params[:acting_session_id],
+      source: source
+    )
+  end
+
   # The one error envelope for the whole API surface.
   #
   # Every error response carries both `message` (a String) and `messages` (an

@@ -175,6 +175,10 @@ class Api::V1::SessionsController < Api::BaseController
   #     branch; a blank or absent one preserves whatever goal the session already has
   #     (use PATCH /api/v1/sessions/:id to clear a goal).
   #   - force_immediate: When true, sends immediately even if session is running (default: false)
+  #   - acting_session_id: Optional. The ID of the agent session making this call. Records an
+  #     "uncle" lineage edge marking the caller as a senior of the target session. Self-declared,
+  #     because the shared API key identifies a caller and not a session; omitting it records
+  #     nothing. See Sessions::RecordUncleEdge.
   def follow_up
     prompt = params[:prompt].to_s.strip
 
@@ -238,6 +242,7 @@ class Api::V1::SessionsController < Api::BaseController
       ).call
 
       if result.success?
+        record_uncle_edge(@session, "api_v1:sessions.follow_up")
         render json: { session: session_json(@session.reload), message: "Follow-up prompt sent immediately" }
       else
         # force_immediate is all-or-nothing: if the interrupt could not be
@@ -270,6 +275,7 @@ class Api::V1::SessionsController < Api::BaseController
         content: "Message queued at position #{enqueued_message.position} (session is running)",
         level: "info"
       )
+      record_uncle_edge(@session, "api_v1:sessions.follow_up")
       render json: {
         session: session_json(@session.reload),
         enqueued_message: {
@@ -301,6 +307,12 @@ class Api::V1::SessionsController < Api::BaseController
         @session.update!(prompt: prompt)
       end
       @session.resume! if @session.may_resume?
+      # Before the enqueue, and in the same transaction: the job this line
+      # creates builds the next prompt for the session, and it must see the edge
+      # — a job that starts first renders a hierarchy missing exactly the human
+      # context the edge exists to carry. A rollback takes the edge with it, so a
+      # failed send still records nothing.
+      record_uncle_edge(@session, "api_v1:sessions.follow_up")
       job = AgentSessionJob.enqueue_with_prompt(@session.id, prompt)
       @session.update!(running_job_id: job.job_id)
     end

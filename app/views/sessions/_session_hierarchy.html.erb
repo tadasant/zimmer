@@ -1,6 +1,7 @@
 <%#
-  The spawn tree this session belongs to — origin session at the root, every
-  descendant below — and the human messages recorded anywhere in it.
+  The lineage graph this session belongs to — origin session at the root, every
+  descendant below, plus any "uncle" that queued or interrupted a session in it —
+  and the human messages recorded anywhere in it.
 
   Two of the four sections in the session detail page's panel group (see
   _detail.html.erb): Status, Session hierarchy, Human messages, Transcript.
@@ -30,13 +31,13 @@
         <span class="text-sm font-semibold text-gray-900">Session hierarchy</span>
         <span class="text-xs text-gray-500 truncate">
           <% if hierarchy.solitary? %>
-            this session was not spawned by another and has spawned none
+            this session was not spawned by another, has spawned none, and none has queued or interrupted it
           <% else %>
             <%= pluralize(hierarchy.size, "session") %>, origin #<%= hierarchy.origin.id %>
           <% end %>
         </span>
       </span>
-      <span class="text-xs text-gray-400 flex-shrink-0">who spawned whom</span>
+      <span class="text-xs text-gray-400 flex-shrink-0">who spawned whom, and who is senior</span>
     </summary>
 
     <div class="border-t border-gray-200 px-4 sm:px-6 py-3">
@@ -57,6 +58,19 @@
                 <%= link_to node.label, session_path(node.id), class: "text-indigo-600 hover:text-indigo-800 hover:underline" %>
               <% end %>
               <span class="text-xs text-gray-400">#<%= node.id %> · <%= node.status %></span>
+              <%# An uncle edge cannot be drawn by indentation — that expresses one
+                  parent and this graph has more than one — so it is named instead.
+                  Silently omitting it would hide the thing that widened this
+                  session's human-message scope. %>
+              <% if node.uncles? %>
+                <span class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200"
+                      title="Queued or interrupted this session, so Zimmer treats it as an additional parent">
+                  also senior:
+                  <% node.uncles.each_with_index do |uncle_id, index| %><%= "," if index.positive? %>
+                    <%= link_to "##{uncle_id}", session_path(uncle_id), class: "underline hover:text-amber-900" %>
+                  <% end %>
+                </span>
+              <% end %>
             </span>
           </li>
         <% end %>
@@ -67,9 +81,19 @@
       <% end %>
 
       <p class="mt-3 text-xs text-gray-400">
-        An edge means <span class="font-medium">spawned</span>, not "most recently talked to" — a session is routinely
+        Indentation means <span class="font-medium">spawned</span>, not "most recently talked to" — a session is routinely
         followed up by a router other than the one that spawned it.
       </p>
+
+      <% if hierarchy.uncle_edges? %>
+        <p class="mt-1 text-xs text-gray-400">
+          <span class="font-medium">also senior</span> is an <span class="font-medium">uncle</span> edge: that session
+          queued or interrupted this one, so Zimmer treats it as an additional parent — a sibling of the spawn parent —
+          on the assumption that a session which inspected another and decided to redirect it holds information that
+          session does not. The edge is declared by the calling session, so it is a claim of seniority rather than proof
+          of one.
+        </p>
+      <% end %>
     </div>
   </details>
 

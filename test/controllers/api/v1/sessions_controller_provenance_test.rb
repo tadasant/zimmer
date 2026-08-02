@@ -67,6 +67,28 @@ class Api::V1::SessionsControllerProvenanceTest < ActionDispatch::IntegrationTes
     assert_equal 1, nodes.last["depth"]
     assert_equal true, nodes.last["current"]
     assert_equal router.id, nodes.last["parent_session_id"]
+    assert_equal [ router.id ], hierarchy["root_session_ids"]
+    assert_equal [], nodes.last["uncle_session_ids"]
+  end
+
+  test "show carries uncle edges alongside the spawn edges" do
+    senior = spawn_session(title: "Senior", agent_root: "zimmer-router")
+    target = spawn_session(title: "Target", agent_root: "zimmer")
+    SessionUncleLink.create!(session: target, uncle_session: senior, source: "test")
+
+    get "/api/v1/sessions/#{target.id}", headers: @headers
+
+    assert_response :success
+    hierarchy = JSON.parse(response.body)["session_hierarchy"]
+
+    # The spawn origin is unchanged — target was spawned by nobody, so it is its
+    # own — while the uncle contributes a second root.
+    assert_equal target.id, hierarchy["origin_session_id"]
+    assert_includes hierarchy["root_session_ids"], senior.id
+
+    node = hierarchy["nodes"].find { |n| n["id"] == target.id }
+    assert_equal [ senior.id ], node["uncle_session_ids"]
+    assert_nil node["parent_session_id"]
   end
 
   test "show renders a message said to this session with its full provenance" do
