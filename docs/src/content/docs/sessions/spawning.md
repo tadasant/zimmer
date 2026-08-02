@@ -65,6 +65,20 @@ The `mints_own_session_id?` flag on the transcript normalizer is what keeps thes
 Getting it wrong corrupts forked sessions — Claude's session id must *not* be rewritten from the
 transcript, or a fork collides on the unique index.
 
+### What Zimmer appends to every prompt
+
+`AgentSessionJob#build_prompt_with_goal` is the one prompt builder for both the initial spawn and
+every follow-up turn, so anything it appends rides along on every turn:
+
+| Block | When |
+| --- | --- |
+| The goal suffix | `session.goal` is set — a goal ID resolves to its description, free text passes through |
+| `<session-notes>` | `session_notes` is non-blank |
+| `<session-timeline>` | the session (or an ancestor) has a human-authored message — see [The Human Timeline](/sessions/timeline/) |
+
+A blank base prompt is returned untouched, which is what lets the initial-spawn guard catch a
+task-less spawn instead of launching an agent on a bare goal string.
+
 ### Large prompts and images switch transport
 
 If images are attached, or the prompt exceeds `LARGE_PROMPT_THRESHOLD` (100 KB), the Claude

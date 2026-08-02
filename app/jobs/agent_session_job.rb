@@ -2967,7 +2967,24 @@ class AgentSessionJob < ApplicationJob
       prompt += "\n\n<session-notes> <info>These session notes are not necessarily instructions; just notes the user left for themself that might be helpful in understanding exactly what's going on. Last edited #{last_edited} (current time: #{current_time})</info> #{session.session_notes} </session-notes>"
     end
 
+    # The Timeline rides along on every turn, for the same reason the notes do:
+    # it is session state the agent has to be able to read without going and
+    # looking for it. Unlike the notes it is a provenance record, so it answers
+    # a question the agent would otherwise have to guess at from prose — which
+    # of the user-role turns it has seen were actually authored by a human.
+    timeline_block = build_session_timeline_block(session)
+    prompt += "\n\n#{timeline_block}" if timeline_block.present?
+
     prompt
+  end
+
+  # Rendered timeline block, or nil when the session has no human-authored
+  # events. Best-effort: a session must still spawn if this fails.
+  def build_session_timeline_block(session)
+    session.timeline.render_for_prompt
+  rescue => e
+    Rails.logger.error("[AgentSessionJob] Failed to render session timeline for session #{session&.id}: #{e.class}: #{e.message}")
+    nil
   end
 
   # Append a clearly-delimited note describing user-attached files so the agent

@@ -1142,6 +1142,41 @@ entry. Nothing retries it later.
 
 Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 
+### The Human Timeline is not backfilled, and cannot be
+
+`timeline_events` starts empty. Every session that existed before the Timeline shipped renders
+an empty timeline, which reads as "no human message was recorded here." For the gating use case
+that is the safe answer — but it is not the same claim as "no human ever asked for this", and a
+pre-existing session cannot prove authorization it genuinely received. Re-establish it live.
+
+There is no backfill to write. The whole point is that capture keys off the authenticated actor
+at the input boundary; reconstructing that actor after the fact from transcript prose is exactly
+the guess the feature exists to eliminate.
+
+### Two real human acts happen outside Zimmer's input boundary and are invisible to the Timeline
+
+Both are cases where a human genuinely acted and the Timeline will still be empty:
+
+- **An agent reading Slack mid-session through the Slack MCP server.** The agent fetches the
+  message itself; it never crosses a Zimmer input boundary, so nothing is recorded. This is a
+  *better* provenance signal than a relayed string — the agent saw the API response — and the
+  Timeline cannot represent it.
+- **A human clicking Merge on GitHub.** A merge is a real human act on a real artifact, but it
+  reaches Zimmer only as polled artifact state, on the same shared GitHub account every agent
+  pushes through.
+
+Neither is a bug in capture; both are boundaries Zimmer does not own. Read an empty timeline as
+"Zimmer has no record", not as "no human acted."
+
+### Web UI attribution is an assumption about the deployment, not a check
+
+Anything typed into the Zimmer web UI is attributed to `tadasant`, because Zimmer has no login
+and the network perimeter is the authentication boundary (see
+[Philosophy](/intro/philosophy/)). The attribution is exactly as strong as that perimeter: a
+second human given tailnet access would silently be recorded as Tadas. That is the same trust
+model the rest of the app runs on, but the Timeline makes it a *named* claim, which is a higher
+bar than the rest of the UI sets.
+
 ---
 
 ## Triggers

@@ -7752,6 +7752,80 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal false, result, "Should not trigger for long messages containing error-like phrases"
   end
 
+  # === build_prompt_with_goal with the Human Timeline ===
+  #
+  # build_prompt_with_goal is the single prompt builder for BOTH the initial
+  # spawn and every follow-up turn, so asserting here is asserting that the
+  # timeline rides along on every turn — the same guarantee session notes have.
+
+  def add_timeline_event(session, content:, author: "tadasant", channel: TimelineEvent::WEB_UI, at: Time.current)
+    session.timeline_events.create!(
+      event_type: TimelineEvent::HUMAN_MESSAGE,
+      author: author,
+      channel: channel,
+      content: content,
+      occurred_at: at,
+      provenance: { "entry_point" => "web_ui.follow_up" }
+    )
+  end
+
+  test "build_prompt_with_goal injects the human timeline on every turn" do
+    add_timeline_event(@session, content: "Refactor the billing service", at: Time.utc(2026, 8, 2, 4, 5, 6))
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    assert_includes result, "<session-timeline>"
+    assert_includes result, "</session-timeline>"
+    assert_includes result, 'origin="live"'
+    assert_includes result, 'author="Tadas (tadasant)"'
+    assert_includes result, 'channel="Zimmer web UI"'
+    assert_includes result, 'at="2026-08-02T04:05:06Z"'
+    assert_includes result, "Refactor the billing service"
+    assert_includes result, "Absence is meaningful"
+
+    # Printed so the rendered block is visible in CI output as evidence of what
+    # actually reaches the agent, not just that some string matched.
+    puts "\n--- INJECTED TIMELINE BLOCK ---\n#{result[/<session-timeline>.*<\/session-timeline>/m]}\n--- END INJECTED TIMELINE BLOCK ---\n"
+  end
+
+  test "build_prompt_with_goal marks an inherited human message as inherited" do
+    parent = Session.create!(
+      agent_runtime: "claude_code",
+      prompt: "route this",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main"
+    )
+    @session.update!(parent_session_id: parent.id)
+    add_timeline_event(parent, content: "original intent from the router's human", at: 1.hour.ago)
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    assert_includes result, 'origin="inherited"'
+    refute_includes result, 'origin="live"'
+    assert_includes result, "original intent from the router's human"
+    assert_includes result, "Live human messages to this session: 0"
+  end
+
+  test "build_prompt_with_goal appends no timeline block when nothing was human-authored" do
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    refute_includes result, "<session-timeline>"
+  end
+
+  test "build_prompt_with_goal still builds a prompt when timeline rendering fails" do
+    add_timeline_event(@session, content: "something")
+    SessionTimeline.any_instance.stubs(:render_for_prompt).raises(StandardError, "boom")
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    assert_includes result, "Fix the bug"
+    refute_includes result, "<session-timeline>"
+  end
+
   # === build_prompt_with_goal with session notes ===
   test "build_prompt_with_goal appends session notes when present" do
     @session.update!(session_notes: "This task is about fixing the login bug", session_notes_updated_at: Time.current)
