@@ -146,6 +146,44 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     assert_match "1 message in this session · 1 elsewhere in the hierarchy", response.body
   end
 
+  # The shape a worker session is usually in: nothing said to it directly, the
+  # instruction said to the router that spawned it.
+  test "the human-messages header states a zero here-count" do
+    router = spawn_session(title: "Route it")
+    worker = spawn_session(parent: router)
+    add_message(router, content: "original intent", at: 1.hour.ago)
+
+    get session_url(worker)
+
+    assert_response :success
+    assert_match "0 messages in this session · 1 elsewhere in the hierarchy", response.body
+  end
+
+  # The header names the hierarchy, so a walk that was cut short has to say so
+  # rather than report the searched slice as the whole tree.
+  test "the human-messages header says when the hierarchy walk was truncated" do
+    root = spawn_session(title: "Origin")
+    node = root
+    (SessionHierarchy::MAX_DEPTH + 2).times { node = spawn_session(parent: node) }
+    add_message(root, content: "original intent", at: 1.hour.ago)
+
+    get session_url(root)
+
+    assert_response :success
+    assert_match "truncated tree — not every session was searched", response.body
+  end
+
+  test "the human-messages header claims no truncation for a complete tree" do
+    router = spawn_session(title: "Route it")
+    worker = spawn_session(parent: router)
+    add_message(router, content: "original intent", at: 1.hour.ago)
+
+    get session_url(worker)
+
+    assert_response :success
+    refute_match "truncated tree", response.body
+  end
+
   # Both halves of the header survive a plural here-count.
   test "the human-messages header states both counts with a plural here-count" do
     add_message(@session, content: "first", at: 2.hours.ago)

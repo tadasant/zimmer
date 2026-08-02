@@ -112,6 +112,29 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
     refute_includes output, "**[here]**"
   end
 
+  # The counts name the hierarchy; when the walk was cut short they are a floor,
+  # and the section has to say so rather than report a total it did not compute.
+  test "the section reports the counts as a floor when the hierarchy walk was truncated" do
+    root = create_session(title: "Origin")
+    node = root
+    (SessionHierarchy::MAX_DEPTH + 2).times { node = create_session(parent: node) }
+    add_message(root, content: "the original ask", at: 1.hour.ago)
+
+    output = @tool.call("id" => root.id)
+
+    assert_includes output, "the elsewhere count is a floor"
+  end
+
+  test "the section claims no truncation for a complete tree" do
+    router = create_session(title: "Route it")
+    worker = create_session(parent: router)
+    add_message(router, content: "the original ask", at: 1.hour.ago)
+
+    output = @tool.call("id" => worker.id)
+
+    refute_includes output, "the elsewhere count is a floor"
+  end
+
   test "the section explains that an absent turn is machine-authored" do
     output = @tool.call("id" => @session.id)
 

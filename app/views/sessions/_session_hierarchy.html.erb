@@ -83,17 +83,21 @@
         <span class="text-sm font-semibold text-gray-900">Human messages</span>
         <%#
           Both counts, always — including a zero. The record is gathered over the
-          whole hierarchy, so a header reading only "1 in this session" describes
-          a narrower search than the one that ran, and a reader has no way to tell
-          "nothing was said elsewhere" from "elsewhere was never looked at". The
-          prompt block and `get_session` both state the pair unconditionally; this
-          panel is the surface that has to agree with them.
+          whole hierarchy, so a header reading only "1 message in this session"
+          describes a narrower search than the one that ran, and a reader has no
+          way to tell "nothing was said elsewhere" from "elsewhere was never
+          looked at". The prompt block and `get_session` state the same pair, so
+          this panel agrees with them.
+
+          And when the walk was cut by MAX_DEPTH/MAX_NODES, say so here too: a
+          count that names the whole hierarchy while the query searched part of
+          it is the same over-claim in the other direction.
         %>
         <span class="text-xs text-gray-500 truncate">
           <% if entries.empty? %>
-            none recorded anywhere in this hierarchy
+            none recorded anywhere in this hierarchy<%= " that was searched" if hierarchy.truncated? %>
           <% else %>
-            <%= pluralize(record.here_count, "message") %> in this session · <%= record.elsewhere_count %> elsewhere in the hierarchy
+            <%= pluralize(record.here_count, "message") %> in this session · <%= record.elsewhere_count %> elsewhere in the hierarchy<%= " (truncated tree — not every session was searched)" if hierarchy.truncated? %>
           <% end %>
         </span>
       </span>

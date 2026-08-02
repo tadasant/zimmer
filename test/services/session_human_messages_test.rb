@@ -104,6 +104,32 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
     refute record.human_message_here?
   end
 
+  # The counts name the hierarchy, so when the walk was cut short they are a
+  # floor rather than a total, and the block has to say so — otherwise it
+  # over-claims in exactly the direction the header was fixed to stop.
+  test "the rendered block says so when the hierarchy walk was truncated" do
+    root = create_session
+    node = root
+    (SessionHierarchy::MAX_DEPTH + 2).times { node = create_session(parent: node) }
+    add_message(root, content: "the original ask")
+
+    record = SessionHumanMessages.new(root)
+
+    assert record.hierarchy.truncated?, "this tree should exceed the depth bound"
+    assert_includes record.render_for_prompt, "the elsewhere count is a floor"
+  end
+
+  test "the rendered block claims no truncation for a complete tree" do
+    router = create_session(title: "Router")
+    worker = create_session(parent: router)
+    add_message(router, content: "the original ask")
+
+    record = SessionHumanMessages.new(worker)
+
+    refute record.hierarchy.truncated?
+    refute_includes record.render_for_prompt, "was truncated"
+  end
+
   test "here and elsewhere messages interleave by when the human spoke" do
     router = create_session(title: "Router")
     worker = create_session(parent: router)

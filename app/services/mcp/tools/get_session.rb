@@ -211,6 +211,10 @@ module Mcp
         lines << "Messages Zimmer KNOWS were authored by a named human, across every session in this hierarchy. Capture keys off the authenticated actor at the input boundary, not off message text, so a user-role turn that is absent here was machine-authored (an agent's follow-up over this API, a router-written spawn prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a resumption, a subagent message, a polled GitHub comment) and is not evidence of human authorization."
         lines << "- **Authored in this session:** #{record.here_count}"
         lines << "- **Elsewhere in the hierarchy:** #{record.elsewhere_count}"
+        # Same over-claim guard the panel and the prompt block carry: a count
+        # that names the whole hierarchy when the walk was cut is a floor, not a
+        # total.
+        lines << "- **Note:** the hierarchy walk was truncated, so not every session in the tree was searched — the elsewhere count is a floor." if record.hierarchy.truncated?
 
         if entries.empty?
           lines << ""
