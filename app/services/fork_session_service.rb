@@ -33,9 +33,14 @@ class ForkSessionService
   Result = Struct.new(:success?, :forked_session, :error, keyword_init: true)
 
   # Waits between clone-copy attempts. Their count is the retry budget: three
-  # attempts, ~2.5s of backoff in the worst case. The mutations this rides out
-  # are single file writes and unlinks by a concurrently running job, not a
-  # minutes-long rebuild, so a longer ladder would only delay a real failure.
+  # attempts, ~2.5s of backoff in the worst case.
+  #
+  # The budget is deliberately small, because a retry is not free — each one
+  # re-walks the whole tree, and a user-initiated fork runs inside the request
+  # that asked for it. A longer ladder would turn a fork that cannot be made
+  # into a request that hangs. It rides out a tree being written to, not a tree
+  # being rebuilt: a copy racing a `bundle install` that runs for half a minute
+  # can still exhaust the budget and fail, loudly, which is the right outcome.
   COPY_RETRY_DELAYS = [ 0.5, 2.0 ].freeze
 
   # Installed-dependency trees, excludable from a fork's copy by callers that
@@ -248,7 +253,7 @@ class ForkSessionService
       file_system.cp_r(source_clone_path, new_clone_path, exclude: copy_exclusions)
     rescue Errno::ENOENT => e
       delay = COPY_RETRY_DELAYS[attempt - 1]
-      raise if delay.nil? || !file_system.directory?(source_clone_path)
+      raise if delay.nil? || !retryable_copy_target?(source_clone_path, new_clone_path)
 
       # Deliberately .info, not .warn/.error: this is the expected cost of
       # copying a live tree, and the fork has not failed yet. The terminal case
@@ -259,12 +264,25 @@ class ForkSessionService
         retry_in_seconds: delay
       )
 
-      # Restart from an empty destination: a partially copied tree would
-      # otherwise be merged into by the next attempt.
+      # Restart from an empty destination. This is a precondition, not a
+      # courtesy: cp_r given a destination that already exists copies INTO it as
+      # a subdirectory, and a pruned copy merges into it — so a retry over a
+      # surviving partial tree produces a nested or stale clone rather than a
+      # failure. rm_rf reports nothing when it removes only part of a tree, so
+      # the check is on the result, not on the call.
       discard_partial_clone(new_clone_path)
+      raise if file_system.exists?(new_clone_path)
+
       sleep(delay)
       retry
     end
+  end
+
+  # An ENOENT is only worth another attempt while both ends of the copy are
+  # still there. A source clone the archive pipeline deleted, or a clones
+  # directory that went away under us, will not come back.
+  def retryable_copy_target?(source_clone_path, new_clone_path)
+    file_system.directory?(source_clone_path) && file_system.directory?(File.dirname(new_clone_path))
   end
 
   # rm_rf on a path that was never created is a no-op, so this needs no guard
