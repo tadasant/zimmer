@@ -291,10 +291,19 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # inserted only after the clone copy had finished, so a second generation
   # landing inside that window saw no row, built its own, and lost on the unique
   # index — a PG::UniqueViolation page, plus a second full copy of a repository.
+  #
+  # Two of these reproduce that defect against the unfixed generator: the
+  # competing generation below (which raises the production PG::UniqueViolation
+  # on index_session_status_summaries_on_session_id) and the failure-handler test
+  # further down (which catches the handler swallowing its own duplicate insert).
+  # The claim-takeover tests cover behavior the fix introduces; against the
+  # unfixed code they fail only because there is no row to take over at all.
 
-  # The insert the old code lost on, exercised against the real unique index:
-  # the second caller adopts the row that landed first instead of raising, and
-  # the transaction survives the violation (the insert is savepointed).
+  # A characterization test of the primitive the fix rests on, NOT a regression
+  # test — it passes against the unfixed code too, which never called this. What
+  # it pins is the property the generator now depends on: the losing INSERT is
+  # savepointed, so the caller adopts the row that landed first and the
+  # connection is still usable afterwards.
   test "a second create of the summary row adopts the first rather than colliding" do
     first = SessionStatusSummary.create_or_find_by!(session_id: @session.id)
     second = SessionStatusSummary.create_or_find_by!(session_id: @session.id)
@@ -338,7 +347,11 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
       unless taken_over
         taken_over = true
-        # What a newer runner's claim looks like from in here: a newer requested_at.
+        # A takeover, compressed: in production this run's claim first ages past
+        # PENDING_TIMEOUT and only then does a newer runner stamp its own
+        # `requested_at`. A test cannot wait fifteen minutes for the first half,
+        # and only the second half is observable from here anyway — a token on
+        # the row that is not the one this run wrote.
         SessionStatusSummary.find_by(session_id: session_id).update!(requested_at: 1.second.from_now)
       end
       super(src, dest, exclude: exclude)
