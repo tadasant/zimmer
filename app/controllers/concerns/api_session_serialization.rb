@@ -65,26 +65,45 @@ module ApiSessionSerialization
     json
   end
 
-  # The Human Timeline: what Zimmer knows a named human said to this session and
-  # to the sessions it was spawned from. `origin` is the load-bearing field —
-  # `live` is a human speaking to THIS session, `inherited` is a human speaking
-  # to an ancestor, and a consumer must not read the second as the first.
+  # The spawn tree a session belongs to: origin at the root, every descendant
+  # below. An edge means "spawned", NOT "most recently talked to".
   #
-  # Rendered as a SIBLING of `session`, never a key inside it. `session` means
-  # one shape on every response that carries it — a contract the API has a test
-  # for — and the timeline cannot join that shape: reading it costs a query per
-  # ancestor, so the index would pay it once per card. Hanging it off the show
-  # response instead keeps the invariant intact and keeps the index cheap.
-  def human_timeline_json(session)
-    session.timeline.entries.map do |entry|
+  # A SIBLING of `session`, never a key inside it — `session` means one shape on
+  # every response that carries it, a contract the API has a test for, and this
+  # costs queries the index would pay once per card.
+  def session_hierarchy_json(hierarchy)
+    {
+      origin_session_id: hierarchy.origin.id,
+      truncated: hierarchy.truncated?,
+      truncation_reason: hierarchy.truncation_reason,
+      nodes: hierarchy.nodes.map do |node|
+        {
+          id: node.id,
+          title: node.label,
+          agent_root: node.agent_root,
+          status: node.status,
+          depth: node.depth,
+          parent_session_id: node.parent_id,
+          current: node.current?
+        }
+      end
+    }
+  end
+
+  # What Zimmer knows a named human said anywhere in that hierarchy. `origin` is
+  # the load-bearing field — `here` is a human speaking to the requested
+  # session, `elsewhere` is a human speaking to another session in the tree, and
+  # a consumer must not read the second as the first.
+  def human_messages_json(record)
+    record.entries.map do |entry|
       {
-        event_type: entry.event.event_type,
         origin: entry.origin.to_s,
         author: entry.author,
         author_display_name: entry.display_name,
         channel: entry.channel,
-        provenance: entry.provenance_label,
-        source_session_id: entry.source_session_id,
+        channel_label: entry.channel_label,
+        authored_in_session_id: entry.session_id,
+        authored_in: entry.authored_in,
         entry_point: entry.entry_point,
         content: entry.content,
         occurred_at: entry.occurred_at.iso8601

@@ -82,7 +82,7 @@ export default defineConfig({
             { label: "Transcripts", slug: "sessions/transcripts" },
             { label: "Triggers and schedules", slug: "sessions/triggers" },
             { label: "Elicitation", slug: "sessions/elicitation" },
-            { label: "The Human Timeline", slug: "sessions/timeline" },
+            { label: "Hierarchy and human messages", slug: "sessions/hierarchy-and-human-messages" },
           ],
         },
         {

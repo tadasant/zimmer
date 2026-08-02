@@ -12,16 +12,17 @@ Rails.application.routes.draw do
     resources :claude_account_quota_snapshots
     resources :elicitations
     resources :enqueued_messages
+    # Read-only plus destroy: a HumanMessage is read-only precisely so nobody can
+    # edit a record of what a human said after the fact, and hand-authoring one
+    # would forge an author. Destroy stays because a misattributed record is
+    # worse than a missing one.
+    resources :human_messages, only: [ :index, :show, :destroy ]
     resources :logs
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
     resources :runtime_login_attempts
     resources :sessions
     resources :subagent_transcripts
-    # Read-only: TimelineEvent is append-only precisely so nobody can edit a
-    # record of what a human said after the fact. Destroy is offered because a
-    # misattributed event is worse than a missing one.
-    resources :timeline_events, only: [ :index, :show, :destroy ]
     resources :trigger_conditions
     resources :triggers
     resources :x_oauth_credentials

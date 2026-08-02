@@ -42,7 +42,7 @@ module Mcp
       CUSTOM_METADATA_DESC = "User-defined metadata as a JSON object. Useful for tracking tickets, projects, etc."
 
       PARENT_SESSION_ID_DESC = <<~TEXT.strip
-        ID of the session spawning this one. Records the spawn edge, which the dependency graph uses and which the Human Timeline walks: the new session inherits the human messages recorded on its ancestors, marked `inherited` so they read as original intent rather than as an instruction to the new session. Set this whenever you start a session on behalf of work you were asked to do — a router composing a downstream prompt is a machine author, so without the edge the downstream session has no record of the human who set the work in motion.
+        ID of the session spawning this one. Records the spawn edge that the dependency graph uses and that the session hierarchy is built from: the new session sees the human messages recorded anywhere in its hierarchy, each marked with the session it was authored in, so a human's original intent reaches the session doing the work. Set this whenever you start a session on behalf of work you were asked to do — a router composing a spawn prompt is a machine author, so without the edge the new session has no record of the human who set the work in motion.
       TEXT
 
       AUTO_COMPACT_WINDOW_DESC = <<~TEXT.strip

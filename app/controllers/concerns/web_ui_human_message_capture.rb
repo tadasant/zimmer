@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Records Timeline `human_message` events for input typed into the Zimmer web UI.
+# Records HumanMessage rows for input typed into the Zimmer web UI.
 #
 # Included ONLY by browser-facing controllers (ApplicationController
 # descendants). That inclusion is the attribution: Zimmer has no login, and the
@@ -15,7 +15,7 @@
 # `user`-role turn through the same delivery path; the controller that accepted
 # the request is the only thing that tells them apart, so it is where the
 # decision is made.
-module WebUiTimelineCapture
+module WebUiHumanMessageCapture
   extend ActiveSupport::Concern
 
   private
@@ -23,9 +23,9 @@ module WebUiTimelineCapture
   # @param session [Session]
   # @param content [String] the human's own words
   # @param entry_point [String] e.g. "web_ui.follow_up"
-  # @return [TimelineEvent, nil]
-  def capture_web_ui_timeline_message(session, content, entry_point, occurred_at: Time.current)
-    TimelineCapture.record_web_ui_message(
+  # @return [HumanMessage, nil]
+  def capture_web_ui_human_message(session, content, entry_point, occurred_at: Time.current)
+    HumanMessageCapture.record_web_ui_message(
       session: session,
       content: content,
       entry_point: entry_point,

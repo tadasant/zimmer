@@ -10,11 +10,11 @@ class Session < ApplicationRecord
   has_many :mcp_oauth_pending_flows, dependent: :destroy
   has_many :elicitations, dependent: :destroy
 
-  # The Timeline: what Zimmer knows a named human said to this session.
-  # Append-only (TimelineEvent refuses update/destroy); it only goes away with
-  # the session itself. Read it through SessionTimeline, which also folds in the
-  # events inherited from ancestor sessions.
-  has_many :timeline_events, dependent: :destroy
+  # What Zimmer knows a named human said TO THIS SESSION. Read-only once
+  # recorded (HumanMessage refuses update/destroy); it only goes away with the
+  # session itself. Read it through SessionHumanMessages, which gathers the
+  # whole spawn hierarchy's records and marks which were authored here.
+  has_many :human_messages, dependent: :destroy
 
   belongs_to :parent_session, class_name: "Session", optional: true
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
@@ -350,11 +350,37 @@ class Session < ApplicationRecord
   after_create :set_default_title
   after_create_commit :enqueue_session_inference
 
-  # This session's Timeline, with the events inherited from ancestor sessions
-  # folded in and every entry tagged live-vs-inherited. Not memoized: the
-  # per-turn prompt build and the detail screen both want current state.
-  def timeline
-    SessionTimeline.new(self)
+  # The session that SPAWNED this one, as an id.
+  #
+  # Two representations, one meaning. `parent_session_id` is the first-class
+  # column and wins when set. Sessions spawned before that was wired recorded
+  # the same fact in `custom_metadata["router_session_id"]`, so the tree is
+  # derived from that as a fallback rather than backfilled — no migration
+  # rewrites what a session recorded about itself, and nothing is lost if the
+  # derivation is later removed.
+  #
+  # This is spawn lineage. A session is routinely followed up by a router other
+  # than the one that spawned it, so this is NOT "who talked to me last".
+  def lineage_parent_id
+    return parent_session_id if parent_session_id.present?
+
+    derived = custom_metadata&.dig("router_session_id")
+    return nil if derived.blank?
+
+    Integer(derived, exception: false)
+  end
+
+  # The whole family of sessions this one belongs to — origin at the root, every
+  # descendant below. Not memoized: the per-turn prompt build and the detail
+  # screen both want current state.
+  def hierarchy
+    SessionHierarchy.new(self)
+  end
+
+  # Every human message in that hierarchy, each marked as authored here or
+  # elsewhere.
+  def human_message_record
+    SessionHumanMessages.new(self)
   end
 
   # The bundle of pluggable implementations for this session's agent runtime

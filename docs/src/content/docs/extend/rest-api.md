@@ -127,7 +127,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | --- | --- | --- |
 | `GET` | `/sessions` | filters: `status`, `agent_runtime`, `show_archived`, `page`, `per_page` |
 | `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`. Missing/oversized `q` → 400 (the only 400 in the API) |
-| `GET` | `/sessions/:id` | always returns a top-level `human_timeline` beside `session`; `include_transcript=true` adds the raw transcript |
+| `GET` | `/sessions/:id` | always returns top-level `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `custom_metadata` |
 | `DELETE` | `/sessions/:id` | → 204 |
@@ -243,15 +243,21 @@ Every response with a `session` key renders it through the same serializer
 (`ApiSessionSerialization`), including `POST /enqueued_messages/:id/interrupt` — `session` means one
 shape everywhere on the surface.
 
-`GET /sessions/:id` returns one more top-level key **alongside** `session`: `human_timeline`, an
-array of the messages Zimmer knows a named human authored, each with `origin` (`live` — a human
-spoke to this session — or `inherited` — a human spoke to a session this one was spawned from),
-`author`, `author_display_name`, `channel`, `provenance`, `source_session_id`, `entry_point`,
-`content` and `occurred_at`. It is a sibling of `session` rather than a field inside it precisely so
-the one-shape rule above keeps holding: reading the timeline costs a query per ancestor, which the
-index would pay once per card, so it cannot travel with every `session` object. It is unconditional
-on the show action — an empty array means no human authored anything here, which is a real answer;
-see [The Human Timeline](/sessions/timeline/) for why absence is the point.
+`GET /sessions/:id` returns two more top-level keys **alongside** `session`, never inside it —
+precisely so the one-shape rule above keeps holding, since both cost queries the index would pay once
+per card:
+
+- `session_hierarchy` — the spawn tree this session belongs to: `origin_session_id`, `truncated`,
+  `truncation_reason`, and `nodes[]` each with `id`, `title`, `agent_root`, `status`, `depth`,
+  `parent_session_id` and `current`. An edge means "spawned", NOT "most recently talked to".
+- `human_messages` — the messages Zimmer knows a named human authored anywhere in that tree, each
+  with `origin` (`here` — a human spoke to this session — or `elsewhere` — a human spoke to another
+  session in the hierarchy), `author`, `author_display_name`, `channel`, `channel_label`,
+  `authored_in_session_id`, `authored_in`, `entry_point`, `content` and `occurred_at`.
+
+Both are unconditional on the show action — an empty `human_messages` means no human authored
+anything in this hierarchy, which is a real answer; see
+[Hierarchy and human messages](/sessions/hierarchy-and-human-messages/) for why absence is the point.
 
 Five of those fields are easy to misread:
 

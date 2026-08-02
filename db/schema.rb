@@ -145,6 +145,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
     t.index ["session_id", "status"], name: "index_enqueued_messages_on_session_id_and_status"
   end
 
+  create_table "human_messages", force: :cascade do |t|
+    t.string "author", null: false
+    t.string "channel", null: false
+    t.text "content", null: false
+    t.datetime "created_at", null: false
+    t.datetime "occurred_at", null: false
+    t.jsonb "provenance", default: {}, null: false
+    t.bigint "session_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["session_id", "occurred_at", "id"], name: "index_human_messages_on_session_id_and_occurred_at_and_id"
+  end
+
   create_table "good_job_batches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.integer "callback_priority"
     t.text "callback_queue_name"
@@ -379,6 +391,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
     t.datetime "trash_after"
     t.datetime "updated_at", null: false
     t.index "((custom_metadata ->> 'github_pull_request_urls'::text))", name: "index_sessions_on_custom_metadata_pr_urls", where: "((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL)"
+    t.index "((custom_metadata ->> 'router_session_id'::text))", name: "index_sessions_on_router_session_id"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
     t.index ["blocked_by_session_id"], name: "index_sessions_on_blocked_by_session_id"
@@ -420,19 +433,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
     t.index ["session_id", "agent_id"], name: "index_subagent_transcripts_on_session_id_and_agent_id", unique: true
     t.index ["session_id"], name: "index_subagent_transcripts_on_session_id"
     t.index ["tool_use_id"], name: "index_subagent_transcripts_on_tool_use_id"
-  end
-
-  create_table "timeline_events", force: :cascade do |t|
-    t.string "author", null: false
-    t.string "channel", null: false
-    t.text "content", null: false
-    t.datetime "created_at", null: false
-    t.string "event_type", default: "human_message", null: false
-    t.datetime "occurred_at", null: false
-    t.jsonb "provenance", default: {}, null: false
-    t.bigint "session_id", null: false
-    t.datetime "updated_at", null: false
-    t.index ["session_id", "occurred_at", "id"], name: "index_timeline_events_on_session_id_and_occurred_at_and_id"
   end
 
   create_table "trigger_conditions", force: :cascade do |t|
@@ -498,6 +498,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
   add_foreign_key "claude_account_quota_snapshots", "claude_accounts"
   add_foreign_key "elicitations", "sessions", on_delete: :cascade
   add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
+  add_foreign_key "human_messages", "sessions", on_delete: :cascade
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade
@@ -506,6 +507,5 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
   add_foreign_key "sessions", "sessions", column: "blocked_by_session_id", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
   add_foreign_key "subagent_transcripts", "sessions", on_delete: :cascade
-  add_foreign_key "timeline_events", "sessions", on_delete: :cascade
   add_foreign_key "trigger_conditions", "triggers"
 end

@@ -24,16 +24,16 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     [ "agent_posted_github_comments", "session_id", :nullify ],
     [ "elicitations", "session_id", :cascade ],
     [ "enqueued_messages", "session_id", :cascade ],
+    # Cascade, not nullify: a human message is a record of what a human said to
+    # THIS session, so it is meaningless without it — and HumanMessage's
+    # read-only guard deliberately allows the association-driven destroy.
+    [ "human_messages", "session_id", :cascade ],
     [ "logs", "session_id", :cascade ],
     [ "mcp_oauth_pending_flows", "session_id", :cascade ],
     [ "notifications", "session_id", :cascade ],
     [ "sessions", "blocked_by_session_id", :nullify ],
     [ "sessions", "parent_session_id", :nullify ],
-    [ "subagent_transcripts", "session_id", :cascade ],
-    # Cascade, not nullify: a timeline event is a record of what a human said to
-    # THIS session, so it is meaningless without it — and TimelineEvent's
-    # append-only guard deliberately allows the association-driven destroy.
-    [ "timeline_events", "session_id", :cascade ]
+    [ "subagent_transcripts", "session_id", :cascade ]
   ].freeze
 
   test "row-level delete of a session with notifications does not raise a foreign key violation" do

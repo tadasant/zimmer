@@ -7,7 +7,7 @@
 class EnqueuedMessagesController < ApplicationController
   include PendingMessageDelivery
   include ActionView::RecordIdentifier
-  include WebUiTimelineCapture
+  include WebUiHumanMessageCapture
 
   before_action :find_session
   before_action :find_enqueued_message, only: [ :destroy, :reorder, :interrupt, :update ]
@@ -117,7 +117,7 @@ class EnqueuedMessagesController < ApplicationController
       # Recorded when the human typed it, not when the processor delivers it.
       # The API/MCP twin of this endpoint deliberately records nothing: an agent
       # queueing a message for another session is not a human turn.
-      capture_web_ui_timeline_message(@session, content, "web_ui.enqueued_message")
+      capture_web_ui_human_message(@session, content, "web_ui.enqueued_message")
 
       @session.logs.create!(
         content: "Enqueued message added at position #{next_position}",

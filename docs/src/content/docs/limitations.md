@@ -1142,40 +1142,50 @@ entry. Nothing retries it later.
 
 Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 
-### The Human Timeline is not backfilled, and cannot be
+### Human messages are not backfilled, and cannot be
 
-`timeline_events` starts empty. Every session that existed before the Timeline shipped renders
-an empty timeline, which reads as "no human message was recorded here." For the gating use case
-that is the safe answer — but it is not the same claim as "no human ever asked for this", and a
+`human_messages` starts empty. Every session that existed before this shipped shows no human
+messages, which reads as "Zimmer has no record here." For the gating use case that is the safe
+answer, and it is honest — but it is not the same claim as "no human ever asked for this", and a
 pre-existing session cannot prove authorization it genuinely received. Re-establish it live.
 
-There is no backfill to write. The whole point is that capture keys off the authenticated actor
-at the input boundary; reconstructing that actor after the fact from transcript prose is exactly
-the guess the feature exists to eliminate.
+There is no backfill to write. The whole point is that capture keys off the authenticated actor at
+the input boundary; reconstructing that actor after the fact from transcript prose is exactly the
+guess the feature exists to eliminate.
 
-### Two real human acts happen outside Zimmer's input boundary and are invisible to the Timeline
+The *hierarchy* is different and deliberately so: it is derived at read time from the
+`custom_metadata.router_session_id` sessions already recorded, so pre-existing trees render
+immediately without any migration rewriting a row.
 
-Both are cases where a human genuinely acted and the Timeline will still be empty:
+### Two real human acts happen outside Zimmer's input boundary and are invisible
+
+Both are cases where a human genuinely acted and no human message will exist:
 
 - **An agent reading Slack mid-session through the Slack MCP server.** The agent fetches the
   message itself; it never crosses a Zimmer input boundary, so nothing is recorded. This is a
   *better* provenance signal than a relayed string — the agent saw the API response — and the
-  Timeline cannot represent it.
+  record cannot represent it.
 - **A human clicking Merge on GitHub.** A merge is a real human act on a real artifact, but it
   reaches Zimmer only as polled artifact state, on the same shared GitHub account every agent
   pushes through.
 
-Neither is a bug in capture; both are boundaries Zimmer does not own. Read an empty timeline as
+Neither is a bug in capture; both are boundaries Zimmer does not own. Read an empty record as
 "Zimmer has no record", not as "no human acted."
 
 ### Web UI attribution is an assumption about the deployment, not a check
 
-Anything typed into the Zimmer web UI is attributed to `tadasant`, because Zimmer has no login
-and the network perimeter is the authentication boundary (see
-[Philosophy](/intro/philosophy/)). The attribution is exactly as strong as that perimeter: a
-second human given tailnet access would silently be recorded as Tadas. That is the same trust
-model the rest of the app runs on, but the Timeline makes it a *named* claim, which is a higher
-bar than the rest of the UI sets.
+Anything typed into the Zimmer web UI is attributed to `tadasant`, because Zimmer has no login and
+the network perimeter is the authentication boundary (see [Philosophy](/intro/philosophy/)). The
+attribution is exactly as strong as that perimeter: a second human given tailnet access would
+silently be recorded as Tadas. That is the same trust model the rest of the app runs on, but a
+human-message record makes it a *named* claim, which is a higher bar than the rest of the UI sets.
+
+### A session hierarchy is bounded, and a big one is shown truncated
+
+The spawn tree is walked at most 8 levels deep and 150 nodes wide. A router that has spawned
+hundreds of sessions renders a truncated tree with an explicit note rather than the whole fleet.
+The session you asked about is always included, but a distant cousin may not be — so "not in the
+tree" is not proof that no such session exists.
 
 ---
 
