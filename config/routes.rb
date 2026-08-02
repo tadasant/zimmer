@@ -12,6 +12,12 @@ Rails.application.routes.draw do
     resources :claude_account_quota_snapshots
     resources :elicitations
     resources :enqueued_messages
+    # Read-only, with no destroy: a HumanMessage refuses update AND direct
+    # destroy, precisely so a record of what a human said cannot be edited or
+    # quietly removed after the fact. Hand-authoring one would forge an author,
+    # and a Delete button here would only 500. A record goes away with its
+    # session or not at all.
+    resources :human_messages, only: [ :index, :show ]
     resources :logs
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows

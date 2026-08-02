@@ -330,8 +330,10 @@ class EnqueuedMessagesTest < ApplicationSystemTestCase
 
     visit session_path(session)
 
-    # Should see truncated content (100 chars + "...")
-    truncated_text = find(".truncate").text
+    # Should see truncated content (100 chars + "...").
+    # Scoped to the message itself: a bare `.truncate` matches any truncating
+    # element on the session page, of which there is now more than one.
+    truncated_text = find("[data-enqueued-messages-list-target='item'] .truncate").text
     assert truncated_text.length < long_content.length
     assert truncated_text.include?("...")
   end

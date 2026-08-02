@@ -24,6 +24,10 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     [ "agent_posted_github_comments", "session_id", :nullify ],
     [ "elicitations", "session_id", :cascade ],
     [ "enqueued_messages", "session_id", :cascade ],
+    # Cascade, not nullify: a human message is a record of what a human said to
+    # THIS session, so it is meaningless without it — and HumanMessage's
+    # read-only guard deliberately allows the association-driven destroy.
+    [ "human_messages", "session_id", :cascade ],
     [ "logs", "session_id", :cascade ],
     [ "mcp_oauth_pending_flows", "session_id", :cascade ],
     [ "notifications", "session_id", :cascade ],

@@ -46,7 +46,13 @@ class Api::V1::SessionsController < Api::BaseController
   # GET /api/v1/sessions/:id
   # Get a single session by ID or slug.
   def show
-    render json: { session: session_json(@session, include_transcript: params[:include_transcript] == "true") }
+    record = @session.human_message_record
+
+    render json: {
+      session: session_json(@session, include_transcript: params[:include_transcript] == "true"),
+      session_hierarchy: session_hierarchy_json(record.hierarchy),
+      human_messages: human_messages_json(record)
+    }
   end
 
   # POST /api/v1/sessions
