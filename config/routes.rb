@@ -28,6 +28,12 @@ Rails.application.routes.draw do
     # operator clears a generation wedged in `pending`; destroy makes the next
     # status change regenerate from scratch.
     resources :session_status_summaries, except: [ :new, :create ]
+    # No create or edit: an edge is a record that one session actually queued or
+    # interrupted another, written only by Sessions::RecordUncleEdge, which is
+    # where the acyclicity invariant lives. Destroy is offered because the edge
+    # is self-declared and unverified, so a mistaken one needs a way out until
+    # there is a first-class detach (issue #299).
+    resources :session_uncle_links, only: [ :index, :show, :destroy ]
     resources :subagent_transcripts
     resources :trigger_conditions
     resources :triggers

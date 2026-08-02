@@ -71,6 +71,10 @@ module Mcp
             minimum: 1,
             description: "New position in queue. Required for reorder."
           },
+          acting_session_id: {
+            type: [ "number", "string" ],
+            description: 'Optional for "create", "send_now" and "interrupt". If you are an agent session queueing or interrupting ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value simply records nothing.'
+          },
           page: { type: "number", minimum: 1, description: "Page number for list. Default: 1" },
           per_page: {
             type: "number",
@@ -155,6 +159,7 @@ module Mcp
         raise ToolError, "Validation failed: #{message.errors.full_messages.join(', ')}" unless message.save
 
         session.logs.create!(content: "Enqueued message added at position #{message.position}", level: "info")
+        record_uncle_edge(session, args, "mcp:manage_enqueued_messages.create")
 
         [
           "## Message Queued",
@@ -234,6 +239,7 @@ module Mcp
 
         raise ToolError, "Cannot interrupt: #{result.error}" unless result.success?
 
+        record_uncle_edge(session, args, "mcp:manage_enqueued_messages.interrupt")
         session.reload
         [
           "## Message Sent as Interrupt",
@@ -281,6 +287,7 @@ module Mcp
           raise ToolError, "Cannot send follow-up: #{result.error}"
         end
 
+        record_uncle_edge(session, args, "mcp:manage_enqueued_messages.send_now")
         session.reload
         [
           "## Message Sent Immediately",

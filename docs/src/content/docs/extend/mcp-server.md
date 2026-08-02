@@ -164,6 +164,16 @@ anything calling `action_session` with `follow_up`: a follow-up issued over this
 machine-authored and records nothing, which is deliberate — pass `parent_session_id` to
 `start_session` so the session you spawn can see the human context you were given.
 
+For a session that already exists, `acting_session_id` is the equivalent. Set it on `follow_up`, or
+on `manage_enqueued_messages` `create` / `send_now` / `interrupt`, to your own session id: Zimmer
+records an "uncle" lineage edge marking you as a senior of the target, and that widens the target's
+hierarchy to include yours, so your hierarchy's human messages reach it as `elsewhere` context. Like
+`parent_session_id` it is self-declared and unverified — the API key identifies a caller, not a
+session — so omitting it records nothing, and a recorded edge is a claim of seniority rather than
+proof of one. The rules, including what happens when a junior calls back into its senior, are in
+[Hierarchy and human
+messages](/sessions/hierarchy-and-human-messages/#the-rules-including-inversion).
+
 `action_health`'s three destructive actions (`cleanup_processes`, `retry_sessions`, `archive_old`)
 share a 30-second cooldown with `Api::V1::HealthController` and the `/health` web dashboard — the
 same `HealthActionCooldown` object, bucketed by a digest of the connection's API key. Switching

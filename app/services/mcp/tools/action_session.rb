@@ -34,6 +34,12 @@ module Mcp
       SESSION_NOTES_DESC = 'Required for "update_notes" action. The notes text to set on the session.'
       SESSION_IDS_DESC = 'Required for "bulk_archive" action. Array of session IDs to archive.'
       TITLE_DESC = 'Required for "update_title" action. The new title for the session.'
+      # The `source` stamped on an uncle edge recorded by follow_up, whichever
+      # delivery branch it took — the branch is an implementation detail of
+      # "this session followed up that one".
+      FOLLOW_UP_EDGE_SOURCE = "mcp:action_session.follow_up"
+
+      ACTING_SESSION_ID_DESC = 'Optional for "follow_up". If you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value simply records nothing.'
 
       ACTIONS = %w[
         follow_up
@@ -151,7 +157,8 @@ module Mcp
           message_index: { type: "number", description: MESSAGE_INDEX_DESC },
           session_notes: { type: "string", description: SESSION_NOTES_DESC },
           session_ids: { type: "array", items: { type: "number" }, description: SESSION_IDS_DESC },
-          title: { type: "string", description: TITLE_DESC }
+          title: { type: "string", description: TITLE_DESC },
+          acting_session_id: { type: [ "number", "string" ], description: ACTING_SESSION_ID_DESC }
         },
         required: [ "action" ]
       })
@@ -225,9 +232,32 @@ module Mcp
           raise ToolError, "goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)"
         end
 
-        return force_immediate_follow_up(session, prompt, goal) if boolean(args["force_immediate"])
-        return queue_follow_up(session, prompt, goal) if session.running?
+        # The edge is recorded only after the message has actually landed — every
+        # branch below raises rather than returning on failure, so an edge is
+        # never written for a delivery that did not happen.
+        #
+        # The direct branch is the exception, and records inside its own
+        # transaction instead: it enqueues the job that will build the very next
+        # prompt, and a job that starts before the edge is visible would render a
+        # hierarchy missing exactly the human context the edge exists to carry.
+        if boolean(args["force_immediate"])
+          force_immediate_follow_up(session, prompt, goal).tap do
+            record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
+          end
+        elsif session.running?
+          queue_follow_up(session, prompt, goal).tap do
+            record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
+          end
+        else
+          direct_follow_up(session, prompt, goal, args)
+        end
+      end
 
+      # An idle session takes the prompt directly. This still records an uncle
+      # edge: "queue or interrupt" is the shape the rule was described in, but
+      # the thing being recorded is one session deciding to redirect another, and
+      # a router following up an idle worker is the most common instance of it.
+      def direct_follow_up(session, prompt, goal, args)
         unless session.waiting? || session.needs_input?
           raise ToolError, "Session is #{session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
         end
@@ -245,6 +275,10 @@ module Mcp
             session.update!(prompt: prompt)
           end
           session.resume! if session.may_resume?
+          # Before the enqueue, and in the same transaction: the job this line
+          # creates builds the next prompt, and it must see the edge. Rolling
+          # back takes the edge with it, so a failed send still records nothing.
+          record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
           job = AgentSessionJob.enqueue_with_prompt(session.id, prompt)
           session.update!(running_job_id: job.job_id)
         end

@@ -7,26 +7,36 @@ sidebar:
 
 Two related things, kept deliberately apart.
 
-**Session hierarchy** is the spawn tree: the origin session at the root and every descendant below
-it. **Human messages** are the messages Zimmer *knows* were authored by a named human, each attached
-to the session where they were actually said, and gathered across that whole tree.
+**Session hierarchy** is the lineage graph: the origin session at the root, every descendant below
+it, and any session that queued or interrupted one of them. **Human messages** are the messages
+Zimmer *knows* were authored by a named human, each attached to the session where they were actually
+said, and gathered across that whole graph.
 
 Together they let an agent answer "did a human actually ask for this?" as a **lookup** instead of a
 judgement it makes by reading the prose of a `user` turn.
 
 ## Session hierarchy
 
-An edge means **"spawned"**. It does *not* mean "most recently talked to" — a session is routinely
-followed up by a router other than the one that spawned it, and reading an edge that way would be
-wrong.
+There are two kinds of edge, and they mean different things.
 
-The tree is traversable in both directions: a session's ancestors up to its origin, and every
+A **spawn** edge means "A spawned B". It does *not* mean "most recently talked to" — a session is
+routinely followed up by a router other than the one that spawned it, and reading a spawn edge that
+way would be wrong. Each session is spawned exactly once, so the spawn edges alone form a tree.
+
+An **uncle** edge means "A inspected B and decided to queue or interrupt it". The premise is that a
+session which read another's state and chose to redirect it holds information that session does not
+— so it is senior: an additional parent, sibling to the spawn parent, hence "uncle". A session can
+collect several over its life, and an uncle can sit in a hierarchy the junior was never spawned into,
+so the combined graph is a **DAG**, not a tree.
+
+The graph is traversable in both directions: a session's seniors up to its roots, and every
 descendant below. That matters because a human's instruction often lands on a *sibling* — the router
-spawns two workers and clarifies intent to one of them.
+spawns two workers and clarifies intent to one of them — or on a session that only later reached in
+to interrupt this one.
 
-### Where the edge lives
+### Where each edge lives
 
-Going forward it is the first-class `parent_session_id` column. Both `POST /api/v1/sessions` and the
+The spawn edge is the first-class `parent_session_id` column. Both `POST /api/v1/sessions` and the
 `start_session` MCP tool accept it, so a router can record the edge as it spawns.
 
 Sessions spawned before that was wired recorded the same fact in `custom_metadata` as
@@ -35,17 +45,88 @@ Sessions spawned before that was wired recorded the same fact in `custom_metadat
 is reversible, and it never rewrites what a session recorded about itself. An expression index on
 `custom_metadata->>'router_session_id'` keeps the downward walk from becoming a sequential scan.
 
+Uncle edges live in their own table, `session_uncle_links` (`session_id` → `uncle_session_id`, plus
+the `source` entry point that recorded it). A separate table rather than a second column because a
+session can have several uncles and there is no principled way to pick one to keep. Both foreign keys
+are `ON DELETE CASCADE`, which is where they differ from `parent_session_id`'s `SET NULL`: nulling a
+parent pointer leaves a meaningful row (a session with no recorded parent), while nulling either end
+of an edge leaves a row that asserts nothing.
+
+### Who writes an uncle edge — and why the caller must declare itself
+
+`Sessions::RecordUncleEdge` is the only writer, called from the session-initiated queue/interrupt
+paths: `action_session` `follow_up` and `manage_enqueued_messages` `create` / `send_now` / `interrupt`
+over MCP, and `POST /api/v1/sessions/:id/follow_up` plus the enqueued-message `create` / `interrupt`
+over REST.
+
+**The acting session is self-declared**, via an `acting_session_id` parameter. That is not laziness;
+it is the only thing available. Nothing about the request identifies the caller: one API key is shared
+by the whole fleet, so it establishes a caller but not a session, and the MCP endpoint's scoping
+(`tool_groups`, `allowed_agent_roots`) is per-connection — the self-session server injected into every
+session is byte-identical across all of them. Omitting `acting_session_id` records nothing, which is
+the right answer for a human with a curl command or an MCP client.
+
+Read an uncle edge as **a claim of seniority, not proof of one**. See
+[Limitations](/limitations/) for what that means for provenance.
+
+**A human is never an uncle.** A person clicking "Send Now" or interrupting from the browser has no
+session on the other end. The web UI controllers have no `acting_session_id` at all — the guarantee is
+structural, not a flag those paths are trusted to set correctly.
+
+### The rules, including inversion
+
+When session A queues or interrupts session B:
+
+| Case | What happens |
+| --- | --- |
+| A is B | Nothing. A session messaging itself says nothing about lineage. |
+| A can already reach B going down (spawn ancestor, or an existing A → B uncle edge) | Nothing. The graph already asserts what the edge would. |
+| An uncle edge **B → A** exists — A was the junior | **Inverted.** B → A is deleted and A → B is written. An uncle edge is a claim about who holds the better information *now*, and the newer act of inspection supersedes the older one. Replacement, not addition: keeping both would assert a two-cycle, in which each session is senior to the other. |
+| B is A's **spawn** ancestor — a child calling back into its parent | Nothing, and `parent_session_id` is never touched. B *did* spawn A; that is history, and a graph that rewrites it lies about something that happened. Nothing is lost by declining — A and B already share one hierarchy, so both consumers of the graph already show everything the inverted edge could add. |
+| B is senior to A two or more hops away | Refused. Only the *direct* uncle edge inverts; unwinding a longer chain would mean deleting an edge neither session is party to. |
+| Otherwise | A → B is written. |
+
+Those rules are the acyclicity invariant: an edge A → B is written only when B cannot already reach
+A, so **no sequence of calls can construct a cycle**. Two details make that hold rather than merely
+sound true. Inversion re-checks reachability *after* removing the direct edge and rolls the whole
+thing back if the target is still senior by a longer path — otherwise A → B → X → A would be
+constructible from four individually-legal calls. And the reachability search is bounded by a node
+budget (5,000 sessions visited), not by `MAX_DEPTH`: a depth-bounded check would answer "no cycle"
+for any path longer than eight hops and let one through, and uncle edges accumulate across unrelated
+hierarchies, so long paths are ordinary. Past that node budget the guarantee lapses to the
+traversal's own `seen` guards, which stop a cycle from hanging a render but do not prevent one.
+
+An edge is a record *about* a delivery, never a precondition of it. If recording fails, the follow-up
+still lands and the failure is logged.
+
+### Origin, and roots
+
+`origin` is the root of the **spawn** chain, and stays single-valued. It is deliberately blind to
+uncle edges: spawning happened once and cannot change, whereas an origin computed over uncle edges
+would move every time some other session interrupted this one, and "where did this session come from"
+would stop having a stable answer.
+
+`roots` is plural — every root reached by walking up *both* edge kinds. That is what pulls an uncle's
+whole hierarchy into view, which is the entire point: the senior that interrupted you usually holds
+the human context you need. The spawn origin always leads the list, so an ordinary single-parent
+hierarchy renders exactly as it did before uncle edges existed.
+
+Because a session can now be reached by more than one path, the downward walk is breadth-first and
+each session is rendered **once, at its shallowest depth**.
+
 ### Depth and cycles
 
 The walk is bounded twice: `MAX_DEPTH` of 8 levels and `MAX_NODES` of 150 sessions. Deep enough for
 the shapes that actually occur (router → worker → helper, plus a gate session spawned off a worker),
 shallow enough that a cycle or a router that has spawned hundreds of sessions cannot turn a detail
-page into a fleet-wide render. The walk tracks visited ids, so a cycle terminates rather than
-looping.
+page into a fleet-wide render. Both bounds apply to the **upward** walk too, because uncle edges mean
+"up" fans out rather than forming a chain. The walk tracks visited ids, so a cycle terminates rather
+than looping — a backstop, since `RecordUncleEdge` refuses to create one, but a bound that assumes
+every writer was correct is not a bound.
 
-When either bound is hit, the reader is told: the UI shows an amber "Showing the first N sessions, M
-levels deep. This tree is larger." and the MCP and REST responses carry the same note (`truncated:
-true` in JSON). The session you asked about is always included, even if the ceiling cut the branch it
+When either bound is hit, the reader is told: the UI shows an amber "Showing at most 150 sessions, 8
+levels from the highest ancestor reached. This tree is larger." and the MCP and REST responses carry
+the same note (`truncated: true` in JSON). The session you asked about is always included, even if the ceiling cut the branch it
 lives on — a page that omits the session you are looking at is worse than one that admits it is
 truncated.
 
@@ -222,6 +303,11 @@ this shipped shows no human messages, which reads as "Zimmer has no record here"
 and, for the gating use case, the safe answer. It does mean a pre-existing session cannot prove a
 human authorized something; that authorization has to be re-established live.
 
-The hierarchy is different, and deliberately so: it is **derived** rather than backfilled, so
+The spawn hierarchy is different, and deliberately so: it is **derived** rather than backfilled, so
 pre-existing sessions show their real trees immediately, reconstructed from the
 `custom_metadata.router_session_id` they already recorded. No migration rewrites any row.
+
+Uncle edges have nothing to derive and nothing to backfill: they are recorded as queue/interrupt
+calls happen, so `session_uncle_links` starts empty and every hierarchy renders exactly as it did
+before until a session declares itself on a follow-up. The derivation of the spawn edge is untouched
+by this — the new table sits alongside it rather than replacing it.

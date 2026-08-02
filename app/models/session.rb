@@ -24,6 +24,16 @@ class Session < ApplicationRecord
   belongs_to :parent_session, class_name: "Session", optional: true
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
 
+  # The second lineage edge: seniors that queued or interrupted this session
+  # ("uncles"), and the sessions this one is senior to. Unlike the spawn edge
+  # above, these are many-to-many, and they are DESTROYED rather than nullified —
+  # an edge with one end missing asserts nothing, so it stops existing when
+  # either session does. Written only by Sessions::RecordUncleEdge.
+  has_many :session_uncle_links, dependent: :destroy
+  has_many :uncle_sessions, through: :session_uncle_links, source: :uncle_session
+  has_many :junior_uncle_links, class_name: "SessionUncleLink", foreign_key: :uncle_session_id, dependent: :destroy
+  has_many :junior_sessions, through: :junior_uncle_links, source: :session
+
   # Organizational category for the sessions dashboard. A NULL category means the
   # session is "Uncategorized". Assigned via drag-and-drop on the index grid.
   belongs_to :category, optional: true

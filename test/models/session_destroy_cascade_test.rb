@@ -38,6 +38,12 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     [ "session_status_summaries", "session_id", :cascade ],
     [ "sessions", "blocked_by_session_id", :nullify ],
     [ "sessions", "parent_session_id", :nullify ],
+    # Cascade on BOTH ends, which is where an uncle edge differs from the spawn
+    # pointer above. Nulling a parent pointer leaves a meaningful row — a session
+    # with no recorded parent. Nulling either end of an edge leaves a row that
+    # asserts nothing, so the edge goes away with either session.
+    [ "session_uncle_links", "session_id", :cascade ],
+    [ "session_uncle_links", "uncle_session_id", :cascade ],
     [ "subagent_transcripts", "session_id", :cascade ]
   ].freeze
 
