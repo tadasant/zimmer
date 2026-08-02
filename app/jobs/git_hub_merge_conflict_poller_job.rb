@@ -28,6 +28,7 @@ require "open3"
 #
 class GitHubMergeConflictPollerJob < ApplicationJob
   include DatabaseRetry
+  include AutomatedSessionMessage
 
   queue_as :pollers
 
@@ -195,54 +196,14 @@ class GitHubMergeConflictPollerJob < ApplicationJob
     stdout.strip
   end
 
+  # Delivery itself — immediate when the session is parked in needs_input, queued
+  # behind the current turn otherwise — lives in AutomatedSessionMessage, shared
+  # with the merged-PR message the PR poller sends.
   def enqueue_merge_conflict_message(session, pr_url)
-    prompt = AutomatedPrompts.merge_conflict_message(pr_url)
-
-    with_db_retry do
-      ActiveRecord::Base.transaction do
-        session.lock!
-
-        if session.needs_input?
-          send_prompt_immediately(session, prompt, pr_url)
-        else
-          enqueue_prompt_for_later(session, prompt, pr_url)
-        end
-      end
-    end
-  rescue => e
-    Rails.logger.error "[GitHubMergeConflictPollerJob] Failed to enqueue merge conflict message for session #{session.id}, PR #{pr_url}: #{e.message}"
-  end
-
-  # Send prompt directly to the session, transitioning it to running
-  # Used when session is in needs_input state
-  def send_prompt_immediately(session, prompt, pr_url)
-    session.logs.create!(
-      content: "Merge conflict detected on #{pr_url} — automated message sent immediately",
-      level: "info"
+    deliver_automated_message(
+      session,
+      AutomatedPrompts.merge_conflict_message(pr_url),
+      event_description: "Merge conflict detected on #{pr_url}"
     )
-
-    session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
-
-    Rails.logger.info "[GitHubMergeConflictPollerJob] Sent immediate merge conflict message for session #{session.id}, PR #{pr_url}"
-  end
-
-  # Queue prompt as an enqueued message for later processing
-  # Used when session is running or waiting
-  def enqueue_prompt_for_later(session, prompt, pr_url)
-    max_position = session.enqueued_messages.maximum(:position) || 0
-    next_position = max_position + 1
-
-    session.enqueued_messages.create!(
-      content: prompt,
-      position: next_position,
-      status: "pending"
-    )
-
-    session.logs.create!(
-      content: "Merge conflict detected on #{pr_url} — automated message enqueued",
-      level: "info"
-    )
-
-    Rails.logger.info "[GitHubMergeConflictPollerJob] Enqueued merge conflict message for session #{session.id}, PR #{pr_url}"
   end
 end
