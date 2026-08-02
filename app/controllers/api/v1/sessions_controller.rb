@@ -12,7 +12,7 @@ class Api::V1::SessionsController < Api::BaseController
   include SessionSearchable
   include ApiSessionSerialization
 
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_heartbeat, :set_category ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_heartbeat, :set_category ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -24,7 +24,10 @@ class Api::V1::SessionsController < Api::BaseController
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
-    scope = Session.includes(:category).order(created_at: :desc)
+    # Status-summary forks are Zimmer's own bookkeeping (see
+    # SessionStatusSummaryGenerator) — excluded here so this listing matches the
+    # dashboard and the MCP search.
+    scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
 
     # Filter by status
     scope = scope.where(status: params[:status]) if params[:status].present?
@@ -50,6 +53,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     render json: {
       session: session_json(@session, include_transcript: params[:include_transcript] == "true"),
+      status_summary: session_status_summary_json(@session),
       session_hierarchy: session_hierarchy_json(record.hierarchy),
       human_messages: human_messages_json(record)
     }
@@ -417,6 +421,19 @@ class Api::V1::SessionsController < Api::BaseController
     end
   end
 
+  # POST /api/v1/sessions/:id/regenerate_status_summary
+  # Rewrite the session's Status blurb. Forced — it regenerates even when the
+  # cached blurb is current — and asynchronous, because generation forks the
+  # session and spends a whole agent turn.
+  def regenerate_status_summary
+    SessionStatusSummaryJob.perform_later(@session.id, force: true)
+
+    render json: {
+      session_id: @session.id,
+      message: "Status summary regeneration queued"
+    }, status: :accepted
+  end
+
   # POST /api/v1/sessions/:id/refresh
   # Re-read transcript from filesystem and recover orphaned jobs.
   def refresh
@@ -468,7 +485,10 @@ class Api::V1::SessionsController < Api::BaseController
   # Bulk refresh all non-archived sessions: restart failed, continue paused, refresh running.
   # Sessions in a frozen category are a parked bucket and are intentionally excluded.
   def refresh_all
-    sessions = Session.not_in_frozen_category.where.not(status: :archived)
+    # A status-summary fork sitting in needs_input between its pause and the
+    # harvest is not work anyone is waiting on — resuming it would spend a
+    # whole agent turn against a throwaway clone, outside the fork lifecycle.
+    sessions = Session.not_in_frozen_category.excluding_status_summary_forks.where.not(status: :archived)
 
     if sessions.empty?
       render json: { message: "No non-archived sessions to refresh", refreshed: 0, restarted: 0, continued: 0, errors: 0 }
@@ -946,7 +966,9 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    scope = Session.includes(:category).order(created_at: :desc)
+    # Excludes status-summary forks for the same reason #index does — the two
+    # listings must not disagree about which sessions exist.
+    scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
 
     # Filter by status
     scope = scope.where(status: params[:status]) if params[:status].present?

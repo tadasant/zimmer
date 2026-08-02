@@ -142,7 +142,20 @@ export default class extends Controller {
     return scrolledToBottom
   }
 
+  // While the transcript sits in a collapsed <details>, streamed items land in a
+  // hidden container. Tailing then has nothing to follow, and scrolling the
+  // document to its bottom would push the Status panel up under the sticky
+  // header for a message the reader cannot see. The transcript-panel controller
+  // scrolls to the bottom when the panel is opened instead.
+  transcriptCollapsed() {
+    const content = this.hasTimelineContainerTarget ? this.timelineContainerTarget : this.element
+    const disclosure = content.closest("details")
+    return disclosure ? !disclosure.open : false
+  }
+
   scrollToBottom() {
+    if (this.transcriptCollapsed()) return
+
     const container = this.findScrollContainer()
     if (container) {
       container.scrollTop = container.scrollHeight

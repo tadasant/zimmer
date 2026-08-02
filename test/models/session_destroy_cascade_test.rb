@@ -31,6 +31,11 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     [ "logs", "session_id", :cascade ],
     [ "mcp_oauth_pending_flows", "session_id", :cascade ],
     [ "notifications", "session_id", :cascade ],
+    # Nullify on the fork, cascade on the subject: losing the throwaway fork that
+    # wrote a status summary must not lose the summary text, but the summary is
+    # meaningless without the session it describes.
+    [ "session_status_summaries", "fork_session_id", :nullify ],
+    [ "session_status_summaries", "session_id", :cascade ],
     [ "sessions", "blocked_by_session_id", :nullify ],
     [ "sessions", "parent_session_id", :nullify ],
     [ "subagent_transcripts", "session_id", :cascade ]

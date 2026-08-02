@@ -69,9 +69,18 @@ module SessionStateMachine
           warn_if_pr_goal_captured_no_url
           cleanup_running_job
           clear_auth_recovery_budget
-          fire_ao_event_triggers("session_needs_input")
-          enqueue_debounced_needs_input_push_notification
-          enqueue_session_inference_if_needed
+          if status_summary_fork?
+            # A status-summary fork pausing means its one turn is done. It is
+            # Zimmer's own bookkeeping, not work the operator is waiting on, so
+            # it gets harvested — not a push notification, a trigger fire, and a
+            # slot in the action queue.
+            harvest_status_summary
+          else
+            fire_ao_event_triggers("session_needs_input")
+            enqueue_debounced_needs_input_push_notification
+            enqueue_session_inference_if_needed
+            enqueue_status_summary_refresh
+          end
           execute_pending_sleep
         end
       end
@@ -147,9 +156,14 @@ module SessionStateMachine
           log_state_change("Session failed: #{metadata['failure_reason']}")
           cleanup_running_job
           preserve_debug_info
-          fire_ao_event_triggers("session_failed")
-          enqueue_failure_push_notification
-          enqueue_session_inference_if_needed
+          if status_summary_fork?
+            harvest_status_summary(failed: true)
+          else
+            fire_ao_event_triggers("session_failed")
+            enqueue_failure_push_notification
+            enqueue_session_inference_if_needed
+            enqueue_status_summary_refresh
+          end
         end
       end
 
@@ -771,6 +785,32 @@ module SessionStateMachine
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to enqueue title/category inference: #{e.message}"
     # Don't raise - inference enqueue failures shouldn't block state transitions
+  end
+
+  # The ONE automatic trigger for the Status panel's blurb: the session coming
+  # to rest, at needs_input or failed. Those are the moments the summary is
+  # about — "where things stand" is a question you ask of a session that has
+  # stopped — and the moments the operator is most likely to read it next.
+  #
+  # Nothing else generates: no polling, no generate-on-page-view, no
+  # generate-per-message. The generator itself still refuses when the session
+  # has not moved since the last summary, so a transition that adds no
+  # transcript costs nothing.
+  def enqueue_status_summary_refresh
+    return if transcript.blank?
+
+    SessionStatusSummaryJob.perform_later(id)
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to enqueue status summary refresh: #{e.message}"
+    # Don't raise - summary enqueue failures shouldn't block state transitions
+  end
+
+  # A summary fork has finished its single turn; lift its answer onto the source
+  # session and archive it.
+  def harvest_status_summary(failed: false)
+    SessionStatusSummaryHarvestJob.perform_later(id, failed: failed)
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to enqueue status summary harvest: #{e.message}"
   end
 
   # Retention period for preserved artifacts (unpushed commits + uncommitted changes).

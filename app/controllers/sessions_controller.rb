@@ -115,7 +115,9 @@ class SessionsController < ApplicationController
     base_scope = lambda do |scope|
       scope = scope.where.not(status: :archived) unless @show_archived
       scope = scope.not_effectively_blocked unless @show_blocked
-      scope
+      # Status-summary forks are Zimmer's own bookkeeping, not the operator's
+      # work — they are never a row on the dashboard, trash view included.
+      scope.excluding_status_summary_forks
     end
 
     sessions = base_scope.call(Session.all)
@@ -1079,7 +1081,10 @@ class SessionsController < ApplicationController
   def refresh_all
     # Only process non-archived sessions. Sessions in a frozen category are a parked
     # bucket and are intentionally left untouched by this bulk refresh.
-    sessions = Session.not_in_frozen_category.where.not(status: :archived)
+    # A status-summary fork sitting in needs_input between its pause and the
+    # harvest is not work anyone is waiting on — resuming it would spend a
+    # whole agent turn against a throwaway clone, outside the fork lifecycle.
+    sessions = Session.not_in_frozen_category.excluding_status_summary_forks.where.not(status: :archived)
     bulk_refresh_sessions(sessions, empty_notice: "No non-archived sessions to refresh")
   end
 
@@ -1747,6 +1752,29 @@ class SessionsController < ApplicationController
         format.html { redirect_to @session, alert: "Failed to fork session: #{result.error}" }
         format.json { render json: { error: result.error }, status: :unprocessable_entity }
       end
+    end
+  end
+
+  # POST /sessions/:id/regenerate_status_summary
+  #
+  # The Status panel's only write path. Forced, because the operator clicking
+  # "regenerate" on a summary Zimmer considers current is a deliberate override
+  # — the staleness check exists to stop AUTOMATIC regeneration, not to argue
+  # with the person looking at the page.
+  def regenerate_status_summary
+    @session = find_session
+    SessionStatusSummaryJob.perform_later(@session.id, force: true)
+
+    respond_to do |format|
+      format.turbo_stream do
+        render turbo_stream: turbo_stream.replace(
+          "session_#{@session.id}_status_panel",
+          partial: "sessions/status_panel",
+          locals: { agent_session: @session, generating: true }
+        )
+      end
+      format.html { redirect_to @session, notice: "Regenerating the status summary…" }
+      format.json { render json: { success: true } }
     end
   end
 

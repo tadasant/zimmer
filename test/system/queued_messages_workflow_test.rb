@@ -226,6 +226,9 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
 
     # Change filter to show logs
     select "Show Logs", from: "log-level-filter"
+    # The filter reloads the page outside Capybara's `visit`, so the
+    # collapsed Transcript panel has to be reopened.
+    open_transcript_panel
 
     # Should see log about interrupt
     assert_text "Enqueued message sent as interrupt via web: Urgent message", wait: 5

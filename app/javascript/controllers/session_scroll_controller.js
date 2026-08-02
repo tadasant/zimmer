@@ -26,8 +26,18 @@ export default class extends Controller {
     this.stopSettleObserver()
   }
 
+  // True when the transcript is inside a collapsed <details>. There is then no
+  // conversation on screen to tail, and scrolling to the document bottom would
+  // only push the Status panel up under the sticky header.
+  get transcriptCollapsed() {
+    if (!this.hasTimelineTarget) return false
+    const disclosure = this.timelineTarget.closest("details")
+    return disclosure ? !disclosure.open : false
+  }
+
   scrollToBottomAfterRender() {
     if (!this.hasTimelineTarget) return
+    if (this.transcriptCollapsed) return
 
     // Double requestAnimationFrame ensures the browser has finished the first
     // layout pass after all initial DOM updates from Turbo and Stimulus.

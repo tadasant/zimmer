@@ -16,7 +16,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
       MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session (replaces the existing set — this is not a merge).'
@@ -53,6 +53,7 @@ module Mcp
         toggle_push_notifications
         set_heartbeat
         fork
+        regenerate_status_summary
         refresh
         refresh_all
         update_notes
@@ -106,6 +107,7 @@ module Mcp
         - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
         - **fork**: Fork a session from a specific transcript message (requires "message_index")
+        - **regenerate_status_summary**: Rewrite the session's Status blurb — the 2-3 sentence "where things stand" shown at the top of its detail page, and returned by get_session. Forced: it regenerates even when Zimmer considers the cached blurb current. Zimmer writes this automatically when a session comes to rest (needs_input or failed) and at no other time, so reach for this only when you need a summary of a session that has NOT changed status since its last one — never in a loop, and never to poll: it forks the session and spends a full agent turn.
         - **refresh**: Refresh a single session's status from the execution provider
         - **refresh_all**: Refresh all active sessions (no session_id needed)
         - **update_notes**: Update the notes on a session (requires "session_notes")
@@ -196,6 +198,7 @@ module Mcp
         when "toggle_push_notifications" then toggle_push_notifications(find_session(args["session_id"]))
         when "set_heartbeat" then set_heartbeat(find_session(args["session_id"]), args)
         when "fork" then fork_session(find_session(args["session_id"]), args)
+        when "regenerate_status_summary" then regenerate_status_summary(find_session(args["session_id"]))
         when "refresh" then refresh(find_session(args["session_id"]))
         when "refresh_all" then refresh_all
         when "update_notes" then update_notes(find_session(args["session_id"]), args)
@@ -696,6 +699,20 @@ module Mcp
         ].join("\n")
       end
 
+      # The MCP twin of the Status panel's "Regenerate" button. Enqueued rather
+      # than run inline: generation forks the session and waits on a whole agent
+      # turn, which is far longer than a tool call should block.
+      def regenerate_status_summary(session)
+        SessionStatusSummaryJob.perform_later(session.id, force: true)
+
+        [
+          "## Status Summary Regenerating",
+          "",
+          "- **Session:** ##{session.id}",
+          "- **Message:** A fork was queued to rewrite the status summary. Read it back with get_session once the fork's turn finishes."
+        ].join("\n")
+      end
+
       # Re-read the transcript the runtime writes to disk into the session record.
       def refresh(session)
         transcript_dir = transcript_directory(session)
@@ -732,7 +749,10 @@ module Mcp
       # Bulk sweep: restart failed sessions, continue auto-continuable paused ones.
       # Sessions in a frozen category are a parked bucket and stay parked.
       def refresh_all
-        sessions = Session.not_in_frozen_category.where.not(status: :archived)
+        # A status-summary fork sitting in needs_input between its pause and the
+        # harvest is not work anyone is waiting on — resuming it would spend a
+        # whole agent turn against a throwaway clone, outside the fork lifecycle.
+        sessions = Session.not_in_frozen_category.excluding_status_summary_forks.where.not(status: :archived)
 
         if sessions.empty?
           return refresh_all_result("No non-archived sessions to refresh", 0, 0, 0, 0)
