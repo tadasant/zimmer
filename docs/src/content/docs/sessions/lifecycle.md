@@ -69,7 +69,7 @@ Guarded on `git_root` being present. Resets the elapsed-time counter and logs.
 ### `pause` — `running → needs_input`
 
 Fired when the agent's turn ends (the process exits normally). This is the workhorse
-transition, and it does six things beyond changing status:
+transition, and it does seven things beyond changing status:
 
 1. `warn_if_pr_goal_captured_no_url` — if the session's goal mentions a pull request and
    `custom_metadata["github_pull_request_urls"]` is still empty, write one `warning` log to the
@@ -80,8 +80,16 @@ transition, and it does six things beyond changing status:
 3. `fire_ao_event_triggers("session_needs_input")` — wakes anything watching this session.
 4. `enqueue_debounced_needs_input_push_notification` — see below.
 5. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
-6. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
+6. `enqueue_status_summary_refresh` — the **only** automatic trigger for the
+   [Status summary](/sessions/status-summary/). The generator still refuses when the session has
+   not moved since the last one, so a transition that added no transcript costs nothing.
+7. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
    sleep was deferred to here; now it fires.
+
+Steps 3–6 are skipped for one kind of session: a **status-summary fork**, which is Zimmer's own
+throwaway (marked in metadata by `SessionStatusSummaryGenerator::FORK_MARKER`). Its pause means its
+one turn is finished, so it is harvested and archived instead of notifying anyone or landing in the
+action queue.
 
 The debounce is worth understanding. Sessions sometimes flap `running → needs_input →
 running` between turns, and without debouncing every flap would push a notification. So the
@@ -136,10 +144,14 @@ monitoring job. A minutes-old stranded block has no live round-trip to resume in
 
 ### `fail` — `waiting | running | needs_input → failed`
 
-Cleans up the running job, fires `session_failed` triggers, and enqueues a push notification
-that bypasses the per-session opt-in. The reasoning: by the time `fail!` fires, retries are
-already exhausted, so this is a final non-self-resolving event. A silent status flip would be
-worse than an unwanted push.
+Cleans up the running job, fires `session_failed` triggers, enqueues a push notification
+that bypasses the per-session opt-in, and — like `pause` — enqueues a
+[Status summary](/sessions/status-summary/) refresh. The reasoning behind the unconditional push:
+by the time `fail!` fires, retries are already exhausted, so this is a final non-self-resolving
+event. A silent status flip would be worse than an unwanted push.
+
+A status-summary fork that fails is harvested (recording the failure on the source session's
+summary) instead of notifying, exactly as on `pause`.
 
 ### `archive` — any state → `archived`
 

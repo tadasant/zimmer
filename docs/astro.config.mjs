@@ -83,6 +83,7 @@ export default defineConfig({
             { label: "Triggers and schedules", slug: "sessions/triggers" },
             { label: "Elicitation", slug: "sessions/elicitation" },
             { label: "Hierarchy and human messages", slug: "sessions/hierarchy-and-human-messages" },
+            { label: "The Status summary", slug: "sessions/status-summary" },
           ],
         },
         {

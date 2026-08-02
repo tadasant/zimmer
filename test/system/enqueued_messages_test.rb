@@ -134,6 +134,9 @@ class EnqueuedMessagesTest < ApplicationSystemTestCase
 
     # Change filter to "Show Logs" to see log entries (default "minimal" hides logs)
     select "Show Logs", from: "log-level-filter"
+    # The filter reloads the page outside Capybara's `visit`, so the
+    # collapsed Transcript panel has to be reopened.
+    open_transcript_panel
 
     # Wait for the log to appear in the timeline (broadcast via Turbo Streams)
     # Should see the log entry for the interrupt (shown in timeline)

@@ -36,7 +36,16 @@
     forkable = is_message && session && item[:transcript_index].present?
     image_count = is_message ? ot_image_count(item) : 0
   %>
-  <div class="px-6 py-4 <%= 'bg-gray-50' if ot_tool_row?(item) %> group/message"
+  <%# Stable anchor target for deep links into a specific message — Status-panel
+      summaries link to `#message-<transcript_index>`, and the fork affordance
+      already keys off the same index, so the two agree by construction.
+      Constrained so the id stays unique on the page: only top-level items (a
+      subagent-accordion copy would duplicate it), and only the first event of a
+      transcript line (one line can fan out into several events, e.g. thinking
+      plus text). %>
+  <% anchor_id = (!nested && item[:transcript_index].present? && item[:event_order].to_i.zero?) ? "message-#{item[:transcript_index]}" : nil %>
+  <div <%= tag.attributes(id: anchor_id) %>
+       class="px-6 py-4 <%= 'bg-gray-50' if ot_tool_row?(item) %> group/message scroll-mt-24"
        data-controller="message-copy<%= ' fork-session' if forkable %>"
        data-message-copy-content-value="<%= body.to_json %>"
        <% if forkable %>
