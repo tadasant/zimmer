@@ -169,7 +169,14 @@ runcmd:
   # First, neutralize the root password DigitalOcean forces on us. DO sets a random root
   # password and FORCE-EXPIRES it (`chage -d 0 root`) on every droplet created with no
   # DO-registered SSH key -- which is deliberate here: ssh_key_fingerprints is ForceNew, so
-  # operator keys ride admin_ssh_pubkeys instead and the list stays empty. Tailscale SSH does
+  # nothing is ever registered with DO and that list stays empty in every environment. What
+  # rides admin_ssh_pubkeys instead is per environment and NOT the same: on staging it is the
+  # operator key, from the ADMIN_SSH_PUBKEYS Actions variable; production leaves the variable
+  # unset and converges its admin keys onto the running box out of band, deliberately
+  # withholding the key Zimmer's own agent sessions hold, because those sessions RUN ON
+  # production and this file authorizes root. See
+  # docs/operate/ssh-access.md#who-is-authorized-where before reconciling them. Neither path
+  # registers a key with DO, so every environment gets the forced expiry. Tailscale SSH does
   # its own authn and never runs pam_unix's account stack, so Kamal and CI never notice. Real
   # OpenSSH does run it, and pam_unix rejects a session with `sp_lstchg == 0` AFTER publickey
   # auth has already succeeded:
