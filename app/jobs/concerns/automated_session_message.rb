@@ -9,9 +9,15 @@
 # agent is already doing. This is that one decision, made in one place, so a new
 # automated message is a prompt and a call rather than a second delivery path.
 #
-# Requires the includer to also include DatabaseRetry (for with_db_retry).
 module AutomatedSessionMessage
   extend ActiveSupport::Concern
+
+  # with_db_retry is part of this delivery path, so the dependency is taken rather
+  # than documented: an includer that forgot it would raise NoMethodError inside the
+  # rescue below and lose the message silently. Including it twice is a no-op.
+  included do
+    include DatabaseRetry
+  end
 
   private
 
