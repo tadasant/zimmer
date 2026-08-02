@@ -1318,6 +1318,39 @@ retry the clone outright.
 Reading the pipes when the exit code is unknown would mean deciding a command succeeded on the
 evidence of its output alone. That is the trade being made deliberately, and it is the cheaper
 error.
+
+### An automated poller message that fails to deliver is logged, not retried
+
+`AutomatedSessionMessage#deliver_automated_message` — the path both the merged-PR message and the
+merge-conflict message go through — swallows any exception raised while delivering, because one
+session that cannot take a message must not abort the poller's sweep of every other session.
+
+The state that triggered the message is written down regardless. `GitHubPullRequestPollerJob`
+records the PR as `merged`, so the `open` → `merged` transition it keys on is gone by the next poll.
+`GitHubMergeConflictPollerJob` records the conflict as confirmed, which suppresses re-notification
+the same way. Neither message is retried.
+
+The markers at least stay honest. The merged-PR marker is written only for PRs a message actually
+went out for, so `github_pull_request_merged_notified` never claims a delivery that didn't happen,
+and the session log entry is written inside the delivery transaction and rolls back with it. The
+failure is in the Rails log, and nowhere else.
+
+A crash is the case the ordering does cover. Messages go out before the markers are persisted, so a
+process that dies in between re-sends on the next poll rather than dropping the notification.
+
+### A parked session can hear about its merged PR up to a day late
+
+`PollBackoff` slows each GitHub poller per session according to how long it has been since the user
+last touched that session. Past 24 hours of no user activity the floor is 24 hours between polls,
+so the merged-PR message rides that same curve.
+
+The session most likely to be parked waiting on a merge is exactly the one with stale user activity:
+it did its work, said so, and has been sitting in `needs_input` ever since. It can therefore wait a
+long time to learn that the PR it was blocked on landed. The backoff exists because polling every
+active session's PRs on every tick exhausts GitHub's 5000/hr authenticated rate limit at around 50
+sessions, and that is the trade being made. Touching the session resets the curve to the 30-second
+cadence.
+
 ---
 
 ## Triggers
