@@ -349,9 +349,13 @@ gh issue create --label "hold issue work gate" --title "…" --body "…"
 ```
 
 — rather than opening it and adding the label a moment later. A label added after the fact races the
-next tick, and if the tick wins, the trigger has already fired. Removing an excluded label later can
-also fire the issue, if it is still inside the 30-minute re-query window described below; after that
-window the issue is past and nothing fires.
+next tick, and if the tick wins, the trigger has already fired.
+
+*Removing* the label later is not a reliable way to un-hold an issue either. The poller re-queries a
+30-minute window behind its cursor, and that cursor advances only when an issue **fires** — so the
+window trails the last fired issue rather than the clock. Un-holding re-exposes the issue when
+nothing else has fired past it since, and does nothing once something has. Open a fresh issue when
+you want the gate.
 :::
 
 Editing `exclude_labels` does **not** re-baseline the condition — unlike `repos`, `labels` and
