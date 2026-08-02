@@ -226,8 +226,40 @@
   <div class="flex flex-1 min-h-0">
     <!-- Timeline Content -->
     <div class="flex-1 min-w-0 max-w-full mx-auto px-2 sm:px-6 lg:px-8 py-4 sm:py-8">
+    <%# The session detail panel group: four sections in one card, divided rather
+        than stacked, so they read as one system. Status is always expanded (it
+        is the at-a-glance surface); Session hierarchy, Human messages and
+        Transcript are <details> disclosures. Transcript is collapsed by default
+        — on a long session it is thousands of rows, and the three panels above
+        it are what a returning reader wants first. %>
+    <div class="bg-white shadow rounded-lg mb-4 divide-y divide-gray-200" id="session_<%= @session.id %>_panels">
+    <%= render "sessions/status_panel", agent_session: @session %>
     <%= render "sessions/session_hierarchy", agent_session: @session %>
-    <div class="bg-white shadow rounded-lg" id="timeline-container" data-session-scroll-target="timeline"
+
+    <%# Opening the transcript scrolls it to the bottom: while closed, the
+        auto-scroll controller's pinning has nothing to measure, so a session
+        that streamed messages in the background would otherwise open at the top,
+        thousands of rows away from what just happened. %>
+    <details data-controller="transcript-panel" data-action="toggle->transcript-panel#toggled">
+      <summary class="px-4 sm:px-6 py-3 cursor-pointer select-none flex items-center justify-between gap-3 hover:bg-gray-50">
+        <span class="flex items-center gap-2 min-w-0">
+          <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
+          </svg>
+          <span class="text-sm font-semibold text-gray-900">Transcript</span>
+          <span class="text-xs text-gray-500 truncate">
+            <% if @total_timeline_items_count.to_i.zero? %>
+              nothing recorded yet
+            <% else %>
+              <%= pluralize(@total_timeline_items_count, "item") %><%= ", #{@timeline_items.count} loaded" if @has_more_items %>
+            <% end %>
+          </span>
+        </span>
+        <span class="text-xs text-gray-400 flex-shrink-0">conversation and activity</span>
+      </summary>
+
+    <div class="border-t border-gray-200" id="timeline-container" data-session-scroll-target="timeline"
+         data-transcript-panel-target="body"
          data-controller="infinite-scroll"
          data-infinite-scroll-url-value="<%= timeline_items_session_path(@session) %>"
          data-infinite-scroll-before-index-value="<%= @oldest_displayed_index %>"
@@ -289,6 +321,8 @@
           <% end %>
         </div>
       </div>
+    </div>
+    </details>
     </div>
 
       <%# Elicitation banners - shown above the follow-up form when MCP servers need user approval %>

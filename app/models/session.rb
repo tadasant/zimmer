@@ -16,6 +16,11 @@ class Session < ApplicationRecord
   # whole spawn hierarchy's records and marks which were authored here.
   has_many :human_messages, dependent: :destroy
 
+  # The cached "where things stand" blurb shown in the Status panel, plus the
+  # bookkeeping that decides when it may be regenerated. See
+  # SessionStatusSummary and SessionStatusSummaryGenerator.
+  has_one :status_summary, class_name: "SessionStatusSummary", dependent: :destroy
+
   belongs_to :parent_session, class_name: "Session", optional: true
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
 
@@ -29,6 +34,12 @@ class Session < ApplicationRecord
   # no automatic dependency detection.
   belongs_to :blocked_by_session, class_name: "Session", optional: true
   has_many :blocked_sessions, class_name: "Session", foreign_key: :blocked_by_session_id, dependent: :nullify
+
+  # Throwaway forks that exist only to write another session's Status blurb (see
+  # SessionStatusSummaryGenerator). They are ordinary sessions mechanically —
+  # they run, pause, and get archived — but they are Zimmer's own bookkeeping
+  # rather than the operator's work, so the lists an operator reads exclude them.
+  scope :excluding_status_summary_forks, -> { where("metadata->>'status_summary_for_session_id' IS NULL") }
 
   scope :root_sessions, -> { where(parent_session_id: nil) }
   scope :children_of, ->(parent_id) { where(parent_session_id: parent_id) }
@@ -381,6 +392,18 @@ class Session < ApplicationRecord
   # elsewhere.
   def human_message_record
     SessionHumanMessages.new(self)
+  end
+
+  # True when this session was forked purely to write another session's Status
+  # blurb. Such a fork never gets a summary of its own, never notifies, and is
+  # archived as soon as its answer has been harvested.
+  def status_summary_fork?
+    metadata&.dig(SessionStatusSummaryGenerator::FORK_MARKER).present?
+  end
+
+  # The source session a summary fork is summarizing, or nil.
+  def status_summary_source_id
+    metadata&.dig(SessionStatusSummaryGenerator::FORK_MARKER)
   end
 
   # The bundle of pluggable implementations for this session's agent runtime

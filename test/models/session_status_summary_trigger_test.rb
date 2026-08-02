@@ -1,0 +1,114 @@
+# frozen_string_literal: true
+
+require "test_helper"
+require "mocha/minitest"
+
+# The single automatic trigger for the Status blurb — the session changing
+# status — and the fact that a summary fork's own transitions are routed into
+# harvesting rather than into the operator's action queue.
+class SessionStatusSummaryTriggerTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
+  setup do
+    Log.any_instance.stubs(:broadcast_append_to_timeline)
+    Session.any_instance.stubs(:broadcast_status_change)
+
+    @session = Session.create!(
+      prompt: "work",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      transcript: JSON.generate({ "type" => "user", "message" => { "role" => "user", "content" => "hi" } }) + "\n"
+    )
+  end
+
+  teardown do
+    Mocha::Mockery.instance.teardown
+  end
+
+  test "pausing to needs_input enqueues a summary refresh" do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id ]) do
+      @session.pause!
+    end
+  end
+
+  test "failing enqueues a summary refresh" do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id ]) do
+      @session.fail!
+    end
+  end
+
+  test "a session with no transcript does not enqueue a summary refresh" do
+    @session.update_column(:transcript, nil)
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      @session.pause!
+    end
+  end
+
+  # The only automatic trigger is a status change. Resuming is a status change
+  # into `running`, but "where things stand" is a question about a session that
+  # has stopped — summarizing at the start of a turn spends a fork on an answer
+  # the same turn invalidates.
+  test "resuming does not enqueue a summary refresh" do
+    @session.pause!
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      @session.resume!
+    end
+  end
+
+  test "a summary fork pausing harvests instead of refreshing, notifying, or titling" do
+    fork = Session.create!(
+      prompt: "summarize",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      transcript: "{}\n",
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => @session.id }
+    )
+
+    # Session creation itself enqueues title inference; the assertions below are
+    # about what the PAUSE enqueues.
+    clear_enqueued_jobs
+
+    assert_enqueued_with(job: SessionStatusSummaryHarvestJob) do
+      fork.pause!
+    end
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob)
+    assert_no_enqueued_jobs(only: SessionTitleJob)
+  end
+
+  test "a summary fork failing harvests with the failed flag" do
+    fork = Session.create!(
+      prompt: "summarize",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      transcript: "{}\n",
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => @session.id }
+    )
+
+    assert_enqueued_with(job: SessionStatusSummaryHarvestJob, args: [ fork.id, { failed: true } ]) do
+      fork.fail!
+    end
+  end
+
+  test "summary forks are excluded from the operator-visible session scope" do
+    fork = Session.create!(
+      prompt: "summarize",
+      agent_runtime: "claude_code",
+      status: :needs_input,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => @session.id }
+    )
+
+    visible = Session.excluding_status_summary_forks
+    assert_includes visible, @session
+    assert_not_includes visible, fork
+  end
+end

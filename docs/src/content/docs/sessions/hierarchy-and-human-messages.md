@@ -147,7 +147,8 @@ timestamp, content and the session it was authored in, and the block states in p
 unlisted user turn was machine-authored. The newest 25 are shown; older ones are counted, not dropped
 silently. A human's own words are neutralized against closing the block early.
 
-**On the session detail screen.** Two panels above the transcript. The hierarchy renders the tree as
+**On the session detail screen.** Two of the four sections in the page's panel group — below
+[Status](/sessions/status-summary/) and above the collapsed Transcript. The hierarchy renders the tree as
 indented nodes, each showing the session's agent root and title, each a link through to that
 session's detail page, with the current session marked and not linked to itself. Below it, the human
 messages, badged `this session` or `elsewhere`, with a link to the authoring session and a Slack

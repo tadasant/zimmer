@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_02_060000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -145,18 +145,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
     t.index ["session_id", "status"], name: "index_enqueued_messages_on_session_id_and_status"
   end
 
-  create_table "human_messages", force: :cascade do |t|
-    t.string "author", null: false
-    t.string "channel", null: false
-    t.text "content", null: false
-    t.datetime "created_at", null: false
-    t.datetime "occurred_at", null: false
-    t.jsonb "provenance", default: {}, null: false
-    t.bigint "session_id", null: false
-    t.datetime "updated_at", null: false
-    t.index ["session_id", "occurred_at", "id"], name: "index_human_messages_on_session_id_and_occurred_at_and_id"
-  end
-
   create_table "good_job_batches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.integer "callback_priority"
     t.text "callback_queue_name"
@@ -246,6 +234,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
     t.index ["priority", "scheduled_at"], name: "index_good_jobs_on_priority_scheduled_at_unfinished_unlocked", where: "((finished_at IS NULL) AND (locked_by_id IS NULL))"
     t.index ["queue_name", "scheduled_at"], name: "index_good_jobs_on_queue_name_and_scheduled_at", where: "(finished_at IS NULL)"
     t.index ["scheduled_at"], name: "index_good_jobs_on_scheduled_at", where: "(finished_at IS NULL)"
+  end
+
+  create_table "human_messages", force: :cascade do |t|
+    t.string "author", null: false
+    t.string "channel", null: false
+    t.text "content", null: false
+    t.datetime "created_at", null: false
+    t.datetime "occurred_at", null: false
+    t.jsonb "provenance", default: {}, null: false
+    t.bigint "session_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["session_id", "occurred_at", "id"], name: "index_human_messages_on_session_id_and_occurred_at_and_id"
   end
 
   create_table "logs", force: :cascade do |t|
@@ -344,6 +344,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
     t.index ["claude_account_id", "created_at"], name: "idx_on_claude_account_id_created_at_edf6f8e6f6"
     t.index ["claude_account_id"], name: "index_runtime_login_attempts_on_claude_account_id"
     t.index ["status"], name: "index_runtime_login_attempts_on_status"
+  end
+
+  create_table "session_status_summaries", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.text "error"
+    t.bigint "fork_session_id"
+    t.datetime "generated_at"
+    t.datetime "requested_at"
+    t.integer "requested_line_count"
+    t.bigint "session_id", null: false
+    t.string "state", default: "idle", null: false
+    t.text "summary"
+    t.integer "transcript_line_count", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["fork_session_id"], name: "index_session_status_summaries_on_fork_session_id"
+    t.index ["session_id"], name: "index_session_status_summaries_on_session_id", unique: true
   end
 
   create_table "sessions", force: :cascade do |t|
@@ -503,6 +519,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade
   add_foreign_key "runtime_login_attempts", "claude_accounts"
+  add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
+  add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
   add_foreign_key "sessions", "categories", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "blocked_by_session_id", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
