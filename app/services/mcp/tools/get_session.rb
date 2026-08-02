@@ -41,6 +41,8 @@ module Mcp
       description <<~DESC
         Get detailed information about a specific agent session.
 
+        **Status summary:** the cached 2-3 sentence "where things stand" blurb Zimmer writes when a session comes to rest, with a freshness marker saying how many transcript events have landed since. Reading it never generates one — a stale blurb is returned as stale. Use `action_session` with `regenerate_status_summary` when you need it rewritten.
+
         **Returns:** Complete session details including status, configuration, metadata, the session hierarchy and its human messages (always), and optionally:
         - Full session transcript (WARNING: can be very large)
         - Session logs (paginated)
@@ -135,6 +137,31 @@ module Mcp
       end
 
       private
+
+      # The cached Status blurb, with the staleness count that decides whether to
+      # trust it. Read-only here: nothing about calling get_session generates a
+      # summary, exactly as viewing the session page does not.
+      def status_summary_lines(session)
+        record = session.status_summary
+        lines = [ "", "### Status Summary" ]
+
+        if record.nil? || record.summary.blank?
+          lines << "_No summary has been generated for this session yet._"
+          return lines
+        end
+
+        behind = record.messages_since(session.transcript_line_count)
+        lines << "```"
+        lines << Sanitize.sanitize_for_fence(record.summary)
+        lines << "```"
+        lines << "- **Generated:** #{record.generated_at&.iso8601}"
+        lines << if behind.zero?
+          "- **Freshness:** current — no transcript events since it was written"
+        else
+          "- **Freshness:** STALE — #{behind} transcript event(s) since it was written, so it describes an earlier point in the session"
+        end
+        lines
+      end
 
       # The spawn tree this session belongs to.
       def session_hierarchy_lines(hierarchy)
@@ -262,6 +289,8 @@ module Mcp
           lines << JSON.pretty_generate(custom_metadata)
           lines << "```"
         end
+
+        lines.concat(status_summary_lines(session))
 
         # One record, so the two sections cannot disagree and the tree is walked
         # once rather than twice.

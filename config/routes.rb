@@ -88,6 +88,7 @@ Rails.application.routes.draw do
           post :sleep, action: :sleep_session
           post :restart
           post :fork
+          post :regenerate_status_summary
           post :refresh
           patch :mcp_servers, action: :update_mcp_servers
           patch :catalog_skills, action: :update_catalog_skills
@@ -300,6 +301,7 @@ Rails.application.routes.draw do
       get :timeline_items
       get :transcript
       post :fork
+      post :regenerate_status_summary
       post :upload_images
       post :upload_files
     end

@@ -1,0 +1,93 @@
+<%#
+  Status — the first of the four sections in the session detail page's panel
+  group, and the only one that is never collapsed. It answers "where does this
+  stand, and does it want me right now?" before the reader has clicked anything.
+
+  Two or three sentences, written by an agent (SessionStatusSummaryGenerator
+  forks the session and asks the fork), cached on SessionStatusSummary, and
+  deliberately link-heavy: a detail worth more than a clause becomes a link to
+  the transcript message, PR, or session where it lives.
+
+  Rendering this NEVER generates. A stale summary shows the cached text plus how
+  many messages have landed since, and waits for the operator to press
+  Regenerate. The only automatic trigger is the session changing status — see
+  SessionStateMachine#enqueue_status_summary_refresh.
+
+  Local variables:
+    agent_session: Session
+    generating:    Boolean (optional) — force the "generating" state immediately
+                   after a Regenerate click, before the job has marked the record
+%>
+<% summary = agent_session.status_summary %>
+<% line_count = agent_session.transcript_line_count %>
+<% behind = summary&.messages_since(line_count).to_i %>
+<% generating = local_assigns.fetch(:generating, false) || summary&.pending? %>
+
+<div id="session_<%= agent_session.id %>_status_panel">
+  <div class="px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+    <span class="flex items-center gap-2 min-w-0">
+      <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+      </svg>
+      <span class="text-sm font-semibold text-gray-900">Status</span>
+      <span class="text-xs text-gray-500 truncate">
+        <% if generating %>
+          generating…
+        <% elsif summary&.summary.present? %>
+          <% if behind.zero? %>
+            up to date as of <%= summary.generated_at&.utc&.strftime("%Y-%m-%d %H:%M UTC") %>
+          <% else %>
+            <%= pluralize(behind, "message") %> since summary generated
+          <% end %>
+        <% else %>
+          no summary yet
+        <% end %>
+      </span>
+    </span>
+
+    <span class="flex items-center gap-2 flex-shrink-0">
+      <%# The only write path in this panel. Forced: an operator pressing this on
+          a summary Zimmer considers current is overriding the staleness check,
+          which exists to stop AUTOMATIC regeneration, not to argue with them. %>
+      <%= button_to regenerate_status_summary_session_path(agent_session),
+            method: :post,
+            form: { data: { turbo: true } },
+            disabled: generating,
+            class: "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium #{generating ? 'text-gray-400 bg-gray-50 cursor-not-allowed' : 'text-indigo-700 bg-indigo-50 hover:bg-indigo-100'}" do %>
+        <svg class="h-3.5 w-3.5 <%= "animate-spin" if generating %>" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+        </svg>
+        <%= generating ? "Generating" : "Regenerate" %>
+      <% end %>
+    </span>
+  </div>
+
+  <%# A `#message-N` link points at the Transcript panel further down this page,
+      not out of it — see status_panel_controller.js. %>
+  <div class="px-4 sm:px-6 pb-4" data-controller="status-panel" data-action="click->status-panel#followFragment">
+    <% if summary&.summary.present? %>
+      <%= render "shared/enhanced_markdown", content: summary.summary_markdown, variant: "default" %>
+      <% if behind.positive? %>
+        <p class="mt-2 text-xs text-amber-700">
+          <%= pluralize(behind, "message") %> since this was generated — it describes an earlier point in the session.
+        </p>
+      <% end %>
+      <% if summary.failed? && summary.error.present? %>
+        <p class="mt-2 text-xs text-red-700">Last regeneration failed: <%= summary.error %></p>
+      <% end %>
+    <% elsif generating %>
+      <p class="text-sm text-gray-500">Forking this session to write a summary. It will appear here when the fork's turn finishes.</p>
+    <% elsif summary&.failed? %>
+      <p class="text-sm text-gray-700">No summary yet — the last attempt failed.</p>
+      <p class="mt-1 text-xs text-red-700"><%= summary.error.presence || "No reason recorded." %></p>
+    <% elsif summary&.abandoned? %>
+      <p class="text-sm text-gray-700">A summary was started but never came back. Press Regenerate to try again.</p>
+    <% elsif line_count.zero? %>
+      <p class="text-sm text-gray-500">Nothing to summarize yet — this session has no transcript.</p>
+    <% else %>
+      <p class="text-sm text-gray-500">
+        No summary yet. One is written automatically when this session next changes status, or press Regenerate now.
+      </p>
+    <% end %>
+  </div>
+</div>

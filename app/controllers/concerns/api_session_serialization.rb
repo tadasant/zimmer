@@ -65,6 +65,23 @@ module ApiSessionSerialization
     json
   end
 
+  # The cached Status blurb and how far behind the session it is.
+  #
+  # A SIBLING of `session` for the same reason session_hierarchy_json is: the
+  # `session` object means one shape on every response that carries it. Reading
+  # it never generates one — POST .../regenerate_status_summary does that.
+  def session_status_summary_json(session)
+    record = session.status_summary
+    return nil if record.nil? || record.summary.blank?
+
+    {
+      summary: record.summary,
+      generated_at: record.generated_at&.iso8601,
+      messages_since_generated: record.messages_since(session.transcript_line_count),
+      state: record.state
+    }
+  end
+
   # The spawn tree a session belongs to: origin at the root, every descendant
   # below. An edge means "spawned", NOT "most recently talked to".
   #

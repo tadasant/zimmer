@@ -1,0 +1,114 @@
+# frozen_string_literal: true
+
+require "test_helper"
+require "mocha/minitest"
+
+# The MCP half of the Status panel: an agent must be able to read a session's
+# blurb (get_session) and ask for it to be rewritten (action_session), and must
+# not see Zimmer's throwaway summary forks in a session listing.
+class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
+  setup do
+    Log.any_instance.stubs(:broadcast_append_to_timeline)
+    Session.any_instance.stubs(:broadcast_status_change)
+
+    @context = Mcp::Context.new(tool_groups: "sessions")
+    @session = Session.create!(
+      prompt: "Ship the thing",
+      agent_runtime: "claude_code",
+      status: :needs_input,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      title: "Ship the thing",
+      transcript: "{}\n{}\n{}\n{}\n"
+    )
+  end
+
+  teardown do
+    Mocha::Mockery.instance.teardown
+  end
+
+  # --- get_session ----------------------------------------------------------
+
+  test "get_session reports a current summary with its freshness" do
+    SessionStatusSummary.create!(
+      session: @session, state: "ready", generated_at: Time.current,
+      transcript_line_count: 4, summary: "The PR is open and CI is green."
+    )
+
+    output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
+
+    assert_includes output, "### Status Summary"
+    assert_includes output, "The PR is open and CI is green."
+    assert_includes output, "**Freshness:** current"
+  end
+
+  test "get_session marks a stale summary stale and counts how far behind it is" do
+    SessionStatusSummary.create!(
+      session: @session, state: "ready", generated_at: 1.hour.ago,
+      transcript_line_count: 1, summary: "Working on it."
+    )
+
+    output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
+
+    assert_includes output, "**Freshness:** STALE — 3 transcript event(s) since it was written"
+  end
+
+  test "get_session says plainly when no summary exists rather than omitting the section" do
+    output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
+
+    assert_includes output, "### Status Summary"
+    assert_includes output, "_No summary has been generated for this session yet._"
+  end
+
+  # Reading must never generate — the same rule the session page follows.
+  test "get_session does not enqueue a generation" do
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
+    end
+  end
+
+  # --- action_session -------------------------------------------------------
+
+  test "action_session exposes regenerate_status_summary and enqueues a forced generation" do
+    assert_includes Mcp::Tools::ActionSession::ACTIONS, "regenerate_status_summary"
+
+    result = nil
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
+      result = Mcp::Tools::ActionSession.new(context: @context)
+        .call("action" => "regenerate_status_summary", "session_id" => @session.id)
+    end
+
+    assert_includes result, "## Status Summary Regenerating"
+  end
+
+  test "the tool description documents the new action" do
+    assert_match(/regenerate_status_summary/, Mcp::Tools::ActionSession.description_value)
+  end
+
+  # A session driving itself gets the self-management subset only; regenerating
+  # a summary forks another session's conversation, so it stays out.
+  test "the self-session tool does not expose regenerate_status_summary" do
+    assert_not_includes Mcp::Tools::SelfSessionActionSession::ACTIONS, "regenerate_status_summary"
+  end
+
+  # --- quick_search_sessions ------------------------------------------------
+
+  test "summary forks do not appear in a session search" do
+    fork = Session.create!(
+      prompt: "summarize",
+      agent_runtime: "claude_code",
+      status: :needs_input,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      title: "Status summary for session ##{@session.id}",
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => @session.id }
+    )
+
+    output = Mcp::Tools::QuickSearchSessions.new(context: @context).call({})
+
+    assert_includes output, "(ID: #{@session.id})"
+    assert_not_includes output, "(ID: #{fork.id})"
+  end
+end

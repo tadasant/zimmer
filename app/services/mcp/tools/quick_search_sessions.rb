@@ -110,7 +110,10 @@ module Mcp
       private
 
       def filtered_scope(args)
-        scope = Session.includes(:category).order(created_at: :desc)
+        # Status-summary forks are Zimmer's own bookkeeping, not sessions anyone
+        # searches for — excluded here for the same reason the dashboard excludes
+        # them, so the two surfaces list the same sessions.
+        scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
 
         status = args["status"].presence
         if status
