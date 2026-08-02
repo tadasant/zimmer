@@ -67,8 +67,14 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
     # The whole point of the change: no ERROR record, so the alert does not fire.
     assert_empty entries.select { |severity, _message| %w[ERROR FATAL].include?(severity) },
       "a CSRF failure must not emit an ERROR/FATAL record: #{entries.inspect}"
-    refute entries.any? { |_severity, message| message.include?("InvalidAuthenticityToken") },
-      "the raw exception must not reach the log: #{entries.inspect}"
+
+    # Rails logs its own `rescue_from handled ActionController::InvalidAuthenticityToken
+    # (…) - <one frame>` line whenever a handler fires. That is fine — it is INFO, it is
+    # one frame rather than sixty, and the alert counts ERROR records. What must never
+    # appear is the exception at a severity the alert can see.
+    exception_mentions = entries.select { |_severity, message| message.include?("InvalidAuthenticityToken") }
+    assert exception_mentions.all? { |severity, _message| severity == "INFO" },
+      "the exception may only be mentioned at INFO: #{exception_mentions.inspect}"
   end
 
   test "the logged line names the method, path, IP, user agent, and an absent session cookie" do
