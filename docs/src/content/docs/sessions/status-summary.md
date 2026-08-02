@@ -93,8 +93,41 @@ A summary fork's clone is therefore **not a runnable checkout** — `.bundle/con
 
 The generator also re-checks that the session is still out of the trash **after** the copy, not just
 before it. The copy takes real time, and a session that archived during it would otherwise get a fork
-of a clone `DeferredCloneCleanupJob` is about to delete. Such a fork is archived immediately and
-nothing is recorded against the summary.
+of a clone `DeferredCloneCleanupJob` is about to delete. Such a fork is archived immediately, the
+claim below is released so the record does not sit in `pending` behind a fork that will never answer,
+and nothing is recorded against the summary.
+
+### One generation at a time
+
+Five call sites can ask for a summary — the `pause` and `fail` transitions, plus Regenerate on each of
+the UI, REST and MCP surfaces — and nothing serializes them. Two landing together on one session used
+to mean two full clone copies and a duplicate-key insert, because the record was read-or-built up
+front and written only *after* the copy finished: for the several seconds the copy took, there was no
+row for the in-flight guard to see.
+
+The record is therefore created **before** the fork, and claimed **before** the fork:
+
+1. The `SessionStatusSummary` row is created if the session has none, atomically — two runners
+   inserting at once end up with one row rather than one row and a `PG::UniqueViolation`.
+2. The generation is claimed under a row lock. Exactly one runner moves the record into `pending`;
+   the losers return "a summary is already being generated" having forked nothing.
+3. `requested_at` doubles as the claim token. Every later write is conditional on the row still
+   carrying the timestamp this runner wrote, so a copy that outlived `PENDING_TIMEOUT` and had its
+   record taken over by a newer generation ends with the older runner archiving its own fork and
+   leaving the newer claim alone — rather than pointing the record at a fork whose answer is already
+   stale.
+
+Harvesting enforces the same rule from the other end: an answer is only lifted onto the record if the
+record still **names that fork**, including when it names no fork at all because a newer claim is
+still copying. Every fork that can reach the harvest job was written onto the record before it was
+dispatched, so a record that does not name it has moved on. Adopting such an answer would store a
+stale blurb against the newer generation's line count — which is to say, render it as up to date. The
+fork is archived either way.
+
+`SessionStatusSummaryJob` is deliberately **not** deduped at the queue level. A GoodJob concurrency
+key on the session id would collapse an operator's forced Regenerate into an unforced automatic
+refresh that happened to be queued for the same session — the operator presses the only control in the
+panel and nothing happens. The exclusion belongs where the expensive work is.
 
 Summary forks are Zimmer's own bookkeeping, not the operator's work, so they stay out of every list
 an operator reads: the dashboard (both the server-rendered grid *and* the Turbo Stream that pushes
@@ -165,6 +198,11 @@ And the summary is readable from both without generating anything: `get_session`
 A fork that fails, or comes back with nothing usable, records the reason on the summary record and
 leaves the previous blurb in place — a stale-but-real summary beats an empty panel. The fork is
 archived either way; a fork left behind holds a full copy of a repository.
+
+The reason is written onto the row **as it exists in the database**, and only when the failing run
+still holds the claim. A handler whose only job is to record a failure must not be able to fail the
+way the thing it is recording failed — when it did, the failure went unrecorded, the record stayed
+`pending`, and the panel spun on "Generating…" for the full fifteen minutes.
 
 An in-flight generation that never comes back stops counting as pending after 15 minutes
 (`PENDING_TIMEOUT`) so the panel says so and the Regenerate button starts working again, rather than
