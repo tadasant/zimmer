@@ -226,7 +226,12 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
     assert_equal :skipped, result.outcome
     assert summary_fork.archived?, "an abandoned fork must be archived so its copied clone is reclaimed"
-    assert_nil @session.reload.status_summary, "an abandoned generation records nothing"
+
+    record = @session.reload.status_summary
+    assert_equal "idle", record.state, "the claim is released rather than left pending with no fork behind it"
+    assert_nil record.requested_at
+    assert_nil record.fork_session_id
+    assert_nil record.summary, "an abandoned generation records no blurb"
   end
 
   # A fork that is made and then never dispatched is invisible to every operator
@@ -255,6 +260,113 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert @fs.exists?(File.join(clone, "Gemfile")), "the working tree itself is still copied"
     assert_not @fs.exists?(File.join(clone, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"))
     assert_not @fs.exists?(File.join(clone, "node_modules/turbo/index.js"))
+  end
+
+  # --- Concurrency ----------------------------------------------------------
+  #
+  # The production defect: the record was read-or-BUILT before the fork and
+  # inserted only after the clone copy had finished, so a second generation
+  # landing inside that window saw no row, built its own, and lost on the unique
+  # index — a PG::UniqueViolation page, plus a second full copy of a repository.
+
+  # The insert the old code lost on, exercised against the real unique index:
+  # the second caller adopts the row that landed first instead of raising, and
+  # the transaction survives the violation (the insert is savepointed).
+  test "a second create of the summary row adopts the first rather than colliding" do
+    first = SessionStatusSummary.create_or_find_by!(session_id: @session.id)
+    second = SessionStatusSummary.create_or_find_by!(session_id: @session.id)
+
+    assert_equal first.id, second.id
+    assert_equal 1, SessionStatusSummary.where(session_id: @session.id).count
+    assert_equal :started, generate.outcome, "the connection is still usable afterwards"
+  end
+
+  test "a second generation landing during the clone copy neither forks nor collides" do
+    session_id = @session.id
+    competitor_fs = MockFileSystemAdapter.new
+    competitor_fs.mkdir_p(@clone_path)
+    competitor = nil
+
+    # A second worker, on its own Session instance and its own filesystem, runs
+    # while the first one's copy is in flight — the window the race lived in.
+    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      competitor ||= SessionStatusSummaryGenerator.call(
+        session: Session.find(session_id), force: true, file_system: competitor_fs
+      )
+      super(src, dest, exclude: exclude)
+    end
+
+    result = generate(force: true)
+
+    assert_equal :started, result.outcome, result.message
+    assert_equal :pending, competitor.outcome, "the second runner must not start a second fork"
+    assert_equal 1, SessionStatusSummary.where(session_id: session_id).count
+    assert_equal 1, Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, session_id.to_s).count
+    assert_equal result.fork_session.id, @session.reload.status_summary.fork_session_id
+  end
+
+  # A claim is not eternal: once it ages past PENDING_TIMEOUT another runner may
+  # take the record over. The runner that lost it must not stomp the newer
+  # generation, and must not leave its fork holding a copy of a repository.
+  test "a generation whose claim is taken over during the copy abandons its fork" do
+    session_id = @session.id
+    taken_over = false
+
+    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      unless taken_over
+        taken_over = true
+        # What a newer runner's claim looks like from in here: a newer requested_at.
+        SessionStatusSummary.find_by(session_id: session_id).update!(requested_at: 1.second.from_now)
+      end
+      super(src, dest, exclude: exclude)
+    end
+
+    result = generate(force: true)
+
+    assert_equal :pending, result.outcome
+    record = @session.reload.status_summary
+    assert_equal "pending", record.state
+    assert_nil record.fork_session_id, "the record still belongs to the newer claim"
+    assert summary_fork.archived?, "the losing runner archives its fork rather than leaving it on the floor"
+  end
+
+  # #record_failure used to re-run the same read-or-build expression whose insert
+  # had just failed, so recording a duplicate-key failure hit the duplicate key
+  # again — and its own rescue swallowed that, leaving the row `pending` and the
+  # panel spinning until PENDING_TIMEOUT.
+  test "a failure is recorded against the row in the database rather than inserted again" do
+    failing = Class.new do
+      def self.call(**)
+        raise ActiveRecord::RecordNotUnique, "duplicate key value violates unique constraint"
+      end
+    end
+
+    result = SessionStatusSummaryGenerator.call(session: @session, fork_service: failing)
+
+    assert_equal :failed, result.outcome
+    assert_equal 1, SessionStatusSummary.where(session_id: @session.id).count
+
+    record = @session.reload.status_summary
+    assert_equal "failed", record.state
+    assert_match(/duplicate key/, record.error)
+    assert_not record.pending?, "a recorded failure must not leave the panel spinning"
+  end
+
+  test "a losing runner's failure does not overwrite the claim that took the record over" do
+    session_id = @session.id
+    failing = Class.new do
+      define_singleton_method(:call) do |**_args|
+        SessionStatusSummary.find_by(session_id: session_id).update!(requested_at: 1.second.from_now)
+        ForkSessionService::Result.new(success?: false, error: "Source clone directory does not exist")
+      end
+    end
+
+    result = SessionStatusSummaryGenerator.call(session: @session, fork_service: failing)
+
+    assert_equal :failed, result.outcome, "the runner still reports its own failure to its caller"
+    record = @session.reload.status_summary
+    assert_equal "pending", record.state, "the newer generation is left in flight"
+    assert_nil record.error
   end
 
   test "a fork failure is recorded on the summary rather than raised" do

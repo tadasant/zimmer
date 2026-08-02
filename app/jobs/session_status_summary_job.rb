@@ -6,6 +6,14 @@
 # single automatic trigger), and the operator clicking "regenerate". Nothing
 # polls, and rendering the panel never enqueues — a page view of a stale summary
 # shows the cached text and the staleness count, and waits.
+# Deliberately NOT deduped with `good_job_control_concurrency_with`. A key on the
+# session id would collapse an operator's forced Regenerate into an automatic
+# refresh that happens to be queued for the same session — the operator presses
+# the one control in the panel and nothing happens, because the queued run is
+# unforced and returns "current". Mutual exclusion belongs where the expensive
+# work is: SessionStatusSummaryGenerator claims the summary record before it
+# forks, so a second run for the same session costs a SELECT and a locked read
+# and starts nothing.
 class SessionStatusSummaryJob < ApplicationJob
   queue_as :default
 
