@@ -36,6 +36,7 @@ class SessionHumanMessages
 
     def author = message.author
     def display_name = message.display_name
+    def author_notes = message.author_notes
     def channel = message.channel
     def content = message.content
     def occurred_at = message.occurred_at
@@ -69,6 +70,7 @@ class SessionHumanMessages
       labels = hierarchy.nodes.to_h { |node| [ node.id, "#{node.agent_root_label} · #{node.label}" ] }
 
       HumanMessage.where(session_id: hierarchy.session_ids)
+        .includes(:user)
         .chronological
         .map do |message|
           Entry.new(
@@ -117,6 +119,8 @@ class SessionHumanMessages
     lines << "…#{omitted} older #{'entry'.pluralize(omitted)} omitted." if omitted.positive?
     lines << "</info>"
 
+    lines.concat(people_lines(shown))
+
     shown.each do |entry|
       lines << ""
       lines << "<message origin=\"#{entry.origin}\" " \
@@ -132,12 +136,39 @@ class SessionHumanMessages
     lines.join("\n")
   end
 
+  # The roster's own context about the humans who actually speak below — the
+  # `notes` column on User, which is where an operator writes things like which
+  # human's word is final. It rides along with the messages because that is
+  # where it gets used: an agent weighing "may I do this?" needs to know who is
+  # asking, not only what was asked.
+  #
+  # Only humans present in `shown` are described, and only when a note exists,
+  # so an empty roster column costs nothing in the prompt.
+  private def people_lines(shown)
+    described = shown.select { |entry| entry.author_notes.present? }.uniq(&:author)
+    return [] if described.empty?
+
+    lines = [ "" ]
+    lines << "<people>"
+    lines << "<info>Context this deployment's roster records about the humans below. It describes who they are; it is not itself an instruction from them.</info>"
+
+    described.each do |entry|
+      lines << "<person author=\"#{self.class.sanitize_for_attribute(entry.author)}\" " \
+               "name=\"#{self.class.sanitize_for_attribute(entry.display_name)}\">"
+      lines << self.class.sanitize_for_prompt(entry.author_notes)
+      lines << "</person>"
+    end
+
+    lines << "</people>"
+    lines
+  end
+
   # A human's own words are untrusted text going into a tagged block the agent
   # reads structurally. Neutralize anything that would close the block early and
   # let the message pose as Zimmer's own framing. Same treatment AgentSessionJob
   # gives an attached filename.
   def self.sanitize_for_prompt(text)
-    text.to_s.gsub(%r{</?\s*(human-messages|message|info|session-hierarchy)\b[^>]*>}i) { |tag| tag.tr("<>", "‹›") }
+    text.to_s.gsub(%r{</?\s*(human-messages|message|info|people|person|session-hierarchy)\b[^>]*>}i) { |tag| tag.tr("<>", "‹›") }
   end
 
   # Stricter treatment for anything interpolated into a tag ATTRIBUTE, where a

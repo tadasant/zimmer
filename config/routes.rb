@@ -31,6 +31,9 @@ Rails.application.routes.draw do
     resources :subagent_transcripts
     resources :trigger_conditions
     resources :triggers
+    # The roster of named humans. Full CRUD: this is where a Slack user ID is
+    # linked to a person, which used to require an env var and a deploy.
+    resources :users
     resources :x_oauth_credentials
 
     root to: "sessions#index"
