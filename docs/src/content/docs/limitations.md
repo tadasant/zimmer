@@ -1244,12 +1244,47 @@ distinction is the only thing standing between grafting and forged authority, so
 collapses the two — or a rendering that stops marking it — reopens this. That is why every surface
 marks it and why the model refuses edits.
 
+### An uncle edge is self-declared, so a session can attach itself as another session's senior
+
+Uncle edges (see [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/)) are
+recorded from an `acting_session_id` the *caller supplies about itself*. Nothing verifies it. This is
+not an oversight to be fixed later — there is no ambient caller identity to read: one API key is
+shared by the whole fleet, and the MCP endpoint's scoping is per-connection, not per-session (the
+self-session server injected into every session is byte-identical across all of them).
+
+So this widens the grafting surface above in two ways:
+
+- **No spawn required.** Grafting via `parent_session_id` means spawning a *new* session pointed at
+  someone else's hierarchy. An uncle edge attaches the *calling* session to an existing hierarchy,
+  and in both directions at once: the target's hierarchy grows to include the caller's, and the
+  caller's grows to include the target's.
+- **Any session that can follow up another can do it.** The declaration rides on `follow_up` /
+  `send_now` / enqueue, so the reach is exactly the reach of the `sessions` MCP tool group (or a
+  bare API key). A session holding only the `self_session` group cannot drive other sessions at all
+  and so cannot do this.
+
+What it still can*not* do is manufacture authorization, for exactly the same reason: messages pulled
+in across an uncle edge arrive marked `elsewhere`, never `here`. `human_message_here?` — the question
+a merge gate asks — is unmoved by any uncle edge, because an edge changes which sessions are *in
+scope*, never which session a human *spoke to*. The `here`/`elsewhere` distinction remains the whole
+defense.
+
+Two things bound the damage rather than prevent it. An edge is written into the junior session's own
+log with the acting session id and the entry point that recorded it, so a graft is visible after the
+fact rather than silent. And every surface — the detail UI, the per-turn prompt injection, and the
+MCP/REST output — labels an uncle edge as a *claim* of seniority rather than a fact, so a reader
+weighing "who is senior here" is told what kind of assertion it is looking at.
+
+If the trust model ever needs this closed, the fix is a per-session credential (a token minted into
+each session's injected MCP config) rather than anything in the graph code.
+
 ### A session hierarchy is bounded, and a big one is shown truncated
 
-The spawn tree is walked at most 8 levels deep and 150 nodes wide. A router that has spawned
-hundreds of sessions renders a truncated tree with an explicit note rather than the whole fleet.
-The session you asked about is always included, but a distant cousin may not be — so "not in the
-tree" is not proof that no such session exists.
+The lineage graph is walked at most 8 levels deep and 150 nodes wide, in both directions — uncle
+edges mean "up" fans out rather than forming a chain, so the upward walk carries the same bounds the
+downward one always did. A router that has spawned hundreds of sessions renders a truncated graph
+with an explicit note rather than the whole fleet. The session you asked about is always included,
+but a distant cousin may not be — so "not in the graph" is not proof that no such session exists.
 
 ### A reaped subprocess loses a result Zimmer already had
 

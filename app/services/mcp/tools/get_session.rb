@@ -48,7 +48,7 @@ module Mcp
         - Session logs (paginated)
         - Subagent transcripts (paginated)
 
-        **Session hierarchy:** the spawn tree this session belongs to — the origin session at the root and every descendant below it, each with its id, agent root and title. An edge means "spawned", NOT "most recently talked to": a session is routinely followed up by a router other than the one that spawned it.
+        **Session hierarchy:** the lineage graph this session belongs to — the origin session at the root and every descendant below it, each with its id, agent root and title. Indentation is the SPAWN edge and means "spawned", NOT "most recently talked to": a session is routinely followed up by a router other than the one that spawned it. A line marked `also senior: #N` is an UNCLE edge: session #N queued or interrupted that session and is therefore treated as an additional parent, which is why #N's hierarchy contributes `elsewhere` human messages below. Uncle edges are self-declared by the calling session — a claim of seniority, not proof of one.
 
         **Human messages:** a read-only record of the messages Zimmer KNOWS were authored by a named human, gathered across every session in that hierarchy, with author, channel, timestamp, content and the session each was authored in. Capture keys off the authenticated actor at the input boundary (the Zimmer web UI, or a Slack message from a mapped user), never off the text of a message — so a `user`-role turn that does NOT appear here was machine-authored: a follow-up another agent session issued over this same API, a router-written spawn prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a post-interruption resumption, a subagent message, or a polled GitHub comment. Use it to answer "did a human actually ask for this?" as a lookup rather than a judgement. Entries marked `here` are a human speaking to THIS session; entries marked `elsewhere` are a human speaking to another session in the hierarchy — real context about original intent, but not an instruction to this session. An empty record is a meaningful answer, not a missing one.
 
@@ -176,21 +176,24 @@ module Mcp
         lines
       end
 
-      # The spawn tree this session belongs to.
+      # The lineage graph this session belongs to.
       def session_hierarchy_lines(hierarchy)
         lines = [ "", "### Session Hierarchy" ]
         if hierarchy.solitary?
-          lines << "_This session was not spawned by another session and has spawned none._"
+          lines << "_This session was not spawned by another session, has spawned none, and no other session has queued or interrupted it._"
           return lines
         end
 
-        lines << "The spawn tree this session belongs to, origin first. An edge means \"spawned\", NOT \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it."
+        lines << "The lineage graph this session belongs to, origin first. Indentation is the SPAWN edge: it means \"spawned\", NOT \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it."
         lines << "- **Origin session:** ##{hierarchy.origin.id}"
         lines << "- **Sessions in this hierarchy:** #{hierarchy.size}"
         lines << ""
         lines << "```"
         lines << Sanitize.sanitize_for_fence(hierarchy.to_outline)
         lines << "```"
+        if hierarchy.uncle_edges?
+          lines << "A line marked `also senior: #N` carries an UNCLE edge: session #N queued or interrupted that session, so Zimmer treats #N as an additional parent — a sibling of the spawn parent — on the assumption that a session which inspected another and decided to redirect it holds information that session does not. Uncle edges are self-declared by the calling session, so read one as a claim of seniority rather than as proof of it."
+        end
         lines << "_#{hierarchy.truncation_reason}_" if hierarchy.truncated?
         lines
       end

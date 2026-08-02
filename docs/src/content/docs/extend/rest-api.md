@@ -133,7 +133,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `DELETE` | `/sessions/:id` | → 204 |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}` |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off |
-| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal` (≤50,000), `force_immediate`. 202 if the session is running (queued); 200 otherwise. `goal` takes effect on every path — see below |
+| `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal` (≤50,000), `force_immediate`, `acting_session_id`. 202 if the session is running (queued); 200 otherwise. `goal` takes effect on every path — see below |
 | `POST` | `/sessions/:id/pause` | running only → `needs_input` |
 | `POST` | `/sessions/:id/sleep` | `needs_input` → sleeps; `running` → sets `pending_sleep` |
 | `POST` | `/sessions/:id/restart` | clears stale retry metadata and re-queues the job; re-runs the whole setup pipeline if setup never finished (a failed clone, say) |
@@ -222,6 +222,21 @@ the `EnqueuedMessage` and `EnqueuedMessageProcessorService` applies it when it c
 the direct path writes it alongside the prompt. A goal over `GOAL_MAX_LENGTH` (50,000) is rejected
 with a 422 before anything is delivered, on every path.
 
+### `acting_session_id`: declaring yourself as the caller
+
+`follow_up`, and the enqueued-message `create` and `interrupt` endpoints, take an optional
+`acting_session_id`. If you are an agent session driving *another* session, set it to your own id and
+Zimmer records an "uncle" lineage edge marking you as a senior of the target — which widens that
+session's hierarchy to include yours, so the human messages recorded in your hierarchy reach it as
+`elsewhere` context.
+
+It is self-declared and unverified, because the API key is shared by the whole fleet and identifies a
+caller but not a session. Omit it and nothing is recorded; that is the right answer for a script or a
+person with a curl command. The rules — including what happens when a junior calls back into its
+senior — are in [Hierarchy and human
+messages](/sessions/hierarchy-and-human-messages/#the-rules-including-inversion), and the provenance
+consequences are in [Limitations](/limitations/).
+
 There is no way to *clear* a goal through `follow_up` — a blank one means "leave it", not "remove
 it". Use `PATCH /sessions/:id` with `goal: ""` for that. (The HTML endpoint behind the web follow-up
 form reads a blank goal as a clear and an *absent* one as "leave it", a distinction the JSON API does
@@ -255,9 +270,15 @@ per card:
   never arrive. `messages_since_generated` counts transcript events since the blurb was written —
   `0` means current. Reading it never generates one; see
   [The Status summary](/sessions/status-summary/).
-- `session_hierarchy` — the spawn tree this session belongs to: `origin_session_id`, `truncated`,
-  `truncation_reason`, and `nodes[]` each with `id`, `title`, `agent_root`, `status`, `depth`,
-  `parent_session_id` and `current`. An edge means "spawned", NOT "most recently talked to".
+- `session_hierarchy` — the lineage graph this session belongs to: `origin_session_id`,
+  `root_session_ids`, `truncated`, `truncation_reason`, and `nodes[]` each with `id`, `title`,
+  `agent_root`, `status`, `depth`, `parent_session_id`, `uncle_session_ids` and `current`.
+  `parent_session_id` is the **spawn** edge and means "spawned", NOT "most recently talked to".
+  `uncle_session_ids` are the sessions that queued or interrupted this one and are therefore treated
+  as additional seniors — self-declared by the caller, so a claim rather than a fact.
+  `origin_session_id` is the spawn origin and stays single-valued; `root_session_ids` is every root
+  the graph is drawn from, which uncle edges can make more than one. See
+  [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
 - `human_messages` — the messages Zimmer knows a named human authored anywhere in that tree, each
   with `origin` (`here` — a human spoke to this session — or `elsewhere` — a human spoke to another
   session in the hierarchy), `author`, `author_display_name`, `channel`, `channel_label`,

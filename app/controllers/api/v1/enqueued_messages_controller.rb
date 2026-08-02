@@ -62,6 +62,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
 
     if @enqueued_message.save
       @session.logs.create!(content: "Enqueued message added at position #{@enqueued_message.position}", level: "info")
+      record_uncle_edge(@session, "api_v1:enqueued_messages.create")
       render json: { enqueued_message: enqueued_message_json(@enqueued_message) }, status: :created
     else
       render_api_error("Validation failed", @enqueued_message.errors.full_messages, status: :unprocessable_entity)
@@ -141,6 +142,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
     ).call
 
     if result.success?
+      record_uncle_edge(@session, "api_v1:enqueued_messages.interrupt")
       render json: { session: session_json(@session.reload), message: "Message sent as interrupt" }
     else
       # Sessions::Result error codes are already valid Rails status symbols

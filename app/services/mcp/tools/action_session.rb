@@ -34,6 +34,7 @@ module Mcp
       SESSION_NOTES_DESC = 'Required for "update_notes" action. The notes text to set on the session.'
       SESSION_IDS_DESC = 'Required for "bulk_archive" action. Array of session IDs to archive.'
       TITLE_DESC = 'Required for "update_title" action. The new title for the session.'
+      ACTING_SESSION_ID_DESC = 'Optional for "follow_up". If you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value simply records nothing.'
 
       ACTIONS = %w[
         follow_up
@@ -151,7 +152,8 @@ module Mcp
           message_index: { type: "number", description: MESSAGE_INDEX_DESC },
           session_notes: { type: "string", description: SESSION_NOTES_DESC },
           session_ids: { type: "array", items: { type: "number" }, description: SESSION_IDS_DESC },
-          title: { type: "string", description: TITLE_DESC }
+          title: { type: "string", description: TITLE_DESC },
+          acting_session_id: { type: [ "number", "string" ], description: ACTING_SESSION_ID_DESC }
         },
         required: [ "action" ]
       })
@@ -225,9 +227,28 @@ module Mcp
           raise ToolError, "goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)"
         end
 
-        return force_immediate_follow_up(session, prompt, goal) if boolean(args["force_immediate"])
-        return queue_follow_up(session, prompt, goal) if session.running?
+        result =
+          if boolean(args["force_immediate"])
+            force_immediate_follow_up(session, prompt, goal)
+          elsif session.running?
+            queue_follow_up(session, prompt, goal)
+          else
+            direct_follow_up(session, prompt, goal)
+          end
 
+        # Recorded only after the message actually landed — every branch above
+        # raises rather than returning on failure, so reaching here means it did.
+        # An edge for a delivery that failed would assert a seniority
+        # relationship that never happened.
+        record_uncle_edge(session, args, "mcp:action_session.follow_up")
+        result
+      end
+
+      # An idle session takes the prompt directly. This still records an uncle
+      # edge: "queue or interrupt" is the shape the rule was described in, but
+      # the thing being recorded is one session deciding to redirect another, and
+      # a router following up an idle worker is the most common instance of it.
+      def direct_follow_up(session, prompt, goal)
         unless session.waiting? || session.needs_input?
           raise ToolError, "Session is #{session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
         end

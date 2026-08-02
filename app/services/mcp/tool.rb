@@ -117,5 +117,20 @@ module Mcp
     def session_url(session)
       context.session_url(session)
     end
+
+    # Record the "uncle" lineage edge for a session-initiated queue/interrupt.
+    #
+    # The acting session is self-declared (`acting_session_id`), because nothing
+    # about an MCP request identifies the caller: the API key is shared by the
+    # whole fleet, and the endpoint's scoping is per-connection, not per-session.
+    # Omitting it records nothing, which is the correct outcome for a human
+    # driving this tool from an MCP client rather than an agent session.
+    def record_uncle_edge(session, args, source)
+      Sessions::RecordUncleEdge.call(
+        junior: session,
+        acting_session_id: args["acting_session_id"],
+        source: source
+      )
+    end
   end
 end
