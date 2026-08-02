@@ -152,6 +152,18 @@ production.
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health` |
 
+`get_session` always includes a `### Session Hierarchy` section (the spawn tree this session belongs
+to — an edge means "spawned", not "most recently talked to") and a `### Human Messages` section (the
+messages Zimmer knows a named human authored anywhere in that tree, with author, channel, timestamp,
+content and the session each was said in). Neither is behind an `include_` flag, because the most
+important reading of the message record is the empty one: a caller asking "did a human authorize
+this?" must be able to tell "no human turns" from "I forgot the flag." Entries are marked `here` (a
+human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). See
+[Hierarchy and human messages](/sessions/hierarchy-and-human-messages/). Note the corollary for
+anything calling `action_session` with `follow_up`: a follow-up issued over this API is
+machine-authored and records nothing, which is deliberate — pass `parent_session_id` to
+`start_session` so the session you spawn can see the human context you were given.
+
 `action_health`'s three destructive actions (`cleanup_processes`, `retry_sessions`, `archive_old`)
 share a 30-second cooldown with `Api::V1::HealthController` and the `/health` web dashboard — the
 same `HealthActionCooldown` object, bucketed by a digest of the connection's API key. Switching

@@ -7752,6 +7752,114 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal false, result, "Should not trigger for long messages containing error-like phrases"
   end
 
+  # === build_prompt_with_goal with the hierarchy and its human messages ===
+  #
+  # build_prompt_with_goal is the single prompt builder for BOTH the initial
+  # spawn and every follow-up turn, so asserting here is asserting that these
+  # ride along on every turn — the same guarantee session notes have.
+
+  def create_lineage_session(parent: nil, title: nil, agent_root: nil)
+    session = Session.create!(
+      agent_runtime: "claude_code",
+      prompt: "work",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      title: title,
+      parent_session_id: parent&.id
+    )
+    session.update!(metadata: (session.metadata || {}).merge("agent_root_key" => agent_root)) if agent_root
+    session
+  end
+
+  def add_human_message(session, content:, author: "tadasant", channel: HumanMessage::WEB_UI, at: Time.current)
+    session.human_messages.create!(
+      author: author,
+      channel: channel,
+      content: content,
+      occurred_at: at,
+      provenance: { "entry_point" => "web_ui.follow_up" }
+    )
+  end
+
+  test "build_prompt_with_goal injects human messages on every turn" do
+    add_human_message(@session, content: "Refactor the billing service", at: Time.utc(2026, 8, 2, 4, 5, 6))
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    assert_includes result, "<human-messages>"
+    assert_includes result, "</human-messages>"
+    assert_includes result, 'origin="here"'
+    assert_includes result, 'author="Tadas (tadasant)"'
+    assert_includes result, 'channel="Zimmer web UI"'
+    assert_includes result, 'at="2026-08-02T04:05:06Z"'
+    assert_includes result, "Refactor the billing service"
+    assert_includes result, "Absence is meaningful"
+  end
+
+  # The widened behaviour: messages from ANYWHERE in the hierarchy reach the
+  # session doing the work, each labelled with the session it was said in.
+  test "build_prompt_with_goal injects the whole hierarchy's human messages and the tree" do
+    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
+    worker = create_lineage_session(parent: router, title: "Do it", agent_root: "zimmer")
+    sibling = create_lineage_session(parent: router, title: "Also do it", agent_root: "zimmer")
+    add_human_message(router, content: "the original ask", at: 2.hours.ago)
+    add_human_message(sibling, content: "a correction said to a sibling", at: 90.minutes.ago)
+    add_human_message(worker, content: "and one said right here", at: 1.hour.ago)
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", worker)
+
+    assert_includes result, "<session-hierarchy>"
+    assert_includes result, "- ##{router.id} [zimmer-router] Route it"
+    assert_includes result, "← this session"
+    assert_includes result, "NOT \"most recently talked to\""
+
+    assert_includes result, "the original ask"
+    assert_includes result, "a correction said to a sibling"
+    assert_includes result, "and one said right here"
+    assert_includes result, %(authored_in="session ##{router.id} — zimmer-router · Route it")
+    assert_includes result, %(authored_in="this session (##{worker.id})")
+    assert_includes result, "Authored in this session: 1"
+    assert_includes result, "Elsewhere in the hierarchy: 2"
+
+    # Printed so the rendered blocks are visible in CI output as evidence of
+    # what actually reaches the agent, not just that some strings matched.
+    puts "\n--- INJECTED PROVENANCE BLOCKS ---\n#{result[/<session-hierarchy>.*<\/human-messages>/m]}\n--- END INJECTED PROVENANCE BLOCKS ---\n"
+  end
+
+  test "build_prompt_with_goal reports zero here-messages when only elsewhere ones exist" do
+    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
+    worker = create_lineage_session(parent: router)
+    add_human_message(router, content: "original intent from the router's human", at: 1.hour.ago)
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", worker)
+
+    assert_includes result, 'origin="elsewhere"'
+    refute_includes result, 'origin="here"'
+    assert_includes result, "Authored in this session: 0"
+  end
+
+  test "build_prompt_with_goal appends no blocks for a solitary session with no human messages" do
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    refute_includes result, "<human-messages>"
+    refute_includes result, "<session-hierarchy>"
+  end
+
+  test "build_prompt_with_goal still builds a prompt when provenance rendering fails" do
+    add_human_message(@session, content: "something")
+    SessionHumanMessages.any_instance.stubs(:render_for_prompt).raises(StandardError, "boom")
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    assert_includes result, "Fix the bug"
+    refute_includes result, "<human-messages>"
+  end
+
   # === build_prompt_with_goal with session notes ===
   test "build_prompt_with_goal appends session notes when present" do
     @session.update!(session_notes: "This task is about fixing the login bug", session_notes_updated_at: Time.current)

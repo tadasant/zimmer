@@ -65,6 +65,52 @@ module ApiSessionSerialization
     json
   end
 
+  # The spawn tree a session belongs to: origin at the root, every descendant
+  # below. An edge means "spawned", NOT "most recently talked to".
+  #
+  # A SIBLING of `session`, never a key inside it — `session` means one shape on
+  # every response that carries it, a contract the API has a test for, and this
+  # costs queries the index would pay once per card.
+  def session_hierarchy_json(hierarchy)
+    {
+      origin_session_id: hierarchy.origin.id,
+      truncated: hierarchy.truncated?,
+      truncation_reason: hierarchy.truncation_reason,
+      nodes: hierarchy.nodes.map do |node|
+        {
+          id: node.id,
+          title: node.label,
+          agent_root: node.agent_root,
+          status: node.status,
+          depth: node.depth,
+          parent_session_id: node.parent_id,
+          current: node.current?
+        }
+      end
+    }
+  end
+
+  # What Zimmer knows a named human said anywhere in that hierarchy. `origin` is
+  # the load-bearing field — `here` is a human speaking to the requested
+  # session, `elsewhere` is a human speaking to another session in the tree, and
+  # a consumer must not read the second as the first.
+  def human_messages_json(record)
+    record.entries.map do |entry|
+      {
+        origin: entry.origin.to_s,
+        author: entry.author,
+        author_display_name: entry.display_name,
+        channel: entry.channel,
+        channel_label: entry.channel_label,
+        authored_in_session_id: entry.session_id,
+        authored_in: entry.authored_in,
+        entry_point: entry.entry_point,
+        content: entry.content,
+        occurred_at: entry.occurred_at.iso8601
+      }
+    end
+  end
+
   # Compact representation of the session's category (nil when Uncategorized).
   def category_summary(category)
     return nil unless category

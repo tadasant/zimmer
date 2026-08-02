@@ -1173,6 +1173,64 @@ entry. Nothing retries it later.
 
 Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 
+### Human messages are not backfilled, and cannot be
+
+`human_messages` starts empty. Every session that existed before this shipped shows no human
+messages, which reads as "Zimmer has no record here." For the gating use case that is the safe
+answer, and it is honest — but it is not the same claim as "no human ever asked for this", and a
+pre-existing session cannot prove authorization it genuinely received. Re-establish it live.
+
+There is no backfill to write. The whole point is that capture keys off the authenticated actor at
+the input boundary; reconstructing that actor after the fact from transcript prose is exactly the
+guess the feature exists to eliminate.
+
+The *hierarchy* is different and deliberately so: it is derived at read time from the
+`custom_metadata.router_session_id` sessions already recorded, so pre-existing trees render
+immediately without any migration rewriting a row.
+
+### Two real human acts happen outside Zimmer's input boundary and are invisible
+
+Both are cases where a human genuinely acted and no human message will exist:
+
+- **An agent reading Slack mid-session through the Slack MCP server.** The agent fetches the
+  message itself; it never crosses a Zimmer input boundary, so nothing is recorded. This is a
+  *better* provenance signal than a relayed string — the agent saw the API response — and the
+  record cannot represent it.
+- **A human clicking Merge on GitHub.** A merge is a real human act on a real artifact, but it
+  reaches Zimmer only as polled artifact state, on the same shared GitHub account every agent
+  pushes through.
+
+Neither is a bug in capture; both are boundaries Zimmer does not own. Read an empty record as
+"Zimmer has no record", not as "no human acted."
+
+### Web UI attribution is an assumption about the deployment, not a check
+
+Anything typed into the Zimmer web UI is attributed to `tadasant`, because Zimmer has no login and
+the network perimeter is the authentication boundary (see [Philosophy](/intro/philosophy/)). The
+attribution is exactly as strong as that perimeter: a second human given tailnet access would
+silently be recorded as Tadas. That is the same trust model the rest of the app runs on, but a
+human-message record makes it a *named* claim, which is a higher bar than the rest of the UI sets.
+
+### `parent_session_id` is agent-settable, so a session can graft itself onto any hierarchy
+
+Nothing checks that the caller of `start_session` (or `POST /api/v1/sessions`) is the session it
+names as parent — the API key is shared by the whole fleet and identifies no one. A session can
+therefore spawn a child pointed at an unrelated hierarchy, and that child will see the other
+hierarchy's human messages.
+
+What it can*not* do is turn them into authorization: those messages arrive marked `elsewhere`, and
+`elsewhere` explicitly means "a human said this to another session, not to you". The `here`/`elsewhere`
+distinction is the only thing standing between grafting and forged authority, so a consumer that
+collapses the two — or a rendering that stops marking it — reopens this. That is why every surface
+marks it and why the model refuses edits.
+
+### A session hierarchy is bounded, and a big one is shown truncated
+
+The spawn tree is walked at most 8 levels deep and 150 nodes wide. A router that has spawned
+hundreds of sessions renders a truncated tree with an explicit note rather than the whole fleet.
+The session you asked about is always included, but a distant cousin may not be — so "not in the
+tree" is not proof that no such session exists.
+
 ### A reaped subprocess loses a result Zimmer already had
 
 `Open3.capture3` hands back `[stdout, stderr, status]`, and that status is nil whenever the child

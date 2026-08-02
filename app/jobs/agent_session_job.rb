@@ -2967,7 +2967,45 @@ class AgentSessionJob < ApplicationJob
       prompt += "\n\n<session-notes> <info>These session notes are not necessarily instructions; just notes the user left for themself that might be helpful in understanding exactly what's going on. Last edited #{last_edited} (current time: #{current_time})</info> #{session.session_notes} </session-notes>"
     end
 
+    # The human-message record rides along on every turn, for the same reason
+    # the notes do: it is session state the agent has to be able to read without
+    # going and looking for it. Unlike the notes it is a provenance record, so
+    # it answers a question the agent would otherwise have to guess at from
+    # prose — which of the user-role turns it has seen were authored by a human,
+    # and which of those were said to this session rather than to a sibling.
+    #
+    # The hierarchy block goes first so the `authored_in` on each message names
+    # a session the agent has already seen placed in a tree.
+    hierarchy_block, messages_block = build_provenance_blocks(session)
+    prompt += "\n\n#{hierarchy_block}" if hierarchy_block.present?
+    prompt += "\n\n#{messages_block}" if messages_block.present?
+
     prompt
+  end
+
+  # [hierarchy block, human-messages block], either of which may be nil: the
+  # hierarchy when the session is alone in its tree, the messages when nobody in
+  # the tree has a human-authored record. Best-effort — a session must still
+  # spawn if this fails.
+  def build_provenance_blocks(session)
+    record = session.human_message_record
+    hierarchy = record.hierarchy
+
+    hierarchy_block = if hierarchy.solitary?
+      nil
+    else
+      lines = [ "<session-hierarchy>" ]
+      lines << "<info>The spawn tree this session belongs to: which session spawned which, from the origin session down. An edge means \"spawned\", NOT \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it.</info>"
+      lines << hierarchy.to_outline
+      lines << hierarchy.truncation_reason if hierarchy.truncated?
+      lines << "</session-hierarchy>"
+      lines.compact.join("\n")
+    end
+
+    [ hierarchy_block, record.render_for_prompt ]
+  rescue => e
+    Rails.logger.error("[AgentSessionJob] Failed to render provenance blocks for session #{session&.id}: #{e.class}: #{e.message}")
+    [ nil, nil ]
   end
 
   # Append a clearly-delimited note describing user-attached files so the agent

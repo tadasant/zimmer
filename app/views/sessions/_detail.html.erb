@@ -226,6 +226,7 @@
   <div class="flex flex-1 min-h-0">
     <!-- Timeline Content -->
     <div class="flex-1 min-w-0 max-w-full mx-auto px-2 sm:px-6 lg:px-8 py-4 sm:py-8">
+    <%= render "sessions/session_hierarchy", agent_session: @session %>
     <div class="bg-white shadow rounded-lg" id="timeline-container" data-session-scroll-target="timeline"
          data-controller="infinite-scroll"
          data-infinite-scroll-url-value="<%= timeline_items_session_path(@session) %>"
