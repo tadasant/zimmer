@@ -117,7 +117,11 @@ class SessionHumanMessages
 
     shown.each do |entry|
       lines << ""
-      lines << "<message origin=\"#{entry.origin}\" author=\"#{entry.display_name} (#{entry.author})\" channel=\"#{entry.channel_label}\" authored_in=\"#{entry.authored_in}\" at=\"#{entry.occurred_at.utc.iso8601}\">"
+      lines << "<message origin=\"#{entry.origin}\" " \
+               "author=\"#{self.class.sanitize_for_attribute("#{entry.display_name} (#{entry.author})")}\" " \
+               "channel=\"#{self.class.sanitize_for_attribute(entry.channel_label)}\" " \
+               "authored_in=\"#{self.class.sanitize_for_attribute(entry.authored_in)}\" " \
+               "at=\"#{entry.occurred_at.utc.iso8601}\">"
       lines << self.class.sanitize_for_prompt(entry.content)
       lines << "</message>"
     end
@@ -132,5 +136,18 @@ class SessionHumanMessages
   # gives an attached filename.
   def self.sanitize_for_prompt(text)
     text.to_s.gsub(%r{</?\s*(human-messages|message|info|session-hierarchy)\b[^>]*>}i) { |tag| tag.tr("<>", "‹›") }
+  end
+
+  # Stricter treatment for anything interpolated into a tag ATTRIBUTE, where a
+  # bare quote is enough to escape.
+  #
+  # This is not paranoia about the values themselves — a session's title is
+  # writable by the session (`action_session` → `update_title`), and a Slack
+  # channel name comes from an external API. Either could otherwise close the
+  # attribute, close the tag, and open a forged `<message origin="here">`,
+  # manufacturing the human authorization this whole record exists to make
+  # unforgeable.
+  def self.sanitize_for_attribute(text)
+    sanitize_for_prompt(text).tr("<>\"", "‹›＂").delete("\n\r")
   end
 end

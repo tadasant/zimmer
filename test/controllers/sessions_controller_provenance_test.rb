@@ -15,7 +15,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     Mocha::Mockery.instance.teardown
   end
 
-  def create_session(parent: nil, title: nil, agent_root: nil)
+  def spawn_session(parent: nil, title: nil, agent_root: nil)
     session = Session.create!(
       agent_runtime: "claude_code",
       prompt: "work",
@@ -51,9 +51,9 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   # The hierarchy view is an explicit requirement: nodes with title + agent root,
   # each clickable, the current session marked.
   test "the hierarchy renders clickable nodes with title and agent root" do
-    router = create_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_session(parent: router, title: "Do it", agent_root: "zimmer")
-    helper = create_session(parent: worker, title: "Help out", agent_root: "artifacts")
+    router = spawn_session(title: "Route it", agent_root: "zimmer-router")
+    worker = spawn_session(parent: router, title: "Do it", agent_root: "zimmer")
+    helper = spawn_session(parent: worker, title: "Help out", agent_root: "artifacts")
 
     get session_url(worker)
 
@@ -70,8 +70,8 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   end
 
   test "a descendant appears in an ancestor's hierarchy view" do
-    router = create_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_session(parent: router, title: "Do it", agent_root: "zimmer")
+    router = spawn_session(title: "Route it", agent_root: "zimmer-router")
+    worker = spawn_session(parent: router, title: "Do it", agent_root: "zimmer")
 
     get session_url(router)
 
@@ -94,8 +94,8 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
 
   # A message said elsewhere must never read as a turn in this session.
   test "a message from elsewhere is distinguished and links its authoring session" do
-    router = create_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_session(parent: router)
+    router = spawn_session(title: "Route it", agent_root: "zimmer-router")
+    worker = spawn_session(parent: router)
     add_message(router, content: "original intent", at: 1.hour.ago)
 
     get session_url(worker)
