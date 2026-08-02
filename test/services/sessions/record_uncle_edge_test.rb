@@ -287,6 +287,24 @@ class Sessions::RecordUncleEdgeTest < ActiveSupport::TestCase
     refute_includes target.logs.order(:id).last.content, "this session"
   end
 
+  # The log is the only place an operator sees which way an edge went, and the
+  # two arrows are trivially easy to write backwards — pin the direction, not
+  # just the phrase.
+  test "the inversion log names the old edge and the new one the right way round" do
+    senior = create_session
+    junior = create_session
+
+    record(junior, senior.id)
+    record(senior, junior.id)
+
+    content = senior.logs.order(:id).last.content
+    assert_includes content, "##{senior.id} was senior to ##{junior.id}"
+    assert_includes content, "the uncle edge ##{senior.id} → ##{junior.id} was replaced by ##{junior.id} → ##{senior.id}"
+    # And the graph agrees with what the log claims.
+    assert edge?(senior, junior)
+    refute edge?(junior, senior)
+  end
+
   test "an inversion says so in both logs" do
     senior = create_session
     junior = create_session

@@ -192,7 +192,7 @@ module Sessions
       # Phrased with both ids and no "this session": the same line is written to
       # both logs, so a reader must be able to tell which end they are looking at.
       log("Seniority inverted: ##{junior.id} was senior to ##{uncle.id}, which has now queued or interrupted it, " \
-          "so the uncle edge ##{uncle.id} → ##{junior.id} was replaced by ##{junior.id} → ##{uncle.id} (#{source})")
+          "so the uncle edge ##{junior.id} → ##{uncle.id} was replaced by ##{uncle.id} → ##{junior.id} (#{source})")
       Outcome.new(action: :inverted, link: link)
     end
 
