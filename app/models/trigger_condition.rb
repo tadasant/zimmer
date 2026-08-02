@@ -17,8 +17,9 @@
 # - "ao_event": Fires on internal Zimmer events (e.g., session transitions to needs_input)
 # - "github_label": Fires when a watched label is ADDED to a PR/issue in a watched repo
 #     { "repos" => ["owner/a"], "target" => "pull_request", "labels" => ["ready to merge"] }
-# - "github_issue": Fires when a new issue is opened in a watched repo
-#     { "repos" => ["owner/a"] }
+# - "github_issue": Fires when a new issue is opened in a watched repo, unless the issue
+#     carries one of the excluded labels — the opt-out an author sets at creation time.
+#     { "repos" => ["owner/a"], "exclude_labels" => ["hold issue work gate"] }
 #
 # Both GitHub types are polled by GithubTriggerPollerJob, which owns the runtime keys
 # it stores back into `configuration` (GITHUB_POLL_STATE_KEYS). See that job for the
@@ -316,6 +317,13 @@ class TriggerCondition < ApplicationRecord
     Array(configuration["labels"]).filter_map { |label| label.to_s.strip.presence }
   end
 
+  # Labels that suppress a github_issue condition (OR semantics: any one of them is
+  # enough to keep the issue from firing). This is an opt-out for the author, not a
+  # filter for the watcher — see the query builder in GithubTriggerPollerJob.
+  def github_exclude_labels
+    Array(configuration["exclude_labels"]).filter_map { |label| label.to_s.strip.presence }
+  end
+
   # Whether a github_label condition watches pull requests or issues.
   def github_target
     configuration["target"].presence || "pull_request"
@@ -365,6 +373,14 @@ class TriggerCondition < ApplicationRecord
   # What this condition watches. The poller snapshots this at the start of a tick and
   # re-checks it before writing, so a UI edit that lands mid-tick is not clobbered by
   # state computed against the old scope.
+  #
+  # `exclude_labels` is deliberately NOT part of it. A change to the scope re-baselines
+  # the condition — it throws the poll state away (see #preserve_github_poll_state) —
+  # which is the right trade when the change WIDENS what is watched. An exclusion only
+  # ever narrows, and it exists on `github_issue` alone, whose state is a time cursor:
+  # narrowing a time-ordered query cannot make an old issue look new, so there is no
+  # retroactive fire to protect against. Re-baselining on every edit would instead
+  # discard a live cursor for nothing — the one direction that loses real issues.
   def github_watch_scope
     [ github_repos.sort, github_target, github_labels.sort ]
   end
@@ -462,7 +478,9 @@ class TriggerCondition < ApplicationRecord
       quoted = github_labels.map { |label| "'#{label}'" }.join(" or ")
       "GitHub: #{quoted.presence || '(no labels)'} added to #{kind} in #{github_repos_summary}"
     when "github_issue"
-      "GitHub: new issue in #{github_repos_summary}"
+      excluded = github_exclude_labels.map { |label| "'#{label}'" }.join(" or ")
+      base = "GitHub: new issue in #{github_repos_summary}"
+      excluded.present? ? "#{base}, unless labelled #{excluded}" : base
     else
       "Unknown trigger"
     end
@@ -536,12 +554,17 @@ class TriggerCondition < ApplicationRecord
     if condition_type == "github_label"
       configuration["labels"] = split_lines(configuration["labels"])
       configuration["target"] = configuration["target"].presence || "pull_request"
+      # The mirror image of the deletes below: an exclusion list is a github_issue
+      # field, so a type switch must not leave one behind on a label condition that
+      # neither the UI nor the query builder would ever consult again.
+      configuration.delete("exclude_labels")
     else
       # A github_issue condition fires on creation, not on labels. Drop the fields
       # so a type switch in the form can't leave a stale label filter behind that
       # the UI no longer shows but #description would still claim.
       configuration.delete("labels")
       configuration.delete("target")
+      configuration["exclude_labels"] = split_lines(configuration["exclude_labels"])
     end
   end
 

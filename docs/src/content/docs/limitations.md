@@ -1530,6 +1530,30 @@ There is no reconciliation pass to catch it.
 `github_label` conditions are immune to this: they compare against current state, not a cursor, so a
 late-indexed item simply fires on whichever tick it first appears.
 
+### A `github_issue` exclusion label only works if it is on the issue at creation
+
+`exclude_labels` keeps an issue from firing a `github_issue` condition, and it is evaluated by the
+GitHub *search* — a `-label:` negation — not by filtering what the poller got back. The poller ticks
+every minute, so an issue that is opened and then labelled a moment later can be seen and fired
+before the label lands. The escape hatch is only reliable when the label is applied at creation:
+
+```sh
+gh issue create --label "hold issue work gate" --title "…" --body "…"
+```
+
+There is no compensating check — nothing re-reads a fired issue's labels afterwards, and a session
+already spawned is not withdrawn.
+
+The reverse direction — *removing* the label later — is unpredictable rather than simply bounded,
+and the reason is worth knowing. The poller re-queries a 30-minute window behind its cursor
+(`INDEX_LAG_GRACE`), and that cursor advances only when an issue actually **fires**; a tick that
+returns nothing leaves it where it was. So the window trails the last fired issue, not wall-clock
+time. Un-holding an issue re-exposes it whenever no *other* issue has fired past it since — which,
+in a repo where the held issues are the only recent ones, can be days later. Once something else has
+fired and dragged the cursor forward, the same issue is behind the window and un-holding it does
+nothing. Neither outcome is announced. Treat un-holding as "may or may not fire" and open a fresh
+issue when you actually want the gate.
+
 ### The GitHub trigger poller needs a `gh` credential in the environment that runs it
 
 `GithubTriggerPollerJob` runs on the **worker**, and shells out to `gh`. If that environment has no
