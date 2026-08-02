@@ -82,6 +82,26 @@ database error once paged the production Slack channel. Errors are therefore add
 `Rails.env` being `production` or `staging`
 ([details](/operate/observability/#only-production-and-staging-may-report)).
 
+### A CSRF failure still ships a context-free WARN, and is still counted per record
+
+`ApplicationController` handles `ActionController::InvalidAuthenticityToken` and re-logs it at
+INFO with the verb, path, IP, user agent, and whether a session cookie was present, so the
+failure no longer emits an ERROR record ([details](/operate/observability/#client-caused-rejections-are-re-logged-at-info-not-suppressed)).
+Two edges remain.
+
+Rails itself logs `Can't verify CSRF token authenticity.` at WARN from inside
+`handle_unverified_request`, before any application code runs. That line is exported — the
+exporter ships WARN and above — and it names nothing: no path, no verb, no client. It is
+suppressible only with `config.action_controller.log_warning_on_csrf_failure = false`, which
+would also silence it in development, so it has been left alone. It does not page anyone; the
+production alert rule counts ERROR records only. Read the INFO record next to it, not the WARN.
+
+And the alert is still per-record rather than a rate. One CSRF failure is a stale form or a bot;
+a hundred an hour is the app being broken for every writer, which is what
+[#19](https://github.com/tadasant/zimmer/issues/19) was. Both look identical to a rule that
+counts to one. Fixing that is an obs-side change and lives in `tadasant-internal` (`obs/`), not
+in this repo.
+
 ### An agent session's shell still carries the OTLP ingest token
 
 `SENTRY_DSN_BACKEND` is scrubbed from agent-session child processes (`CliSpawnEnv`), but
