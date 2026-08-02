@@ -82,6 +82,37 @@ database error once paged the production Slack channel. Errors are therefore add
 `Rails.env` being `production` or `staging`
 ([details](/operate/observability/#only-production-and-staging-may-report)).
 
+### A CSRF failure still ships a context-free WARN, and is still counted per record
+
+`ApplicationController` handles `ActionController::InvalidAuthenticityToken` and re-logs it at
+INFO with the verb, path, IP, user agent, failure reason, and whether a session cookie was
+present, so the failure no longer emits an ERROR record and no longer pages
+([details](/operate/observability/#client-caused-rejections-are-re-logged-at-info-not-suppressed)).
+Three edges remain.
+
+**The attributable line is not in VictoriaLogs.** The exporter ships WARN and above, so the INFO
+record lands on container stdout and nowhere else. What Grafana still has is the WARN Rails logs
+from inside `handle_unverified_request` before any application code runs — and that line names
+nothing: no path, no verb, no client. So an on-call who stops at Grafana is back where
+[#295](https://github.com/tadasant/zimmer/issues/295) started, and has to read the container to
+get the rest. Logging it at WARN instead would put it in Grafana and still page nobody (the
+production rule counts ERROR records only); it is at INFO because that is what #295 specified
+and what `ErrorsController` already does for 404s. Suppressing the bare WARN is possible only
+with `config.action_controller.log_warning_on_csrf_failure = false`, which would also silence it
+in development, so it has been left alone.
+
+**The alert is per-record, not a rate.** One CSRF failure is a stale form or a bot; a hundred an
+hour is the app being broken for every writer, which is what
+[#19](https://github.com/tadasant/zimmer/issues/19) was. Both look identical to a rule that
+counts to one. Fixing that is an obs-side change and lives in `tadasant-internal` (`obs/`), not
+in this repo.
+
+**Administrate is not covered.** `Supervisor::ApplicationController` descends from
+`Administrate::ApplicationController`, not from Zimmer's `ApplicationController`, so it never
+sees the handler. A tokenless non-GET to any `/supervisor/*` route still raises, still logs at
+ERROR, and still pages. Nothing links to those routes from the public UI, so the realistic
+trigger is a probe rather than a user.
+
 ### An agent session's shell still carries the OTLP ingest token
 
 `SENTRY_DSN_BACKEND` is scrubbed from agent-session child processes (`CliSpawnEnv`), but
