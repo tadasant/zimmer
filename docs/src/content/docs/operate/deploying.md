@@ -187,6 +187,22 @@ the first exceeds the second.
 `bundle install` (which catches Gemfile drift against the base), precompiles assets, drops to
 `USER 1000:1000`, and runs `bin/thrust bin/rails server`.
 
+### Static files in `public/` are not digest stamped
+
+`config.public_file_server.headers` in `production.rb` and `staging.rb` sets the cache header for
+everything under `public/` — `manifest.json`, `service-worker.js`, `404.html`, and the icons. It does
+**not** cover the compiled asset bundle: Propshaft serves that under `/assets` with its own
+far-future headers, and those filenames carry a content digest.
+
+Nothing in `public/` does. Each of those files lives at a URL that never changes, so a far-future
+`max-age` there pins whatever a browser fetched first — replace an icon or edit the manifest and the
+change reaches nobody who already loaded the old one. The header is therefore one hour, not one year.
+
+An hour still leaves already-cached copies stale for an hour, and copies fetched under an older,
+longer header stale for as long as that header said. When you replace a file at a URL that has
+already shipped, bump its `?v=` query in whatever references it — that is what the `?v=2` on
+`/manifest.json` and the two reused icon `src`s is for.
+
 :::caution[The AIR CLI version is pinned in two places]
 `Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0`, and `AirPrepareService::AIR_CLI_VERSION` must
 match. Nothing enforces that they agree. If they drift, the pre-baked CLI is ignored and every
