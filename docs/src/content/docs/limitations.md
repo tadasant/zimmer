@@ -1095,9 +1095,10 @@ refuses only when the session has not moved since the last summary — which, on
 always has.
 
 Mitigations already in place: only resting transitions trigger it (a resume into `running` does not),
-a generation already in flight is never duplicated, the fork is archived immediately on harvest so the
-clone copy is reclaimed on the normal trash path, and rendering the panel or reading the session over
-MCP/REST never generates.
+a generation already in flight is never duplicated, the copy leaves out installed-dependency trees
+(`vendor/bundle`, `**/node_modules`) that the summarizer never uses, the fork is archived immediately
+on harvest so the clone copy is reclaimed on the normal trash path, and rendering the panel or reading
+the session over MCP/REST never generates.
 
 ### Terminating a session's process leaks a zombie, takes ~15–25 seconds, and always escalates to SIGKILL
 

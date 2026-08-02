@@ -62,6 +62,35 @@ lost. The fork gets the real conversation at the real point it stopped.
 a goal is an instruction to act — a summarizer still carrying "open a PR and label it ready to merge"
 would go and do that.
 
+### Copying a clone that is still being written to
+
+The fork copies the source session's clone directory, and that clone is a **live working tree**. The
+session's own agent, its jobs (`BundleInstallJob` rewrites `vendor/bundle` wholesale) and the archive
+pipeline all keep writing to it while the copy walks it. A recursive copy enumerates a directory
+before it stats the entries it found, so a file that disappears in that window aborts the copy with
+`ENOENT`.
+
+Three things keep that from failing a fork:
+
+- **The copy is retried.** `ForkSessionService::COPY_RETRY_DELAYS` gives it three attempts with
+  backoff, clearing the half-written destination between them. Intermediate attempts log at `info`;
+  only an exhausted budget logs `error` — which is what alerts. A copy that fails for a reason that
+  will not fix itself (`EACCES`, `ENOSPC`, or an `ENOENT` because the *source* clone is gone) fails on
+  the first hit instead of spending the budget.
+- **A summary fork does not copy installed dependencies.** The summarizer reads the conversation and
+  is told not to run tools; it never builds or boots anything. `ForkSessionService::DEPENDENCY_DIRECTORIES`
+  (`vendor/bundle`, `**/node_modules`) is excluded from its copy, which is most of the bytes and most
+  of the seconds — and every second the copy is not running is a second the source tree cannot change
+  underneath it. A **user-initiated** fork excludes nothing; it is a working session and wants the
+  tree it forked.
+- **A failed fork cleans up after itself.** The partial destination is removed rather than left for
+  `OrphanCloneFilesystemCleanupJob`, which ignores anything younger than 48 hours.
+
+The generator also re-checks that the session is still out of the trash **after** the copy, not just
+before it. The copy takes real time, and a session that archived during it would otherwise get a fork
+of a clone `DeferredCloneCleanupJob` is about to delete. Such a fork is archived immediately and
+nothing is recorded against the summary.
+
 Summary forks are Zimmer's own bookkeeping, not the operator's work, so they stay out of every list
 an operator reads: the dashboard (both the server-rendered grid *and* the Turbo Stream that pushes
 new cards into it — the marker is stamped at create time, before that broadcast fires),
