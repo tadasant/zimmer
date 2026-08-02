@@ -365,6 +365,39 @@ class SessionHierarchyTest < ActiveSupport::TestCase
     assert_operator hierarchy.size, :<=, SessionHierarchy::MAX_NODES
   end
 
+  # Regression: the downward walk used the same flag the UPWARD walk sets, so a
+  # truncated upward walk ended the downward one after a single level. The graph
+  # silently shrank — and with it the scope human messages are gathered over,
+  # which is the one thing this feature exists to widen.
+  test "an upward walk cut by the depth bound does not also cut the downward walk" do
+    # Nine seniors above, so the upward walk is truncated...
+    chain = Array.new(SessionHierarchy::MAX_DEPTH + 1) { create_session }
+    chain.each_cons(2) { |junior, senior| SessionUncleLink.create!(session: junior, uncle_session: senior) }
+    # ...and three spawn levels below the session we ask from.
+    child = create_session(parent: chain.first)
+    grandchild = create_session(parent: child)
+    great_grandchild = create_session(parent: grandchild)
+
+    ids = SessionHierarchy.new(chain.first).session_ids
+
+    assert_includes ids, child.id
+    assert_includes ids, grandchild.id, "the second level below must survive a truncated upward walk"
+    assert_includes ids, great_grandchild.id, "and so must the third"
+  end
+
+  test "a spawn parent recorded in metadata that no longer exists is not reported as truncation" do
+    ghost = create_session
+    orphan = create_session(router_metadata: ghost)
+    ghost.destroy!
+
+    hierarchy = SessionHierarchy.new(orphan.reload)
+
+    # The pointer is dead, not merely unwalked — `topmost` and `origin` both
+    # treat it as "nothing above here", so this must agree with them.
+    refute hierarchy.truncated?
+    assert_equal orphan.id, hierarchy.origin.id
+  end
+
   test "the node ceiling still holds with uncle edges" do
     senior = create_session
     juniors = Array.new(20) { create_session }

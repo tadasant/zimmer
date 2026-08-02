@@ -230,7 +230,14 @@ class SessionHierarchy
   def self.parent_ids_of(child_ids)
     return [] if child_ids.empty?
 
-    spawn = Session.where(id: child_ids).map(&:lineage_parent_id).compact
+    # Plucked rather than instantiated: this runs once per upward level on every
+    # detail-page render, and building whole Session objects would drag up to
+    # PROMPT_MAX_LENGTH of prompt text per row to read one integer off each.
+    # Mirrors Session#lineage_parent_id — the column wins, the metadata key is
+    # the fallback.
+    spawn = Session.where(id: child_ids)
+                   .pluck(:parent_session_id, Arel.sql("custom_metadata->>'router_session_id'"))
+                   .filter_map { |column, derived| column || (derived.presence && Integer(derived, exception: false)) }
     uncles = SessionUncleLink.where(session_id: child_ids).pluck(:uncle_session_id)
 
     (spawn + uncles).uniq
@@ -272,9 +279,12 @@ class SessionHierarchy
 
       seen.merge(senior_ids)
       level = Session.where(id: senior_ids).to_a
-      # A senior id that no longer resolves to a row cannot be walked past, so
-      # the walk above it is incomplete.
-      @upward_truncated = true if level.size < senior_ids.size
+      # A senior id that does not resolve is a DEAD POINTER, not a walk that ran
+      # out of budget — `custom_metadata["router_session_id"]` is never cleaned
+      # up when the router is deleted, unlike the column, which is nullified.
+      # `topmost` and `origin` both treat a dangling id as "nothing above here",
+      # so flagging truncation on it would make the same fact read as a complete
+      # tree in two places and a partial one here.
       ancestors.concat(level)
       frontier = level.map(&:id)
     end
@@ -331,9 +341,17 @@ class SessionHierarchy
       # Marked seen as the level is discovered, not as it is appended: in a DAG
       # a session can be a junior of two sessions in the same frontier, and
       # without this it would be collected twice at the same depth.
+      #
+      # `ceiling_hit` is local rather than the @truncated flag: @truncated may
+      # already be true because the UPWARD walk was cut, and reusing it as the
+      # loop's exit signal would end the downward walk after a single level —
+      # silently shrinking the graph, and with it the scope human messages are
+      # gathered over.
       admitted = []
+      ceiling_hit = false
       next_frontier.each do |child|
         if collected.size >= MAX_NODES
+          ceiling_hit = true
           @truncated = true
           break
         end
@@ -343,7 +361,7 @@ class SessionHierarchy
         admitted << child
       end
 
-      break if @truncated
+      break if ceiling_hit
 
       frontier = admitted
     end

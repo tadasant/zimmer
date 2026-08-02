@@ -307,11 +307,16 @@ class Api::V1::SessionsController < Api::BaseController
         @session.update!(prompt: prompt)
       end
       @session.resume! if @session.may_resume?
+      # Before the enqueue, and in the same transaction: the job this line
+      # creates builds the next prompt for the session, and it must see the edge
+      # — a job that starts first renders a hierarchy missing exactly the human
+      # context the edge exists to carry. A rollback takes the edge with it, so a
+      # failed send still records nothing.
+      record_uncle_edge(@session, "api_v1:sessions.follow_up")
       job = AgentSessionJob.enqueue_with_prompt(@session.id, prompt)
       @session.update!(running_job_id: job.job_id)
     end
 
-    record_uncle_edge(@session, "api_v1:sessions.follow_up")
     render json: { session: session_json(@session.reload), message: "Follow-up prompt sent" }
   rescue ActiveRecord::RecordInvalid => e
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)

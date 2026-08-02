@@ -52,14 +52,31 @@ module Sessions
   #
   # Rules 2 and 3 together are the acyclicity invariant: an edge A → B is written
   # only when B cannot already reach A, so no sequence of calls can construct a
-  # cycle. `SessionHierarchy` still carries its own `seen` guards — a bound that
-  # depends on every writer having been correct is not a bound — but they are a
-  # backstop here rather than the primary defense.
+  # cycle.
+  #
+  # Two things are load-bearing for that, and both are easy to get subtly wrong.
+  # Inversion re-checks reachability AFTER deleting the direct edge and rolls
+  # back if the target is still senior by a longer path — without that,
+  # A → B → X → A is constructible from four individually-legal calls. And
+  # reachability is bounded by a node budget rather than by depth: a check that
+  # stopped at SessionHierarchy::MAX_DEPTH would answer "no cycle" for any path
+  # longer than eight hops and let one be created.
+  #
+  # Past the node budget the guarantee lapses, which is why `SessionHierarchy`
+  # still carries its own `seen` guards — a bound that depends on every writer
+  # having been correct is not a bound.
   class RecordUncleEdge
-    # How far to search for an existing seniority relationship before giving up
-    # and refusing the edge. Matched to SessionHierarchy::MAX_DEPTH so the
-    # reachability question this asks is the same one the renderer will answer.
-    MAX_SEARCH_DEPTH = SessionHierarchy::MAX_DEPTH
+    # How many sessions the reachability search may visit before giving up.
+    #
+    # Deliberately a NODE budget and not a depth one. The renderer stops at
+    # SessionHierarchy::MAX_DEPTH because a reader does not need level nine; a
+    # cycle check that stopped there would answer "no cycle" for any path longer
+    # than eight hops and let one be created — and uncle edges accumulate over a
+    # session's life and join unrelated hierarchies, so long paths are ordinary.
+    # This bound exists only so a pathological graph cannot make one follow-up
+    # walk the whole fleet; see the acyclicity note in the class comment for what
+    # is and is not guaranteed once it is hit.
+    MAX_SEARCH_NODES = 5_000
 
     Outcome = Struct.new(:action, :link, keyword_init: true) do
       # An edge was created — either fresh, or replacing an inverted one.
@@ -107,8 +124,11 @@ module Sessions
     def uncle
       return @uncle if defined?(@uncle)
 
-      id = Integer(@acting_session_id.to_s, exception: false)
-      @uncle = id && Session.find_by(id: id)
+      # Digits only. `Integer()` would accept Ruby literal forms — "0x10" parses
+      # as 16, "1_0" as 10 — so a malformed declaration would attribute the edge
+      # to an arbitrary other session instead of recording nothing.
+      id = @acting_session_id.to_s.strip[/\A\d+\z/]
+      @uncle = id && Session.find_by(id: id.to_i)
     end
 
     # Can the actor already reach the junior going down? True when the actor is
@@ -124,14 +144,15 @@ module Sessions
       reachable_downward?(from: junior.id, target: uncle.id)
     end
 
-    # Breadth-first over BOTH edge kinds, from `from` toward `target`, bounded by
-    # MAX_SEARCH_DEPTH. Cycle-safe via `seen` even though the invariant says there
-    # are none — the guard is what makes that safe to assume.
+    # Breadth-first over BOTH edge kinds, from `from` toward `target`, to
+    # exhaustion or MAX_SEARCH_NODES, whichever comes first. Cycle-safe via
+    # `seen` even though the invariant says there are none — the guard is what
+    # makes that safe to assume.
     def reachable_downward?(from:, target:)
       seen = Set.new([ from ])
       frontier = [ from ]
 
-      MAX_SEARCH_DEPTH.times do
+      while frontier.any? && seen.size < MAX_SEARCH_NODES
         next_ids = SessionHierarchy.child_ids_of(frontier) - seen.to_a
         return false if next_ids.empty?
         return true if next_ids.include?(target)
@@ -143,31 +164,60 @@ module Sessions
       false
     end
 
+    # Removing the direct edge is not by itself enough to make the reverse safe:
+    # the actor may ALSO be reachable from the junior by a longer uncle path
+    # (junior → X → actor), in which case writing actor → junior closes a cycle
+    # through X. So the seniority is re-checked after the delete, inside the
+    # transaction, and the whole inversion is rolled back if it survives.
+    # Cheaper than proving the general case and exact for the graph as it stands.
     def invert(existing)
       link = nil
-      ActiveRecord::Base.transaction do
+      inverted = ActiveRecord::Base.transaction do
         existing.destroy!
+
+        if junior_of_actor?
+          raise ActiveRecord::Rollback
+        end
+
         link = SessionUncleLink.create!(session_id: junior.id, uncle_session_id: uncle.id, source: source)
+        true
       end
 
-      log("Seniority inverted: ##{uncle.id} was junior to this session and has now queued or interrupted it, " \
-          "so the uncle edge ##{junior.id} → ##{uncle.id} was replaced by ##{uncle.id} → ##{junior.id} (#{source})")
+      unless inverted
+        Rails.logger.info "[Sessions::RecordUncleEdge] Refused to invert ##{junior.id} → ##{uncle.id}: " \
+                          "##{uncle.id} stays senior to ##{junior.id} by another path, so the reverse would close a cycle"
+        return skip(:would_create_cycle)
+      end
+
+      # Phrased with both ids and no "this session": the same line is written to
+      # both logs, so a reader must be able to tell which end they are looking at.
+      log("Seniority inverted: ##{junior.id} was senior to ##{uncle.id}, which has now queued or interrupted it, " \
+          "so the uncle edge ##{uncle.id} → ##{junior.id} was replaced by ##{junior.id} → ##{uncle.id} (#{source})")
       Outcome.new(action: :inverted, link: link)
     end
 
     def create_edge
       link = SessionUncleLink.create!(session_id: junior.id, uncle_session_id: uncle.id, source: source)
-      log("Uncle edge recorded: session ##{uncle.id} queued or interrupted this session and is now linked as a senior (#{source})")
+      log("Uncle edge recorded: session ##{uncle.id} queued or interrupted session ##{junior.id}, " \
+          "so ##{uncle.id} is now linked as an additional senior of ##{junior.id} (#{source})")
       Outcome.new(action: :created, link: link)
     end
 
-    # A lineage edge changes whose human messages this session's prompt carries,
-    # so it is written into the session's own log where a reader can see it
-    # happen rather than inferring it from the graph.
+    # A lineage edge changes whose human messages BOTH sessions' prompts carry,
+    # so it is written into both logs rather than inferred from the graph.
+    #
+    # Both ends, not just the junior, because the interesting abuse is a session
+    # calling follow_up on ITSELF while naming some unrelated session as the
+    # actor: that grafts the unrelated hierarchy into its own scope without ever
+    # touching it. Logging only the junior would put the sole record of that in
+    # the grafting session's own log, leaving the hierarchy it reached into with
+    # no trace at all.
     def log(content)
-      junior.logs.create!(content: content, level: "info")
-    rescue StandardError => e
-      Rails.logger.warn "[Sessions::RecordUncleEdge] Could not log edge for session #{junior.id}: #{e.message}"
+      [ junior, uncle ].each do |session|
+        session.logs.create!(content: content, level: "info")
+      rescue StandardError => e
+        Rails.logger.warn "[Sessions::RecordUncleEdge] Could not log edge for session #{session.id}: #{e.message}"
+      end
     end
 
     def skip(reason)
