@@ -39,7 +39,9 @@ class Session < ApplicationRecord
   # SessionStatusSummaryGenerator). They are ordinary sessions mechanically —
   # they run, pause, and get archived — but they are Zimmer's own bookkeeping
   # rather than the operator's work, so the lists an operator reads exclude them.
-  scope :excluding_status_summary_forks, -> { where("metadata->>'status_summary_for_session_id' IS NULL") }
+  scope :excluding_status_summary_forks, lambda {
+    where("metadata->>? IS NULL", SessionStatusSummaryGenerator::FORK_MARKER)
+  }
 
   scope :root_sessions, -> { where(parent_session_id: nil) }
   scope :children_of, ->(parent_id) { where(parent_session_id: parent_id) }
@@ -102,8 +104,11 @@ class Session < ApplicationRecord
 
   # Broadcast changes to sessions index page
   # Only broadcast when attributes visible in the session card change
+  # A status-summary fork is excluded from every server-rendered session list;
+  # the live broadcasts have to agree, or it appears on the dashboard anyway —
+  # once per completed turn, per session — and vanishes only when archived.
   after_update_commit :broadcast_update_to_sessions_index, if: :should_broadcast_to_index?
-  after_create_commit :broadcast_create_to_sessions_index
+  after_create_commit :broadcast_create_to_sessions_index, unless: :status_summary_fork?
   after_destroy_commit :broadcast_remove_from_sessions_index
 
   # Broadcast status changes to session detail page
@@ -1277,6 +1282,9 @@ class Session < ApplicationRecord
   # Determine if we should broadcast updates to the sessions index
   # Only broadcast when attributes visible in the session card change
   def should_broadcast_to_index?
+    # A fork the index never lists has nothing to update there.
+    return false if status_summary_fork?
+
     # Check if any of the attributes displayed in the session card changed
     return true if saved_change_to_status? ||
       saved_change_to_title? ||

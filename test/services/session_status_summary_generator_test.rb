@@ -82,6 +82,51 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_match(/Do not run any tools/, prompts.first)
   end
 
+  # The dashboard broadcasts a card from after_create_commit, so a marker
+  # stamped afterwards is stamped too late — the card is already on every open
+  # dashboard.
+  test "the fork carries its marker from the moment it is created" do
+    seen = nil
+    Session.any_instance.stubs(:broadcast_create_to_sessions_index).with { seen = :broadcast; true }
+
+    fork = generate.fork_session
+
+    assert_equal @session.id, fork.metadata[SessionStatusSummaryGenerator::FORK_MARKER]
+    assert_nil seen, "a summary fork must never broadcast a card to the dashboard"
+  end
+
+  test "a summary fork never broadcasts an update to the dashboard either" do
+    fork = generate.fork_session
+
+    assert_not fork.send(:should_broadcast_to_index?)
+  end
+
+  # ForkSessionService indexes into the JSON-PARSED transcript, so a blank or
+  # unparseable line makes the raw line count the wrong index space.
+  test "a transcript with an unparseable line still forks at its last real message" do
+    @session.update_column(:transcript, @transcript + "\n" + "not json\n")
+
+    result = generate
+
+    assert_equal :started, result.outcome, result.message
+    assert_equal 1, result.fork_session.metadata["forked_at_message_index"]
+  end
+
+  # The fork's turn can finish before this method returns; the harvest job keys
+  # off the record, so it has to name the fork before the fork is dispatched.
+  test "the record names the fork before the follow-up is delivered" do
+    state_at_delivery = nil
+    Session.any_instance.stubs(:deliver_follow_up!).with do
+      record = SessionStatusSummary.find_by(session_id: @session.id)
+      state_at_delivery = [ record&.state, record&.fork_session_id.present? ]
+      true
+    end
+
+    generate
+
+    assert_equal [ "pending", true ], state_at_delivery
+  end
+
   test "a started generation is recorded as pending against the fork and the line count" do
     fork = generate.fork_session
     record = @session.reload.status_summary

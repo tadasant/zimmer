@@ -126,7 +126,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/sessions` | filters: `status`, `agent_runtime`, `show_archived`, `page`, `per_page`. Zimmer's own status-summary forks are never listed |
-| `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`. Missing/oversized `q` → 400 (the only 400 in the API) |
+| `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`. Missing/oversized `q` → 400 (the only 400 in the API). Status-summary forks are never listed |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `custom_metadata` |
@@ -248,9 +248,12 @@ shape everywhere on the surface.
 precisely so the one-shape rule above keeps holding, since they cost queries the index would pay once
 per card:
 
-- `status_summary` — the cached "where things stand" blurb, or `null` when none has been generated:
-  `summary`, `generated_at`, `state`, and `messages_since_generated` (transcript events since it was
-  written — `0` means current). Reading it never generates one; see
+- `status_summary` — the cached "where things stand" blurb, or `null` when the session has never had
+  one requested. `summary` and `messages_since_generated` are `null` until text exists; `state`
+  (`idle`/`pending`/`ready`/`failed`), `generating` and `error` are always present, so a caller that
+  asked for a regeneration can tell "still running" from "failed" without polling for text that may
+  never arrive. `messages_since_generated` counts transcript events since the blurb was written —
+  `0` means current. Reading it never generates one; see
   [The Status summary](/sessions/status-summary/).
 - `session_hierarchy` — the spawn tree this session belongs to: `origin_session_id`, `truncated`,
   `truncation_reason`, and `nodes[]` each with `id`, `title`, `agent_root`, `status`, `depth`,

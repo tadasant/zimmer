@@ -40,6 +40,32 @@ class Api::V1::SessionsControllerStatusSummaryTest < ActionDispatch::Integration
     assert_nil json["status_summary"]
   end
 
+  # A caller that asked for a regeneration must be able to tell "still running"
+  # from "never generated" without polling for text that may never arrive.
+  test "show reports an in-flight generation before any text exists" do
+    SessionStatusSummary.create!(session: @session, state: "pending", requested_at: 1.minute.ago)
+
+    get "/api/v1/sessions/#{@session.id}", headers: @headers
+
+    assert_response :success
+    summary = JSON.parse(response.body)["status_summary"]
+    assert_nil summary["summary"]
+    assert_equal "pending", summary["state"]
+    assert summary["generating"]
+  end
+
+  test "show reports a failure reason when the last attempt failed" do
+    SessionStatusSummary.create!(session: @session, state: "failed", error: "Source clone directory does not exist")
+
+    get "/api/v1/sessions/#{@session.id}", headers: @headers
+
+    assert_response :success
+    summary = JSON.parse(response.body)["status_summary"]
+    assert_equal "failed", summary["state"]
+    assert_equal "Source clone directory does not exist", summary["error"]
+    assert_not summary["generating"]
+  end
+
   test "show carries the summary and how far behind it is" do
     SessionStatusSummary.create!(
       session: @session, state: "ready", generated_at: Time.current,
@@ -62,6 +88,15 @@ class Api::V1::SessionsControllerStatusSummaryTest < ActionDispatch::Integration
 
     assert_response :accepted
     assert_equal "Status summary regeneration queued", JSON.parse(response.body)["message"]
+  end
+
+  test "get_session's text-less states are distinguishable over MCP too" do
+    SessionStatusSummary.create!(session: @session, state: "pending", requested_at: 1.minute.ago)
+
+    output = Mcp::Tools::GetSession.new(context: Mcp::Context.new(tool_groups: "sessions"))
+      .call("id" => @session.id)
+
+    assert_includes output, "A summary is being generated now"
   end
 
   test "the index does not list Zimmer's own summary forks" do

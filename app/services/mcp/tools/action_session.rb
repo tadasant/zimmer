@@ -16,7 +16,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
       MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session (replaces the existing set — this is not a merge).'
@@ -749,7 +749,10 @@ module Mcp
       # Bulk sweep: restart failed sessions, continue auto-continuable paused ones.
       # Sessions in a frozen category are a parked bucket and stay parked.
       def refresh_all
-        sessions = Session.not_in_frozen_category.where.not(status: :archived)
+        # A status-summary fork sitting in needs_input between its pause and the
+        # harvest is not work anyone is waiting on — resuming it would spend a
+        # whole agent turn against a throwaway clone, outside the fork lifecycle.
+        sessions = Session.not_in_frozen_category.excluding_status_summary_forks.where.not(status: :archived)
 
         if sessions.empty?
           return refresh_all_result("No non-archived sessions to refresh", 0, 0, 0, 0)

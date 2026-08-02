@@ -128,6 +128,26 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The scope alone is not enough — the dashboard also receives cards over a
+  # Turbo Stream, so this asserts the rendered page, not the query.
+  test "the dashboard does not render a card for a summary fork" do
+    fork = Session.create!(
+      prompt: "summarize",
+      agent_runtime: "claude_code",
+      status: :needs_input,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      title: "Status summary for session ##{@session.id}",
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => @session.id }
+    )
+
+    get root_url
+
+    assert_response :success
+    assert_select "##{ActionView::RecordIdentifier.dom_id(@session)}"
+    assert_select "##{ActionView::RecordIdentifier.dom_id(fork)}", 0
+  end
+
   test "regenerate enqueues a forced generation" do
     assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
       post regenerate_status_summary_session_url(@session)

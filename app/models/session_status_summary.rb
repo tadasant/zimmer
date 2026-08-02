@@ -16,8 +16,16 @@
 # subtraction — and a summary of a session that has not moved is never
 # regenerated, no matter how many times the page is viewed.
 class SessionStatusSummary < ApplicationRecord
+  include ActionView::RecordIdentifier
+
   belongs_to :session
   belongs_to :fork_session, class_name: "Session", optional: true
+
+  # Generation takes a whole agent turn on a fork, so the page that asked for it
+  # is long since rendered by the time an answer exists. Without this the panel
+  # sits on "Generating…" until someone reloads — which, for the one control in
+  # the panel, reads as broken.
+  after_commit :broadcast_panel_replacement, on: [ :create, :update ]
 
   STATES = %w[idle pending ready failed].freeze
 
@@ -75,5 +83,22 @@ class SessionStatusSummary < ApplicationRecord
     return summary if summary.blank?
 
     summary.gsub(Regexp.new(format(SELF_LINK.source, id: session_id)), '#\k<fragment>')
+  end
+
+  private
+
+  # Re-renders the Status panel on the session detail screen (full page and
+  # dashboard drawer alike — both subscribe to this stream). Best-effort, like
+  # every other broadcast on this path: a rendering or cable failure must not
+  # take down the job that produced the summary.
+  def broadcast_panel_replacement
+    broadcast_replace_to(
+      "session_#{session_id}_status",
+      target: "session_#{session_id}_status_panel",
+      partial: "sessions/status_panel",
+      locals: { agent_session: session }
+    )
+  rescue => e
+    Rails.logger.error "[SessionStatusSummary] Broadcast failed for session #{session_id}: #{e.message}"
   end
 end

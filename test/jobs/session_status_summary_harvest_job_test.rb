@@ -93,6 +93,29 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     assert_no_match(/Opened the PR/, @source.status_summary.summary)
   end
 
+  # The prompt asks for 2-3 sentences; this is the backstop for an agent that
+  # answered with an essay, so the panel cannot push the page off screen.
+  test "an over-long answer is truncated to the panel's cap" do
+    fork = build_fork(answer: "word " * 1000)
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    stored = @source.reload.status_summary.summary
+    assert_equal SessionStatusSummaryHarvestJob::MAX_SUMMARY_CHARS, stored.length
+    assert stored.end_with?("...")
+  end
+
+  test "a fork destroyed before harvest is a no-op, not an error" do
+    fork = build_fork
+    pending_record(fork)
+    id = fork.id
+    fork.destroy!
+
+    assert_nothing_raised { SessionStatusSummaryHarvestJob.perform_now(id) }
+    assert_equal "pending", @source.reload.status_summary.state
+  end
+
   test "a fenced answer is unwrapped" do
     fork = build_fork(answer: "```markdown\nThe PR is open.\n```")
     pending_record(fork)
