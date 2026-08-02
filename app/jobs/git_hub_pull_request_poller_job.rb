@@ -22,7 +22,18 @@ require "open3"
 # - "cancel" - CI checks cancelled
 # - nil - No CI checks or status unknown
 #
+# When a PR goes from "open" to "merged" the session is told, once, via
+# AutomatedPrompts.pr_merged_message — the merge is either the end of the
+# session's work or the event it was parked waiting for, and it is the only one
+# that can tell which. PRs already merged the first time this job sees them are
+# not announced: a session that recorded a PR URL which was merged before the
+# first poll never did the work in question, and waking it would be noise.
+# github_pull_request_merged_notified records which PRs have been announced.
+#
 class GitHubPullRequestPollerJob < ApplicationJob
+  include DatabaseRetry
+  include AutomatedSessionMessage
+
   queue_as :pollers
 
   # Singleton pattern: only allow one instance to run/queue at a time
@@ -58,8 +69,11 @@ class GitHubPullRequestPollerJob < ApplicationJob
 
     current_statuses = session.custom_metadata&.dig("github_pull_request_statuses") || {}
     current_ci_statuses = session.custom_metadata&.dig("github_pull_request_ci_statuses") || {}
+    current_merged_notified = session.custom_metadata&.dig("github_pull_request_merged_notified") || {}
     updated_statuses = current_statuses.dup
     updated_ci_statuses = current_ci_statuses.dup
+    updated_merged_notified = current_merged_notified.dup
+    newly_merged_prs = []
 
     pr_urls.each do |pr_url|
       # Extract owner, repo, and PR number from URL
@@ -72,6 +86,14 @@ class GitHubPullRequestPollerJob < ApplicationJob
       # Use gh CLI to get PR status (requires gh to be installed and authenticated)
       status = fetch_pr_status(owner, repo, pr_number)
       next unless status.present?
+
+      # Only the open → merged transition is announced, and only once. No debounce:
+      # unlike the merge conflict poller's mergeable field, `mergedAt` has no
+      # transient-false failure mode — a PR with a merge timestamp is merged, and
+      # stays merged.
+      if status == "merged" && current_statuses[pr_url] == "open" && !current_merged_notified[pr_url]
+        newly_merged_prs << pr_url
+      end
 
       updated_statuses[pr_url] = status
 
@@ -90,25 +112,71 @@ class GitHubPullRequestPollerJob < ApplicationJob
       end
     end
 
+    # Deliver the merged-PR messages BEFORE the markers below are persisted. A crash
+    # in between then costs at most one duplicate message on the next poll, where the
+    # other order would drop the notification silently and forever. A delivery that
+    # fails and is swallowed is a different case: the status write below advances past
+    # the transition, so that message is not retried — see docs/limitations.
+    notify_merged_prs(session, newly_merged_prs).each do |pr_url|
+      updated_merged_notified[pr_url] = true
+    end
+
     # Check if anything changed
     statuses_changed = updated_statuses != current_statuses
     ci_statuses_changed = updated_ci_statuses != current_ci_statuses
+    merged_notified_changed = updated_merged_notified != current_merged_notified
 
-    return unless statuses_changed || ci_statuses_changed
+    return unless statuses_changed || ci_statuses_changed || merged_notified_changed
 
     # Build updates
     updates = {}
     updates["github_pull_request_statuses"] = updated_statuses if statuses_changed
     updates["github_pull_request_ci_statuses"] = updated_ci_statuses if ci_statuses_changed
+    updates["github_pull_request_merged_notified"] = updated_merged_notified if merged_notified_changed
 
     # Update the statuses. A poll cycle spans several seconds of GitHub API calls, so
     # the session row this job read at the start is stale by now — a whole-column write
     # here would erase whatever the session's own worker recorded in the meantime,
     # `github_pull_request_urls` included.
-    session.merge_custom_metadata!(updates)
+    with_db_retry { session.merge_custom_metadata!(updates) }
 
     Rails.logger.info "[GitHubPullRequestPollerJob] Updated PR statuses for session #{session.id}: #{updated_statuses}" if statuses_changed
     Rails.logger.info "[GitHubPullRequestPollerJob] Updated CI statuses for session #{session.id}: #{updated_ci_statuses}" if ci_statuses_changed
+  end
+
+  # Tell the session about each PR that just merged.
+  #
+  # Delivery goes through AutomatedSessionMessage, the same path the merge conflict
+  # poller uses: immediate when the session is parked in needs_input, queued behind
+  # the current turn when it is running or waiting.
+  #
+  # @return [Array<String>] the PR urls a message was delivered for — the caller
+  #   marks exactly these as notified, so a session skipped here, or one whose
+  #   delivery failed, is never recorded as having been told.
+  def notify_merged_prs(session, pr_urls)
+    return [] if pr_urls.empty?
+
+    # `with_github_prs` already excludes archived and failed sessions, but a session
+    # can reach either state during the seconds this poll spends talking to GitHub.
+    # There is nothing for it to decide at that point, so say nothing. The reload is
+    # what makes that check real: the row was read before the GitHub calls and nothing
+    # since has refreshed it, so the in-memory status is the one from the top of the
+    # sweep. Reloading here is safe — every hash this method's caller is about to write
+    # was dup'd before the first GitHub call, and the write itself merges in Postgres.
+    session.reload
+
+    if session.archived? || session.failed?
+      Rails.logger.info "[GitHubPullRequestPollerJob] Skipping merged-PR message for #{session.status} session #{session.id}: #{pr_urls.join(', ')}"
+      return []
+    end
+
+    pr_urls.select do |pr_url|
+      deliver_automated_message(
+        session,
+        AutomatedPrompts.pr_merged_message(pr_url),
+        event_description: "PR merged: #{pr_url}"
+      )
+    end
   end
 
   def fetch_pr_status(owner, repo, pr_number)
