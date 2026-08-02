@@ -93,6 +93,8 @@ Pages are under `docs/src/content/docs/`:
 | `infra/`, `Dockerfile*`, `.github/workflows/**` | `operate/deploying.md`, `operate/provisioning.md` |
 | any GoodJob cron entry | `operate/background-jobs.md` |
 | test conventions, CI jobs | `operate/testing.md` |
+| `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |
+| `config.public_file_server.headers` | `operate/deploying.md` |
 | architecture, philosophy, core vocabulary | `intro/*.md` |
 
 **Two hard sync requirements — treat these as non-negotiable:**

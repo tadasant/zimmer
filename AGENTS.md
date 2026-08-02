@@ -42,6 +42,8 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `config/goals.json` | `sessions/goals.md` |
 | any cron job | `operate/background-jobs.md` |
 | `config/initializers/otel_logs_exporter.rb`, `config/initializers/sentry.rb`, `lib/tasks/obs.rake` | `operate/observability.md` |
+| `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |
+| `config.public_file_server.headers` | `operate/deploying.md` |
 
 Pages are `docs/src/content/docs/**`. A new page must also be added to the `sidebar`
 array in `docs/astro.config.mjs` — Starlight does not auto-discover it. `cd docs &&

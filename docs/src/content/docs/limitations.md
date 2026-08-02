@@ -1200,6 +1200,28 @@ hundreds of sessions renders a truncated tree with an explicit note rather than 
 The session you asked about is always included, but a distant cousin may not be — so "not in the
 tree" is not proof that no such session exists.
 
+### A reaped subprocess loses a result Zimmer already had
+
+`Open3.capture3` hands back `[stdout, stderr, status]`, and that status is nil whenever the child
+was reaped by something other than `capture3`'s own `Process.detach` wait thread — the thread's
+`waitpid` gets `ECHILD` and `wait_thr.value` returns nil. `ZombieReaperJob` is careful not to be
+that something (see
+[Background jobs](/operate/background-jobs/#the-zombie-reaper-only-takes-what-nobody-is-waiting-for)),
+but its protection for waiters it cannot see in `ChildWaiterRegistry` is rule 2 — "still defunct a
+couple of seconds later" — which is a timing argument, not a guarantee, and nothing stops future
+code from reaping more bluntly.
+
+Every call site reads that status through `SubprocessStatus`, which treats nil as a **failure**: a
+result nobody can vouch for is not a result. Nothing crashes, and nothing is mistaken for success.
+What is lost is the work. On the reaped path stdout and stderr are usually sitting right there and
+the command very likely succeeded — only the exit code is missing — yet the caller throws the whole
+response away. A poller retries on its next tick, so the cost is one wasted `gh` round trip;
+`GitCloneService` and `AirPrepareService` have no next tick, so they classify it transient and
+retry the clone outright.
+
+Reading the pipes when the exit code is unknown would mean deciding a command succeeded on the
+evidence of its output alone. That is the trade being made deliberately, and it is the cheaper
+error.
 ---
 
 ## Triggers

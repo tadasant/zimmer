@@ -15,8 +15,11 @@ module Execution
       freeze
     end
 
+    # `== 0` rather than `#zero?`: exit_status is nil when the command failed and
+    # its exit code was never learned (see SubprocessStatus), and an unverifiable
+    # result is not a success.
     def success?
-      exit_status.zero?
+      exit_status == 0
     end
 
     def failure?

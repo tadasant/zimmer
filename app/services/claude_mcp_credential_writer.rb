@@ -322,10 +322,11 @@ class ClaudeMcpCredentialWriter
     stdin_command = "add-generic-password -U -a \"#{username}\" -s \"#{KEYCHAIN_SERVICE_NAME}\" -X \"#{hex_data}\"\n"
     result = Open3.capture3("security", "-i", stdin_data: stdin_command)
 
-    if result[2].success?
+    if SubprocessStatus.success?(result[2])
       Rails.logger.info "[ClaudeMcpCredentialWriter] Wrote #{credentials.size} credentials to macOS Keychain"
     else
-      Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to write to macOS Keychain: #{result[1]}"
+      Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to write to macOS Keychain: " \
+        "#{SubprocessStatus.describe_failure(result[2], result[1])}"
     end
   rescue => e
     Rails.logger.warn "[ClaudeMcpCredentialWriter] Keychain write error: #{e.message}"
@@ -348,8 +349,9 @@ class ClaudeMcpCredentialWriter
     stdin_command = "add-generic-password -U -a \"#{username}\" -s \"#{KEYCHAIN_SERVICE_NAME}\" -X \"#{hex_data}\"\n"
     result = Open3.capture3("security", "-i", stdin_data: stdin_command)
 
-    unless result[2].success?
-      Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to delete credentials from macOS Keychain: #{result[1]}"
+    unless SubprocessStatus.success?(result[2])
+      Rails.logger.warn "[ClaudeMcpCredentialWriter] Failed to delete credentials from macOS Keychain: " \
+        "#{SubprocessStatus.describe_failure(result[2], result[1])}"
     end
   rescue => e
     Rails.logger.warn "[ClaudeMcpCredentialWriter] Keychain delete error: #{e.message}"
@@ -364,7 +366,7 @@ class ClaudeMcpCredentialWriter
       "-w"
     )
 
-    return nil unless status.success? && output.present?
+    return nil unless SubprocessStatus.success?(status) && output.present?
 
     JSON.parse(output.strip)
   rescue JSON::ParserError => e
