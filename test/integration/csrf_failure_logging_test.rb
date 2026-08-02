@@ -84,6 +84,23 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
     assert_includes line, "ip=203.0.113.9"
     assert_includes line, "session_cookie=absent"
     assert_includes line, 'user_agent="curl/8.7.1"'
+    assert_includes line, 'reason="Can\'t verify CSRF token authenticity."'
+  end
+
+  test "an Origin mismatch is distinguishable from a missing token" do
+    # Rails raises InvalidAuthenticityToken for two very different conditions. A bad
+    # Origin means the proxy in front of the app is misreporting scheme or host,
+    # which breaks every write for every real user (#19) — the opposite of a bot
+    # probe. Carrying the exception message is what keeps them apart in the log.
+    entries = capture_log_entries do
+      patch mark_read_notification_path(notifications(:default_notification)),
+        headers: { "Origin" => "https://not-this-app.example" }
+    end
+
+    assert_response :unprocessable_entity
+    line = csrf_line(entries)
+    assert_includes line, "reason=\"HTTP Origin header (https://not-this-app.example)"
+    refute_includes line, "Can't verify CSRF token authenticity."
   end
 
   test "a request carrying a session cookie is logged as session_cookie=present" do
@@ -140,13 +157,17 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
   end
 
   test "a GET to the same controller is unaffected by the handler" do
-    get notifications_path
+    entries = capture_log_entries do
+      get notifications_path
+    end
 
     assert_response :success
+    refute entries.any? { |_severity, message| message.include?("CSRF verification failed") },
+      "a GET is exempt from the check and must not produce a CSRF record"
   end
 
   # The control. Without ApplicationController's rescue_from, this exact request is
-  # what production emitted on 2026-08-02: an ERROR record whose body is the
+  # what production emitted in #295: an ERROR record whose body is the
   # InvalidAuthenticityToken stack trace and nothing else. Removing only that one
   # handler (the RecordNotFound one stays) reproduces the pre-fix behavior, which
   # proves two things at once — the assertions above are not vacuous, and the
@@ -217,7 +238,7 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
     attr_reader :entries
 
     def initialize
-      super(IO::NULL)
+      super(nil)
       self.level = ::Logger::DEBUG
       @entries = []
     end

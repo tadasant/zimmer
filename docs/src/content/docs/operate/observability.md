@@ -54,17 +54,31 @@ signal survives without paging anyone:
 | Condition | Handled by | Response | INFO line |
 | --- | --- | --- | --- |
 | Unmatched route | `ErrorsController#not_found` | 404 | `Unmatched route 404: <verb> <path>` |
-| Missing/stale CSRF token | `ApplicationController#invalid_authenticity_token` | 422 | `CSRF verification failed 422: <verb> <path> ip=… session_cookie=present\|absent user_agent="…"` |
+| Failed CSRF check | `ApplicationController#invalid_authenticity_token` | 422 | `CSRF verification failed 422: <verb> <path> ip=… session_cookie=present\|absent user_agent="…" reason="…"` |
 
-Neither one weakens the check it reports on. CSRF verification still runs on every
-`ApplicationController` descendant and still aborts the action; only the log level and the
-information content of the line change. `skip_forgery_protection` appears exactly once, in
-`ErrorsController`, where the response is a 404 that carries no state to protect.
+Neither one weakens the check it reports on. Only the log level and the information content
+of the line change — CSRF verification still runs and still aborts the action before it
+executes. Three controllers opt out of that check for their own reasons, and the handler
+simply never fires for them: `ErrorsController` (`skip_forgery_protection`, because a 404
+carries no state to protect), `McpOauthController` (`skip_forgery_protection only:` its three
+callback actions), and `PushSubscriptionsController` (`skip_before_action
+:verify_authenticity_token`, for the service worker).
 
-`session_cookie` is the field to read first on a CSRF record: **present** means a browser
-that has been here before — a stale form, an expired session, a tab left open across a
-deploy — and **absent** means an unauthenticated probe. A sustained rate of either is the
-real signal; a single record is not.
+Two fields carry the triage on a CSRF record. **`session_cookie`** separates client
+populations: *present* means a browser that has been here before — a stale form, an expired
+session, a tab left open across a deploy — and *absent* means an unauthenticated probe.
+**`reason`** separates causes: `Can't verify CSRF token authenticity.` is a missing or stale
+token, genuinely client-side, while `HTTP Origin header (…) didn't match request.base_url
+(…)` is a *server* fault — a proxy that stopped forwarding `X-Forwarded-Proto` or `Host`
+breaks every write for every real user. A sustained rate of either is the real signal; a
+single record is not.
+
+:::caution[These INFO lines are not in VictoriaLogs]
+The exporter ships WARN and above, so an INFO record reaches container stdout and nothing
+else. Grafana still shows the context-free WARN Rails logs from inside
+`handle_unverified_request`; the attributable line next to it has to be read from the
+container. See [limitations](/limitations/#a-csrf-failure-still-ships-a-context-free-warn-and-is-still-counted-per-record).
+:::
 
 ## How environments are told apart
 
