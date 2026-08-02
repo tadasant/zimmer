@@ -83,6 +83,56 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal %w[U222], condition.allowed_user_ids
   end
 
+  test "the edit form renders the exclude-labels field for a github_issue condition" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "exclude_labels" => [ "hold issue work gate" ]
+    ))
+
+    get edit_trigger_path(condition.trigger)
+    assert_response :success
+
+    assert_select "textarea[name=?]",
+                  "trigger[trigger_conditions_attributes][0][configuration][exclude_labels][]",
+                  text: "hold issue work gate"
+    # The block is only unhidden for github_issue — a github_label condition never sees it.
+    assert_select "[data-trigger-form-target=githubIssueFields]:not(.hidden)", 1
+  end
+
+  test "the exclude-labels block is hidden for a github_label condition" do
+    get edit_trigger_path(trigger_conditions(:github_label_condition).trigger)
+    assert_response :success
+
+    assert_select "[data-trigger-form-target=githubIssueFields].hidden", 1
+  end
+
+  test "saving a github_issue condition from the form stores the exclusion and keeps its cursor" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z",
+      "seen_issue_keys" => [ "tadasant/zimmer#42" ]
+    ))
+
+    patch trigger_path(condition.trigger), params: {
+      trigger: {
+        name: condition.trigger.name,
+        trigger_conditions_attributes: [
+          {
+            id: condition.id,
+            condition_type: "github_issue",
+            # The textarea shape: one element carrying newlines.
+            configuration: { repos: [ "tadasant/zimmer" ], exclude_labels: [ "hold issue work gate" ] }
+          }
+        ]
+      }
+    }
+
+    condition.reload
+    assert_equal [ "hold issue work gate" ], condition.github_exclude_labels
+    assert_equal "2026-07-12T09:00:00Z", condition.github_last_issue_at
+    assert_equal [ "tadasant/zimmer#42" ], condition.github_seen_issue_keys
+  end
+
   test "an explicit empty allowlist still clears it" do
     condition = trigger_conditions(:passive_listen_all_channels_condition)
     condition.update!(configuration: condition.configuration.merge("allowed_user_ids" => %w[U222]))

@@ -952,6 +952,65 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_not condition.configuration.key?("target")
   end
 
+  test "github_issue exclusions are normalized from the form's newline-separated text" do
+    condition = TriggerCondition.create!(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_issue",
+      configuration: {
+        "repos" => [ "tadasant/zimmer" ],
+        "exclude_labels" => [ "hold issue work gate\n wip \n\nhold issue work gate" ]
+      }
+    )
+
+    assert_equal [ "hold issue work gate", "wip" ], condition.github_exclude_labels
+  end
+
+  test "github_label conditions drop an exclusion list they would never consult" do
+    condition = TriggerCondition.create!(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "github_label",
+      configuration: github_label_config("exclude_labels" => [ "hold issue work gate" ])
+    )
+
+    assert_not condition.configuration.key?("exclude_labels")
+    assert_empty condition.github_exclude_labels
+  end
+
+  test "a github_issue condition's description names what it excludes" do
+    condition = trigger_conditions(:github_issue_condition)
+    assert_equal "GitHub: new issue in tadasant/zimmer", condition.description
+
+    condition.update!(configuration: condition.configuration.merge(
+      "exclude_labels" => [ "hold issue work gate" ]
+    ))
+
+    assert_equal "GitHub: new issue in tadasant/zimmer, unless labelled 'hold issue work gate'",
+                 condition.reload.description
+  end
+
+  # The blast radius of adding an exclusion to a LIVE condition: `exclude_labels` is
+  # deliberately outside github_watch_scope, so an edit that only adds one must keep the
+  # cursor. Losing it would re-baseline the condition and silently skip the issues opened
+  # between the edit and the next tick.
+  test "adding an exclusion keeps a github_issue condition's cursor" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z",
+      "seen_issue_keys" => [ "tadasant/zimmer#42" ]
+    ))
+
+    # Exactly what an API caller sends: the user-facing keys only, cursor omitted.
+    condition.update!(configuration: {
+      "repos" => [ "tadasant/zimmer" ],
+      "exclude_labels" => [ "hold issue work gate" ]
+    })
+
+    condition.reload
+    assert_equal [ "hold issue work gate" ], condition.github_exclude_labels
+    assert_equal "2026-07-12T09:00:00Z", condition.github_last_issue_at
+    assert_equal [ "tadasant/zimmer#42" ], condition.github_seen_issue_keys
+  end
+
   test "poll state survives an edit that does not change what is watched" do
     condition = trigger_conditions(:github_label_condition)
     condition.update!(configuration: condition.configuration.merge("seen_items" => [ "tadasant/zimmer#1:ready to merge" ]))

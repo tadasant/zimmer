@@ -53,8 +53,12 @@ module Mcp
         - An element with an `id` updates that condition. Omit `configuration` to leave it
           untouched. Sending one REPLACES the condition's user-facing keys, so send every key
           you want to keep — notably `event_type`, which defaults to `new_message` (fire on
-          everything) if you drop it. Keys the Slack poller owns — its cursors and
-          `allowed_user_ids` — survive an update that omits them.
+          everything) if you drop it. Keys a POLLER owns survive an update that omits them: the
+          Slack cursors (plus `allowed_user_ids`), and the GitHub ones (`seen_items`,
+          `seen_missing_counts`, `last_issue_at`, `seen_issue_keys`). The GitHub keys are the
+          one exception with a condition attached — an edit that changes `repos`, `labels` or
+          `target` deliberately DROPS them to re-baseline the condition, since widening what is
+          watched would otherwise stampede a session for everything already matching.
         - An element without an `id` adds a new condition.
         - An existing condition the array does not mention is **left alone**. To delete one,
           send `{"id": 123, "remove": true}`.
@@ -80,13 +84,21 @@ module Mcp
         **GitHub configuration:**
         - **github_label**: `{"repos": ["owner/a", "owner/b"], "target": "pull_request", "labels": ["ready to merge"]}`
           — `target` is `pull_request` (default) or `issue`; any ONE of `labels` firing is enough.
-        - **github_issue**: `{"repos": ["owner/a"]}`
+        - **github_issue**: `{"repos": ["owner/a"], "exclude_labels": ["hold issue work gate"]}`
+          — `exclude_labels` is optional: an issue opened carrying ANY of those labels does not fire
+          the condition. It is an author-side opt-out, and it is applied by the search, so the label
+          must be on the issue when GitHub indexes it — in practice, at creation
+          (`gh issue create --label "hold issue work gate"`). The poll runs every minute, so a label
+          added after the fact can lose the race and the issue fires anyway.
 
         GitHub triggers fire on the label being *added*, not on it merely being present: an item
         that already carries the label when the trigger is created is absorbed into a baseline on
         the first poll and does NOT fire retroactively. Removing and re-adding the label fires again.
         Editing `repos`/`labels`/`target` re-baselines the condition, so widening the watch does not
-        stampede sessions for everything already labelled.
+        stampede sessions for everything already labelled. Editing `exclude_labels` does NOT
+        re-baseline — an exclusion only narrows the search, so it keeps the condition's live cursor.
+        Omitting `exclude_labels` from an update of a condition that HAS one is rejected rather than
+        silently obeyed, since it would re-arm the gate; send `[]` to clear it deliberately.
 
         Triggered sessions receive the repo, number, URL, title, author, body and labels — via the
         `{{repo}}`, `{{number}}`, `{{link}}`, `{{title}}`, `{{author}}`, `{{text}}`, `{{labels}}` and
@@ -425,24 +437,48 @@ module Mcp
         end
       end
 
-      # `configuration` replaces the user-facing keys, and for a Slack condition
-      # dropping `event_type` is not a small mistake: the reader defaults to
-      # "new_message", so a passive or @mention condition would silently start firing
-      # on EVERY message in its channel. Poller state is merged back by
-      # preserve_slack_poll_state, but event_type is not poller state, so nothing
-      # else catches this.
+      # `configuration` replaces the user-facing keys, so a key the caller forgot is a
+      # key the condition loses. For most keys that is a visible edit; for these two it
+      # is a silent WIDENING — the condition quietly starts firing on more than it did,
+      # with nothing in the response to say so. Poller state is merged back by
+      # preserve_slack_poll_state / preserve_github_poll_state, but neither of these is
+      # poller state, so nothing else catches it.
       def reject_widening_configuration!(target, condition, index)
-        return unless target.condition_type == "slack"
-        return if target.event_type == "new_message"
-
         incoming = condition["configuration"]
         return unless incoming.is_a?(Hash)
+
+        case target.condition_type
+        when "slack" then reject_widening_slack_configuration!(target, incoming, index)
+        when "github_issue" then reject_widening_github_issue_configuration!(target, incoming, index)
+        end
+      end
+
+      # Dropping `event_type` is not a small mistake: the reader defaults to
+      # "new_message", so a passive or @mention condition would silently start firing on
+      # EVERY message in its channel.
+      def reject_widening_slack_configuration!(target, incoming, index)
+        return if target.event_type == "new_message"
         return if incoming["event_type"].present?
 
         raise ToolError, "conditions[#{index}] omits \"event_type\" from the configuration of " \
                          "condition #{target.id}, which is currently \"#{target.event_type}\". " \
                          "configuration replaces the condition's user-facing keys, so this would " \
                          "reset it to \"new_message\" and fire on every message. Re-send event_type."
+      end
+
+      # Dropping `exclude_labels` re-arms the gate for every issue that was opting out of
+      # it. Keyed on the KEY's absence rather than its emptiness, so a caller that means
+      # to remove the exclusion still can — by sending an explicit empty array.
+      def reject_widening_github_issue_configuration!(target, incoming, index)
+        return if target.github_exclude_labels.empty?
+        return if incoming.key?("exclude_labels")
+
+        excluded = target.github_exclude_labels.join(", ")
+        raise ToolError, "conditions[#{index}] omits \"exclude_labels\" from the configuration of " \
+                         "condition #{target.id}, which currently excludes: #{excluded}. " \
+                         "configuration replaces the condition's user-facing keys, so this would " \
+                         "drop the exclusion and fire on every new issue again. Re-send " \
+                         "exclude_labels, or send it as [] to clear it deliberately."
       end
 
       # Resolve which existing condition the flat trigger_type/configuration pair

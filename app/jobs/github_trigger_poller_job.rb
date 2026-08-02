@@ -53,6 +53,11 @@
 # issue that shared its second with the previous tick's newest. The cursor is therefore
 # inclusive (`>=`) and paired with a small set of keys already fired at that exact second.
 #
+# A `github_issue` condition may also carry `exclude_labels` — an opt-out the issue's author
+# applies by opening it with one of those labels. It is expressed as a `-label:` negation in
+# the search itself, so an excluded issue is never seen, never fires, and never moves the
+# cursor. See #issue_query for the timing this implies.
+#
 # In both cases state advances only for items that actually produced a session, so a
 # failure to create one leaves the item to be retried on the next tick rather than
 # swallowing it.
@@ -292,11 +297,7 @@ class GithubTriggerPollerJob < ApplicationJob
     # whole window, not just the cursor's second) is what keeps it from firing twice.
     window_start = (Time.iso8601(cursor) - INDEX_LAG_GRACE).utc.iso8601
 
-    query = [
-      "is:issue",
-      GithubSearchService.repo_group(condition.github_repos),
-      "created:>=#{window_start}"
-    ].join(" ")
+    query = issue_query(condition, window_start)
 
     # Ascending, so the cursor advances through the batch and stops cleanly at the first
     # item that fails to produce a session.
@@ -335,6 +336,23 @@ class GithubTriggerPollerJob < ApplicationJob
       { "last_issue_at" => newest_at, "seen_issue_keys" => retained_keys },
       fired: true
     )
+  end
+
+  # The exclusion is applied by the SEARCH, not by filtering what comes back, so an
+  # excluded issue never enters the tick at all: it is not fired, and — because the
+  # cursor only ever advances past issues that fired — it does not drag the cursor
+  # forward either. An issue held back this way is simply never an event.
+  #
+  # The consequence worth knowing is that the label has to be there when GitHub indexes
+  # the issue, which in practice means at creation (`gh issue create --label …`). The
+  # poller ticks every minute, so a label added a minute later can lose the race.
+  def issue_query(condition, window_start)
+    [
+      "is:issue",
+      GithubSearchService.repo_group(condition.github_repos),
+      "created:>=#{window_start}",
+      GithubSearchService.exclude_label_terms(condition.github_exclude_labels)
+    ].reject(&:blank?).join(" ")
   end
 
   # ── Firing ──────────────────────────────────────────────────────────────────
