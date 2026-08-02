@@ -29,3 +29,11 @@
 
 en:
   hello: "Hello world"
+  activerecord:
+    attributes:
+      user:
+        # `slack_user_ids_list` is the comma-separated view of the Postgres
+        # array, which is what the Supervisor form edits. Without this the
+        # column header reads "Slack User Ids List". Administrate titleizes what it
+        # gets, so the value is written in sentence case.
+        slack_user_ids_list: "Slack user ids"
