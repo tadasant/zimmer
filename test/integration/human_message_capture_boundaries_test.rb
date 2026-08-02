@@ -145,6 +145,23 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
     assert_equal "web_ui.follow_up_queued", human_messages(session).last.entry_point
   end
 
+  # An edit is a second thing the human said. The record keeps both: the original
+  # was genuinely typed, and the edit is what the agent will actually receive.
+  test "editing a queued message in the web UI is recorded too" do
+    session = sessions(:running)
+    post session_enqueued_messages_url(session), params: { content: "first draft" }
+    message = session.enqueued_messages.order(:id).last
+
+    assert_difference("HumanMessage.count", 1) do
+      patch session_enqueued_message_url(session, message), params: { content: "what I actually meant" }
+    end
+
+    recorded = human_messages(session).last
+    assert_equal "what I actually meant", recorded.content
+    assert_equal "web_ui.enqueued_message_edited", recorded.entry_point
+    assert_equal "what I actually meant", message.reload.content
+  end
+
   test "a message Tadas enqueues in the web UI is recorded when he types it" do
     session = sessions(:running)
 

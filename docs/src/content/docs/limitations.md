@@ -1180,6 +1180,19 @@ attribution is exactly as strong as that perimeter: a second human given tailnet
 silently be recorded as Tadas. That is the same trust model the rest of the app runs on, but a
 human-message record makes it a *named* claim, which is a higher bar than the rest of the UI sets.
 
+### `parent_session_id` is agent-settable, so a session can graft itself onto any hierarchy
+
+Nothing checks that the caller of `start_session` (or `POST /api/v1/sessions`) is the session it
+names as parent — the API key is shared by the whole fleet and identifies no one. A session can
+therefore spawn a child pointed at an unrelated hierarchy, and that child will see the other
+hierarchy's human messages.
+
+What it can*not* do is turn them into authorization: those messages arrive marked `elsewhere`, and
+`elsewhere` explicitly means "a human said this to another session, not to you". The `here`/`elsewhere`
+distinction is the only thing standing between grafting and forged authority, so a consumer that
+collapses the two — or a rendering that stops marking it — reopens this. That is why every surface
+marks it and why the model refuses edits.
+
 ### A session hierarchy is bounded, and a big one is shown truncated
 
 The spawn tree is walked at most 8 levels deep and 150 nodes wide. A router that has spawned

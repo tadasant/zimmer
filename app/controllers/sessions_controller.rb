@@ -1358,7 +1358,7 @@ class SessionsController < ApplicationController
         )
 
         # Recorded at the moment the human typed it, not at delivery: the
-        # timeline is a record of what was said and when, and a queued message
+        # record is of what was said and when, and a queued message
         # may sit for a whole turn before it reaches the agent.
         capture_web_ui_human_message(@session, follow_up_prompt, "web_ui.follow_up_queued")
 

@@ -6,9 +6,10 @@ module Supervisor
     # Browsing them answers "what did a human actually ask for, and where" across
     # sessions, which a per-session panel cannot.
     #
-    # No new or edit: HumanMessage refuses update precisely so a record of what a
-    # human said cannot be rewritten after the fact, and hand-authoring one would
-    # be forging an author. Destroy stays, because a misattributed record is
-    # worse than a missing one.
+    # Index and show only. HumanMessage refuses update AND direct destroy, so a
+    # record of what a human said cannot be rewritten or quietly removed after
+    # the fact — that unforgeability is the whole reason the record is worth
+    # anything. Hand-authoring one would forge an author; a record goes away
+    # with its session or not at all.
   end
 end

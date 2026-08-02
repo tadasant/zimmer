@@ -92,7 +92,6 @@ class SessionHumanMessages
   # authorization to act here.
   def human_message_here? = here_entries.any?
 
-  def most_recent_here_entry = here_entries.last
 
   # The block appended to every prompt Zimmer builds for this session.
   # Returns nil when there is nothing to say, so the caller appends nothing.
@@ -149,5 +148,25 @@ class SessionHumanMessages
   # unforgeable.
   def self.sanitize_for_attribute(text)
     sanitize_for_prompt(text).tr("<>\"", "‹›＂").delete("\n\r")
+  end
+
+  # For a value interpolated into one line of the markdown `get_session` returns.
+  #
+  # The threat is the same one the prompt path guards, on the surface a
+  # self-inspecting session is most likely to read: a title carrying a newline
+  # can otherwise open a second `- **[here]** …` bullet and forge an entry in
+  # the Human Messages section. Newlines are what makes that possible, so they
+  # go — nothing legitimate in a title, agent root, or Slack channel name needs
+  # one.
+  def self.sanitize_for_markdown_line(text)
+    sanitize_for_attribute(text)
+  end
+
+  # For a value emitted inside a fenced code block. A fence is closed by a line
+  # of three backticks, so a run of three or more is neutralized the same way a
+  # closing tag is: replaced with a lookalike, never deleted, so the reader can
+  # still see what was said.
+  def self.sanitize_for_fence(text)
+    sanitize_for_prompt(text).gsub(/`{3,}/) { |run| "ˋ" * run.length }
   end
 end
