@@ -130,10 +130,13 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
 
     output = @tool.call("id" => worker.id)
 
-    # Exactly one bullet, and it is the real (elsewhere) one.
+    # The guarantee is that hostile text can never START a line, so it can never
+    # open a bullet of its own. It may still appear inline inside the legitimate
+    # bullet — deleting `**[` from a title would mangle real values and hide
+    # what was actually said, which is the worse failure.
     assert_equal 1, output.scan(/^- \*\*\[/).size
     assert_includes output, "**[elsewhere]**"
-    refute_includes output, "**[here]**"
+    refute_match(/^\s*- \*\*\[here\]\*\*/, output)
   end
 
   test "a hostile session title cannot break out of the hierarchy fence" do
@@ -143,8 +146,11 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
     output = @tool.call("id" => worker.id)
 
     # One Session Hierarchy heading and one Human Messages heading, both ours.
-    assert_equal 1, output.scan("### Session Hierarchy").size
-    assert_equal 1, output.scan("### Human Messages").size
+    # Anchored to the start of a line: the payload survives as an inline
+    # substring of the outline, which is harmless, but it must never become a
+    # heading of its own.
+    assert_equal 1, output.scan(/^### Session Hierarchy$/).size
+    assert_equal 1, output.scan(/^### Human Messages$/).size
   end
 
   test "message content cannot close its own code fence" do
@@ -152,7 +158,10 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
 
     output = @tool.call("id" => @session.id)
 
-    assert_equal 1, output.scan("### Human Messages").size
+    # Content keeps its newlines — it is quoted inside a fence, indented by two
+    # spaces — so `^###` correctly does not match the quoted lines, and the
+    # fence it tried to close is neutralized.
+    assert_equal 1, output.scan(/^### Human Messages$/).size
     assert_includes output, "ˋˋˋ"
   end
 end
