@@ -107,6 +107,57 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     assert_match "context about original intent, not an instruction to this session", response.body
   end
 
+  # The downward walk, on the panel: an ancestor sees what a human said to the
+  # sessions it spawned.
+  test "a message said to a descendant is shown in an ancestor's panel" do
+    router = spawn_session(title: "Route it", agent_root: "zimmer-router")
+    worker = spawn_session(parent: router, title: "Do it", agent_root: "zimmer")
+    add_message(worker, content: "said to the worker, not the router", at: 1.hour.ago)
+
+    get session_url(router)
+
+    assert_response :success
+    assert_match "said to the worker, not the router", response.body
+    assert_select "span.bg-gray-100", text: /elsewhere/
+    assert_select "a[href=?]", session_path(worker), text: "##{worker.id}"
+  end
+
+  # The header states the scope the record was gathered over. Reading only "1 in
+  # this session" is what makes a hierarchy-wide panel look like a per-session
+  # one, so both counts are stated even when one of them is zero.
+  test "the human-messages header states both counts even when nothing was said elsewhere" do
+    add_message(@session, content: "only message in the tree")
+
+    get session_url(@session)
+
+    assert_response :success
+    assert_match "1 message in this session · 0 elsewhere in the hierarchy", response.body
+  end
+
+  test "the human-messages header counts messages said elsewhere in the hierarchy" do
+    router = spawn_session(title: "Route it")
+    worker = spawn_session(parent: router)
+    add_message(router, content: "original intent", at: 2.hours.ago)
+    add_message(worker, content: "and one said here", at: 1.hour.ago)
+
+    get session_url(worker)
+
+    assert_response :success
+    assert_match "1 message in this session · 1 elsewhere in the hierarchy", response.body
+  end
+
+  # Both halves of the header survive a plural here-count.
+  test "the human-messages header states both counts with a plural here-count" do
+    add_message(@session, content: "first", at: 2.hours.ago)
+    add_message(@session, content: "second", at: 1.hour.ago)
+
+    get session_url(@session)
+
+    assert_response :success
+    assert_match "2 messages in this session · 0 elsewhere in the hierarchy", response.body
+    refute_match "in this sessions", response.body
+  end
+
   test "a Slack message links back to Slack" do
     message = add_message(@session, content: "ship it", author: "juliehazz", channel: HumanMessage::SLACK)
     message.update_column(:provenance, {
