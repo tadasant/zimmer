@@ -183,10 +183,13 @@ module Mcp
 
         entries.last(MAX_HUMAN_MESSAGES).each do |entry|
           lines << ""
-          author = Sanitize.sanitize_for_markdown_line("#{entry.display_name} (#{entry.author})")
+          name = Sanitize.sanitize_for_markdown_line(entry.display_name)
+          # The handle sits in an inline code span, so a backtick in it would
+          # close that span early; neutralize it the way a fence is neutralized.
+          handle = Sanitize.sanitize_for_markdown_line(entry.author).tr("`", "ˋ")
           channel = Sanitize.sanitize_for_markdown_line(entry.channel_label)
           where = Sanitize.sanitize_for_markdown_line(entry.authored_in)
-          lines << "- **[#{entry.origin}]** #{author} via #{channel}, in #{where}, at #{entry.occurred_at.utc.iso8601}"
+          lines << "- **[#{entry.origin}]** #{name} (`#{handle}`) via #{channel}, in #{where}, at #{entry.occurred_at.utc.iso8601}"
           lines << "  ```"
           Sanitize.sanitize_for_fence(entry.content).each_line { |line| lines << "  #{line.chomp}" }
           lines << "  ```"
