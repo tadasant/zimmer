@@ -170,4 +170,23 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     assert_nil @source.status_summary.summary
     assert old_fork.reload.archived?
   end
+
+  # A newer generation claims the record before it forks, so between its claim
+  # and its copy finishing the record is `pending` and names NO fork. A slow
+  # older fork answering in that window must not be adopted: its blurb would be
+  # stored against the newer generation's requested_line_count and so render as
+  # up to date, and the newer generation would find its claim gone.
+  test "an answer arriving while a newer claim names no fork yet is dropped" do
+    old_fork = build_fork(answer: "Stale answer.")
+    record = pending_record(old_fork)
+    record.update!(requested_at: Time.current, requested_line_count: 9, fork_session: nil)
+
+    SessionStatusSummaryHarvestJob.perform_now(old_fork.id)
+
+    record.reload
+    assert_equal "pending", record.state, "the newer claim is left in flight"
+    assert_nil record.summary
+    assert_equal 0, record.transcript_line_count, "no stale blurb stamped with the newer line count"
+    assert old_fork.reload.archived?, "the fork is still cleaned up"
+  end
 end

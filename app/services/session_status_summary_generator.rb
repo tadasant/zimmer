@@ -44,9 +44,10 @@ class SessionStatusSummaryGenerator
     @force = force
     @fork_service = fork_service
     @file_system = file_system
-    # The `requested_at` this run wrote when it claimed the record; nil until it
-    # has claimed one. See #claim!.
+    # The `requested_at` this run wrote when it claimed the record, and the
+    # attributes that claim displaced. Both nil until it has claimed. See #claim.
     @claim_token = nil
+    @displaced = nil
     @logger = StructuredLogger.new({ session_id: session.id, service: "SessionStatusSummaryGenerator" })
   end
 
@@ -61,8 +62,7 @@ class SessionStatusSummaryGenerator
 
     return Result.new(outcome: :fresh, message: "Summary is current.") if !force && !summary.stale?(line_count)
 
-    previous_state = summary.state
-    unless claim!(summary, line_count)
+    unless claim(summary, line_count)
       return Result.new(outcome: :pending, message: "A summary is already being generated.")
     end
 
@@ -104,7 +104,7 @@ class SessionStatusSummaryGenerator
       # gone to the trash is a copy of a clone DeferredCloneCleanupJob is about
       # to delete, about a session nobody is looking at.
       if session.reload.archived?
-        release_claim(summary, previous_state)
+        release_claim(summary)
         abandon_fork(fork)
         return Result.new(outcome: :skipped, message: "Session is in the trash.")
       end
@@ -172,11 +172,15 @@ class SessionStatusSummaryGenerator
   # makes is conditional on the row still carrying the timestamp it wrote, so a
   # runner whose claim aged past PENDING_TIMEOUT and was taken over by a newer
   # generation cannot stomp that newer one on its way out.
-  def claim!(summary, line_count)
+  def claim(summary, line_count)
     claimed = false
 
     summary.with_lock do
       next if summary.pending?
+
+      # Snapshotted under the lock, so a release puts back what was actually
+      # displaced rather than what a read before the lock thought was there.
+      @displaced = summary.slice(:state, :error, :requested_at, :requested_line_count, :fork_session_id)
 
       summary.update!(
         state: "pending",
@@ -209,14 +213,17 @@ class SessionStatusSummaryGenerator
     attached
   end
 
-  # Puts the record back the way it was found, for an exit that starts nothing —
-  # a session that reached the trash during the copy. Without this the claim
-  # would sit `pending` for the full PENDING_TIMEOUT with no fork behind it.
-  def release_claim(summary, previous_state)
+  # Puts the record back exactly the way it was found, for an exit that starts
+  # nothing — a session that reached the trash during the copy. Without this the
+  # claim would sit `pending` for the full PENDING_TIMEOUT with no fork behind
+  # it; without restoring the whole snapshot, a previous failure's reason (which
+  # the claim cleared) would be lost and the panel would say a summary failed
+  # for no recorded reason.
+  def release_claim(summary)
     summary.with_lock do
       next unless holds_claim?(summary)
 
-      summary.update!(state: previous_state, requested_at: nil, fork_session: nil)
+      summary.update!(@displaced)
     end
   rescue StandardError => e
     @logger.error("Failed to release the status summary claim", error: e.message)
