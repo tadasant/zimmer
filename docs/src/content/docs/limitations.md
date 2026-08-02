@@ -944,6 +944,11 @@ broken catalog look exactly like a fresh install with nothing configured
 records every failed resolve — including the no-fallback case `degraded?` cannot see — and the
 session form renders it as a banner.
 
+`Mcp::Tools::GetConfigs` carries the same fact to agents, which read the catalog through those same
+façades — but not the same detail. The banner prints `air resolve`'s stderr verbatim, and that process
+is given `AIR_GITHUB_TOKEN`, so the MCP surface reports only *that* resolution failed and when. Same
+fact, different fidelity, different audience.
+
 The residual limit: that flag is process-local, like the rest of the in-memory catalog cache. It
 describes what *this* web process last saw. With more than one web process, a form served by a worker
 that has not yet retried shows the banner while its neighbour does not — the pickers and the banner
