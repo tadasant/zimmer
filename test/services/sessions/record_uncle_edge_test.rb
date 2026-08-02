@@ -190,6 +190,44 @@ class Sessions::RecordUncleEdgeTest < ActiveSupport::TestCase
     assert_equal 2, SessionUncleLink.count
   end
 
+  # Regression: inversion used to delete only the ONE direct edge, so when the
+  # actor was also reachable from the target by a longer uncle path, writing the
+  # reverse closed a cycle through the middle session.
+  test "inversion is refused when the actor stays senior by another path" do
+    a = create_session
+    b = create_session
+    x = create_session
+
+    record(a, b.id)   # b → a
+    record(a, x.id)   # x → a
+    record(x, b.id)   # b → x
+
+    # b is senior to a directly AND via x. Inverting only the direct edge would
+    # leave a → b → x → a.
+    outcome = record(b, a.id)
+
+    assert_equal :would_create_cycle, outcome.action
+    assert edge?(a, b), "the direct edge is restored, not left deleted"
+    assert edge?(x, b)
+    assert edge?(a, x)
+    assert_cycle_free([ a, b, x ])
+  end
+
+  # Regression: the reachability search was depth-bounded at 8, so a cycle
+  # spanning more hops than that was invisible to the check and got created.
+  test "a cycle longer than the render depth bound is still refused" do
+    chain = Array.new(SessionHierarchy::MAX_DEPTH + 4) { create_session }
+    # top → … → bottom, each link an uncle edge.
+    chain.each_cons(2) { |senior, junior| record(junior, senior.id) }
+
+    # The bottom of the chain tries to become senior to the top, which would
+    # close the whole loop.
+    outcome = record(chain.first, chain.last.id)
+
+    assert_equal :would_create_cycle, outcome.action
+    assert_cycle_free(chain)
+  end
+
   # The invariant, stated directly: whatever sequence of calls arrives, the
   # combined graph never contains a cycle.
   test "no sequence of calls can construct a cycle" do

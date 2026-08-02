@@ -87,7 +87,14 @@ When session A queues or interrupts session B:
 | Otherwise | A → B is written. |
 
 Those rules are the acyclicity invariant: an edge A → B is written only when B cannot already reach
-A, so **no sequence of calls can construct a cycle**.
+A, so **no sequence of calls can construct a cycle**. Two details make that hold rather than merely
+sound true. Inversion re-checks reachability *after* removing the direct edge and rolls the whole
+thing back if the target is still senior by a longer path — otherwise A → B → X → A would be
+constructible from four individually-legal calls. And the reachability search is bounded by a node
+budget (5,000 sessions visited), not by `MAX_DEPTH`: a depth-bounded check would answer "no cycle"
+for any path longer than eight hops and let one through, and uncle edges accumulate across unrelated
+hierarchies, so long paths are ordinary. Past that node budget the guarantee lapses to the
+traversal's own `seen` guards, which stop a cycle from hanging a render but do not prevent one.
 
 An edge is a record *about* a delivery, never a precondition of it. If recording fails, the follow-up
 still lands and the failure is logged.
@@ -117,9 +124,9 @@ page into a fleet-wide render. Both bounds apply to the **upward** walk too, bec
 than looping — a backstop, since `RecordUncleEdge` refuses to create one, but a bound that assumes
 every writer was correct is not a bound.
 
-When either bound is hit, the reader is told: the UI shows an amber "Showing the first N sessions, M
-levels deep. This tree is larger." and the MCP and REST responses carry the same note (`truncated:
-true` in JSON). The session you asked about is always included, even if the ceiling cut the branch it
+When either bound is hit, the reader is told: the UI shows an amber "Showing at most 150 sessions, 8
+levels from the highest ancestor reached. This tree is larger." and the MCP and REST responses carry
+the same note (`truncated: true` in JSON). The session you asked about is always included, even if the ceiling cut the branch it
 lives on — a page that omits the session you are looking at is worse than one that admits it is
 truncated.
 
