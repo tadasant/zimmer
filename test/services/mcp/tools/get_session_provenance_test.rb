@@ -40,7 +40,7 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
     output = @tool.call("id" => @session.id)
 
     assert_includes output, "### Session Hierarchy"
-    assert_includes output, "_This session was not spawned by another session and has spawned none._"
+    assert_includes output, "_This session was not spawned by another session, has spawned none, and no other session has queued or interrupted it._"
   end
 
   test "a hierarchy renders as an outline with the origin, agent roots and titles" do
