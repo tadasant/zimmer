@@ -17,6 +17,14 @@ module Mcp
         "verbose" => "📝"
       }.freeze
 
+      # Titles are agent-writable (`action_session` → `update_title`) and Slack
+      # channel names come from an external API, so both are untrusted text
+      # flowing into the markdown a self-inspecting session reads. Without this
+      # a title carrying a newline opens a second "- **[here]** …" bullet and
+      # forges a human message — the same laundering the prompt path already
+      # guards against, on the surface a merge gate is most likely to read.
+      Sanitize = SessionHumanMessages
+
       # Bounded so a long-lived hierarchy cannot turn a get_session call into a
       # context dump. Newest entries win — the oldest human instruction is
       # usually the session prompt, which the caller already sees above.
@@ -129,9 +137,7 @@ module Mcp
       private
 
       # The spawn tree this session belongs to.
-      def session_hierarchy_lines(session)
-        hierarchy = session.hierarchy
-
+      def session_hierarchy_lines(hierarchy)
         lines = [ "", "### Session Hierarchy" ]
         if hierarchy.solitary?
           lines << "_This session was not spawned by another session and has spawned none._"
@@ -143,7 +149,7 @@ module Mcp
         lines << "- **Sessions in this hierarchy:** #{hierarchy.size}"
         lines << ""
         lines << "```"
-        lines << hierarchy.to_outline
+        lines << Sanitize.sanitize_for_fence(hierarchy.to_outline)
         lines << "```"
         lines << "_#{hierarchy.truncation_reason}_" if hierarchy.truncated?
         lines
@@ -158,8 +164,7 @@ module Mcp
       # "no human turns" from "I forgot to pass the flag" — an opt-in section
       # makes those two look identical, which is precisely the confusion this
       # feature exists to remove.
-      def human_message_lines(session)
-        record = session.human_message_record
+      def human_message_lines(record)
         entries = record.entries
 
         lines = [ "", "### Human Messages" ]
@@ -178,9 +183,12 @@ module Mcp
 
         entries.last(MAX_HUMAN_MESSAGES).each do |entry|
           lines << ""
-          lines << "- **[#{entry.origin}]** #{entry.display_name} (`#{entry.author}`) via #{entry.channel_label}, in #{entry.authored_in}, at #{entry.occurred_at.utc.iso8601}"
+          author = Sanitize.sanitize_for_markdown_line("#{entry.display_name} (#{entry.author})")
+          channel = Sanitize.sanitize_for_markdown_line(entry.channel_label)
+          where = Sanitize.sanitize_for_markdown_line(entry.authored_in)
+          lines << "- **[#{entry.origin}]** #{author} via #{channel}, in #{where}, at #{entry.occurred_at.utc.iso8601}"
           lines << "  ```"
-          entry.content.to_s.each_line { |line| lines << "  #{line.chomp}" }
+          Sanitize.sanitize_for_fence(entry.content).each_line { |line| lines << "  #{line.chomp}" }
           lines << "  ```"
         end
 
@@ -252,8 +260,11 @@ module Mcp
           lines << "```"
         end
 
-        lines.concat(session_hierarchy_lines(session))
-        lines.concat(human_message_lines(session))
+        # One record, so the two sections cannot disagree and the tree is walked
+        # once rather than twice.
+        record = session.human_message_record
+        lines.concat(session_hierarchy_lines(record.hierarchy))
+        lines.concat(human_message_lines(record))
 
         lines << ""
         lines << "### Timestamps"

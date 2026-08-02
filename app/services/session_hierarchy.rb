@@ -47,53 +47,36 @@ class SessionHierarchy
 
   # The origin session: the highest ancestor reachable within MAX_DEPTH.
   # Returns the session itself when it has no recorded parent.
+  #
+  # Sets @origin_truncated when the walk stopped on the bound rather than on a
+  # session with no parent — i.e. this is NOT really the origin. Without that,
+  # a chain deeper than MAX_DEPTH would render as a complete tree rooted at a
+  # session that has a parent, which is a lie the reader has no way to catch.
   def origin
-    @origin ||= begin
-      current = session
-      seen = Set.new([ session.id ])
+    return @origin if defined?(@origin)
 
-      MAX_DEPTH.times do
-        parent_id = current.lineage_parent_id
-        break if parent_id.blank? || seen.include?(parent_id)
+    current = session
+    seen = Set.new([ session.id ])
+    @origin_truncated = false
 
-        parent = Session.find_by(id: parent_id)
-        break if parent.nil?
+    MAX_DEPTH.times do
+      parent_id = current.lineage_parent_id
+      break if parent_id.blank? || seen.include?(parent_id)
 
-        seen << parent.id
-        current = parent
-      end
+      parent = Session.find_by(id: parent_id)
+      break if parent.nil?
 
-      current
+      seen << parent.id
+      current = parent
     end
-  end
 
-  # Ancestors of the requested session, nearest first. Kept separate from the
-  # full tree because "who spawned me" is a question on its own.
-  def ancestors
-    @ancestors ||= begin
-      list = []
-      current = session
-      seen = Set.new([ session.id ])
-
-      MAX_DEPTH.times do
-        parent_id = current.lineage_parent_id
-        break if parent_id.blank? || seen.include?(parent_id)
-
-        parent = Session.find_by(id: parent_id)
-        break if parent.nil?
-
-        seen << parent.id
-        list << parent
-        current = parent
-      end
-
-      list
+    # One more look: if the session we stopped on still has a reachable parent,
+    # we ran out of budget rather than reaching the top.
+    if current.lineage_parent_id.present? && !seen.include?(current.lineage_parent_id)
+      @origin_truncated = Session.exists?(id: current.lineage_parent_id)
     end
-  end
 
-  # Direct descendants of the requested session, in creation order.
-  def children
-    @children ||= self.class.children_of([ session.id ])
+    @origin = current
   end
 
   # The whole tree from `origin` down, breadth-first, each node carrying its
@@ -112,7 +95,7 @@ class SessionHierarchy
   def truncation_reason
     return nil unless truncated?
 
-    "Showing the first #{MAX_NODES} sessions, #{MAX_DEPTH} levels deep. This tree is larger."
+    "Showing at most #{MAX_NODES} sessions, #{MAX_DEPTH} levels from the highest ancestor reached. This tree is larger."
   end
 
   # Every session id in the tree. This is the scope the human-message record is
@@ -135,8 +118,8 @@ class SessionHierarchy
   def to_outline
     nodes.map do |node|
       marker = node.current? ? " ← this session" : ""
-      root = SessionHumanMessages.sanitize_for_prompt(node.agent_root_label)
-      label = SessionHumanMessages.sanitize_for_prompt(node.label)
+      root = SessionHumanMessages.sanitize_for_attribute(node.agent_root_label)
+      label = SessionHumanMessages.sanitize_for_attribute(node.label)
       "#{'  ' * node.depth}- ##{node.id} [#{root}] #{label}#{marker}"
     end.join("\n")
   end
@@ -157,8 +140,10 @@ class SessionHierarchy
   private
 
   def build_nodes
-    @truncated = false
     root = origin
+    # origin sets @origin_truncated; an incomplete upward walk means the tree we
+    # are about to render is a subtree, whatever the downward walk finds.
+    @truncated = @origin_truncated
     collected = [ node_for(root, depth: 0) ]
     seen = Set.new([ root.id ])
     frontier = [ root ]
@@ -197,7 +182,10 @@ class SessionHierarchy
     # branch it lives on — a detail page that omits the session you are looking
     # at is worse than one that admits it is truncated.
     unless seen.include?(session.id)
-      collected << node_for(session, depth: 0)
+      # Rendered one level below the last node we did collect rather than at the
+      # root: claiming depth 0 would draw it as a sibling of the origin, which
+      # is a worse lie than an approximate depth.
+      collected << node_for(session, depth: (collected.last&.depth || 0) + 1)
       @truncated = true
     end
 

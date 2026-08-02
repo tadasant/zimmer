@@ -32,8 +32,9 @@ class SessionHierarchyTest < ActiveSupport::TestCase
     middle = create_session(parent: root)
     leaf = create_session(parent: middle)
 
-    assert_equal root.id, SessionHierarchy.new(leaf).origin.id
-    assert_equal [ middle.id, root.id ], SessionHierarchy.new(leaf).ancestors.map(&:id)
+    hierarchy = SessionHierarchy.new(leaf)
+    assert_equal root.id, hierarchy.origin.id
+    refute hierarchy.truncated?
   end
 
   # The edge is derived, not backfilled: sessions spawned before
@@ -79,13 +80,13 @@ class SessionHierarchyTest < ActiveSupport::TestCase
     refute hierarchy.nodes.find { |n| n.id == worker_a.id }.current?
   end
 
-  test "children resolves both edge representations" do
+  test "the tree resolves both edge representations" do
     router = create_session
     by_column = create_session(parent: router)
     by_metadata = create_session(router_metadata: router)
 
-    assert_equal [ by_column.id, by_metadata.id ].sort,
-                 SessionHierarchy.new(router).children.map(&:id).sort
+    assert_equal [ router.id, by_column.id, by_metadata.id ].sort,
+                 SessionHierarchy.new(router).session_ids.sort
   end
 
   test "nodes carry depth relative to the origin" do
@@ -130,12 +131,29 @@ class SessionHierarchyTest < ActiveSupport::TestCase
     assert_operator hierarchy.size, :<=, SessionHierarchy::MAX_NODES
   end
 
-  test "the walk upward is depth-bounded" do
+  test "the walk upward is depth-bounded, and says so rather than claiming a false origin" do
     session = create_session
     oldest = session
     (SessionHierarchy::MAX_DEPTH + 3).times { session = create_session(parent: session) }
 
-    refute_equal oldest.id, SessionHierarchy.new(session).origin.id
+    hierarchy = SessionHierarchy.new(session)
+
+    refute_equal oldest.id, hierarchy.origin.id
+    assert hierarchy.truncated?,
+           "a tree rooted at a session that still has a parent is a subtree, and must say so"
+    assert_match(/larger/, hierarchy.truncation_reason)
+  end
+
+  test "a tree exactly at the depth bound is reported complete" do
+    root = create_session
+    node = root
+    SessionHierarchy::MAX_DEPTH.times { node = create_session(parent: node) }
+
+    hierarchy = SessionHierarchy.new(root)
+
+    refute hierarchy.truncated?
+    assert_nil hierarchy.truncation_reason
+    assert_equal SessionHierarchy::MAX_DEPTH + 1, hierarchy.size
   end
 
   # A truncated tree says so rather than quietly showing a slice.
@@ -154,11 +172,19 @@ class SessionHierarchyTest < ActiveSupport::TestCase
     root = create_session
     node = root
     (SessionHierarchy::MAX_DEPTH + 2).times { node = create_session(parent: node) }
+    deepest = node
 
-    hierarchy = SessionHierarchy.new(root)
+    # Requested from the DEEPEST session, so the downward walk from the origin
+    # genuinely runs out of depth before reaching it — the case the fallback
+    # exists for. Asking from the root would put it in `seen` immediately and
+    # the branch would never execute.
+    hierarchy = SessionHierarchy.new(deepest)
 
-    assert_includes hierarchy.session_ids, root.id
-    assert hierarchy.nodes.any?(&:current?)
+    assert_includes hierarchy.session_ids, deepest.id
+    assert_equal 1, hierarchy.nodes.count(&:current?)
+    assert hierarchy.truncated?
+    # Never drawn as a sibling of the origin.
+    assert_operator hierarchy.nodes.find(&:current?).depth, :>, 0
   end
 
   test "the outline marks the current session and indents by depth" do

@@ -915,7 +915,45 @@ class SlackTriggerPollerJob < ApplicationJob
       channel: channel_name
     )
 
-    session = trigger.create_session!(prompt: prompt)
+    session = nil
+
+    # The spawn and the record commit together.
+    #
+    # Trigger#create_session! enqueues the agent job itself, and GoodJob's queue
+    # is this same database — so without the transaction a worker could claim
+    # the job and build the session's first prompt before the human's message
+    # existed to be injected into it. That would drop the human's own words from
+    # the one channel where a genuinely named human is the author. Every web-UI
+    # path already records before it enqueues; this makes Slack agree.
+    #
+    # HumanMessageCapture takes its own savepoint and swallows its own errors,
+    # so a capture failure still cannot take the spawn down with it.
+    ActiveRecord::Base.transaction do
+      session = trigger.create_session!(prompt: prompt)
+
+      if session
+        # We record the human's OWN words (message_text), never the rendered
+        # prompt: `prompt` is the trigger's prompt_template with the message
+        # interpolated into it, and the template is written by whoever
+        # configured the trigger, not by the person who just spoke. Recording
+        # the rendered text would attribute machine-written instructions to a
+        # human.
+        #
+        # Resolution goes through the Slack user ID map, so a message from an
+        # allow-listed account that maps to no configured human records nothing
+        # — `user_allowed?` says "may fire this trigger", which is not the same
+        # claim as "is Tadas or Julie".
+        HumanMessageCapture.record_slack_message(
+          session: session,
+          slack_user_id: message.user,
+          content: message_text,
+          entry_point: dm ? "slack.dm" : "slack.channel_message",
+          slack_channel: channel_name,
+          slack_permalink: permalink,
+          occurred_at: slack_ts_to_time(message.ts)
+        )
+      end
+    end
 
     # Burst control can suppress the spawn (see Trigger::BURST_WINDOW). The
     # message is then DROPPED, not retried: the caller advances the condition's
@@ -926,26 +964,6 @@ class SlackTriggerPollerJob < ApplicationJob
       Rails.logger.info "[SlackTriggerPollerJob] Trigger #{trigger.id} spawned nothing for message #{message.ts} (burst-suppressed) — dropping it"
       return
     end
-
-    # We record the human's OWN words (message_text), never the
-    # rendered prompt: `prompt` is the trigger's prompt_template with the
-    # message interpolated into it, and the template is written by whoever
-    # configured the trigger, not by the person who just spoke. Recording the
-    # rendered text would attribute machine-written instructions to a human.
-    #
-    # Resolution goes through the Slack user ID map, so a message from an
-    # allow-listed account that maps to no configured human records nothing —
-    # `user_allowed?` says "may fire this trigger", which is not the same claim
-    # as "is Tadas or Julie".
-    HumanMessageCapture.record_slack_message(
-      session: session,
-      slack_user_id: message.user,
-      content: message_text,
-      entry_point: dm ? "slack.dm" : "slack.channel_message",
-      slack_channel: channel_name,
-      slack_permalink: permalink,
-      occurred_at: slack_ts_to_time(message.ts)
-    )
 
     # Update condition's last_triggered_at
     condition.update!(last_triggered_at: Time.current)
