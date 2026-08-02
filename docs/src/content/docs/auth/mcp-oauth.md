@@ -518,8 +518,8 @@ said while the row is still green, which is the only time saying it helps
 "Leaves no refresh token" is the test, not "this response carried none": plenty of servers mint a
 refresh token on first consent and omit it when re-authorizing a grant that is still live. A
 re-authorization that omits one keeps the stored token rather than nulling it, and the flag is
-derived from what survives — so the row can never claim renewable on a credential that has nothing
-to renew with, or one-shot on a server already seen to issue a refresh token
+derived from what survives — so a token exchange can never leave the row claiming renewable on a
+credential it just emptied, or one-shot on a server already seen to issue a refresh token
 ([#309](https://github.com/tadasant/zimmer/issues/309)).
 
 What has *not* changed: Zimmer does not ask for `offline_access` a server did not advertise, and the
