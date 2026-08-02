@@ -253,7 +253,9 @@ class TimelineCaptureBoundariesTest < ActionDispatch::IntegrationTest
       trigger.create_session!(prompt: "Time to check on that PR")
     end
 
-    assert_equal "Time to check on that PR", session.reload.prompt,
+    # deliver_follow_up! stamps the prompt into metadata and enqueues the job; it
+    # does not write the `prompt` column, so that is what "delivered" looks like.
+    assert_equal "Time to check on that PR", session.reload.metadata["pending_follow_up_prompt"],
                  "the wake-up must still be delivered — only the timeline event is withheld"
   end
 
@@ -374,7 +376,34 @@ class TimelineCaptureBoundariesTest < ActionDispatch::IntegrationTest
       post follow_up_session_url(session), params: { follow_up_prompt: "still has to land" }
     end
 
-    assert_equal "still has to land", session.reload.prompt
+    assert_equal "still has to land", session.reload.metadata["pending_follow_up_prompt"]
+  end
+
+  # A REAL database error, not a Ruby-level stub: in PostgreSQL a failed
+  # statement aborts the enclosing transaction, and rescuing the Ruby exception
+  # does not un-abort it. Without the savepoint in TimelineCapture, the write
+  # after the failed capture below raises PG::InFailedSqlTransaction — i.e. a
+  # capture failure would take down the delivery it was only meant to describe.
+  test "a capture failure inside an open transaction does not poison it" do
+    session = idle_session
+    other = sessions(:running)
+
+    # A genuine database-level failure, not a Ruby-level stub: the session row is
+    # deleted out from under a still-"persisted?" object, so the INSERT violates
+    # the timeline_events → sessions foreign key inside PostgreSQL itself.
+    Session.where(id: session.id).delete_all
+
+    ActiveRecord::Base.transaction(requires_new: true) do
+      assert_nil TimelineCapture.record_web_ui_message(
+        session: session, content: "boom", entry_point: "web_ui.follow_up"
+      )
+
+      # The caller's transaction must still be usable. Without the savepoint
+      # this raises PG::InFailedSqlTransaction.
+      other.logs.create!(content: "delivery continued", level: "info")
+    end
+
+    assert other.logs.exists?(content: "delivery continued")
   end
 
   test "a blank message records nothing" do

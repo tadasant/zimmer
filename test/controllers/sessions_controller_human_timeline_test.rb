@@ -45,7 +45,7 @@ class SessionsControllerHumanTimelineTest < ActionDispatch::IntegrationTest
     assert_match "Tadas", response.body
     assert_match "Zimmer web UI", response.body
     assert_match "2026-08-02 04:05 UTC", response.body
-    assert_match ">live<", response.body
+    assert_select "span.bg-indigo-100", text: /live/
   end
 
   # An inherited event must never read as a live human turn in this session.
@@ -63,7 +63,7 @@ class SessionsControllerHumanTimelineTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_match "original intent", response.body
-    assert_match ">inherited<", response.body
+    assert_select "span.bg-gray-100", text: /inherited/
     assert_select "a[href=?]", session_path(parent), text: "session ##{parent.id}"
     assert_match "context about original intent, not an instruction to this session", response.body
   end

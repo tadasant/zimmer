@@ -2,8 +2,9 @@ require "test_helper"
 
 # The Human Timeline on the REST surface.
 #
-# Present on show, absent on index: reading it costs a query per ancestor, which
-# the index would pay once per session. On show it is unconditional, so an empty
+# A sibling of `session`, not a key inside it: `session` means one shape on every
+# response that carries it, and the timeline costs a query per ancestor, which
+# the index would pay once per card. On show it is unconditional, so an empty
 # array means "no human authored anything here" rather than "you didn't ask".
 class Api::V1::SessionsControllerHumanTimelineTest < ActionDispatch::IntegrationTest
   setup do
@@ -31,8 +32,9 @@ class Api::V1::SessionsControllerHumanTimelineTest < ActionDispatch::Integration
 
     assert_response :success
     json = JSON.parse(response.body)
-    assert json["session"].key?("human_timeline"), "human_timeline must always be present on show"
-    assert_empty json["session"]["human_timeline"]
+    assert json.key?("human_timeline"), "human_timeline must always be present on show"
+    assert_empty json["human_timeline"]
+    refute json["session"].key?("human_timeline"), "`session` must keep one shape across the API"
   end
 
   test "show renders a live human message with its full provenance" do
@@ -41,7 +43,7 @@ class Api::V1::SessionsControllerHumanTimelineTest < ActionDispatch::Integration
     get "/api/v1/sessions/#{@session.id}", headers: @headers
 
     assert_response :success
-    entry = JSON.parse(response.body).dig("session", "human_timeline").first
+    entry = JSON.parse(response.body)["human_timeline"].first
     assert_equal "human_message", entry["event_type"]
     assert_equal "live", entry["origin"]
     assert_equal "tadasant", entry["author"]
@@ -65,7 +67,7 @@ class Api::V1::SessionsControllerHumanTimelineTest < ActionDispatch::Integration
 
     get "/api/v1/sessions/#{@session.id}", headers: @headers
 
-    entry = JSON.parse(response.body).dig("session", "human_timeline").first
+    entry = JSON.parse(response.body)["human_timeline"].first
     assert_equal "inherited", entry["origin"]
     assert_equal parent.id, entry["source_session_id"]
     assert_includes entry["provenance"], "inherited from session ##{parent.id}"
@@ -77,7 +79,9 @@ class Api::V1::SessionsControllerHumanTimelineTest < ActionDispatch::Integration
     get "/api/v1/sessions", headers: @headers
 
     assert_response :success
-    JSON.parse(response.body)["sessions"].each do |s|
+    json = JSON.parse(response.body)
+    refute json.key?("human_timeline"), "index must stay cheap — no per-card timeline query"
+    json["sessions"].each do |s|
       refute s.key?("human_timeline"), "index must stay cheap — no per-card timeline query"
     end
   end

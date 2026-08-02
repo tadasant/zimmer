@@ -47,11 +47,8 @@ class Api::V1::SessionsController < Api::BaseController
   # Get a single session by ID or slug.
   def show
     render json: {
-      session: session_json(
-        @session,
-        include_transcript: params[:include_transcript] == "true",
-        include_timeline: true
-      )
+      session: session_json(@session, include_transcript: params[:include_transcript] == "true"),
+      human_timeline: human_timeline_json(@session)
     }
   end
 

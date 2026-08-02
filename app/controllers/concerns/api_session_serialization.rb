@@ -13,14 +13,7 @@ module ApiSessionSerialization
 
   private
 
-  # @param include_timeline [Boolean] render the Human Timeline. Off by default
-  #   and on for `GET /sessions/:id`, for the same reason `include_transcript`
-  #   is: the timeline needs a query per ancestor, which the index action would
-  #   pay once per card. Unlike an `include_` *param*, this is not the caller's
-  #   choice — on the show action the timeline is always present, so an empty
-  #   array unambiguously means "no human authored anything here" rather than
-  #   "you didn't ask for it".
-  def session_json(session, include_transcript: false, include_timeline: false)
+  def session_json(session, include_transcript: false)
     json = {
       id: session.id,
       slug: session.slug,
@@ -68,7 +61,6 @@ module ApiSessionSerialization
     json[:session_notes_updated_at] = session.session_notes_updated_at&.iso8601
     json[:favorited] = session.favorited
     json[:transcript] = session.transcript if include_transcript
-    json[:human_timeline] = human_timeline_json(session) if include_timeline
 
     json
   end
@@ -77,6 +69,12 @@ module ApiSessionSerialization
   # to the sessions it was spawned from. `origin` is the load-bearing field —
   # `live` is a human speaking to THIS session, `inherited` is a human speaking
   # to an ancestor, and a consumer must not read the second as the first.
+  #
+  # Rendered as a SIBLING of `session`, never a key inside it. `session` means
+  # one shape on every response that carries it — a contract the API has a test
+  # for — and the timeline cannot join that shape: reading it costs a query per
+  # ancestor, so the index would pay it once per card. Hanging it off the show
+  # response instead keeps the invariant intact and keeps the index cheap.
   def human_timeline_json(session)
     session.timeline.entries.map do |entry|
       {
