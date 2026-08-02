@@ -32,18 +32,40 @@ class ForkSessionService
   # Result object returned by the service
   Result = Struct.new(:success?, :forked_session, :error, keyword_init: true)
 
-  attr_reader :source_session, :message_index, :file_system, :extra_metadata
+  # Waits between clone-copy attempts. Their count is the retry budget: three
+  # attempts, ~2.5s of backoff in the worst case.
+  #
+  # The budget is deliberately small, because a retry is not free — each one
+  # re-walks the whole tree, and a user-initiated fork runs inside the request
+  # that asked for it. A longer ladder would turn a fork that cannot be made
+  # into a request that hangs. It rides out a tree being written to, not a tree
+  # being rebuilt: a copy racing a `bundle install` that runs for half a minute
+  # can still exhaust the budget and fail, loudly, which is the right outcome.
+  COPY_RETRY_DELAYS = [ 0.5, 2.0 ].freeze
+
+  # Installed-dependency trees, excludable from a fork's copy by callers that
+  # know the fork will never build or boot anything. They are the bulk of a
+  # clone — `vendor/bundle` alone is ~300 gem directories in Zimmer's own repo —
+  # and every second the copy spends walking them is a second the source tree
+  # can change underneath it.
+  DEPENDENCY_DIRECTORIES = [ "vendor/bundle", "**/node_modules" ].freeze
+
+  attr_reader :source_session, :message_index, :file_system, :extra_metadata, :copy_exclusions
 
   # @param extra_metadata [Hash] merged into the forked session's metadata at
   #   CREATE time. Callers that need the fork classified from its very first
   #   commit must use this rather than updating it afterwards: `Session`'s
   #   after_create_commit broadcasts a card to every open dashboard, and it has
   #   already fired by the time an update could add the marker.
-  def initialize(source_session:, message_index:, file_system: nil, extra_metadata: {})
+  # @param copy_exclusions [Array<String>] fnmatch patterns, relative to the
+  #   clone root, to leave out of the copied clone. Empty by default: a
+  #   user-initiated fork is a working session and wants the tree it forked.
+  def initialize(source_session:, message_index:, file_system: nil, extra_metadata: {}, copy_exclusions: [])
     @source_session = source_session
     @message_index = message_index
     @file_system = file_system || RealFileSystemAdapter.new
     @extra_metadata = extra_metadata || {}
+    @copy_exclusions = copy_exclusions || []
     @logger = StructuredLogger.new({ session_id: source_session.id, service: "ForkSessionService" })
   end
 
@@ -178,11 +200,7 @@ class ForkSessionService
 
     new_clone_path = File.join(base_path, "#{repo_name}-#{branch}-#{timestamp}-#{random}")
 
-    # Copy the source clone directory
-    @logger.info("Copying clone directory", source: source_clone_path, destination: new_clone_path)
-
-    # Use file_system.cp_r for deep copy (allows mocking in tests)
-    file_system.cp_r(source_clone_path, new_clone_path)
+    copy_clone_directory(source_clone_path, new_clone_path)
 
     # Clean up Claude-specific files that shouldn't be inherited
     cleanup_inherited_files(new_clone_path)
@@ -197,7 +215,83 @@ class ForkSessionService
     new_clone_path
   rescue => e
     @logger.error("Failed to create forked clone", error: e.message)
+    # Whatever got written before the failure belongs to nobody:
+    # OrphanCloneFilesystemCleanupJob ignores anything younger than its 48h
+    # threshold, so a partial clone left here sits on disk for two days.
+    discard_partial_clone(new_clone_path)
     nil
+  end
+
+  # Copies the source clone, retrying the whole copy when a file vanishes from
+  # under it.
+  #
+  # The source is a LIVE working tree. Its own agent process, its jobs
+  # (BundleInstallJob rewrites `vendor/bundle` wholesale) and the archive
+  # pipeline all keep writing to it while the copy walks it, and a recursive
+  # copy enumerates a directory before it stats the entries it found — so a file
+  # that disappears in between aborts the entire copy with ENOENT. That is
+  # transient by construction: the next attempt enumerates a tree that no longer
+  # contains the file.
+  #
+  # Only that case is retried. Any other errno — EACCES, ENOSPC — and an ENOENT
+  # raised because the source clone itself is gone (the archive pipeline deleted
+  # it) will not fix itself, and must fail on the first hit rather than spend the
+  # retry budget first.
+  def copy_clone_directory(source_clone_path, new_clone_path)
+    attempt = 0
+
+    begin
+      attempt += 1
+      @logger.info("Copying clone directory",
+        source: source_clone_path,
+        destination: new_clone_path,
+        attempt: attempt,
+        exclusions: copy_exclusions
+      )
+
+      # Use file_system.cp_r for deep copy (allows mocking in tests)
+      file_system.cp_r(source_clone_path, new_clone_path, exclude: copy_exclusions)
+    rescue Errno::ENOENT => e
+      delay = COPY_RETRY_DELAYS[attempt - 1]
+      raise if delay.nil? || !retryable_copy_target?(source_clone_path, new_clone_path)
+
+      # Deliberately .info, not .warn/.error: this is the expected cost of
+      # copying a live tree, and the fork has not failed yet. The terminal case
+      # still logs .error from #create_forked_clone, and still pages.
+      @logger.info("Retrying clone copy after a source file vanished mid-copy",
+        error: e.message,
+        attempt: attempt,
+        retry_in_seconds: delay
+      )
+
+      # Restart from an empty destination. This is a precondition, not a
+      # courtesy: cp_r given a destination that already exists copies INTO it as
+      # a subdirectory, and a pruned copy merges into it — so a retry over a
+      # surviving partial tree produces a nested or stale clone rather than a
+      # failure. rm_rf reports nothing when it removes only part of a tree, so
+      # the check is on the result, not on the call.
+      discard_partial_clone(new_clone_path)
+      raise if file_system.exists?(new_clone_path)
+
+      sleep(delay)
+      retry
+    end
+  end
+
+  # An ENOENT is only worth another attempt while both ends of the copy are
+  # still there. A source clone the archive pipeline deleted, or a clones
+  # directory that went away under us, will not come back.
+  def retryable_copy_target?(source_clone_path, new_clone_path)
+    file_system.directory?(source_clone_path) && file_system.directory?(File.dirname(new_clone_path))
+  end
+
+  # rm_rf on a path that was never created is a no-op, so this needs no guard
+  # beyond having a path at all — and the destination may be a partially written
+  # tree, a bare directory, or nothing.
+  def discard_partial_clone(path)
+    file_system.rm_rf(path) if path.present?
+  rescue => e
+    @logger.warn("Failed to remove partial forked clone", path: path, error: e.message)
   end
 
   def cleanup_inherited_files(clone_path)

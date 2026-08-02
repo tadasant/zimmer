@@ -580,4 +580,182 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       "Fork must write the transcript to the runtime's resume path even with a subdirectory (#{expected_path})"
     assert_equal forked.transcript, @mock_fs.read(expected_path)
   end
+
+  # --- Copying a live working tree ------------------------------------------
+  #
+  # Regression for the production page of 2026-08-02: the copy walked the source
+  # clone for 33 seconds while a concurrently restarted BundleInstallJob rewrote
+  # `vendor/bundle` underneath it, hit ENOENT on a gem file that had just been
+  # unlinked, failed the fork, alerted, and left 45 MB of half-copied clone on
+  # disk that nothing would collect for 48 hours.
+
+  # Records every cp_r the service attempts, and fails the first `failures` of
+  # them with `error` — leaving a half-written destination behind first, the way
+  # a real recursive copy does when it dies partway through. Later attempts
+  # perform the real mock copy.
+  def failing_copy_adapter(adapter, failures:, error: Errno::ENOENT.new("/src/vendor/bundle/ruby/3.4.0/gems/activemodel-8.1.3/lib/active_model/railtie.rb"))
+    attempts = []
+    adapter.define_singleton_method(:copy_attempts) { attempts }
+    adapter.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      attempts << dest
+      if attempts.size <= failures
+        mkdir_p(dest)
+        write(File.join(dest, "Gemfile.lock"), "partially copied")
+        raise error
+      end
+
+      super(src, dest, exclude: exclude)
+    end
+    adapter
+  end
+
+  def assert_no_partial_clones(fs)
+    fs.copy_attempts.uniq.each do |path|
+      assert_not fs.directory?(path), "a failed fork must not strand a partial clone at #{path}"
+      assert_not fs.exists?(File.join(path, "Gemfile.lock")), "a failed fork must not strand partially copied files under #{path}"
+    end
+  end
+
+  test "a source file vanishing mid-copy is retried and the fork succeeds" do
+    ForkSessionService.any_instance.stubs(:sleep)
+    fs = failing_copy_adapter(@mock_fs, failures: 1)
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: fs
+    )
+
+    assert result.success?, "a file disappearing from a live tree is transient, not a fork failure: #{result.error}"
+    assert_equal 2, fs.copy_attempts.size, "the copy should be retried once and then succeed"
+    assert_equal result.forked_session.metadata["clone_path"], fs.copy_attempts.last
+  end
+
+  test "the partial destination is removed before each retry" do
+    ForkSessionService.any_instance.stubs(:sleep)
+    fs = failing_copy_adapter(@mock_fs, failures: 1)
+
+    removed = []
+    fs.define_singleton_method(:rm_rf) do |path|
+      removed << path
+      super(path)
+    end
+
+    result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: fs)
+
+    assert result.success?
+    assert_includes removed, fs.copy_attempts.first,
+      "a half-written destination must be cleared, not merged into by the next attempt"
+    # The effect, not just the call: the failing attempt wrote Gemfile.lock into
+    # the destination, and the fork that succeeded must not have inherited it.
+    assert_not fs.exists?(File.join(result.forked_session.metadata["clone_path"], "Gemfile.lock")),
+      "the successful attempt must start from an empty destination"
+  end
+
+  # rm_rf reports nothing when it removes only part of a tree, and cp_r given a
+  # destination that already exists copies INTO it — so a retry over a surviving
+  # partial tree would produce a nested clone instead of a failure.
+  test "a destination that survives the cleanup fails the fork instead of being retried into" do
+    ForkSessionService.any_instance.stubs(:sleep)
+    fs = failing_copy_adapter(@mock_fs, failures: 1)
+    fs.define_singleton_method(:rm_rf) { |_path| nil } # a cleanup that silently removes nothing
+
+    result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: fs)
+
+    assert_not result.success?
+    assert_equal 1, fs.copy_attempts.size, "no attempt may run against a destination that still exists"
+  end
+
+  test "an exhausted retry budget fails the fork and leaves no partial clone behind" do
+    ForkSessionService.any_instance.stubs(:sleep)
+    fs = failing_copy_adapter(@mock_fs, failures: 99)
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: fs
+    )
+
+    assert_not result.success?
+    assert_includes result.error, "Failed to create forked clone directory"
+    assert_equal ForkSessionService::COPY_RETRY_DELAYS.length + 1, fs.copy_attempts.size,
+      "the retry budget is the delay ladder plus the first attempt"
+    assert_no_partial_clones(fs)
+  end
+
+  test "a non-transient copy error fails immediately without burning retries" do
+    ForkSessionService.any_instance.stubs(:sleep)
+    fs = failing_copy_adapter(@mock_fs, failures: 99, error: Errno::EACCES.new("/home/rails/.zimmer/clones"))
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: fs
+    )
+
+    assert_not result.success?
+    assert_equal 1, fs.copy_attempts.size, "EACCES will not fix itself — no point retrying it"
+    assert_no_partial_clones(fs)
+  end
+
+  test "an ENOENT raised because the source clone itself is gone is not retried" do
+    ForkSessionService.any_instance.stubs(:sleep)
+    fs = @mock_fs
+    source = @clone_path
+    attempts = []
+    fs.define_singleton_method(:copy_attempts) { attempts }
+    fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      attempts << dest
+      # DeferredCloneCleanupJob deleted the source clone out from under the copy,
+      # which is a different ENOENT: no later attempt can find what it deleted.
+      rm_rf(source)
+      raise Errno::ENOENT.new(File.join(src, "Gemfile"))
+    end
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: fs
+    )
+
+    assert_not result.success?
+    assert_equal 1, fs.copy_attempts.size, "retrying a copy of a clone that no longer exists cannot succeed"
+  end
+
+  test "copy_exclusions keep installed-dependency trees out of the forked clone" do
+    @mock_fs.write(File.join(@clone_path, "Gemfile"), "source 'https://rubygems.org'")
+    @mock_fs.write(File.join(@clone_path, "vendor/bundle/ruby/3.4.0/gems/activemodel-8.1.3/lib/active_model/railtie.rb"), "gem")
+    @mock_fs.write(File.join(@clone_path, "docs/node_modules/astro/package.json"), "{}")
+    @mock_fs.write(File.join(@clone_path, "vendor/javascript/stimulus.js"), "js")
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      copy_exclusions: ForkSessionService::DEPENDENCY_DIRECTORIES
+    )
+
+    assert result.success?
+    new_clone = result.forked_session.metadata["clone_path"]
+
+    assert @mock_fs.exists?(File.join(new_clone, "Gemfile"))
+    assert @mock_fs.exists?(File.join(new_clone, "vendor/javascript/stimulus.js")),
+      "only the install trees are excluded, not everything under vendor/"
+    assert_not @mock_fs.exists?(File.join(new_clone, "vendor/bundle/ruby/3.4.0/gems/activemodel-8.1.3/lib/active_model/railtie.rb"))
+    assert_not @mock_fs.exists?(File.join(new_clone, "docs/node_modules/astro/package.json"))
+  end
+
+  test "a fork copies the whole tree by default" do
+    @mock_fs.write(File.join(@clone_path, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"), "gem")
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?
+    assert @mock_fs.exists?(File.join(result.forked_session.metadata["clone_path"], "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md")),
+      "a user-initiated fork is a working session and keeps its installed dependencies"
+  end
 end

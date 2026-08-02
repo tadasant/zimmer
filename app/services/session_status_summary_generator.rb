@@ -66,7 +66,13 @@ class SessionStatusSummaryGenerator
       # would put the last raw index out of range and fail every automatic
       # generation for this session.
       message_index: ForkSessionService.parsed_messages(session.transcript).length - 1,
-      extra_metadata: { FORK_MARKER => session.id }
+      extra_metadata: { FORK_MARKER => session.id },
+      # The summarizer reads the conversation it was forked with and is told not
+      # to run tools — it never builds or boots anything, so copying the
+      # installed-dependency trees buys it nothing and costs it the tens of
+      # seconds that make a concurrent-mutation race likely in the first place.
+      # A user-initiated fork keeps them; it is a working session.
+      copy_exclusions: ForkSessionService::DEPENDENCY_DIRECTORIES
     }
     fork_args[:file_system] = @file_system if @file_system
     result = @fork_service.call(**fork_args)
@@ -76,21 +82,44 @@ class SessionStatusSummaryGenerator
       return Result.new(outcome: :failed, message: result.error)
     end
 
-    fork = prepare_fork(result.forked_session)
+    fork = result.forked_session
 
-    # Marked pending BEFORE the fork is dispatched. The fork's turn can finish
-    # (or die on spawn) before this method returns, and the harvest job keys off
-    # this row — writing it afterwards would let a harvest land on a record that
-    # names no fork, then be stomped back to `pending` here.
-    summary.update!(
-      state: "pending",
-      requested_at: Time.current,
-      requested_line_count: line_count,
-      fork_session: fork,
-      error: nil
-    )
+    # Everything from here to the follow-up has a fork on the floor. A fork that
+    # is made and then never dispatched is the worst thing this service can
+    # leave behind: it is hidden from every operator list by
+    # `excluding_status_summary_forks`, and its clone is skipped by
+    # OrphanCloneFilesystemCleanupJob precisely because a session row still
+    # claims it — so a full copy of a repository sits there permanently. Dispose
+    # of it on every exit that is not "dispatched".
+    begin
+      # #refuse_reason asked this before the fork, but the copy takes real time
+      # and the answer can change during it. A fork of a session that has since
+      # gone to the trash is a copy of a clone DeferredCloneCleanupJob is about
+      # to delete, about a session nobody is looking at.
+      if session.reload.archived?
+        abandon_fork(fork)
+        return Result.new(outcome: :skipped, message: "Session is in the trash.")
+      end
 
-    fork.deliver_follow_up!(prompt_for(fork))
+      prepare_fork(fork)
+
+      # Marked pending BEFORE the fork is dispatched. The fork's turn can finish
+      # (or die on spawn) before this method returns, and the harvest job keys off
+      # this row — writing it afterwards would let a harvest land on a record that
+      # names no fork, then be stomped back to `pending` here.
+      summary.update!(
+        state: "pending",
+        requested_at: Time.current,
+        requested_line_count: line_count,
+        fork_session: fork,
+        error: nil
+      )
+
+      fork.deliver_follow_up!(prompt_for(fork))
+    rescue StandardError
+      abandon_fork(fork)
+      raise
+    end
 
     @logger.info("Status summary generation started", fork_session_id: fork.id, transcript_line_count: line_count)
     Result.new(outcome: :started, message: "Generating summary…", fork_session: fork)
@@ -127,6 +156,19 @@ class SessionStatusSummaryGenerator
       heartbeat_enabled: false
     )
     fork
+  end
+
+  # Disposes of a fork that was made but will never be prompted. Archiving is the
+  # same path SessionStatusSummaryHarvestJob uses for a fork that has finished:
+  # it reclaims the copied clone on the normal trash path rather than reaching
+  # into the filesystem from here.
+  def abandon_fork(fork)
+    return if fork.nil?
+
+    @logger.info("Abandoning an undispatched status summary fork", fork_session_id: fork.id)
+    fork.archive! if fork.may_archive?
+  rescue StandardError => e
+    @logger.error("Failed to abandon status summary fork", fork_session_id: fork&.id, error: e.message)
   end
 
   def prompt_for(fork)
