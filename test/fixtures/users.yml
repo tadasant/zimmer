@@ -1,0 +1,15 @@
+# The roster the migration seeds, mirrored for tests.
+#
+# `slack_user_ids` is empty here for the same reason it is empty in the seeded
+# rows: a Slack ID is deployment configuration, not application source. Tests
+# that need one set it on the record.
+tadasant:
+  key: tadasant
+  display_name: Tadas
+  email: tadas@tadasant.com
+  notes: Owns and operates this Zimmer deployment, and is its admin.
+
+juliehazz:
+  key: juliehazz
+  display_name: Julie
+  email: julie@tadasant.com

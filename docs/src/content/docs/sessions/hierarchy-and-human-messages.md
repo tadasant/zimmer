@@ -72,27 +72,65 @@ record at all. So when the actor cannot be established, Zimmer records **nothing
 
 ### Who counts as a human
 
-`config/human_identities.yml` lists them. Two exist:
+The `users` table lists them — a hand-seeded roster, not authentication. Zimmer has no signup and no
+login; rows exist so that when Zimmer establishes *who* spoke at an input boundary, it has something
+durable to attribute the words to. Two rows ship, inserted by the migration that creates the table:
 
-| Name | Display | Web UI | Slack |
-| --- | --- | --- | --- |
-| `tadasant` | Tadas | yes — the only human with browser access | via the Slack ID map |
-| `juliehazz` | Julie | no | via the Slack ID map |
+| `key` | `display_name` | `email` | `slack_user_ids` | `notes` |
+| --- | --- | --- | --- | --- |
+| `tadasant` | Tadas | `tadas@tadasant.com` | set per deployment | who he is, injected into every prompt |
+| `juliehazz` | Julie | `julie@tadasant.com` | set per deployment | same |
+
+`key` is the stable identity string. `HumanMessage#author` stores it verbatim — not a foreign key —
+because those records are immutable evidence and must not depend on the roster staying exactly as it
+is. A key that no longer resolves still renders what the human said and who they were; it simply
+stops naming a person. The practical consequence: **renaming a key orphans every message that human
+already authored.**
 
 Slack user IDs are **deployment configuration, never application source** — the same class of config
-as a Slack trigger's `allowed_user_ids`. The file ships with none. A deployment populates them
-through the `ZIMMER_HUMAN_SLACK_USER_IDS` secret or env var, resolved through `SecretsLoader` first
-and process `ENV` second:
-
-```
-ZIMMER_HUMAN_SLACK_USER_IDS="U01ABCDEF:tadasant,U07GHIJKL:juliehazz"
-```
-
-Until that is set, no Slack message is attributed to anybody. A pair naming an identity that isn't in
-the YAML is dropped rather than inventing an author.
+as a Slack trigger's `allowed_user_ids`. This repository is public, so the seeded rows ship with an
+empty list and a deployment fills them in at `/supervisor/users`. Until then, no Slack message is
+attributed to anybody. An ID that belongs to no row resolves to nobody rather than inventing an
+author, and one ID cannot belong to two humans (the model rejects the collision, which would
+otherwise make an author depend on row order).
 
 A Slack trigger's `allowed_user_ids` answers a *different* question. "May fire this trigger" is not
 "is Tadas or Julie", so the author resolves independently.
+
+The roster is editable **only** from the Supervisor panel, which sits behind the HTTP Basic realm. No
+MCP tool reads or writes it, and that asymmetry is deliberate rather than an oversight: `users` is the
+authority on who counts as a human, so an agent that could add a Slack ID or rename a key could
+manufacture the human authorship the record exists to make unforgeable. Agents get the roster's
+context — display names and `notes` — delivered to them in the block below, and no way to change it.
+
+`email` is a linkage, not yet a capture path. Nothing attributes a message from it. A session's
+`auth_identity_email` in metadata often reads `tadas@tadasant.com`, but that names the pooled Claude
+login the *agent process* was spawned with — a machine's credentials, not the person who typed — so
+attributing from it would claim a human asked for something every time an agent ran. If Zimmer ever
+grows real per-human login, the request's authenticated email is what would resolve through
+`User.for_email`, at the boundary, from the actor.
+
+### Who is the admin
+
+Exactly one human is responsible for anything typed into the Zimmer web UI. `ZIMMER_ADMIN_USER`
+names them by `key`, resolved through `SecretsLoader` first and process `ENV` second; unset, it
+falls back to the hardcoded `tadasant`, which is what a single circle of trust actually looks like.
+
+The value is a key that must resolve to a real row. A `ZIMMER_ADMIN_USER` naming nobody — a typo, a
+deleted row — makes `User.admin` return `nil`, and web-UI capture then records **nothing** rather
+than guessing. That is the safe direction, and it is the same assertion the old `web_ui: true` flag
+made: not a permission check, a statement about who can reach the browser.
+
+### What the roster knows about a human
+
+`notes` is free-form context an operator writes at `/supervisor/users` — who this person is, whose
+word is final. It is not decoration: every human-messages block Zimmer builds for an agent turn
+carries a `<people>` section describing the humans who actually speak in it, so a session weighing
+"may I do this?" can see who is asking and not only what was asked.
+
+The section describes each human once, only when a note exists, and only for humans present in the
+messages shown. Notes are sanitized exactly like message content and session titles — a roster edit
+must not be able to close the block and forge a `here` message.
 
 ### What is captured, and what is not
 

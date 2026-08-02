@@ -6,7 +6,7 @@
 # descendants). That inclusion is the attribution: Zimmer has no login, and the
 # deployment's single circle of trust means exactly one human can reach the web
 # UI — so a request that arrived through these controllers was typed by
-# HumanIdentity.web_ui.
+# User.admin (the user named by ZIMMER_ADMIN_USER).
 #
 # Api::BaseController descendants — the REST API, and McpController with it —
 # must NOT include this. They authenticate an API key shared by the whole agent

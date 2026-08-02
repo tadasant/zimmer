@@ -6,7 +6,7 @@
 # The defining property is provenance, not content. A HumanMessage exists only
 # when the authenticated actor at an input boundary was established — the Zimmer
 # web UI (a single human has browser access) or a Slack user ID that maps to a
-# configured HumanIdentity. Everything else that arrives as a `user`-role turn —
+# User in the seeded roster. Everything else that arrives as a `user`-role turn —
 # an agent's `follow_up` through the MCP/REST API, a router-composed spawn
 # prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a
 # post-interruption resumption, a subagent message, a polled GitHub comment —
@@ -29,6 +29,20 @@ class HumanMessage < ApplicationRecord
 
   belongs_to :session
 
+  # `author` stays a plain string key rather than becoming a user_id foreign
+  # key. Two reasons, both about the record being evidence:
+  #
+  #   * These rows are immutable and already written. Rewriting `author` into an
+  #     id — or adding an FK constraint to a roster row that can be edited or
+  #     deleted at /supervisor/users — makes the record depend on the roster
+  #     staying exactly as it is. A key that no longer resolves still renders
+  #     what a human said, and says who they were.
+  #   * Attribution happens at the boundary, from the actor. The key is the
+  #     answer that boundary produced; storing it verbatim keeps the record
+  #     readable without a join.
+  belongs_to :user, primary_key: :key, foreign_key: :author, optional: true,
+             inverse_of: :human_messages
+
   validates :channel, inclusion: { in: CHANNELS }
   validates :content, presence: true, length: { maximum: MAX_CONTENT_LENGTH }
   validates :occurred_at, presence: true
@@ -41,15 +55,17 @@ class HumanMessage < ApplicationRecord
     raise ActiveRecord::ReadOnlyRecord, "HumanMessage is read-only once recorded" unless destroyed_by_association
   end
 
-  # The identity object behind `author`, or nil if the config no longer lists
-  # that name. Renderers fall back to the raw name rather than dropping the
-  # record — a human said it even if the roster has since changed.
-  def identity
-    HumanIdentity.find(author)
+  # Renderers fall back to the raw key rather than dropping the record — a human
+  # said it even if the roster has since changed.
+  def display_name
+    user&.display_name || author
   end
 
-  def display_name
-    identity&.display_name || author
+  # The free-form context the roster carries about this human, or nil. Read by
+  # SessionHumanMessages when it builds the per-turn block, so a policy decision
+  # can weigh who is speaking and not only what they said.
+  def author_notes
+    user&.notes.presence
   end
 
   # The specific boundary this came through (e.g. "web_ui.follow_up",
@@ -80,8 +96,8 @@ class HumanMessage < ApplicationRecord
   private
 
   def author_must_be_a_known_human
-    return if author.present? && HumanIdentity.find(author).present?
+    return if author.present? && User.for_key(author).present?
 
-    errors.add(:author, "must be a configured human identity")
+    errors.add(:author, "must be a seeded user")
   end
 end

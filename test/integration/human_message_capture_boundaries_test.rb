@@ -31,8 +31,6 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
 
   teardown do
     ENV.delete("API_KEYS")
-    ENV.delete(HumanIdentity::SLACK_ID_ENV_KEY)
-    HumanIdentity.reset_cache!
     Mocha::Mockery.instance.teardown
   end
 
@@ -312,7 +310,7 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
   # ==========================================================================
 
   test "a Slack message from a mapped human records that human's own words" do
-    ENV[HumanIdentity::SLACK_ID_ENV_KEY] = "U07JULIE:juliehazz"
+    users(:juliehazz).update!(slack_user_ids: %w[U07JULIE])
     session = idle_session
 
     event = HumanMessageCapture.record_slack_message(
@@ -334,7 +332,7 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
   # The trigger's prompt_template is machine-written. Only the human's own
   # message text is human-authored.
   test "a Slack trigger records the human message, not the rendered prompt template" do
-    ENV[HumanIdentity::SLACK_ID_ENV_KEY] = "U01TADAS:tadasant"
+    users(:tadasant).update!(slack_user_ids: %w[U01TADAS])
     session = idle_session
     trigger = triggers(:new_slack_trigger)
     trigger.update!(prompt_template: "MACHINE PREAMBLE — act on this message: {{text}}")
@@ -355,7 +353,7 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
 
   # `user_allowed?` means "may fire this trigger" — not "is Tadas or Julie".
   test "a Slack message from an unmapped user records nothing" do
-    ENV[HumanIdentity::SLACK_ID_ENV_KEY] = "U01TADAS:tadasant"
+    users(:tadasant).update!(slack_user_ids: %w[U01TADAS])
     session = idle_session
 
     assert_no_difference("HumanMessage.count") do

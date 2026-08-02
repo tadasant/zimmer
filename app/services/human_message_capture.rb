@@ -13,10 +13,20 @@
 # boundaries call in explicitly:
 #
 #   * SessionsController / EnqueuedMessagesController (the browser)
-#       → HumanIdentity.web_ui, because Zimmer has no login and exactly one
-#         human can reach the UI.
+#       → User.admin, because Zimmer has no login and exactly one human can
+#         reach the UI. Which user that is comes from the ZIMMER_ADMIN_USER
+#         deployment config, not from anything in the request.
 #   * SlackTriggerPollerJob (a real Slack message)
-#       → HumanIdentity.for_slack_user_id(message.user).
+#       → User.for_slack_user_id(message.user).
+#
+# Sessions carry an `auth_identity_email` in metadata that often matches a
+# User#email, and it is tempting to attribute from it. It is NOT wired here:
+# AuthRecoveryCoordinator writes it to name the pooled Claude login the *agent
+# process* was spawned with, so it describes a machine's credentials, not the
+# person who typed. Attributing from it would say a human asked for something
+# every time an agent ran under Tadas's account. If Zimmer ever
+# grows real per-human login, the request's authenticated email is what would
+# resolve through User.for_email — at the boundary, from the actor, same rule.
 #
 # Nothing else calls this. Api::V1 controllers, McpController and every MCP tool
 # authenticate an API key, not a person: an API key is shared by the whole fleet
@@ -34,7 +44,7 @@ class HumanMessageCapture
     def record_web_ui_message(session:, content:, entry_point:, occurred_at: Time.current)
       record(
         session: session,
-        author: HumanIdentity.web_ui,
+        author: User.admin,
         channel: HumanMessage::WEB_UI,
         content: content,
         occurred_at: occurred_at,
@@ -51,7 +61,7 @@ class HumanMessageCapture
                              slack_channel: nil, slack_permalink: nil, occurred_at: Time.current)
       record(
         session: session,
-        author: HumanIdentity.for_slack_user_id(slack_user_id),
+        author: User.for_slack_user_id(slack_user_id),
         channel: HumanMessage::SLACK,
         content: content,
         occurred_at: occurred_at,
@@ -95,7 +105,7 @@ class HumanMessageCapture
       # the rollback to this INSERT and leaves the caller's transaction usable.
       HumanMessage.transaction(requires_new: true) do
         session.human_messages.create!(
-          author: author.name,
+          author: author.key,
           channel: channel,
           content: body,
           occurred_at: occurred_at,
