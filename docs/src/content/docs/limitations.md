@@ -1224,8 +1224,9 @@ Neither is a bug in capture; both are boundaries Zimmer does not own. Read an em
 
 ### Web UI attribution is an assumption about the deployment, not a check
 
-Anything typed into the Zimmer web UI is attributed to `tadasant`, because Zimmer has no login and
-the network perimeter is the authentication boundary (see [Philosophy](/intro/philosophy/)). The
+Anything typed into the Zimmer web UI is attributed to the user `ZIMMER_ADMIN_USER` names —
+`tadasant` unless a deployment says otherwise — because Zimmer has no login and the network
+perimeter is the authentication boundary (see [Philosophy](/intro/philosophy/)). The
 attribution is exactly as strong as that perimeter: a second human given tailnet access would
 silently be recorded as Tadas. That is the same trust model the rest of the app runs on, but a
 human-message record makes it a *named* claim, which is a higher bar than the rest of the UI sets.

@@ -20,11 +20,11 @@ class HumanMessageTest < ActiveSupport::TestCase
     assert build_message.valid?
   end
 
-  test "author must be a configured human identity" do
+  test "author must be a seeded user" do
     message = build_message(author: "some-agent")
 
     refute message.valid?
-    assert_includes message.errors[:author], "must be a configured human identity"
+    assert_includes message.errors[:author], "must be a seeded user"
   end
 
   test "author cannot be blank" do
@@ -80,9 +80,33 @@ class HumanMessageTest < ActiveSupport::TestCase
     refute HumanMessage.exists?(message.id)
   end
 
-  test "display_name resolves through the identity config" do
+  test "display_name resolves through the users table" do
     assert_equal "Tadas", build_message(author: "tadasant").display_name
     assert_equal "Julie", build_message(author: "juliehazz").display_name
+  end
+
+  # `author` is a key, not a foreign key, precisely so an immutable record
+  # survives the roster changing under it.
+  test "a record whose author left the roster still renders, naming the key" do
+    message = @session.human_messages.create!(
+      author: "juliehazz",
+      channel: HumanMessage::SLACK,
+      content: "the rest should all be actioned",
+      occurred_at: Time.current
+    )
+
+    users(:juliehazz).destroy!
+
+    message.reload
+    assert_equal "juliehazz", message.author
+    assert_nil message.user
+    assert_equal "juliehazz", message.display_name
+    assert_nil message.author_notes
+  end
+
+  test "author_notes carries the roster's context about the human" do
+    assert_equal users(:tadasant).notes, build_message(author: "tadasant").author_notes
+    assert_nil build_message(author: "juliehazz").author_notes
   end
 
   test "channel_label names the channel a reader has to weigh" do

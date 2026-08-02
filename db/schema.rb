@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_02_060000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_02_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -489,6 +489,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_060000) do
     t.datetime "updated_at", null: false
     t.index ["last_session_id"], name: "index_triggers_on_last_session_id"
     t.index ["status"], name: "index_triggers_on_status"
+  end
+
+  create_table "users", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "display_name", null: false
+    t.string "email"
+    t.string "key", null: false
+    t.text "notes"
+    t.string "slack_user_ids", default: [], null: false, array: true
+    t.datetime "updated_at", null: false
+    t.index "lower((email)::text)", name: "index_users_on_lower_email", unique: true, where: "(email IS NOT NULL)"
+    t.index ["key"], name: "index_users_on_key", unique: true
+    t.index ["slack_user_ids"], name: "index_users_on_slack_user_ids", using: :gin
   end
 
   create_table "x_oauth_credentials", force: :cascade do |t|

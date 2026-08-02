@@ -48,6 +48,7 @@ Everything in Zimmer reads them through `AirCatalogService`. Code that reads `ro
 | `ENG_ALERTS_SLACK_CHANNEL_ID` | the channel `AlertService` posts to | via `mcp_secrets`; ENV is the fallback |
 | `ALERTS_ENABLED` | whether this instance may post to that channel. Unset means *production and staging only* — [holding the token is not authorization to page](/operate/background-jobs/#who-is-allowed-to-page). Set `true` on another instance that should page, `false` to mute one that otherwise would. **ENV only** — never put it in `mcp_secrets`, which is copied into every agent clone's `.env` | not set; the default is the environment |
 | `SLACK_BOT_MENTION_ALLOWED_USER_IDS` | comma-separated Slack user IDs allowed to fire `bot_mention` and passive-listening triggers. **Blank or unset means everyone** — see [the caveat](/limitations/#anyone-in-the-workspace-can-trigger-an-agent-via-bot-mention-by-default) | via `mcp_secrets`; ENV is the fallback |
+| `ZIMMER_ADMIN_USER` | the `users.key` of the human responsible for web UI actions, since Zimmer has no login. Unset falls back to `tadasant`; a value naming no row means web-UI [human messages](/sessions/hierarchy-and-human-messages/#who-is-the-admin) record nothing rather than guessing an author | not set; the default is the seeded admin |
 
 The env, secrets, and data-store wiring all live in `config/deploy.*.yml` and `.kamal/secrets.*`,
 not in Terraform — Terraform only provisions the host.
