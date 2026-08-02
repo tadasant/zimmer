@@ -166,6 +166,44 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
     end
   end
 
+  # The session detail screen's Transcript panel is a collapsed <details> (see
+  # app/views/sessions/_detail.html.erb), so its contents are in the DOM but not
+  # *visible* — and Capybara asserts on visible text. Almost every system test
+  # that opens a session then asserts on something inside the transcript.
+  #
+  # So `visit` opens it, rather than ~90 call sites each remembering to. This
+  # cannot mask a regression in the collapsed-by-default behaviour itself: that
+  # is asserted directly, on the rendered HTML, in
+  # test/controllers/sessions_controller_status_panel_test.rb.
+  #
+  # Navigation that does NOT go through `visit` — clicking a card to open the
+  # dashboard drawer — has to call #open_transcript_panel itself.
+  def visit(*args, **kwargs)
+    super
+    open_transcript_panel
+  end
+
+  # Open every Transcript panel on the page, firing the same `toggle` event a
+  # real click does so the transcript-panel controller still scrolls to the
+  # newest message. A no-op on pages that have no such panel.
+  #
+  # `wait` defaults to 0 because the panel is server-rendered and `visit` has
+  # already returned by the time this runs. Pass a real wait when the panel
+  # arrives asynchronously — the dashboard drawer loads the detail into a lazy
+  # turbo-frame, so it is not in the DOM the instant the drawer opens.
+  def open_transcript_panel(wait: 0)
+    return unless page.has_css?("details[data-controller~='transcript-panel']", wait: wait)
+
+    page.execute_script(<<~JS)
+      document.querySelectorAll("details[data-controller~='transcript-panel']").forEach((d) => {
+        if (!d.open) {
+          d.open = true
+          d.dispatchEvent(new Event("toggle"))
+        }
+      })
+    JS
+  end
+
   # Select an agent root via the agent-root-select Stimulus controller.
   #
   # The radios on the new session form are hidden — they exist only to
