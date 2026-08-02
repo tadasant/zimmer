@@ -312,11 +312,19 @@ class SessionStatusSummaryGenerator
   # `pending` and the panel spun on "Generating…" until PENDING_TIMEOUT. A
   # handler whose only job is to record a failure must not be able to fail the
   # way the thing it is recording failed.
+  #
+  # Under the row lock, like #attach_fork and #release_claim: checking the claim
+  # and then writing outside the lock is the check-then-write shape this whole
+  # rework exists to remove, and it would let a runner whose claim aged out in
+  # the gap stomp the one that replaced it.
   def record_failure(error)
     row = summary_record
-    return unless may_record_outcome?(row)
 
-    row.update!(state: "failed", error: error.to_s.truncate(500), fork_session: nil)
+    row.with_lock do
+      next unless may_record_outcome?(row)
+
+      row.update!(state: "failed", error: error.to_s.truncate(500), fork_session: nil)
+    end
   rescue StandardError => e
     @logger.error("Failed to record status summary failure", error: e.message)
   end
