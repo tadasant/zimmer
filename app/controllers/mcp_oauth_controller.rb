@@ -379,28 +379,35 @@ class McpOauthController < ApplicationController
     return nil unless tokens
 
     credential = McpOauthCredential.find_or_initialize_by(credential_key: pending_flow.credential_key)
+
+    # Plenty of servers mint a refresh token on first consent and omit it when
+    # re-authorizing a grant that is still live. Taking the response literally
+    # would drop a working refresh token on re-consent, leaving a credential
+    # nothing can renew. `credential` still holds its pre-update values here, so
+    # an omitted token falls back to the one already stored.
+    #
+    # Both the column and the flag below are derived from this one value, so they
+    # cannot disagree: the credential is one-shot exactly when no refresh token
+    # survives this exchange.
+    refresh_token = tokens["refresh_token"].presence || credential.refresh_token
+
     credential.update!(
       server_name: pending_flow.server_name,
       server_url: pending_flow.server_url,
       client_id: pending_flow.client_id,
       client_secret: pending_flow.client_secret,
       access_token: tokens["access_token"],
-      refresh_token: tokens["refresh_token"],
+      refresh_token: refresh_token,
       token_endpoint: pending_flow.token_endpoint,
       scopes: tokens["scope"],
       resource: pending_flow.resource,
       expires_at: tokens["expires_in"] ? Time.current + tokens["expires_in"].to_i.seconds : nil,
-      # A token response with no refresh token means this server issues one-shot
-      # credentials. Recorded here, at the only moment it is knowable, so the
-      # Connectors page can state the limitation instead of letting it resurface
-      # later as an unexplained re-auth. See McpOauthCredential#requires_periodic_reauth?.
-      #
-      # The stored refresh token is read too, because plenty of servers mint one
-      # on first consent and omit it when re-authorizing a grant that is still
-      # live. Claiming "this server issues no refresh token" off that response
-      # would assert a permanent property about a server we have already seen
-      # issue one. `credential` still holds its pre-update values here.
-      refresh_token_unsupported: tokens["refresh_token"].blank? && credential.refresh_token.blank?
+      # No refresh token anywhere — not in this response, not already stored —
+      # means this server issues one-shot credentials. Recorded here, at the only
+      # moment it is knowable, so the Connectors page can state the limitation
+      # instead of letting it resurface later as an unexplained re-auth. See
+      # McpOauthCredential#requires_periodic_reauth?.
+      refresh_token_unsupported: refresh_token.blank?
     )
 
     session = pending_flow.session
