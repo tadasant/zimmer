@@ -555,6 +555,79 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # --- resolve_failure: the flag the session form renders as a banner ---------
+  #
+  # degraded? is only true when a last-known-good tree was available to fall back
+  # on. The case it cannot see is the one that produces empty pickers: a resolve
+  # failure with no fallback at all, where load! re-raises and every config facade
+  # rescues CatalogError to []. resolve_failure covers both.
+
+  test "records resolve_failure when a resolve fails with no last-known-good fallback" do
+    assert_nil CatalogSnapshot.latest
+    assert_nil AirCatalogService.resolve_failure
+
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, ->(*) { [ "", "boom", fake_status(1) ] }) do
+          assert_raises(AirCatalogService::CatalogError) { AirCatalogService.entries_for(:roots) }
+        end
+      end
+    end
+
+    # The facades rescue that CatalogError to [], so this flag is the only thing
+    # left that can tell an empty picker from a broken catalog.
+    refute AirCatalogService.degraded?, "no fallback was served, so degraded? stays false"
+    assert AirCatalogService.resolve_failure
+    assert_match(/boom/, AirCatalogService.resolve_failure[:message])
+    assert_kind_of Time, AirCatalogService.resolve_failure[:at]
+  end
+
+  test "records resolve_failure when a resolve fails but a last-known-good is served" do
+    CatalogSnapshot.store!(roots: { "zimmer-router" => { "name" => "zimmer-router" } }, skills: {})
+    AirCatalogService.reset!
+
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, ->(*) { [ "", "cross-scope shortname collision", fake_status(1) ] }) do
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys
+        end
+      end
+    end
+
+    assert AirCatalogService.degraded?
+    assert AirCatalogService.resolve_failure
+    assert_match(/cross-scope shortname collision/, AirCatalogService.resolve_failure[:message])
+  end
+
+  test "clears resolve_failure once resolution recovers" do
+    CatalogSnapshot.store!(roots: { "stale" => { "name" => "stale" } })
+    AirCatalogService.reset!
+
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, ->(*) { [ "", "boom", fake_status(1) ] }) do
+          AirCatalogService.entries_for(:roots)
+          assert AirCatalogService.resolve_failure
+        end
+
+        fresh = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), "", fake_status(0) ] }
+        Open3.stub(:capture3, fresh) do
+          AirCatalogService.reload!
+
+          assert_nil AirCatalogService.resolve_failure
+        end
+      end
+    end
+  end
+
+  test "resolve_failure is nil on a healthy resolve" do
+    with_air_resolve("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }) do
+      AirCatalogService.entries_for(:roots)
+    end
+
+    assert_nil AirCatalogService.resolve_failure
+  end
+
   test "clears degraded state and persists a fresh snapshot once resolution recovers" do
     CatalogSnapshot.store!(roots: { "stale" => { "name" => "stale" } })
     AirCatalogService.reset!

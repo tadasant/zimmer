@@ -94,6 +94,42 @@ class HooksConfigTest < ActiveSupport::TestCase
     assert_equal initial_hooks.size, reloaded_hooks.size
   end
 
+  test "every registered hook has a HOOK.json body on disk" do
+    # AIR validates references *between* entries but not that a hook's path
+    # exists. `git-push-ci-reminder` was registered — and bundled into the
+    # `ci-workflow` plugin, which is default-on for the `agent-orchestrator`
+    # root — with no directory behind it for exactly that reason: the catalog
+    # resolved clean, and the adapter silently skipped the hook at `air prepare`
+    # time with a warning nobody reads. See issue #65.
+    assert HooksConfig.all.any?, "expected at least one registered hook"
+
+    HooksConfig.all.each do |hook|
+      body = File.join(hook.absolute_path, "HOOK.json")
+      assert File.exist?(body), "hook #{hook.id.inspect} has no body at #{body}"
+
+      manifest = JSON.parse(File.read(body))
+      assert manifest["event"].present?, "hook #{hook.id.inspect} declares no event"
+      assert manifest["command"].present?, "hook #{hook.id.inspect} declares no command"
+    end
+  end
+
+  test "every command a hook declares resolves to a file it ships" do
+    # A hook-relative command or argument (`./script.mjs`) is rewritten to
+    # "$CLAUDE_PROJECT_DIR/.claude/hooks/<id>/script.mjs" at install time. If the
+    # file is not in the hook directory the rewrite silently does not happen and
+    # the hook fails at fire time, in the agent's session, not here.
+    HooksConfig.all.each do |hook|
+      manifest = JSON.parse(File.read(File.join(hook.absolute_path, "HOOK.json")))
+
+      ([ manifest["command"] ] + Array(manifest["args"])).each do |token|
+        next unless token.to_s.start_with?("./")
+
+        target = File.join(hook.absolute_path, token.delete_prefix("./"))
+        assert File.exist?(target), "hook #{hook.id.inspect} references #{token} but ships no #{target}"
+      end
+    end
+  end
+
   # TTL/cache invalidation lives in AirCatalogService and is exercised in
   # AirCatalogServiceTest. HooksConfig only delegates.
 end

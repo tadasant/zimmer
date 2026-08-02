@@ -140,6 +140,24 @@ class AirCatalogService
       @last_known_good_at
     end
 
+    # The most recent failed resolve, or nil when the last resolve succeeded.
+    #
+    # This is deliberately broader than degraded?, which is only true when a
+    # last-known-good tree was available to fall back on. The case degraded?
+    # cannot see is the worst one: a resolve failure with no fallback at all, where
+    # load! re-raises and every config facade rescues CatalogError to an empty
+    # array. That renders the session form as a full set of empty pickers —
+    # indistinguishable from a fresh install with nothing configured. This flag is
+    # recorded on *every* failure so the form can say which of the two it is.
+    #
+    # Process-local, like the rest of the in-memory cache: it describes what this
+    # process last saw, and is cleared the moment a resolve succeeds.
+    #
+    # @return [Hash{Symbol => Object}, nil] :message and :at, or nil when healthy
+    def resolve_failure
+      @resolve_failure
+    end
+
     # Pull latest provider caches (github clones) via `air update`, then reload
     # the in-memory entry tree. This is the "pull latest catalog" operation
     # invoked by CatalogRefreshJob and the manual refresh endpoint.
@@ -149,6 +167,12 @@ class AirCatalogService
       run_air_update!
       reload!
       true
+    rescue CatalogError => e
+      # A refresh that dies before reload! never reaches load!'s rescue, so record
+      # the failure here too — otherwise "Refresh catalogs" can fail while the
+      # session form still shows a healthy catalog.
+      @resolve_failure = { message: e.message, at: Time.current }
+      raise
     end
 
     # Wall-clock time of the last provider-cache refresh. Derived from FETCH_HEAD
@@ -196,6 +220,7 @@ class AirCatalogService
       @effective_fingerprint = nil
       @degraded = nil
       @last_known_good_at = nil
+      @resolve_failure = nil
     end
 
     private
@@ -222,6 +247,10 @@ class AirCatalogService
       parsed = parse_resolve_output(run_air_resolve!)
       store_loaded_entries(normalize_parsed(parsed))
     rescue CatalogError => e
+      # Recorded before serve_last_known_good!, which re-raises when there is no
+      # fallback — the one path where degraded? never gets set and the pickers go
+      # silently empty.
+      @resolve_failure = { message: e.message, at: Time.current }
       serve_last_known_good!(e)
     end
 
@@ -233,6 +262,7 @@ class AirCatalogService
       @loaded_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       @last_known_good_at = Time.current
       @degraded = false
+      @resolve_failure = nil
       persist_snapshot(entries)
     end
 

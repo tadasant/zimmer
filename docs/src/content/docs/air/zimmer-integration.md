@@ -21,7 +21,7 @@ flowchart TB
     end
 
     subgraph facades["The six read-model façades"]
-        F["SkillsConfig · AgentRootsConfig<br/>ServersConfig · PluginsConfig<br/>HooksConfig · ReferencesConfig<br/>(CatalogError → [] + warn)"]
+        F["SkillsConfig · AgentRootsConfig<br/>ServersConfig · PluginsConfig<br/>HooksConfig · ReferencesConfig<br/>(CatalogError → [] + warn;<br/>resolve_failure → form banner)"]
     end
 
     subgraph write["WRITE PATH — AirPrepareService (per session)"]
@@ -110,15 +110,16 @@ naming an unknown root) reddens the whole suite. `CONTRIBUTING.md` says it: if y
 wave of `RecordInvalid` across unrelated session tests, suspect the catalog before you suspect
 your change.
 
-:::danger[There is a missing hook body in the catalog right now]
-`hooks/hooks.json` declares `git-push-ci-reminder` with `"path": "git-push-ci-reminder"`, and
-`plugins/ci-workflow/.plugin/plugin.json` bundles that hook — but `hooks/git-push-ci-reminder/`
-does not exist on disk. The `hooks/` directory contains only `hooks.json`.
+:::caution[A missing body is quieter than a dangling reference]
+The stderr marker check only sees references *between* entries. It does not see a registered
+artifact whose `path` has nothing behind it — that resolves clean and is silently skipped later, at
+`air prepare`, when the adapter tries to copy a directory that isn't there.
 
-This is a missing *body*, not a dangling *reference*, so it slips past the stderr marker check at
-resolve time. It will bite at `air prepare`, when the Claude adapter tries to copy a hook directory
-that isn't there — and `ci-workflow` is `default_in_roots: ["agent-orchestrator"]`, so any session
-on that root is affected.
+`git-push-ci-reminder` was exactly that for a while ([#65](https://github.com/tadasant/zimmer/issues/65)):
+registered in `hooks/hooks.json`, bundled by `plugins/ci-workflow`, `default_in_roots:
+["agent-orchestrator"]`, and no `hooks/git-push-ci-reminder/` on disk. The body exists now, and
+`SkillsConfig`/`HooksConfig`'s tests assert every registered artifact has one — but AIR itself still
+won't tell you.
 :::
 
 ## Three cache layers
@@ -218,11 +219,15 @@ pinned to `AIR_CLI_VERSION = "0.13.0"` — the CLI plus both adapters, the secre
 the GitHub provider. Guarded by a version marker file, a binary health check (`air --version`), and
 a cross-process install lock.
 
-:::caution[Two versions to keep in lockstep by hand]
-`Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0` into `/opt/air-cli`, and
-`AirPrepareService::AIR_CLI_VERSION` must match it. Nothing enforces that they agree. If they
-drift, the image's pre-baked CLI is ignored and every worker re-downloads a different version at
-runtime.
+:::caution[Two versions to keep in lockstep]
+`Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0` into `/opt/air-cli` and touches a
+`.air-version-0.13.0` marker; `AirPrepareService::AIR_CLI_VERSION` is what `ensure_air_installed!`
+looks for. If they drift, the image's pre-baked CLI is ignored and the first session on a fresh
+container `rm_rf`s it and re-downloads a different version — on the session's launch path.
+
+`test/contracts/air_config_parity_test.rb` asserts they agree (and that `air.json` and
+`air.production.json` still declare the same catalog), so drift fails a test rather than a deploy.
+Bump both together.
 :::
 
 ## The six façades
@@ -231,7 +236,24 @@ runtime.
 `ReferencesConfig` are thin read-models over `AirCatalogService.entries_for(:type)`. Each shapes
 raw resolve output into a Ruby value object, and each swallows `CatalogError` into an empty array
 with a warning — so a catalog failure degrades the UI instead of returning a 500.
-Tracked in [#112](https://github.com/tadasant/zimmer/issues/112).
+
+That degrade is deliberate, but on its own it is indistinguishable from a fresh install: every
+picker on the session form renders empty and nothing says why
+([#112](https://github.com/tadasant/zimmer/issues/112)). `AirCatalogService.resolve_failure` closes
+that gap. It records the last failed resolve — including the case `degraded?` cannot see, where no
+last-known-good tree exists, `load!` re-raises, and the façades rescue to `[]` — and the session form
+renders it as a banner saying whether the lists below are *empty* or merely *stale*, with the resolve
+error verbatim.
+
+The agent side reads through the same façades, so it had the same blind spot: `get_configs` would
+report *"No MCP servers available"* and `start_session` would happily build a session against a
+catalog that never resolved. `Mcp::Tools::GetConfigs` now prepends the same fact — empty versus
+stale, plus when the failure was seen.
+
+**Not the same fidelity, deliberately.** The banner prints `air resolve`'s stderr verbatim, and that
+process is handed `AIR_GITHUB_TOKEN` by `AirPrepareService#air_env`, so its output is not something
+to echo onto an agent channel. What an agent needs in order not to act wrongly is the fact and its
+age; the text stays with the operator, on the form and in the logs.
 
 Never parse the index files directly. That's the rule in `AGENTS.md` and it's a good one: the
 indexes are AIR's input; the resolved tree is Zimmer's data model. The resolved tree is what Zimmer consumes, and it
