@@ -27,7 +27,8 @@ module Mcp
         - **schedule**: Recurring or one-time scheduled triggers
         - **ao_event**: Triggers fired by internal Zimmer state transitions (e.g., a session entering needs_input or failed). These back the `wake_me_up_when_session_changes_state` tool.
         - **github_label**: Triggers fired when a watched label is added to a PR/issue in a watched repo
-        - **github_issue**: Triggers fired when a new issue is opened in a watched repo
+        - **github_issue**: Triggers fired when a new issue is opened in a watched repo, unless the
+          issue carries one of the condition's `exclude_labels`
 
         A trigger may have multiple conditions (OR semantics) — filtering by trigger_type returns triggers that have at least one condition of that type. Fetching a trigger by id lists each condition with its own id, which is what action_trigger's `conditions` array uses to address one of them.
 

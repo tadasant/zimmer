@@ -130,6 +130,15 @@ class GithubSearchService
       or_group(labels.map { |label| %(label:"#{label.to_s.delete('"')}") })
     end
 
+    # ["hold issue work gate", "wip"] -> -label:"hold issue work gate" -label:"wip"
+    #
+    # Negations are ANDed, which is what makes "carrying ANY of these is enough to be
+    # excluded" fall out: an item is returned only if it carries none of them. Returns
+    # "" for an empty list so callers can join it into a query unconditionally.
+    def exclude_label_terms(labels)
+      labels.map { |label| %(-label:"#{label.to_s.delete('"')}") }.join(" ")
+    end
+
     private
 
     def or_group(terms)

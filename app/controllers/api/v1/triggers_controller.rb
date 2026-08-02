@@ -155,7 +155,7 @@ class Api::V1::TriggersController < Api::BaseController
       mcp_servers: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, allowed_user_ids: [], repos: [], labels: [] ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [] ]
       ]
     )
     permitted[:mcp_servers] ||= []
