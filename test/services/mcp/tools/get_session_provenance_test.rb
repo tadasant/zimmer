@@ -94,6 +94,47 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
     refute_includes output, "**[here]**"
   end
 
+  # The downward walk over MCP: a router inspecting itself sees what a human said
+  # to the sessions it spawned, which is where the clarification usually lands.
+  test "a message said to a descendant is reported to an ancestor" do
+    router = create_session(title: "Route it", agent_root: "zimmer-router")
+    worker = create_session(parent: router, title: "Do it", agent_root: "zimmer")
+
+    add_message(worker, content: "said to the worker, not the router", at: 1.hour.ago)
+
+    output = @tool.call("id" => router.id)
+
+    assert_includes output, "**[elsewhere]**"
+    assert_includes output, "in session ##{worker.id} — zimmer · Do it"
+    assert_includes output, "said to the worker, not the router"
+    assert_includes output, "- **Authored in this session:** 0"
+    assert_includes output, "- **Elsewhere in the hierarchy:** 1"
+    refute_includes output, "**[here]**"
+  end
+
+  # The counts name the hierarchy; when the walk was cut short they are a floor,
+  # and the section has to say so rather than report a total it did not compute.
+  test "the section reports the counts as a floor when the hierarchy walk was truncated" do
+    root = create_session(title: "Origin")
+    node = root
+    (SessionHierarchy::MAX_DEPTH + 2).times { node = create_session(parent: node) }
+    add_message(root, content: "the original ask", at: 1.hour.ago)
+
+    output = @tool.call("id" => root.id)
+
+    assert_includes output, "the elsewhere count is a floor"
+  end
+
+  test "the section claims no truncation for a complete tree" do
+    router = create_session(title: "Route it")
+    worker = create_session(parent: router)
+    add_message(router, content: "the original ask", at: 1.hour.ago)
+
+    output = @tool.call("id" => worker.id)
+
+    refute_includes output, "the elsewhere count is a floor"
+  end
+
   test "the section explains that an absent turn is machine-authored" do
     output = @tool.call("id" => @session.id)
 

@@ -7828,6 +7828,29 @@ class AgentSessionJobTest < ActiveJob::TestCase
     puts "\n--- INJECTED PROVENANCE BLOCKS ---\n#{result[/<session-hierarchy>.*<\/human-messages>/m]}\n--- END INJECTED PROVENANCE BLOCKS ---\n"
   end
 
+  # The other walk direction on the injection surface: a router's own turn
+  # carries what a human said to the sessions it spawned.
+  test "build_prompt_with_goal injects a descendant's human messages into an ancestor's prompt" do
+    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
+    worker = create_lineage_session(parent: router, title: "Do it", agent_root: "zimmer")
+    # Real roots.json keys: agent_root_key resolves against the catalog rather
+    # than echoing the metadata, so an unknown name renders as "—".
+    helper = create_lineage_session(parent: worker, title: "Help out", agent_root: "agents")
+    add_human_message(worker, content: "said to the worker", at: 2.hours.ago)
+    add_human_message(helper, content: "said to the worker's own child", at: 1.hour.ago)
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", router)
+
+    assert_includes result, "said to the worker"
+    assert_includes result, "said to the worker's own child"
+    assert_includes result, %(authored_in="session ##{worker.id} — zimmer · Do it")
+    assert_includes result, %(authored_in="session ##{helper.id} — agents · Help out")
+    assert_includes result, "Authored in this session: 0"
+    assert_includes result, "Elsewhere in the hierarchy: 2"
+    refute_includes result, 'origin="here"'
+  end
+
   test "build_prompt_with_goal reports zero here-messages when only elsewhere ones exist" do
     router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
     worker = create_lineage_session(parent: router)
