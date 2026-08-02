@@ -473,12 +473,18 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
   end
 
   test "poll_pr_statuses does not message a session that reached a terminal state mid-poll" do
-    @session_with_pr.update!(status: :archived, custom_metadata: {
+    @session_with_pr.update!(status: :running, custom_metadata: {
       "github_pull_request_urls" => [ MERGED_PR_URL ],
       "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
     })
 
-    TestJobReturningMerged.new.send(:poll_pr_statuses, @session_with_pr)
+    # The poller reads the session before it spends seconds talking to GitHub, so the
+    # status it holds is the one from the top of the sweep. Poll a stale view of a
+    # session that archived itself in the meantime — the state this guard exists for.
+    stale_view = Session.find(@session_with_pr.id)
+    @session_with_pr.update!(status: :archived)
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, stale_view)
 
     @session_with_pr.reload
     # The status is still recorded — only the message is withheld, and the PR is
@@ -487,6 +493,58 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     assert_nil @session_with_pr.custom_metadata["github_pull_request_merged_notified"]
     refute @session_with_pr.enqueued_messages.pending.exists?
     refute @session_with_pr.logs.where("content LIKE ?", "%PR merged:%").exists?
+  end
+
+  test "poll_pr_statuses queues the merged message for a waiting session" do
+    @session_with_pr.update!(status: :waiting, custom_metadata: {
+      "github_pull_request_urls" => [ MERGED_PR_URL ],
+      "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
+    })
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, @session_with_pr)
+
+    @session_with_pr.reload
+    assert_equal "waiting", @session_with_pr.status,
+      "A sleeping session is not woken by the poller — the message waits for its next turn"
+    assert_equal 1, @session_with_pr.enqueued_messages.pending.count
+    assert @session_with_pr.logs.where("content LIKE ?", "%PR merged: #{MERGED_PR_URL}%enqueued%").exists?
+  end
+
+  test "poll_pr_statuses says nothing when a PR is closed without merging" do
+    @session_with_pr.update!(status: :running, custom_metadata: {
+      "github_pull_request_urls" => [ MERGED_PR_URL ],
+      "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
+    })
+
+    TestJobReturningClosed.new.send(:poll_pr_statuses, @session_with_pr)
+
+    @session_with_pr.reload
+    assert_equal({ MERGED_PR_URL => "closed" }, @session_with_pr.custom_metadata["github_pull_request_statuses"])
+    assert_nil @session_with_pr.custom_metadata["github_pull_request_merged_notified"]
+    refute @session_with_pr.enqueued_messages.pending.exists?,
+      "Only a merge is worth interrupting a session for"
+  end
+
+  test "poll_pr_statuses announces two PRs that merge in the same poll" do
+    first = "https://github.com/owner/repo/pull/201"
+    second = "https://github.com/owner/repo/pull/202"
+    @session_with_pr.update!(status: :running, custom_metadata: {
+      "github_pull_request_urls" => [ first, second ],
+      "github_pull_request_statuses" => { first => "open", second => "open" }
+    })
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, @session_with_pr)
+
+    @session_with_pr.reload
+    assert_equal({ first => true, second => true }, @session_with_pr.custom_metadata["github_pull_request_merged_notified"])
+
+    # Two deliveries against one session in a single sweep: each takes its own lock and
+    # its own position, so neither overwrites the other.
+    contents = @session_with_pr.enqueued_messages.pending.order(:position).pluck(:content)
+    assert_equal 2, contents.size
+    assert contents.any? { |c| c.include?(first) }
+    assert contents.any? { |c| c.include?(second) }
+    assert_equal [ 1, 2 ], @session_with_pr.enqueued_messages.pending.order(:position).pluck(:position)
   end
 
   test "poll_pr_statuses does not record a PR as notified when delivery failed" do
@@ -570,6 +628,16 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
   class TestJobReturningOpen < GitHubPullRequestPollerJob
     def fetch_pr_status(_owner, _repo, _pr_number)
       "open"
+    end
+
+    def fetch_ci_status(_owner, _repo, _pr_number)
+      nil
+    end
+  end
+
+  class TestJobReturningClosed < GitHubPullRequestPollerJob
+    def fetch_pr_status(_owner, _repo, _pr_number)
+      "closed"
     end
 
     def fetch_ci_status(_owner, _repo, _pr_number)

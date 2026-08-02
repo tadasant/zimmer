@@ -138,7 +138,7 @@ class GitHubPullRequestPollerJob < ApplicationJob
     # the session row this job read at the start is stale by now — a whole-column write
     # here would erase whatever the session's own worker recorded in the meantime,
     # `github_pull_request_urls` included.
-    session.merge_custom_metadata!(updates)
+    with_db_retry { session.merge_custom_metadata!(updates) }
 
     Rails.logger.info "[GitHubPullRequestPollerJob] Updated PR statuses for session #{session.id}: #{updated_statuses}" if statuses_changed
     Rails.logger.info "[GitHubPullRequestPollerJob] Updated CI statuses for session #{session.id}: #{updated_ci_statuses}" if ci_statuses_changed
@@ -158,7 +158,13 @@ class GitHubPullRequestPollerJob < ApplicationJob
 
     # `with_github_prs` already excludes archived and failed sessions, but a session
     # can reach either state during the seconds this poll spends talking to GitHub.
-    # There is nothing for it to decide at that point, so say nothing.
+    # There is nothing for it to decide at that point, so say nothing. The reload is
+    # what makes that check real: the row was read before the GitHub calls and nothing
+    # since has refreshed it, so the in-memory status is the one from the top of the
+    # sweep. Reloading here is safe — every hash this method's caller is about to write
+    # was dup'd before the first GitHub call, and the write itself merges in Postgres.
+    session.reload
+
     if session.archived? || session.failed?
       Rails.logger.info "[GitHubPullRequestPollerJob] Skipping merged-PR message for #{session.status} session #{session.id}: #{pr_urls.join(', ')}"
       return []

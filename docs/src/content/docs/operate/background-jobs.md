@@ -160,17 +160,18 @@ one on a private repo.
 ## What a merged PR tells the session
 
 `GitHubPullRequestPollerJob` writes each tracked PR's state into
-`custom_metadata["github_pull_request_statuses"]` every 30 seconds. When one of them goes from
-`open` to `merged`, the session that owns it gets `AutomatedPrompts::PR_MERGED_TEMPLATE` — the same
-delivery path the merge conflict poller uses (`AutomatedSessionMessage`): sent immediately if the
-session is parked in `needs_input`, queued behind the current turn if it is running or waiting.
+`custom_metadata["github_pull_request_statuses"]` on every tick it is allowed to poll — every 30
+seconds for a session the user has touched recently, less often as `PollBackoff` stretches the
+interval out. When one of them goes from `open` to `merged`, the session that owns it gets
+`AutomatedPrompts::PR_MERGED_TEMPLATE` through the same delivery path the merge conflict poller
+uses (`AutomatedSessionMessage`): sent immediately if the session is parked in `needs_input`, queued
+behind the current turn if it is running or waiting.
 
 The message names two outcomes and lets the agent pick. Either the merge was the end of the work,
-in which case the session archives itself and stops sitting in your queue; or the session was
-parked *waiting* for that merge — to rebase onto it, to start the next piece, to check something
-downstream — in which case it carries on. It also says that an unanswered human message outranks
-archiving, because a session that closes itself on top of a question you asked is the expensive
-failure here.
+in which case the session archives itself and stops sitting in your queue. Or the session was parked
+*waiting* for that merge, to rebase onto it or to start the next piece, in which case it carries on.
+It also says that an unanswered human message outranks archiving, because a session that closes
+itself on top of a question you asked is the expensive failure here.
 
 Three rules keep it quiet:
 
