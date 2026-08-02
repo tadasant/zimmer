@@ -28,6 +28,10 @@
       </div>
     </div>
 
+    <%# Renders only when the catalog failed to resolve — otherwise the pickers
+        below would be empty (or stale) with nothing saying why. %>
+    <%= render "shared/catalog_failure_banner" %>
+
     <!-- Form -->
     <% temp_session_id = "temp_#{SecureRandom.uuid}" %>
     <div class="bg-white shadow rounded-lg">

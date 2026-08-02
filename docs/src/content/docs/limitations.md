@@ -934,17 +934,37 @@ If AIR ever rewords that warning, Zimmer quietly starts accepting degraded catal
 
 Tracked in [#66](https://github.com/tadasant/zimmer/issues/66).
 
-### The only hook in the catalog has no body
+### The catalog-failure banner is per-process
 
-🔴 `hooks/hooks.json` declares `git-push-ci-reminder` with `"path": "git-push-ci-reminder"`. The `hooks/`
-directory contains only `hooks.json` — there is no such directory.
+Every config facade (`AgentRootsConfig`, `ServersConfig`, `SkillsConfig`, `HooksConfig`,
+`PluginsConfig`, `ReferencesConfig`) rescues `CatalogError` to an empty array, so a catalog that
+cannot resolve degrades the session form to empty pickers rather than a 500. On its own that made a
+broken catalog look exactly like a fresh install with nothing configured
+([#112](https://github.com/tadasant/zimmer/issues/112)). `AirCatalogService.resolve_failure` now
+records every failed resolve — including the no-fallback case `degraded?` cannot see — and the
+session form renders it as a banner.
 
-And `plugins/ci-workflow/.plugin/plugin.json` bundles that hook, and `ci-workflow` is
-`default_in_roots: ["agent-orchestrator"]`. Every session on that root activates a hook whose body
-doesn't exist. A missing *body* isn't a dangling *reference*, so it slips past the stderr check and
-surfaces at `air prepare`.
+`Mcp::Tools::GetConfigs` carries the same fact to agents, which read the catalog through those same
+façades — but not the same detail. The banner prints `air resolve`'s stderr verbatim, and that process
+is given `AIR_GITHUB_TOKEN`, so the MCP surface reports only *that* resolution failed and when. Same
+fact, different fidelity, different audience.
 
-Tracked in [#65](https://github.com/tadasant/zimmer/issues/65).
+The residual limit: that flag is process-local, like the rest of the in-memory catalog cache. It
+describes what *this* web process last saw. With more than one web process, a form served by a worker
+that has not yet retried shows the banner while its neighbour does not — the pickers and the banner
+are at least always consistent with each other, because both come from the same process's cache.
+
+### A missing artifact body is invisible until `air prepare`
+
+AIR validates references *between* entries but never checks that a `path` exists on disk. A
+registered hook or skill with no body resolves clean, slips past Zimmer's stderr marker check, and is
+silently skipped by the adapter with a warning nobody reads.
+
+`git-push-ci-reminder` sat that way for a while — registered in `hooks/hooks.json`, bundled into the
+`ci-workflow` plugin, `default_in_roots: ["agent-orchestrator"]`, and with no directory behind it
+([#65](https://github.com/tadasant/zimmer/issues/65)). The body exists now, and the test suites for
+`SkillsConfig` and `HooksConfig` assert every registered artifact really has one — but that is a
+Zimmer-side test, not something AIR enforces.
 
 ### The environment configs describe a catalog that no longer exists
 
@@ -963,18 +983,17 @@ background thread *inside Puma* every 300s to compensate.
 
 Tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
 
-### The AIR CLI version is pinned in two places
+### The AIR CLI version is pinned in two places, and the catalog config in two files
 
-`Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0`; `AirPrepareService::AIR_CLI_VERSION` must match.
-Nothing enforces it.
+`Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0` (plus four adapters, plus a `.air-version-<v>`
+marker); `AirPrepareService::AIR_CLI_VERSION` is the version the app looks for. Separately, `air.json`
+(dev/test) and `air.production.json` (in-image) declare the same six sources and differ only in their
+`description`. Both pairs are still kept in step by hand — the duplication is real.
 
-Tracked in [#68](https://github.com/tadasant/zimmer/issues/68).
-
-### Two catalog configs, kept mirrored by hand
-
-`air.json` and `air.production.json` declare the same six sources and must be kept that way manually.
-They differ only in their `description` and their formatting, and nothing checks that the sources still
-agree.
+What changed is that drift now fails a test rather than a deploy: `test/contracts/air_config_parity_test.rb`
+asserts every `@pulsemcp/air-*` pin and the version marker match `AIR_CLI_VERSION`, and that the two
+catalog configs are identical outside `description`. A mismatched marker would otherwise make every
+fresh container throw away its baked-in AIR install and re-download the CLI on a session's launch path.
 
 Tracked in [#68](https://github.com/tadasant/zimmer/issues/68).
 
@@ -1437,18 +1456,29 @@ noted as having turned `main` red), [#5](https://github.com/tadasant/zimmer/issu
 
 Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
 
-### `db/schema.rb` is a Rails 8.0-format dump, and CI never runs the migrations
+### CI never runs the migrations
 
-🟡 `db/schema.rb` says `ActiveRecord::Schema[8.0]` and lists columns in declaration order, while
-`Gemfile.lock` pins Rails 8.1, whose dumper sorts columns alphabetically. So `bin/rails db:migrate`
-rewrites all ~450 lines regardless of how small the migration was, and the author has to either
-commit that reformat or hand-write the schema entry and throw the dump away.
+🟡 Both test jobs build the database with `bin/rails db:test:prepare`, which *loads* `db/schema.rb`
+and never runs a migration. So a `schema.rb` that disagrees with `db/migrate/` passes CI and diverges
+from production, which does run them.
 
-CI cannot catch the drift that invites: both test jobs build the database with `bin/rails
-db:test:prepare`, which *loads* `schema.rb` and never runs a migration — so a `schema.rb` that
-disagrees with `db/migrate/` passes CI and diverges from production, which does run them. Until that
-is fixed, a migration PR should verify the two agree by hand (load the schema into a scratch database,
-run the migrations into another, and diff the introspected result).
+`bin/rails db:schema:verify` (`lib/tasks/schema_verify.rake`) is the check: it migrates a scratch
+database from zero, loads the committed schema into another, dumps both, and diffs. It drops and
+recreates databases, so it refuses to run outside `RAILS_ENV=test` and is deliberately not wired into
+the merge gate. What *does* run in CI is the cheap half, `test/migrations/schema_dump_test.rb`: the
+dumps are in the running Active Record version's format, and `schema.rb` is at the newest migration
+on disk.
+
+**And it already found one.** 🔴 `db/migrate/` is not replayable from zero:
+`20260613193000_add_session_maintenance_indexes` builds a partial index on `sessions.transcript`, and
+nothing in `db/migrate/` ever creates that column — `db/schema.rb` declares it, so every environment
+got it from a schema load. A from-zero `db:migrate` dies there with `PG::UndefinedColumn`. That is the
+exact divergence this section warns about, sitting in the tree unnoticed because nothing migrates from
+zero.
+
+The format half is fixed. `db/schema.rb` was an `ActiveRecord::Schema[8.0]` dump under Rails 8.1, so
+every `db:migrate` reformatted all ~450 lines (the 8.1 dumper alphabetizes) and every migration PR
+carried an unreviewable whole-file diff. It is an 8.1 dump now.
 
 Tracked in [#182](https://github.com/tadasant/zimmer/issues/182).
 
