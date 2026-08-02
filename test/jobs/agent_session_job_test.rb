@@ -7813,7 +7813,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_includes result, "<session-hierarchy>"
     assert_includes result, "- ##{router.id} [zimmer-router] Route it"
     assert_includes result, "← this session"
-    assert_includes result, "NOT \"most recently talked to\""
+    assert_includes result, "does NOT mean \"most recently talked to\""
 
     assert_includes result, "the original ask"
     assert_includes result, "a correction said to a sibling"
@@ -7849,6 +7849,41 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_includes result, "Authored in this session: 0"
     assert_includes result, "Elsewhere in the hierarchy: 2"
     refute_includes result, 'origin="here"'
+  end
+
+  # The per-turn injection is one of the three surfaces an uncle edge has to
+  # reach. Indentation can only express one parent, so the edge is named on the
+  # line — without that it would silently change which human messages the prompt
+  # carries while being invisible in the tree the agent reads.
+  test "build_prompt_with_goal names an uncle edge and carries its hierarchy's human messages" do
+    senior = create_lineage_session(title: "Senior", agent_root: "zimmer-router")
+    target = create_lineage_session(title: "Target", agent_root: "zimmer")
+    SessionUncleLink.create!(session: target, uncle_session: senior, source: "test")
+    add_human_message(senior, content: "what the human told the senior", at: 1.hour.ago)
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", target)
+
+    assert_includes result, "<session-hierarchy>"
+    assert_includes result, "(also senior: ##{senior.id})"
+    assert_includes result, "carries an UNCLE edge"
+    # The whole reason the edge exists: the senior's human context reaches the
+    # junior, and arrives marked `elsewhere` rather than `here`.
+    assert_includes result, "what the human told the senior"
+    assert_includes result, 'origin="elsewhere"'
+    refute_includes result, 'origin="here"'
+  end
+
+  test "build_prompt_with_goal omits the uncle legend when the graph has no uncle edges" do
+    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
+    worker = create_lineage_session(parent: router, title: "Do it", agent_root: "zimmer")
+    add_human_message(router, content: "the ask", at: 1.hour.ago)
+
+    result = AgentSessionJob.new.send(:build_prompt_with_goal, "Fix the bug", worker)
+
+    assert_includes result, "<session-hierarchy>"
+    refute_includes result, "also senior"
+    refute_includes result, "UNCLE edge"
   end
 
   test "build_prompt_with_goal reports zero here-messages when only elsewhere ones exist" do

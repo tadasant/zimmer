@@ -44,7 +44,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     assert_select "#session_#{@session.id}_provenance"
     assert_select "summary", text: /Session hierarchy/
     assert_select "summary", text: /Human messages/
-    assert_match "this session was not spawned by another and has spawned none", response.body
+    assert_match "this session was not spawned by another, has spawned none, and none has queued or interrupted it", response.body
     assert_match "No message anywhere in this hierarchy was authored by a named human.", response.body
   end
 
