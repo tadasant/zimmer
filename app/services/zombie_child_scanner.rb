@@ -62,7 +62,7 @@ class ZombieChildScanner
     # another reaper. Nothing in this process reaps blindly any more, so that
     # should not happen — but a nil status is still not a "ps succeeded", and
     # acting on a half-read process table means reaping the wrong pid.
-    [ stdout, status&.success? == true ]
+    [ stdout, SubprocessStatus.success?(status) ]
   rescue StandardError => e
     Rails.logger.warn "[ZombieChildScanner] Could not read the process table: #{e.class}: #{e.message}"
     [ nil, false ]

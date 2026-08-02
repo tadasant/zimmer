@@ -47,7 +47,7 @@ class CloneArtifactService
 
     # Check for uncommitted changes (working tree + staged)
     stdout, _stderr, status = run_git("status", "--porcelain", cwd: clone_path)
-    if status.success? && stdout.strip.present?
+    if SubprocessStatus.success?(status) && stdout.strip.present?
       has_uncommitted = true
       details << "uncommitted changes (#{stdout.lines.count} files)"
     end
@@ -58,7 +58,7 @@ class CloneArtifactService
       commit_stdout, _stderr, commit_status = run_git(
         "log", "#{upstream_ref}..HEAD", "--format=%H %s", cwd: clone_path
       )
-      if commit_status.success? && commit_stdout.strip.present?
+      if SubprocessStatus.success?(commit_status) && commit_stdout.strip.present?
         has_unpushed = true
         details << "#{commit_stdout.strip.lines.count} unpushed commit(s)"
       end
@@ -103,11 +103,11 @@ class CloneArtifactService
 
     # Capture current branch name
     branch_stdout, _, branch_status = run_git("rev-parse", "--abbrev-ref", "HEAD", cwd: clone_path)
-    metadata["branch"] = branch_stdout.strip if branch_status.success?
+    metadata["branch"] = branch_stdout.strip if SubprocessStatus.success?(branch_status)
 
     # Capture current commit SHA
     sha_stdout, _, sha_status = run_git("rev-parse", "HEAD", cwd: clone_path)
-    metadata["head_sha"] = sha_stdout.strip if sha_status.success?
+    metadata["head_sha"] = sha_stdout.strip if SubprocessStatus.success?(sha_status)
 
     # Determine upstream reference
     upstream_ref = detect_upstream_ref(clone_path)
@@ -120,7 +120,7 @@ class CloneArtifactService
         "bundle", "create", bundle_path, "#{upstream_ref}..HEAD",
         cwd: clone_path
       )
-      metadata["has_bundle"] = bundle_status.success? && file_system.exists?(bundle_path)
+      metadata["has_bundle"] = SubprocessStatus.success?(bundle_status) && file_system.exists?(bundle_path)
       @logger.info("Git bundle creation", success: metadata["has_bundle"], path: bundle_path) if metadata["has_bundle"]
     else
       metadata["has_bundle"] = false
@@ -138,7 +138,7 @@ class CloneArtifactService
     # through `git apply`; without it git only writes "Binary files differ" and
     # the file's contents would be silently lost on restore.
     diff_stdout, _, diff_status = run_git("diff", "--binary", "--cached", "HEAD", cwd: clone_path, binmode: true)
-    if diff_status.success? && !diff_stdout.strip.empty?
+    if SubprocessStatus.success?(diff_status) && !diff_stdout.strip.empty?
       patch_path = File.join(artifacts_dir, "working_tree.patch")
       file_system.binwrite(patch_path, diff_stdout)
       metadata["has_working_tree_patch"] = true
@@ -218,19 +218,19 @@ class CloneArtifactService
   def detect_upstream_ref(clone_path)
     # Try @{upstream}
     stdout, _, status = run_git("rev-parse", "--abbrev-ref", "@{upstream}", cwd: clone_path)
-    return stdout.strip if status.success? && stdout.strip.present?
+    return stdout.strip if SubprocessStatus.success?(status) && stdout.strip.present?
 
     # Fallback to origin/HEAD
     _, _, status = run_git("rev-parse", "--verify", "origin/HEAD", cwd: clone_path)
-    return "origin/HEAD" if status.success?
+    return "origin/HEAD" if SubprocessStatus.success?(status)
 
     # Fallback to origin/main
     _, _, status = run_git("rev-parse", "--verify", "origin/main", cwd: clone_path)
-    return "origin/main" if status.success?
+    return "origin/main" if SubprocessStatus.success?(status)
 
     # Fallback to origin/master
     _, _, status = run_git("rev-parse", "--verify", "origin/master", cwd: clone_path)
-    return "origin/master" if status.success?
+    return "origin/master" if SubprocessStatus.success?(status)
 
     nil
   end
@@ -250,21 +250,21 @@ class CloneArtifactService
   def apply_bundle(bundle_path, clone_path)
     # Verify bundle is valid
     _, _, verify_status = run_git("bundle", "verify", bundle_path, cwd: clone_path)
-    unless verify_status.success?
+    unless SubprocessStatus.success?(verify_status)
       @logger.warn("Bundle verification failed, skipping")
       return false
     end
 
     # Fetch commits from bundle
     _, _, fetch_status = run_git("fetch", bundle_path, cwd: clone_path)
-    unless fetch_status.success?
+    unless SubprocessStatus.success?(fetch_status)
       @logger.warn("Bundle fetch failed")
       return false
     end
 
     # Fast-forward merge to apply the commits
     _, _, merge_status = run_git("merge", "--ff-only", "FETCH_HEAD", cwd: clone_path)
-    if merge_status.success?
+    if SubprocessStatus.success?(merge_status)
       @logger.info("Applied git bundle via fast-forward merge")
       true
     else
@@ -276,14 +276,14 @@ class CloneArtifactService
   def apply_patch(patch_path, clone_path)
     # Try normal apply first
     _, _, apply_status = run_git("apply", "--whitespace=nowarn", patch_path, cwd: clone_path)
-    if apply_status.success?
+    if SubprocessStatus.success?(apply_status)
       @logger.info("Applied working tree patch")
       return true
     end
 
     # Fall back to 3-way merge
     _, _, apply3_status = run_git("apply", "--3way", "--whitespace=nowarn", patch_path, cwd: clone_path)
-    if apply3_status.success?
+    if SubprocessStatus.success?(apply3_status)
       @logger.info("Applied working tree patch with 3-way merge")
       return true
     end
