@@ -655,6 +655,55 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_equal [ "tadasant/zimmer#42" ], condition.github_seen_issue_keys
   end
 
+  # Dropping the exclusion re-arms the gate for every issue that was opting out of it,
+  # and nothing downstream would catch it: exclude_labels is not poller state, so
+  # preserve_github_poll_state does not merge it back.
+  test "rejects an update that would silently drop a github_issue condition's exclusion" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "exclude_labels" => [ "hold issue work gate" ]
+    ))
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "update",
+        "id" => condition.trigger_id,
+        "conditions" => [
+          {
+            "id" => condition.id,
+            "trigger_type" => "github_issue",
+            "configuration" => { "repos" => [ "tadasant/zimmer" ] }
+          }
+        ]
+      )
+    end
+
+    assert_match(/omits "exclude_labels"/, error.message)
+    assert_match(/hold issue work gate/, error.message)
+    assert_equal [ "hold issue work gate" ], condition.reload.github_exclude_labels
+  end
+
+  test "an explicit empty exclude_labels clears the exclusion" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "exclude_labels" => [ "hold issue work gate" ]
+    ))
+
+    @tool.call(
+      "action" => "update",
+      "id" => condition.trigger_id,
+      "conditions" => [
+        {
+          "id" => condition.id,
+          "trigger_type" => "github_issue",
+          "configuration" => { "repos" => [ "tadasant/zimmer" ], "exclude_labels" => [] }
+        }
+      ]
+    )
+
+    assert_empty condition.reload.github_exclude_labels
+  end
+
   test "rejects a github trigger with a malformed repo" do
     assert_raises(ActiveRecord::RecordInvalid) do
       @tool.call(
