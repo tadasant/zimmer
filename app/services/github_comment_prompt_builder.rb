@@ -246,7 +246,7 @@ class GithubCommentPromptBuilder
     command = [ "gh", "api", "repos/#{owner}/#{repo}", "--jq", ".private" ]
     stdout, stderr, status = Open3.capture3(*command)
 
-    if status.success?
+    if SubprocessStatus.success?(status)
       is_private = stdout.strip == "true"
       @repo_visibility_cache[cache_key] = !is_private
       !is_private

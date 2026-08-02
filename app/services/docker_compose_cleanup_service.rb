@@ -56,10 +56,11 @@ class DockerComposeCleanupService
         Open3.capture3(*command)
       end
 
-      if status.success?
+      if SubprocessStatus.success?(status)
         Rails.logger.info "[DockerComposeCleanupService] Docker Compose down succeeded"
       else
-        Rails.logger.warn "[DockerComposeCleanupService] Docker Compose down exited with status #{status.exitstatus}: stdout=#{stdout.to_s.truncate(500)} stderr=#{stderr.to_s.truncate(500)}"
+        Rails.logger.warn "[DockerComposeCleanupService] Docker Compose down failed " \
+          "(#{SubprocessStatus.describe_failure(status)}): stdout=#{stdout.to_s.truncate(500)} stderr=#{stderr.to_s.truncate(500)}"
       end
     end
   end

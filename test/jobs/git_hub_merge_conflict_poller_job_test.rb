@@ -236,10 +236,7 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
   test "fetch_mergeable_field returns nil on command failure" do
     job = GitHubMergeConflictPollerJob.new
 
-    fail_status = mock
-    fail_status.stubs(:success?).returns(false)
-
-    Open3.stubs(:capture3).returns([ "", "Error", fail_status ])
+    Open3.stubs(:capture3).returns([ "", "Error", fake_process_status(exitstatus: 1) ])
     assert_nil job.send(:fetch_mergeable_field, "owner", "repo", "123")
   end
 
@@ -408,6 +405,22 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
     def fetch_merge_conflict_status(_owner, _repo, _pr_number)
       true
     end
+  end
+
+  # Open3.capture3 returns `[stdout, stderr, nil]` when ZombieReaperJob's blanket
+  # `Process.waitpid(-1, WNOHANG)` reaps the gh child before capture3's waiter does.
+  # A nil status is a failed API call, so the mergeable field is simply unknown.
+  test "fetch_mergeable_field treats a nil status as a failure instead of raising" do
+    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+
+    job = GitHubMergeConflictPollerJob.new
+
+    result = nil
+    assert_nothing_raised do
+      result = job.send(:fetch_mergeable_field, "owner", "repo", "42")
+    end
+
+    assert_nil result, "an unverifiable gh call must not report a mergeable state"
   end
 
   class TestJobNoConflict < GitHubMergeConflictPollerJob

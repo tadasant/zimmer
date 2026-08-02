@@ -387,9 +387,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
       data: { "id" => 11111, "author" => "tadasant" }
     }
 
-    mock_status = mock
-    mock_status.stubs(:success?).returns(false)
-    Open3.stubs(:capture3).returns([ "", "API error", mock_status ])
+    Open3.stubs(:capture3).returns([ "", "API error", fake_process_status(exitstatus: 1) ])
 
     # Should not raise an exception
     assert_nothing_raised do
@@ -920,9 +918,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
 
     # A failed `gh api repos/...` is the only capture3 call we expect: no reaction follows
-    failure_status = mock
-    failure_status.stubs(:success?).returns(false)
-    Open3.expects(:capture3).with("gh", "api", "repos/otherowner/repo", "--jq", ".private").returns([ "", "HTTP 502", failure_status ])
+    Open3.expects(:capture3).with("gh", "api", "repos/otherowner/repo", "--jq", ".private")
+      .returns([ "", "HTTP 502", fake_process_status(exitstatus: 1) ])
 
     job = TestJobWithWhitelistedComment.new
     job.send(:poll_comments_for_session, @session_with_pr)
@@ -1005,9 +1002,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
-    failure_status = mock
-    failure_status.stubs(:success?).returns(false)
-    Open3.stubs(:capture3).returns([ "", "API error", failure_status ])
+    Open3.stubs(:capture3).returns([ "", "API error", fake_process_status(exitstatus: 1) ])
 
     job = GithubCommentPollerJob.new
 
@@ -1412,5 +1407,122 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     TestJobWithWhitelistedComment.new.send(:poll_comments_for_session, session)
     assert_equal "dispatching", stored_pr_comments(session).first["dispatch_state"]
     assert_equal 0, session.reload.enqueued_messages.count
+  end
+
+  # ---- Nil subprocess status (ZombieReaperJob reaped the gh child) ----
+  #
+  # ZombieReaperJob runs `Process.waitpid(-1, WNOHANG)` in the same worker process as
+  # this poller. When it reaps a `gh` child before Open3.capture3's own waiter thread
+  # does, that thread's waitpid gets ECHILD and `wait_thr.value` returns nil, so
+  # capture3 returns `[stdout, stderr, nil]`. `status.success?` on that nil is what
+  # crashed the tick in production and paged. These pin the nil path as a plain
+  # failure: warn, retry next tick, never raise, never ERROR.
+
+  test "fetch_paginated_comments treats a nil status as a failed fetch instead of raising" do
+    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+
+    job = GithubCommentPollerJob.new
+
+    result = nil
+    assert_nothing_raised do
+      result = job.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+    end
+
+    # No comments were read this tick, so the caller gets the same "nothing to act on"
+    # answer a non-zero exit already produces — retry on the next poll.
+    assert_nil result
+  end
+
+  test "fetch_paginated_comments logs the reaped child distinctly from a non-zero exit" do
+    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+
+    warnings = capture_warn_logs do
+      GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+    end
+
+    warning = warnings.find { |line| line.include?("Failed to fetch comments") }
+    assert warning, "expected a warn line naming the failed fetch, got: #{warnings.inspect}"
+    # "we never learned the exit code" must not read as "gh returned non-zero".
+    assert_includes warning, SubprocessStatus::REAPED_DESCRIPTION
+    # stderr is still populated on the reaped path; only the exit code is lost.
+    assert_includes warning, "gh: connection reset"
+  end
+
+  test "fetch_paginated_comments returns the pages it already read when a later page is reaped" do
+    # A full first page makes the loop ask for page 2; page 2 loses the race with the reaper.
+    full_page = Array.new(GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE) do |i|
+      { "id" => i + 1, "user" => { "login" => "someone" }, "body" => "hi" }
+    end
+    Open3.stubs(:capture3)
+      .returns([ full_page.to_json, "", fake_process_status(exitstatus: 0) ])
+      .then.returns([ "", "", nil ])
+
+    result = GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+
+    assert_equal GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE, result.length
+    assert_equal 1, result.first["id"]
+  end
+
+  test "add_eyes_reaction reports a nil status as a failed reaction, not as an exception" do
+    Open3.stubs(:capture3).returns([ "", "", nil ])
+
+    comment_info = {
+      type: "pr",
+      owner: "testowner",
+      repo: "testrepo",
+      pr_number: "42",
+      data: { "id" => 11111, "author" => "tadasant" }
+    }
+
+    # `assert_nothing_raised` alone would pass pre-fix too: the method's broad
+    # `rescue StandardError` already swallowed the NoMethodError. The observable delta
+    # is which warn line it emits — the reaction failing, not the job throwing.
+    warnings = capture_warn_logs do
+      GithubCommentPollerJob.new.send(:add_eyes_reaction, comment_info)
+    end
+
+    warning = warnings.find { |line| line.include?("Failed to add eyes reaction") }
+    assert warning, "expected the reaction failure warn line, got: #{warnings.inspect}"
+    assert_includes warning, SubprocessStatus::REAPED_DESCRIPTION
+    assert warnings.none? { |line| line.include?("NoMethodError") },
+      "the nil status must not surface as an exception, got: #{warnings.inspect}"
+  end
+
+  test "perform emits no ERROR record when gh children are reaped mid-poll" do
+    @session_with_pr.update!(
+      metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 5.minutes.ago.iso8601)
+    )
+    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
+
+    # Every gh call this tick loses the race with the reaper. `at_least_once` keeps the
+    # test honest: if PollBackoff gating or the fixture ever drifts so the poll never
+    # shells out, this must fail rather than pass vacuously.
+    Open3.expects(:capture3).at_least_once.returns([ "", "gh: connection reset", nil ])
+
+    # This is the regression: the crash surfaced as
+    # "[GithubCommentPollerJob] Error polling comments for session N: undefined method
+    # 'success?' for nil" from the per-session rescue in #perform, which is what paged.
+    errors = capture_error_logs do
+      assert_nothing_raised { GithubCommentPollerJob.perform_now }
+    end
+
+    assert_empty errors, "a reaped gh child must not produce an ERROR record — that is what paged"
+  end
+
+  # Collects the strings passed to Rails.logger.warn during the block.
+  def capture_warn_logs(&block)
+    capture_logs_at(:warn, &block)
+  end
+
+  # Collects the strings passed to Rails.logger.error during the block.
+  def capture_error_logs(&block)
+    capture_logs_at(:error, &block)
+  end
+
+  def capture_logs_at(level)
+    captured = []
+    Rails.logger.stubs(level).with { |message| captured << message.to_s; true }
+    yield
+    captured
   end
 end

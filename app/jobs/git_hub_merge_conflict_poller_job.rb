@@ -184,8 +184,11 @@ class GitHubMergeConflictPollerJob < ApplicationJob
 
     stdout, stderr, status = Open3.capture3(*command)
 
-    unless status.success?
-      Rails.logger.warn "[GitHubMergeConflictPollerJob] gh api command failed for #{owner}/#{repo}##{pr_number}: #{stderr}"
+    # A nil status (this `gh` child reaped by ZombieReaperJob before capture3's waiter
+    # got to it) is a failed call, not a successful one — see SubprocessStatus.
+    unless SubprocessStatus.success?(status)
+      Rails.logger.warn "[GitHubMergeConflictPollerJob] gh api command failed for #{owner}/#{repo}##{pr_number}: " \
+        "#{SubprocessStatus.describe_failure(status, stderr)}"
       return nil
     end
 

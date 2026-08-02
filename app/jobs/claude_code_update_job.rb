@@ -32,7 +32,7 @@ class ClaudeCodeUpdateJob < ApplicationJob
 
     stdout, stderr, status = run_update
 
-    if status&.success?
+    if SubprocessStatus.success?(status)
       after_version = current_version
       if before_version != after_version
         Rails.logger.info "[ClaudeCodeUpdateJob] Updated from #{before_version} to #{after_version}"
@@ -40,7 +40,8 @@ class ClaudeCodeUpdateJob < ApplicationJob
         Rails.logger.info "[ClaudeCodeUpdateJob] Already up to date (#{after_version})"
       end
     else
-      Rails.logger.warn "[ClaudeCodeUpdateJob] Update command failed (exit #{status&.exitstatus}): #{stderr.to_s.strip}"
+      Rails.logger.warn "[ClaudeCodeUpdateJob] Update command failed " \
+        "(#{SubprocessStatus.describe_failure(status, stderr)})"
     end
 
     # Refresh CLI status cache so the version is immediately visible
@@ -53,7 +54,7 @@ class ClaudeCodeUpdateJob < ApplicationJob
     stdout, _stderr, status = Timeout.timeout(30) do
       Open3.capture3("claude", "--version")
     end
-    return nil unless status.success?
+    return nil unless SubprocessStatus.success?(status)
 
     # Extract semver from output like "2.1.87 (Claude Code)"
     match = stdout.strip.match(/(\d+\.\d+\.\d+)/)

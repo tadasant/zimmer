@@ -355,8 +355,13 @@ class GithubCommentPollerJob < ApplicationJob
 
       stdout, stderr, status = Open3.capture3(*command)
 
-      unless status.success?
-        Rails.logger.warn "[GithubCommentPollerJob] Failed to fetch comments from #{api_path} (page #{page}): #{stderr}"
+      # SubprocessStatus, not `status.success?`: the status is nil when ZombieReaperJob
+      # reaps this `gh` child before capture3's waiter does, and a nil status is a failed
+      # fetch, not a successful one. Falling into this branch gives the tick the same
+      # outcome it already has for a non-zero exit — return what we have, retry next tick.
+      unless SubprocessStatus.success?(status)
+        Rails.logger.warn "[GithubCommentPollerJob] Failed to fetch comments from #{api_path} " \
+          "(page #{page}): #{SubprocessStatus.describe_failure(status, stderr)}"
         return all_comments.any? ? all_comments : nil
       end
 
@@ -502,8 +507,9 @@ class GithubCommentPollerJob < ApplicationJob
 
     stdout, stderr, status = Open3.capture3(*command)
 
-    unless status.success?
-      Rails.logger.warn "[GithubCommentPollerJob] Failed to add eyes reaction to comment #{comment_id}: #{stderr}"
+    unless SubprocessStatus.success?(status)
+      Rails.logger.warn "[GithubCommentPollerJob] Failed to add eyes reaction to comment #{comment_id}: " \
+        "#{SubprocessStatus.describe_failure(status, stderr)}"
     end
   rescue StandardError => e
     # Don't let reaction failures prevent the follow-up prompt from being enqueued
