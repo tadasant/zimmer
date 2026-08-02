@@ -82,6 +82,28 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
     refute record.human_message_here?
   end
 
+  # The other walk direction. A human very often clarifies intent to the worker
+  # a router spawned, and the router is then the session asking "what was I
+  # actually asked to do?" — so the gather gathers DOWN as well as up.
+  test "a message said to a descendant session is gathered in an ancestor's record" do
+    router = create_session(title: "Router")
+    worker = create_session(parent: router, title: "Worker")
+    helper = create_session(parent: worker, title: "Helper")
+    add_message(worker, content: "said to the worker", at: 2.hours.ago)
+    add_message(helper, content: "said to the worker's own child", at: 1.hour.ago)
+
+    record = SessionHumanMessages.new(router)
+
+    assert_equal [ "said to the worker", "said to the worker's own child" ],
+                 record.entries.map(&:content)
+    assert_equal [ worker.id, helper.id ], record.entries.map(&:session_id)
+    assert record.entries.all?(&:elsewhere?)
+    assert_equal 0, record.here_count
+    assert_equal 2, record.elsewhere_count
+    # Gathering a descendant's message must not make it authorization to act here.
+    refute record.human_message_here?
+  end
+
   test "here and elsewhere messages interleave by when the human spoke" do
     router = create_session(title: "Router")
     worker = create_session(parent: router)

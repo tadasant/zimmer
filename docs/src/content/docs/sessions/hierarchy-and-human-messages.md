@@ -155,6 +155,11 @@ messages, badged `this session` or `elsewhere`, with a link to the authoring ses
 permalink where there is one. An empty record renders an explicit empty state explaining what absence
 means, rather than showing nothing.
 
+The panel header states **both** counts, always — `3 messages in this session · 0 elsewhere in the hierarchy`.
+A header that named only the first would describe a narrower search than the one that ran, and a
+reader would have no way to tell "nothing was said elsewhere" from "elsewhere was never looked at".
+The prompt block and `get_session` state the same pair unconditionally, so all three agree.
+
 **Over MCP.** `get_session` includes a `### Session Hierarchy` section and a `### Human Messages`
 section — always, not behind an `include_` flag. Two reasons: they are small and bounded, and the
 most important reading of the message record is the empty one. A caller must be able to tell "no

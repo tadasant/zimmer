@@ -94,6 +94,24 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
     refute_includes output, "**[here]**"
   end
 
+  # The downward walk over MCP: a router inspecting itself sees what a human said
+  # to the sessions it spawned, which is where the clarification usually lands.
+  test "a message said to a descendant is reported to an ancestor" do
+    router = create_session(title: "Route it", agent_root: "zimmer-router")
+    worker = create_session(parent: router, title: "Do it", agent_root: "zimmer")
+
+    add_message(worker, content: "said to the worker, not the router", at: 1.hour.ago)
+
+    output = @tool.call("id" => router.id)
+
+    assert_includes output, "**[elsewhere]**"
+    assert_includes output, "in session ##{worker.id} — zimmer · Do it"
+    assert_includes output, "said to the worker, not the router"
+    assert_includes output, "- **Authored in this session:** 0"
+    assert_includes output, "- **Elsewhere in the hierarchy:** 1"
+    refute_includes output, "**[here]**"
+  end
+
   test "the section explains that an absent turn is machine-authored" do
     output = @tool.call("id" => @session.id)
 
