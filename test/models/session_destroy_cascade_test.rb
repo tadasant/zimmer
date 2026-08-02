@@ -29,7 +29,11 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     [ "notifications", "session_id", :cascade ],
     [ "sessions", "blocked_by_session_id", :nullify ],
     [ "sessions", "parent_session_id", :nullify ],
-    [ "subagent_transcripts", "session_id", :cascade ]
+    [ "subagent_transcripts", "session_id", :cascade ],
+    # Cascade, not nullify: a timeline event is a record of what a human said to
+    # THIS session, so it is meaningless without it — and TimelineEvent's
+    # append-only guard deliberately allows the association-driven destroy.
+    [ "timeline_events", "session_id", :cascade ]
   ].freeze
 
   test "row-level delete of a session with notifications does not raise a foreign key violation" do

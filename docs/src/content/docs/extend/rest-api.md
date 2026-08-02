@@ -127,7 +127,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | --- | --- | --- |
 | `GET` | `/sessions` | filters: `status`, `agent_runtime`, `show_archived`, `page`, `per_page` |
 | `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`. Missing/oversized `q` → 400 (the only 400 in the API) |
-| `GET` | `/sessions/:id` | always carries `human_timeline`; `include_transcript=true` adds the raw transcript |
+| `GET` | `/sessions/:id` | always returns a top-level `human_timeline` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `custom_metadata` |
 | `DELETE` | `/sessions/:id` | → 204 |
@@ -243,13 +243,15 @@ Every response with a `session` key renders it through the same serializer
 (`ApiSessionSerialization`), including `POST /enqueued_messages/:id/interrupt` — `session` means one
 shape everywhere on the surface.
 
-`GET /sessions/:id` adds one more: `human_timeline`, an array of the messages Zimmer knows a named
-human authored, each with `origin` (`live` — a human spoke to this session — or `inherited` — a
-human spoke to a session this one was spawned from), `author`, `author_display_name`, `channel`,
-`provenance`, `source_session_id`, `entry_point`, `content` and `occurred_at`. It is always present
-on the show action, never on the index — reading the timeline costs a query per ancestor, which the
-index would pay per card. An empty array on show means no human authored anything here, which is a
-real answer; see [The Human Timeline](/sessions/timeline/) for why absence is the point.
+`GET /sessions/:id` returns one more top-level key **alongside** `session`: `human_timeline`, an
+array of the messages Zimmer knows a named human authored, each with `origin` (`live` — a human
+spoke to this session — or `inherited` — a human spoke to a session this one was spawned from),
+`author`, `author_display_name`, `channel`, `provenance`, `source_session_id`, `entry_point`,
+`content` and `occurred_at`. It is a sibling of `session` rather than a field inside it precisely so
+the one-shape rule above keeps holding: reading the timeline costs a query per ancestor, which the
+index would pay once per card, so it cannot travel with every `session` object. It is unconditional
+on the show action — an empty array means no human authored anything here, which is a real answer;
+see [The Human Timeline](/sessions/timeline/) for why absence is the point.
 
 Five of those fields are easy to misread:
 

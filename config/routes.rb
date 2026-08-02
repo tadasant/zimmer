@@ -18,6 +18,10 @@ Rails.application.routes.draw do
     resources :runtime_login_attempts
     resources :sessions
     resources :subagent_transcripts
+    # Read-only: TimelineEvent is append-only precisely so nobody can edit a
+    # record of what a human said after the fact. Destroy is offered because a
+    # misattributed event is worse than a missing one.
+    resources :timeline_events, only: [ :index, :show, :destroy ]
     resources :trigger_conditions
     resources :triggers
     resources :x_oauth_credentials

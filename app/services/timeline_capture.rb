@@ -83,14 +83,27 @@ class TimelineCapture
         body = "#{body[0, TimelineEvent::MAX_CONTENT_LENGTH - 20]}\n…[truncated]"
       end
 
-      session.timeline_events.create!(
-        event_type: TimelineEvent::HUMAN_MESSAGE,
-        author: author.name,
-        channel: channel,
-        content: body,
-        occurred_at: occurred_at,
-        provenance: provenance
-      )
+      # The savepoint is what makes the rescue below actually best-effort.
+      #
+      # Two of the call sites (SessionsController#follow_up, and any future one
+      # inside an ActiveRecord::Base.transaction block) run with an enclosing
+      # transaction open. In PostgreSQL a failed statement aborts the whole
+      # transaction: rescuing the Ruby exception does NOT un-abort it, and every
+      # later statement raises PG::InFailedSqlTransaction. Without
+      # `requires_new: true` a capture failure would therefore take down the
+      # follow-up delivery it was only supposed to describe — the exact opposite
+      # of the guarantee this method is written to provide. The savepoint scopes
+      # the rollback to this INSERT and leaves the caller's transaction usable.
+      TimelineEvent.transaction(requires_new: true) do
+        session.timeline_events.create!(
+          event_type: TimelineEvent::HUMAN_MESSAGE,
+          author: author.name,
+          channel: channel,
+          content: body,
+          occurred_at: occurred_at,
+          provenance: provenance
+        )
+      end
     rescue => e
       # Capture is observational. If it fails, the message it describes still
       # has to reach the agent.
