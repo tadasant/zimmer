@@ -682,11 +682,16 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
 
   test "an ENOENT raised because the source clone itself is gone is not retried" do
     ForkSessionService.any_instance.stubs(:sleep)
-    fs = failing_copy_adapter(@mock_fs, failures: 99)
+    fs = @mock_fs
     source = @clone_path
-    fs.define_singleton_method(:directory?) do |path|
-      # The archive pipeline deleted the source clone out from under the copy.
-      path == source ? false : super(path)
+    attempts = []
+    fs.define_singleton_method(:copy_attempts) { attempts }
+    fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      attempts << dest
+      # DeferredCloneCleanupJob deleted the source clone out from under the copy,
+      # which is a different ENOENT: no later attempt can find what it deleted.
+      rm_rf(source)
+      raise Errno::ENOENT.new(File.join(src, "Gemfile"))
     end
 
     result = ForkSessionService.call(
