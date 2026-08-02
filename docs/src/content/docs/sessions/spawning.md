@@ -74,7 +74,8 @@ every follow-up turn, so anything it appends rides along on every turn:
 | --- | --- |
 | The goal suffix | `session.goal` is set — a goal ID resolves to its description, free text passes through |
 | `<session-notes>` | `session_notes` is non-blank |
-| `<session-timeline>` | the session (or an ancestor) has a human-authored message — see [The Human Timeline](/sessions/timeline/) |
+| `<session-hierarchy>` | the session was spawned by another or has spawned one — see [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/) |
+| `<human-messages>` | any session in that hierarchy has a human-authored message |
 
 A blank base prompt is returned untouched, which is what lets the initial-spawn guard catch a
 task-less spawn instead of launching an agent on a bare goal string.

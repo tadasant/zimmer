@@ -1,8 +1,8 @@
-# The named human beings Zimmer will attribute a timeline event to.
+# The named human beings Zimmer will attribute a human message to.
 #
-# A TimelineEvent's `author` is ALWAYS one of these keys. There is deliberately
+# A HumanMessage's `author` is ALWAYS one of these keys. There is deliberately
 # no "unknown human" bucket: when the actor at an input boundary cannot be
-# established, Zimmer records nothing at all (a missing event is safe; a
+# established, Zimmer records nothing at all (a missing record is safe; a
 # wrongly-attributed one launders automation into authorization).
 #
 # `slack_user_ids` maps Slack user IDs to a human. It is intentionally EMPTY in

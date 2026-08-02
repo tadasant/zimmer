@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# The registry of named human beings Zimmer can attribute a TimelineEvent to.
+# The registry of named human beings Zimmer can attribute a HumanMessage to.
 #
 # Two ideas are deliberately kept apart here:
 #

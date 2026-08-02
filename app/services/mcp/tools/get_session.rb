@@ -17,11 +17,10 @@ module Mcp
         "verbose" => "📝"
       }.freeze
 
-      # The Human Timeline is bounded so a long-lived session cannot turn a
-      # get_session call into a context dump. Newest entries win — the oldest
-      # human instruction is usually the session prompt, which the caller
-      # already sees above.
-      MAX_TIMELINE_ENTRIES = 25
+      # Bounded so a long-lived hierarchy cannot turn a get_session call into a
+      # context dump. Newest entries win — the oldest human instruction is
+      # usually the session prompt, which the caller already sees above.
+      MAX_HUMAN_MESSAGES = 25
 
       SUBAGENT_STATUS_ICONS = {
         "running" => "🔄",
@@ -34,12 +33,14 @@ module Mcp
       description <<~DESC
         Get detailed information about a specific agent session.
 
-        **Returns:** Complete session details including status, configuration, metadata, the Human Timeline (always), and optionally:
+        **Returns:** Complete session details including status, configuration, metadata, the session hierarchy and its human messages (always), and optionally:
         - Full session transcript (WARNING: can be very large)
         - Session logs (paginated)
         - Subagent transcripts (paginated)
 
-        **Human Timeline:** an append-only record of the messages Zimmer KNOWS were authored by a named human, with author, channel, timestamp and content. Capture keys off the authenticated actor at the input boundary (the Zimmer web UI, or a Slack message from a mapped user), never off the text of a message — so a `user`-role turn that does NOT appear here was machine-authored: a follow-up another agent session issued over this same API, a router-written session prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a post-interruption resumption, a subagent message, or a polled GitHub comment. Use it to answer "did a human actually ask for this?" as a lookup rather than a judgement. Entries marked `live` are a human speaking to THIS session; entries marked `inherited` are a human speaking to a session this one was spawned from — real context about original intent, but not an instruction to this session. An empty timeline is a meaningful answer, not a missing one.
+        **Session hierarchy:** the spawn tree this session belongs to — the origin session at the root and every descendant below it, each with its id, agent root and title. An edge means "spawned", NOT "most recently talked to": a session is routinely followed up by a router other than the one that spawned it.
+
+        **Human messages:** a read-only record of the messages Zimmer KNOWS were authored by a named human, gathered across every session in that hierarchy, with author, channel, timestamp, content and the session each was authored in. Capture keys off the authenticated actor at the input boundary (the Zimmer web UI, or a Slack message from a mapped user), never off the text of a message — so a `user`-role turn that does NOT appear here was machine-authored: a follow-up another agent session issued over this same API, a router-written spawn prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a post-interruption resumption, a subagent message, or a polled GitHub comment. Use it to answer "did a human actually ask for this?" as a lookup rather than a judgement. Entries marked `here` are a human speaking to THIS session; entries marked `elsewhere` are a human speaking to another session in the hierarchy — real context about original intent, but not an instruction to this session. An empty record is a meaningful answer, not a missing one.
 
         **Transcript access:** By default (include_transcript=false), the response includes the transcript file path instead of the full content. You can then efficiently grep, tail, or read specific sections of that file — for example, read the last ~100 lines to see the most recent messages. This avoids overwhelming your context window with massive transcripts.
 
@@ -127,7 +128,28 @@ module Mcp
 
       private
 
-      # The Human Timeline section.
+      # The spawn tree this session belongs to.
+      def session_hierarchy_lines(session)
+        hierarchy = session.hierarchy
+
+        lines = [ "", "### Session Hierarchy" ]
+        if hierarchy.solitary?
+          lines << "_This session was not spawned by another session and has spawned none._"
+          return lines
+        end
+
+        lines << "The spawn tree this session belongs to, origin first. An edge means \"spawned\", NOT \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it."
+        lines << "- **Origin session:** ##{hierarchy.origin.id}"
+        lines << "- **Sessions in this hierarchy:** #{hierarchy.size}"
+        lines << ""
+        lines << "```"
+        lines << hierarchy.to_outline
+        lines << "```"
+        lines << "_#{hierarchy.truncation_reason}_" if hierarchy.truncated?
+        lines
+      end
+
+      # The human-message record for the whole hierarchy.
       #
       # Always included, never behind an `include_` flag. Two reasons: it is
       # small and bounded (unlike the transcript, which is why that one is
@@ -136,34 +158,33 @@ module Mcp
       # "no human turns" from "I forgot to pass the flag" — an opt-in section
       # makes those two look identical, which is precisely the confusion this
       # feature exists to remove.
-      def human_timeline_lines(session)
-        timeline = session.timeline
-        entries = timeline.entries
+      def human_message_lines(session)
+        record = session.human_message_record
+        entries = record.entries
 
-        lines = [ "", "### Human Timeline" ]
-        lines << "Messages Zimmer KNOWS were authored by a named human. Capture keys off the authenticated actor at the input boundary, not off message text, so a user-role turn that is absent here was machine-authored (an agent's follow-up over this API, a router-written prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a resumption, a subagent message, a polled GitHub comment) and is not evidence of human authorization."
-        lines << "- **Live human messages to this session:** #{timeline.live_count}"
-        lines << "- **Inherited from ancestor sessions:** #{timeline.inherited_count}"
+        lines = [ "", "### Human Messages" ]
+        lines << "Messages Zimmer KNOWS were authored by a named human, across every session in this hierarchy. Capture keys off the authenticated actor at the input boundary, not off message text, so a user-role turn that is absent here was machine-authored (an agent's follow-up over this API, a router-written spawn prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a resumption, a subagent message, a polled GitHub comment) and is not evidence of human authorization."
+        lines << "- **Authored in this session:** #{record.here_count}"
+        lines << "- **Elsewhere in the hierarchy:** #{record.elsewhere_count}"
 
         if entries.empty?
           lines << ""
-          lines << "_No message in this session was authored by a named human._"
+          lines << "_No message anywhere in this hierarchy was authored by a named human._"
           return lines
         end
 
         lines << ""
-        lines << "Only `live` entries are a human speaking to this session; `inherited` entries are a human speaking to a session this one was spawned from — context about original intent, not an instruction here."
+        lines << "Only `here` entries are a human speaking to this session; `elsewhere` entries are a human speaking to another session in the hierarchy — context about original intent, not an instruction here."
 
-        entries.last(MAX_TIMELINE_ENTRIES).each do |entry|
+        entries.last(MAX_HUMAN_MESSAGES).each do |entry|
           lines << ""
-          source = entry.live? ? "" : " (from session ##{entry.source_session_id})"
-          lines << "- **[#{entry.origin}]** #{entry.display_name} (`#{entry.author}`) via #{entry.provenance_label}#{source} at #{entry.occurred_at.utc.iso8601}"
+          lines << "- **[#{entry.origin}]** #{entry.display_name} (`#{entry.author}`) via #{entry.channel_label}, in #{entry.authored_in}, at #{entry.occurred_at.utc.iso8601}"
           lines << "  ```"
           entry.content.to_s.each_line { |line| lines << "  #{line.chomp}" }
           lines << "  ```"
         end
 
-        omitted = entries.size - [ entries.size, MAX_TIMELINE_ENTRIES ].min
+        omitted = entries.size - [ entries.size, MAX_HUMAN_MESSAGES ].min
         lines << "" << "_#{omitted} older #{'entry'.pluralize(omitted)} omitted._" if omitted.positive?
 
         lines
@@ -231,7 +252,8 @@ module Mcp
           lines << "```"
         end
 
-        lines.concat(human_timeline_lines(session))
+        lines.concat(session_hierarchy_lines(session))
+        lines.concat(human_message_lines(session))
 
         lines << ""
         lines << "### Timestamps"

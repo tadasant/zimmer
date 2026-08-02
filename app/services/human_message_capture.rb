@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-# Writes `human_message` events onto a session's Timeline.
+# Writes HumanMessage records.
 #
-# This is the ONLY way a TimelineEvent is created, and it exists so the rule can
-# be stated in one place: capture keys off the *authenticated actor at the input
+# This is the ONLY way one is created, and it exists so the rule can be stated
+# in one place: capture keys off the *authenticated actor at the input
 # boundary*, never off the text of the message.
 #
 # That distinction is the whole feature. `follow_up` issued by Tadas in the
@@ -23,20 +23,19 @@
 # and establishes no human author, so those paths deliberately record nothing.
 #
 # Every method is best-effort: a capture failure must never break the delivery
-# of the message it was describing. A missing event is a safe outcome.
-class TimelineCapture
+# of the message it was describing. A missing record is a safe outcome.
+class HumanMessageCapture
   class << self
     # Record a message typed by a human into the Zimmer web UI.
     #
-    # @param session [Session]
+    # @param session [Session] the session the human was speaking TO
     # @param content [String] the human's own words
     # @param entry_point [String] the specific boundary, e.g. "web_ui.follow_up"
-    # @param occurred_at [Time]
     def record_web_ui_message(session:, content:, entry_point:, occurred_at: Time.current)
       record(
         session: session,
         author: HumanIdentity.web_ui,
-        channel: TimelineEvent::WEB_UI,
+        channel: HumanMessage::WEB_UI,
         content: content,
         occurred_at: occurred_at,
         provenance: { "entry_point" => entry_point }
@@ -53,7 +52,7 @@ class TimelineCapture
       record(
         session: session,
         author: HumanIdentity.for_slack_user_id(slack_user_id),
-        channel: TimelineEvent::SLACK,
+        channel: HumanMessage::SLACK,
         content: content,
         occurred_at: occurred_at,
         provenance: {
@@ -67,7 +66,7 @@ class TimelineCapture
 
     private
 
-    # @return [TimelineEvent, nil] nil whenever the actor could not be
+    # @return [HumanMessage, nil] nil whenever the actor could not be
     #   established, the content is empty, or the write failed.
     def record(session:, author:, channel:, content:, occurred_at:, provenance:)
       return nil if session.nil? || !session.persisted?
@@ -77,10 +76,10 @@ class TimelineCapture
       return nil if body.blank?
 
       # Truncate rather than reject: an over-long message is still evidence a
-      # human asked for something, and losing the event entirely would be the
-      # worse failure. The marker keeps the rendering honest about it.
-      if body.length > TimelineEvent::MAX_CONTENT_LENGTH
-        body = "#{body[0, TimelineEvent::MAX_CONTENT_LENGTH - 20]}\n…[truncated]"
+      # human asked for something, and losing it entirely would be the worse
+      # failure. The marker keeps the rendering honest about it.
+      if body.length > HumanMessage::MAX_CONTENT_LENGTH
+        body = "#{body[0, HumanMessage::MAX_CONTENT_LENGTH - 20]}\n…[truncated]"
       end
 
       # The savepoint is what makes the rescue below actually best-effort.
@@ -94,9 +93,8 @@ class TimelineCapture
       # follow-up delivery it was only supposed to describe — the exact opposite
       # of the guarantee this method is written to provide. The savepoint scopes
       # the rollback to this INSERT and leaves the caller's transaction usable.
-      TimelineEvent.transaction(requires_new: true) do
-        session.timeline_events.create!(
-          event_type: TimelineEvent::HUMAN_MESSAGE,
+      HumanMessage.transaction(requires_new: true) do
+        session.human_messages.create!(
           author: author.name,
           channel: channel,
           content: body,
@@ -107,7 +105,7 @@ class TimelineCapture
     rescue => e
       # Capture is observational. If it fails, the message it describes still
       # has to reach the agent.
-      Rails.logger.error("[TimelineCapture] Failed to record event for session #{session&.id}: #{e.class}: #{e.message}")
+      Rails.logger.error("[HumanMessageCapture] Failed to record for session #{session&.id}: #{e.class}: #{e.message}")
       nil
     end
   end

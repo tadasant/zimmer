@@ -2,7 +2,7 @@ class SessionsController < ApplicationController
   require "path_sanitizer"
   require "automated_prompts"
   include ActionView::RecordIdentifier
-  include WebUiTimelineCapture
+  include WebUiHumanMessageCapture
   include SessionSearchable
   include PendingMessageDelivery
 
@@ -300,7 +300,7 @@ class SessionsController < ApplicationController
       if @session.save
         # A clone-only session has no prompt, so there is nothing a human said
         # yet; the first thing they type arrives through #follow_up.
-        capture_web_ui_timeline_message(@session, @session.prompt, "web_ui.new_session") unless is_clone_only
+        capture_web_ui_human_message(@session, @session.prompt, "web_ui.new_session") unless is_clone_only
 
         # Copy images and files from temp session storage to real session storage
         if temp_session_id.present? && temp_session_id.match?(TEMP_SESSION_ID_PATTERN)
@@ -402,7 +402,7 @@ class SessionsController < ApplicationController
 
       # Recorded before the job is enqueued so the very first prompt Zimmer
       # builds for this session already carries it.
-      capture_web_ui_timeline_message(session, prompt, "web_ui.quick_prompt")
+      capture_web_ui_human_message(session, prompt, "web_ui.quick_prompt")
 
       images_to_attach, files_to_attach = copy_staged_uploads_to_session(
         temp_session_id, session, log_prefix: "quick prompt"
@@ -499,7 +499,7 @@ class SessionsController < ApplicationController
 
       # The human's own words, not `augmented_prompt` — the page-context block
       # wrapped around them is written by Zimmer, not by Tadas.
-      capture_web_ui_timeline_message(session, prompt, "web_ui.chat_bubble")
+      capture_web_ui_human_message(session, prompt, "web_ui.chat_bubble")
 
       images_to_attach, files_to_attach = copy_staged_uploads_to_session(
         temp_session_id, session, log_prefix: "chat bubble prompt"
@@ -1360,7 +1360,7 @@ class SessionsController < ApplicationController
         # Recorded at the moment the human typed it, not at delivery: the
         # timeline is a record of what was said and when, and a queued message
         # may sit for a whole turn before it reaches the agent.
-        capture_web_ui_timeline_message(@session, follow_up_prompt, "web_ui.follow_up_queued")
+        capture_web_ui_human_message(@session, follow_up_prompt, "web_ui.follow_up_queued")
 
         @session.logs.create!(
           content: "Message queued at position #{next_position} (redirected from follow_up to queue)",
@@ -1411,7 +1411,7 @@ class SessionsController < ApplicationController
 
         # Before deliver_follow_up! enqueues the job, so the prompt that job
         # builds already includes this turn.
-        capture_web_ui_timeline_message(@session, follow_up_prompt, "web_ui.follow_up", occurred_at: sent_at)
+        capture_web_ui_human_message(@session, follow_up_prompt, "web_ui.follow_up", occurred_at: sent_at)
 
         # Clear stale retry state, resume, stamp the prompt, enqueue, record the job id.
         #
