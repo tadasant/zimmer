@@ -95,8 +95,11 @@ class FileSystemAdapter
   # Copy a file or directory recursively
   # @param src [String] The source path
   # @param dest [String] The destination path
+  # @param exclude [Array<String>] fnmatch patterns tested against each entry's
+  #   path relative to +src+ ("vendor/bundle", "**/node_modules"). A matching
+  #   directory is skipped whole — not descended into.
   # @return [void]
-  def cp_r(src, dest)
+  def cp_r(src, dest, exclude: [])
     raise NotImplementedError, "#{self.class}#cp_r must be implemented"
   end
 

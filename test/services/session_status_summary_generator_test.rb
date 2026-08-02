@@ -206,6 +206,40 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal :skipped, generate.outcome
   end
 
+  # The copy takes real time — tens of seconds on a repo with an installed
+  # bundle — and the session can reach the trash during it. In production it did:
+  # the source clone was deleted 12 seconds after the copy ended.
+  test "a session that archives during the clone copy abandons the fork" do
+    session = @session
+    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      session.update_column(:status, Session.statuses[:archived])
+      super(src, dest, exclude: exclude)
+    end
+
+    result = generate
+
+    assert_equal :skipped, result.outcome
+    assert_nil result.fork_session
+    fork = Session.where.not(id: @session.id).order(:id).last
+    assert fork.archived?, "an abandoned fork must be archived so its copied clone is reclaimed"
+    assert_nil @session.reload.status_summary, "an abandoned generation records nothing"
+  end
+
+  # The summarizer reads the transcript and is told not to run tools, so the
+  # installed-dependency trees are pure copy cost — and the copy window is what
+  # makes a concurrent-mutation race likely at all.
+  test "a summary fork does not copy installed-dependency trees" do
+    @fs.write(File.join(@clone_path, "Gemfile"), "source 'https://rubygems.org'")
+    @fs.write(File.join(@clone_path, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"), "gem")
+    @fs.write(File.join(@clone_path, "node_modules/turbo/index.js"), "js")
+
+    clone = generate.fork_session.metadata["clone_path"]
+
+    assert @fs.exists?(File.join(clone, "Gemfile")), "the working tree itself is still copied"
+    assert_not @fs.exists?(File.join(clone, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"))
+    assert_not @fs.exists?(File.join(clone, "node_modules/turbo/index.js"))
+  end
+
   test "a fork failure is recorded on the summary rather than raised" do
     failing = Class.new do
       def self.call(**)

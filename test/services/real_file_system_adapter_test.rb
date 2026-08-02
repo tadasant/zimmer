@@ -183,4 +183,69 @@ class RealFileSystemAdapterTest < ActiveSupport::TestCase
 
     assert_raises(Errno::ENOENT) { @adapter.chmod(0o755, path) }
   end
+
+  # --- cp_r with exclusions -------------------------------------------------
+
+  def build_clone_tree(root)
+    FileUtils.mkdir_p(File.join(root, "vendor/bundle/ruby/3.4.0/gems/activemodel-8.1.3/lib"))
+    FileUtils.mkdir_p(File.join(root, "vendor/javascript"))
+    FileUtils.mkdir_p(File.join(root, "docs/node_modules/astro"))
+    FileUtils.mkdir_p(File.join(root, "node_modules/turbo"))
+    FileUtils.mkdir_p(File.join(root, ".git"))
+    FileUtils.mkdir_p(File.join(root, "bin"))
+
+    File.write(File.join(root, "Gemfile"), "source 'https://rubygems.org'")
+    File.write(File.join(root, ".gitignore"), "log/\n")
+    File.write(File.join(root, ".git/HEAD"), "ref: refs/heads/main")
+    File.write(File.join(root, "vendor/bundle/ruby/3.4.0/gems/activemodel-8.1.3/lib/railtie.rb"), "gem code")
+    File.write(File.join(root, "vendor/javascript/stimulus.js"), "js")
+    File.write(File.join(root, "docs/node_modules/astro/package.json"), "{}")
+    File.write(File.join(root, "node_modules/turbo/index.js"), "js")
+    File.write(File.join(root, "bin/rails"), "#!/usr/bin/env ruby")
+    File.chmod(0o755, File.join(root, "bin/rails"))
+    File.symlink("Gemfile", File.join(root, "Gemfile.link"))
+  end
+
+  test "cp_r copies the whole tree when nothing is excluded" do
+    source = File.join(@temp_dir, "source")
+    dest = File.join(@temp_dir, "dest")
+    build_clone_tree(source)
+
+    @adapter.cp_r(source, dest)
+
+    assert @adapter.exists?(File.join(dest, "vendor/bundle/ruby/3.4.0/gems/activemodel-8.1.3/lib/railtie.rb"))
+    assert @adapter.exists?(File.join(dest, "node_modules/turbo/index.js"))
+  end
+
+  test "cp_r skips excluded directories and copies everything else" do
+    source = File.join(@temp_dir, "source")
+    dest = File.join(@temp_dir, "dest")
+    build_clone_tree(source)
+
+    @adapter.cp_r(source, dest, exclude: [ "vendor/bundle", "**/node_modules" ])
+
+    assert_not @adapter.exists?(File.join(dest, "vendor/bundle")),
+      "an excluded directory is skipped whole, not descended into"
+    assert_not @adapter.exists?(File.join(dest, "node_modules"))
+    assert_not @adapter.exists?(File.join(dest, "docs/node_modules")),
+      "**/node_modules matches at any depth"
+
+    assert_equal "source 'https://rubygems.org'", @adapter.read(File.join(dest, "Gemfile"))
+    assert @adapter.exists?(File.join(dest, ".gitignore")), "dotfiles ride along"
+    assert @adapter.exists?(File.join(dest, ".git/HEAD"))
+    assert @adapter.exists?(File.join(dest, "vendor/javascript/stimulus.js")),
+      "excluding vendor/bundle must not exclude the rest of vendor/"
+    assert @adapter.exists?(File.join(dest, "docs")), "the parent of an excluded directory still exists"
+  end
+
+  test "cp_r with exclusions preserves file modes and symlinks" do
+    source = File.join(@temp_dir, "source")
+    dest = File.join(@temp_dir, "dest")
+    build_clone_tree(source)
+
+    @adapter.cp_r(source, dest, exclude: [ "vendor/bundle" ])
+
+    assert_equal 0o100755, File.stat(File.join(dest, "bin/rails")).mode, "an executable stays executable"
+    assert File.symlink?(File.join(dest, "Gemfile.link")), "a symlink is copied as a symlink, not followed"
+  end
 end

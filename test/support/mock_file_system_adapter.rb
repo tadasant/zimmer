@@ -121,8 +121,10 @@ class MockFileSystemAdapter < FileSystemAdapter
   end
 
   # Copy a file or directory recursively (simulated for testing)
-  # In the mock, we copy all files and directories that start with src path
-  def cp_r(src, dest)
+  # In the mock, we copy all files and directories that start with src path.
+  # `exclude` holds fnmatch patterns against the path relative to src, matching
+  # RealFileSystemAdapter's pruning.
+  def cp_r(src, dest, exclude: [])
     # Copy the directory itself
     if @directories.include?(src)
       @directories.add(dest)
@@ -130,6 +132,8 @@ class MockFileSystemAdapter < FileSystemAdapter
 
     # Copy all files under src to dest
     @files.keys.select { |p| p.start_with?("#{src}/") || p == src }.each do |src_file|
+      next if excluded?(src, src_file, exclude)
+
       dest_file = src_file.sub(src, dest)
       @files[dest_file] = @files[src_file]
       @mtimes[dest_file] = @mtimes[src_file] if @mtimes[src_file]
@@ -137,6 +141,8 @@ class MockFileSystemAdapter < FileSystemAdapter
 
     # Copy all directories under src to dest
     @directories.select { |d| d.start_with?("#{src}/") }.each do |src_dir|
+      next if excluded?(src, src_dir, exclude)
+
       dest_dir = src_dir.sub(src, dest)
       @directories.add(dest_dir)
     end
@@ -150,5 +156,22 @@ class MockFileSystemAdapter < FileSystemAdapter
   # Read binary content from a file (same as read in mock)
   def binread(path)
     read(path)
+  end
+
+  private
+
+  # The real adapter prunes at descent, so an excluded directory takes its whole
+  # subtree with it. The mock walks a flat path list instead, so it has to test
+  # every ancestor of the path as well as the path itself.
+  def excluded?(src, path, patterns)
+    return false if patterns.blank?
+
+    relative = path.delete_prefix("#{src}/")
+    components = relative.split("/")
+
+    components.each_index.any? do |i|
+      candidate = components[0..i].join("/")
+      patterns.any? { |pattern| File.fnmatch?(pattern, candidate, File::FNM_PATHNAME | File::FNM_DOTMATCH) }
+    end
   end
 end
