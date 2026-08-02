@@ -1269,14 +1269,24 @@ a merge gate asks — is unmoved by any uncle edge, because an edge changes whic
 scope*, never which session a human *spoke to*. The `here`/`elsewhere` distinction remains the whole
 defense.
 
-Two things bound the damage rather than prevent it. An edge is written into the junior session's own
-log with the acting session id and the entry point that recorded it, so a graft is visible after the
-fact rather than silent. And every surface — the detail UI, the per-turn prompt injection, and the
-MCP/REST output — labels an uncle edge as a *claim* of seniority rather than a fact, so a reader
-weighing "who is senior here" is told what kind of assertion it is looking at.
+Three things bound the damage rather than prevent it.
 
-If the trust model ever needs this closed, the fix is a per-session credential (a token minted into
-each session's injected MCP config) rather than anything in the graph code.
+An edge is written into the logs of **both** sessions, naming both ids, the acting session and the
+entry point that recorded it — so a graft is visible after the fact rather than silent. Both ends
+matter: the shape worth catching is a session calling `follow_up` on *itself* while naming an
+unrelated session as the actor, which pulls that hierarchy into its own scope without ever touching
+it. Logging only the junior would leave the hierarchy that was reached into with no trace at all.
+
+Every surface — the detail UI, the per-turn prompt injection, and the MCP/REST output — labels an
+uncle edge as a *claim* of seniority rather than a fact, so a reader weighing "who is senior here" is
+told what kind of assertion it is looking at.
+
+And an edge recorded in error can be removed: `/supervisor/session_uncle_links` lists every edge with
+its source and offers destroy. That is the operator escape hatch, not a product surface — there is no
+way to detach an edge from the app itself yet ([#299](https://github.com/tadasant/zimmer/issues/299)).
+
+If the trust model ever needs this closed properly, the fix is a per-session credential (a token
+minted into each session's injected MCP config) rather than anything in the graph code.
 
 ### A session hierarchy is bounded, and a big one is shown truncated
 

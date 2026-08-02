@@ -257,19 +257,37 @@ class Sessions::RecordUncleEdgeTest < ActiveSupport::TestCase
 
   # --- Observability ---------------------------------------------------------
 
-  test "recording an edge writes a log the reader can see" do
+  # Both ends, because the abuse worth catching is a session calling follow_up on
+  # ITSELF while naming an unrelated session as the actor: that grafts the
+  # unrelated hierarchy into its own scope without ever touching it. Logging only
+  # the junior would leave the hierarchy that was reached into with no trace.
+  test "recording an edge writes a log into both sessions" do
     actor = create_session
     target = create_session
 
     record(target, actor.id, source: "mcp:action_session.follow_up")
 
-    log = target.logs.order(:id).last
-    assert_includes log.content, "Uncle edge recorded"
-    assert_includes log.content, "##{actor.id}"
-    assert_includes log.content, "mcp:action_session.follow_up"
+    [ target, actor ].each do |session|
+      log = session.logs.order(:id).last
+      assert_includes log.content, "Uncle edge recorded", "expected a log on ##{session.id}"
+      assert_includes log.content, "##{actor.id}"
+      assert_includes log.content, "##{target.id}"
+      assert_includes log.content, "mcp:action_session.follow_up"
+    end
   end
 
-  test "an inversion says so in the log" do
+  test "the edge log names both ends rather than saying \"this session\"" do
+    actor = create_session
+    target = create_session
+
+    record(target, actor.id)
+
+    # The same line lands in two logs, so a reader has to be able to tell which
+    # end they are looking at without inferring it from which log they opened.
+    refute_includes target.logs.order(:id).last.content, "this session"
+  end
+
+  test "an inversion says so in both logs" do
     senior = create_session
     junior = create_session
 
@@ -277,6 +295,7 @@ class Sessions::RecordUncleEdgeTest < ActiveSupport::TestCase
     record(senior, junior.id)
 
     assert_includes senior.logs.order(:id).last.content, "Seniority inverted"
+    assert_includes junior.logs.order(:id).last.content, "Seniority inverted"
   end
 
   private
