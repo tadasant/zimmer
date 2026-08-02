@@ -35,10 +35,18 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
 
     summary = SessionStatusSummary.find_by(session_id: source_id)
 
-    # A regenerate that was forced while this fork was still running has already
-    # pointed the record at a newer fork. This one's answer is stale before it
-    # is read; drop it and still clean up.
-    if summary.nil? || (summary.fork_session_id.present? && summary.fork_session_id != fork.id)
+    # The record must still name THIS fork. A regenerate that was forced while
+    # this fork was still running has moved on — either to a newer fork, or to a
+    # newer claim that has not finished copying and so names no fork yet. Either
+    # way this answer is stale before it is read; drop it and still clean up.
+    #
+    # Deliberately not `fork_session_id.present? && ...`: a record naming no fork
+    # is not an invitation. Every fork that can reach this job was written onto
+    # the record before it was dispatched (SessionStatusSummaryGenerator#call),
+    # so a record that does not name it has been claimed by someone else — and
+    # accepting the answer there would publish a stale blurb stamped with the
+    # newer generation's line count, i.e. labelled current.
+    if summary.nil? || summary.fork_session_id != fork.id
       archive_fork(fork)
       return
     end

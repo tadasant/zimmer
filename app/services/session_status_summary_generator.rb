@@ -13,9 +13,9 @@
 #
 # The flow, end to end:
 #
-#   1. This service forks the session at its last transcript message and sends
-#      the fork one follow-up prompt (the summary request), then marks the
-#      summary record `pending`.
+#   1. This service claims the summary record (marks it `pending`), forks the
+#      session at its last transcript message, points the record at the fork,
+#      and sends the fork one follow-up prompt (the summary request).
 #   2. The fork runs a single agent turn and pauses.
 #   3. SessionStateMachine's pause/fail hooks recognize the fork by its metadata
 #      marker and enqueue SessionStatusSummaryHarvestJob instead of the usual
@@ -44,6 +44,10 @@ class SessionStatusSummaryGenerator
     @force = force
     @fork_service = fork_service
     @file_system = file_system
+    # The `requested_at` this run wrote when it claimed the record, and the
+    # attributes that claim displaced. Both nil until it has claimed. See #claim.
+    @claim_token = nil
+    @displaced = nil
     @logger = StructuredLogger.new({ session_id: session.id, service: "SessionStatusSummaryGenerator" })
   end
 
@@ -53,11 +57,14 @@ class SessionStatusSummaryGenerator
     refusal = refuse_reason
     return refusal if refusal
 
-    summary = session.status_summary || session.build_status_summary
+    summary = summary_record
     line_count = session.transcript_line_count
 
     return Result.new(outcome: :fresh, message: "Summary is current.") if !force && !summary.stale?(line_count)
-    return Result.new(outcome: :pending, message: "A summary is already being generated.") if summary.pending?
+
+    unless claim(summary, line_count)
+      return Result.new(outcome: :pending, message: "A summary is already being generated.")
+    end
 
     fork_args = {
       source_session: session,
@@ -78,7 +85,7 @@ class SessionStatusSummaryGenerator
     result = @fork_service.call(**fork_args)
 
     unless result.success?
-      record_failure(summary, result.error)
+      record_failure(result.error)
       return Result.new(outcome: :failed, message: result.error)
     end
 
@@ -97,23 +104,26 @@ class SessionStatusSummaryGenerator
       # gone to the trash is a copy of a clone DeferredCloneCleanupJob is about
       # to delete, about a session nobody is looking at.
       if session.reload.archived?
+        release_claim(summary)
         abandon_fork(fork)
         return Result.new(outcome: :skipped, message: "Session is in the trash.")
       end
 
       prepare_fork(fork)
 
-      # Marked pending BEFORE the fork is dispatched. The fork's turn can finish
-      # (or die on spawn) before this method returns, and the harvest job keys off
-      # this row — writing it afterwards would let a harvest land on a record that
-      # names no fork, then be stomped back to `pending` here.
-      summary.update!(
-        state: "pending",
-        requested_at: Time.current,
-        requested_line_count: line_count,
-        fork_session: fork,
-        error: nil
-      )
+      # The record names the fork BEFORE the fork is dispatched. The fork's turn
+      # can finish (or die on spawn) before this method returns, and the harvest
+      # job keys off this row — writing it afterwards would let a harvest land on
+      # a record that names no fork, then be stomped back to `pending` here.
+      #
+      # Conditional on this runner still holding the claim it took before the
+      # copy: a copy that outlived PENDING_TIMEOUT can have had the record taken
+      # over by a newer generation, and pointing it back at this fork would make
+      # the harvest of the newer one look stale and drop its answer.
+      unless attach_fork(summary, fork)
+        abandon_fork(fork)
+        return Result.new(outcome: :pending, message: "A newer summary generation took over.")
+      end
 
       fork.deliver_follow_up!(prompt_for(fork))
     rescue StandardError
@@ -125,11 +135,103 @@ class SessionStatusSummaryGenerator
     Result.new(outcome: :started, message: "Generating summary…", fork_session: fork)
   rescue StandardError => e
     @logger.error("Failed to start status summary generation", error: e.message)
-    record_failure(session.status_summary || session.build_status_summary, e.message)
+    record_failure(e.message)
     Result.new(outcome: :failed, message: e.message)
   end
 
   private
+
+  # The row, guaranteed to exist and guaranteed to be one row.
+  #
+  # It used to be read-or-BUILT at the top of #call and inserted only after the
+  # fork's filesystem copy had finished — a read-then-insert window seconds
+  # wide, in which a second generation for the same session saw no row, built
+  # its own, and lost on the unique index (PG::UniqueViolation). Creating it
+  # here, before anything slow, gives the claim below something real to read and
+  # makes every later write a plain UPDATE.
+  #
+  # `create_or_find_by!` rather than `find_or_create_by!`: the check-then-insert
+  # in the latter is the same race one layer down. The plain `find_by` first is
+  # only to keep the common path (a row that already exists) from issuing an
+  # INSERT it knows will fail.
+  def summary_record
+    SessionStatusSummary.find_by(session_id: session.id) ||
+      SessionStatusSummary.create_or_find_by!(session_id: session.id)
+  end
+
+  # Claims the record for THIS generation, and is the mutual exclusion for the
+  # whole service: a locked read-and-write that exactly one runner can win, with
+  # the losers returning before they have paid for anything.
+  #
+  # Claiming BEFORE the fork rather than after it is the point. The record used
+  # to be marked `pending` once the clone copy had already finished, so the
+  # guard could not see a competing generation that was still copying — and two
+  # runners could each spend a full copy of a repository on one session.
+  #
+  # `requested_at` doubles as the claim token. Every later write this runner
+  # makes is conditional on the row still carrying the timestamp it wrote, so a
+  # runner whose claim aged past PENDING_TIMEOUT and was taken over by a newer
+  # generation cannot stomp that newer one on its way out.
+  def claim(summary, line_count)
+    claimed = false
+
+    summary.with_lock do
+      next if summary.pending?
+
+      # Snapshotted under the lock, so a release puts back what was actually
+      # displaced rather than what a read before the lock thought was there.
+      @displaced = summary.slice(:state, :error, :requested_at, :requested_line_count, :fork_session_id)
+
+      summary.update!(
+        state: "pending",
+        requested_at: Time.current,
+        requested_line_count: line_count,
+        fork_session: nil,
+        error: nil
+      )
+      claimed = true
+    end
+
+    # Read the token back rather than trusting the in-memory value: the token is
+    # only useful if it is byte-for-byte what a later reload will compare against.
+    @claim_token = summary.reload.requested_at if claimed
+    claimed
+  end
+
+  # Points the claimed record at the fork that will answer it. False means the
+  # claim was lost while the copy ran, and the caller disposes of the fork.
+  def attach_fork(summary, fork)
+    attached = false
+
+    summary.with_lock do
+      next unless holds_claim?(summary)
+
+      summary.update!(fork_session: fork)
+      attached = true
+    end
+
+    attached
+  end
+
+  # Puts the record back exactly the way it was found, for an exit that starts
+  # nothing — a session that reached the trash during the copy. Without this the
+  # claim would sit `pending` for the full PENDING_TIMEOUT with no fork behind
+  # it; without restoring the whole snapshot, a previous failure's reason (which
+  # the claim cleared) would be lost and the panel would say a summary failed
+  # for no recorded reason.
+  def release_claim(summary)
+    summary.with_lock do
+      next unless holds_claim?(summary)
+
+      summary.update!(@displaced)
+    end
+  rescue StandardError => e
+    @logger.error("Failed to release the status summary claim", error: e.message)
+  end
+
+  # Whether the row in the database is still the claim this runner took.
+  # `with_lock` reloads first, so callers inside it are reading the DB.
+  def holds_claim?(summary) = summary.state == "pending" && summary.requested_at == @claim_token
 
   # Reasons a session is not a candidate at all, as opposed to "not stale yet".
   def refuse_reason
@@ -201,9 +303,38 @@ class SessionStatusSummaryGenerator
 
   def session_url = "#{AppUrl.base_url}/sessions/#{session.id}"
 
-  def record_failure(summary, error)
-    summary.update!(state: "failed", error: error.to_s.truncate(500), fork_session: nil)
+  # Records a failure against the row as it exists IN THE DATABASE.
+  #
+  # This handler used to re-run `session.status_summary || session.build_status_summary`
+  # — the very read-or-build expression whose insert had just failed — so a
+  # generation that died on a duplicate key died the same way while reporting
+  # it, and the rescue below swallowed the second death. The record was left
+  # `pending` and the panel spun on "Generating…" until PENDING_TIMEOUT. A
+  # handler whose only job is to record a failure must not be able to fail the
+  # way the thing it is recording failed.
+  #
+  # Under the row lock, like #attach_fork and #release_claim: checking the claim
+  # and then writing outside the lock is the check-then-write shape this whole
+  # rework exists to remove, and it would let a runner whose claim aged out in
+  # the gap stomp the one that replaced it.
+  def record_failure(error)
+    row = summary_record
+
+    row.with_lock do
+      next unless may_record_outcome?(row)
+
+      row.update!(state: "failed", error: error.to_s.truncate(500), fork_session: nil)
+    end
   rescue StandardError => e
     @logger.error("Failed to record status summary failure", error: e.message)
+  end
+
+  # A runner writes an outcome only onto the claim it holds. A failure raised
+  # before it ever claimed (creating or reading the row itself) is still worth
+  # showing, but only when nobody else's generation is in flight to overwrite.
+  def may_record_outcome?(row)
+    return !row.pending? if @claim_token.nil?
+
+    holds_claim?(row)
   end
 end
