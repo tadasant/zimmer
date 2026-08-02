@@ -418,6 +418,10 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
 
     # Wait for the drawer to open and the detail to load into the lazy frame.
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
+    # The drawer is reached by clicking a card, not by `visit`, so the Transcript
+    # panel has to be opened here — there is nothing to scroll to the bottom of
+    # while it is collapsed. It arrives in a lazy turbo-frame, hence the wait.
+    open_transcript_panel(wait: 5)
     within "turbo-frame#session_detail" do
       assert_selector "[data-timeline-item]", minimum: 1
     end
@@ -450,6 +454,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     find("a[aria-label='View session #{session.id}']").click
 
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
+    open_transcript_panel(wait: 5)
     within "turbo-frame#session_detail" do
       assert_selector "[data-timeline-item]", minimum: 1
     end

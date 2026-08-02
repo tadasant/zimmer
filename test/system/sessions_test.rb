@@ -276,6 +276,9 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Change log level to "Show Logs" (default is now "Minimal")
     select "Show Logs", from: "log-level-filter"
+    # The filter reloads the page outside Capybara's `visit`, so the
+    # collapsed Transcript panel has to be reopened.
+    open_transcript_panel
 
     # Should display logs from fixtures
     session.logs.each do |log|
