@@ -114,7 +114,9 @@ class GitHubPullRequestPollerJob < ApplicationJob
 
     # Deliver the merged-PR messages BEFORE the markers below are persisted. A crash
     # in between then costs at most one duplicate message on the next poll, where the
-    # other order would drop the notification silently and forever.
+    # other order would drop the notification silently and forever. A delivery that
+    # fails and is swallowed is a different case: the status write below advances past
+    # the transition, so that message is not retried — see docs/limitations.
     notify_merged_prs(session, newly_merged_prs).each do |pr_url|
       updated_merged_notified[pr_url] = true
     end
@@ -149,8 +151,8 @@ class GitHubPullRequestPollerJob < ApplicationJob
   # the current turn when it is running or waiting.
   #
   # @return [Array<String>] the PR urls a message was delivered for — the caller
-  #   marks exactly these as notified, so a session skipped here is never recorded
-  #   as having been told.
+  #   marks exactly these as notified, so a session skipped here, or one whose
+  #   delivery failed, is never recorded as having been told.
   def notify_merged_prs(session, pr_urls)
     return [] if pr_urls.empty?
 
@@ -162,7 +164,7 @@ class GitHubPullRequestPollerJob < ApplicationJob
       return []
     end
 
-    pr_urls.each do |pr_url|
+    pr_urls.select do |pr_url|
       deliver_automated_message(
         session,
         AutomatedPrompts.pr_merged_message(pr_url),
