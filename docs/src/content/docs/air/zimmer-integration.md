@@ -245,6 +245,16 @@ last-known-good tree exists, `load!` re-raises, and the façades rescue to `[]` 
 renders it as a banner saying whether the lists below are *empty* or merely *stale*, with the resolve
 error verbatim.
 
+The agent side reads through the same façades, so it had the same blind spot: `get_configs` would
+report *"No MCP servers available"* and `start_session` would happily build a session against a
+catalog that never resolved. `Mcp::Tools::GetConfigs` now prepends the same fact — empty versus
+stale, plus when the failure was seen.
+
+**Not the same fidelity, deliberately.** The banner prints `air resolve`'s stderr verbatim, and that
+process is handed `AIR_GITHUB_TOKEN` by `AirPrepareService#air_env`, so its output is not something
+to echo onto an agent channel. What an agent needs in order not to act wrongly is the fact and its
+age; the text stays with the operator, on the form and in the logs.
+
 Never parse the index files directly. That's the rule in `AGENTS.md` and it's a good one: the
 indexes are AIR's input; the resolved tree is Zimmer's data model. The resolved tree is what Zimmer consumes, and it
 differs from the raw index (references canonicalized, `default_in_roots` inverted and deleted, paths

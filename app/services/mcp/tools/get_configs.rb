@@ -26,7 +26,7 @@ module Mcp
       })
 
       def call(_args)
-        lines = []
+        lines = catalog_health_lines
 
         servers = ServersConfig.all
         lines << "## MCP Servers" << ""
@@ -77,6 +77,40 @@ module Mcp
       end
 
       private
+
+      # Prepended when catalog resolution failed, so an agent can tell a broken
+      # catalog from an empty one before it acts on the lists below. Without it,
+      # `ServersConfig.all` and `allowed_roots` rescue CatalogError to `[]` and
+      # this tool reports "No MCP servers available" — indistinguishable from a
+      # fresh install, which is #112's defect on the agent side of the wall.
+      #
+      # Deliberately narrower than the operator-facing banner on the session
+      # form. The banner prints `air resolve`'s stderr verbatim; that process is
+      # given AIR_GITHUB_TOKEN by AirPrepareService#air_env, so its output is not
+      # something to echo onto an agent channel. What an agent needs in order not
+      # to act wrongly is the fact and its age, not the text. Same fact,
+      # different fidelity, different audience.
+      def catalog_health_lines
+        failure = AirCatalogService.resolve_failure
+        return [] unless failure
+
+        lines = [ "## ⚠️ Catalog resolution is failing", "" ]
+        if AirCatalogService.degraded?
+          stamp = AirCatalogService.last_known_good_at
+          lines << "The lists below come from the last catalog that resolved successfully" \
+                   "#{" (#{stamp.utc.iso8601})" if stamp}, not from the current one. Anything added or " \
+                   "changed since then is missing here."
+        else
+          lines << "Resolution failed with no previously cached catalog to fall back on, so the lists " \
+                   "below are empty **because of the failure**, not because nothing is configured. Do " \
+                   "not read an empty list as an empty catalog, and expect `start_session` to fail " \
+                   "until resolution is repaired."
+        end
+        lines << ""
+        lines << "Reported at #{failure[:at].utc.iso8601}. The underlying `air resolve` error is on the " \
+                 "session form and in the application logs."
+        lines << "" << "---" << ""
+      end
 
       def allowed_roots
         roots = AgentRootsConfig.all
