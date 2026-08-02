@@ -135,3 +135,9 @@ archived either way; a fork left behind holds a full copy of a repository.
 An in-flight generation that never comes back stops counting as pending after 15 minutes
 (`PENDING_TIMEOUT`) so the panel says so and the Regenerate button starts working again, rather than
 spinning forever.
+
+Fleet-wide, the rows are browsable in the Supervisor dashboard (`/supervisor/session_status_summaries`),
+which answers two questions a per-session panel cannot: which generations are wedged in `pending`, and
+which sessions keep failing for the same reason. Only `state` is editable there — the text is
+agent-written and the two line counts *are* the staleness arithmetic, so hand-editing either would
+make the panel lie about how current it is.

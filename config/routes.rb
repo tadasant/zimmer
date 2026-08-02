@@ -23,6 +23,11 @@ Rails.application.routes.draw do
     resources :mcp_oauth_pending_flows
     resources :runtime_login_attempts
     resources :sessions
+    # No create: a summary row exists because a session asked for one. Edit is
+    # limited to `state` (the dashboard's FORM_ATTRIBUTES), which is how an
+    # operator clears a generation wedged in `pending`; destroy makes the next
+    # status change regenerate from scratch.
+    resources :session_status_summaries, except: [ :new, :create ]
     resources :subagent_transcripts
     resources :trigger_conditions
     resources :triggers
