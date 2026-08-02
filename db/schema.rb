@@ -362,6 +362,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_120000) do
     t.index ["session_id"], name: "index_session_status_summaries_on_session_id", unique: true
   end
 
+  create_table "session_uncle_links", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "session_id", null: false
+    t.string "source"
+    t.bigint "uncle_session_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["session_id", "uncle_session_id"], name: "index_session_uncle_links_on_pair", unique: true
+    t.index ["uncle_session_id"], name: "index_session_uncle_links_on_uncle_session_id"
+  end
+
   create_table "sessions", force: :cascade do |t|
     t.string "agent_runtime", default: "claude_code", null: false
     t.datetime "archived_at"
@@ -534,6 +544,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_120000) do
   add_foreign_key "runtime_login_attempts", "claude_accounts"
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
+  add_foreign_key "session_uncle_links", "sessions", column: "uncle_session_id", on_delete: :cascade
+  add_foreign_key "session_uncle_links", "sessions", on_delete: :cascade
   add_foreign_key "sessions", "categories", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "blocked_by_session_id", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify

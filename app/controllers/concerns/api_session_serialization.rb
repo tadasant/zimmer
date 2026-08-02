@@ -87,8 +87,15 @@ module ApiSessionSerialization
     }
   end
 
-  # The spawn tree a session belongs to: origin at the root, every descendant
-  # below. An edge means "spawned", NOT "most recently talked to".
+  # The lineage graph a session belongs to: roots at the top, every descendant
+  # below. Two kinds of edge — a spawn edge (`parent_session_id`) means "spawned",
+  # and an uncle edge (`uncle_session_ids`) means "queued or interrupted, and is
+  # therefore senior". Neither means "most recently talked to".
+  #
+  # `origin_session_id` is the SPAWN origin and stays single-valued;
+  # `root_session_ids` is every root the graph is drawn from, which uncle edges
+  # can make more than one. A consumer reading only `origin_session_id` sees what
+  # it always saw.
   #
   # A SIBLING of `session`, never a key inside it — `session` means one shape on
   # every response that carries it, a contract the API has a test for, and this
@@ -96,6 +103,7 @@ module ApiSessionSerialization
   def session_hierarchy_json(hierarchy)
     {
       origin_session_id: hierarchy.origin.id,
+      root_session_ids: hierarchy.root_ids,
       truncated: hierarchy.truncated?,
       truncation_reason: hierarchy.truncation_reason,
       nodes: hierarchy.nodes.map do |node|
@@ -106,6 +114,7 @@ module ApiSessionSerialization
           status: node.status,
           depth: node.depth,
           parent_session_id: node.parent_id,
+          uncle_session_ids: node.uncles,
           current: node.current?
         }
       end
