@@ -53,8 +53,12 @@ module Mcp
         - An element with an `id` updates that condition. Omit `configuration` to leave it
           untouched. Sending one REPLACES the condition's user-facing keys, so send every key
           you want to keep — notably `event_type`, which defaults to `new_message` (fire on
-          everything) if you drop it. Keys the Slack poller owns — its cursors and
-          `allowed_user_ids` — survive an update that omits them.
+          everything) if you drop it. Keys a POLLER owns survive an update that omits them: the
+          Slack cursors (plus `allowed_user_ids`), and the GitHub ones (`seen_items`,
+          `seen_missing_counts`, `last_issue_at`, `seen_issue_keys`). The GitHub keys are the
+          one exception with a condition attached — an edit that changes `repos`, `labels` or
+          `target` deliberately DROPS them to re-baseline the condition, since widening what is
+          watched would otherwise stampede a session for everything already matching.
         - An element without an `id` adds a new condition.
         - An existing condition the array does not mention is **left alone**. To delete one,
           send `{"id": 123, "remove": true}`.
@@ -80,13 +84,19 @@ module Mcp
         **GitHub configuration:**
         - **github_label**: `{"repos": ["owner/a", "owner/b"], "target": "pull_request", "labels": ["ready to merge"]}`
           — `target` is `pull_request` (default) or `issue`; any ONE of `labels` firing is enough.
-        - **github_issue**: `{"repos": ["owner/a"]}`
+        - **github_issue**: `{"repos": ["owner/a"], "exclude_labels": ["hold issue work gate"]}`
+          — `exclude_labels` is optional: an issue opened carrying ANY of those labels does not fire
+          the condition. It is an author-side opt-out, and it is applied by the search, so the label
+          must be on the issue when GitHub indexes it — in practice, at creation
+          (`gh issue create --label "hold issue work gate"`). The poll runs every minute, so a label
+          added after the fact can lose the race and the issue fires anyway.
 
         GitHub triggers fire on the label being *added*, not on it merely being present: an item
         that already carries the label when the trigger is created is absorbed into a baseline on
         the first poll and does NOT fire retroactively. Removing and re-adding the label fires again.
         Editing `repos`/`labels`/`target` re-baselines the condition, so widening the watch does not
-        stampede sessions for everything already labelled.
+        stampede sessions for everything already labelled. Editing `exclude_labels` does NOT
+        re-baseline — an exclusion only narrows the search, so it keeps the condition's live cursor.
 
         Triggered sessions receive the repo, number, URL, title, author, body and labels — via the
         `{{repo}}`, `{{number}}`, `{{link}}`, `{{title}}`, `{{author}}`, `{{text}}`, `{{labels}}` and

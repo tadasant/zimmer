@@ -1497,6 +1497,22 @@ There is no reconciliation pass to catch it.
 `github_label` conditions are immune to this: they compare against current state, not a cursor, so a
 late-indexed item simply fires on whichever tick it first appears.
 
+### A `github_issue` exclusion label only works if it is on the issue at creation
+
+`exclude_labels` keeps an issue from firing a `github_issue` condition, and it is evaluated by the
+GitHub *search* — a `-label:` negation — not by filtering what the poller got back. The poller ticks
+every minute, so an issue that is opened and then labelled a moment later can be seen and fired
+before the label lands. The escape hatch is only reliable when the label is applied at creation:
+
+```sh
+gh issue create --label "hold issue work gate" --title "…" --body "…"
+```
+
+There is no compensating check — nothing re-reads a fired issue's labels afterwards, and a session
+already spawned is not withdrawn. The reverse direction is bounded but real too: *removing* an
+excluded label re-exposes the issue to the 30-minute re-query window (`INDEX_LAG_GRACE`), so an issue
+un-held within half an hour of being opened fires late, while one un-held after that never fires.
+
 ### The GitHub trigger poller needs a `gh` credential in the environment that runs it
 
 `GithubTriggerPollerJob` runs on the **worker**, and shells out to `gh`. If that environment has no

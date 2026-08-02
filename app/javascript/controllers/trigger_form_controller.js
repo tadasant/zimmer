@@ -9,7 +9,7 @@ export default class extends Controller {
   static targets = [
     "conditionsContainer", "conditionCard", "conditionTypeSelect",
     "slackConfig", "scheduleConfig", "aoEventConfig",
-    "githubConfig", "githubLabelFields",
+    "githubConfig", "githubLabelFields", "githubIssueFields",
     "channelSelect", "channelStatus", "channelId", "channelName",
     "channelManual", "channelManualInput",
     "unitSelect", "dayOfWeekContainer", "timeContainer", "timezoneContainer",
@@ -84,8 +84,9 @@ export default class extends Controller {
   //
   // Disabling is what keeps the submitted configuration honest. Both GitHub types share
   // one repos textarea, so without it a Slack condition would post an empty `repos` array
-  // into its own config, and a github_issue condition would post a `labels` array the UI
-  // never showed it — a stale label filter the model would then have to guess about.
+  // into its own config, a github_issue condition would post a `labels` array the UI never
+  // showed it — a stale label filter the model would then have to guess about — and a
+  // github_label condition would post an `exclude_labels` array that nothing consults.
   updateGithubFieldsInCard(card, type) {
     const githubConfig = card.querySelector("[data-trigger-form-target='githubConfig']")
     const labelFields = card.querySelector("[data-trigger-form-target='githubLabelFields']")
@@ -101,6 +102,13 @@ export default class extends Controller {
       const showLabels = type === "github_label"
       labelFields.classList.toggle("hidden", !showLabels)
       labelFields.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !showLabels })
+    }
+
+    const issueFields = card.querySelector("[data-trigger-form-target='githubIssueFields']")
+    if (issueFields) {
+      const showIssueFields = type === "github_issue"
+      issueFields.classList.toggle("hidden", !showIssueFields)
+      issueFields.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !showIssueFields })
     }
   }
 
@@ -542,6 +550,14 @@ export default class extends Controller {
               <label class="block text-sm font-medium text-gray-700 mb-1">Labels <span class="text-red-500">*</span></label>
               <textarea name="${name}[configuration][labels][]" rows="2" disabled placeholder="ready to merge" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"></textarea>
               <p class="mt-1 text-xs text-gray-500">One label per line. The condition fires when <strong>any</strong> of them is added.</p>
+            </div>
+          </div>
+
+          <div data-trigger-form-target="githubIssueFields" class="hidden space-y-3">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Exclude labels <span class="text-gray-400 font-normal">(optional)</span></label>
+              <textarea name="${name}[configuration][exclude_labels][]" rows="2" disabled placeholder="hold issue work gate" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"></textarea>
+              <p class="mt-1 text-xs text-gray-500">One label per line. An issue carrying <strong>any</strong> of them does not fire this condition. The label must be on the issue when it is <em>created</em>; a label added afterwards can lose the race with the next poll.</p>
             </div>
           </div>
 

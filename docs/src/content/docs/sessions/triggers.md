@@ -19,7 +19,7 @@ flowchart LR
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
         AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived"]
         GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
-        GI["github_issue<br/>repos"]
+        GI["github_issue<br/>repos + exclude_labels"]
     end
 
     SL -->|"SlackTriggerPollerJob<br/>(cron, every minute)"| T["Trigger"]
@@ -313,11 +313,52 @@ The motivating flow: the `open-pr` skill applies `ready to merge` as its termina
 
 ### `github_issue`
 
-Fires when a new issue is opened in one of the watched repos. Repos are the only configuration.
+Fires when a new issue is opened in one of the watched repos.
 
 ```json
-{ "repos": ["tadasant/zimmer"] }
+{
+  "repos": ["tadasant/zimmer"],
+  "exclude_labels": ["hold issue work gate"]
+}
 ```
+
+#### Opting an issue out, with a label
+
+`exclude_labels` is optional, and it is an **escape hatch for the issue's author**, not a filter for
+whoever configured the trigger. An issue opened carrying *any* of those labels does not fire the
+condition; every other issue still does. That is what makes it usable as a default-on gate you can
+step around deliberately — the motivating case being a batch of issues filed at once, none of which
+should each spawn a session.
+
+The exclusion is expressed as a negation in the search itself, one `-label:` term per entry:
+
+```
+is:issue (repo:tadasant/zimmer) created:>=… -label:"hold issue work gate"
+```
+
+Negations are ANDed, so an issue is returned only if it carries **none** of the excluded labels. An
+excluded issue is never seen by the poller at all: it does not fire, and it does not advance the
+cursor past itself either.
+
+:::caution[The label has to be there when the issue is created]
+The exclusion is evaluated at *search* time, and the poll runs every minute. Label the issue as you
+open it —
+
+```sh
+gh issue create --label "hold issue work gate" --title "…" --body "…"
+```
+
+— rather than opening it and adding the label a moment later. A label added after the fact races the
+next tick, and if the tick wins, the trigger has already fired. Removing an excluded label later can
+also fire the issue, if it is still inside the 30-minute re-query window described below; after that
+window the issue is past and nothing fires.
+:::
+
+Editing `exclude_labels` does **not** re-baseline the condition — unlike `repos`, `labels` and
+`target`, which do. Re-baselining exists to stop a *widened* watch from stampeding sessions for
+everything already matching; an exclusion only ever narrows, and a `github_issue` condition's state
+is a time cursor, so a narrowing cannot make an old issue look new. Throwing the cursor away on
+every edit would instead skip the issues opened between the edit and the next tick.
 
 ### What a GitHub-triggered session receives
 

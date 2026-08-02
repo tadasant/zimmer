@@ -328,6 +328,64 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_nothing_raised { GithubTriggerPollerJob.perform_now }
   end
 
+  # ── github_issue: excluding issues by label ───────────────────────────────
+
+  test "the issue query carries no negation when nothing is excluded" do
+    stub_search(issue: []) do |queries|
+      GithubTriggerPollerJob.perform_now
+
+      issue_query = queries.find { |q| q.start_with?("is:issue ") }
+      assert_equal "is:issue (repo:tadasant/zimmer) created:>=2026-06-30T23:30:00Z", issue_query
+    end
+  end
+
+  test "each excluded label becomes a -label: negation in the issue query" do
+    @issue_condition.update!(configuration: @issue_condition.configuration.merge(
+      "exclude_labels" => [ "hold issue work gate", "wip" ]
+    ))
+
+    stub_search(issue: []) do |queries|
+      GithubTriggerPollerJob.perform_now
+
+      issue_query = queries.find { |q| q.start_with?("is:issue ") }
+      assert_equal "is:issue (repo:tadasant/zimmer) created:>=2026-06-30T23:30:00Z " \
+                   '-label:"hold issue work gate" -label:"wip"',
+                   issue_query
+    end
+  end
+
+  # The exclusion is applied by the SEARCH, so a held issue never reaches the poller at
+  # all. What matters is that its absence does not look like progress: the cursor must not
+  # advance past it, or removing the label later would leave it permanently unfired.
+  test "a held-back issue neither fires nor moves the cursor" do
+    @issue_condition.update!(configuration: @issue_condition.configuration.merge(
+      "exclude_labels" => [ "hold issue work gate" ],
+      "last_issue_at" => "2026-07-12T08:00:00Z",
+      "seen_issue_keys" => []
+    ))
+
+    # GitHub returns nothing: the only issue opened in the window carries the label.
+    stub_search(issue: []) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+
+    @issue_condition.reload
+    assert_equal "2026-07-12T08:00:00Z", @issue_condition.github_last_issue_at
+    assert_equal [ "hold issue work gate" ], @issue_condition.github_exclude_labels
+  end
+
+  test "an unheld issue in an exclusion-carrying condition still fires" do
+    @issue_condition.update!(configuration: @issue_condition.configuration.merge(
+      "exclude_labels" => [ "hold issue work gate" ]
+    ))
+
+    stub_search(issue: [ item(number: 61, pr: false, created_at: "2026-07-12T09:00:00Z") ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_equal "2026-07-12T09:00:00Z", @issue_condition.reload.github_last_issue_at
+  end
+
   # ── github_issue: created_at cursor ───────────────────────────────────────
 
   test "first poll of a new-issue condition baselines the cursor and fires nothing" do

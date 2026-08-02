@@ -607,6 +607,54 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_equal [ "tadasant/zimmer" ], condition.github_repos
   end
 
+  test "creates a github_issue trigger that excludes labelled issues" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Issue Gate",
+      "trigger_type" => "github_issue",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "Gate {{link}}",
+      "configuration" => {
+        "repos" => [ "tadasant/zimmer" ],
+        "exclude_labels" => [ "hold issue work gate" ]
+      }
+    )
+
+    condition = Trigger.find_by!(name: "Issue Gate").trigger_conditions.sole
+    assert_equal [ "hold issue work gate" ], condition.github_exclude_labels
+  end
+
+  # This is the path that wires an exclusion onto a LIVE gate. Sending a configuration
+  # replaces the user-facing keys, so the test that matters is what happens to the keys
+  # the caller did NOT send: the poller's cursor.
+  test "adding an exclusion through the conditions upsert keeps the github cursor" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z",
+      "seen_issue_keys" => [ "tadasant/zimmer#42" ]
+    ))
+
+    @tool.call(
+      "action" => "update",
+      "id" => condition.trigger_id,
+      "conditions" => [
+        {
+          "id" => condition.id,
+          "trigger_type" => "github_issue",
+          "configuration" => {
+            "repos" => [ "tadasant/zimmer" ],
+            "exclude_labels" => [ "hold issue work gate" ]
+          }
+        }
+      ]
+    )
+
+    condition.reload
+    assert_equal [ "hold issue work gate" ], condition.github_exclude_labels
+    assert_equal "2026-07-12T09:00:00Z", condition.github_last_issue_at
+    assert_equal [ "tadasant/zimmer#42" ], condition.github_seen_issue_keys
+  end
+
   test "rejects a github trigger with a malformed repo" do
     assert_raises(ActiveRecord::RecordInvalid) do
       @tool.call(
