@@ -14,7 +14,7 @@ class Api::V1::SessionsControllerProvenanceTest < ActionDispatch::IntegrationTes
 
   teardown { ENV.delete("API_KEYS") }
 
-  def create_session(parent: nil, title: nil, agent_root: nil)
+  def spawn_session(parent: nil, title: nil, agent_root: nil)
     session = Session.create!(
       agent_runtime: "claude_code",
       prompt: "work",
@@ -48,8 +48,8 @@ class Api::V1::SessionsControllerProvenanceTest < ActionDispatch::IntegrationTes
   end
 
   test "show carries the session hierarchy" do
-    router = create_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_session(parent: router, title: "Do it", agent_root: "zimmer")
+    router = spawn_session(title: "Route it", agent_root: "zimmer-router")
+    worker = spawn_session(parent: router, title: "Do it", agent_root: "zimmer")
 
     get "/api/v1/sessions/#{worker.id}", headers: @headers
 
@@ -88,8 +88,8 @@ class Api::V1::SessionsControllerProvenanceTest < ActionDispatch::IntegrationTes
   end
 
   test "show marks a message said elsewhere and names its session" do
-    router = create_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_session(parent: router)
+    router = spawn_session(title: "Route it", agent_root: "zimmer-router")
+    worker = spawn_session(parent: router)
     add_message(router, content: "original intent", at: 1.hour.ago)
 
     get "/api/v1/sessions/#{worker.id}", headers: @headers

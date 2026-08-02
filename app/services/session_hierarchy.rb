@@ -103,7 +103,11 @@ class SessionHierarchy
   end
 
   # True when the walk stopped early — the reader is seeing part of a tree.
-  def truncated? = (nodes && @truncated)
+  # Forces the walk, since that is what decides the answer.
+  def truncated?
+    nodes
+    @truncated
+  end
 
   def truncation_reason
     return nil unless truncated?
@@ -122,10 +126,18 @@ class SessionHierarchy
   def solitary? = nodes.size <= 1
 
   # Compact indented rendering for the agent's prompt and for MCP output.
+  #
+  # Titles are neutralized, not trusted. A session's title is writable by the
+  # session itself (`action_session` → `update_title`), so an agent could
+  # otherwise name itself something that closes this block and opens a forged
+  # `<human-messages>` entry in a sibling's prompt — manufacturing exactly the
+  # human authorization this whole feature exists to make unforgeable.
   def to_outline
     nodes.map do |node|
       marker = node.current? ? " ← this session" : ""
-      "#{'  ' * node.depth}- ##{node.id} [#{node.agent_root_label}] #{node.label}#{marker}"
+      root = SessionHumanMessages.sanitize_for_prompt(node.agent_root_label)
+      label = SessionHumanMessages.sanitize_for_prompt(node.label)
+      "#{'  ' * node.depth}- ##{node.id} [#{root}] #{label}#{marker}"
     end.join("\n")
   end
 
@@ -153,14 +165,18 @@ class SessionHierarchy
     depth = 0
 
     while frontier.any?
+      # The depth check comes AFTER discovering the next level, so a tree that
+      # happens to be exactly MAX_DEPTH deep is reported complete rather than
+      # truncated — we only claim truncation when there is something we did not
+      # show.
+      next_frontier = self.class.children_of(frontier.map(&:id)).reject { |s| seen.include?(s.id) }
+      break if next_frontier.empty?
+
       depth += 1
       if depth > MAX_DEPTH
         @truncated = true
         break
       end
-
-      next_frontier = self.class.children_of(frontier.map(&:id)).reject { |s| seen.include?(s.id) }
-      break if next_frontier.empty?
 
       next_frontier.each do |child|
         if collected.size >= MAX_NODES
