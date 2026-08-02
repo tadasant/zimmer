@@ -52,7 +52,7 @@ has an obvious answer:
 | `infra/`, `.github/workflows/**`, `Dockerfile*` | [Deploying](/operate/deploying/), [Provisioning](/operate/provisioning/) |
 | `config/goals.json` | [Goals and stop conditions](/sessions/goals/) |
 | Any cron job | [Background jobs](/operate/background-jobs/) |
-| `docs/scripts/generate-icons.mjs`, the icon master, `public/icons/**`, `public/manifest.json` | [Structure](#structure), below |
+| `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | [The icon set](#the-icon-set), below |
 
 The `sync-docs` skill (default-on for the `zimmer` root) runs this check as a pre-PR step.
 
@@ -67,7 +67,7 @@ npm run dev        # → http://localhost:4321
 ```bash
 npm run build      # astro check && astro build → docs/dist/
 npm run preview    # serve the built output
-npm run icons      # re-cut every icon from the master render (see Structure)
+npm run icons      # re-cut every icon — also writes ../public/, not just docs/
 ```
 
 The `docs_site` job in `.github/workflows/ci.yml` runs `npm ci && npm run build` on every PR, so a
@@ -153,7 +153,7 @@ docs/
 │   └── mcp.schema.json       # served at /mcp.schema.json
 ├── scripts/
 │   ├── zimmer-icon-source.jpg    # the master artwork
-│   └── generate-icons.mjs        # `npm run icons` — see below
+│   └── generate-icons.mjs        # `npm run icons` — see The icon set, below
 └── src/
     ├── assets/               # logo
     ├── components/Head.astro # the Mermaid client renderer + favicon links
@@ -162,12 +162,35 @@ docs/
     └── styles/custom.css
 ```
 
+## The icon set
+
 Every icon in the repo — the docs site's favicons, the Rails app's favicons, its
 PWA icons and its apple-touch icon — is derived from a single master render at
 `docs/scripts/zimmer-icon-source.jpg`. Nothing is hand-edited: change the master,
-run `npm run icons` from `docs/`, and commit what it writes into `docs/public/`
-and `public/icons/`. The generator lives here because `docs/` is the only npm
-workspace in the repo, and image resizing needs `sharp`.
+run `npm run icons` from `docs/`, and commit what it writes. The generator lives
+here because `docs/` is the only npm workspace in the repo, and image resizing
+needs `sharp`.
+
+It writes twelve files into three places, and nowhere else:
+`docs/public/` (the docs site's `favicon.ico`, its two favicon PNGs and its
+apple-touch icon), `public/icons/` (the app's favicon PNGs, apple-touch icon, and
+both the full-bleed and maskable PWA icons), and `public/favicon.ico`.
+
+Two things about the icons are *not* generated and have to be edited by hand:
+
+- **`public/manifest.json`.** Its `icons` array deliberately splits `purpose`
+  into separate `any` and `maskable` entries rather than declaring one file both.
+  The artwork is full-bleed, and Android crops a maskable icon to a circle or
+  squircle guaranteeing only the centre 80% — so the full-bleed render would lose
+  the mascot's ears and the gold ring. The `icon-maskable-*.png` files are padded
+  for that safe zone; the plain ones are not. Keep the two purposes on separate
+  files. `theme_color` and `background_color` live here too, and the layout's
+  `<meta name="theme-color">` must agree with them.
+- **The `?v=` cache busters** on `/manifest.json` and the two reused icon `src`s.
+  Nothing in `public/` is digest stamped, so replacing an icon in place does not
+  reach a browser that already has it (see
+  [Deploying](/operate/deploying/#static-files-in-public-are-not-digest-stamped)).
+  Bump the number when you replace artwork at a URL that already shipped.
 
 Adding a page means creating the markdown file **and** adding it to the `sidebar` array in
 `astro.config.mjs`. Starlight won't auto-discover it into the nav.
