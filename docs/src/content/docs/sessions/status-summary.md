@@ -117,6 +117,13 @@ The record is therefore created **before** the fork, and claimed **before** the 
    leaving the newer claim alone — rather than pointing the record at a fork whose answer is already
    stale.
 
+Harvesting enforces the same rule from the other end: an answer is only lifted onto the record if the
+record still **names that fork**, including when it names no fork at all because a newer claim is
+still copying. Every fork that can reach the harvest job was written onto the record before it was
+dispatched, so a record that does not name it has moved on. Adopting such an answer would store a
+stale blurb against the newer generation's line count — which is to say, render it as up to date. The
+fork is archived either way.
+
 `SessionStatusSummaryJob` is deliberately **not** deduped at the queue level. A GoodJob concurrency
 key on the session id would collapse an operator's forced Regenerate into an unforced automatic
 refresh that happened to be queued for the same session — the operator presses the only control in the

@@ -234,6 +234,29 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_nil record.summary, "an abandoned generation records no blurb"
   end
 
+  # Releasing the claim puts back what the claim displaced — all of it. The
+  # claim clears `error` on its way in, so a partial restore would leave the
+  # panel saying the last attempt failed for no recorded reason.
+  test "a released claim restores the state it displaced, reason included" do
+    SessionStatusSummary.create!(
+      session: @session, state: "failed", error: "The summary fork failed.",
+      summary: "All good.", transcript_line_count: 1, generated_at: Time.current
+    )
+    session = @session
+    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      session.update_column(:status, Session.statuses[:archived])
+      super(src, dest, exclude: exclude)
+    end
+
+    assert_equal :skipped, generate(force: true).outcome
+
+    record = @session.reload.status_summary
+    assert_equal "failed", record.state
+    assert_equal "The summary fork failed.", record.error
+    assert_equal "All good.", record.summary
+    assert_nil record.requested_at
+  end
+
   # A fork that is made and then never dispatched is invisible to every operator
   # list and its clone is skipped by OrphanCloneFilesystemCleanupJob (a session
   # row still claims it), so it would hold a full copy of a repository forever.
@@ -330,15 +353,16 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert summary_fork.archived?, "the losing runner archives its fork rather than leaving it on the floor"
   end
 
-  # #record_failure used to re-run the same read-or-build expression whose insert
-  # had just failed, so recording a duplicate-key failure hit the duplicate key
-  # again — and its own rescue swallowed that, leaving the row `pending` and the
-  # panel spinning until PENDING_TIMEOUT.
+  # #record_failure takes no record from its caller: it reads the row back and
+  # writes that, so it cannot repeat the write that just failed. In production it
+  # did — it re-ran the read-or-build expression whose INSERT had collided,
+  # collided again, and swallowed the second failure in its own rescue, leaving
+  # the row `pending` and the panel spinning until PENDING_TIMEOUT.
   #
-  # A row therefore has to EXIST by the time the failure is recorded, which is the
-  # whole point: that is the state in which a handler that rebuilds the record
-  # instead of reloading it attempts a second INSERT and dies the way the thing it
-  # is recording died.
+  # A row therefore has to EXIST by the time the failure is recorded, which is
+  # what the stub arranges: that is the state in which a handler that rebuilds
+  # the record instead of reloading it attempts a second INSERT and dies the way
+  # the thing it is recording died.
   test "a failure is recorded against the row in the database rather than inserted again" do
     session = @session
     failing = Class.new do
