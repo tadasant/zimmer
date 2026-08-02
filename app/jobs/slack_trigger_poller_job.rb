@@ -927,6 +927,26 @@ class SlackTriggerPollerJob < ApplicationJob
       return
     end
 
+    # The Timeline records the human's OWN words (message_text), never the
+    # rendered prompt: `prompt` is the trigger's prompt_template with the
+    # message interpolated into it, and the template is written by whoever
+    # configured the trigger, not by the person who just spoke. Recording the
+    # rendered text would attribute machine-written instructions to a human.
+    #
+    # Resolution goes through the Slack user ID map, so a message from an
+    # allow-listed account that maps to no configured human records nothing —
+    # `user_allowed?` says "may fire this trigger", which is not the same claim
+    # as "is Tadas or Julie".
+    TimelineCapture.record_slack_message(
+      session: session,
+      slack_user_id: message.user,
+      content: message_text,
+      entry_point: dm ? "slack.dm" : "slack.channel_message",
+      slack_channel: channel_name,
+      slack_permalink: permalink,
+      occurred_at: slack_ts_to_time(message.ts)
+    )
+
     # Update condition's last_triggered_at
     condition.update!(last_triggered_at: Time.current)
 
@@ -934,6 +954,16 @@ class SlackTriggerPollerJob < ApplicationJob
   rescue => e
     note_transient(e)
     Rails.logger.error "[SlackTriggerPollerJob] Failed to create session for message #{message.ts}: #{e.message}"
+  end
+
+  # A Slack `ts` is an epoch-seconds string with a microsecond suffix
+  # ("1717171717.123456"). Falls back to now when it is missing or unparseable —
+  # a slightly-off timestamp on a real human message beats dropping the event.
+  def slack_ts_to_time(ts)
+    seconds = ts.to_s.to_f
+    return Time.current if seconds <= 0
+
+    Time.zone.at(seconds)
   end
 
   # The message's Slack link, or nil when Slack won't give us one.

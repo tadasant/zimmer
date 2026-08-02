@@ -41,6 +41,10 @@ module Mcp
 
       CUSTOM_METADATA_DESC = "User-defined metadata as a JSON object. Useful for tracking tickets, projects, etc."
 
+      PARENT_SESSION_ID_DESC = <<~TEXT.strip
+        ID of the session spawning this one. Records the spawn edge, which the dependency graph uses and which the Human Timeline walks: the new session inherits the human messages recorded on its ancestors, marked `inherited` so they read as original intent rather than as an instruction to the new session. Set this whenever you start a session on behalf of work you were asked to do — a router composing a downstream prompt is a machine author, so without the edge the downstream session has no record of the human who set the work in motion.
+      TEXT
+
       AUTO_COMPACT_WINDOW_DESC = <<~TEXT.strip
         Optional per-session auto-compact (context) window override, in tokens. **You should generally rely on the default of 200,000** — omit this parameter and the API default applies. Only override in the rare situation where the spawned session is suffering from compaction thrashing because it doesn't have enough space to work — in that case, retry with `1000000` (1 million tokens). Compaction thrashing is currently the only known reason to set this preemptively.
       TEXT
@@ -91,6 +95,7 @@ module Mcp
           plugins: { type: "array", items: { type: "string" }, description: PLUGINS_DESC },
           config: { type: "object", description: CONFIG_DESC },
           custom_metadata: { type: "object", description: CUSTOM_METADATA_DESC },
+          parent_session_id: { type: "integer", description: PARENT_SESSION_ID_DESC },
           auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC }
         },
         required: []
@@ -161,6 +166,7 @@ module Mcp
         attrs[:catalog_plugins] = string_array(args["plugins"]) if args["plugins"].present?
         attrs[:config] = args["config"] if args["config"].is_a?(Hash)
         attrs[:custom_metadata] = args["custom_metadata"] if args["custom_metadata"].is_a?(Hash)
+        attrs[:parent_session_id] = args["parent_session_id"] unless args["parent_session_id"].nil?
         attrs
       end
 

@@ -1,0 +1,83 @@
+<%#
+  The session's Timeline: what Zimmer KNOWS a named human said.
+
+  Deliberately placed above the transcript rather than in the notes sidebar. The
+  question it answers — "what did the human actually ask for, and when?" — is the
+  first thing a reader of a long-running session needs, and it should not require
+  opening a drawer to reach.
+
+  Rendered with <details> rather than a Stimulus controller: open by default when
+  there is anything to show, no JS to load, and nothing for the transcript's own
+  infinite-scroll/auto-scroll controllers to fight with.
+%>
+<% timeline = agent_session.timeline %>
+<% entries = timeline.entries %>
+
+<div class="bg-white shadow rounded-lg mb-4" id="session_<%= agent_session.id %>_human_timeline">
+  <details <%= "open" if entries.any? %>>
+    <summary class="px-4 sm:px-6 py-3 cursor-pointer select-none flex items-center justify-between gap-3 rounded-lg hover:bg-gray-50">
+      <span class="flex items-center gap-2 min-w-0">
+        <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+        </svg>
+        <span class="text-sm font-semibold text-gray-900">Human Timeline</span>
+        <span class="text-xs text-gray-500 truncate">
+          <% if entries.empty? %>
+            no human messages recorded
+          <% else %>
+            <%= pluralize(timeline.live_count, "live message") %><%= ", #{timeline.inherited_count} inherited" if timeline.inherited_count.positive? %>
+          <% end %>
+        </span>
+      </span>
+      <span class="text-xs text-gray-400 flex-shrink-0">provenance</span>
+    </summary>
+
+    <div class="border-t border-gray-200">
+      <% if entries.empty? %>
+        <div class="px-4 sm:px-6 py-4 text-sm text-gray-500">
+          <p>No message in this session was authored by a named human.</p>
+          <p class="mt-1 text-xs text-gray-400">
+            Zimmer records an event only when it can establish the human at the input boundary — the web UI, or a Slack
+            message from a mapped user. Everything else that arrives as a user turn (an agent's follow-up over the API, a
+            router-written prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a resumption, a GitHub
+            comment) is machine-authored and records nothing.
+          </p>
+        </div>
+      <% else %>
+        <ul class="divide-y divide-gray-100">
+          <% entries.each do |entry| %>
+            <li class="px-4 sm:px-6 py-3">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 font-medium <%= entry.live? ? "bg-indigo-100 text-indigo-800" : "bg-gray-100 text-gray-600" %>">
+                  <%= entry.live? ? "live" : "inherited" %>
+                </span>
+                <span class="font-semibold text-gray-900"><%= entry.display_name %></span>
+                <span class="text-gray-400">·</span>
+                <span class="text-gray-600"><%= entry.provenance_label %></span>
+                <% if entry.inherited? %>
+                  <%= link_to "session ##{entry.source_session_id}", session_path(entry.source_session_id), class: "text-indigo-600 hover:text-indigo-800 underline" %>
+                <% end %>
+                <span class="text-gray-400">·</span>
+                <time datetime="<%= entry.occurred_at.utc.iso8601 %>"
+                      title="<%= entry.occurred_at.utc.iso8601 %><%= " · #{entry.entry_point}" if entry.entry_point.present? %>"
+                      class="text-gray-500">
+                  <%= entry.occurred_at.utc.strftime("%Y-%m-%d %H:%M UTC") %>
+                </time>
+                <% if entry.event.slack_permalink.present? %>
+                  <%= link_to "view in Slack", entry.event.slack_permalink, target: "_blank", rel: "noopener", class: "text-indigo-600 hover:text-indigo-800 underline" %>
+                <% end %>
+              </div>
+              <p class="mt-1.5 text-sm text-gray-800 whitespace-pre-wrap break-words"><%= entry.content %></p>
+            </li>
+          <% end %>
+        </ul>
+        <% if timeline.inherited_count.positive? %>
+          <p class="px-4 sm:px-6 py-2 text-xs text-gray-400 border-t border-gray-100">
+            <span class="font-medium">inherited</span> entries are a human speaking to a session this one was spawned
+            from — context about original intent, not an instruction to this session.
+          </p>
+        <% end %>
+      <% end %>
+    </div>
+  </details>
+</div>

@@ -10,6 +10,12 @@ class Session < ApplicationRecord
   has_many :mcp_oauth_pending_flows, dependent: :destroy
   has_many :elicitations, dependent: :destroy
 
+  # The Timeline: what Zimmer knows a named human said to this session.
+  # Append-only (TimelineEvent refuses update/destroy); it only goes away with
+  # the session itself. Read it through SessionTimeline, which also folds in the
+  # events inherited from ancestor sessions.
+  has_many :timeline_events, dependent: :destroy
+
   belongs_to :parent_session, class_name: "Session", optional: true
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
 
@@ -343,6 +349,13 @@ class Session < ApplicationRecord
 
   after_create :set_default_title
   after_create_commit :enqueue_session_inference
+
+  # This session's Timeline, with the events inherited from ancestor sessions
+  # folded in and every entry tagged live-vs-inherited. Not memoized: the
+  # per-turn prompt build and the detail screen both want current state.
+  def timeline
+    SessionTimeline.new(self)
+  end
 
   # The bundle of pluggable implementations for this session's agent runtime
   # (CLI adapter, retry strategy, transcript source/normalizer, prompt

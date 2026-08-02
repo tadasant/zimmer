@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_01_200000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_02_040000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -422,6 +422,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_01_200000) do
     t.index ["tool_use_id"], name: "index_subagent_transcripts_on_tool_use_id"
   end
 
+  create_table "timeline_events", force: :cascade do |t|
+    t.string "author", null: false
+    t.string "channel", null: false
+    t.text "content", null: false
+    t.datetime "created_at", null: false
+    t.string "event_type", default: "human_message", null: false
+    t.datetime "occurred_at", null: false
+    t.jsonb "provenance", default: {}, null: false
+    t.bigint "session_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["session_id", "occurred_at", "id"], name: "index_timeline_events_on_session_id_and_occurred_at_and_id"
+  end
+
   create_table "trigger_conditions", force: :cascade do |t|
     t.string "condition_type", null: false
     t.jsonb "configuration", default: {}, null: false
@@ -493,5 +506,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_01_200000) do
   add_foreign_key "sessions", "sessions", column: "blocked_by_session_id", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
   add_foreign_key "subagent_transcripts", "sessions", on_delete: :cascade
+  add_foreign_key "timeline_events", "sessions", on_delete: :cascade
   add_foreign_key "trigger_conditions", "triggers"
 end

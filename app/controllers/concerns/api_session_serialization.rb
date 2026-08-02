@@ -13,7 +13,14 @@ module ApiSessionSerialization
 
   private
 
-  def session_json(session, include_transcript: false)
+  # @param include_timeline [Boolean] render the Human Timeline. Off by default
+  #   and on for `GET /sessions/:id`, for the same reason `include_transcript`
+  #   is: the timeline needs a query per ancestor, which the index action would
+  #   pay once per card. Unlike an `include_` *param*, this is not the caller's
+  #   choice — on the show action the timeline is always present, so an empty
+  #   array unambiguously means "no human authored anything here" rather than
+  #   "you didn't ask for it".
+  def session_json(session, include_transcript: false, include_timeline: false)
     json = {
       id: session.id,
       slug: session.slug,
@@ -61,8 +68,30 @@ module ApiSessionSerialization
     json[:session_notes_updated_at] = session.session_notes_updated_at&.iso8601
     json[:favorited] = session.favorited
     json[:transcript] = session.transcript if include_transcript
+    json[:human_timeline] = human_timeline_json(session) if include_timeline
 
     json
+  end
+
+  # The Human Timeline: what Zimmer knows a named human said to this session and
+  # to the sessions it was spawned from. `origin` is the load-bearing field —
+  # `live` is a human speaking to THIS session, `inherited` is a human speaking
+  # to an ancestor, and a consumer must not read the second as the first.
+  def human_timeline_json(session)
+    session.timeline.entries.map do |entry|
+      {
+        event_type: entry.event.event_type,
+        origin: entry.origin.to_s,
+        author: entry.author,
+        author_display_name: entry.display_name,
+        channel: entry.channel,
+        provenance: entry.provenance_label,
+        source_session_id: entry.source_session_id,
+        entry_point: entry.entry_point,
+        content: entry.content,
+        occurred_at: entry.occurred_at.iso8601
+      }
+    end
   end
 
   # Compact representation of the session's category (nil when Uncategorized).

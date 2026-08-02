@@ -1,0 +1,29 @@
+# The named human beings Zimmer will attribute a timeline event to.
+#
+# A TimelineEvent's `author` is ALWAYS one of these keys. There is deliberately
+# no "unknown human" bucket: when the actor at an input boundary cannot be
+# established, Zimmer records nothing at all (a missing event is safe; a
+# wrongly-attributed one launders automation into authorization).
+#
+# `slack_user_ids` maps Slack user IDs to a human. It is intentionally EMPTY in
+# git — Slack user IDs are deployment configuration, in the same class as the
+# Slack trigger's `allowed_user_ids`, and are populated per deployment via the
+# ZIMMER_HUMAN_SLACK_USER_IDS secret/env var:
+#
+#   ZIMMER_HUMAN_SLACK_USER_IDS="U01ABCDEF:tadasant,U07GHIJKL:juliehazz"
+#
+# Entries there are merged over what is listed here, so a deployment can add
+# Slack IDs without a code change. An ID that maps to a name not listed below is
+# ignored — see HumanIdentity.slack_id_map.
+identities:
+  - name: tadasant
+    display_name: Tadas
+    # The single human with Zimmer web UI access. Anything typed into the web UI
+    # is attributed to this identity; exactly one identity may claim it.
+    web_ui: true
+    slack_user_ids: []
+
+  - name: juliehazz
+    display_name: Julie
+    web_ui: false
+    slack_user_ids: []
