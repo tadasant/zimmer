@@ -54,6 +54,29 @@ module AutomatedPrompts
     If you are unable to resolve the conflicts automatically, let the user know what conflicts exist so they can help.
   PROMPT
 
+  # Prompt sent when the PR poller sees one of a session's PRs go from open to
+  # merged.
+  #
+  # A merge is the end of the road for some sessions and the starting gun for
+  # others, and Zimmer cannot tell which from the outside — so the message names
+  # both outcomes and hands the choice to the agent. It also says plainly that an
+  # unanswered human request outranks archiving, because the failure mode that
+  # actually costs the human something is a session that archives itself on top
+  # of a question they asked and never got an answer to.
+  PR_MERGED_TEMPLATE = <<~PROMPT.strip
+    [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
+
+    PR %{pr_url}, associated with this session, has been merged. This is Zimmer reporting a state change on GitHub — no human is speaking to you right now.
+
+    Decide which of these two applies, and act on it:
+
+    1. Nothing is left in this session's scope. The PR was the deliverable, and no human message in this conversation is still waiting on you. Archive this session with your Zimmer tools so it stops sitting in your human's queue.
+
+    2. You were waiting on this merge to keep going — to rebase onto it, to start the next piece of work, or to verify something downstream. Do that work now.
+
+    If a human asked you for something in this session that you have not delivered yet, that outranks archiving: finish it, or report back to them, and leave the session open for them to read.
+  PROMPT
+
   # Prompt sent by HeartbeatSweepJob when a session with an active per-session
   # heartbeat is found in the needs_input state. The heartbeat nudges the agent
   # to keep working toward its goal, and tells it how to stop the heartbeat via
@@ -73,5 +96,13 @@ module AutomatedPrompts
   # @return [String] The formatted automated message
   def self.merge_conflict_message(pr_url)
     format(MERGE_CONFLICT_TEMPLATE, pr_url: pr_url)
+  end
+
+  # Build a PR-merged automated message for a specific PR URL
+  #
+  # @param pr_url [String] The full GitHub PR URL (e.g., "https://github.com/owner/repo/pull/123")
+  # @return [String] The formatted automated message
+  def self.pr_merged_message(pr_url)
+    format(PR_MERGED_TEMPLATE, pr_url: pr_url)
   end
 end

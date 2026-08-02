@@ -21,7 +21,7 @@ From `config.good_job.cron`:
 | Cadence | Job | What it does |
 | --- | --- | --- |
 | 30s | `HeartbeatSweepJob` | Nudge `needs_input` sessions with a heartbeat enabled |
-| 30s | `GitHubPullRequestPollerJob` | Poll CI status on sessions with a PR URL |
+| 30s | `GitHubPullRequestPollerJob` | Poll PR state and CI status on sessions with a PR URL; tell a session when its PR merges |
 | 30s | `GithubCommentPollerJob` | Poll PR review comments |
 | 1m | `SlackTriggerPollerJob` | Poll Slack channels for trigger conditions |
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
@@ -156,6 +156,35 @@ stays best-effort — a failed reaction API call is logged and the follow-up pro
 assumption when `gh` can't answer — see [Limitations](/limitations/#a-failed-repo-visibility-lookup-drops-the-comment).
 That case logs at `warn` rather than `info`, since the comment it drops may well have been a real
 one on a private repo.
+
+## What a merged PR tells the session
+
+`GitHubPullRequestPollerJob` writes each tracked PR's state into
+`custom_metadata["github_pull_request_statuses"]` every 30 seconds. When one of them goes from
+`open` to `merged`, the session that owns it gets `AutomatedPrompts::PR_MERGED_TEMPLATE` — the same
+delivery path the merge conflict poller uses (`AutomatedSessionMessage`): sent immediately if the
+session is parked in `needs_input`, queued behind the current turn if it is running or waiting.
+
+The message names two outcomes and lets the agent pick. Either the merge was the end of the work,
+in which case the session archives itself and stops sitting in your queue; or the session was
+parked *waiting* for that merge — to rebase onto it, to start the next piece, to check something
+downstream — in which case it carries on. It also says that an unanswered human message outranks
+archiving, because a session that closes itself on top of a question you asked is the expensive
+failure here.
+
+Three rules keep it quiet:
+
+- **Only the `open` → `merged` transition.** A PR that was already merged the first time the poller
+  saw it is not this session's merge event, and wakes nobody.
+- **Once per PR.** `custom_metadata["github_pull_request_merged_notified"]` records which PRs have
+  been announced. A session with three PRs is told about each one as it lands, and only then.
+- **No debounce, unlike merge conflicts.** The two-poll confirmation in
+  `GitHubMergeConflictPollerJob` exists because GitHub's `mergeable` field returns transient
+  `false` readings. `mergedAt` has no such failure mode: a PR with a merge timestamp is merged, and
+  stays merged.
+
+The message is delivered before the metadata marker is written, so a crash in between costs one
+duplicate on the next poll rather than a notification that silently never arrives.
 
 ## Queues
 
