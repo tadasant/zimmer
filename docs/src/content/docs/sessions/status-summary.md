@@ -62,9 +62,14 @@ lost. The fork gets the real conversation at the real point it stopped.
 a goal is an instruction to act — a summarizer still carrying "open a PR and label it ready to merge"
 would go and do that.
 
-Summary forks are Zimmer's own bookkeeping, not the operator's work, so they are excluded from the
-dashboard, from `GET /api/v1/sessions`, and from the `quick_search_sessions` MCP tool. A fork
-reaching `needs_input` is routed into harvesting instead of into the action queue: no push
+Summary forks are Zimmer's own bookkeeping, not the operator's work, so they stay out of every list
+an operator reads: the dashboard (both the server-rendered grid *and* the Turbo Stream that pushes
+new cards into it — the marker is stamped at create time, before that broadcast fires),
+`GET /api/v1/sessions`, `GET /api/v1/sessions/search`, and `quick_search_sessions`. They are also
+excluded from every bulk refresh (`refresh_all` in the UI, REST, and MCP), which would otherwise
+resume a fork sitting between its pause and its harvest and spend a second agent turn on it.
+
+A fork reaching `needs_input` is routed into harvesting instead of into the action queue: no push
 notification, no `session_needs_input` trigger fire, no title inference.
 
 ## Caching: staleness is counted in messages, not minutes
@@ -104,6 +109,12 @@ and when it is itself a summary fork.
 The **Regenerate** button in the panel is the one write path, and it is *forced* — it regenerates even
 when Zimmer considers the cached blurb current. The staleness check exists to stop automatic
 regeneration, not to argue with the person looking at the page.
+
+The panel updates itself when the answer lands: `SessionStatusSummary` broadcasts a replacement of
+`session_<id>_status_panel` over the `session_<id>_status` stream the detail screen already
+subscribes to. Generation takes a whole agent turn on a fork, so the page that asked for it is long
+since rendered by then — without the broadcast the panel would sit on "Generating…" until someone
+reloaded, which for the only control in the panel reads as broken.
 
 The same capability is on the other two surfaces:
 

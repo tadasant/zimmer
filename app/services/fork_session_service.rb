@@ -32,13 +32,38 @@ class ForkSessionService
   # Result object returned by the service
   Result = Struct.new(:success?, :forked_session, :error, keyword_init: true)
 
-  attr_reader :source_session, :message_index, :file_system
+  attr_reader :source_session, :message_index, :file_system, :extra_metadata
 
-  def initialize(source_session:, message_index:, file_system: nil)
+  # @param extra_metadata [Hash] merged into the forked session's metadata at
+  #   CREATE time. Callers that need the fork classified from its very first
+  #   commit must use this rather than updating it afterwards: `Session`'s
+  #   after_create_commit broadcasts a card to every open dashboard, and it has
+  #   already fired by the time an update could add the marker.
+  def initialize(source_session:, message_index:, file_system: nil, extra_metadata: {})
     @source_session = source_session
     @message_index = message_index
     @file_system = file_system || RealFileSystemAdapter.new
+    @extra_metadata = extra_metadata || {}
     @logger = StructuredLogger.new({ session_id: source_session.id, service: "ForkSessionService" })
+  end
+
+  # The transcript as this service sees it: one JSON object per line, with blank
+  # and unparseable lines dropped. `message_index` is an index into THIS, not
+  # into the raw line count — see #validate_inputs, which bounds it against this
+  # length, and #truncate_transcript, which slices it.
+  #
+  # Exposed because a caller computing a fork point from a session's line count
+  # is computing it in the wrong index space: one blank line anywhere puts the
+  # last raw index out of range.
+  def self.parsed_messages(transcript)
+    return [] if transcript.blank?
+    return transcript if transcript.is_a?(Array)
+
+    transcript.lines.filter_map do |line|
+      JSON.parse(line.strip)
+    rescue JSON::ParserError
+      nil
+    end
   end
 
   def self.call(...)
@@ -121,13 +146,7 @@ class ForkSessionService
   end
 
   def parse_transcript
-    return @parsed_transcript if defined?(@parsed_transcript)
-
-    @parsed_transcript = source_session.transcript.lines.map do |line|
-      JSON.parse(line.strip)
-    rescue JSON::ParserError
-      nil
-    end.compact
+    @parsed_transcript ||= self.class.parsed_messages(source_session.transcript)
   end
 
   def truncate_transcript
@@ -250,7 +269,7 @@ class ForkSessionService
         "forked_at_message_index" => message_index,
         "broadcast_message_count" => @truncated_message_count, # Set to transcript length to prevent replay
         "runtime_started" => true # Required for --resume mode on first follow-up
-      }
+      }.merge(extra_metadata)
 
       # Create the forked session
       forked_session = Session.create!(

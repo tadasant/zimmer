@@ -145,8 +145,21 @@ module Mcp
         record = session.status_summary
         lines = [ "", "### Status Summary" ]
 
-        if record.nil? || record.summary.blank?
+        if record.nil?
           lines << "_No summary has been generated for this session yet._"
+          return lines
+        end
+
+        # Say what state a text-less record is in, so a caller that asked for a
+        # regeneration can tell "still running" from "failed" without polling.
+        if record.summary.blank?
+          lines << if record.pending?
+            "_A summary is being generated now; it was requested at #{record.requested_at&.iso8601}._"
+          elsif record.error.present?
+            "_No summary yet — the last attempt failed: #{record.error}_"
+          else
+            "_No summary has been generated for this session yet._"
+          end
           return lines
         end
 

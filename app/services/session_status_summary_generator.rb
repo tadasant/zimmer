@@ -29,7 +29,8 @@
 class SessionStatusSummaryGenerator
   # Marks a session as a summary fork. Read by SessionStateMachine (to route the
   # fork's pause into harvesting rather than into the user's action queue) and by
-  # Session.visible_to_operator (to keep it off the dashboard).
+  # Session.excluding_status_summary_forks (to keep it out of every list an
+  # operator reads).
   FORK_MARKER = "status_summary_for_session_id"
 
   Result = Struct.new(:outcome, :message, :fork_session, keyword_init: true) do
@@ -58,7 +59,15 @@ class SessionStatusSummaryGenerator
     return Result.new(outcome: :fresh, message: "Summary is current.") if !force && !summary.stale?(line_count)
     return Result.new(outcome: :pending, message: "A summary is already being generated.") if summary.pending?
 
-    fork_args = { source_session: session, message_index: line_count - 1 }
+    fork_args = {
+      source_session: session,
+      # NOT `line_count - 1`: the fork service indexes into the JSON-PARSED
+      # transcript, which drops blank and unparseable lines. One blank line
+      # would put the last raw index out of range and fail every automatic
+      # generation for this session.
+      message_index: ForkSessionService.parsed_messages(session.transcript).length - 1,
+      extra_metadata: { FORK_MARKER => session.id }
+    }
     fork_args[:file_system] = @file_system if @file_system
     result = @fork_service.call(**fork_args)
 
@@ -68,8 +77,11 @@ class SessionStatusSummaryGenerator
     end
 
     fork = prepare_fork(result.forked_session)
-    fork.deliver_follow_up!(prompt_for(fork))
 
+    # Marked pending BEFORE the fork is dispatched. The fork's turn can finish
+    # (or die on spawn) before this method returns, and the harvest job keys off
+    # this row — writing it afterwards would let a harvest land on a record that
+    # names no fork, then be stomped back to `pending` here.
     summary.update!(
       state: "pending",
       requested_at: Time.current,
@@ -77,6 +89,8 @@ class SessionStatusSummaryGenerator
       fork_session: fork,
       error: nil
     )
+
+    fork.deliver_follow_up!(prompt_for(fork))
 
     @logger.info("Status summary generation started", fork_session_id: fork.id, transcript_line_count: line_count)
     Result.new(outcome: :started, message: "Generating summary…", fork_session: fork)
@@ -103,12 +117,14 @@ class SessionStatusSummaryGenerator
   # summarizer carrying "open a PR and label it ready to merge" would go and do
   # that. It also inherits the source's title and heartbeat, neither of which
   # should follow a throwaway. Strip all three before handing it a prompt.
+  #
+  # FORK_MARKER is NOT set here — it is passed to the fork service so it is
+  # present on the very first commit, before the dashboard broadcast fires.
   def prepare_fork(fork)
     fork.update!(
       goal: nil,
       title: "Status summary for session ##{session.id}",
-      heartbeat_enabled: false,
-      metadata: (fork.metadata || {}).merge(FORK_MARKER => session.id)
+      heartbeat_enabled: false
     )
     fork
   end

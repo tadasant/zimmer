@@ -16,8 +16,6 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
   include DatabaseRetry
   queue_as :default
 
-  discard_on ActiveRecord::RecordNotFound
-
   # Hard cap on stored summary text. The prompt asks for 2-3 sentences; this is
   # the backstop for an agent that answered with an essay, so the panel cannot
   # push the rest of the page off screen.
@@ -26,7 +24,12 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
   # @param fork_session_id [Integer] the summary fork that just came to rest
   # @param failed [Boolean] true when the fork reached `failed` rather than `needs_input`
   def perform(fork_session_id, failed: false)
-    fork = Session.find(fork_session_id)
+    # A fork destroyed before harvest leaves nothing to lift and nothing to
+    # clean up. `find_by` rather than `find` because the rescue below would
+    # swallow RecordNotFound anyway and log it as a failure it is not.
+    fork = Session.find_by(id: fork_session_id)
+    return if fork.nil?
+
     source_id = fork.metadata&.dig(SessionStatusSummaryGenerator::FORK_MARKER)
     return if source_id.blank?
 

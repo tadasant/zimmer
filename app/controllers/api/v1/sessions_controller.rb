@@ -485,7 +485,10 @@ class Api::V1::SessionsController < Api::BaseController
   # Bulk refresh all non-archived sessions: restart failed, continue paused, refresh running.
   # Sessions in a frozen category are a parked bucket and are intentionally excluded.
   def refresh_all
-    sessions = Session.not_in_frozen_category.where.not(status: :archived)
+    # A status-summary fork sitting in needs_input between its pause and the
+    # harvest is not work anyone is waiting on — resuming it would spend a
+    # whole agent turn against a throwaway clone, outside the fork lifecycle.
+    sessions = Session.not_in_frozen_category.excluding_status_summary_forks.where.not(status: :archived)
 
     if sessions.empty?
       render json: { message: "No non-archived sessions to refresh", refreshed: 0, restarted: 0, continued: 0, errors: 0 }
@@ -963,7 +966,9 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    scope = Session.includes(:category).order(created_at: :desc)
+    # Excludes status-summary forks for the same reason #index does — the two
+    # listings must not disagree about which sessions exist.
+    scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
 
     # Filter by status
     scope = scope.where(status: params[:status]) if params[:status].present?

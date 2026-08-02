@@ -232,7 +232,7 @@
         Transcript are <details> disclosures. Transcript is collapsed by default
         — on a long session it is thousands of rows, and the three panels above
         it are what a returning reader wants first. %>
-    <div class="bg-white shadow rounded-lg mb-4 divide-y divide-gray-200" id="session_<%= @session.id %>_panels">
+    <div class="bg-white shadow rounded-lg mb-4 divide-y divide-gray-200" id="session_<%= @session.id %>_panels" data-session-panels>
     <%= render "sessions/status_panel", agent_session: @session %>
     <%= render "sessions/session_hierarchy", agent_session: @session %>
 
