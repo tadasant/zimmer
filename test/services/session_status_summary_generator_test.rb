@@ -334,9 +334,16 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # had just failed, so recording a duplicate-key failure hit the duplicate key
   # again — and its own rescue swallowed that, leaving the row `pending` and the
   # panel spinning until PENDING_TIMEOUT.
+  #
+  # A row therefore has to EXIST by the time the failure is recorded, which is the
+  # whole point: that is the state in which a handler that rebuilds the record
+  # instead of reloading it attempts a second INSERT and dies the way the thing it
+  # is recording died.
   test "a failure is recorded against the row in the database rather than inserted again" do
+    session = @session
     failing = Class.new do
-      def self.call(**)
+      define_singleton_method(:call) do |**_args|
+        SessionStatusSummary.create_or_find_by!(session_id: session.id)
         raise ActiveRecord::RecordNotUnique, "duplicate key value violates unique constraint"
       end
     end
