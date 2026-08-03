@@ -209,7 +209,7 @@ Valid models are a property of the runtime, not the root (`ModelCatalog::MODELS`
 | Runtime | Models |
 | --- | --- |
 | `claude_code` | `opus` (default) · `sonnet` · `haiku` · `fable` |
-| `codex` | `gpt-5.6-sol` (default, needs a ChatGPT login) · `gpt-5.6-terra` (needs a ChatGPT login) · `gpt-5.6-luna` (needs a ChatGPT login) · `gpt-5.5` (needs a ChatGPT login) · `gpt-5.4` (retires from ChatGPT sign-in August 31, 2026) · `gpt-5.4-mini` (retires from ChatGPT sign-in August 31, 2026) · `gpt-5.3-codex` (deprecated) · `gpt-5.2-codex` (deprecated) |
+| `codex` | `gpt-5.6-sol` (needs a ChatGPT login) · `gpt-5.6-terra` (default, needs a ChatGPT login) · `gpt-5.6-luna` (needs a ChatGPT login) · `gpt-5.5` (needs a ChatGPT login) · `gpt-5.4` (retires from ChatGPT sign-in August 31, 2026) · `gpt-5.4-mini` (retires from ChatGPT sign-in August 31, 2026) · `gpt-5.3-codex` (deprecated) · `gpt-5.2-codex` (deprecated) |
 
 `PATCH /sessions/:id/model` validates against the list for the session's own runtime; anything else
 → `422 {"error": "Invalid model"}` with a message naming the valid ones.

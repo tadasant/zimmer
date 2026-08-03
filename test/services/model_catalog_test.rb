@@ -43,8 +43,8 @@ class ModelCatalogTest < ActiveSupport::TestCase
       ModelCatalog.model_ids_for("codex")
   end
 
-  test "default_for codex is gpt-5.6-sol" do
-    assert_equal "gpt-5.6-sol", ModelCatalog.default_for("codex")
+  test "default_for codex is gpt-5.6-terra" do
+    assert_equal "gpt-5.6-terra", ModelCatalog.default_for("codex")
   end
 
   test "valid_model? is true for catalog members and false otherwise" do

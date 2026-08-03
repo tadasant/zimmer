@@ -142,7 +142,7 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
 
     runtime_models = JSON.parse(response.body)["runtime_models"]
     assert_equal "opus", runtime_models.dig("claude_code", "default")
-    assert_equal "gpt-5.6-sol", runtime_models.dig("codex", "default")
+    assert_equal "gpt-5.6-terra", runtime_models.dig("codex", "default")
 
     claude_ids = runtime_models.dig("claude_code", "models").map { |model| model["id"] }
     codex_ids = runtime_models.dig("codex", "models").map { |model| model["id"] }
@@ -161,11 +161,15 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
 
     runtime_models = JSON.parse(response.body)["runtime_models"]
     sol = runtime_models.dig("codex", "models").find { |model| model["id"] == "gpt-5.6-sol" }
+    terra = runtime_models.dig("codex", "models").find { |model| model["id"] == "gpt-5.6-terra" }
     fable = runtime_models.dig("claude_code", "models").find { |model| model["id"] == "fable" }
 
-    assert_equal "gpt-5.6-sol (default, ChatGPT auth)", sol["label"]
-    assert_equal true, sol["default"]
+    assert_equal "gpt-5.6-sol (ChatGPT auth)", sol["label"]
+    assert_equal false, sol["default"]
     assert_equal true, sol["requires_oauth"]
+    assert_equal "gpt-5.6-terra (default, ChatGPT auth)", terra["label"]
+    assert_equal true, terra["default"]
+    assert_equal true, terra["requires_oauth"]
     assert_equal "fable", fable["label"]
     assert_equal false, fable["default"]
     assert_equal false, fable["requires_oauth"]

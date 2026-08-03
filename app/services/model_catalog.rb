@@ -40,8 +40,8 @@ class ModelCatalog
       { id: "fable", label: "fable" }
     ],
     "codex" => [
-      { id: "gpt-5.6-sol", label: "gpt-5.6-sol (default, ChatGPT auth)", default: true, requires_oauth: true },
-      { id: "gpt-5.6-terra", label: "gpt-5.6-terra (ChatGPT auth)", requires_oauth: true },
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol (ChatGPT auth)", requires_oauth: true },
+      { id: "gpt-5.6-terra", label: "gpt-5.6-terra (default, ChatGPT auth)", default: true, requires_oauth: true },
       { id: "gpt-5.6-luna", label: "gpt-5.6-luna (fast, ChatGPT auth)", requires_oauth: true },
       { id: "gpt-5.5", label: "gpt-5.5 (ChatGPT auth)", requires_oauth: true },
       { id: "gpt-5.4", label: "gpt-5.4 (retires from ChatGPT sign-in August 31, 2026)", requires_oauth: false },

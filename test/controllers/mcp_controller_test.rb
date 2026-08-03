@@ -151,7 +151,7 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_includes text, "## Runtime Models"
     assert_includes text, "`fable`"
-    assert_includes text, "`gpt-5.6-sol` (default, requires OAuth)"
+    assert_includes text, "`gpt-5.6-terra` (default, requires OAuth)"
   end
 
   test "tools/call surfaces a tool error as an error result, not a protocol error" do
