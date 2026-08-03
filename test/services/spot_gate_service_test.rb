@@ -72,7 +72,9 @@ class SpotGateServiceTest < ActiveSupport::TestCase
   test "holds spot when the 5-hour forecast breaches its ceiling" do
     seed_history(current_5h: 0.79, current_7d: 0.05)
 
-    decision = SpotGateService.evaluate(now: @now)
+    # candidate_sessions: 1 is the real start decision — with nothing else
+    # running, the informational reading is flat and could never breach.
+    decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
     refute decision.allowed?
     assert_equal "forecast_breached", decision.reason
     assert decision.forecast_5h.breached?
@@ -82,7 +84,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
   test "holds spot when only the weekly forecast breaches" do
     seed_history(current_5h: 0.05, current_7d: 0.95)
 
-    decision = SpotGateService.evaluate(now: @now)
+    decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
     refute decision.allowed?
     assert decision.forecast_7d.breached?
     refute decision.forecast_5h.breached?
@@ -90,10 +92,10 @@ class SpotGateServiceTest < ActiveSupport::TestCase
 
   test "a higher threshold lets the same forecast through" do
     seed_history(current_5h: 0.79, current_7d: 0.05)
-    assert SpotGateService.evaluate(now: @now).held?
+    assert SpotGateService.evaluate(now: @now, candidate_sessions: 1).held?
 
     @setting.update!(spot_gate_five_hour_threshold_pct: 100, spot_gate_weekly_threshold_pct: 100)
-    assert SpotGateService.evaluate(now: @now).allowed?
+    assert SpotGateService.evaluate(now: @now, candidate_sessions: 1).allowed?
   end
 
   test "the start gate counts the session being asked about" do
