@@ -14,6 +14,7 @@ module Mcp
         Returns:
         - **MCP servers**: Available servers for use with start_session (name, title, description)
         - **Agent roots**: Preconfigured repository settings with defaults (git_root, branch, mcp_servers, skills, goal)
+        - **Runtime models**: Selectable models grouped by agent runtime, including default and auth requirements
         - **Goals**: Available session completion criteria (id, name, description)
 
         **Use this tool** to get all configuration options before calling start_session.
@@ -51,6 +52,15 @@ module Mcp
           roots.each { |root| lines.concat(format_root(root)) }
         end
 
+        lines << "---" << "" << "## Runtime Models" << ""
+        ModelCatalog::MODELS.each_key do |runtime|
+          lines << "### #{RuntimeRegistry.label_for(runtime)}"
+          lines << "- **Runtime:** `#{runtime}`"
+          lines << "- **Default Model:** `#{ModelCatalog.default_for(runtime)}`"
+          lines << "- **Models:** #{format_models(runtime)}"
+          lines << ""
+        end
+
         goals = GoalsConfig.all
         lines << "---" << "" << "## Goals" << ""
         if goals.empty?
@@ -69,6 +79,7 @@ module Mcp
         lines << "---" << "" << "### Usage Notes" << ""
         lines << "- Use `name` values from **MCP Servers** in `start_session` `mcp_servers` parameter"
         lines << "- Use `git_root` from **Agent Roots** to start sessions with preconfigured defaults"
+        lines << "- Use **Runtime Models** to choose a `config.model` value that belongs to the selected `agent_runtime`"
         lines << "- If an **Agent Root** has a `default_subdirectory`, pass it as `subdirectory` in `start_session` — do not set `subdirectory` to arbitrary internal paths"
         lines << "- Pass `default_skills` from **Agent Roots** in the `skills` parameter of `start_session` — sessions won't have skills loaded unless you explicitly pass them"
         lines << "- Use `id` values from **Goals** in `start_session` `goal` parameter"
@@ -136,6 +147,15 @@ module Mcp
         lines << "- **Default Model:** `#{data[:default_model]}`" if data[:default_model].present?
         lines << ""
         lines
+      end
+
+      def format_models(runtime)
+        ModelCatalog.models_for(runtime).map do |model|
+          notes = []
+          notes << "default" if model[:default]
+          notes << "requires OAuth" if model[:requires_oauth]
+          "`#{model[:id]}`#{notes.any? ? " (#{notes.join(', ')})" : ""}"
+        end.join(", ")
       end
     end
   end

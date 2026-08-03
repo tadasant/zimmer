@@ -250,15 +250,31 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
   test "change_model updates the model and rejects models outside the runtime catalog" do
     session = sessions(:needs_input)
 
-    result = @tool.call("action" => "change_model", "session_id" => session.id, "model" => "sonnet")
+    result = @tool.call("action" => "change_model", "session_id" => session.id, "model" => "fable")
     assert_includes result, "## Model Updated"
-    assert_includes result, "- **Model:** sonnet"
-    assert_equal "sonnet", session.reload.config["model"]
+    assert_includes result, "- **Model:** fable"
+    assert_equal "fable", session.reload.config["model"]
 
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "change_model", "session_id" => session.id, "model" => "gpt-imaginary")
     end
     assert_match(/is not valid for runtime/, error.message)
+  end
+
+  test "change_model accepts GPT 5.6 models for Codex sessions" do
+    session = sessions(:needs_input)
+    session.update!(agent_runtime: "codex", config: { "model" => "gpt-5.5" })
+
+    result = @tool.call("action" => "change_model", "session_id" => session.id, "model" => "gpt-5.6-terra")
+
+    assert_includes result, "## Model Updated"
+    assert_includes result, "- **Model:** gpt-5.6-terra"
+    assert_equal "gpt-5.6-terra", session.reload.config["model"]
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_model", "session_id" => session.id, "model" => "fable")
+    end
+    assert_match(/is not valid for runtime codex/, error.message)
   end
 
   # --- Catalog list fields (skills / hooks / plugins) -----------------------

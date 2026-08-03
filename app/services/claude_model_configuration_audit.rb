@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class ClaudeModelConfigurationAudit
-  CONCRETE_CLAUDE_MODEL = /\A(?:(?:claude-)?(?:opus|sonnet|haiku)-\d|claude-\d)/i
+  CONCRETE_CLAUDE_MODEL = /\A(?:(?:claude-)?(?:opus|sonnet|haiku|fable)-\d|claude-\d)/i
   DEFAULT_SETTINGS_PATH = File.join(Dir.home, ".claude", "settings.json")
 
   Finding = Data.define(:location, :value, :message)

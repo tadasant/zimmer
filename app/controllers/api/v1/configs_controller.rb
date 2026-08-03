@@ -5,6 +5,7 @@
 # Provides read-only access to application configuration metadata including:
 #   - MCP servers (name, title, description only - no sensitive fields)
 #   - Agent roots (preconfigured repository settings)
+#   - Runtime models (selectable agent models per runtime)
 #   - Goals (session completion criteria)
 #
 # All endpoints require API key authentication via X-API-Key header.
@@ -16,12 +17,14 @@ class Api::V1::ConfigsController < Api::BaseController
   #   {
   #     mcp_servers: [...],      # Available MCP server options
   #     agent_roots: [...],      # Preconfigured agent repository roots
+  #     runtime_models: {...},   # Selectable model catalog per runtime
   #     goals: [...]             # Available session goals
   #   }
   def index
     render json: {
       mcp_servers: mcp_servers_data,
       agent_roots: agent_roots_data,
+      runtime_models: runtime_models_data,
       goals: goals_data
     }
   end
@@ -42,6 +45,23 @@ class Api::V1::ConfigsController < Api::BaseController
   # Returns agent root configurations
   def agent_roots_data
     AgentRootsConfig.all.map(&:to_h)
+  end
+
+  # Returns selectable model metadata grouped by runtime.
+  def runtime_models_data
+    ModelCatalog::MODELS.keys.index_with do |runtime|
+      {
+        default: ModelCatalog.default_for(runtime),
+        models: ModelCatalog.models_for(runtime).map do |model|
+          {
+            id: model[:id],
+            label: model[:label],
+            default: !!model[:default],
+            requires_oauth: !!model[:requires_oauth]
+          }
+        end
+      }
+    end
   end
 
   # Returns goal configurations
