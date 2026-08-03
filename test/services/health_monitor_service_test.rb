@@ -242,7 +242,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_equal 1, stats[:active_workers]
   end
 
-  test "worker_statistics counts a worker one jitter past the renew cadence as active" do
+  test "worker_statistics counts a worker at the top of the renew window as active" do
     GoodJob::Process.delete_all
     create_good_job_process(seconds_since_heartbeat: 33)
 
@@ -271,6 +271,19 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_equal 0, stats[:active_workers]
   end
 
+  # The shape the incident alert actually printed: two registered workers, one of
+  # them stale. active_workers must be a filtered count, not the row count.
+  test "worker_statistics counts only the live worker when one of two has expired" do
+    GoodJob::Process.delete_all
+    create_good_job_process(seconds_since_heartbeat: 20, hostname: "live")
+    create_good_job_process(seconds_since_heartbeat: GoodJob::Process::EXPIRED_INTERVAL.to_i + 60, hostname: "dead")
+
+    stats = @service.system_health[:worker_stats]
+
+    assert_equal 2, stats[:total_workers]
+    assert_equal 1, stats[:active_workers]
+  end
+
   test "worker_statistics active threshold clears GoodJob's renew cadence" do
     assert_operator HealthMonitorService::WORKER_ACTIVE_INTERVAL, :>,
       GoodJob::Process::STALE_INTERVAL * 1.1,
@@ -285,7 +298,9 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
     assert_equal 1, details.size
     assert_equal "worker-1", details.first[:hostname]
-    assert_in_delta 296, details.first[:seconds_since_heartbeat], 2
+    # Generous delta: the age is measured when the service reads, not when the
+    # row was written, so a contended CI worker can add seconds in between.
+    assert_in_delta 296, details.first[:seconds_since_heartbeat], 15
   end
 
   test "worker_statistics does not report a hardcoded dispatcher count" do
