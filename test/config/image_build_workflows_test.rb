@@ -21,7 +21,7 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
 
   # [workflow basename, job name, job hash] for every job that builds an image.
   def self.image_build_jobs
-    Dir[WORKFLOW_DIR.join("*.yml")].sort.flat_map do |path|
+    Dir[WORKFLOW_DIR.join("*.{yml,yaml}")].sort.flat_map do |path|
       jobs = YAML.load_file(path, aliases: true)["jobs"] || {}
       jobs.filter_map do |job_name, job|
         steps = job["steps"] || []
