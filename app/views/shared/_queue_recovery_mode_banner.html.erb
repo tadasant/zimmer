@@ -1,0 +1,17 @@
+<%# Global banner shown while QueueRecoveryMode is halting the demand-side job
+    queues. An instance that is deliberately not processing work must say so on
+    every page — a silent halt is indistinguishable from an outage. Renders
+    nothing when the mode is off. %>
+<% if (recovery = queue_recovery_mode_status)&.active? %>
+  <div role="alert"
+       class="bg-amber-600 text-white text-sm px-4 py-2 text-center shadow-md">
+    <span class="font-semibold">⏸ Queue recovery mode.</span>
+    Background jobs are halted on <span class="font-mono"><%= recovery.halted_queues.join(", ") %></span>;
+    agent sessions still run.
+    <% if recovery.reason.present? %>
+      <span class="opacity-90">Reason: <%= truncate(recovery.reason, length: 120) %>.</span>
+    <% end %>
+    <span class="opacity-90">Auto-resumes in <%= queue_recovery_mode_countdown(recovery) %>.</span>
+    <%= link_to "Manage", health_dashboard_path, class: "underline font-medium" %>
+  </div>
+<% end %>

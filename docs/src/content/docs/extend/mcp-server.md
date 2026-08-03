@@ -186,6 +186,15 @@ cache cannot enforce the cooldown (a null store, or a Redis that is down), the t
 only enqueue a job and are never throttled. See
 [the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
 
+`action_health` also carries the job-queue escape hatch: `enter_queue_recovery_mode` (`reason`,
+`ttl_minutes`) halts execution on `pollers`, `triggers` and `default` while leaving `agents`
+running, and `exit_queue_recovery_mode` resumes it. Both are outside that cooldown — the way out of
+a halt has to work on the first try. `get_system_health` states the mode up front when it is on,
+because a pending-job count means something completely different when the queues are deliberately
+frozen. An agent session only gets these if its connection was given the `health` tool group; the
+curated `self_session` set does not include it. See
+[Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
+
 The action tools are verb-multiplexers: `action_session` takes an `action` enum (`follow_up`,
 `pause`, `restart`, `archive`, `unarchive`, `fork`, `change_model`, …), `action_trigger` takes
 `create` / `update` / `delete` / `toggle`, and so on. `tools/list` carries the full schema for each —

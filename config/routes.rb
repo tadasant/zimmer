@@ -159,6 +159,11 @@ Rails.application.routes.draw do
         post :cleanup_processes
         post :retry_sessions
         post :archive_old
+        # The queue escape hatch (QueueRecoveryMode). Named for the queues, not
+        # for sessions — "recovery" elsewhere in this app means session recovery.
+        get :queue_recovery_mode
+        post :enter_queue_recovery_mode
+        post :exit_queue_recovery_mode
       end
 
       # Transcript archive download and status
@@ -183,6 +188,8 @@ Rails.application.routes.draw do
   post "health/retry_sessions", to: "health#retry_sessions", as: :retry_sessions_health
   post "health/archive_old", to: "health#archive_old", as: :archive_old_health
   get "health/export_diagnostics", to: "health#export_diagnostics", as: :export_diagnostics_health
+  post "health/enter_queue_recovery_mode", to: "health#enter_queue_recovery_mode", as: :enter_queue_recovery_mode_health
+  post "health/exit_queue_recovery_mode", to: "health#exit_queue_recovery_mode", as: :exit_queue_recovery_mode_health
 
   # Polled by every page for the "live updates paused" banner. Deliberately plain
   # HTTP: the condition it reports is the broadcast circuit breaker being open,

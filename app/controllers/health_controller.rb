@@ -114,6 +114,59 @@ class HealthController < ApplicationController
     end
   end
 
+  # POST /health/enter_queue_recovery_mode
+  #
+  # Halts the demand-side job queues so the cause of a backlog can be
+  # investigated. See QueueRecoveryMode — in particular, this does NOT halt
+  # `agents`, so sessions can still be started and can still run.
+  #
+  # Deliberately NOT behind HealthActionCooldown. The cooldown exists to throttle
+  # bulk mutations (terminating processes, rewriting session rows); this writes two
+  # rows. More importantly, its partner action must work on the first try during an
+  # incident, and a cooldown that fails closed when the cache is down — which is a
+  # plausible symptom of the very overload being recovered from — would be a lock
+  # on the escape hatch.
+  def enter_queue_recovery_mode
+    status = QueueRecoveryMode.enter!(
+      reason: params[:reason],
+      ttl: recovery_mode_ttl,
+      actor: "web UI"
+    )
+
+    respond_to do |format|
+      format.html do
+        flash[:notice] = "Queue recovery mode ON — #{QueueRecoveryMode::HALTED_QUEUES.join(", ")} halted, " \
+          "auto-resuming at #{status.expires_at&.strftime("%H:%M UTC")}."
+        redirect_to health_dashboard_path
+      end
+      format.json { render json: status.as_json }
+    end
+  rescue QueueRecoveryMode::NotAvailable => e
+    respond_to do |format|
+      format.html do
+        flash[:alert] = e.message
+        redirect_to health_dashboard_path
+      end
+      format.json { render json: { error: "Queue recovery mode unavailable", message: e.message }, status: :service_unavailable }
+    end
+  end
+
+  # POST /health/exit_queue_recovery_mode
+  #
+  # Resumes normal processing. Idempotent, and never rate-limited or gated: the
+  # way out of a halt must always be available.
+  def exit_queue_recovery_mode
+    status = QueueRecoveryMode.exit!(actor: "web UI")
+
+    respond_to do |format|
+      format.html do
+        flash[:notice] = "Queue recovery mode OFF — background job processing resumed."
+        redirect_to health_dashboard_path
+      end
+      format.json { render json: status.as_json }
+    end
+  end
+
   def export_diagnostics
     @health_service = HealthMonitorService.new
     @health_report = @health_service.full_health_report
@@ -131,6 +184,16 @@ class HealthController < ApplicationController
   end
 
   private
+
+  # Minutes from the form, converted to a Duration. Blank means the default;
+  # QueueRecoveryMode clamps whatever arrives into MIN_TTL..MAX_TTL, so a hand-typed
+  # "9999" becomes the cap rather than an error.
+  def recovery_mode_ttl
+    minutes = params[:ttl_minutes]
+    return nil if minutes.blank?
+
+    minutes.to_i.minutes
+  end
 
   # The same cooldown Api::V1::HealthController and the MCP action_health tool
   # enforce — the same object, so a caller cannot get a second run out of one

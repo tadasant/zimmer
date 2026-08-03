@@ -63,5 +63,16 @@ module Zimmer
 
     # Use GoodJob as the Active Job queue adapter
     config.active_job.queue_adapter = :good_job
+
+    # Turn on GoodJob's queue pausing, which is off by default. It is what
+    # QueueRecoveryMode halts the demand-side queues with: without this flag
+    # GoodJob still writes the pause rows and still ignores them at dequeue, so
+    # recovery mode would report a halt that never happened.
+    #
+    # The cost is real but small: `GoodJob::Job.exclude_paused` adds three
+    # subqueries against `good_job_settings` (one row, indexed on `key`) to each
+    # dequeue. Set here rather than per environment so the test suite exercises
+    # the same code path production runs.
+    config.good_job.enable_pauses = true
   end
 end

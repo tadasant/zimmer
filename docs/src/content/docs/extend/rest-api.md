@@ -350,6 +350,16 @@ also reports `bursting`, true while the trigger is inside a burst and spawning n
 `POST /health/cleanup_processes` · `POST /health/retry_sessions` ·
 `POST /health/archive_old` (`days`, clamped 1–365, default 7).
 
+`GET /health/queue_recovery_mode` · `POST /health/enter_queue_recovery_mode` (`reason`,
+`ttl_minutes`, clamped 5–240, default 60) · `POST /health/exit_queue_recovery_mode` — the job-queue
+escape hatch. Entering halts execution on `pollers`, `triggers` and `default` and leaves `agents`
+running, so a session started to investigate the backlog still runs. `GET /health` carries the same
+state under a top-level `queue_recovery_mode` key. These three are deliberately **not** behind the
+cooldown described below: an overloaded instance is exactly when the cache is least trustworthy, and
+the cooldown fails closed. Entering answers 503 `Queue recovery mode unavailable` when
+`config.good_job.enable_pauses` is off, rather than reporting a halt GoodJob would ignore. See
+[Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
+
 Two health endpoints sit **outside** this API — no `/api/v1` prefix, no API key, because a load
 balancer and a deploy gate have neither: `GET /up` (200 if the process booted) and `GET /up/deep`
 (200 only if the database, the cache and Redis each answered a real round trip; `503` with a

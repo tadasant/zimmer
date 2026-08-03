@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
   setup do
@@ -190,5 +191,82 @@ class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
     get api_v1_health_path, headers: @headers
 
     assert_response :success
+  end
+  # === Queue recovery mode (the job-queue escape hatch) ===
+
+  test "the health report carries the queue recovery mode state" do
+    get api_v1_health_path, headers: @headers
+
+    json = JSON.parse(response.body)
+    assert json.key?("queue_recovery_mode")
+    assert_equal false, json["queue_recovery_mode"]["active"]
+  end
+
+  test "entering halts the demand-side queues and leaves agents live" do
+    AlertService.stubs(:raise_alert).returns(true)
+
+    post enter_queue_recovery_mode_api_v1_health_path,
+      params: { reason: "trigger stampede", ttl_minutes: 30 },
+      headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert json["active"]
+    assert_equal "trigger stampede", json["reason"]
+    assert_equal QueueRecoveryMode::HALTED_QUEUES, json["halted_queues"]
+    assert_equal QueueRecoveryMode::LIVE_QUEUES, json["live_queues"]
+    assert_equal QueueRecoveryMode::HALTED_QUEUES.sort, GoodJob.paused(:queues).sort
+    refute_includes GoodJob.paused(:queues), "agents"
+  ensure
+    GoodJob::Setting.delete_all
+    AppSetting.delete_all
+  end
+
+  test "exiting resumes processing" do
+    AlertService.stubs(:raise_alert).returns(true)
+    post enter_queue_recovery_mode_api_v1_health_path, params: { reason: "x" }, headers: @headers
+
+    post exit_queue_recovery_mode_api_v1_health_path, headers: @headers
+
+    assert_response :success
+    assert_equal false, JSON.parse(response.body)["active"]
+    assert_empty GoodJob.paused(:queues)
+  ensure
+    GoodJob::Setting.delete_all
+    AppSetting.delete_all
+  end
+
+  test "the queue recovery mode state is readable on its own" do
+    get queue_recovery_mode_api_v1_health_path, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal false, json["active"]
+    assert_equal QueueRecoveryMode::HALTED_QUEUES, json["halted_queues"]
+  end
+
+  test "the queue recovery mode endpoints still require an API key" do
+    post enter_queue_recovery_mode_api_v1_health_path
+    assert_response :unauthorized
+
+    post exit_queue_recovery_mode_api_v1_health_path
+    assert_response :unauthorized
+  end
+
+  # A null cache fails the shared health cooldown closed. The escape hatch is
+  # deliberately outside that cooldown: an overloaded instance is exactly when the
+  # cache is least trustworthy, and that must not lock the way out.
+  test "a null cache does not block entering or leaving queue recovery mode" do
+    AlertService.stubs(:raise_alert).returns(true)
+    Rails.cache = ActiveSupport::Cache::NullStore.new
+
+    post enter_queue_recovery_mode_api_v1_health_path, params: { reason: "x" }, headers: @headers
+    assert_response :success
+
+    post exit_queue_recovery_mode_api_v1_health_path, headers: @headers
+    assert_response :success
+  ensure
+    GoodJob::Setting.delete_all
+    AppSetting.delete_all
   end
 end
