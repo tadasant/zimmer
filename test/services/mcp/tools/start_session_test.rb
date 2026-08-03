@@ -194,9 +194,9 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_equal [ "git-push-ci-reminder" ], Session.order(:id).last.catalog_hooks
   end
 
-  # The guard this replaced was `if session.catalog_hooks.blank?`, which cannot
-  # tell "asked for none" from "not asked yet" — an explicit [] read as blank and
-  # was overwritten with the root's defaults.
+  # An explicit [] has to survive apply_agent_root_defaults!. A `.blank?` test
+  # there cannot tell "asked for none" from "not asked yet", so it hands back the
+  # root's defaults to a caller that asked for neither.
   test "an explicit empty hooks array attaches no hooks" do
     stub_root_with_defaults
 
