@@ -888,6 +888,21 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal 1, missing_pr_url_warnings(session).size, "fail must not repeat the warning pause already wrote"
   end
 
+  # The commonest real terminal sequence: a session dies, and the user trashes
+  # it afterwards. Both new call sites fire, and between them they must still
+  # produce one warning.
+  test "a session that fails, warns, and is then archived warns exactly once" do
+    session = pr_goal_session
+    session.start!
+
+    session.fail!
+    assert_equal 1, missing_pr_url_warnings(session).size, "expected the failure to warn"
+
+    session.archive!
+
+    assert_equal 1, missing_pr_url_warnings(session).size, "archive must not repeat the warning fail already wrote"
+  end
+
   # A warning that breaks a state transition is worse than the thing it warns
   # about — and on these two events the transition is running cleanup.
   test "archive completes its cleanup when the missing-PR-URL check raises" do
@@ -899,7 +914,9 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     end
 
     assert session.archived?, "archive must still complete"
-    assert_not_nil session.reload.archived_at, "archive bookkeeping must not be skipped"
+    # set_trash_expiry is the callback immediately before the new call, so it is
+    # the one that proves the raise did not truncate the rest of the block.
+    assert_not_nil session.reload.trash_after, "archive bookkeeping must not be skipped"
   end
 
   test "fail completes when the missing-PR-URL check raises" do
@@ -913,19 +930,21 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.failed?, "fail must still complete"
   end
 
-  # A status-summary fork is Zimmer's own bookkeeping throwaway, and it is
-  # harvested by archiving. It needs no carve-out here the way the notification
-  # machinery does: SessionStatusSummaryGenerator strips the inherited goal
-  # (precisely so the fork does not go and act on it), and a session with no
-  # goal never reaches the warning.
-  test "archiving a status-summary fork does not warn about a missing PR URL" do
+  # A status-summary fork is Zimmer's own bookkeeping throwaway and is disposed
+  # of by archiving, so it must not warn. The goal check alone does not cover
+  # it: ForkSessionService copies the source's goal, and
+  # SessionStatusSummaryGenerator only strips it in #prepare_fork — which
+  # #abandon_fork runs *before* on the "source went to the trash mid-copy" path.
+  # So the fork under test keeps its inherited PR-flavored goal, which is the
+  # state the explicit carve-out in the hook exists for.
+  test "archiving an abandoned status-summary fork does not warn about a missing PR URL" do
     source = pr_goal_session
     fork = pr_goal_session
-    fork.update!(
-      goal: nil,
-      metadata: fork.metadata.to_h.merge(SessionStatusSummaryGenerator::FORK_MARKER => source.id)
-    )
+    fork.update!(metadata: fork.metadata.to_h.merge(SessionStatusSummaryGenerator::FORK_MARKER => source.id))
     fork.start!
+
+    assert fork.status_summary_fork?, "the fixture must actually be a fork"
+    assert fork.goal.present?, "this test is only meaningful while the fork still carries a PR goal"
 
     fork.archive!
 

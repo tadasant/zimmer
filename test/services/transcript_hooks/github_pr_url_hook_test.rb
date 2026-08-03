@@ -723,6 +723,21 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     end
   end
 
+  # The fork carve-out cannot ride on the goal check. ForkSessionService copies
+  # the source's goal onto a status-summary fork, and the generator only strips
+  # it in #prepare_fork — which #abandon_fork runs before on its early-exit
+  # paths, archiving a throwaway that still says "open a PR".
+  test "does not warn about a status-summary fork that still carries its inherited goal" do
+    @session.update!(
+      goal: "Open a PR and leave it unmerged for review.",
+      metadata: @session.metadata.to_h.merge(SessionStatusSummaryGenerator::FORK_MARKER => 12_345)
+    )
+
+    assert_no_difference -> { @session.logs.count } do
+      TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session)
+    end
+  end
+
   test "does not warn when the session has no goal" do
     @session.update!(goal: nil)
 
