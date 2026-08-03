@@ -84,6 +84,7 @@ export default defineConfig({
             { label: "Elicitation", slug: "sessions/elicitation" },
             { label: "Hierarchy and human messages", slug: "sessions/hierarchy-and-human-messages" },
             { label: "The Status summary", slug: "sessions/status-summary" },
+            { label: "Spot and priority", slug: "sessions/spot-and-priority" },
           ],
         },
         {

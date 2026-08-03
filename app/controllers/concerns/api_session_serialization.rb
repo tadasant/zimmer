@@ -20,6 +20,11 @@ module ApiSessionSerialization
       title: session.title,
       status: session.status,
       agent_runtime: session.agent_runtime,
+      # Where this session's line of work came from, and the scheduling class
+      # that genesis resolves to. Derived on read, so a genesis promoted in
+      # Settings changes this for existing sessions too.
+      genesis: session.genesis_key,
+      priority_class: session.priority_class,
       prompt: session.prompt,
       git_root: session.git_root,
       branch: session.branch,
@@ -115,7 +120,9 @@ module ApiSessionSerialization
           depth: node.depth,
           parent_session_id: node.parent_id,
           uncle_session_ids: node.uncles,
-          current: node.current?
+          current: node.current?,
+          genesis: node.genesis,
+          priority_class: node.priority_class
         }
       end
     }

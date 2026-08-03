@@ -112,6 +112,11 @@ module Mcp
         enforce_root_constraints!(agent_root_name, args.key?("mcp_servers") ? string_array(args["mcp_servers"]) : nil)
 
         session = Session.new(session_attributes(args))
+        # A router spawning downstream work passes parent_session_id, and that
+        # session belongs to the same line of work as its parent — assign_genesis
+        # inherits it. Only a parentless spawn, which nothing connects to a human,
+        # is classified `api`.
+        session.genesis = SessionGenesis::API if session.parent_session_id.blank?
         # Recorded before save so the job starting moments later can tell a
         # deliberate "no MCP servers" from a column that landed empty by accident
         # and would otherwise be healed back to the root's defaults.

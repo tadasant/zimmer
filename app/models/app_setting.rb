@@ -22,6 +22,10 @@ class AppSetting < ApplicationRecord
   # historical behavior before the section became reorderable.
   DEFAULT_UNCATEGORIZED_POSITION = 0
 
+  # The forecast ceiling a spot session must stay under to start, as a percentage
+  # of the window. 80 is the value Tadas named; both windows default to it.
+  DEFAULT_SPOT_GATE_THRESHOLD_PCT = 80
+
   # Null-object stand-in used only when the table can't be read (e.g. during a
   # migration run before the table exists, or in a DB-less boot path). It answers
   # the same read interface as a blank record so AgentRootsConfig never crashes on
@@ -45,6 +49,25 @@ class AppSetting < ApplicationRecord
     def extension_enabled?(_id, default: false)
       default
     end
+
+    # No persisted policy exists, so the spot gate is off and every genesis
+    # resolves to its shipped default. A DB-less boot never throttles anything.
+    def spot_gating_enabled
+      false
+    end
+    alias_method :spot_gating_enabled?, :spot_gating_enabled
+
+    def spot_gate_five_hour_threshold_pct
+      DEFAULT_SPOT_GATE_THRESHOLD_PCT
+    end
+
+    def spot_gate_weekly_threshold_pct
+      DEFAULT_SPOT_GATE_THRESHOLD_PCT
+    end
+
+    def genesis_class_overrides
+      {}
+    end
   end.new(default_runtime: nil, default_model: nil)
 
   validates :default_runtime,
@@ -52,6 +75,9 @@ class AppSetting < ApplicationRecord
     allow_blank: true
   validate :default_model_valid_for_runtime
   validate :only_one_row, on: :create
+  validates :spot_gate_five_hour_threshold_pct, :spot_gate_weekly_threshold_pct,
+    numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
+  validate :genesis_class_overrides_well_formed
 
   class << self
     # The singleton row for reads. Returns a blank, unsaved record when no row
@@ -114,7 +140,45 @@ class AppSetting < ApplicationRecord
     ModelCatalog.default_for(runtime)
   end
 
+  # Set one genesis kind's spot/priority class, leaving every other kind's stored
+  # state alone — the same merge-not-replace discipline #set_extension_enabled
+  # uses, so promoting one genesis can never clobber another.
+  #
+  # Storing a value equal to the shipped default removes the key instead. That
+  # keeps the column a record of deliberate divergence, so a later change to a
+  # default is not silently pinned by a no-op override written months earlier.
+  def set_genesis_class(genesis_key, klass)
+    key = genesis_key.to_s
+    klass = klass.to_s
+    raise ArgumentError, "unknown genesis #{key}" unless SessionGenesis.valid?(key)
+    raise ArgumentError, "unknown class #{klass}" unless SessionGenesis::CLASSES.include?(klass)
+
+    stored = (genesis_class_overrides || {}).except(key)
+    stored[key] = klass unless klass == SessionGenesis.default_class(key)
+    self.genesis_class_overrides = stored
+  end
+
+  # Drop every override, returning all genesis kinds to their shipped defaults.
+  def reset_genesis_classes
+    self.genesis_class_overrides = {}
+  end
+
   private
+
+  def genesis_class_overrides_well_formed
+    overrides = genesis_class_overrides
+    return if overrides.blank?
+
+    unless overrides.is_a?(Hash)
+      errors.add(:genesis_class_overrides, "must be an object keyed by genesis")
+      return
+    end
+
+    overrides.each do |key, klass|
+      errors.add(:genesis_class_overrides, "#{key} is not a known genesis") unless SessionGenesis.valid?(key)
+      errors.add(:genesis_class_overrides, "#{klass} is not a valid class") unless SessionGenesis::CLASSES.include?(klass.to_s)
+    end
+  end
 
   def default_model_valid_for_runtime
     return if default_model.blank?

@@ -37,6 +37,7 @@ From `config.good_job.cron`:
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
 | 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts, then resume the sessions parked on them |
+| 15m | `ClaudeUsageSamplerJob` | Read the serving Claude account's quota so the per-session usage rate has an evenly spaced series to differentiate — `QuotaResetCheckerJob` samples only *exceeded* accounts, whose utilization is pinned and says nothing about burn rate. See [Spot and priority](/sessions/spot-and-priority/). |
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, and sweep the scratch/attachment directories of sessions whose row is gone |
