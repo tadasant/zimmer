@@ -604,7 +604,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     fake_http.define_singleton_method(:request) { |req| captured_request = req; response }
 
     Net::HTTP.stub(:start, ->(_host, _port, **kwargs, &block) { captured_kwargs = kwargs; block.call(fake_http) }) do
-      @service.send(:post_form, URI("https://auth.example.com/oauth/token?x=1"), { code: "abc", scope: "a b" })
+      @service.post_form(URI("https://auth.example.com/oauth/token?x=1"), { code: "abc", scope: "a b" })
     end
 
     assert_equal McpOauthService::REQUEST_TIMEOUT, captured_kwargs[:open_timeout]
