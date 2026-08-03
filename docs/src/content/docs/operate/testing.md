@@ -120,12 +120,22 @@ test classes and 7,920 collected test methods.
 
 - **Runtime** — walks `Minitest::Runnable.runnables` and fails if any loaded test class has a
   private or protected `test_*` method. This is ground truth: it asks the loaded classes what
-  Minitest would collect. It only sees what this process loaded, and `bin/rails test` does not
-  descend into `test/system`.
-- **Static** — parses every `test/**/*_test.rb` on disk with Prism, tracks each class body's default
-  visibility, and fails on a `def test_...` or a literal `define_method(:test_...)` written under a
-  non-public default. This half reaches the system suite, which the runtime half cannot see from the
-  `test-unit` job.
+  Minitest would collect. Its blind spots are what the process did not load — `bin/rails test` never
+  descends into `test/system` — and methods a test class picks up from an included module, which
+  `private_instance_methods(false)` does not report.
+- **Static** — parses every `.rb` under `test/` with Prism, tracks each class or module body's
+  default visibility, and fails on a `def test_...`, a `private def test_...`, a `private :test_...`,
+  or a literal `define_method(:test_...)` left non-public. It follows a `private` through `if`,
+  `case`, `begin`/`rescue`, `send(:private)`, `module_function`, and `included do ... end`. It covers
+  the system suite and `test/support` shared modules, neither of which the runtime half can see from
+  the `test-unit` job.
+
+The static half only flags inside a body that could contribute a Minitest test — a class named
+`*Test`, a class descending from a `*Test`/`*TestCase`, or any module. A plain helper class is
+exempt, because `test_`-prefixed is a legitimate method name outside a test case:
+`FakeParameterStore#test_iam_permissions` fakes the GCP `testIamPermissions` endpoint and is
+correctly private. `class << self` is skipped for the same reason in reverse — those are singleton
+methods, and Minitest collects instance methods.
 
 The file also carries a `VisibilityProbe` that defines all three styles under a `private` and
 asserts which ones `runnable_methods` returns, so the claim above is pinned to real Ruby semantics
