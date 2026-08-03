@@ -40,6 +40,7 @@ class TranscriptTextRenderer
 
     def entry_lines(entry)
       return [ "--- Unknown ---", entry.to_s, "" ] unless entry.is_a?(Hash)
+      return open_transcript_entry_lines(entry) if OpenTranscript::Types::ALL.include?(entry[:type])
 
       type = entry["type"].to_s
       message = entry["message"].is_a?(Hash) ? entry["message"] : entry
@@ -59,6 +60,26 @@ class TranscriptTextRenderer
         role = message["role"].presence
         body = content_text(content.nil? ? entry : content).truncate(UNKNOWN_ENTRY_TRUNCATION)
         [ "--- #{label.titleize}#{role ? " (#{role})" : ''} ---", body, "" ]
+      end
+    end
+
+    def open_transcript_entry_lines(entry)
+      case entry[:type]
+      when OpenTranscript::Types::USER_MESSAGE
+        [ "--- User ---", content_text(entry[:content]), "" ]
+      when OpenTranscript::Types::ASSISTANT_MESSAGE
+        [ "--- Assistant ---", content_text(entry[:content]), "" ]
+      when OpenTranscript::Types::THINKING
+        [ "--- Thinking ---", entry[:text].to_s, "" ]
+      when OpenTranscript::Types::TOOL_CALL
+        [ "--- Tool Use: #{entry[:tool_name] || 'unknown'} ---", content_text(entry[:arguments]), "" ]
+      when OpenTranscript::Types::TOOL_RESULT
+        [ "--- Tool Result ---", content_text(entry[:output]).truncate(TOOL_RESULT_TRUNCATION), "" ]
+      when OpenTranscript::Types::COMPACTION
+        [ "--- Compaction ---", entry[:summary].to_s, "" ]
+      else
+        label = entry[:type].to_s.titleize
+        [ "--- #{label} ---", content_text(entry.except(:provider_raw)).truncate(UNKNOWN_ENTRY_TRUNCATION), "" ]
       end
     end
 

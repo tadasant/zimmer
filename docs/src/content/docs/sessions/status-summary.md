@@ -52,6 +52,12 @@ fork runs a single turn and pauses. `SessionStatusSummaryHarvestJob` lifts the a
 fork wrote *after* the fork point onto the source session's `SessionStatusSummary` record, then
 archives the fork so its copied clone is reclaimed on the normal trash path.
 
+For runtimes with a deterministic resume transcript file, such as Claude Code, the fork resumes from
+the copied transcript file. Codex does not have that shape: its rollouts live in a date-partitioned
+tree with runtime-generated UUID filenames, so Zimmer cannot recreate a resumable rollout for a
+fresh fork. A Codex summary fork therefore starts as a fresh one-shot turn and receives the copied
+conversation inline in the summary prompt.
+
 Forking rather than a one-shot completion is a deliberate trade. The specifics that justify a link —
 "CI is red on the migration test, see message 214" — live in the session's own conversation. A
 headless inference call (the substrate `SessionTitleJob` uses for titles and categories) only ever
