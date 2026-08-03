@@ -88,6 +88,59 @@ Several tests `skip` when a credential or file is absent — which in CI means t
 That last pair means the catalog-pinning feature has zero CI coverage — the code path exists,
 the tests exist, and neither runs. Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
 
+## Tests that would never run — and the one that looked like it
+
+A test method that is not public is a test method Minitest never runs.
+`Minitest::Runnable.runnable_methods` collects `public_instance_methods` only, so a test defined
+while its class body's default visibility is private is dropped silently: no failure, no skip, no
+line in the run count. That is worse than a red test, because the suite stays green.
+
+Three definition styles sit under a class-level `private`, and they do not behave the same way:
+
+```ruby
+private
+
+def test_thing; end               # private -> dormant
+define_method(:test_thing) { }    # private -> dormant
+test "thing" do ... end           # public  -> runs
+```
+
+The third one runs because `ActiveSupport::Testing::Declarative#test` calls `define_method` from
+inside a method body. Default visibility is a property of the class-body frame; a call out to a
+helper does not carry it, so the method lands public no matter what precedes the `test` block.
+`define_method` written *literally* in the class body is a different story — that one is in the
+frame, and it goes private.
+
+This distinction is why [#350](https://github.com/tadasant/zimmer/issues/350) — "143 tests never
+run", counting `test` blocks below a class-level `private` in nine files — was a false alarm. All
+143 were running. A suite-wide sweep found **zero** private or protected `test_*` methods across 398
+test classes and 7,920 collected test methods.
+
+`test/contracts/dormant_test_contract_test.rb` is what keeps that true. It works both ends:
+
+- **Runtime** — walks `Minitest::Runnable.runnables` and fails if any loaded test class has a
+  private or protected `test_*` method. This is ground truth: it asks the loaded classes what
+  Minitest would collect. Its blind spots are what the process did not load — `bin/rails test` never
+  descends into `test/system` — and methods a test class picks up from an included module, which
+  `private_instance_methods(false)` does not report.
+- **Static** — parses every `.rb` under `test/` with Prism, tracks each class or module body's
+  default visibility, and fails on a `def test_...`, a `private def test_...`, a `private :test_...`,
+  or a literal `define_method(:test_...)` left non-public. It follows a `private` through `if`,
+  `case`, `begin`/`rescue`, `send(:private)`, `module_function`, and `included do ... end`. It covers
+  the system suite and `test/support` shared modules, neither of which the runtime half can see from
+  the `test-unit` job.
+
+The static half only flags inside a body that could contribute a Minitest test — a class named
+`*Test`, a class descending from a `*Test`/`*TestCase`, or any module. A plain helper class is
+exempt, because `test_`-prefixed is a legitimate method name outside a test case:
+`FakeParameterStore#test_iam_permissions` fakes the GCP `testIamPermissions` endpoint and is
+correctly private. `class << self` is skipped for the same reason in reverse — those are singleton
+methods, and Minitest collects instance methods.
+
+The file also carries a `VisibilityProbe` that defines all three styles under a `private` and
+asserts which ones `runnable_methods` returns, so the claim above is pinned to real Ruby semantics
+rather than to a comment. It is the one file excluded from the on-disk scan, for the obvious reason.
+
 ## Flaky tests and the two root causes behind them
 
 A run of CI flakes ([#2](https://github.com/tadasant/zimmer/issues/2),
