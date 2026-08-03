@@ -317,6 +317,36 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(Session.last)
   end
 
+  # What the new-session form actually posts when no server is selected: the
+  # multi-select emits one blank hidden input, which session_params strips to [].
+  # That is a deliberate "no servers", and it has to survive to job start rather
+  # than being healed back to the root's defaults.
+  test "creating a session with no servers selected records a deliberate none" do
+    post sessions_url, params: {
+      session: {
+        git_root: "https://github.com/test/repo.git",
+        prompt: "Test prompt",
+        mcp_servers: [ "" ]
+      }
+    }
+
+    session = Session.last
+    assert_equal [], session.mcp_servers
+    assert session.mcp_servers_explicitly_empty?
+  end
+
+  test "creating a session with servers selected records no deliberate none" do
+    post sessions_url, params: {
+      session: {
+        git_root: "https://github.com/test/repo.git",
+        prompt: "Test prompt",
+        mcp_servers: [ "playwright-custom" ]
+      }
+    }
+
+    refute Session.last.mcp_servers_explicitly_empty?
+  end
+
   test "should set default values on create" do
     post sessions_url, params: {
       session: {
@@ -3836,6 +3866,32 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     json_response = JSON.parse(response.body)
     assert_equal true, json_response["success"]
     assert_equal [ "playwright-custom", "twist-wolfbot" ], json_response["mcp_servers"]
+  end
+
+  # The form emits a blank hidden input when nothing is selected, so an empty
+  # list is a user who deliberately picked no servers. Without recording that,
+  # McpServerBackfill reads the empty column as an accident and restores the
+  # root's defaults the next time the config is regenerated.
+  test "clearing mcp_servers from the UI records the choice as deliberate" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [ "playwright-custom" ])
+
+    patch update_mcp_servers_session_url(session), params: { mcp_servers: [] }, as: :json
+
+    assert_response :success
+    session.reload
+    assert_equal [], session.mcp_servers
+    assert session.mcp_servers_explicitly_empty?
+  end
+
+  test "selecting mcp_servers again clears the deliberate-none flag" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [])
+    patch update_mcp_servers_session_url(session), params: { mcp_servers: [] }, as: :json
+    assert session.reload.mcp_servers_explicitly_empty?
+
+    patch update_mcp_servers_session_url(session), params: { mcp_servers: [ "context7" ] }, as: :json
+
+    assert_response :success
+    refute session.reload.mcp_servers_explicitly_empty?
   end
 
   test "should create log when updating mcp_servers" do

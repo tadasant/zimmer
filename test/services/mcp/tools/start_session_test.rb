@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
+require "ostruct" # OpenStruct is used to build mock agent roots; not autoloaded when this file runs in isolation
 
 class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
@@ -128,7 +130,94 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     end
   end
 
+  # An explicit [] and an omitted key are two different requests, and only a root
+  # that actually declares defaults can tell them apart. Sessions 959 saw
+  # ssh-tadasant-obs-prod and ssh-ci-runner attached to spawns that asked for
+  # none, because the fallback fired on both.
+  test "an explicit empty mcp_servers array attaches no servers" do
+    stub_root_with_defaults
+
+    @tool.call("agent_root" => "test-root", "title" => "Least privilege", "mcp_servers" => [])
+
+    session = Session.order(:id).last
+    assert_equal [], session.mcp_servers
+    # Recorded so McpServerBackfill doesn't restore the defaults at job start.
+    assert session.mcp_servers_explicitly_empty?
+  end
+
+  test "an omitted mcp_servers still takes the root's defaults" do
+    stub_root_with_defaults
+
+    @tool.call("agent_root" => "test-root", "title" => "Defaults please")
+
+    session = Session.order(:id).last
+    assert_equal [ "context7" ], session.mcp_servers
+    refute session.mcp_servers_explicitly_empty?
+  end
+
+  test "an explicit empty skills or plugins array attaches none of that artifact" do
+    stub_root_with_defaults
+
+    @tool.call(
+      "agent_root" => "test-root",
+      "title" => "No skills, no plugins",
+      "skills" => [],
+      "plugins" => []
+    )
+
+    session = Session.order(:id).last
+    assert_equal [], session.catalog_skills
+    assert_equal [], session.catalog_plugins
+    # Hooks are not a start_session parameter, so they still come from the root.
+    assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
+    # An untouched list is unaffected by another list being cleared.
+    assert_equal [ "context7" ], session.mcp_servers
+  end
+
+  # The restricted path already rejected [] before this fix, and must keep doing
+  # so: on a restricted connection the list has to match the root's defaults
+  # exactly, in either direction.
+  test "a restricted connection still rejects an explicit empty mcp_servers array" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "x", "mcp_servers" => [])
+    end
+
+    assert_match(/must use its exact default MCP servers/, error.message)
+  end
+
   private
+
+  # A root that actually declares defaults. The catalog's own roots are resolved
+  # from the AIR index, so a stub is the only way to pin a non-empty default set
+  # the omitted-vs-[] distinction can be observed against.
+  def stub_root_with_defaults
+    root = OpenStruct.new(
+      name: "test-root",
+      url: "https://github.com/test/repo.git",
+      default_branch: "main",
+      subdirectory: nil,
+      default_mcp_servers: [ "context7" ],
+      default_skills: [ "zimmer-run-tests" ],
+      default_hooks: [ "git-push-ci-reminder" ],
+      default_plugins: [ "screenshots-videos" ],
+      default_runtime: "claude_code",
+      default_model: "opus"
+    )
+    AgentRootsConfig.stubs(:find!).with("test-root").returns(root)
+    AgentRootsConfig.stubs(:find).with("test-root").returns(root)
+    # The mock root's artifact names are asserted against, not resolved, so the
+    # model's catalog-existence validations are stubbed rather than relied on.
+    ServersConfig.stubs(:exists?).returns(true)
+    SkillsConfig.stubs(:exists?).returns(true)
+    HooksConfig.stubs(:exists?).returns(true)
+    PluginsConfig.stubs(:exists?).returns(true)
+    root
+  end
 
   def restricted_tool
     Mcp::Tools::StartSession.new(

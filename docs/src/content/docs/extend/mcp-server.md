@@ -106,7 +106,10 @@ pass its own. See the caution above.)
 With `allowed_agent_roots` set, the connection is locked to those [agent roots](/air/agent-roots/):
 
 - `start_session` requires an `agent_root`, it must be in the list, and its `mcp_servers` must
-  **exactly** match that root's `default_mcp_servers` — no additions, no removals.
+  **exactly** match that root's `default_mcp_servers` — no additions, no removals. That includes
+  `[]`: on an unrestricted connection an explicit empty array is a valid request for no servers
+  ([omitted vs `[]`](/air/agent-roots/#omitting-a-list-is-not-the-same-as-asking-for-an-empty-one)),
+  but here it is a removal and is rejected unless the root has no defaults to begin with.
 - `action_trigger` may only create, update, delete, or toggle triggers on an allowed root, and
   `search_triggers` only shows those.
 - `action_session`'s `change_mcp_servers` — and `change_plugins`, since plugins can bundle MCP
@@ -212,7 +215,10 @@ config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`
 validated against its catalog, so an unknown skill/hook/plugin id is rejected with the valid options
 listed rather than persisted (a bad value would otherwise fail AIR prepare on the next unarchive).
 Like `change_mcp_servers`, these persist to the session and take effect the next time its runtime
-config is prepared — they do not hot-reconfigure a running process.
+config is prepared — they do not hot-reconfigure a running process. An empty array is a value, not
+an absence, on both sides of a session's life: `change_mcp_servers` with `[]` clears the list, and
+`start_session` with `[]` launches with none — the same request means the same thing at launch time
+and at change time.
 
 Two tools deliver a message to a session that already exists, and both let you choose whether to
 interrupt. `action_session` `follow_up` queues the prompt when the session is `running` and sends it

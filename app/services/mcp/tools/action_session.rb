@@ -459,6 +459,10 @@ module Mcp
         raise ToolError, "Invalid MCP servers: #{invalid.join(', ')}" if invalid.any?
 
         old_servers = session.mcp_servers || []
+        # Without this, clearing the list is undone the next time the config is
+        # regenerated: McpServerBackfill reads the empty column as an accident
+        # and restores the root's defaults. See Session#record_explicit_mcp_servers.
+        session.record_explicit_mcp_servers(mcp_servers)
         session.update!(mcp_servers: mcp_servers)
 
         added = mcp_servers - old_servers

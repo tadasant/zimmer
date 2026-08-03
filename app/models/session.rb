@@ -293,6 +293,10 @@ class Session < ApplicationRecord
     runtime_started
   ].freeze
 
+  # Marks an empty mcp_servers column as a deliberate "no servers" choice rather
+  # than a column that landed empty by accident. See #record_explicit_mcp_servers.
+  EXPLICIT_EMPTY_MCP_SERVERS_KEY = "mcp_servers_explicitly_empty"
+
   # The agent root used for routing freeform user requests from the dashboard
   ROUTER_AGENT_ROOT = "zimmer-router"
 
@@ -990,7 +994,6 @@ class Session < ApplicationRecord
   #   spawning a subagent) run the new session under a different runtime than the
   #   root declares, without changing the root's catalog entry.
   # @param mcp_servers [Array<String>, nil] override MCP servers (uses agent root defaults if nil or blank)
-  # @param preserve_empty_mcp_servers [Boolean] when true, an explicit empty mcp_servers array overrides root defaults
   # @param catalog_skills [Array<String>, nil] override catalog skills (uses agent root defaults if nil)
   # @param catalog_hooks [Array<String>, nil] override catalog hooks (uses agent root defaults if nil)
   # @param catalog_plugins [Array<String>, nil] override catalog plugins (uses agent root defaults if nil)
@@ -999,7 +1002,7 @@ class Session < ApplicationRecord
   # @param metadata [Hash] additional metadata to store on the session
   # @param custom_metadata [Hash] additional custom metadata
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, preserve_empty_mcp_servers: false)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false)
     agent_root = AgentRootsConfig.find!(agent_root_name)
 
     # An explicit override wins over the root's declared runtime; either way the
@@ -1025,8 +1028,17 @@ class Session < ApplicationRecord
       git_root: agent_root.url,
       branch: agent_root.default_branch,
       subdirectory: agent_root.subdirectory,
-      # Keep historical agent-root behavior: nil or [] inherits root defaults.
-      # Callers that need "explicitly no MCP servers" can opt into preserving [].
+      # On THIS path, nil and [] both inherit the root's defaults, and that is
+      # deliberate. Its callers are the dashboard quick prompt, the chat bubble,
+      # and Trigger — and a Trigger's mcp_servers column is `default: [], null:
+      # false`, so [] is what an untouched trigger stores, not a request for
+      # none. Reading it as "no servers" would silently strip every existing
+      # trigger's servers.
+      #
+      # The surfaces where a caller can genuinely say "none" — MCP start_session,
+      # POST /api/v1/sessions, the new-session form — build the Session directly
+      # and distinguish an omitted list from an explicit [] there, recording the
+      # choice via #record_explicit_mcp_servers.
       #
       # agent_root is guaranteed non-nil here (AgentRootsConfig.find! above raises
       # otherwise), so dereferencing its defaults is safe. Sessions created without
@@ -1038,11 +1050,7 @@ class Session < ApplicationRecord
       # hook list ONLY from these columns) reconstruct the plugin-derived MCP
       # servers — those come from default_plugins, NOT default_mcp_servers, so they
       # must be captured here rather than copied into mcp_servers.
-      mcp_servers: if preserve_empty_mcp_servers && mcp_servers == []
-                     []
-                   else
-                     mcp_servers.presence || agent_root.default_mcp_servers || []
-                   end,
+      mcp_servers: mcp_servers.presence || agent_root.default_mcp_servers || [],
       catalog_skills: catalog_skills.presence || agent_root.default_skills || [],
       catalog_hooks: catalog_hooks.presence || agent_root.default_hooks || [],
       catalog_plugins: catalog_plugins.presence || agent_root.default_plugins || [],
@@ -1116,6 +1124,33 @@ class Session < ApplicationRecord
     return if remaining == status
 
     merge_custom_metadata!("mcp_servers_status" => remaining)
+  end
+
+  # Record whether a caller that named the mcp_servers list itself asked for zero
+  # servers.
+  #
+  # An empty mcp_servers column is ambiguous on its own. It is what a session
+  # lands on when the catalog failed to resolve its root's defaults at create
+  # time — the defect McpServerBackfill exists to heal — and it is also what a
+  # caller gets when it deliberately asks for none. Healing the second case
+  # re-attaches the very servers the caller declined, which for a root whose
+  # defaults carry SSH access silently upgrades a least-privilege request.
+  #
+  # This flag is what tells the two apart, so it must be set by every surface
+  # that lets someone name the list: session creation (MCP start_session, the
+  # REST API, the new-session form) and the mid-life change paths.
+  #
+  # @param servers [Array<String>, nil] the list the caller named
+  def record_explicit_mcp_servers(servers)
+    remaining = (metadata || {}).except(EXPLICIT_EMPTY_MCP_SERVERS_KEY)
+    remaining[EXPLICIT_EMPTY_MCP_SERVERS_KEY] = true if Array(servers).empty?
+    self.metadata = remaining
+  end
+
+  # True when an empty mcp_servers column is a deliberate choice rather than a
+  # failed resolve. See #record_explicit_mcp_servers.
+  def mcp_servers_explicitly_empty?
+    metadata&.dig(EXPLICIT_EMPTY_MCP_SERVERS_KEY) == true
   end
 
   # Plugin composition: returns a hash of { item_name => contributing_plugin_id }
