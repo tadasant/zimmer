@@ -62,9 +62,9 @@ module Mcp
 
         **Agent Roots:** Use `agent_root` to specify which preconfigured agent root to use. The API resolves git_root, branch, subdirectory, default_model, and other defaults from the agent root configuration.
 
-        **Defaults from Agent Roots:** The agent root defines `default_mcp_servers`, `default_skills`, and optionally a `default_goal`. Omitting `mcp_servers` or `skills` means the session gets NONE — there is no automatic fallback to defaults.
+        **Defaults from Agent Roots:** The agent root defines `default_mcp_servers`, `default_skills`, and optionally a `default_goal`. Omitting `mcp_servers`, `skills`, or `plugins` means the session takes the root's defaults for that list. Passing an explicit empty array (`[]`) means the session gets NONE of that artifact — omitted and `[]` are two different requests, not the same one.
 
-        - **MCP servers:** Start with `default_mcp_servers`. Drop servers the task doesn't need (least-privilege). Add extras when the task requires tools beyond the defaults. When this connection is restricted to specific agent roots, you cannot add servers beyond the defaults.
+        - **MCP servers:** Start with `default_mcp_servers`. Drop servers the task doesn't need (least-privilege) by passing the narrowed list; pass `[]` when the task needs no servers at all. When this connection is restricted to specific agent roots, you cannot add or remove servers — the list you pass must match the root's defaults exactly, and `[]` is rejected unless the root has no defaults.
         - **Skills:** Start with `default_skills`. You can freely add skills beyond the defaults. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
 
         **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku` for claude_code, `gpt-5.5`/`gpt-5.4` for codex). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
@@ -105,11 +105,18 @@ module Mcp
         agent_root_name = args["agent_root"].presence
         # An omitted mcp_servers means "take the root's defaults" (that is what
         # apply_agent_root_defaults! does), so it is only a deviation to check when
-        # the caller actually named a list.
+        # the caller actually named a list. This gate stays `key?` rather than the
+        # `is_a?(Array)` used elsewhere: a restricted connection that sends an
+        # explicit null already fails here, and loosening that would widen what a
+        # restricted connection may spawn.
         enforce_root_constraints!(agent_root_name, args.key?("mcp_servers") ? string_array(args["mcp_servers"]) : nil)
 
         session = Session.new(session_attributes(args))
-        apply_agent_root_defaults!(session, agent_root_name, explicit_runtime: args["agent_runtime"].present?) if agent_root_name
+        # Recorded before save so the job starting moments later can tell a
+        # deliberate "no MCP servers" from a column that landed empty by accident
+        # and would otherwise be healed back to the root's defaults.
+        session.record_explicit_mcp_servers(session.mcp_servers) if explicit_list?(args, "mcp_servers")
+        apply_agent_root_defaults!(session, agent_root_name, args: args, explicit_runtime: args["agent_runtime"].present?) if agent_root_name
         ensure_model!(session)
         session.save!
 
@@ -161,9 +168,14 @@ module Mcp
         attrs[:execution_provider] = args["execution_provider"] if args["execution_provider"].present?
         attrs[:auto_compact_window] = args["auto_compact_window"] unless args["auto_compact_window"].nil?
         attrs[:goal] = resolved_goal(args["goal"]) if args["goal"].present?
-        attrs[:mcp_servers] = string_array(args["mcp_servers"]) if args["mcp_servers"].present?
-        attrs[:catalog_skills] = string_array(args["skills"]) if args["skills"].present?
-        attrs[:catalog_plugins] = string_array(args["plugins"]) if args["plugins"].present?
+        # Gate on "the caller named a list", not on "the list has entries" — the
+        # same test change_mcp_servers applies (action_session.rb). `[].present?`
+        # is false, so a presence gate drops an explicit empty array before it
+        # ever reaches the session, and the caller silently gets the root's
+        # defaults instead of the none it asked for.
+        attrs[:mcp_servers] = string_array(args["mcp_servers"]) if explicit_list?(args, "mcp_servers")
+        attrs[:catalog_skills] = string_array(args["skills"]) if explicit_list?(args, "skills")
+        attrs[:catalog_plugins] = string_array(args["plugins"]) if explicit_list?(args, "plugins")
         attrs[:config] = args["config"] if args["config"].is_a?(Hash)
         attrs[:custom_metadata] = args["custom_metadata"] if args["custom_metadata"].is_a?(Hash)
         attrs[:parent_session_id] = args["parent_session_id"] unless args["parent_session_id"].nil?
@@ -176,7 +188,9 @@ module Mcp
         GoalsConfig.find(goal.to_s)&.description || goal
       end
 
-      def apply_agent_root_defaults!(session, agent_root_name, explicit_runtime:)
+      # @param args [Hash] the raw tool arguments, needed to tell an omitted
+      #   artifact list (take the root's defaults) from an explicit `[]` (take none).
+      def apply_agent_root_defaults!(session, agent_root_name, args:, explicit_runtime:)
         root = AgentRootsConfig.find!(agent_root_name)
 
         # The per-spawn override wins; otherwise the session adopts the root's
@@ -185,10 +199,16 @@ module Mcp
         session.git_root = root.url if session.git_root.blank?
         session.branch = root.default_branch || "main"
         session.subdirectory = root.subdirectory if session.subdirectory.blank? && root.subdirectory.present?
-        session.mcp_servers = root.default_mcp_servers || [] if session.mcp_servers.blank?
-        session.catalog_skills = root.default_skills || [] if session.catalog_skills.blank?
+        # Only an OMITTED list falls back to the root's defaults. A `.blank?` test
+        # cannot tell omitted from explicitly-empty, so it overwrites `[]` with
+        # the defaults — which is how a caller asking for no MCP servers ends up
+        # holding whatever the root declares, SSH access included.
+        session.mcp_servers = root.default_mcp_servers || [] unless explicit_list?(args, "mcp_servers")
+        session.catalog_skills = root.default_skills || [] unless explicit_list?(args, "skills")
+        session.catalog_plugins = root.default_plugins || [] unless explicit_list?(args, "plugins")
+        # Hooks are not a start_session parameter, so there is no explicit-empty
+        # case to preserve: the column is always at its default here.
         session.catalog_hooks = root.default_hooks || [] if session.catalog_hooks.blank?
-        session.catalog_plugins = root.default_plugins || [] if session.catalog_plugins.blank?
         session.metadata = (session.metadata || {}).merge("agent_root_key" => agent_root_name)
 
         return if session.config&.dig("model").present?
@@ -236,6 +256,14 @@ module Mcp
 
       def string_array(value)
         Array(value).map(&:to_s)
+      end
+
+      # True when the caller actually named this artifact list, empty or not.
+      # An array is the only thing that counts as naming one, which is the same
+      # test change_mcp_servers uses (action_session.rb) — so launch-time and
+      # change-time agree on what an explicit `[]` means.
+      def explicit_list?(args, key)
+        args[key].is_a?(Array)
       end
 
       def format_list(list)

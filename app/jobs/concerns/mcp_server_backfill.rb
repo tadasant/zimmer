@@ -18,6 +18,10 @@
 # unarchive (UnarchiveSessionService) AND on mid-run clone recreation / fresh
 # start (AgentSessionJob), which is why the heal lives in a shared concern.
 #
+# The heal applies only to an *accidental* empty column. A caller that asked for
+# zero servers on purpose is recorded by Session#record_explicit_mcp_servers and
+# skipped here.
+#
 # Requires the includer to also include DatabaseRetry (for with_db_retry).
 module McpServerBackfill
   extend ActiveSupport::Concern
@@ -29,6 +33,14 @@ module McpServerBackfill
   # ensure_baseline_mcp_config!. No-op when the catalog itself cannot resolve the
   # root's defaults (returns []), so we never clobber with garbage.
   #
+  # A session whose caller explicitly asked for zero MCP servers is left alone.
+  # The heal above assumes an empty column is always accidental; once a caller
+  # can say "none" and mean it, that assumption re-attaches exactly the servers
+  # the caller declined — on a root whose defaults carry SSH, that turns a
+  # least-privilege request into prod access at job start, after the API already
+  # reported none. Session#mcp_servers_explicitly_empty? is what distinguishes
+  # the deliberate empty from the accidental one.
+  #
   # Resolved defaults are filtered through ServersConfig.exists? — the same gate
   # the sessions controller applies — so a still-structurally-incomplete catalog
   # (a name resolved into the root's defaults but absent from the catalog's mcp
@@ -39,6 +51,7 @@ module McpServerBackfill
   # @return [Array<String>, nil] the restored server list if a backfill occurred, else nil
   def backfill_default_mcp_servers_if_empty(session)
     return if session.mcp_servers.present?
+    return if session.mcp_servers_explicitly_empty?
 
     defaults = session.agent_root_default_mcp_servers.select { |name| ServersConfig.exists?(name) }
     return if defaults.blank?
@@ -47,6 +60,7 @@ module McpServerBackfill
     with_db_retry do
       session.reload
       next if session.mcp_servers.present?
+      next if session.mcp_servers_explicitly_empty?
 
       session.update!(mcp_servers: defaults)
       backfilled = true
