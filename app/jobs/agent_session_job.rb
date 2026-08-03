@@ -391,12 +391,18 @@ class AgentSessionJob < ApplicationJob
           end
         end
 
-        # Clear the pending_follow_up_prompt and sent_at from metadata now that we're processing it.
-        # This prevents the SIGTERM retry service from using a stale prompt and signals to the
-        # pause action that the message has been picked up for processing.
-        if session.metadata&.dig("pending_follow_up_prompt").present?
-          session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
-        end
+        # Preserve this turn's prompt in a per-turn recovery slot before
+        # clearing delivery markers. `pending_follow_up_prompt` means "the job
+        # has not picked this up yet", while `active_follow_up_prompt` means
+        # "this turn is being delivered to the runtime". If a runtime resume
+        # immediately fails before the prompt lands in its durable transcript
+        # (Codex: "no rollout found"), failed-resume recovery can fresh-start
+        # with this exact prompt instead of losing the deploy/trigger/status
+        # summary continuation and parking the session in needs_input.
+        pending_follow_up_prompt = session.metadata&.dig("pending_follow_up_prompt").presence
+        active_follow_up_prompt = pending_follow_up_prompt || follow_up_prompt
+        pending_keys = pending_follow_up_prompt.present? ? %w[pending_follow_up_prompt pending_follow_up_sent_at] : []
+        session.merge_metadata!({ "active_follow_up_prompt" => active_follow_up_prompt }, pending_keys)
       else
         log_buffer.add(
           "Job started for session #{session_id}",
@@ -1410,6 +1416,7 @@ class AgentSessionJob < ApplicationJob
                 log_buffer.flush
                 return
               end
+              session.remove_metadata!("active_follow_up_prompt")
               session.pause! if session.may_pause?
               # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
               @broadcast_service.session_status(session)

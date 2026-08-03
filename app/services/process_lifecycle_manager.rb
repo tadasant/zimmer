@@ -353,8 +353,8 @@ class ProcessLifecycleManager
         # Check for failed resume - Claude CLI exits 0 even when it can't find the
         # session to resume, producing "No conversation found with session ID" in stderr.
         # Instead of permanently failing, attempt to recover by starting a fresh CLI
-        # session with the original prompt. This handles deploy-interrupt recovery where
-        # the CLI session was too short-lived to persist on Anthropic's servers.
+        # session with the best durable prompt. This handles deploy-interrupt recovery
+        # where the CLI session was too short-lived to persist on Anthropic's servers.
         # (Runtimes that signal a failed resume with a NON-zero exit — e.g. Codex —
         # are caught by the matching check in the failure branch below.)
         if retry_strategy.failed_resume_recovery_needed?(stderr_log_path: @stderr_log_path)
@@ -590,7 +590,7 @@ class ProcessLifecycleManager
     # spawn_continuation resumes the existing runtime session id and handles its own
     # state transitions + error rescue (returning :failed if the resume itself fails).
     # A resume that lands on a vanished conversation is caught on the next loop by the
-    # failed_resume_recovery path, which restarts fresh from the original prompt.
+    # failed_resume_recovery path, which restarts fresh from the best durable prompt.
     spawn_continuation(
       working_dir: working_dir,
       prompt: AutomatedPrompts::SYSTEM_RECOVERY,
@@ -751,13 +751,13 @@ class ProcessLifecycleManager
   # When Claude CLI can't find a session to resume (e.g., the original process was
   # killed before the conversation persisted on Anthropic's servers), we recover by:
   # 1. Resetting runtime_started so the next spawn uses --session-id instead of --resume
-  # 2. Spawning a fresh CLI process with the session's original prompt
+  # 2. Spawning a fresh CLI process with the best durable prompt
   #
   # This commonly happens during deploy-interrupt recovery: the original session barely
   # started (e.g., 1 transcript line), got killed by GoodJob shutdown, and the auto-recovery
   # tried to --resume a session that never persisted.
   #
-  # Falls back to permanent failure if there's no original prompt to retry with.
+  # Falls back to permanent failure if there's no prompt to retry with.
   #
   # No retry counter needed (unlike SIGTERM/compact/API error handlers) because
   # the recovery uses execute (--session-id), not resume (--resume). A successful
@@ -772,17 +772,28 @@ class ProcessLifecycleManager
   def handle_failed_resume_recovery(working_dir)
     session.reload
 
-    # Prefer the user's pending follow-up message over the original session prompt.
-    # When a --resume fails (e.g. the clone was recreated so the local transcript is
-    # gone), we restart fresh — but if the user just sent a follow-up, that message
-    # is what they're waiting on, not the original task. `sent_message` holds the
-    # pending follow-up until it appears in the transcript; it is absent for the
-    # deploy-interrupt case this recovery was first built for (a barely-started
-    # session with no follow-up), where we correctly fall back to session.prompt.
-    # Without this, a follow-up whose resume fails silently re-runs the original task
-    # and the user's message is dropped — the session bounces straight back to
-    # needs_input with no visible action.
-    recovery_prompt = session.metadata&.dig("sent_message").presence || session.prompt
+    # Prefer the in-flight follow-up over the original session prompt. A failed
+    # --resume means this turn never reached the runtime's durable conversation, so
+    # the fresh start must replay the prompt that spawned the failed resume:
+    #
+    # - sent_message: web follow-ups keep this until transcript polling confirms
+    #   the user message landed.
+    # - active_follow_up_prompt: AgentSessionJob moves trigger/deploy/heartbeat
+    #   recovery prompts here while delivering the turn, after clearing the
+    #   "not picked up yet" pending marker.
+    # - pending_follow_up_prompt: fallback for paths that have stamped a prompt
+    #   but have not yet reached AgentSessionJob's delivery handoff.
+    # - session.prompt: original prompt for a barely-started session with no
+    #   follow-up in flight.
+    #
+    # Without the active/pending follow-up fallbacks, deploy auto-continuation can
+    # lose its recovery prompt after Codex rejects `thread/resume` with "no rollout
+    # found", parking the session in needs_input with unfinished side effects.
+    recovery_prompt =
+      session.metadata&.dig("sent_message").presence ||
+      session.metadata&.dig("active_follow_up_prompt").presence ||
+      session.metadata&.dig("pending_follow_up_prompt").presence ||
+      session.prompt
 
     unless recovery_prompt.present?
       error_msg = "Resume failed and no prompt available for fresh start recovery"
@@ -796,7 +807,7 @@ class ProcessLifecycleManager
       session.merge_metadata!("runtime_started" => false)
     end
 
-    add_log("Recovering from failed resume: starting fresh CLI session with original prompt", level: "info")
+    add_log("Recovering from failed resume: starting fresh CLI session with recovered prompt", level: "info")
     @logger.info("Failed resume recovery: spawning fresh CLI session")
 
     # Reconstruct mcp_config_path if the session uses MCP servers (including

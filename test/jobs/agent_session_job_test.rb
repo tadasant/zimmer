@@ -425,7 +425,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
   end
 
-  test "should clear pending_follow_up_prompt from metadata when processing follow-up" do
+  test "should move pending_follow_up_prompt to active_follow_up_prompt when processing follow-up" do
     session_id = SecureRandom.uuid
     clone_path = "/tmp/test-clone"
     @session.update!(
@@ -434,6 +434,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       metadata: {
         "clone_path" => clone_path,
         "working_directory" => clone_path,
+        "runtime_started" => true,
         "pending_follow_up_prompt" => "This should be cleared"
       }
     )
@@ -452,6 +453,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Setup mocks
     mock_fs.mkdir_p(clone_path)
     mock_fs.write("#{clone_path}/claude_stderr.log", "")
+    active_prompt_at_spawn = nil
+
+    mock_cli_adapter.resume_hook = ->(_opts) do
+      active_prompt_at_spawn = @session.reload.metadata["active_follow_up_prompt"]
+      { pid: 12345, stderr_log_path: "#{clone_path}/claude_stderr.log" }
+    end
 
     mock_process_manager.wait_hook = ->(pid, flags) do
       [ pid, MockProcessManager::MockStatus.new(0) ]
@@ -478,8 +485,71 @@ class AgentSessionJobTest < ActiveJob::TestCase
         # Verify pending prompt was cleared
         assert_nil @session.metadata["pending_follow_up_prompt"],
           "pending_follow_up_prompt should be cleared after job processes follow-up"
+        assert_equal "This should be cleared", active_prompt_at_spawn,
+          "active_follow_up_prompt should preserve the prompt during runtime delivery"
+        assert_nil @session.metadata["active_follow_up_prompt"],
+          "active_follow_up_prompt should be cleared after the turn finishes"
         # Verify other metadata is preserved
         assert_equal clone_path, @session.metadata["clone_path"]
+      end
+    end
+  end
+
+  test "should set active_follow_up_prompt from direct follow-up when no pending marker exists" do
+    session_id = SecureRandom.uuid
+    clone_path = "/tmp/test-clone"
+    @session.update!(
+      session_id: session_id,
+      status: :running,
+      metadata: {
+        "clone_path" => clone_path,
+        "working_directory" => clone_path,
+        "runtime_started" => true
+      }
+    )
+
+    job = AgentSessionJob.new
+
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p(clone_path)
+    mock_fs.write("#{clone_path}/claude_stderr.log", "")
+    active_prompt_at_spawn = nil
+
+    mock_cli_adapter.resume_hook = ->(_opts) do
+      active_prompt_at_spawn = @session.reload.metadata["active_follow_up_prompt"]
+      { pid: 12345, stderr_log_path: "#{clone_path}/claude_stderr.log" }
+    end
+
+    mock_process_manager.wait_hook = ->(pid, _flags) do
+      [ pid, MockProcessManager::MockStatus.new(0) ]
+    end
+
+    TranscriptPollerService.stub(:new, ->(_session, file_system: nil, broadcast_service: nil) {
+      mock_poller = Object.new
+      def mock_poller.poll_and_broadcast; end
+      mock_poller
+    }) do
+      Thread.stub(:new, ->(&_block) {
+        mock_thread = Object.new
+        def mock_thread.alive?; false; end
+        def mock_thread.kill; end
+        def mock_thread.join(*); end
+        mock_thread
+      }) do
+        job.perform(@session.id, "Status summary follow-up")
+
+        @session.reload
+        assert_equal "Status summary follow-up", active_prompt_at_spawn,
+          "direct follow-up prompt should be preserved during runtime delivery"
+        assert_nil @session.metadata["active_follow_up_prompt"],
+          "active_follow_up_prompt should be cleared after the turn finishes"
       end
     end
   end

@@ -522,6 +522,43 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     refute_equal @session.prompt, recovery_command[:prompt]
   end
 
+  test "handle_exit failed resume recovery uses active follow-up prompt after delivery marker is cleared" do
+    # Regression for deploy auto-continuation: AgentSessionJob clears
+    # pending_follow_up_prompt once it starts delivering the follow-up. If the
+    # runtime rejects the resume before the prompt reaches durable transcript
+    # state, recovery must use the active per-turn prompt rather than falling
+    # back to the original task or failing when no original prompt exists.
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    active_prompt = "[AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]\n\nContinue after deploy interruption."
+
+    @session.update!(
+      prompt: nil,
+      metadata: @session.metadata.merge("active_follow_up_prompt" => active_prompt)
+    )
+
+    @mock_cli_adapter.execute_hook = ->(_opts) do
+      { pid: 12345, stderr_log_path: stderr_path }
+    end
+
+    manager = create_manager
+    manager.spawn(prompt: "Resume please", working_dir: "/tmp/test-clone")
+
+    @mock_file_system.write(
+      stderr_path,
+      "No conversation found with session ID: c65ced73-208f-4e45-ad49-3ea78cf6c4aa\n"
+    )
+
+    @mock_cli_adapter.execute_hook = ->(_opts) do
+      { pid: 99999, stderr_log_path: stderr_path }
+    end
+
+    status = MockProcessManager::MockStatus.new(0)
+    decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_equal active_prompt, @mock_cli_adapter.executed_commands.last[:prompt]
+  end
+
   test "handle_exit fails when failed resume recovery spawn raises an error" do
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     call_count = 0
@@ -647,6 +684,38 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal stderr_path, manager.stderr_log_path
     assert_not_includes manager.stderr_log_path, "claude_stderr.log",
       "A Codex session must never be handed a Claude stderr filename"
+  end
+
+  test "Codex exit 1 with 'no rollout found' recovers with active follow-up prompt" do
+    session = create_codex_session
+    stderr_path = "/tmp/codex-clone/codex_stderr.log"
+    active_prompt = "[AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]\n\nContinue after deploy interruption."
+    session.update!(
+      prompt: nil,
+      metadata: session.metadata.merge("active_follow_up_prompt" => active_prompt)
+    )
+    codex_adapter = MockCodexRuntimeAdapter.new
+    codex_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = ProcessLifecycleManager.new(
+      session: session,
+      cli_adapter: codex_adapter,
+      process_manager: @mock_process_manager,
+      log_buffer: LogBuffer.new(session),
+      file_system: @mock_file_system
+    )
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/codex-clone")
+
+    @mock_file_system.write(
+      stderr_path,
+      "Error: thread/resume: thread/resume failed: no rollout found for thread id 019fc72f-dead-beef (code -32600)\n"
+    )
+
+    status = MockProcessManager::MockStatus.new(1)
+    decision = manager.handle_exit(status, working_dir: "/tmp/codex-clone")
+
+    assert_equal :continue, decision.action
+    assert_equal active_prompt, codex_adapter.executed_commands.last[:prompt]
   end
 
   test "Codex exit 1 with unrelated stderr fails and surfaces stderr to the user" do
