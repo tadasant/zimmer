@@ -5,6 +5,12 @@ require "test_helper"
 class SpotGateServiceTest < ActiveSupport::TestCase
   setup do
     @now = Time.current
+    # The forecast reads the SERVING account's snapshots and multiplies by the
+    # running fleet, so a fixture account or a fixture session in `running`
+    # silently changes the arithmetic these tests assert on. Clear both, then
+    # build the one account this suite forecasts from.
+    ClaudeAccount.update_all(is_current: false)
+    Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
     @account = ClaudeAccount.create!(
       email: "gate-test@example.com", runtime: "claude_code",
       oauth_config: { "x" => 1 }, is_current: true

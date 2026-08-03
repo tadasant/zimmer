@@ -107,10 +107,15 @@ class ClaudeUsageRateServiceTest < ActiveSupport::TestCase
   end
 
   test "active_session_count counts only running Claude Code sessions" do
+    # Measured as a delta: the fixture set already contains sessions, and this
+    # asserts what the three new rows contribute, not the absolute total.
+    before = ClaudeUsageRateService.active_session_count
+
     Session.create!(git_root: "https://github.com/t/r.git", prompt: "a", status: :running, agent_runtime: "claude_code")
     Session.create!(git_root: "https://github.com/t/r.git", prompt: "b", status: :waiting, agent_runtime: "claude_code")
     Session.create!(git_root: "https://github.com/t/r.git", prompt: "c", status: :running, agent_runtime: "codex")
 
-    assert_equal 1, ClaudeUsageRateService.active_session_count
+    assert_equal before + 1, ClaudeUsageRateService.active_session_count,
+      "only the running claude_code session counts"
   end
 end

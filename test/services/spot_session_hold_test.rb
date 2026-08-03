@@ -10,6 +10,10 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
   setup do
+    # Same isolation as SpotGateServiceTest: the forecast is sensitive to which
+    # account is serving and how many sessions are running.
+    ClaudeAccount.update_all(is_current: false)
+    Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
     @setting = AppSetting.editable
     @setting.update!(spot_gating_enabled: false)
   end
