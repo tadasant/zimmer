@@ -12,7 +12,7 @@ Application: Zimmer (https://github.com/tadasant/zimmer-catalog)
 - Branch: main
 - Working directory: /home/rails/clone/path
 - Subdirectory: agents/agent-orchestrator
-- Durable scratch directory (also in $AO_SESSION_SCRATCH_DIR): /home/rails/.zimmer/session-scratch/4242 — use this for any on-disk state that must survive a restart/deploy. Do NOT use /tmp for cross-step state; /tmp is ephemeral and wiped on container recreation.
+- Durable scratch directory (also in $AO_SESSION_SCRATCH_DIR): /home/rails/.zimmer/session-scratch/4242 — use this for any on-disk state that must survive a restart/deploy. It also survives archive and is intact on unarchive, until the session's trash retention expires (4 days after archive). Do NOT use /tmp for cross-step state; /tmp is ephemeral and wiped on container recreation.
 
 ## MCP Servers
 

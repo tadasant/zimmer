@@ -110,8 +110,9 @@ every category.
 
 **Archived is "trash" in the UI, `archived` on the wire.** The status enum value is `archived` and
 the column is `archived_at`; filters and status values never take `trash`. Only the prose moves —
-archiving answers `"Session moved to trash"` and a `trash_after` timestamp saying when the clone gets
-cleaned up.
+archiving answers `"Session moved to trash"` and a `trash_after` timestamp saying when what the
+archive retained gets cleaned up — preserved clone artifacts, the scratch directory, prompt
+attachments. A clean clone is deleted well before that, at the end of the undo window.
 
 **`git_root` is a string; `agent_root` is a catalog name.** `git_root` is a free-form repository URL
 or local path stored on the session. `agent_root` names a preconfigured [agent

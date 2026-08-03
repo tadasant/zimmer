@@ -15,9 +15,18 @@ class EmptyTrashJobTest < ActiveJob::TestCase
       trash_after: 1.day.ago,
       metadata: { "clone_path" => @clone_path }
     )
+
+    # The job now reaps the scratch base, so pin it to a tmpdir for every test
+    # in this file — otherwise the suite deletes out of the host's real
+    # ~/.zimmer/session-scratch.
+    @scratch_env = ENV["AGENT_SCRATCH_DIR"]
+    @scratch_base = Dir.mktmpdir("trash-scratch")
+    ENV["AGENT_SCRATCH_DIR"] = @scratch_base
   end
 
   teardown do
+    @scratch_env.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = @scratch_env
+    FileUtils.remove_entry(@scratch_base) if @scratch_base && Dir.exist?(@scratch_base)
     FileUtils.rm_rf(@clone_path) if @clone_path && File.directory?(@clone_path)
   end
 
@@ -62,6 +71,48 @@ class EmptyTrashJobTest < ActiveJob::TestCase
 
     @session.reload
     assert_nil @session.metadata&.dig("artifacts_path"), "artifacts_path should be cleared from metadata"
+  end
+
+  test "reaps the durable scratch dir when retention expires" do
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    File.write(File.join(scratch_path, "state.txt"), "cross-step state")
+
+    EmptyTrashJob.perform_now
+
+    assert_not Dir.exist?(scratch_path), "scratch dir should be deleted once retention expires"
+
+    log = @session.logs.find_by("content LIKE ?", "%scratch directory deleted%")
+    assert_not_nil log, "cleanup log should mention the scratch directory"
+  end
+
+  test "reaps durable prompt attachments when retention expires" do
+    file_service = FileStorageService.new(session_id: @session.id)
+    image_service = ImageStorageService.new(session_id: @session.id)
+    begin
+      file_service.store(data: "notes", filename: "notes.md")
+      png = [ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A ].pack("C*") + ("x" * 32)
+      image_service.store(data: Base64.strict_encode64(png), filename: "shot.png")
+
+      EmptyTrashJob.perform_now
+
+      assert_not Dir.exist?(file_service.session_dir), "file attachments should be reaped at the trash deadline"
+      assert_not Dir.exist?(image_service.session_dir), "image attachments should be reaped at the trash deadline"
+
+      log = @session.logs.find_by("content LIKE ?", "%prompt attachments deleted%")
+      assert_not_nil log, "cleanup log should mention prompt attachments"
+    ensure
+      file_service.cleanup!
+      image_service.cleanup!
+    end
+  end
+
+  test "leaves the scratch dir alone while retention has not expired" do
+    @session.update!(trash_after: 1.day.from_now)
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+
+    EmptyTrashJob.perform_now
+
+    assert Dir.exist?(scratch_path), "scratch dir must survive until the trash deadline passes"
   end
 
   test "skips sessions where trash_after has not expired" do
