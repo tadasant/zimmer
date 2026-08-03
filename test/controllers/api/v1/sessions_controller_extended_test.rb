@@ -250,7 +250,7 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)
     assert_equal "Invalid model", json["error"]
     assert_match(/not valid for runtime claude_code/, json["message"])
-    assert_match(/opus, sonnet, haiku/, json["message"])
+    assert_match(/opus, sonnet, haiku, fable/, json["message"])
     # The session's model is left unchanged.
     assert_not_equal "gpt-5", session.reload.config&.dig("model")
   end

@@ -12,8 +12,14 @@ class AppSettingTest < ActiveSupport::TestCase
     assert AppSetting.new(default_runtime: "claude_code", default_model: "opus").valid?
   end
 
-  test "valid codex + gpt-5.5 pairing" do
-    assert AppSetting.new(default_runtime: "codex", default_model: "gpt-5.5").valid?
+  test "valid claude_code + fable pairing" do
+    assert AppSetting.new(default_runtime: "claude_code", default_model: "fable").valid?
+  end
+
+  test "valid codex + gpt-5.6 series pairing" do
+    assert AppSetting.new(default_runtime: "codex", default_model: "gpt-5.6-sol").valid?
+    assert AppSetting.new(default_runtime: "codex", default_model: "gpt-5.6-terra").valid?
+    assert AppSetting.new(default_runtime: "codex", default_model: "gpt-5.6-luna").valid?
   end
 
   test "rejects an unregistered runtime" do

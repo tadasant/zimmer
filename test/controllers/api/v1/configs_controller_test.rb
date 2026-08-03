@@ -38,13 +38,14 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "application/json; charset=utf-8", response.content_type
   end
 
-  test "should return all three config sections" do
+  test "should return all config sections" do
     get api_v1_configs_path, headers: @headers
     assert_response :success
 
     json = JSON.parse(response.body)
     assert json.key?("mcp_servers"), "Response should include mcp_servers"
     assert json.key?("agent_roots"), "Response should include agent_roots"
+    assert json.key?("runtime_models"), "Response should include runtime_models"
     assert json.key?("goals"), "Response should include goals"
   end
 
@@ -132,6 +133,42 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
     AgentRootsConfig.names.each do |name|
       assert_includes root_names, name, "Expected agent root '#{name}' to be in response"
     end
+  end
+
+  # Runtime Models tests
+  test "runtime_models should expose the model catalog grouped by runtime" do
+    get api_v1_configs_path, headers: @headers
+    assert_response :success
+
+    runtime_models = JSON.parse(response.body)["runtime_models"]
+    assert_equal "opus", runtime_models.dig("claude_code", "default")
+    assert_equal "gpt-5.6-sol", runtime_models.dig("codex", "default")
+
+    claude_ids = runtime_models.dig("claude_code", "models").map { |model| model["id"] }
+    codex_ids = runtime_models.dig("codex", "models").map { |model| model["id"] }
+
+    assert_equal %w[opus sonnet haiku fable], claude_ids
+    assert_includes codex_ids, "gpt-5.6-sol"
+    assert_includes codex_ids, "gpt-5.6-terra"
+    assert_includes codex_ids, "gpt-5.6-luna"
+    refute_includes claude_ids, "gpt-5.6-sol"
+    refute_includes codex_ids, "fable"
+  end
+
+  test "runtime_models entries expose labels and auth/default flags" do
+    get api_v1_configs_path, headers: @headers
+    assert_response :success
+
+    runtime_models = JSON.parse(response.body)["runtime_models"]
+    sol = runtime_models.dig("codex", "models").find { |model| model["id"] == "gpt-5.6-sol" }
+    fable = runtime_models.dig("claude_code", "models").find { |model| model["id"] == "fable" }
+
+    assert_equal "gpt-5.6-sol (default, ChatGPT auth)", sol["label"]
+    assert_equal true, sol["default"]
+    assert_equal true, sol["requires_oauth"]
+    assert_equal "fable", fable["label"]
+    assert_equal false, fable["default"]
+    assert_equal false, fable["requires_oauth"]
   end
 
   # Goals tests

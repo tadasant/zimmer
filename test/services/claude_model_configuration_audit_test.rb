@@ -14,6 +14,17 @@ class ClaudeModelConfigurationAuditTest < ActiveSupport::TestCase
     assert_equal "claude-opus-4-7", findings.first.value
   end
 
+  test "flags concrete Fable ANTHROPIC_MODEL pins" do
+    findings = ClaudeModelConfigurationAudit.findings(
+      env: { "ANTHROPIC_MODEL" => "claude-fable-5" },
+      settings_path: missing_settings_path
+    )
+
+    assert_equal 1, findings.size
+    assert_equal "ANTHROPIC_MODEL", findings.first.location
+    assert_equal "claude-fable-5", findings.first.value
+  end
+
   test "flags concrete settings model pins" do
     Dir.mktmpdir do |dir|
       settings_path = File.join(dir, "settings.json")
@@ -53,7 +64,7 @@ class ClaudeModelConfigurationAuditTest < ActiveSupport::TestCase
   test "allows floating Claude aliases" do
     Dir.mktmpdir do |dir|
       settings_path = File.join(dir, "settings.json")
-      File.write(settings_path, { model: "opus" }.to_json)
+      File.write(settings_path, { model: "fable" }.to_json)
 
       findings = ClaudeModelConfigurationAudit.findings(
         env: { "ANTHROPIC_MODEL" => "sonnet" },

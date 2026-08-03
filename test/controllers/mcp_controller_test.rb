@@ -144,6 +144,16 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_includes body["result"]["content"].first["text"], "## MCP Servers"
   end
 
+  test "get_configs tool call exposes runtime model discovery" do
+    body = rpc("tools/call", { "name" => "get_configs", "arguments" => {} })
+    text = body["result"]["content"].first["text"]
+
+    assert_response :success
+    assert_includes text, "## Runtime Models"
+    assert_includes text, "`fable`"
+    assert_includes text, "`gpt-5.6-sol` (default, requires OAuth)"
+  end
+
   test "tools/call surfaces a tool error as an error result, not a protocol error" do
     body = rpc("tools/call", { "name" => "get_session", "arguments" => { "id" => "999999999" } })
 

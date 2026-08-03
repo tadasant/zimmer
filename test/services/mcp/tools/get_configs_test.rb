@@ -26,6 +26,22 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     assert_includes result, "## MCP Servers"
   end
 
+  test "lists runtime model catalogs for model discovery" do
+    result = @tool.call({})
+
+    assert_includes result, "## Runtime Models"
+    assert_includes result, "### Claude Code"
+    assert_includes result, "- **Runtime:** `claude_code`"
+    assert_includes result, "- **Default Model:** `opus`"
+    assert_includes result, "`fable`"
+    assert_includes result, "### Codex"
+    assert_includes result, "- **Runtime:** `codex`"
+    assert_includes result, "- **Default Model:** `gpt-5.6-sol`"
+    assert_includes result, "`gpt-5.6-sol` (default, requires OAuth)"
+    assert_includes result, "`gpt-5.6-terra` (requires OAuth)"
+    assert_includes result, "`gpt-5.6-luna` (requires OAuth)"
+  end
+
   test "warns that empty lists are a resolution failure, not an empty catalog" do
     AirCatalogService.stubs(:resolve_failure).returns({ message: "boom", at: Time.utc(2026, 8, 1, 12, 0, 0) })
     AirCatalogService.stubs(:degraded?).returns(false)
