@@ -767,7 +767,26 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.running?, "Session should be running after resume from sleeping/waiting"
   end
 
-  # === Tests for warn_if_pr_goal_captured_no_url (pause callback) ===
+  # === Tests for warn_if_pr_goal_captured_no_url (pause/fail/archive callback) ===
+
+  # A session for the backstop tests: PR-flavored goal, nothing recorded.
+  def pr_goal_session(custom_metadata: {})
+    Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code",
+      branch: "main",
+      session_id: SecureRandom.uuid,
+      status: :waiting,
+      goal: "Open a PR, confirm CI is green, and stop.",
+      custom_metadata: custom_metadata
+    )
+  end
+
+  def missing_pr_url_warnings(session)
+    session.logs.where(level: "warning").select do |log|
+      log.content.include?(TranscriptHooks::GithubPrUrlHook::MISSING_PR_URL_WARNING_MARKER)
+    end
+  end
 
   test "pause warns when a session with a pull-request goal recorded no PR URL" do
     session = Session.create!(
@@ -801,6 +820,135 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.pause!
 
     assert_empty session.logs.where(level: "warning").select { |log| log.content.include?(TranscriptHooks::GithubPrUrlHook::MISSING_PR_URL_WARNING_MARKER) }
+  end
+
+  # `fail` and `archive` are where the miss becomes permanent: a paused session
+  # gets another turn to open its PR, a failed or archived one does not (#313).
+
+  test "fail warns when a session with a pull-request goal recorded no PR URL" do
+    session = pr_goal_session
+    session.start!
+
+    session.fail!
+
+    assert_equal 1, missing_pr_url_warnings(session).size, "expected fail to warn about the missing PR URL"
+  end
+
+  test "archive warns when a session with a pull-request goal recorded no PR URL" do
+    session = pr_goal_session
+    session.start!
+    session.pause!
+    session.logs.destroy_all # isolate archive from the pause that preceded it
+
+    session.archive!
+
+    assert_equal 1, missing_pr_url_warnings(session).size, "expected archive to warn about the missing PR URL"
+  end
+
+  test "fail does not warn when the session recorded a PR URL" do
+    session = pr_goal_session(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/test/repo/pull/1" ] })
+    session.start!
+
+    session.fail!
+
+    assert_empty missing_pr_url_warnings(session)
+  end
+
+  test "archive does not warn when the session recorded a PR URL" do
+    session = pr_goal_session(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/test/repo/pull/1" ] })
+    session.start!
+
+    session.archive!
+
+    assert_empty missing_pr_url_warnings(session)
+  end
+
+  # The dedup guard is on the warning log itself, so all three call sites share
+  # one budget of one warning per session — which is what makes adding call
+  # sites free of timeline spam.
+  test "a session that pauses, warns, and then archives warns exactly once" do
+    session = pr_goal_session
+    session.start!
+
+    session.pause!
+    assert_equal 1, missing_pr_url_warnings(session).size, "expected the pause to warn"
+
+    session.archive!
+
+    assert_equal 1, missing_pr_url_warnings(session).size, "archive must not repeat the warning pause already wrote"
+  end
+
+  test "a session that pauses, warns, and then fails warns exactly once" do
+    session = pr_goal_session
+    session.start!
+
+    session.pause!
+    session.fail!
+
+    assert_equal 1, missing_pr_url_warnings(session).size, "fail must not repeat the warning pause already wrote"
+  end
+
+  # The commonest real terminal sequence: a session dies, and the user trashes
+  # it afterwards. Both new call sites fire, and between them they must still
+  # produce one warning.
+  test "a session that fails, warns, and is then archived warns exactly once" do
+    session = pr_goal_session
+    session.start!
+
+    session.fail!
+    assert_equal 1, missing_pr_url_warnings(session).size, "expected the failure to warn"
+
+    session.archive!
+
+    assert_equal 1, missing_pr_url_warnings(session).size, "archive must not repeat the warning fail already wrote"
+  end
+
+  # A warning that breaks a state transition is worse than the thing it warns
+  # about — and on these two events the transition is running cleanup.
+  test "archive completes its cleanup when the missing-PR-URL check raises" do
+    session = pr_goal_session
+    session.start!
+
+    TranscriptHooks::GithubPrUrlHook.stub(:warn_if_pr_goal_captured_no_url, ->(*) { raise "boom" }) do
+      assert_nothing_raised { session.archive! }
+    end
+
+    assert session.archived?, "archive must still complete"
+    # set_trash_expiry is the callback immediately before the new call, so it is
+    # the one that proves the raise did not truncate the rest of the block.
+    assert_not_nil session.reload.trash_after, "archive bookkeeping must not be skipped"
+  end
+
+  test "fail completes when the missing-PR-URL check raises" do
+    session = pr_goal_session
+    session.start!
+
+    TranscriptHooks::GithubPrUrlHook.stub(:warn_if_pr_goal_captured_no_url, ->(*) { raise "boom" }) do
+      assert_nothing_raised { session.fail! }
+    end
+
+    assert session.failed?, "fail must still complete"
+  end
+
+  # A status-summary fork is Zimmer's own bookkeeping throwaway and is disposed
+  # of by archiving, so it must not warn. The goal check alone does not cover
+  # it: ForkSessionService copies the source's goal, and
+  # SessionStatusSummaryGenerator only strips it in #prepare_fork — which
+  # #abandon_fork runs *before* on the "source went to the trash mid-copy" path.
+  # So the fork under test keeps its inherited PR-flavored goal, which is the
+  # state the explicit carve-out in the hook exists for.
+  test "archiving an abandoned status-summary fork does not warn about a missing PR URL" do
+    source = pr_goal_session
+    fork = pr_goal_session
+    fork.update!(metadata: fork.metadata.to_h.merge(SessionStatusSummaryGenerator::FORK_MARKER => source.id))
+    fork.start!
+
+    assert fork.status_summary_fork?, "the fixture must actually be a fork"
+    assert fork.goal.present?, "this test is only meaningful while the fork still carries a PR goal"
+
+    fork.archive!
+
+    assert_empty missing_pr_url_warnings(fork)
   end
 
   # === Tests for execute_pending_sleep (pause callback) ===

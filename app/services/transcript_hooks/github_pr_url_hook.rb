@@ -35,8 +35,9 @@
 # Every rule above is a bet against the opposite failure — a session that opened a
 # PR and has nothing recorded, which silently switches off every GitHub
 # integration for it (#89). `.warn_if_pr_goal_captured_no_url` is the backstop:
-# when a session with a PR-flavored goal finishes a turn with an empty list, it
-# says so once in the session timeline instead of failing quietly.
+# when a session with a PR-flavored goal comes to rest — finishing a turn,
+# failing, or being archived — with an empty list, it says so once in the
+# session timeline instead of failing quietly.
 #
 # Runtime support: both Claude Code and OpenAI Codex sessions are handled. The two
 # runtimes write very different transcript shapes, so locating `gh pr create`
@@ -134,23 +135,43 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   MISSING_PR_URL_WARNING_MARKER = "[GitHub] This session's goal asks for a pull request"
 
   # Warn — once, in the session's own timeline — when a session whose goal is
-  # about opening a pull request finishes a turn with no PR recorded. The whole
-  # GitHub integration hangs off github_pull_request_urls, and its failure mode
-  # is silence, so this is the one place that says the quiet part out loud.
+  # about opening a pull request reaches a rest state with no PR recorded. The
+  # whole GitHub integration hangs off github_pull_request_urls, and its failure
+  # mode is silence, so this is the one place that says the quiet part out loud.
   #
-  # Called from the session state machine's `pause` (turn completion), which is
-  # every hand-back to the user, not only the last one — so the warning is
-  # phrased as of that moment ("no PR URL yet") and is written once per session.
-  # A session that pauses to ask a question mid-task and opens its PR afterwards
-  # gets one accurate-when-written note; the alternative, re-checking on every
-  # pause, is timeline spam for the same fact.
+  # Called from the session state machine's three rest states: `pause` (turn
+  # completion), `fail` and `archive` — the transitions after which nothing runs
+  # unless a person comes back to the session. `pause` is every hand-back to the
+  # user, not only the last one, so it catches the miss while the same session
+  # can still act on it. `fail` and `archive` catch the ones `pause` never sees:
+  # a session that dies mid-turn, or is trashed straight from `needs_input`,
+  # would otherwise be recorded nowhere at all (#313).
+  #
+  # `failed` and `archived` are not literally terminal — `resume` runs from
+  # `failed` and `unarchive_to_*` from `archived` — so this shares `pause`'s
+  # point-in-time honesty: the warning states what was true when it was written
+  # ("no PR URL yet") and is never retracted if the session is revived and does
+  # open one.
+  #
+  # Repeats are the dedup guard's job, not the call site's. The guard below
+  # looks for an existing MISSING_PR_URL_WARNING_MARKER log on the session, so
+  # every call site shares one budget of one warning per session: a session that
+  # pauses, warns, and later archives says it once. That is why adding call
+  # sites costs nothing in timeline spam.
   #
   # Never raises: a warning that breaks a state transition would be worse than
-  # the thing it warns about.
+  # the thing it warns about — and on `fail` and `archive` it would break a
+  # transition that is running cleanup.
   #
   # @param session [Session]
   # @return [void]
   def self.warn_if_pr_goal_captured_no_url(session)
+    # A status-summary fork is Zimmer's own throwaway and never opens anything.
+    # It cannot be left to the goal check below: SessionStatusSummaryGenerator
+    # strips the inherited goal in `prepare_fork`, but `abandon_fork` archives a
+    # fork made before that point — which still carries the source's "open a PR"
+    # and an empty URL list — so the goal is only usually nil by then.
+    return if session.status_summary_fork?
     return if session.goal.blank?
     return unless PR_GOAL_PATTERNS.any? { |pattern| pattern.match?(session.goal) }
 
@@ -158,8 +179,8 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     return if session.logs.where(level: "warning").where("content LIKE ?", "#{MISSING_PR_URL_WARNING_MARKER}%").exists?
 
     Rails.logger.warn(
-      "[GithubPrUrlHook] Session #{session.id} paused with a pull-request goal but no PR URL captured; " \
-      "GitHub comment and merge-conflict polling will not run for it"
+      "[GithubPrUrlHook] Session #{session.id} came to rest with a pull-request goal but no PR URL " \
+      "captured; GitHub comment and merge-conflict polling will not run for it"
     )
     session.logs.create!(level: "warning", content: MISSING_PR_URL_WARNING)
   rescue => e
