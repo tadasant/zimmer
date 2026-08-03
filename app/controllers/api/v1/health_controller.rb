@@ -16,10 +16,47 @@ class Api::V1::HealthController < Api::BaseController
 
     render json: {
       health_report: report,
+      queue_recovery_mode: QueueRecoveryMode.status.as_json,
       timestamp: Time.current.iso8601,
       rails_env: Rails.env,
       ruby_version: RUBY_VERSION
     }
+  end
+
+  # GET /api/v1/health/queue_recovery_mode
+  # Whether the demand-side job queues are currently halted, and until when.
+  def queue_recovery_mode
+    render json: QueueRecoveryMode.status.as_json
+  end
+
+  # POST /api/v1/health/enter_queue_recovery_mode
+  # Halt the demand-side job queues (`pollers`, `triggers`, `default`) so a
+  # backlog can be investigated. `agents` keeps running, so sessions still start
+  # and run. See QueueRecoveryMode.
+  #
+  # Request body:
+  #   - reason: Optional free text shown in the UI banner and the Slack alert
+  #   - ttl_minutes: Optional auto-exit window, clamped to 5..240 (default 60)
+  #
+  # Deliberately not behind HealthActionCooldown — see the same note on
+  # HealthController#enter_queue_recovery_mode.
+  def enter_queue_recovery_mode
+    status = QueueRecoveryMode.enter!(
+      reason: params[:reason],
+      ttl: params[:ttl_minutes].presence&.to_i&.minutes,
+      actor: "REST API"
+    )
+
+    render json: status.as_json
+  rescue QueueRecoveryMode::NotAvailable => e
+    render_api_error("Queue recovery mode unavailable", e.message, status: :service_unavailable)
+  end
+
+  # POST /api/v1/health/exit_queue_recovery_mode
+  # Resume normal processing. Idempotent, and never gated: the way out of a halt
+  # must always be available.
+  def exit_queue_recovery_mode
+    render json: QueueRecoveryMode.exit!(actor: "REST API").as_json
   end
 
   # POST /api/v1/health/cleanup_processes

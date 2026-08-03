@@ -1,0 +1,102 @@
+<%# The operator control for QueueRecoveryMode: the escape hatch for a runaway
+    job queue. Full width above the health grid, because when it is ON it is the
+    single most important fact on this page, and when it is OFF it is the control
+    someone lands here looking for during an incident. %>
+<% recovery = queue_recovery_mode_status %>
+<div class="mb-6 bg-white rounded-lg shadow border-l-4 <%= recovery.active? ? "border-amber-500" : "border-gray-200" %>">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div class="flex items-center justify-between">
+      <div>
+        <h3 class="text-lg font-medium text-gray-900">Queue Recovery Mode</h3>
+        <p class="mt-1 text-sm text-gray-600">
+          Halts background job execution on
+          <span class="font-mono"><%= recovery.halted_queues.join(", ") %></span>
+          so a runaway backlog can be investigated. The
+          <span class="font-mono"><%= QueueRecoveryMode::LIVE_QUEUES.join(", ") %></span>
+          queue keeps running, so sessions can still be started and can still run.
+          Jobs are frozen, not discarded. Unrelated to session recovery after a deploy.
+        </p>
+      </div>
+      <span class="shrink-0 ml-4 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= recovery.active? ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700" %>">
+        <%= recovery.active? ? "ON — queues halted" : "Off" %>
+      </span>
+    </div>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6">
+    <% if recovery.active? %>
+      <dl class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div>
+          <dt class="text-sm font-medium text-gray-500">Halted since</dt>
+          <dd class="mt-1 text-sm text-gray-900"><%= recovery.entered_at&.utc&.strftime("%Y-%m-%d %H:%M UTC") %></dd>
+        </div>
+        <div>
+          <dt class="text-sm font-medium text-gray-500">Auto-resumes</dt>
+          <dd class="mt-1 text-sm text-gray-900">
+            <%= recovery.expires_at&.utc&.strftime("%H:%M UTC") %>
+            <span class="text-gray-500">(in <%= queue_recovery_mode_countdown(recovery) %>)</span>
+          </dd>
+        </div>
+        <div>
+          <dt class="text-sm font-medium text-gray-500">Entered by</dt>
+          <dd class="mt-1 text-sm text-gray-900"><%= recovery.entered_by.presence || "—" %></dd>
+        </div>
+      </dl>
+
+      <% if recovery.reason.present? %>
+        <div class="mb-6 bg-amber-50 rounded-md p-3">
+          <p class="text-sm text-amber-900"><span class="font-medium">Reason:</span> <%= recovery.reason %></p>
+        </div>
+      <% end %>
+
+      <div class="mb-6 text-sm text-gray-600">
+        <p class="font-medium text-gray-700 mb-1">While halted, act on the cause:</p>
+        <ul class="list-disc list-inside space-y-1">
+          <li>Disable a stampeding trigger on the <%= link_to "Triggers page", triggers_path, class: "text-indigo-600 hover:underline" %>.</li>
+          <li>Discard or reschedule queued jobs by class in the <%= link_to "GoodJob dashboard", "/jobs", class: "text-indigo-600 hover:underline" %>.</li>
+          <li>Trash runaway sessions with the maintenance actions below.</li>
+        </ul>
+      </div>
+
+      <div class="flex flex-wrap gap-3">
+        <%= button_to "Resume Job Processing", exit_queue_recovery_mode_health_path,
+            method: :post,
+            class: "inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500" %>
+
+        <%= form_with url: enter_queue_recovery_mode_health_path, method: :post, class: "flex items-end gap-2" do |f| %>
+          <%= f.hidden_field :reason, value: recovery.reason %>
+          <div>
+            <%= f.label :ttl_minutes, "Extend by (min)", class: "block text-xs font-medium text-gray-500" %>
+            <%= f.number_field :ttl_minutes,
+                value: (QueueRecoveryMode::DEFAULT_TTL / 60).to_i,
+                min: (QueueRecoveryMode::MIN_TTL / 60).to_i,
+                max: (QueueRecoveryMode::MAX_TTL / 60).to_i,
+                class: "mt-1 w-28 rounded-md border-gray-300 shadow-sm text-sm" %>
+          </div>
+          <%= f.submit "Extend",
+              class: "inline-flex justify-center items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 cursor-pointer" %>
+        <% end %>
+      </div>
+    <% else %>
+      <%= form_with url: enter_queue_recovery_mode_health_path, method: :post, class: "flex flex-wrap items-end gap-3" do |f| %>
+        <div class="grow min-w-64">
+          <%= f.label :reason, "Reason (shown in the banner and the Slack alert)", class: "block text-xs font-medium text-gray-500" %>
+          <%= f.text_field :reason,
+              placeholder: "e.g. trigger stampede, 900 jobs/hour",
+              class: "mt-1 w-full rounded-md border-gray-300 shadow-sm text-sm" %>
+        </div>
+        <div>
+          <%= f.label :ttl_minutes, "Auto-resume after (min)", class: "block text-xs font-medium text-gray-500" %>
+          <%= f.number_field :ttl_minutes,
+              value: (QueueRecoveryMode::DEFAULT_TTL / 60).to_i,
+              min: (QueueRecoveryMode::MIN_TTL / 60).to_i,
+              max: (QueueRecoveryMode::MAX_TTL / 60).to_i,
+              class: "mt-1 w-36 rounded-md border-gray-300 shadow-sm text-sm" %>
+        </div>
+        <%= f.submit "Halt Job Processing",
+            data: { turbo_confirm: "Halt #{QueueRecoveryMode::HALTED_QUEUES.join(", ")} for the whole instance? Agent sessions keep running; everything else stops until you resume or the timer expires." },
+            class: "inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-amber-600 hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 cursor-pointer" %>
+      <% end %>
+    <% end %>
+  </div>
+</div>

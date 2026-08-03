@@ -128,6 +128,11 @@ Rails.application.configure do
       class: "CatalogRefreshJob",
       description: "Refresh catalog repo (skills, servers, agent roots) from tadasant/zimmer-catalog"
     },
+    queue_recovery_mode_expiry: {
+      cron: "* * * * *", # Every minute
+      class: "QueueRecoveryModeExpiryJob",
+      description: "Lift queue recovery mode once its TTL has elapsed (runs on `agents`, the queue recovery mode never pauses)"
+    },
     slack_trigger_poller: {
       # Every minute. GoodJob/fugit do support second-granularity cron — the six-field
       # "*/30 * * * * *" entries above really do fire every 30s — so this cadence is a

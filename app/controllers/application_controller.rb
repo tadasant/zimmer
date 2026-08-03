@@ -23,7 +23,42 @@ class ApplicationController < ActionController::Base
   # enforcement for every descendant controller with no visible symptom.
   rescue_from ActionController::InvalidAuthenticityToken, with: :invalid_authenticity_token
 
+  before_action :reconcile_queue_recovery_mode
+
   private
+
+  # The web-process half of QueueRecoveryMode's TTL backstop.
+  #
+  # QueueRecoveryModeExpiryJob is the primary path, but it runs on the `agents`
+  # queue and sixteen long-running sessions can occupy every thread on it — which
+  # is exactly the incident recovery mode gets entered for. This path needs no
+  # worker thread at all, so the two cover each other.
+  #
+  # Throttled to one check per RECOVERY_MODE_RECONCILE_INTERVAL across the whole
+  # process so it is not a query on every request, and swallowed entirely on
+  # failure: a backstop must never be the reason a page 500s. When the cache is
+  # unavailable the guard falls through to the check, which is one indexed read of
+  # a one-row table — the safe direction to fail.
+  RECOVERY_MODE_RECONCILE_INTERVAL = 30.seconds
+  RECOVERY_MODE_RECONCILE_KEY = "queue_recovery_mode:reconcile_throttle"
+
+  def reconcile_queue_recovery_mode
+    return unless recovery_mode_reconcile_due?
+
+    QueueRecoveryMode.expire_if_due!
+  rescue StandardError => e
+    Rails.logger.error("[queue_recovery_mode] reconcile skipped: #{e.class}: #{e.message}")
+    nil
+  end
+
+  def recovery_mode_reconcile_due?
+    Rails.cache.write(
+      RECOVERY_MODE_RECONCILE_KEY, true,
+      expires_in: RECOVERY_MODE_RECONCILE_INTERVAL, unless_exist: true
+    )
+  rescue StandardError
+    true
+  end
 
   def record_not_found
     render file: Rails.public_path.join("404.html"), status: :not_found, layout: false
