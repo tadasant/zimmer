@@ -88,6 +88,54 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_match(/Do not run any tools/, prompts.first)
   end
 
+  test "a Codex summary fork starts a fresh turn with inline transcript context" do
+    @session.update!(
+      agent_runtime: "codex",
+      transcript: file_fixture("codex_rollout.jsonl").read
+    )
+    prompts = []
+    Session.any_instance.stubs(:deliver_follow_up!).with do |prompt, *|
+      prompts << prompt
+      true
+    end
+
+    fork = generate.fork_session
+
+    assert_equal false, fork.metadata["runtime_started"]
+    assert_equal "codex", fork.agent_runtime
+    assert_equal 1, prompts.size
+    assert_match(/Conversation so far:/, prompts.first)
+    assert_match(/List the files in the current directory\./, prompts.first)
+    assert_match(/The directory contains a single file: `README\.md`\./, prompts.first)
+    assert_no_match(/"response_item"/, prompts.first)
+  end
+
+  test "a Claude summary fork remains resumable and does not inline the transcript" do
+    prompts = []
+    Session.any_instance.stubs(:deliver_follow_up!).with do |prompt, *|
+      prompts << prompt
+      true
+    end
+
+    fork = generate.fork_session
+
+    assert_equal true, fork.metadata["runtime_started"]
+    assert_equal 1, prompts.size
+    assert_no_match(/Conversation so far:/, prompts.first)
+  end
+
+  test "inline transcript context keeps the latest messages when it is truncated" do
+    generator = SessionStatusSummaryGenerator.new(session: @session, file_system: @fs)
+    rendered = "oldest message\n#{"middle\n" * 20_000}latest message"
+
+    excerpt = generator.send(:latest_transcript_excerpt, rendered)
+
+    assert_operator excerpt.length, :<=, SessionStatusSummaryGenerator::INLINE_TRANSCRIPT_MAX_CHARS
+    assert_match(/\A\n\n\[Earlier transcript truncated\]\n\n/, excerpt)
+    assert_no_match(/oldest message/, excerpt)
+    assert_match(/latest message\z/, excerpt)
+  end
+
   # The dashboard broadcasts a card from after_create_commit, so a marker
   # stamped afterwards is stamped too late — the card is already on every open
   # dashboard.

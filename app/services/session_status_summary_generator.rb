@@ -32,6 +32,7 @@ class SessionStatusSummaryGenerator
   # Session.excluding_status_summary_forks (to keep it out of every list an
   # operator reads).
   FORK_MARKER = "status_summary_for_session_id"
+  INLINE_TRANSCRIPT_MAX_CHARS = 80.kilobytes
 
   Result = Struct.new(:outcome, :message, :fork_session, keyword_init: true) do
     def started? = outcome == :started
@@ -249,13 +250,23 @@ class SessionStatusSummaryGenerator
   # that. It also inherits the source's title and heartbeat, neither of which
   # should follow a throwaway. Strip all three before handing it a prompt.
   #
+  # A normal fork is treated as already-started because ForkSessionService
+  # materializes a runtime transcript before the first follow-up. That is only
+  # true for runtimes with a deterministic resume file. Codex rollouts cannot be
+  # recreated at a deterministic path, so a status-summary fork must start as a
+  # fresh one-shot turn and receive the copied conversation inline instead.
+  #
   # FORK_MARKER is NOT set here — it is passed to the fork service so it is
   # present on the very first commit, before the dashboard broadcast fires.
   def prepare_fork(fork)
+    metadata = fork.metadata.to_h
+    metadata["runtime_started"] = false unless resumable_fork?(fork)
+
     fork.update!(
       goal: nil,
       title: "Status summary for session ##{session.id}",
-      heartbeat_enabled: false
+      heartbeat_enabled: false,
+      metadata: metadata
     )
     fork
   end
@@ -296,12 +307,51 @@ class SessionStatusSummaryGenerator
       - Any pull request, issue, or run URL that came up in the conversation,
         linked by what it is ("PR #123", "the failing CI run").
       - Another Zimmer session: #{AppUrl.base_url}/sessions/ID.
-
+      #{inline_transcript_for(fork)}
       Reply with the summary text and nothing else.
     PROMPT
   end
 
   def session_url = "#{AppUrl.base_url}/sessions/#{session.id}"
+
+  def resumable_fork?(fork)
+    working_directory = fork.metadata&.dig("working_directory")
+    TranscriptRuntime.source_for(fork, file_system: @file_system)
+      .resume_transcript_path(session: fork, working_directory: working_directory)
+      .present?
+  end
+
+  def inline_transcript_for(fork)
+    return "" if resumable_fork?(fork)
+
+    rendered = TranscriptTextRenderer.render(normalized_transcript_for(fork)).strip
+    return "" if rendered.blank?
+
+    excerpt = latest_transcript_excerpt(rendered)
+
+    <<~TEXT
+
+      Conversation so far:
+      ```text
+      #{excerpt}
+      ```
+    TEXT
+  end
+
+  def latest_transcript_excerpt(rendered)
+    return rendered if rendered.length <= INLINE_TRANSCRIPT_MAX_CHARS
+
+    omission = "\n\n[Earlier transcript truncated]\n\n"
+    "#{omission}#{rendered.last(INLINE_TRANSCRIPT_MAX_CHARS - omission.length)}"
+  end
+
+  def normalized_transcript_for(fork)
+    normalizer = TranscriptRuntime.normalizer_for(fork)
+
+    fork.parsed_transcript.flat_map do |raw_event|
+      normalizer.normalize(raw_event, session: fork, transcript_index: raw_event["_transcript_index"])
+    end
+  end
 
   # Records a failure against the row as it exists IN THE DATABASE.
   #
