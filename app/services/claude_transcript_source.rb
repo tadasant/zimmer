@@ -103,4 +103,14 @@ class ClaudeTranscriptSource < TranscriptSource
     sanitized_path = PathSanitizer.sanitize(working_directory)
     [ File.join(PathSanitizer.cache_base, sanitized_path) ]
   end
+
+  # @see TranscriptSource#rotates_transcript_files?
+  #
+  # Claude Code resumes into <transcript_directory>/<session_id>.jsonl and keeps
+  # appending to that one file for the life of the session, so the file only ever
+  # gets shorter when the clone holding it was recreated. That is history loss to
+  # be refused and repaired, never new conversation to append.
+  def rotates_transcript_files?
+    false
+  end
 end

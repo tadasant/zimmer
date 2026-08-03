@@ -546,6 +546,168 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     refute @session.metadata["transcript_regression_detected"]
   end
 
+  # === Rollout rotation continuity (the "session frozen for tens of minutes" bug) ===
+  #
+  # Codex mints a NEW rollout file whenever a failed resume is recovered by a fresh
+  # start. The poller then read a file far shorter than the session's history, and
+  # `new_messages[broadcast_count..]` returned nil (Ruby's past-the-end result), so
+  # nothing was ever broadcast while the regression guard also refused to persist.
+  # Production session 2256 sat at broadcast_message_count 227 against a 56-line
+  # live rollout, showing the user nothing new until a deploy recreated the clone.
+
+  def codex_rollout_line(text)
+    %({"timestamp":"2026-08-03T12:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"#{text}"}]}})
+  end
+
+  def prepare_codex_rotation(stored_events:, live_events:, carryover_count: nil)
+    stored = (1..stored_events).map { |i| codex_rollout_line("old #{i}") }.join("\n") + "\n"
+    live = (1..live_events).map { |i| codex_rollout_line("new #{i}") }.join("\n") + "\n"
+
+    metadata = {
+      "working_directory" => "/tmp/codex-clone",
+      "broadcast_message_count" => stored_events,
+      "transcript_source_path" => "/prior/rollout-old.jsonl"
+    }
+    metadata["transcript_carryover_event_count"] = carryover_count if carryover_count
+
+    @session.update!(agent_runtime: "codex", transcript: stored, metadata: metadata)
+    @session.update_column(:session_id, "rotating-uuid")
+
+    [ stored, live ]
+  end
+
+  test "carryover_prefix carries stored history forward when Codex rotates to a new rollout" do
+    stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    updates = {}
+
+    carryover = service.send(:carryover_prefix, "/live/rollout-new.jsonl", live, updates)
+
+    assert_equal stored, carryover, "the whole stored transcript becomes the history prefix"
+    assert_equal 5, updates["transcript_carryover_event_count"]
+    assert_equal "/live/rollout-new.jsonl", updates["transcript_source_path"]
+  end
+
+  test "carryover_prefix re-derives the same prefix on a later poll of the same rollout" do
+    # After a rotation the stored transcript is `carryover + live`, so the prefix
+    # must come back out as the first N lines rather than compounding again.
+    stored, _live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    grown_live = (1..4).map { |i| codex_rollout_line("new #{i}") }.join("\n") + "\n"
+    @session.update!(
+      transcript: stored + grown_live,
+      metadata: @session.metadata.merge(
+        "transcript_carryover_event_count" => 5,
+        "transcript_source_path" => "/live/rollout-new.jsonl"
+      )
+    )
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    updates = {}
+
+    carryover = service.send(:carryover_prefix, "/live/rollout-new.jsonl", grown_live, updates)
+
+    assert_equal stored, carryover
+    assert_nil updates["transcript_carryover_event_count"], "an unchanged file is not a rotation"
+  end
+
+  test "carryover_prefix compounds across a second rotation" do
+    stored, _live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    first_live = (1..2).map { |i| codex_rollout_line("new #{i}") }.join("\n") + "\n"
+    combined = stored + first_live
+    @session.update!(
+      transcript: combined,
+      metadata: @session.metadata.merge(
+        "transcript_carryover_event_count" => 5,
+        "transcript_source_path" => "/live/rollout-new.jsonl"
+      )
+    )
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    updates = {}
+
+    second_live = codex_rollout_line("newer 1") + "\n"
+    carryover = service.send(:carryover_prefix, "/live/rollout-newer.jsonl", second_live, updates)
+
+    assert_equal combined, carryover, "the previous carryover and its rollout both become history"
+    assert_equal 7, updates["transcript_carryover_event_count"]
+  end
+
+  test "carryover_prefix does not treat a short read of the same file as a rotation" do
+    # Guards against duplicating history on a partially flushed read: only a change
+    # of file can be a rotation.
+    _stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    @session.update!(metadata: @session.metadata.merge("transcript_source_path" => "/live/rollout-new.jsonl"))
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    updates = {}
+
+    carryover = service.send(:carryover_prefix, "/live/rollout-new.jsonl", live, updates)
+
+    assert_equal "", carryover
+    assert_nil updates["transcript_carryover_event_count"]
+  end
+
+  test "carryover_prefix is a no-op for a runtime that keeps one transcript file" do
+    # Claude Code must keep the existing refuse-and-repair behavior: a shorter file
+    # there means the clone was recreated, and carrying history forward would double
+    # it once AgentSessionJob restores the full transcript to disk.
+    long_transcript = (1..5).map { |i| %({"type":"user","message":{"role":"user","content":"msg #{i}"}}) }.join("\n")
+    @session.update!(
+      agent_runtime: "claude_code",
+      transcript: long_transcript,
+      metadata: { "working_directory" => "/tmp/test-clone", "broadcast_message_count" => 5 }
+    )
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    updates = {}
+
+    carryover = service.send(:carryover_prefix, "/tmp/test-clone/short.jsonl", "one line\n", updates)
+
+    assert_equal "", carryover
+    assert_empty updates
+  end
+
+  test "carryover_prefix clears the stale regression marker once history is whole again" do
+    _stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    @session.update!(metadata: @session.metadata.merge("transcript_regression_detected" => true))
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+
+    service.send(:carryover_prefix, "/live/rollout-new.jsonl", live, {})
+
+    assert_nil @session.reload.metadata["transcript_regression_detected"],
+      "the marker must not outlive the repair it describes"
+  end
+
+  test "poll_and_broadcast streams a rotated Codex rollout instead of freezing" do
+    # End-to-end proof of the production symptom: broadcast_message_count (5) exceeds
+    # the live rollout's event count (2), which used to make messages_to_broadcast nil.
+    original_codex_home = ENV["CODEX_HOME"]
+    ENV.delete("CODEX_HOME")
+
+    stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    rollout_dir = File.join(CodexHome.sessions_path, "2026", "08", "03")
+    rollout_path = File.join(rollout_dir, "rollout-2026-08-03T12-00-00-rotating-uuid.jsonl")
+    @mock_file_system.mkdir_p(rollout_dir)
+    @mock_file_system.write(rollout_path, live)
+
+    broadcasts = []
+    broadcast_service = mock("broadcast_service")
+    broadcast_service.stubs(:remove_empty_timeline_message)
+    broadcast_service.stubs(:running_loader)
+    broadcast_service.stubs(:timeline_message).with { |_session, message| broadcasts << message; true }
+
+    service = TranscriptPollerService.new(
+      @session, file_system: @mock_file_system, broadcast_service: broadcast_service
+    )
+    result = service.poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_equal stored + live, @session.transcript,
+      "the rotated rollout must be appended to history, not discarded"
+    assert_equal 2, broadcasts.length, "both events from the new rollout must reach the timeline"
+    assert_equal 7, @session.metadata["broadcast_message_count"]
+    assert_equal 5, @session.metadata["transcript_carryover_event_count"]
+  ensure
+    original_codex_home.nil? ? ENV.delete("CODEX_HOME") : ENV["CODEX_HOME"] = original_codex_home
+  end
+
   # === Tests for extract_subagent_links (Issue #509) ===
   # Ensure Array toolUseResult values don't crash the subagent linking logic
 

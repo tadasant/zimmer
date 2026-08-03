@@ -139,6 +139,15 @@ class ClaudeTranscriptSourceTest < ActiveSupport::TestCase
     assert_equal [], @source.mcp_log_paths(working_directory: nil)
   end
 
+  # === rotates_transcript_files? ===
+
+  test "rotates_transcript_files? is false because Claude resumes into one file" do
+    # A shorter <session_id>.jsonl means the clone was recreated and history was
+    # lost, so the poller must refuse it and AgentSessionJob must repair the file
+    # before resuming — never append it as if it were new conversation.
+    refute @source.rotates_transcript_files?
+  end
+
   private
 
   # Capture everything written to Rails.logger during the block as a String so

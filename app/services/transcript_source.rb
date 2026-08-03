@@ -125,6 +125,27 @@ class TranscriptSource
     raise NotImplementedError, "#{self.class}#mcp_log_paths"
   end
 
+  # Does this runtime abandon its transcript file and start a new one when a
+  # session continues after a failed resume?
+  #
+  # The answer decides how TranscriptPollerService reads a transcript that is
+  # SHORTER than the stored one. There are two incompatible causes for that:
+  #
+  #   * A runtime that resumes into one canonical file (Claude Code) only
+  #     shortens it when the file itself was lost — a recreated clone. The stored
+  #     transcript is the same conversation, so the shorter file must be refused
+  #     and the on-disk copy repaired before resuming (see
+  #     AgentSessionJob#restore_regressed_transcript_if_needed).
+  #   * A runtime with an append-only, per-run transcript store (Codex rollouts)
+  #     never truncates a file at all. A shorter read therefore means the poller
+  #     is now looking at a DIFFERENT, newer file, and its events are new
+  #     conversation the user has not seen — not history to be discarded.
+  #
+  # @return [Boolean] true when a shorter read means "new file", not "lost file"
+  def rotates_transcript_files?
+    raise NotImplementedError, "#{self.class}#rotates_transcript_files?"
+  end
+
   protected
 
   attr_reader :file_system
