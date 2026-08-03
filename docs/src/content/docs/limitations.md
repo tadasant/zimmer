@@ -882,10 +882,15 @@ Scope acquisition just joins the server's advertised `scopes_supported`. No `off
 token ⇒ the credential is single-use and dies with no way to refresh, and Zimmer does not ask for a scope
 the server did not advertise.
 
-What it no longer does is stay quiet about it. A token response with no refresh token sets
-`refresh_token_unsupported` on the credential, and the Connectors row says the credential cannot be
+What it no longer does is stay quiet about it. A token exchange that leaves no refresh token on the
+credential sets `refresh_token_unsupported`, and the Connectors row says the credential cannot be
 renewed and will need authorizing again — while the row is still green, rather than months later as an
 unexplained re-auth. The chore is real; the surprise is not.
+
+A re-authorization that omits a refresh token keeps the one already stored, and the flag is derived
+from what survives the exchange rather than from the response alone — a server that mints a refresh
+token on first consent and omits it when re-authorizing a live grant stays renewable
+([#309](https://github.com/tadasant/zimmer/issues/309)).
 
 Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 

@@ -508,11 +508,19 @@ doesn't advertise `offline_access`, no refresh token is issued and the credentia
 nothing can renew it, so it becomes `requires_reauth?` the moment it lapses.
 
 That is a permanent property of the server, and it is knowable the instant the token response
-arrives. A token response with no refresh token sets `refresh_token_unsupported` on the credential,
-and `McpOauthCredential#requires_periodic_reauth?` (the flag, plus a still-absent refresh token —
-so one that arrives later settles the question) drives an amber line on the Connectors row saying
-the credential cannot be renewed and will need authorizing again. It is said while the row is still
-green, which is the only time saying it helps ([#64](https://github.com/tadasant/zimmer/issues/64)).
+arrives. A token exchange that leaves no refresh token on the credential sets
+`refresh_token_unsupported`, and `McpOauthCredential#requires_periodic_reauth?` (the flag, plus a
+still-absent refresh token — so one that arrives later settles the question) drives an amber line on
+the Connectors row saying the credential cannot be renewed and will need authorizing again. It is
+said while the row is still green, which is the only time saying it helps
+([#64](https://github.com/tadasant/zimmer/issues/64)).
+
+"Leaves no refresh token" is the test, not "this response carried none": plenty of servers mint a
+refresh token on first consent and omit it when re-authorizing a grant that is still live. A
+re-authorization that omits one keeps the stored token rather than nulling it, and the flag is
+derived from what survives — so a token exchange can never leave the row claiming renewable on a
+credential it just emptied, or one-shot on a server already seen to issue a refresh token
+([#309](https://github.com/tadasant/zimmer/issues/309)).
 
 What has *not* changed: Zimmer does not ask for `offline_access` a server did not advertise, and the
 re-authorization is still manual. The fix is that a permanent limitation is stated once, up front,

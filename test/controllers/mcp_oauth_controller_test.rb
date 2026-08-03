@@ -136,10 +136,11 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
   end
 
   # Plenty of servers mint a refresh token on first consent and omit it when
-  # re-authorizing a grant that is still live. Claiming "this server issues no
-  # refresh token" off that response would assert a permanent property about a
+  # re-authorizing a grant that is still live. Writing that response through
+  # literally would drop a working refresh token — and claiming "this server
+  # issues no refresh token" off it would assert a permanent property about a
   # server we have already seen issue one.
-  test "a re-authorization that omits the refresh token does not label the server one-shot" do
+  test "a re-authorization that omits the refresh token keeps the stored one" do
     McpOauthCredential.create!(
       server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
       client_id: "c", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
@@ -152,6 +153,9 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     end
 
     credential = McpOauthCredential.for_credential_key(@key_a).first
+    assert_equal "issued-on-first-consent", credential.refresh_token,
+      "a response that omits the refresh token must not null the stored one"
+    assert credential.can_refresh?, "the credential is still renewable after re-consent"
     assert_not credential.refresh_token_unsupported?,
       "a server that has issued a refresh token before is not one-shot"
     assert_not credential.requires_periodic_reauth?

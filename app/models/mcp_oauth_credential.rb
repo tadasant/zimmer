@@ -102,8 +102,9 @@ class McpOauthCredential < ApplicationRecord
   # `offline_access` scope, or simply declines to mint one) hands Zimmer a
   # one-shot credential: RefreshMcpOauthTokensJob has nothing to send, so the
   # access token lapses and the next session stops for consent. That is a
-  # permanent property of the server, knowable the moment the token response
-  # arrives — `refresh_token_unsupported` records it there so it can be said
+  # permanent property of the server, knowable the moment a token exchange
+  # leaves no refresh token on the credential — `refresh_token_unsupported`
+  # records it there (McpOauthController#store_tokens_and_resume) so it can be said
   # once, up front, instead of resurfacing later as "the agent randomly needs me
   # to authorize this again".
   #
