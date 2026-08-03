@@ -162,6 +162,12 @@ Rails.application.eager_load!
 # Resolving it here pins the entry to the real boot-time BroadcastLogger in every
 # worker, so Rails.logger and the middleware's logger are the same object no matter
 # what any example does afterwards.
+#
+# The same call freezes the rest of env_config at its boot values — show_exceptions,
+# show_detailed_exceptions, log_rescued_responses, the CSP objects, the cookie salts.
+# Nothing in the suite mutates config.action_dispatch.* mid-run, and nothing may start
+# to: a request reads this hash, not the config object, so such a mutation would be
+# silently ignored rather than half-applied depending on ordering.
 Rails.application.env_config
 
 module ActiveSupport
@@ -181,6 +187,7 @@ module ActiveSupport
     include AssertionHelpers
     include FixtureHelpers
     include BroadcastHelpers
+    include LogCaptureHelpers
 
     # Add more helper methods to be used by all tests here...
   end

@@ -186,7 +186,9 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
     # than assuming it — a regression should name the broken invariant instead of
     # surfacing as an inexplicably absent ERROR record, which is how #337 presented.
     assert_same Rails.logger, Rails.application.env_config["action_dispatch.logger"],
-      "the capture harness cannot observe DebugExceptions unless these are one logger"
+      "the capture harness cannot observe DebugExceptions unless these are one logger: " \
+      "either test_helper.rb's env_config pin is gone, or an earlier example assigned " \
+      "Rails.logger and did not restore it"
 
     entries = without_csrf_rescue_handler do
       capture_log_entries do
@@ -229,41 +231,7 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
     csrf_entry(entries).last
   end
 
-  # Captures (severity, message) pairs from every Rails.logger write during the
-  # block, including writes from Rack middleware.
-  #
-  # Broadcasting is what makes the ERROR assertions non-vacuous. Reassigning
-  # Rails.logger would not: Rails::Application#env_config memoizes
-  # "action_dispatch.logger" at boot, so DebugExceptions — the middleware that logs
-  # an unhandled InvalidAuthenticityToken at ERROR — would keep writing to the
-  # original logger and the capture would see nothing either way. Attaching a sink
-  # to the existing BroadcastLogger object keeps that reference valid.
-  def capture_log_entries
-    sink = RecordingLogger.new
-    Rails.logger.broadcast_to(sink)
-
-    yield
-
-    sink.entries
-  ensure
-    Rails.logger.stop_broadcasting_to(sink)
-  end
-
-  class RecordingLogger < ::Logger
-    attr_reader :entries
-
-    def initialize
-      super(nil)
-      self.level = ::Logger::DEBUG
-      @entries = []
-    end
-
-    def add(severity, message = nil, progname = nil, &block)
-      severity ||= ::Logger::UNKNOWN
-      resolved = message || (block ? block.call : progname)
-      @entries << [ format_severity(severity), resolved.to_s ]
-
-      super
-    end
-  end
+  # capture_log_entries is LogCaptureHelpers (test/support/log_capture_helpers.rb).
+  # It broadcasts to a sink instead of assigning Rails.logger, which is what makes the
+  # ERROR assertions here able to see ActionDispatch::DebugExceptions at all.
 end
