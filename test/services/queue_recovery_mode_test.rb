@@ -151,7 +151,9 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
   # --- The TTL backstop --------------------------------------------------------
 
   test "status reports inactive past the expiry even before anything reconciles" do
-    travel_to Time.utc(2026, 8, 3, 12, 0, 0) { QueueRecoveryMode.enter!(ttl: 10.minutes) }
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(ttl: 10.minutes)
+    end
 
     travel_to Time.utc(2026, 8, 3, 12, 11, 0) do
       refute QueueRecoveryMode.active?,
@@ -160,7 +162,9 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
   end
 
   test "expire_if_due! resumes processing once the window elapses" do
-    travel_to Time.utc(2026, 8, 3, 12, 0, 0) { QueueRecoveryMode.enter!(ttl: 10.minutes) }
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(ttl: 10.minutes)
+    end
 
     travel_to Time.utc(2026, 8, 3, 12, 11, 0) do
       assert QueueRecoveryMode.expire_if_due!
@@ -169,7 +173,9 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
   end
 
   test "expire_if_due! leaves an unexpired window alone" do
-    travel_to Time.utc(2026, 8, 3, 12, 0, 0) { QueueRecoveryMode.enter!(ttl: 60.minutes) }
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(ttl: 60.minutes)
+    end
 
     travel_to Time.utc(2026, 8, 3, 12, 30, 0) do
       refute QueueRecoveryMode.expire_if_due!
@@ -183,7 +189,9 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
   end
 
   test "expire_if_due! swallows failures rather than breaking its callers" do
-    travel_to Time.utc(2026, 8, 3, 12, 0, 0) { QueueRecoveryMode.enter!(ttl: 10.minutes) }
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(ttl: 10.minutes)
+    end
     QueueRecoveryMode.stubs(:exit!).raises(ActiveRecord::StatementInvalid, "boom")
 
     travel_to Time.utc(2026, 8, 3, 12, 11, 0) do
@@ -216,7 +224,9 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
   end
 
   test "an auto-exit says it was the TTL and not a human" do
-    travel_to Time.utc(2026, 8, 3, 12, 0, 0) { QueueRecoveryMode.enter!(ttl: 10.minutes) }
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(ttl: 10.minutes)
+    end
 
     alerts = capture_alerts do
       travel_to(Time.utc(2026, 8, 3, 12, 11, 0)) { QueueRecoveryMode.expire_if_due! }
