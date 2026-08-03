@@ -286,8 +286,8 @@ Three details worth knowing before you touch it:
 ### Running on the shared self-hosted runner
 
 The runner box is shared across several repos, so a job cannot assume it has the
-machine to itself. Four things follow, and every Rails job in `ci.yml` already does
-them:
+machine to itself. Five things follow. The first four are what every Rails job in
+`ci.yml` already does; the fifth is what every image-building job does:
 
 - **`ruby/setup-ruby` gets `self-hosted: true` and `bundler-cache: false`.**
   `self-hosted: true` selects the Ruby already staged in
@@ -320,6 +320,66 @@ them:
   `test-system` pins it to 1 because its persistent per-worker Chrome profile does not
   tolerate concurrent browser instances. `test-system` runs the Chrome-driven system
   suite (`bin/rails test:system`); the companion system-test semaphore gates it.
+- **Image builds get a private `DOCKER_CONFIG` and name their builder explicitly.**
+  Every job that runs `docker/build-push-action` exports a fresh
+  `DOCKER_CONFIG` under `$RUNNER_TEMP` before its first `docker/*` step, and passes
+  `builder: ${{ steps.buildx.outputs.name }}` to each build. See
+  [Why image builds isolate their Docker config](#why-image-builds-isolate-their-docker-config).
+  `test/config/image_build_workflows_test.rb` fails the build if a workflow adds a
+  `build-push-action` step without both.
+
+### Why image builds isolate their Docker config
+
+All ~14 runner workers on the box execute as the same OS user with no per-job
+`DOCKER_CONFIG`, so they share one `~/.docker` — one `config.json` and one
+`buildx/current`. Both are mutable state that any job can overwrite at any moment.
+
+`docker/setup-buildx-action` creates a builder with `docker buildx create --use`, and
+`--use` writes the *shared* current-builder file. `docker/build-push-action` reads that
+same file to decide which builder to build on — it does not remember which builder its
+own job created. So a build step that starts after a co-tenant job's `--use` lands
+silently builds on **that job's** buildkit container. When the co-tenant finishes,
+`setup-buildx-action`'s post step runs `docker buildx rm`, which stops the container
+and deletes its instance file. The victim's in-flight build sees:
+
+```
+ERROR: failed to build: failed to receive status: rpc error: code = Unavailable
+desc = closing transport due to: ... received prior goaway: ... debug data: "graceful_stop"
+ERROR: no builder "builder-<some-other-jobs-uuid>" found
+```
+
+The tell is that the UUID in the error is **not** the one the job's own "Set up Buildx"
+step printed. The shared `config.json` has the matching hazard: `docker/login-action`'s
+post step runs `docker logout ghcr.io`, which strips GHCR credentials out from under a
+concurrent job's push.
+
+A per-job `DOCKER_CONFIG` under `$RUNNER_TEMP` gives each job its own current-builder
+file and its own credential store, which removes both races; the explicit `builder:`
+input makes the binding unambiguous even if that state is ever shared again.
+
+It is exported from a step rather than declared in job-level `env:`:
+
+```yaml
+- name: Isolate Docker client state for this job
+  run: |
+    cfg="${RUNNER_TEMP}/docker-config"
+    rm -rf "$cfg"
+    mkdir -p "$cfg"
+    echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
+```
+
+The `runner` context is [not available in `jobs.<job_id>.env`](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability),
+so `DOCKER_CONFIG: ${{ runner.temp }}/docker-config` there expands to the empty string
+and silently points every build at `/docker-config`. A step's `run:` always has
+`$RUNNER_TEMP`. `image_build_workflows_test.rb` asserts both the step form and that it
+precedes every `docker/*` step.
+
+:::note[The host could also fix this]
+Setting `DOCKER_CONFIG` per worker in the runner service definitions (in the private
+`tadasant-internal` repo's `ci-runner/`) would fix it for every repo on the box at once,
+instead of once per repo. The in-repo change here stands on its own and does not
+conflict with that.
+:::
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 
