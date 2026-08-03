@@ -501,6 +501,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.update!(
       session_id: session_id,
       status: :running,
+      goal: "Write the status summary and stop",
       metadata: {
         "clone_path" => clone_path,
         "working_directory" => clone_path,
@@ -546,8 +547,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
         job.perform(@session.id, "Status summary follow-up")
 
         @session.reload
-        assert_equal "Status summary follow-up", active_prompt_at_spawn,
+        assert_includes active_prompt_at_spawn, "Status summary follow-up",
           "direct follow-up prompt should be preserved during runtime delivery"
+        assert_includes active_prompt_at_spawn, "Write the status summary and stop",
+          "active_follow_up_prompt should preserve the exact expanded prompt delivered to the runtime"
         assert_nil @session.metadata["active_follow_up_prompt"],
           "active_follow_up_prompt should be cleared after the turn finishes"
       end

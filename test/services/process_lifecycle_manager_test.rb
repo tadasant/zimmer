@@ -533,7 +533,10 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     @session.update!(
       prompt: nil,
-      metadata: @session.metadata.merge("active_follow_up_prompt" => active_prompt)
+      metadata: @session.metadata.merge(
+        "active_follow_up_prompt" => active_prompt,
+        "sent_message" => "raw web follow-up"
+      )
     )
 
     @mock_cli_adapter.execute_hook = ->(_opts) do
@@ -624,6 +627,8 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     # After successful recovery, runtime_started should be true again
     @session.reload
     assert_equal true, @session.metadata["runtime_started"]
+    assert_equal true, @session.metadata["transcript_recovery_expected"]
+    assert_equal @session.transcript_line_count, @session.metadata["transcript_recovery_base_line_count"]
   end
 
   # ===========================================================================
@@ -692,7 +697,10 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     active_prompt = "[AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]\n\nContinue after deploy interruption."
     session.update!(
       prompt: nil,
-      metadata: session.metadata.merge("active_follow_up_prompt" => active_prompt)
+      metadata: session.metadata.merge(
+        "active_follow_up_prompt" => active_prompt,
+        "sent_message" => "raw web follow-up"
+      )
     )
     codex_adapter = MockCodexRuntimeAdapter.new
     codex_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: stderr_path } }
