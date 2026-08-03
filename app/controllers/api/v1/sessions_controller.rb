@@ -781,7 +781,7 @@ class Api::V1::SessionsController < Api::BaseController
   #
   # Request body:
   #   - model: String model identifier. Must be valid for the session's
-  #     agent_runtime (e.g. "opus", "sonnet", "haiku" for claude_code).
+  #     agent_runtime (e.g. "opus", "sonnet", "haiku", "fable" for claude_code).
   def update_model
     model = params[:model]
 

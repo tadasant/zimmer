@@ -11,7 +11,7 @@ export default class extends Controller {
   static targets = ["select", "hiddenField"]
   static values = {
     agentRootDefaults: Object, // { agentRootName: "opus", ... }
-    runtimeModels: Object,     // { claude_code: ["opus", "sonnet", "haiku"], ... }
+    runtimeModels: Object,     // { runtimeName: ["model-id", ...], ... }
     runtimeDefaults: Object,   // { claude_code: "opus", ... }
     runtime: String            // currently selected runtime
   }

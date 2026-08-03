@@ -54,12 +54,25 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
       "agent_root" => "zimmer",
       "title" => "Explicit config",
       "mcp_servers" => [ "context7" ],
-      "config" => { "model" => "sonnet" }
+      "config" => { "model" => "fable" }
     )
 
     session = Session.order(:id).last
     assert_equal [ "context7" ], session.mcp_servers
-    assert_equal "sonnet", session.config["model"]
+    assert_equal "fable", session.config["model"]
+  end
+
+  test "persists an explicit GPT 5.6 Codex model" do
+    @tool.call(
+      "agent_root" => "zimmer",
+      "agent_runtime" => "codex",
+      "title" => "Codex config",
+      "config" => { "model" => "gpt-5.6-luna" }
+    )
+
+    session = Session.order(:id).last
+    assert_equal "codex", session.agent_runtime
+    assert_equal "gpt-5.6-luna", session.config["model"]
   end
 
   test "raises for an unknown agent root" do

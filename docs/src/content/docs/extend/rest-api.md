@@ -208,8 +208,8 @@ Valid models are a property of the runtime, not the root (`ModelCatalog::MODELS`
 
 | Runtime | Models |
 | --- | --- |
-| `claude_code` | `opus` (default) · `sonnet` · `haiku` |
-| `codex` | `gpt-5.5` (default, needs a ChatGPT login) · `gpt-5.4` · `gpt-5.4-mini` · `gpt-5.3-codex` · `gpt-5.2-codex` (deprecated) |
+| `claude_code` | `opus` (default) · `sonnet` · `haiku` · `fable` |
+| `codex` | `gpt-5.6-sol` (needs a ChatGPT login) · `gpt-5.6-terra` (default, needs a ChatGPT login) · `gpt-5.6-luna` (needs a ChatGPT login) · `gpt-5.5` (needs a ChatGPT login) · `gpt-5.4` (retires from ChatGPT sign-in August 31, 2026) · `gpt-5.4-mini` (retires from ChatGPT sign-in August 31, 2026) · `gpt-5.3-codex` (deprecated) · `gpt-5.2-codex` (deprecated) |
 
 `PATCH /sessions/:id/model` validates against the list for the session's own runtime; anything else
 → `422 {"error": "Invalid model"}` with a message naming the valid ones.
@@ -419,7 +419,7 @@ curl -X POST "$BASE_URL/categories/reorder" \
 | **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent`. Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status` |
-| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
+| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
 
 One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{name, description}]}`,
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind

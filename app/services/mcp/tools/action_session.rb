@@ -20,7 +20,7 @@ module Mcp
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
       MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session (replaces the existing set — this is not a merge).'
-      MODEL_DESC = 'Required for "change_model" action. The model identifier to use (e.g., "opus", "sonnet").'
+      MODEL_DESC = 'Required for "change_model" action. The model identifier to use (e.g., "opus", "sonnet", "fable", "gpt-5.6-sol"). Must be valid for the session runtime.'
       SKILLS_DESC = 'Required for "change_skills" action. Array of catalog skill IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected. Call get_configs / the skills catalog for valid IDs.'
       HOOKS_DESC = 'Required for "change_hooks" action. Array of catalog hook IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
       PLUGINS_DESC = 'Required for "change_plugins" action. Array of catalog plugin IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
@@ -102,7 +102,7 @@ module Mcp
         - **archive**: Archive a session (marks as completed)
         - **unarchive**: Restore an archived session to idle "needs_input" status
         - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set)
-        - **change_model**: Update the model for a session (requires "model" parameter, e.g., "opus", "sonnet")
+        - **change_model**: Update the model for a session (requires "model" parameter, e.g., "opus", "sonnet", "fable", "gpt-5.6-sol")
         - **change_skills**: Update the catalog skills for a session (requires "skills" parameter; replaces the set). Invalid skill IDs are rejected.
         - **change_hooks**: Update the catalog hooks for a session (requires "hooks" parameter; replaces the set). Invalid hook IDs are rejected.
         - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected.

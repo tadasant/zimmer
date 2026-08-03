@@ -20,7 +20,7 @@ class ModelCatalog
   # entry when none is flagged). Keys are RuntimeRegistry runtime identifiers.
   #
   # The Claude Code labels intentionally match their ids so the rendered options
-  # read exactly as they did before this catalog existed (opus/sonnet/haiku).
+  # stay aligned with Claude Code's selector aliases.
   #
   # `requires_oauth` marks models that can only be driven with an interactive
   # (ChatGPT/Claude) login rather than an API key. The UI uses it to warn when an
@@ -36,13 +36,17 @@ class ModelCatalog
     "claude_code" => [
       { id: "opus", label: "opus", default: true },
       { id: "sonnet", label: "sonnet" },
-      { id: "haiku", label: "haiku" }
+      { id: "haiku", label: "haiku" },
+      { id: "fable", label: "fable" }
     ],
     "codex" => [
-      { id: "gpt-5.5", label: "gpt-5.5 (default, ChatGPT auth)", default: true, requires_oauth: true },
-      { id: "gpt-5.4", label: "gpt-5.4", requires_oauth: false },
-      { id: "gpt-5.4-mini", label: "gpt-5.4-mini (fast)", requires_oauth: false },
-      { id: "gpt-5.3-codex", label: "gpt-5.3-codex", requires_oauth: false },
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol (ChatGPT auth)", requires_oauth: true },
+      { id: "gpt-5.6-terra", label: "gpt-5.6-terra (default, ChatGPT auth)", default: true, requires_oauth: true },
+      { id: "gpt-5.6-luna", label: "gpt-5.6-luna (fast, ChatGPT auth)", requires_oauth: true },
+      { id: "gpt-5.5", label: "gpt-5.5 (ChatGPT auth)", requires_oauth: true },
+      { id: "gpt-5.4", label: "gpt-5.4 (retires from ChatGPT sign-in August 31, 2026)", requires_oauth: false },
+      { id: "gpt-5.4-mini", label: "gpt-5.4-mini (fast, retires from ChatGPT sign-in August 31, 2026)", requires_oauth: false },
+      { id: "gpt-5.3-codex", label: "gpt-5.3-codex (deprecated)", requires_oauth: false },
       { id: "gpt-5.2-codex", label: "gpt-5.2-codex (deprecated)", requires_oauth: false }
     ]
   }.freeze
