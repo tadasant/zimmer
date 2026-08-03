@@ -4,7 +4,10 @@
 <% hold_detail = agent_session.metadata&.dig(SpotSessionHold::HELD_DETAIL) %>
 <% if hold_detail.present? && agent_session.waiting? %>
   <% retry_at = agent_session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT) %>
-  <div class="mb-4 rounded-md border border-amber-200 bg-amber-50 p-4" id="spot-hold-banner">
+  <%# A data attribute rather than an id: this partial renders twice per page —
+      once in the mobile block, once in the desktop header, mirroring
+      auth_outage_banner — and two elements cannot share one id. %>
+  <div class="mb-4 rounded-md border border-amber-200 bg-amber-50 p-4" data-spot-hold-banner>
     <div class="flex items-start gap-3">
       <svg class="h-5 w-5 text-amber-500 shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v4a1 1 0 00.293.707l2 2a1 1 0 001.414-1.414L11 10.586V7z" clip-rule="evenodd" />
