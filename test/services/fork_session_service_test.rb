@@ -416,6 +416,38 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_not_nil result.forked_session
   end
 
+  # A fork copies the source's server list verbatim, and its metadata is built
+  # from scratch rather than inherited — so the marker that says the empty list
+  # was deliberate has to be carried across explicitly. Without it,
+  # McpServerBackfill restores the agent root's defaults on the fork's first job
+  # start, handing it the servers the source deliberately declined.
+  test "a fork of a session that deliberately has no MCP servers stays empty" do
+    @source_session.record_explicit_mcp_servers([])
+    @source_session.update!(mcp_servers: [])
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?
+    assert_equal [], result.forked_session.mcp_servers
+    assert result.forked_session.mcp_servers_explicitly_empty?
+  end
+
+  test "a fork of a session with servers carries no deliberate-none marker" do
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?
+    assert_equal [ "playwright-custom" ], result.forked_session.mcp_servers
+    refute result.forked_session.mcp_servers_explicitly_empty?
+  end
+
   test "skips MCP config generation when session has no MCP servers" do
     @source_session.update!(mcp_servers: [])
 
