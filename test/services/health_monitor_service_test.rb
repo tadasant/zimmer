@@ -226,6 +226,90 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert health[:status].healthy?
   end
 
+  # === Worker Statistics Tests ===
+  #
+  # A GoodJob capsule renews its process row every STALE_INTERVAL + jitter
+  # (30-33s), so any active-worker threshold at or below that cadence reports
+  # healthy workers as down. See triage session 1683.
+
+  test "worker_statistics counts a worker that renewed within the last minute as active" do
+    GoodJob::Process.delete_all
+    create_good_job_process(seconds_since_heartbeat: 45)
+
+    stats = @service.system_health[:worker_stats]
+
+    assert_equal 1, stats[:total_workers]
+    assert_equal 1, stats[:active_workers]
+  end
+
+  test "worker_statistics counts a worker at the top of the renew window as active" do
+    GoodJob::Process.delete_all
+    create_good_job_process(seconds_since_heartbeat: 33)
+
+    stats = @service.system_health[:worker_stats]
+
+    assert_equal 1, stats[:active_workers],
+      "a worker at the top of GoodJob's 30-33s renew window is healthy, not down"
+  end
+
+  test "worker_statistics counts a worker GoodJob has not yet expired as active" do
+    GoodJob::Process.delete_all
+    create_good_job_process(seconds_since_heartbeat: GoodJob::Process::EXPIRED_INTERVAL.to_i - 10)
+
+    stats = @service.system_health[:worker_stats]
+
+    assert_equal 1, stats[:active_workers]
+  end
+
+  test "worker_statistics counts a worker past GoodJob's expiry as inactive" do
+    GoodJob::Process.delete_all
+    create_good_job_process(seconds_since_heartbeat: GoodJob::Process::EXPIRED_INTERVAL.to_i + 10)
+
+    stats = @service.system_health[:worker_stats]
+
+    assert_equal 1, stats[:total_workers]
+    assert_equal 0, stats[:active_workers]
+  end
+
+  # The shape the incident alert actually printed: two registered workers, one of
+  # them stale. active_workers must be a filtered count, not the row count.
+  test "worker_statistics counts only the live worker when one of two has expired" do
+    GoodJob::Process.delete_all
+    create_good_job_process(seconds_since_heartbeat: 20, hostname: "live")
+    create_good_job_process(seconds_since_heartbeat: GoodJob::Process::EXPIRED_INTERVAL.to_i + 60, hostname: "dead")
+
+    stats = @service.system_health[:worker_stats]
+
+    assert_equal 2, stats[:total_workers]
+    assert_equal 1, stats[:active_workers]
+  end
+
+  test "worker_statistics active threshold clears GoodJob's renew cadence" do
+    assert_operator HealthMonitorService::WORKER_ACTIVE_INTERVAL, :>,
+      GoodJob::Process::STALE_INTERVAL * 1.1,
+      "the threshold must exceed STALE_INTERVAL plus its maximum 10% jitter"
+  end
+
+  test "worker_statistics reports per-worker heartbeat age" do
+    GoodJob::Process.delete_all
+    create_good_job_process(seconds_since_heartbeat: 296, hostname: "worker-1")
+
+    details = @service.system_health[:worker_stats][:worker_details]
+
+    assert_equal 1, details.size
+    assert_equal "worker-1", details.first[:hostname]
+    # Generous delta: the age is measured when the service reads, not when the
+    # row was written, so a contended CI worker can add seconds in between.
+    assert_in_delta 296, details.first[:seconds_since_heartbeat], 15
+  end
+
+  test "worker_statistics does not report a hardcoded dispatcher count" do
+    stats = @service.system_health[:worker_stats]
+
+    refute stats.key?(:dispatchers),
+      "GoodJob has no dispatchers; a hardcoded 0 reads as a signal on a healthy system"
+  end
+
   test "system_health recent_errors includes error logs" do
     session = Session.create!(
       prompt: "Test",
@@ -1057,5 +1141,15 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     summary = @service.send(:session_summary, session)
 
     assert_nil summary[:failure_reason]
+  end
+
+  private
+
+  # Build a GoodJob process row whose heartbeat is a given age. updated_at is
+  # managed by Rails, so it has to be written past the timestamp callbacks.
+  def create_good_job_process(seconds_since_heartbeat:, hostname: "test-host")
+    process = GoodJob::Process.create!(state: { "hostname" => hostname })
+    process.update_column(:updated_at, seconds_since_heartbeat.seconds.ago)
+    process
   end
 end

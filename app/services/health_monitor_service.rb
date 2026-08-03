@@ -29,6 +29,16 @@ class HealthMonitorService
   # Display limits
   RECENT_EVENTS_DISPLAY_LIMIT = 5
 
+  # How recently a GoodJob process must have renewed its heartbeat to count as
+  # active. A capsule renews on GoodJob::Process::STALE_INTERVAL + jitter — 30 to
+  # 33 seconds — and the renew is gated on holding a lock and runs on the shared
+  # 2-thread executor, so it slips further under load. Anything at or below the
+  # renew cadence reports a healthy worker as inactive a meaningful fraction of
+  # the time. EXPIRED_INTERVAL is the interval after which GoodJob itself gives
+  # up on a process, deletes the row and releases its jobs, so a worker that is
+  # inactive by this measure is one GoodJob is about to reap.
+  WORKER_ACTIVE_INTERVAL = GoodJob::Process::EXPIRED_INTERVAL
+
   # Structured result for health status
   HealthStatus = Struct.new(:status, :message, keyword_init: true) do
     def healthy?
@@ -458,13 +468,12 @@ class HealthMonitorService
     processes = GoodJob::Process.all
 
     active_processes = processes.select do |p|
-      p.updated_at && (Time.current - p.updated_at) < 30.seconds
+      p.updated_at && (Time.current - p.updated_at) < WORKER_ACTIVE_INTERVAL
     end
 
     {
       total_workers: processes.count,
       active_workers: active_processes.count,
-      dispatchers: 0, # GoodJob doesn't have separate dispatchers
       worker_details: processes.map do |p|
         {
           id: p.id,
