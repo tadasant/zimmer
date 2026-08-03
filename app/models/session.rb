@@ -121,6 +121,23 @@ class Session < ApplicationRecord
   after_create_commit :broadcast_create_to_sessions_index, unless: :status_summary_fork?
   after_destroy_commit :broadcast_remove_from_sessions_index
 
+  # Deleting the row deletes the bytes it owns. `dependent: :destroy` above covers
+  # the DB side; these three roots are the filesystem side — scratch, and the two
+  # prompt-attachment trees — and they are keyed on the session id, so the moment
+  # the row is gone nothing can query for them again (#340).
+  #
+  # after_destroy_commit, not before_destroy: the directories go only once the row
+  # is really gone, so a destroy that rolls back (ForkSessionService cleans up a
+  # half-built fork this way) can never take a live session's state with it.
+  #
+  # StaleCloneCleanupJob's per-session orphan sweep is the safety net behind this
+  # — for rows deleted before this shipped, and for any delete path that skips
+  # callbacks. This callback is what makes the common case prompt instead of
+  # hourly. The clone is deliberately not reclaimed here: it already has its own
+  # DB-driven and filesystem-driven reapers, and tearing one down means Docker
+  # Compose teardown, which does not belong in a DELETE request.
+  after_destroy_commit :reclaim_session_directories
+
   # Broadcast status changes to session detail page
   #
   # IMPORTANT: We use a before_save callback to track status changes instead of
@@ -1259,6 +1276,26 @@ class Session < ApplicationRecord
   end
 
   private
+
+  # Reclaim the on-disk state a destroyed session owned: its durable scratch
+  # directory and its two prompt-attachment directories. See the callback
+  # declaration above for why this runs after commit rather than before destroy.
+  #
+  # Best-effort by construction — each cleanup_for already swallows and logs its
+  # own errors — and wrapped again here so that an unreadable volume cannot turn
+  # a completed delete into an exception raised after the row is already gone.
+  #
+  # The same three roots are what DurableSessionStorage reaps for the jobs. That
+  # concern confirms each deletion so a job can write an honest per-session log
+  # line; here the row (and its logs) are already gone, so there is nothing left
+  # to tell, and the direct calls are the whole of it.
+  def reclaim_session_directories
+    SessionScratchDirectory.cleanup_for(id)
+    FileStorageService.cleanup_for(id)
+    ImageStorageService.cleanup_for(id)
+  rescue => e
+    Rails.logger.warn "[Session] Failed to reclaim directories for deleted session #{id}: #{e.class} - #{e.message}"
+  end
 
   # Whether a rejected write is another session having claimed the slug we were
   # about to take. The race has two shapes: the winner commits after the

@@ -18,6 +18,12 @@
 # clone_path metadata. This catches directories whose session metadata was cleared
 # before the directory was deleted.
 #
+# And a second orphan sweep over the three roots whose per-session directories are
+# named for the session id — scratch and the two prompt-attachment trees. Every
+# other reaper in the pipeline starts from a Session query, so a hard-deleted row
+# takes with it the only handle on its bytes; this sweep is the one that can still
+# find them (see #sweep_orphaned_session_directories).
+#
 class StaleCloneCleanupJob < ApplicationJob
   include DatabaseRetry
   include DurableSessionStorage
@@ -36,6 +42,25 @@ class StaleCloneCleanupJob < ApplicationJob
   # Minimum age before an unreferenced directory is considered orphaned.
   # Prevents racing with session startup (clone created but metadata not yet persisted).
   ORPHAN_AGE_THRESHOLD = 1.hour
+
+  # Directory names the per-session orphan sweep is willing to consider. A session
+  # id is always a positive integer, so this pattern is what makes "the directory
+  # name IS the primary key" a safe assumption: it excludes the `temp_<uuid>`
+  # attachment directories (pre-session uploads that no session id can vouch for
+  # yet — deleting one would eat an upload the user is still composing with) and
+  # the `test-worker-<pid>` namespacing FileStorageService adds under test.
+  #
+  # Capped at 18 digits so a candidate always fits in the bigint primary key: a
+  # longer run of digits would make Postgres raise on the lookup below rather
+  # than answer it, and a directory whose ownership cannot be established is a
+  # directory this sweep leaves alone.
+  SESSION_ID_DIR = /\A[1-9]\d{0,17}\z/
+
+  # Blast-radius cap: the most directories one run will remove from any single
+  # per-session root. Over-limit orphans are logged and picked up next hour, so a
+  # sweep that is wrong about what it owns is wrong 200 directories at a time
+  # instead of all at once.
+  ORPHAN_SWEEP_LIMIT = 200
 
   def perform
     cleaned_count = 0
@@ -67,6 +92,10 @@ class StaleCloneCleanupJob < ApplicationJob
     orphan_result = sweep_orphaned_clones
     cleaned_count += orphan_result[:cleaned]
     error_count += orphan_result[:errors]
+
+    orphan_dir_result = sweep_orphaned_session_directories
+    cleaned_count += orphan_dir_result[:cleaned]
+    error_count += orphan_dir_result[:errors]
 
     if cleaned_count > 0 || error_count > 0
       Rails.logger.info "[StaleCloneCleanupJob] Completed: cleaned #{cleaned_count} clones, #{error_count} errors"
@@ -230,6 +259,152 @@ class StaleCloneCleanupJob < ApplicationJob
     end
 
     { cleaned: cleaned, errors: errors, skipped_referenced: skipped_referenced }
+  end
+
+  # Filesystem-level sweep over the roots whose per-session directories are named
+  # for the session id: scratch, and the two prompt-attachment trees.
+  #
+  # Why this has to exist at all: every other reaper that touches these roots
+  # (EmptyTrashJob, DeferredCloneCleanupJob, the DB-driven scopes above) starts
+  # from a Session query and cleans up by id. Deleting the row therefore destroys
+  # the only handle on those bytes — no query can find a directory whose owner no
+  # longer exists — and they stay on the durable volume forever (#340). The clones
+  # base has had a sweep for exactly this since forever; these three are siblings
+  # of it, deliberately outside its scan (see SessionScratchDirectory), so they
+  # need their own.
+  #
+  # The safety argument, since this deletes directories on the live data volume
+  # from a computed set difference:
+  #
+  #   * Only `\d+` names are considered (SESSION_ID_DIR) — a directory name that
+  #     is not a session id is never a candidate, whatever else it may be.
+  #   * The DB question asked is the narrow one — "which of THESE ids exist?" —
+  #     not "list every id". A row is only ever swept when Postgres explicitly
+  #     said that primary key is gone.
+  #   * The id set is read AFTER the directory listing, so a session created in
+  #     between is in the set; the reverse ordering (which could miss it) is
+  #     impossible.
+  #   * ORPHAN_AGE_THRESHOLD covers the startup race: a directory younger than an
+  #     hour is left alone no matter what the DB says, so a scratch dir created
+  #     before its row committed survives.
+  #   * A sessions table with no rows at all aborts the sweep. That is what a
+  #     restored-but-not-yet-seeded database looks like, and it is the one shape
+  #     where "no row owns this" is a lie about every directory at once.
+  #   * Every removal is logged with its path and mtime BEFORE the bytes go.
+  def sweep_orphaned_session_directories
+    cleaned = 0
+    errors = 0
+
+    unless any_sessions_exist?
+      Rails.logger.warn "[StaleCloneCleanupJob] Skipping per-session orphan sweep: the sessions table is empty, " \
+        "so every directory would look orphaned"
+      return { cleaned: cleaned, errors: errors }
+    end
+
+    session_directory_roots.each do |label, root, env_override|
+      next unless sweepable_root?(label, root, env_override)
+
+      result = sweep_session_directory_root(label, root)
+      cleaned += result[:cleaned]
+      errors += result[:errors]
+    end
+
+    { cleaned: cleaned, errors: errors }
+  end
+
+  # The roots swept above, each with the env var that relocates it.
+  #
+  # Resolved through the same single-source-of-truth readers the writers use, so
+  # a sweep can never scan a base the writers stopped using. FileStorageService
+  # and ImageStorageService are read through `base_dir` (not `storage_root`)
+  # because `base_dir` is what `session_dir` is built from — under test it adds a
+  # per-worker-pid segment, and the sweep has to see the same tree the uploads
+  # actually landed in.
+  def session_directory_roots
+    [
+      [ "scratch", SessionScratchDirectory.base, "AGENT_SCRATCH_DIR" ],
+      [ "prompt files", FileStorageService.base_dir, "AGENT_FILES_DIR" ],
+      [ "prompt images", ImageStorageService.base_dir, "AGENT_IMAGES_DIR" ]
+    ]
+  end
+
+  # Whether a root may be swept in this environment.
+  #
+  # In test, the default roots resolve under the developer's real `~/.zimmer`
+  # volume — the very volume a production Zimmer keeps live sessions on. (That is
+  # not hypothetical: it is why FileStorageService.base_dir namespaces itself per
+  # test-worker pid.) The test database knows nothing about those sessions, so an
+  # unguarded sweep during `bin/rails test` would compute every live session's
+  # scratch directory as an orphan and delete it. A root is therefore only swept
+  # under test when its env var explicitly points somewhere else — which is what
+  # the tests for this sweep do.
+  def sweepable_root?(label, root, env_override)
+    return false if root.blank? || !File.directory?(root)
+
+    return true unless Rails.env.test?
+    return true if ENV[env_override].present?
+
+    Rails.logger.debug "[StaleCloneCleanupJob] Skipping #{label} orphan sweep: #{env_override} is unset under test"
+    false
+  end
+
+  def sweep_session_directory_root(label, root)
+    cleaned = 0
+    errors = 0
+    over_limit = 0
+
+    candidates = Dir.children(root).select { |entry| entry.match?(SESSION_ID_DIR) }
+    return { cleaned: cleaned, errors: errors } if candidates.empty?
+
+    # Asked after the listing, and only about the ids on disk: a bounded primary
+    # key lookup, and a superset in time of what the listing saw. Sliced so a
+    # volume with a large backlog of directories cannot build an unbounded IN.
+    live_ids = candidates
+      .each_slice(1_000)
+      .flat_map { |slice| Session.where(id: slice).pluck(:id) }
+      .map(&:to_s)
+      .to_set
+    cutoff = ORPHAN_AGE_THRESHOLD.ago
+
+    candidates.each do |entry|
+      next if live_ids.include?(entry)
+
+      path = File.join(root, entry)
+      next unless File.directory?(path)
+
+      begin
+        mtime = File.mtime(path)
+        next if mtime > cutoff
+
+        if cleaned >= ORPHAN_SWEEP_LIMIT
+          over_limit += 1
+          next
+        end
+
+        Rails.logger.info "[StaleCloneCleanupJob] Sweeping orphaned #{label} dir for deleted session #{entry}: " \
+          "#{path} (mtime: #{mtime.iso8601})"
+        FileUtils.rm_rf(path)
+        cleaned += 1
+      rescue => e
+        errors += 1
+        Rails.logger.error "[StaleCloneCleanupJob] Failed to sweep orphaned #{label} dir #{path}: #{e.class} - #{e.message}"
+      end
+    end
+
+    if over_limit > 0
+      Rails.logger.warn "[StaleCloneCleanupJob] Orphan sweep hit the #{ORPHAN_SWEEP_LIMIT}-directory cap for " \
+        "#{label}: #{over_limit} left for the next run"
+    end
+
+    if cleaned > 0
+      Rails.logger.info "[StaleCloneCleanupJob] Orphan sweep: removed #{cleaned} #{label} directories"
+    end
+
+    { cleaned: cleaned, errors: errors }
+  end
+
+  def any_sessions_exist?
+    Session.unscoped.exists?
   end
 
   # Maps every session-referenced clone directory's basename to its owning

@@ -39,7 +39,7 @@ From `config.good_job.cron`:
 | 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts, then resume the sessions parked on them |
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
-| hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions |
+| hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, and sweep the scratch/attachment directories of sessions whose row is gone |
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
 | — | `ZombieReaperJob`, `DeferredCloneCleanupJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
 
@@ -55,6 +55,42 @@ three environment files, and for each six-field one it asserts fugit still fires
 a minute — 30 seconds apart, for the `*/30 * * * * *` the whole config uses. A fugit upgrade that
 stopped reading the seconds field fails CI instead of silently slowing three pollers to a crawl.
 :::
+
+## A deleted session takes its directories with it
+
+Archiving a session runs it through the trash pipeline, which reaps its clone, its scratch
+directory and its prompt attachments on a timer. **Deleting** one (`DELETE /api/v1/sessions/:id`)
+is a different door: the row goes immediately, and with it the only handle anything had on those
+bytes. Every reaper in the pipeline — `EmptyTrashJob`, `DeferredCloneCleanupJob`,
+`StaleCloneCleanupJob`'s DB-driven scopes — starts from a `Session` query and cleans up by id, so
+once the row is gone there is no query left that can find the directories.
+
+Two things close that, at different speeds:
+
+- **`Session#reclaim_session_directories`** (`after_destroy_commit`) removes the session's scratch
+  directory and its two prompt-attachment directories as soon as the delete commits. After commit,
+  not before: a destroy that rolls back must not take a live session's state with it. The clone is
+  deliberately left to its own reapers — tearing one down means Docker Compose teardown, which does
+  not belong in a `DELETE` request.
+- **`StaleCloneCleanupJob#sweep_orphaned_session_directories`** (hourly) is the safety net, for rows
+  deleted before this existed and for any delete path that skips callbacks. It is the same shape as
+  the clone orphan sweep: the directory name under each root *is* the session id, so an orphan is a
+  set difference.
+
+That sweep deletes directories on the live data volume from a computed set difference, so it is
+fenced:
+
+| Guard | Effect |
+| --- | --- |
+| `SESSION_ID_DIR` (`/\A[1-9]\d{0,17}\z/`) | Only directories named like a session id are candidates. Excludes the `temp_<uuid>` pre-session upload dirs and anything too long for a bigint |
+| `Session.where(id: candidates)` | Asks "which of *these* ids exist?", never "list every id" — a directory goes only when Postgres said that primary key is gone |
+| Listing before querying | A session created between the two is in the answer; the ordering that could miss one is impossible |
+| `ORPHAN_AGE_THRESHOLD` (1 hour) | A directory younger than an hour survives regardless, so a scratch dir created before its row committed is safe |
+| Empty `sessions` table | Aborts the whole sweep — that is what a restored-but-unseeded database looks like, and the one shape where "no row owns this" is a lie about every directory at once |
+| `ORPHAN_SWEEP_LIMIT` (200 per root) | Caps one run's blast radius; the overflow is logged and picked up next hour |
+| Test environment | A root is swept only when its `AGENT_*_DIR` override points somewhere explicit. The defaults resolve onto the developer's real `~/.zimmer` volume, which the test database knows nothing about |
+
+Every removal is logged with its path and mtime before the bytes go.
 
 ## The zombie reaper only takes what nobody is waiting for
 
