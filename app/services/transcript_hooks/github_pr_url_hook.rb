@@ -35,8 +35,9 @@
 # Every rule above is a bet against the opposite failure — a session that opened a
 # PR and has nothing recorded, which silently switches off every GitHub
 # integration for it (#89). `.warn_if_pr_goal_captured_no_url` is the backstop:
-# when a session with a PR-flavored goal finishes a turn with an empty list, it
-# says so once in the session timeline instead of failing quietly.
+# when a session with a PR-flavored goal comes to rest — finishing a turn,
+# failing, or being archived — with an empty list, it says so once in the
+# session timeline instead of failing quietly.
 #
 # Runtime support: both Claude Code and OpenAI Codex sessions are handled. The two
 # runtimes write very different transcript shapes, so locating `gh pr create`
@@ -138,15 +139,22 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # GitHub integration hangs off github_pull_request_urls, and its failure mode
   # is silence, so this is the one place that says the quiet part out loud.
   #
-  # Called from the session state machine's `pause` (turn completion), which is
-  # every hand-back to the user, not only the last one — so the warning is
-  # phrased as of that moment ("no PR URL yet") and is written once per session.
-  # A session that pauses to ask a question mid-task and opens its PR afterwards
-  # gets one accurate-when-written note; the alternative, re-checking on every
-  # pause, is timeline spam for the same fact.
+  # Called from the session state machine's three rest states: `pause` (turn
+  # completion), `fail` and `archive`. `pause` is every hand-back to the user,
+  # not only the last one, so the warning it writes is phrased as of that moment
+  # ("no PR URL yet"); `fail` and `archive` are where the miss stops being
+  # recoverable, because a paused session gets another turn to open its PR and a
+  # failed or archived one does not (#313).
+  #
+  # Repeats are the dedup guard's job, not the call site's. The guard below
+  # looks for an existing MISSING_PR_URL_WARNING_MARKER log on the session, so
+  # every call site shares one budget of one warning per session: a session that
+  # pauses, warns, and later archives says it once. That is why adding call
+  # sites costs nothing in timeline spam.
   #
   # Never raises: a warning that breaks a state transition would be worse than
-  # the thing it warns about.
+  # the thing it warns about — and on `fail` and `archive` it would break a
+  # transition that is running cleanup.
   #
   # @param session [Session]
   # @return [void]
@@ -158,8 +166,8 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     return if session.logs.where(level: "warning").where("content LIKE ?", "#{MISSING_PR_URL_WARNING_MARKER}%").exists?
 
     Rails.logger.warn(
-      "[GithubPrUrlHook] Session #{session.id} paused with a pull-request goal but no PR URL captured; " \
-      "GitHub comment and merge-conflict polling will not run for it"
+      "[GithubPrUrlHook] Session #{session.id} came to rest with a pull-request goal but no PR URL " \
+      "captured; GitHub comment and merge-conflict polling will not run for it"
     )
     session.logs.create!(level: "warning", content: MISSING_PR_URL_WARNING)
   rescue => e

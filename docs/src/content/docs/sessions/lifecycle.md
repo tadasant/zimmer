@@ -75,7 +75,9 @@ transition, and it does seven things beyond changing status:
    `custom_metadata["github_pull_request_urls"]` is still empty, write one `warning` log to the
    timeline. `GithubPrUrlHook` only records a PR it can see the session open, and an empty list is
    otherwise indistinguishable from "no PR to record" — see
-   [transcript hooks](/extend/transcript-hooks/). Once per session, never raises.
+   [transcript hooks](/extend/transcript-hooks/). Never raises, and once per **session**, not once
+   per event: `fail` and `archive` call it too, and the dedup is on the warning log itself, so a
+   session that pauses, warns, and later archives says it once.
 2. `cleanup_running_job` — clears `running_job_id`.
 3. `fire_ao_event_triggers("session_needs_input")` — wakes anything watching this session.
 4. `enqueue_debounced_needs_input_push_notification` — see below.
@@ -153,10 +155,21 @@ event. A silent status flip would be worse than an unwanted push.
 A status-summary fork that fails is harvested (recording the failure on the source session's
 summary) instead of notifying, exactly as on `pause`.
 
+It also runs `warn_if_pr_goal_captured_no_url`, last in the callback so nothing above it can be
+skipped. `pause` catches a missing PR URL early and recoverably — a paused session gets another
+turn to open its PR. A failed one does not, which is why the check runs here as well
+([#313](https://github.com/tadasant/zimmer/issues/313)).
+
 ### `archive` — any state → `archived`
 
 Sets `archived_at`, dismisses notifications, fires `session_archived` triggers, cleans up
-triggers watching this session, and sets a trash expiry.
+triggers watching this session, sets a trash expiry, and — last, for the same reason as on
+`fail` — runs `warn_if_pr_goal_captured_no_url`. Archiving is the other transition a session
+never comes back from, so it is the last chance to say a PR was opened and never recorded.
+
+A status-summary fork needs no carve-out here the way the notification machinery does: the
+generator strips the goal it inherited (precisely so a throwaway does not act on "open a PR"),
+and a session with no goal never reaches the warning.
 
 The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a short undo
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
