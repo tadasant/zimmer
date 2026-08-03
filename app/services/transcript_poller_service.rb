@@ -372,7 +372,14 @@ class TranscriptPollerService
   def carryover_prefix(main_transcript_file, live_content, metadata_updates)
     return "" unless @source.rotates_transcript_files?
 
-    stored = @session.transcript.to_s
+    # Carrying over is line surgery on JSONL text. The legacy transcript format is
+    # an Array of events (Session.transcript_line_count still handles it), and
+    # slicing `.to_s` of an Array would splice Ruby's inspect output into the
+    # transcript, so leave those alone — the regression guard below still protects
+    # them. No Codex session has one: the Array format predates the runtime.
+    stored = @session.transcript
+    return "" unless stored.is_a?(String)
+
     carryover = extract_carryover(stored, @session.metadata&.dig("transcript_carryover_event_count").to_i)
     last_path = @session.metadata&.dig("transcript_source_path")
     metadata_updates["transcript_source_path"] = main_transcript_file if last_path != main_transcript_file
