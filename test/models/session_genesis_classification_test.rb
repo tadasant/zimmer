@@ -57,9 +57,13 @@ class SessionGenesisClassificationTest < ActiveSupport::TestCase
     assert_equal SessionGenesis::SLACK, fork.genesis
   end
 
-  test "a missing parent does not blow up assignment" do
-    session = build_session(parent_session_id: 999_999_999)
+  test "a dangling fork marker does not blow up assignment" do
+    # parent_session_id carries a referential validation, so a missing spawn
+    # parent can never reach assign_genesis. The fork marker is plain metadata
+    # with no such guard, which is the case the nil-check actually protects.
+    session = build_session(metadata: { "forked_from_session_id" => 999_999_999 })
     assert_equal SessionGenesis::UNKNOWN, session.genesis
+    assert session.priority?
   end
 
   test "an unknown genesis value is rejected" do
