@@ -1885,7 +1885,9 @@ Heuristics have two failure directions and neither announces itself:
 
 The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
 covers the second case only, and only when the goal happens to mention pull requests. There is no
-check at all for the first.
+check at all for the first. That warning is also written once per session and never retracted, so a
+session that was warned and is then resumed or unarchived — `resume` runs from `failed`,
+`unarchive_to_*` from `archived` — keeps a warning its later PR made obsolete.
 
 Narrowed in [#214](https://github.com/tadasant/zimmer/issues/214) and widened in
 [#89](https://github.com/tadasant/zimmer/issues/89).

@@ -156,20 +156,25 @@ A status-summary fork that fails is harvested (recording the failure on the sour
 summary) instead of notifying, exactly as on `pause`.
 
 It also runs `warn_if_pr_goal_captured_no_url`, last in the callback so nothing above it can be
-skipped. `pause` catches a missing PR URL early and recoverably — a paused session gets another
-turn to open its PR. A failed one does not, which is why the check runs here as well
-([#313](https://github.com/tadasant/zimmer/issues/313)).
+skipped. A session that dies mid-turn never reaches `pause`, so a PR it opened and never named
+would be recorded nowhere at all ([#313](https://github.com/tadasant/zimmer/issues/313)).
 
 ### `archive` — any state → `archived`
 
 Sets `archived_at`, dismisses notifications, fires `session_archived` triggers, cleans up
 triggers watching this session, sets a trash expiry, and — last, for the same reason as on
-`fail` — runs `warn_if_pr_goal_captured_no_url`. Archiving is the other transition a session
-never comes back from, so it is the last chance to say a PR was opened and never recorded.
+`fail` — runs `warn_if_pr_goal_captured_no_url`. A session trashed straight from `needs_input`
+is one nobody is coming back to, so this is where a PR opened and never recorded gets said out
+loud.
 
-A status-summary fork needs no carve-out here the way the notification machinery does: the
-generator strips the goal it inherited (precisely so a throwaway does not act on "open a PR"),
-and a session with no goal never reaches the warning.
+Neither this nor `fail` is literally terminal — `resume` runs from `failed` and the three
+`unarchive_to_*` events from `archived` — so the warning keeps `pause`'s point-in-time honesty:
+it says what was true when it was written ("no PR URL **yet**") and, because the dedup is
+once-per-session, it is not retracted if the session is later revived and does open one.
+
+Status-summary forks are carved out inside the hook rather than at the call site. The generator
+strips the goal a fork inherits, but only in `prepare_fork` — a fork abandoned before that point
+still carries the source's "open a PR", so the goal check alone would not have covered it.
 
 The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a short undo
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for

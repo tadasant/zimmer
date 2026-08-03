@@ -164,9 +164,10 @@ module SessionStateMachine
             enqueue_session_inference_if_needed
             enqueue_status_summary_refresh
           end
-          # Last, deliberately: a failed session is done, so this is its final
-          # chance to say the PR was never recorded — but the cleanup above is
-          # load-bearing and must not be skipped by anything this raises.
+          # A session that dies mid-turn never reaches `pause`, so without this
+          # the miss is recorded nowhere. Placed last because the cleanup above
+          # is load-bearing and predates this call — nothing here should be able
+          # to disturb it.
           warn_if_pr_goal_captured_no_url
         end
       end
@@ -189,9 +190,9 @@ module SessionStateMachine
           fire_ao_event_triggers("session_archived")
           cleanup_watched_session_ao_event_triggers
           set_trash_expiry
-          # Last, for the same reason as on `fail`: an archived session never
-          # gets another turn, so this is the last call — and the trash
-          # bookkeeping above must run whatever happens here.
+          # Same reasoning as on `fail`: a session trashed straight from
+          # `needs_input` is one nobody comes back to, and the trash bookkeeping
+          # above must run whatever happens here.
           warn_if_pr_goal_captured_no_url
         end
       end
@@ -420,10 +421,12 @@ module SessionStateMachine
   # that distinguishes "nothing to do" from "the association never happened".
   # The rule and the wording live with the hook that populates the list.
   #
-  # Called from `pause`, `fail` and `archive`. `pause` catches it early and
-  # recoverably; `fail` and `archive` are where the miss becomes permanent. The
-  # hook deduplicates on the warning log itself, so a session that pauses, warns
-  # and later archives is warned once, not twice.
+  # Called from `pause`, `fail` and `archive` — the three transitions after
+  # which nothing runs unless a person comes back. `pause` catches the miss
+  # while the session can still act on it; `fail` and `archive` catch the
+  # sessions `pause` never sees. The hook deduplicates on the warning log
+  # itself, so a session that pauses, warns and later archives is warned once,
+  # not twice.
   #
   # The rescue is not redundant with the hook's own: the hook's guard cannot
   # cover the constant lookup that reaches it, and on `fail` and `archive` an
