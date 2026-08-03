@@ -50,6 +50,21 @@ class ForkSessionService
   # can change underneath it.
   DEPENDENCY_DIRECTORIES = [ "vendor/bundle", "**/node_modules" ].freeze
 
+  # What a fork's title is built from — see #generate_forked_title.
+  FORK_TITLE_PREFIX = "Fork of "
+  TITLE_OMISSION = "…"
+
+  # The cap a generated title has to fit, read off Session's own validator
+  # rather than restated here: a change to the model's limit must not leave this
+  # service composing titles the model then rejects, which fails the fork
+  # deterministically. nil means the model imposes no cap.
+  def self.title_length_limit
+    Session.validators_on(:title)
+      .select { |validator| validator.is_a?(ActiveModel::Validations::LengthValidator) }
+      .filter_map { |validator| validator.options[:maximum] }
+      .min
+  end
+
   attr_reader :source_session, :message_index, :file_system, :extra_metadata, :copy_exclusions
 
   # @param extra_metadata [Hash] merged into the forked session's metadata at
@@ -118,7 +133,13 @@ class ForkSessionService
       new_session_id: new_session_id,
       truncated_transcript: truncated_transcript
     )
-    return Result.new(success?: false, error: "Failed to create forked session record") unless forked_session
+    unless forked_session
+      # The clone was copied in full before this point, and with no record to
+      # claim it, nothing but OrphanCloneFilesystemCleanupJob's 48h sweep would
+      # ever collect it.
+      cleanup_on_failure(nil, new_clone_path)
+      return Result.new(success?: false, error: "Failed to create forked session record")
+    end
 
     # Write truncated transcript to the new location
     write_transcript_success = write_transcript_file(
@@ -407,9 +428,21 @@ class ForkSessionService
     nil
   end
 
+  # A fork's title is the source's under a prefix — and it has to survive
+  # Session's own length validation, which the source title has already spent
+  # up to all of. Titles in the low 90s are legal and routine, so the prefix
+  # alone is enough to push one over the cap; the base is truncated to whatever
+  # the prefix leaves, with an ellipsis so the result still reads as the session
+  # it forked.
   def generate_forked_title
     base_title = source_session.title.presence || "Session #{source_session.id}"
-    "Fork of #{base_title}"
+    limit = self.class.title_length_limit
+    return "#{FORK_TITLE_PREFIX}#{base_title}" if limit.nil?
+
+    budget = limit - FORK_TITLE_PREFIX.length
+    return "#{FORK_TITLE_PREFIX}#{base_title}".truncate(limit, omission: TITLE_OMISSION) if budget < 1
+
+    "#{FORK_TITLE_PREFIX}#{base_title.truncate(budget, omission: TITLE_OMISSION)}"
   end
 
   def write_transcript_file(new_working_directory:, new_session_id:, truncated_transcript:)
