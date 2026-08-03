@@ -162,6 +162,13 @@ The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a sho
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
 `TRASH_RETENTION_PERIOD`, which is `4.days`. `EmptyTrashJob` deletes them once that expires.
 
+The session's [scratch directory](/sessions/spawning/) and prompt attachments are on the trash
+schedule too, not the undo-window one: nothing can rebuild them from a remote the way a clone is
+rebuilt, so they are kept for the whole time archive is undoable and reaped by `EmptyTrashJob`.
+That is why a clean-clone session can still hold a `trash_after` — it is the deadline for whatever
+is still retained, which is not always the clone. See
+[how long scratch lasts](/limitations/#a-sessions-scratch-directory-survives-archive-but-only-for-the-trash-window).
+
 :::danger[The Undo button doesn't work]
 [Issue #12](https://github.com/tadasant/zimmer/issues/12): the archive `turbo_stream` response
 never renders the flash toast, so there is no toast and no Undo affordance — even though the

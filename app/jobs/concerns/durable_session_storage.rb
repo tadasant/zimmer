@@ -38,20 +38,25 @@ module DurableSessionStorage
 
   # Deletes the scratch directory and prompt attachments for a session.
   #
+  # Both underlying cleanups swallow their own errors, so each one is confirmed
+  # against the filesystem afterwards. A caller writes what this returns into a
+  # durable session log; reporting a deletion that an EACCES or EBUSY quietly
+  # refused would leave the bytes on disk under a log line saying they are gone.
+  #
   # @return [Array<String>] human-readable descriptions of what was actually
-  #   removed; empty when there was nothing on disk.
+  #   removed; empty when there was nothing on disk, or nothing could be removed.
   def cleanup_durable_session_storage(session_id)
     removed = []
 
     if scratch_dir_exists?(session_id)
       SessionScratchDirectory.cleanup_for(session_id)
-      removed << "scratch directory deleted"
+      removed << "scratch directory deleted" unless scratch_dir_exists?(session_id)
     end
 
     if prompt_attachments_exist?(session_id)
       FileStorageService.cleanup_for(session_id)
       ImageStorageService.cleanup_for(session_id)
-      removed << "prompt attachments deleted"
+      removed << "prompt attachments deleted" unless prompt_attachments_exist?(session_id)
     end
 
     removed
