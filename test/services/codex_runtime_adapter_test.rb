@@ -139,6 +139,92 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_includes_subsequence command, [ "-m", "gpt-5.4" ]
   end
 
+  test "execute rejects gpt-5.6 models when the installed Codex CLI is too old" do
+    @adapter.stubs(:installed_cli_version).returns(Gem::Version.new("0.135.0"))
+
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.execute(
+        prompt: "go",
+        session_id: "zimmer-session-uuid",
+        working_dir: @test_dir,
+        model: "gpt-5.6-terra"
+      )
+    end
+
+    assert_match(/gpt-5\.6-terra requires Codex CLI >= 0\.146\.0/, error.message)
+    assert_match(/installed version is 0\.135\.0/, error.message)
+    assert_empty @mock_process_manager.spawned_processes,
+      "the guard must fail before launching a codex process"
+  end
+
+  test "execute allows gpt-5.6 models when the installed Codex CLI is compatible" do
+    @adapter.stubs(:installed_cli_version).returns(Gem::Version.new("0.146.0"))
+
+    @adapter.execute(
+      prompt: "go",
+      session_id: "zimmer-session-uuid",
+      working_dir: @test_dir,
+      model: "gpt-5.6-terra"
+    )
+
+    command = @mock_process_manager.spawned_processes.last[:command]
+    assert_includes_subsequence command, [ "-m", "gpt-5.6-terra" ]
+  end
+
+  test "resume rejects gpt-5.6 models when the installed Codex CLI is too old" do
+    @adapter.stubs(:installed_cli_version).returns(Gem::Version.new("0.145.0"))
+
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.resume(
+        session_id: "codex-session-uuid",
+        working_dir: @test_dir,
+        prompt: "continue",
+        model: "gpt-5.6-luna"
+      )
+    end
+
+    assert_match(/gpt-5\.6-luna requires Codex CLI >= 0\.146\.0/, error.message)
+    assert_empty @mock_process_manager.spawned_processes
+  end
+
+  test "execute rejects gpt-5.6 models when the Codex CLI version cannot be detected" do
+    @adapter.stubs(:installed_cli_version).returns(nil)
+
+    error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
+      @adapter.execute(
+        prompt: "go",
+        session_id: "zimmer-session-uuid",
+        working_dir: @test_dir,
+        model: "gpt-5.6-sol"
+      )
+    end
+
+    assert_match(/installed version is unknown/, error.message)
+    assert_empty @mock_process_manager.spawned_processes
+  end
+
+  test "older Codex models do not require the gpt-5.6 CLI floor" do
+    @adapter.expects(:installed_cli_version).never
+
+    @adapter.execute(
+      prompt: "go",
+      session_id: "zimmer-session-uuid",
+      working_dir: @test_dir,
+      model: "gpt-5.5"
+    )
+
+    command = @mock_process_manager.spawned_processes.last[:command]
+    assert_includes_subsequence command, [ "-m", "gpt-5.5" ]
+  end
+
+  test "Dockerfile installs a Codex CLI version compatible with gpt-5.6 models" do
+    dockerfile = Rails.root.join("Dockerfile.base").read
+    match = dockerfile.match(/@openai\/codex@(\d+\.\d+\.\d+)/)
+
+    assert match, "Dockerfile.base should pin @openai/codex"
+    assert_operator Gem::Version.new(match[1]), :>=, CodexRuntimeAdapter::MINIMUM_GPT_5_6_CLI_VERSION
+  end
+
   test "build_command omits the model flag when no model is given" do
     command = @adapter.send(:build_command,
       prompt: "hi",
