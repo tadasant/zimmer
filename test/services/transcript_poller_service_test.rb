@@ -663,6 +663,21 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_empty updates
   end
 
+  test "carryover_prefix leaves a legacy Array transcript alone" do
+    # Carrying over slices JSONL lines out of a String. The legacy format stores
+    # one event per Array element, and slicing `.to_s` of an Array would splice
+    # Ruby's inspect output into the transcript.
+    _stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    @session.update!(transcript: [ { "type" => "user" }, { "type" => "assistant" } ])
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    updates = {}
+
+    carryover = service.send(:carryover_prefix, "/live/rollout-new.jsonl", live, updates)
+
+    assert_equal "", carryover
+    assert_empty updates
+  end
+
   test "carryover_prefix clears the stale regression marker once history is whole again" do
     _stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2)
     @session.update!(metadata: @session.metadata.merge("transcript_regression_detected" => true))
