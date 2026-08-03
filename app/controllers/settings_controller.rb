@@ -25,5 +25,13 @@ class SettingsController < ApplicationController
     # dropped extension disappears from the UI with no view edit. Each entry knows
     # its own id/title/description and current enablement.
     @extensions = Zimmer::ExtensionRegistry.experimental
+
+    # The spot gate card. `@spot_decision` is the live gate evaluation — the same
+    # object AgentSessionJob acts on, so what the page shows is exactly what a
+    # spot session starting right now would get, not a re-derivation that could
+    # drift from it.
+    @spot_decision = SpotGateService.evaluate
+    @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
+    @genesis_counts = Session.genesis_counts
   end
 end

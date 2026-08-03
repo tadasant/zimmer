@@ -126,8 +126,8 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/sessions` | filters: `status`, `agent_runtime`, `show_archived`, `page`, `per_page`. Zimmer's own status-summary forks are never listed |
-| `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`. Missing/oversized `q` → 400 (the only 400 in the API). Status-summary forks are never listed |
+| `GET` | `/sessions` | filters: `status`, `agent_runtime`, `priority_class`, `genesis`, `show_archived`, `page`, `per_page`. Zimmer's own status-summary forks are never listed |
+| `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` filters as `/sessions`. Missing/oversized `q` → 400 (the only 400 in the API). Status-summary forks are never listed |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `custom_metadata` |
@@ -169,6 +169,16 @@ Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`,
 
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
 default to false wherever they appear.
+
+`priority_class` accepts `spot` or `priority`; `genesis` accepts one of `web_ui`, `slack`,
+`github_issue`, `github_label`, `schedule`, `ao_event`, `api`, `unknown`. Both are resolved live, so a
+genesis promoted in Settings moves its sessions between the two `priority_class` values immediately.
+An unrecognised value for either is ignored rather than erroring.
+
+`genesis` is not a permitted param on create and is never caller-supplied. A create that passes
+`parent_session_id` inherits that parent's genesis; one that does not is recorded as `api`, which
+classifies **spot**. See [Spot and priority](/sessions/spot-and-priority/). Every session object
+carries `genesis` and `priority_class`.
 
 `agent_root` is not a Session column — it names a catalog entry that expands into `git_root`,
 `branch`, `subdirectory` and the catalog defaults, and is recorded as `metadata.agent_root_key`. An
@@ -282,7 +292,8 @@ per card:
   [The Status summary](/sessions/status-summary/).
 - `session_hierarchy` — the lineage graph this session belongs to: `origin_session_id`,
   `root_session_ids`, `truncated`, `truncation_reason`, and `nodes[]` each with `id`, `title`,
-  `agent_root`, `status`, `depth`, `parent_session_id`, `uncle_session_ids` and `current`.
+  `agent_root`, `status`, `depth`, `parent_session_id`, `uncle_session_ids`, `current`, `genesis`
+  and `priority_class`.
   `parent_session_id` is the **spawn** edge and means "spawned", NOT "most recently talked to".
   `uncle_session_ids` are the sessions that queued or interrupted this one and are therefore treated
   as additional seniors — self-declared by the caller, so a claim rather than a fact.

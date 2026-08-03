@@ -58,6 +58,15 @@
                 <%= link_to node.label, session_path(node.id), class: "text-indigo-600 hover:text-indigo-800 hover:underline" %>
               <% end %>
               <span class="text-xs text-gray-400">#<%= node.id %> · <%= node.status %></span>
+              <%# Genesis, on every node. It is inherited down a lineage, so showing
+                  it per-node is what makes "this whole branch is spot" readable —
+                  and makes an outlier stand out instead of surprising someone later. %>
+              <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium <%= node.spot? ? "bg-gray-100 text-gray-600 ring-1 ring-gray-200" : "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200" %>"
+                    data-genesis="<%= node.genesis %>"
+                    data-priority-class="<%= node.priority_class %>"
+                    title="Genesis: <%= node.genesis_label %> — classified <%= node.priority_class %>">
+                <%= node.genesis %> · <%= node.priority_class %>
+              </span>
               <%# An uncle edge cannot be drawn by indentation — that expresses one
                   parent and this graph has more than one — so it is named instead.
                   Silently omitting it would hide the thing that widened this
@@ -83,6 +92,15 @@
       <p class="mt-3 text-xs text-gray-400">
         Indentation means <span class="font-medium">spawned</span>, not "most recently talked to" — a session is routinely
         followed up by a router other than the one that spawned it.
+      </p>
+
+      <p class="mt-1 text-xs text-gray-400">
+        The second pill is the session's <span class="font-medium">genesis</span> — where its line of work came
+        from — and the class that genesis currently resolves to.
+        <span class="font-medium">priority</span> sessions always start;
+        <span class="font-medium">spot</span> sessions wait for quota headroom when the gate is on.
+        A spawned session inherits its parent's genesis, which is why a branch usually shares one.
+        Classes are changed per genesis in <%= link_to "Settings", settings_path(anchor: "spot-gate"), class: "underline hover:text-gray-600" %>.
       </p>
 
       <% if hierarchy.uncle_edges? %>

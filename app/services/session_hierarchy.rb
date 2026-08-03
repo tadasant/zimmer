@@ -59,7 +59,8 @@ class SessionHierarchy
   # `uncle_ids` is the additional seniors, which a renderer must show separately
   # — indentation can only express one parent, so an uncle edge is invisible in
   # the outline unless it is named.
-  Node = Struct.new(:id, :title, :agent_root, :status, :depth, :parent_id, :uncle_ids, :current, keyword_init: true) do
+  Node = Struct.new(:id, :title, :agent_root, :status, :depth, :parent_id, :uncle_ids, :current,
+                    :genesis, :priority_class, keyword_init: true) do
     def current? = current
 
     def label = title.presence || "Session ##{id}"
@@ -75,6 +76,19 @@ class SessionHierarchy
     # markdown all use, so the three surfaces cannot describe the same edge
     # differently.
     def uncle_summary = "also senior: #{uncles.map { |uid| "##{uid}" }.join(', ')}"
+
+    # Where this session's line of work came from, and what that buys it in the
+    # scheduler. Shown on every node because genesis is inherited down a lineage:
+    # seeing it beside each session is what makes "this whole branch is spot"
+    # legible, and what makes an outlier — a web_ui session hanging off a
+    # github_issue root — visible at a glance rather than a surprise later.
+    def genesis_label = SessionGenesis.label(genesis)
+
+    def spot? = priority_class == SessionGenesis::SPOT
+
+    # "web_ui · priority" — the phrasing shared by the UI panel and the MCP
+    # outline, so both surfaces describe a node identically.
+    def genesis_summary = "#{genesis.presence || SessionGenesis::DEFAULT_KEY} · #{priority_class}"
   end
 
   attr_reader :session
@@ -194,7 +208,7 @@ class SessionHierarchy
       root = SessionHumanMessages.sanitize_for_attribute(node.agent_root_label)
       label = SessionHumanMessages.sanitize_for_attribute(node.label)
       uncles = node.uncles? ? " (#{node.uncle_summary})" : ""
-      "#{'  ' * node.depth}- ##{node.id} [#{root}] #{label}#{uncles}#{marker}"
+      "#{'  ' * node.depth}- ##{node.id} [#{root}] {#{node.genesis_summary}} #{label}#{uncles}#{marker}"
     end.join("\n")
   end
 
@@ -403,7 +417,16 @@ class SessionHierarchy
       depth: depth,
       parent_id: record.lineage_parent_id,
       uncle_ids: uncle_ids,
-      current: record.id == session.id
+      current: record.id == session.id,
+      genesis: record.genesis_key,
+      priority_class: record.priority_class(genesis_overrides)
     )
+  end
+
+  # Read the per-genesis overrides once per hierarchy rather than once per node —
+  # a 150-node tree would otherwise hit AppSetting 150 times to answer the same
+  # question.
+  def genesis_overrides
+    @genesis_overrides ||= AppSetting.current.genesis_class_overrides || {}
   end
 end

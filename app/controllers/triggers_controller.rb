@@ -121,7 +121,9 @@ class TriggersController < ApplicationController
     variables = params.permit(*Trigger::USER_INPUT_VARIABLES.map(&:to_sym))
     prompt = @trigger.interpolate_prompt(**variables.to_h.symbolize_keys)
 
-    session = @trigger.create_session!(prompt: prompt)
+    # A human clicked Invoke in the web app, so this fire is web_ui regardless of
+    # what the trigger's own conditions would derive.
+    session = @trigger.create_session!(prompt: prompt, genesis: SessionGenesis::WEB_UI)
 
     if session.nil?
       message = if @trigger.last_fire_burst_suppressed?

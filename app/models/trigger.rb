@@ -168,8 +168,20 @@ class Trigger < ApplicationRecord
   # created: the trigger is burst-suppressed (see #spawn_with_burst_control!),
   # or a one-time reuse trigger's target session is gone. Callers must handle
   # nil.
-  def create_session!(prompt:)
+  # The genesis stamped on sessions this trigger spawns.
+  #
+  # Derived from the trigger's own condition types, so a Slack trigger's sessions
+  # are priority and a github_issue trigger's are spot without the firing job
+  # having to say so. `genesis_override` is how a fire that knows better — the
+  # Invoke button, where a human is clicking in the web app — overrules that.
+  def session_genesis
+    @genesis_override.presence || SessionGenesis.from_condition_types(condition_types)
+  end
+
+  # @param genesis [String, nil] override the derived genesis for this fire only.
+  def create_session!(prompt:, genesis: nil)
     @last_fire_burst_suppressed = false
+    @genesis_override = genesis
 
     # Heal any catalog references that no longer exist before creating or
     # reusing a session. Each heal method persists the fix so subsequent
@@ -810,6 +822,7 @@ class Trigger < ApplicationRecord
       catalog_skills: catalog_skills,
       catalog_hooks: catalog_hooks,
       catalog_plugins: catalog_plugins,
+      genesis: session_genesis,
       metadata: { trigger_id: id, trigger_name: name, burst_notice: true }
     )
 
@@ -870,6 +883,7 @@ class Trigger < ApplicationRecord
       catalog_hooks: catalog_hooks,
       catalog_plugins: catalog_plugins,
       goal: goal,
+      genesis: session_genesis,
       metadata: { trigger_id: id, trigger_name: name }
     )
 

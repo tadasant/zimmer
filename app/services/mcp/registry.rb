@@ -63,7 +63,14 @@ module Mcp
 
       # Health
       Definition.new(klass: "Mcp::Tools::GetSystemHealth", group: "health", write: false),
-      Definition.new(klass: "Mcp::Tools::ActionHealth", group: "health", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionHealth", group: "health", write: true),
+
+      # Spot / priority scheduling. In `health` rather than `sessions` because
+      # both tools are about the deployment's quota posture, not about one
+      # session — and a self_session connection has no business rewriting the
+      # global policy from inside a session it is being throttled by.
+      Definition.new(klass: "Mcp::Tools::GetSpotPolicy", group: "health", write: false),
+      Definition.new(klass: "Mcp::Tools::ActionSpotPolicy", group: "health", write: true)
     ].freeze
 
     module_function

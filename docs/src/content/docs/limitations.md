@@ -2030,6 +2030,48 @@ and resume.
 
 ---
 
+## The spot gate cannot see spend it never sampled
+
+`ClaudeUsageRateService` differentiates `ClaudeAccountQuotaSnapshot` rows, so its resolution is
+whatever the sampling cadence happens to be. `ClaudeUsageSamplerJob` reads the serving account every
+15 minutes, which is enough for a rate but not for a spike: a burst that starts and finishes inside
+one 15-minute gap is invisible, and the forecast that follows is built on a rate that never saw it.
+
+Two consequences worth knowing:
+
+- The gate reacts on a 15-minute lag at best. Twenty spot sessions launched at once all evaluate
+  against the same pre-burst rate and all start.
+- A pair of readings that straddles a window reset is dropped rather than clamped, because the
+  counters slide downward on their own and the difference measures nothing. If resets happen to line
+  up with the sample cadence, usable pairs get scarce and the gate falls open on
+  `insufficient_data`.
+
+Both are deliberate — the alternative is a gate that guesses — but they mean the gate is a brake on
+sustained burn, not a circuit breaker on a spike.
+
+---
+
+## Only a session's first start is gated
+
+`SpotSessionHold` runs on the new-session path only. A follow-up, a monitoring resume and a
+clone-only setup all pass through regardless of forecast, so a long-running spot session keeps
+spending after the gate has closed behind it. Interrupting a conversation already underway would
+strand it half-done and waste the tokens already spent, so this is the intended trade — but "spot
+sessions are held" means "not started", not "not running".
+
+---
+
+## Genesis backfill cannot recover what was never recorded
+
+The migration that added `sessions.genesis` reconstructs it from `metadata->>'source'`, the
+trigger's condition types, and the lineage edge. The new-session form and the REST API never
+stamped anything, so pre-migration rows from those two paths are indistinguishable and land on
+`unknown` — which classifies **priority**. Old automated work created over the API therefore reads
+as priority until it is archived. The failure mode is "runs anyway", which is the right way round,
+but the historical counts on the Settings page are not a reliable census of what was automated.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
