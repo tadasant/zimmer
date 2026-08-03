@@ -127,8 +127,10 @@ class Session < ApplicationRecord
   # the row is gone nothing can query for them again (#340).
   #
   # after_destroy_commit, not before_destroy: the directories go only once the row
-  # is really gone, so a destroy that rolls back (ForkSessionService cleans up a
-  # half-built fork this way) can never take a live session's state with it.
+  # is really gone, so a destroy that rolls back — the row survives, and with it a
+  # session that may still be resumed — cannot take that session's state with it.
+  # Nothing on disk here is reconstructable, so the ordering is the difference
+  # between a survivable rollback and an unrecoverable one.
   #
   # StaleCloneCleanupJob's per-session orphan sweep is the safety net behind this
   # — for rows deleted before this shipped, and for any delete path that skips

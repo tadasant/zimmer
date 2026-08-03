@@ -45,10 +45,11 @@ class StaleCloneCleanupJob < ApplicationJob
 
   # Directory names the per-session orphan sweep is willing to consider. A session
   # id is always a positive integer, so this pattern is what makes "the directory
-  # name IS the primary key" a safe assumption: it excludes the `temp_<uuid>`
-  # attachment directories (pre-session uploads that no session id can vouch for
-  # yet — deleting one would eat an upload the user is still composing with) and
-  # the `test-worker-<pid>` namespacing FileStorageService adds under test.
+  # name IS the primary key" a safe assumption. What it keeps out: the
+  # `temp_<uuid>` attachment directories (pre-session uploads that no session id
+  # can vouch for yet — deleting one would eat an upload the user is still
+  # composing with), and the `test-worker-<pid>` trees a suite run leaves in the
+  # attachment roots when it runs against a shared volume.
   #
   # Capped at 18 digits so a candidate always fits in the bigint primary key: a
   # longer run of digits would make Postgres raise on the lookup below rather
@@ -61,6 +62,11 @@ class StaleCloneCleanupJob < ApplicationJob
   # sweep that is wrong about what it owns is wrong 200 directories at a time
   # instead of all at once.
   ORPHAN_SWEEP_LIMIT = 200
+
+  # The deployments that own the durable `zimmer_data` volume, and so are the
+  # only ones allowed to reap per-session directories inside it. See
+  # #sweepable_root?.
+  SWEEPS_DEFAULT_DURABLE_ROOT = %w[production staging].freeze
 
   def perform
     cleaned_count = 0
@@ -287,9 +293,14 @@ class StaleCloneCleanupJob < ApplicationJob
   #   * ORPHAN_AGE_THRESHOLD covers the startup race: a directory younger than an
   #     hour is left alone no matter what the DB says, so a scratch dir created
   #     before its row committed survives.
-  #   * A sessions table with no rows at all aborts the sweep. That is what a
-  #     restored-but-not-yet-seeded database looks like, and it is the one shape
-  #     where "no row owns this" is a lie about every directory at once.
+  #   * A completely empty sessions table aborts the sweep. That is only the
+  #     crudest version of "the database does not know about this volume" — a
+  #     restore from a stale snapshot still has rows and passes — but it is the
+  #     one shape where "no row owns this" is a lie about every directory at
+  #     once, and ORPHAN_SWEEP_LIMIT is what bounds the subtler versions.
+  #   * Only the deployment that owns the durable volume sweeps it — see
+  #     #sweepable_root?, which is what keeps `bin/dev` and `bin/rails test` on
+  #     a machine that shares that volume from reaping live sessions.
   #   * Every removal is logged with its path and mtime BEFORE the bytes go.
   def sweep_orphaned_session_directories
     cleaned = 0
@@ -301,8 +312,8 @@ class StaleCloneCleanupJob < ApplicationJob
       return { cleaned: cleaned, errors: errors }
     end
 
-    session_directory_roots.each do |label, root, env_override|
-      next unless sweepable_root?(label, root, env_override)
+    session_directory_roots.each do |label, root|
+      next unless sweepable_root?(label, root)
 
       result = sweep_session_directory_root(label, root)
       cleaned += result[:cleaned]
@@ -312,40 +323,54 @@ class StaleCloneCleanupJob < ApplicationJob
     { cleaned: cleaned, errors: errors }
   end
 
-  # The roots swept above, each with the env var that relocates it.
+  # The roots swept above.
   #
   # Resolved through the same single-source-of-truth readers the writers use, so
   # a sweep can never scan a base the writers stopped using. FileStorageService
   # and ImageStorageService are read through `base_dir` (not `storage_root`)
-  # because `base_dir` is what `session_dir` is built from — under test it adds a
-  # per-worker-pid segment, and the sweep has to see the same tree the uploads
-  # actually landed in.
+  # because `base_dir` is what `session_dir` is built from, so this is the tree
+  # the uploads actually landed in.
   def session_directory_roots
     [
-      [ "scratch", SessionScratchDirectory.base, "AGENT_SCRATCH_DIR" ],
-      [ "prompt files", FileStorageService.base_dir, "AGENT_FILES_DIR" ],
-      [ "prompt images", ImageStorageService.base_dir, "AGENT_IMAGES_DIR" ]
+      [ "scratch", SessionScratchDirectory.base ],
+      [ "prompt files", FileStorageService.base_dir ],
+      [ "prompt images", ImageStorageService.base_dir ]
     ]
   end
 
-  # Whether a root may be swept in this environment.
+  # Whether this process is allowed to sweep a given root.
   #
-  # In test, the default roots resolve under the developer's real `~/.zimmer`
-  # volume — the very volume a production Zimmer keeps live sessions on. (That is
-  # not hypothetical: it is why FileStorageService.base_dir namespaces itself per
-  # test-worker pid.) The test database knows nothing about those sessions, so an
-  # unguarded sweep during `bin/rails test` would compute every live session's
-  # scratch directory as an orphan and delete it. A root is therefore only swept
-  # under test when its env var explicitly points somewhere else — which is what
-  # the tests for this sweep do.
-  def sweepable_root?(label, root, env_override)
+  # The hazard is a process whose database does not describe the volume it is
+  # looking at. The default roots resolve under `~/.zimmer` — the same durable
+  # volume a production Zimmer keeps live sessions on — while the database is
+  # whatever the local environment points at. `bin/rails test` against
+  # `zimmer_test`, or `bin/dev` against `zimmer_development` (which runs this
+  # very job on an hourly cron, in-process), would then compute every live
+  # session's scratch directory as an orphan and delete it. Scratch and prompt
+  # attachments have no remote to be re-fetched from, so that is unrecoverable.
+  #
+  # The rule is therefore about the path, not the environment name: only the
+  # deployments that own the durable volume (production, staging) may sweep a
+  # root that lives inside it. Anywhere else a root is swept only when it has
+  # been relocated clear of that volume — which is what the tests for this sweep
+  # do, and what a developer with a private data dir gets for free.
+  def sweepable_root?(label, root)
     return false if root.blank? || !File.directory?(root)
+    return true if SWEEPS_DEFAULT_DURABLE_ROOT.include?(Rails.env)
+    return true unless inside_default_durable_root?(root)
 
-    return true unless Rails.env.test?
-    return true if ENV[env_override].present?
-
-    Rails.logger.debug "[StaleCloneCleanupJob] Skipping #{label} orphan sweep: #{env_override} is unset under test"
+    Rails.logger.debug "[StaleCloneCleanupJob] Skipping #{label} orphan sweep: #{root} is inside the durable " \
+      "volume and #{Rails.env} is not the deployment that owns it"
     false
+  end
+
+  # Whether a path sits at or under the durable root that backs the clones base
+  # (`~/.zimmer` by default, or the parent of AGENT_CLONES_DIR).
+  def inside_default_durable_root?(path)
+    durable_root = File.expand_path(File.dirname(ClonesDirectory.base))
+    expanded = File.expand_path(path)
+
+    expanded == durable_root || expanded.start_with?("#{durable_root}#{File::SEPARATOR}")
   end
 
   def sweep_session_directory_root(label, root)
@@ -353,15 +378,26 @@ class StaleCloneCleanupJob < ApplicationJob
     errors = 0
     over_limit = 0
 
-    candidates = Dir.children(root).select { |entry| entry.match?(SESSION_ID_DIR) }
+    begin
+      candidates = Dir.children(root).select { |entry| entry.match?(SESSION_ID_DIR) }
+    rescue => e
+      Rails.logger.error "[StaleCloneCleanupJob] Failed to list #{label} root #{root}: #{e.class} - #{e.message}"
+      return { cleaned: cleaned, errors: 1 }
+    end
+
     return { cleaned: cleaned, errors: errors } if candidates.empty?
 
     # Asked after the listing, and only about the ids on disk: a bounded primary
     # key lookup, and a superset in time of what the listing saw. Sliced so a
     # volume with a large backlog of directories cannot build an unbounded IN.
+    # `unscoped` deliberately: this query decides deletions, so it must see every
+    # row the table has. A default scope added later for soft-delete or tenancy
+    # would otherwise hide live rows from it and make their directories look
+    # orphaned — while the empty-table guard above, which is already unscoped,
+    # kept passing.
     live_ids = candidates
       .each_slice(1_000)
-      .flat_map { |slice| Session.where(id: slice).pluck(:id) }
+      .flat_map { |slice| Session.unscoped.where(id: slice).pluck(:id) }
       .map(&:to_s)
       .to_set
     cutoff = ORPHAN_AGE_THRESHOLD.ago
