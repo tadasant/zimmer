@@ -122,7 +122,10 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
 
   def failure_reason(fork)
     reason = fork.metadata&.dig("failure_reason").presence
-    reason ? "The summary fork failed: #{reason}" : "The summary fork failed."
+    exit_status = fork.metadata&.dig("exit_status").presence
+    detail = [ reason, exit_status ].compact.join(" — ")
+
+    detail.present? ? "The summary fork failed: #{detail}".truncate(500) : "The summary fork failed."
   end
 
   def archive_fork(fork)

@@ -147,6 +147,27 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     assert fork.reload.archived?
   end
 
+  test "a failed fork records its exit status on the source summary" do
+    fork = build_fork
+    fork.update!(
+      metadata: fork.metadata.merge(
+        "failure_reason" => "process_failed",
+        "exit_status" => "Resume failed and no prompt available for fresh start recovery"
+      )
+    )
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id, failed: true)
+
+    record = @source.reload.status_summary
+    assert_equal "failed", record.state
+    assert_equal(
+      "The summary fork failed: process_failed — Resume failed and no prompt available for fresh start recovery",
+      record.error
+    )
+    assert fork.reload.archived?
+  end
+
   test "a fork with no answer of its own records a failure" do
     fork = build_fork
     fork.update_column(:transcript, transcript_of("Ship the thing", "Opened the PR"))

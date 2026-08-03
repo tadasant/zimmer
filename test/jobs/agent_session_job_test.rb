@@ -5031,6 +5031,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Verify failure_reason was set
     assert_equal "process_failed", @session.metadata["failure_reason"]
     assert_equal "exit code: 2", @session.metadata["exit_status"]
+
+    log_contents = @session.logs.reload.map(&:content).join("\n")
+    assert_match(/Session job ended with failed session status: exit code: 2/, log_contents)
+    refute_match(/Session job completed successfully/, log_contents)
   end
 
   test "should set failure_reason to sigterm_retries_exhausted when SIGTERM retries are exhausted" do

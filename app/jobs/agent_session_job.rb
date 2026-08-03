@@ -1574,17 +1574,29 @@ class AgentSessionJob < ApplicationJob
       end
 
       job_type = follow_up_prompt.present? ? "Follow-up" : "Session"
-      log_buffer.add(
-        "#{job_type} job completed successfully",
-        level: "info"
-      )
-      log_buffer.add(
-        "[DIAGNOSTIC] Job completing normally for session #{session_id}",
-        level: "debug"
-      )
+      session.reload
+      if session.failed?
+        log_buffer.add(
+          "#{job_type} job ended with failed session status: #{session.metadata&.dig("exit_status").presence || session.metadata&.dig("failure_reason").presence || "unknown failure"}",
+          level: "warning"
+        )
+        log_buffer.add(
+          "[DIAGNOSTIC] Job completing after failed session #{session_id}",
+          level: "debug"
+        )
+      else
+        log_buffer.add(
+          "#{job_type} job completed successfully",
+          level: "info"
+        )
+        log_buffer.add(
+          "[DIAGNOSTIC] Job completing normally for session #{session_id}",
+          level: "debug"
+        )
+      end
       log_buffer.flush
 
-      # Clear running_job_id on successful completion
+      # Clear running_job_id when this job is no longer supervising a process.
       session.update!(running_job_id: nil)
 
     # NOTE: GoodJob::InterruptError is NOT caught here. GoodJob's InterruptErrors
