@@ -59,24 +59,36 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # The app image builds FROM ghcr.io/tadasant/zimmer-base:latest. Bootstrap it
-      # if it does not exist yet, so the first release (and any release before the
-      # "Build base image" workflow has ever run) does not fail with
-      # "zimmer-base:latest: not found". Once present it is reused; rebuild it via
-      # the monthly/manual "Build base image" workflow when Dockerfile.base changes.
+      # The app image builds FROM ghcr.io/tadasant/zimmer-base:latest. Rebuild it
+      # first when Dockerfile.base changed in this push, and bootstrap it if it
+      # does not exist yet, so the app image is built on the base image declared
+      # by the same commit.
       - name: Check for base image
         id: base
         run: |
           set -euo pipefail
+          BASE_CHANGED=false
+          BEFORE="${{ github.event.before }}"
+          if [ "$BEFORE" != "0000000000000000000000000000000000000000" ] &&
+             git rev-parse --verify "$BEFORE^{commit}" >/dev/null 2>&1 &&
+             git diff --name-only "$BEFORE" "${{ github.sha }}" -- Dockerfile.base | grep -q .; then
+            BASE_CHANGED=true
+          fi
+
           if docker buildx imagetools inspect ghcr.io/tadasant/zimmer-base:latest >/dev/null 2>&1; then
-            echo "need_base=false" >> "$GITHUB_OUTPUT"
-            echo "Base image present; reusing it."
+            if [ "$BASE_CHANGED" = true ]; then
+              echo "need_base=true" >> "$GITHUB_OUTPUT"
+              echo "Dockerfile.base changed; rebuilding base image before app image."
+            else
+              echo "need_base=false" >> "$GITHUB_OUTPUT"
+              echo "Base image present and Dockerfile.base unchanged; reusing it."
+            fi
           else
             echo "need_base=true" >> "$GITHUB_OUTPUT"
             echo "Base image missing; bootstrapping it from Dockerfile.base."
           fi
 
-      - name: Build & push base image (bootstrap, only if missing)
+      - name: Build & push base image
         if: steps.base.outputs.need_base == 'true'
         uses: docker/build-push-action@v6
         with:
@@ -91,6 +103,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          pull: true
           # Uses the Zimmer base image (Node/Playwright/gh/gems), ensured to exist by
           # the bootstrap step above. The Dockerfile defaults BASE_IMAGE to
           # ghcr.io/tadasant/zimmer-base:latest.
