@@ -15,6 +15,24 @@ class TranscriptTextRendererTest < ActiveSupport::TestCase
     assert_includes text, "hi back"
   end
 
+  test "renders normalized OpenTranscript message events" do
+    text = TranscriptTextRenderer.render([
+      {
+        type: OpenTranscript::Types::USER_MESSAGE,
+        content: [ OpenTranscript.text_part("List the files.") ]
+      },
+      {
+        type: OpenTranscript::Types::ASSISTANT_MESSAGE,
+        content: [ OpenTranscript.text_part("The directory contains README.md.") ]
+      }
+    ])
+
+    assert_includes text, "--- User ---"
+    assert_includes text, "List the files."
+    assert_includes text, "--- Assistant ---"
+    assert_includes text, "The directory contains README.md."
+  end
+
   # The bug this class exists to kill: `content` is frequently an array of
   # content blocks, and pushing it into the line list left `join` to `to_s` each
   # Hash into the output.
