@@ -97,7 +97,7 @@ class DeferredCloneCleanupJob < ApplicationJob
         with_db_retry do
           new_metadata = (session.reload.metadata || {}).merge("artifacts_path" => create_result.artifacts_path)
           session.update_columns(
-            trash_after: SessionStateMachine::TRASH_RETENTION_PERIOD.from_now,
+            trash_after: trash_deadline_for(session),
             metadata: new_metadata
           )
         end
@@ -154,10 +154,18 @@ class DeferredCloneCleanupJob < ApplicationJob
   def finalize_trash_expiry(session)
     with_db_retry do
       if durable_session_storage_exists?(session.id)
-        session.update_column(:trash_after, SessionStateMachine::TRASH_RETENTION_PERIOD.from_now)
+        session.update_column(:trash_after, trash_deadline_for(session))
       else
         session.update_column(:trash_after, nil)
       end
     end
+  end
+
+  # The retention window runs from the archive, not from whenever this job got
+  # to run. Normally that is a ten-second difference, but a backed-up queue or a
+  # retried job would otherwise silently extend retention past the deadline the
+  # session was told about (see OrchestratorSystemPromptBuilder#durable_scratch_line).
+  def trash_deadline_for(session)
+    (session.archived_at || Time.current) + SessionStateMachine::TRASH_RETENTION_PERIOD
   end
 end

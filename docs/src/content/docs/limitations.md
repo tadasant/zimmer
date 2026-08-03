@@ -1258,11 +1258,21 @@ durable against archive — but not indefinitely. The contract is:
 | Container restart, Kamal deploy | Survives (it is on the `zimmer_data` volume) |
 | Archive, then unarchive | Survives, contents intact |
 | Trash retention expires (`TRASH_RETENTION_PERIOD`, 4 days after archive) | Deleted by `EmptyTrashJob` |
-| Archived >1h with no `trash_after`, or failed >24h | Deleted by `StaleCloneCleanupJob` |
+| Archived >1h with no `trash_after`, or failed >24h, **and** the session recorded a `clone_path` | Deleted by `StaleCloneCleanupJob` |
+| The session row is hard-deleted | Never — see below |
 
 So a session can trust scratch for recovery state across an archive/unarchive round trip, and cannot
 trust it beyond four days in the trash. Prompt attachments (`FileStorageService`,
 `ImageStorageService`) are on the same schedule.
+
+Every reaper above is driven by a database query, and there is no filesystem-level sweep of the
+scratch base the way there is for the clones base. So a session row deleted outright — `DELETE
+/api/v1/sessions/:id`, which does no filesystem cleanup at all — orphans its scratch directory and
+prompt attachments on the volume permanently. The clone survives that because
+`OrphanCloneFilesystemCleanupJob` scans `ClonesDirectory.base`; scratch is deliberately a *sibling*
+of that base to stay out of the sweep, and nothing sweeps it instead. This predates the retention
+change and is not specific to archived sessions — a live session's scratch leaks the same way.
+Tracked in [#340](https://github.com/tadasant/zimmer/issues/340).
 
 The archive/unarchive half of that used to be false in the other direction:
 `DeferredCloneCleanupJob` deleted scratch about ten seconds after archive, and

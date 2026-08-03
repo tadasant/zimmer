@@ -15,9 +15,18 @@ class EmptyTrashJobTest < ActiveJob::TestCase
       trash_after: 1.day.ago,
       metadata: { "clone_path" => @clone_path }
     )
+
+    # The job now reaps the scratch base, so pin it to a tmpdir for every test
+    # in this file — otherwise the suite deletes out of the host's real
+    # ~/.zimmer/session-scratch.
+    @scratch_env = ENV["AGENT_SCRATCH_DIR"]
+    @scratch_base = Dir.mktmpdir("trash-scratch")
+    ENV["AGENT_SCRATCH_DIR"] = @scratch_base
   end
 
   teardown do
+    @scratch_env.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = @scratch_env
+    FileUtils.remove_entry(@scratch_base) if @scratch_base && Dir.exist?(@scratch_base)
     FileUtils.rm_rf(@clone_path) if @clone_path && File.directory?(@clone_path)
   end
 
@@ -65,21 +74,15 @@ class EmptyTrashJobTest < ActiveJob::TestCase
   end
 
   test "reaps the durable scratch dir when retention expires" do
-    original = ENV["AGENT_SCRATCH_DIR"]
-    Dir.mktmpdir("trash-scratch") do |scratch_base|
-      ENV["AGENT_SCRATCH_DIR"] = scratch_base
-      scratch_path = SessionScratchDirectory.ensure_for(@session.id)
-      File.write(File.join(scratch_path, "state.txt"), "cross-step state")
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    File.write(File.join(scratch_path, "state.txt"), "cross-step state")
 
-      EmptyTrashJob.perform_now
+    EmptyTrashJob.perform_now
 
-      assert_not Dir.exist?(scratch_path), "scratch dir should be deleted once retention expires"
+    assert_not Dir.exist?(scratch_path), "scratch dir should be deleted once retention expires"
 
-      log = @session.logs.find_by("content LIKE ?", "%scratch directory deleted%")
-      assert_not_nil log, "cleanup log should mention the scratch directory"
-    ensure
-      original.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = original
-    end
+    log = @session.logs.find_by("content LIKE ?", "%scratch directory deleted%")
+    assert_not_nil log, "cleanup log should mention the scratch directory"
   end
 
   test "reaps durable prompt attachments when retention expires" do
@@ -105,18 +108,11 @@ class EmptyTrashJobTest < ActiveJob::TestCase
 
   test "leaves the scratch dir alone while retention has not expired" do
     @session.update!(trash_after: 1.day.from_now)
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
 
-    original = ENV["AGENT_SCRATCH_DIR"]
-    Dir.mktmpdir("trash-scratch-unexpired") do |scratch_base|
-      ENV["AGENT_SCRATCH_DIR"] = scratch_base
-      scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    EmptyTrashJob.perform_now
 
-      EmptyTrashJob.perform_now
-
-      assert Dir.exist?(scratch_path), "scratch dir must survive until the trash deadline passes"
-    ensure
-      original.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = original
-    end
+    assert Dir.exist?(scratch_path), "scratch dir must survive until the trash deadline passes"
   end
 
   test "skips sessions where trash_after has not expired" do
