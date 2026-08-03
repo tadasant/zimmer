@@ -72,14 +72,19 @@ class Api::V1::SessionsController < Api::BaseController
   #   - title: Session title
   #   - slug: URL-friendly identifier
   #   - goal: High-level goal/stop-criteria for the session
-  #   - mcp_servers: Array of MCP server names (overrides agent_root's defaults if provided)
-  #   - catalog_skills: Array of skill names (overrides agent_root's defaults if provided)
-  #   - catalog_hooks: Array of hook names (overrides agent_root's defaults if provided)
-  #   - catalog_plugins: Array of plugin IDs (overrides agent_root's defaults if provided)
+  #   - mcp_servers: Array of MCP server names (overrides agent_root's defaults if provided;
+  #     an explicit [] means no servers, while omitting the key takes the root's defaults)
+  #   - catalog_skills: Array of skill names (same omitted-vs-[] rule as mcp_servers)
+  #   - catalog_hooks: Array of hook names (same omitted-vs-[] rule as mcp_servers)
+  #   - catalog_plugins: Array of plugin IDs (same omitted-vs-[] rule as mcp_servers)
   #   - config: Additional configuration (JSON)
   #   - custom_metadata: Custom user metadata (JSON)
   def create
     @session = Session.new(session_params.except(:agent_root))
+
+    # Recorded before save so the job starting moments later can tell a
+    # deliberate "no MCP servers" from a column that landed empty by accident.
+    @session.record_explicit_mcp_servers(@session.mcp_servers) if explicit_list_param?(:mcp_servers)
 
     # Resolve the runtime, the model, and — when agent_root was given — the
     # repository fields, through the shared param → root → AppSetting → hardcoded
@@ -615,6 +620,11 @@ class Api::V1::SessionsController < Api::BaseController
 
     old_servers = @session.mcp_servers || []
 
+    # Clearing the list has to be recorded as deliberate, or McpServerBackfill
+    # reads the empty column as an accident and restores the root's defaults the
+    # next time the config is regenerated.
+    @session.record_explicit_mcp_servers(mcp_servers)
+
     if @session.update(mcp_servers: mcp_servers)
       added = mcp_servers - old_servers
       removed = old_servers - mcp_servers
@@ -1068,6 +1078,13 @@ class Api::V1::SessionsController < Api::BaseController
     )
   end
 
+  # True when the request actually named this artifact list, empty or not. An
+  # array is the only thing that counts as naming one, so an explicit `[]` is a
+  # request for none while an absent key falls through to the root's defaults.
+  def explicit_list_param?(key)
+    session_params[key].is_a?(Array)
+  end
+
   # Resolve agent_root param to git_root and apply catalog defaults.
   # Explicit params (git_root, branch, subdirectory, mcp_servers, catalog_skills, catalog_hooks, catalog_plugins)
   # take precedence over agent root defaults.
@@ -1101,10 +1118,14 @@ class Api::V1::SessionsController < Api::BaseController
       @session.git_root = agent_root.url if @session.git_root.blank?
       @session.branch = agent_root.default_branch || "main" unless params[:branch].present?
       @session.subdirectory = agent_root.subdirectory if @session.subdirectory.blank? && agent_root.subdirectory.present?
-      @session.mcp_servers = agent_root.default_mcp_servers || [] if @session.mcp_servers.blank?
-      @session.catalog_skills = agent_root.default_skills || [] if @session.catalog_skills.blank?
-      @session.catalog_hooks = agent_root.default_hooks || [] if @session.catalog_hooks.blank?
-      @session.catalog_plugins = agent_root.default_plugins || [] if @session.catalog_plugins.blank?
+      # Only an OMITTED list falls back to the root's defaults. A `.blank?` test
+      # cannot tell omitted from explicitly-empty, so it overwrites an explicit
+      # `[]` with the defaults — handing a caller that asked for no MCP servers
+      # whatever the root declares, SSH access included.
+      @session.mcp_servers = agent_root.default_mcp_servers || [] unless explicit_list_param?(:mcp_servers)
+      @session.catalog_skills = agent_root.default_skills || [] unless explicit_list_param?(:catalog_skills)
+      @session.catalog_hooks = agent_root.default_hooks || [] unless explicit_list_param?(:catalog_hooks)
+      @session.catalog_plugins = agent_root.default_plugins || [] unless explicit_list_param?(:catalog_plugins)
       @session.metadata = (@session.metadata || {}).merge("agent_root_key" => agent_root_name)
     end
 

@@ -395,6 +395,74 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "test-root", session["metadata"]["agent_root_key"]
   end
 
+  # An omitted list takes the root's defaults; an explicit [] takes none. The two
+  # must not collapse — collapsing them is what handed spawns that asked for no
+  # servers whatever their root declared, SSH access included. JSON encoding is
+  # required here: a form-encoded empty array does not survive the round trip,
+  # so it could not express the case under test.
+  test "an explicit empty mcp_servers array creates a session with no servers" do
+    mock_agent_root = OpenStruct.new(
+      name: "test-root",
+      url: "https://github.com/test/correct-repo.git",
+      default_branch: "main",
+      subdirectory: nil,
+      default_mcp_servers: [ "context7" ],
+      default_skills: [],
+      default_model: "sonnet"
+    )
+    ServersConfig.stubs(:exists?).returns(true)
+
+    AgentRootsConfig.stub(:find!, ->(_name) { mock_agent_root }) do
+      post api_v1_sessions_path,
+        params: { agent_root: "test-root", prompt: "Least privilege", mcp_servers: [] }.to_json,
+        headers: @headers.merge("CONTENT_TYPE" => "application/json")
+    end
+
+    assert_response :created
+    session = Session.order(:id).last
+    assert_equal [], session.mcp_servers
+    # Recorded so McpServerBackfill doesn't restore the defaults at job start.
+    assert session.mcp_servers_explicitly_empty?
+  end
+
+  test "an omitted mcp_servers key still takes the root's default servers" do
+    mock_agent_root = OpenStruct.new(
+      name: "test-root",
+      url: "https://github.com/test/correct-repo.git",
+      default_branch: "main",
+      subdirectory: nil,
+      default_mcp_servers: [ "context7" ],
+      default_skills: [],
+      default_model: "sonnet"
+    )
+    ServersConfig.stubs(:exists?).returns(true)
+
+    AgentRootsConfig.stub(:find!, ->(_name) { mock_agent_root }) do
+      post api_v1_sessions_path,
+        params: { agent_root: "test-root", prompt: "Defaults please" }.to_json,
+        headers: @headers.merge("CONTENT_TYPE" => "application/json")
+    end
+
+    assert_response :created
+    session = Session.order(:id).last
+    assert_equal [ "context7" ], session.mcp_servers
+    refute session.mcp_servers_explicitly_empty?
+  end
+
+  test "clearing mcp_servers over the API records the choice as deliberate" do
+    ServersConfig.stubs(:exists?).returns(true)
+    session = sessions(:needs_input)
+    session.update!(mcp_servers: [ "context7" ])
+
+    patch mcp_servers_api_v1_session_path(session),
+      params: { mcp_servers: [] }.to_json,
+      headers: @headers.merge("CONTENT_TYPE" => "application/json")
+
+    assert_response :success
+    assert_equal [], session.reload.mcp_servers
+    assert session.mcp_servers_explicitly_empty?
+  end
+
   test "should return error for invalid agent_root" do
     AgentRootsConfig.stub(:find!, ->(name) {
       raise AgentRootsConfig::AgentRootNotFoundError, "Agent root '#{name}' not found in catalog"

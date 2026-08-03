@@ -395,6 +395,16 @@ class ForkSessionService
           "runtime_started" => true # Required for --resume mode on first follow-up
         }.merge(extra_metadata)
 
+        # The fork copies the source's server list verbatim, so it has to copy
+        # the reason that list is empty too. This metadata is built from scratch
+        # rather than inherited, so without carrying the marker across,
+        # McpServerBackfill reads the fork's empty column as an accident and
+        # restores the agent root's defaults — handing the fork exactly the
+        # servers the source declined.
+        if source_session.mcp_servers_explicitly_empty?
+          new_metadata[Session::EXPLICIT_EMPTY_MCP_SERVERS_KEY] = true
+        end
+
         # Create the forked session
         forked_session = Session.create!(
           agent_runtime: source_session.agent_runtime,

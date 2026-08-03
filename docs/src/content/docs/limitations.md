@@ -598,6 +598,24 @@ text. No validation, no trusted identifiers.
 
 Tracked in [#50](https://github.com/tadasant/zimmer/issues/50).
 
+### A trigger cannot spawn a session with zero MCP servers
+
+The three surfaces that create a session against a root directly — MCP `start_session`, `POST
+/api/v1/sessions`, and the new-session form — distinguish an omitted `mcp_servers` (take the root's
+defaults) from an explicit `[]` (take none). `Session.create_from_agent_root!` does not: `nil` and
+`[]` both inherit the root's defaults there.
+
+That is deliberate, not an oversight. `create_from_agent_root!` is what the dashboard quick prompt,
+the chat bubble, and every [trigger](/sessions/triggers/) spawn through, and a `Trigger`'s
+`mcp_servers` column is `default: [], null: false` — so `[]` is what an untouched trigger stores, not
+a request for none. Reading it as "no servers" would silently strip the servers from every existing
+trigger at once.
+
+The consequence is that a trigger whose root carries privileged defaults always spawns with them.
+There is no way to configure a least-privilege trigger short of giving its root narrower defaults, or
+having the spawned session clear its own list with `change_mcp_servers` after it starts — which is
+after the servers have already been wired for that run.
+
 ---
 
 ## Agent harness

@@ -177,4 +177,41 @@ class McpServerBackfillTest < ActiveSupport::TestCase
 
     assert_equal [ "digitalocean-tadasant", "tailscale-readwrite" ], lost.sort
   end
+
+  # backfill_default_mcp_servers_if_empty
+  #
+  # The heal exists for a column that landed empty because the catalog resolve
+  # was incomplete. It must not fire on an empty column that a caller chose.
+
+  test "backfills an empty mcp_servers column from the root's resolved defaults" do
+    @session.update!(mcp_servers: [])
+    @session.stubs(:agent_root_default_mcp_servers).returns([ "digitalocean-tadasant" ])
+
+    restored = @host.backfill_default_mcp_servers_if_empty(@session)
+
+    assert_equal [ "digitalocean-tadasant" ], restored
+    assert_equal [ "digitalocean-tadasant" ], @session.reload.mcp_servers
+  end
+
+  # The exact failure the documented workaround hit: change_mcp_servers([])
+  # returned "(none)", then the job started and the session came up holding the
+  # root's default again. On a root whose defaults carry SSH, that is prod access
+  # handed to a session that explicitly declined it.
+  test "leaves a session that explicitly asked for no MCP servers empty" do
+    @session.record_explicit_mcp_servers([])
+    @session.update!(mcp_servers: [])
+    @session.stubs(:agent_root_default_mcp_servers).returns([ "digitalocean-tadasant" ])
+
+    restored = @host.backfill_default_mcp_servers_if_empty(@session)
+
+    assert_nil restored
+    assert_equal [], @session.reload.mcp_servers
+  end
+
+  test "leaves a non-empty mcp_servers column untouched" do
+    @session.stubs(:agent_root_default_mcp_servers).returns([ "digitalocean-tadasant" ])
+
+    assert_nil @host.backfill_default_mcp_servers_if_empty(@session)
+    assert_equal [ "appsignal-pulsemcp-prod" ], @session.reload.mcp_servers
+  end
 end
