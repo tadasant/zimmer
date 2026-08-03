@@ -54,6 +54,7 @@ class HumanMessage < ApplicationRecord
   before_destroy do
     raise ActiveRecord::ReadOnlyRecord, "HumanMessage is read-only once recorded" unless destroyed_by_association
   end
+  after_create_commit -> { session.broadcast_provenance_change_to_hierarchy }
 
   # Renderers fall back to the raw key rather than dropping the record — a human
   # said it even if the roster has since changed.

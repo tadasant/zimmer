@@ -139,4 +139,44 @@ class HumanMessageTest < ActiveSupport::TestCase
 
     assert_equal %w[first second], @session.human_messages.chronological.map(&:content)
   end
+
+  test "creating a record refreshes provenance panels across the hierarchy" do
+    parent = Session.create!(
+      agent_runtime: "claude_code",
+      prompt: "parent",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      title: "Parent"
+    )
+    child = Session.create!(
+      agent_runtime: "claude_code",
+      prompt: "child",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      title: "Child",
+      parent_session_id: parent.id
+    )
+
+    broadcasts = []
+    Turbo::StreamsChannel.stubs(:broadcast_replace_to).with do |stream, **options|
+      broadcasts << [ stream, options ]
+      true
+    end
+
+    child.human_messages.create!(
+      author: "tadasant",
+      channel: HumanMessage::WEB_UI,
+      content: "human context for the child",
+      occurred_at: Time.current
+    )
+
+    parent_broadcast = broadcasts.find do |stream, options|
+      stream == "session_#{parent.id}_status" &&
+        options[:target] == "session_#{parent.id}_provenance"
+    end
+
+    assert parent_broadcast, "Expected parent provenance panel to refresh when a child records a human message"
+    assert_includes parent_broadcast.last[:html], "human context for the child"
+    assert_includes parent_broadcast.last[:html], "elsewhere"
+  end
 end

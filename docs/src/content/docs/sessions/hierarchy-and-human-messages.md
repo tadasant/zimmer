@@ -274,6 +274,9 @@ messages, badged `this session` or `elsewhere`, with a link to the authoring ses
 permalink where there is one. An empty record renders an explicit empty state explaining what absence
 means, rather than showing nothing.
 
+An open detail screen refreshes this panel when the hierarchy changes or when a human message is
+recorded anywhere in that hierarchy, so it does not stay pinned to the tree it rendered on first load.
+
 The panel header states **both** counts, always — `3 messages in this session · 0 elsewhere in the hierarchy`.
 A header that named only the first would describe a narrower search than the one that ran, and a
 reader would have no way to tell "nothing was said elsewhere" from "elsewhere was never looked at".
