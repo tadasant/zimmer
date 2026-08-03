@@ -1396,6 +1396,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     manager = create_manager
 
     manager.send(:release_stale_runtime_session_id!)
+    @log_buffer.flush
 
     assert_nil @session.reload.session_id,
       "the dead rollout id must be released so the locator falls back to the clone path"

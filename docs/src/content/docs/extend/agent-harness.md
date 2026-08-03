@@ -229,8 +229,6 @@ classifier, not the recovery.
 
 Other known gaps:
 
-- Shared code still says "Claude." `TranscriptPollerService` logs *"Waiting for Claude CLI to
-  create transcript directory…"* for every runtime.
 - `ELICITATION_SESSION_ID` is Claude-only — elicitations
   [silently no-op on Codex](/sessions/elicitation/#known-problems).
 - `Zimmer::ExtensionRegistry.spawn_env_contributions` is Claude-only — extension env contributions are

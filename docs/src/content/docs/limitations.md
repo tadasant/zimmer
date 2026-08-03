@@ -810,8 +810,10 @@ Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 
 ### Shared code still says "Claude"
 
-`TranscriptPollerService` logs *"Waiting for Claude CLI to create transcript directory…"* for every
-runtime. `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
+`SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
+
+`TranscriptPollerService`'s waiting log now names the session's own runtime via
+`RuntimeRegistry.label_for`, so it no longer tells a Codex session to wait on the Claude CLI.
 
 Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 
