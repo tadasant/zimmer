@@ -22,7 +22,9 @@ class QueueRecoveryModeExpiryJobTest < ActiveSupport::TestCase
   end
 
   test "lifts a halt whose window has elapsed" do
-    travel_to Time.utc(2026, 8, 3, 12, 0, 0) { QueueRecoveryMode.enter!(ttl: 10.minutes) }
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(ttl: 10.minutes)
+    end
 
     travel_to Time.utc(2026, 8, 3, 12, 11, 0) do
       QueueRecoveryModeExpiryJob.perform_now
@@ -32,7 +34,9 @@ class QueueRecoveryModeExpiryJobTest < ActiveSupport::TestCase
   end
 
   test "leaves a live window alone" do
-    travel_to Time.utc(2026, 8, 3, 12, 0, 0) { QueueRecoveryMode.enter!(ttl: 60.minutes) }
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(ttl: 60.minutes)
+    end
 
     travel_to Time.utc(2026, 8, 3, 12, 5, 0) do
       QueueRecoveryModeExpiryJob.perform_now
