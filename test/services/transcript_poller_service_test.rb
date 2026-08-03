@@ -667,15 +667,37 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     # Carrying over slices JSONL lines out of a String. The legacy format stores
     # one event per Array element, and slicing `.to_s` of an Array would splice
     # Ruby's inspect output into the transcript.
-    _stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2)
+    # carryover_count must be non-zero for this to discriminate: with a count of 0
+    # extract_carryover returns "" regardless of the transcript's type, so the
+    # assertion would pass against unguarded code too.
+    _stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2, carryover_count: 2)
     @session.update!(transcript: [ { "type" => "user" }, { "type" => "assistant" } ])
     service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
     updates = {}
 
     carryover = service.send(:carryover_prefix, "/live/rollout-new.jsonl", live, updates)
 
-    assert_equal "", carryover
-    assert_empty updates
+    assert_equal "", carryover, "an Array transcript must never be sliced as text"
+    assert_nil updates["transcript_carryover_event_count"]
+  end
+
+  test "carryover_prefix records the transcript source path on a session's first poll" do
+    # The path stamp is what later polls compare against to tell a rotation from a
+    # short read of the same file. Skipping it while the transcript is still nil
+    # would leave the next short read with nothing to compare against, and it would
+    # be misread as a rotation — duplicating history.
+    @session.update!(
+      agent_runtime: "codex",
+      transcript: nil,
+      metadata: { "working_directory" => "/tmp/codex-clone" }
+    )
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    updates = {}
+
+    carryover = service.send(:carryover_prefix, "/live/rollout-first.jsonl", codex_rollout_line("first"), updates)
+
+    assert_equal "", carryover, "there is no history to carry on a first poll"
+    assert_equal "/live/rollout-first.jsonl", updates["transcript_source_path"]
   end
 
   test "carryover_prefix clears the stale regression marker once history is whole again" do
