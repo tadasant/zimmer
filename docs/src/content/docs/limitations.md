@@ -1248,6 +1248,34 @@ entry. Nothing retries it later.
 
 Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
 
+### A session's scratch directory survives archive, but only for the trash window
+
+The [scratch directory](/sessions/spawning/) is durable against restarts and deploys, and it is
+durable against archive — but not indefinitely. The contract is:
+
+| Event | Scratch directory |
+| --- | --- |
+| Container restart, Kamal deploy | Survives (it is on the `zimmer_data` volume) |
+| Archive, then unarchive | Survives, contents intact |
+| Trash retention expires (`TRASH_RETENTION_PERIOD`, 4 days after archive) | Deleted by `EmptyTrashJob` |
+| Archived >1h with no `trash_after`, or failed >24h | Deleted by `StaleCloneCleanupJob` |
+
+So a session can trust scratch for recovery state across an archive/unarchive round trip, and cannot
+trust it beyond four days in the trash. Prompt attachments (`FileStorageService`,
+`ImageStorageService`) are on the same schedule.
+
+The archive/unarchive half of that used to be false in the other direction:
+`DeferredCloneCleanupJob` deleted scratch about ten seconds after archive, and
+`UnarchiveSessionService` had no restore path for it, so an unarchived session resumed with an empty
+directory and no way to tell it apart from one it had never written to. Fixed in
+[#323](https://github.com/tadasant/zimmer/issues/323) by moving the deletion to `EmptyTrashJob`,
+which reaps at the trash deadline.
+
+The remaining sharp edge is the last row: a session that fails and is left alone for 24 hours loses
+its scratch directory while still being resumable. That window is deliberate — abandoned failed
+sessions would otherwise accumulate on the volume forever — but it is shorter than the four days an
+archived session gets.
+
 ### Human messages are not backfilled, and cannot be
 
 `human_messages` starts empty. Every session that existed before this shipped shows no human

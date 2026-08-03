@@ -10,6 +10,10 @@
 # SessionStateMachine::TRASH_RETENTION_PERIOD (4 days) so they can be restored on
 # unarchive. Clean clones are deleted immediately with no retention period.
 #
+# This job only reaps the clone. The session's scratch directory and prompt
+# attachments are held for the full reversible window and reaped by EmptyTrashJob
+# — see DurableSessionStorage for why.
+#
 # The job checks that:
 # 1. The session is still archived (not undone)
 # 2. The archived_at timestamp matches what was set when we scheduled the job
@@ -17,6 +21,7 @@
 #
 class DeferredCloneCleanupJob < ApplicationJob
   include DatabaseRetry
+  include DurableSessionStorage
   queue_as :default
 
   # Delay before cleanup runs (should be longer than the undo window)
@@ -59,26 +64,18 @@ class DeferredCloneCleanupJob < ApplicationJob
       return
     end
 
-    # Reclaim the durable per-session scratch directory. It holds only
-    # reconstructable cross-step state, so it is deleted outright (not preserved
-    # like clone artifacts). Runs whenever we've committed to reaping this
-    # archived session, regardless of which clone-cleanup path is taken below.
-    SessionScratchDirectory.cleanup_for(session_id)
-
-    # Reclaim durable prompt-attachment storage (files + images) on the same
-    # lifecycle. It now lives on the shared ~/.zimmer volume (see
-    # FileStorageService.storage_root), so container recreation no longer wipes
-    # it and it must be reaped explicitly to avoid unbounded growth.
-    FileStorageService.cleanup_for(session_id)
-    ImageStorageService.cleanup_for(session_id)
+    # The scratch directory and prompt attachments are deliberately NOT touched
+    # here. Only the clone is reconstructable at the end of the undo window;
+    # that state is not, and unarchive has nothing to restore it from. It is
+    # held for the reversible window and reaped by EmptyTrashJob at the trash
+    # deadline instead — see DurableSessionStorage.
 
     # Perform the actual cleanup
     clone_path = session.metadata&.dig("clone_path")
 
     unless clone_path && File.directory?(clone_path)
       Rails.logger.info "[DeferredCloneCleanupJob] Session #{session_id} has no clone to clean up"
-      # Clear trash_after since there's nothing to preserve
-      session.update_column(:trash_after, nil)
+      finalize_trash_expiry(session)
       return
     end
 
@@ -112,10 +109,7 @@ class DeferredCloneCleanupJob < ApplicationJob
       end
     else
       Rails.logger.info "[DeferredCloneCleanupJob] Session #{session_id} is clean, no artifacts to preserve"
-      # No artifacts needed — clear trash_after since there's nothing to retain
-      with_db_retry do
-        session.update_column(:trash_after, nil)
-      end
+      finalize_trash_expiry(session)
     end
 
     # Tear down Docker Compose resources before removing the clone directory.
@@ -147,5 +141,23 @@ class DeferredCloneCleanupJob < ApplicationJob
     Rails.logger.error "[DeferredCloneCleanupJob] Error cleaning up session #{session_id}: #{e.class} - #{e.message}"
     Rails.logger.error "Backtrace: #{e.backtrace.first(5).join("\n")}" if e.backtrace
     raise # Re-raise to trigger job retry
+  end
+
+  private
+
+  # Decide whether this session still needs a trash deadline once the clone is
+  # gone. trash_after is what makes EmptyTrashJob find the session later and
+  # what keeps StaleCloneCleanupJob's one-hour sweep off it, so it may only be
+  # cleared when nothing restorable is left on disk. A scratch directory or
+  # prompt attachments outlive the undo window, so they hold the deadline open
+  # for the full reversible window even when the clone was clean.
+  def finalize_trash_expiry(session)
+    with_db_retry do
+      if durable_session_storage_exists?(session.id)
+        session.update_column(:trash_after, SessionStateMachine::TRASH_RETENTION_PERIOD.from_now)
+      else
+        session.update_column(:trash_after, nil)
+      end
+    end
   end
 end

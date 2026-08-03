@@ -80,10 +80,17 @@ class OrchestratorSystemPromptBuilder
   # that is mid-run when a deploy lands loses everything under `/tmp`. This
   # directory lives on the durable clones volume and survives restarts/deploys,
   # and is also exported to the process as the AO_SESSION_SCRATCH_DIR env var.
+  #
+  # It also survives archive for as long as archive is undoable: it is reaped at
+  # the trash deadline by EmptyTrashJob, not when the undo window closes. The
+  # line states that window explicitly so a session knows how long it can trust
+  # the directory for recovery state.
   def durable_scratch_line
     scratch_path = SessionScratchDirectory.path_for(@session.id)
     "- Durable scratch directory (also in $AO_SESSION_SCRATCH_DIR): #{scratch_path} " \
       "— use this for any on-disk state that must survive a restart/deploy. " \
+      "It also survives archive and is intact on unarchive, until the session's trash " \
+      "retention expires (#{SessionStateMachine::TRASH_RETENTION_PERIOD.inspect} after archive). " \
       "Do NOT use /tmp for cross-step state; /tmp is ephemeral and wiped on container recreation."
   end
 

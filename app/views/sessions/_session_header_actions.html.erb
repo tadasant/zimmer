@@ -99,11 +99,11 @@
       Restore
     <% end %>
     <% if agent_session.trash_after.present? %>
-      <span class="text-xs text-gray-500" title="Clone will be permanently deleted after this date">
+      <span class="text-xs text-gray-500" title="Everything held for a restore — preserved clone artifacts, the scratch directory, prompt attachments — is permanently deleted after this date">
         <% if agent_session.trash_after > Time.current %>
           Expires <%= distance_of_time_in_words(Time.current, agent_session.trash_after) %> from now
         <% else %>
-          Clone deletion pending
+          Deletion pending
         <% end %>
       </span>
     <% end %>

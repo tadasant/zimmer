@@ -31,7 +31,7 @@
   <% end %>
   <% scratch_path = SessionScratchDirectory.path_for(agent_session.id) %>
   <div class="flex items-center gap-1" data-controller="clipboard"
-       title="Durable per-session scratch directory (also exported as $AO_SESSION_SCRATCH_DIR). Survives restarts/deploys — unlike /tmp.">
+       title="Durable per-session scratch directory (also exported as $AO_SESSION_SCRATCH_DIR). Survives restarts/deploys and an archive/unarchive round trip — unlike /tmp. Deleted when trash retention expires.">
     <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
       <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
     </svg>
