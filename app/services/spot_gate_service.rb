@@ -7,12 +7,15 @@
 # A spot session starts while BOTH windows are forecast to stay under their
 # configured ceiling:
 #
-#     forecast = utilization now + (rate × sessions running × hours left in window)
+#     forecast = utilization now + (rate × sessions × hours left in window)
 #
 # `utilization now` comes from the pool's live snapshots. `rate` is
 # ClaudeUsageRateService's per-session-hour figure. `hours left` is the time to
-# the window's own reset. So the forecast answers: if the current fleet keeps
-# running at the current burn, where does this window land by the time it resets?
+# the window's own reset. `sessions` is the running fleet **plus the session
+# being asked about** — the question a gate answers is "if I start this, where
+# does the window land", and the fleet does not include it yet. So the forecast
+# answers: if this session and everything already running keep burning at the
+# current rate, where does this window sit by the time it resets?
 #
 # Priority sessions are never consulted about any of this. They start.
 #
@@ -85,19 +88,30 @@ class SpotGateService
   class << self
     # Whether `session` may start now. Priority sessions short-circuit without
     # touching the database beyond their own genesis.
+    #
+    # `candidate_sessions: 1` counts the session being asked about. The question
+    # a gate answers is "if I start THIS, where does the window land" — and the
+    # fleet does not include it yet, so forecasting off the running count alone
+    # understates by exactly one session. With nothing else running that
+    # understatement is total: the forecast would equal current utilization and
+    # the first spot session would start however steep the burn rate.
     def allow_start?(session)
       return true unless session.spot?
 
-      evaluate.allowed?
+      evaluate(candidate_sessions: 1).allowed?
     end
 
-    def evaluate(now: Time.current)
-      new(now: now).evaluate
+    # `candidate_sessions` is 0 for the informational read on /settings and over
+    # MCP — that describes the fleet as it stands, which is what an operator
+    # looking at a dashboard means by "the forecast".
+    def evaluate(now: Time.current, candidate_sessions: 0)
+      new(now: now, candidate_sessions: candidate_sessions).evaluate
     end
   end
 
-  def initialize(now: Time.current)
+  def initialize(now: Time.current, candidate_sessions: 0)
     @now = now
+    @candidate_sessions = candidate_sessions
   end
 
   def evaluate
@@ -123,7 +137,7 @@ class SpotGateService
       return allow("no_snapshot", "No Claude Code quota reading available to forecast from.", rate: rate)
     end
 
-    sessions = ClaudeUsageRateService.active_session_count
+    sessions = ClaudeUsageRateService.active_session_count + @candidate_sessions
 
     five_hour = forecast(
       current: ClaudeAccountQuotaSnapshot.effective_utilization(snapshot.utilization_5h, snapshot.reset_5h),
