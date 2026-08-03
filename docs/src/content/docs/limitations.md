@@ -1277,20 +1277,20 @@ durable against archive — but not indefinitely. The contract is:
 | Archive, then unarchive | Survives, contents intact |
 | Trash retention expires (`TRASH_RETENTION_PERIOD`, 4 days after archive) | Deleted by `EmptyTrashJob` |
 | Archived >1h with no `trash_after`, or failed >24h, **and** the session recorded a `clone_path` | Deleted by `StaleCloneCleanupJob` |
-| The session row is hard-deleted | Never — see below |
+| The session row is hard-deleted | Deleted with the row, by `Session#reclaim_session_directories` |
 
 So a session can trust scratch for recovery state across an archive/unarchive round trip, and cannot
 trust it beyond four days in the trash. Prompt attachments (`FileStorageService`,
 `ImageStorageService`) are on the same schedule.
 
-Every reaper above is driven by a database query, and there is no filesystem-level sweep of the
-scratch base the way there is for the clones base. So a session row deleted outright — `DELETE
-/api/v1/sessions/:id`, which does no filesystem cleanup at all — orphans its scratch directory and
-prompt attachments on the volume permanently. The clone survives that because
-`OrphanCloneFilesystemCleanupJob` scans `ClonesDirectory.base`; scratch is deliberately a *sibling*
-of that base to stay out of the sweep, and nothing sweeps it instead. This predates the retention
-change and is not specific to archived sessions — a live session's scratch leaks the same way.
-Tracked in [#340](https://github.com/tadasant/zimmer/issues/340).
+Every reaper in that table is driven by a database query, so a row deleted outright used to orphan
+its scratch directory and prompt attachments on the volume permanently — nothing that could find
+them was left. [#340](https://github.com/tadasant/zimmer/issues/340) closed that with an
+`after_destroy_commit` on `Session` plus a filesystem-level
+[orphan sweep](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) over the
+three per-session roots, the equivalent of what `ClonesDirectory.base` has always had. The sweep
+runs hourly and ignores anything younger than `ORPHAN_AGE_THRESHOLD`, so a delete that skips the
+callback costs a couple of hours rather than forever.
 
 The archive/unarchive half of that used to be false in the other direction:
 `DeferredCloneCleanupJob` deleted scratch about ten seconds after archive, and
@@ -1303,6 +1303,20 @@ The remaining sharp edge is the last row: a session that fails and is left alone
 its scratch directory while still being resumable. That window is deliberate — abandoned failed
 sessions would otherwise accumulate on the volume forever — but it is shorter than the four days an
 archived session gets.
+
+### An abandoned pre-session upload is never reclaimed
+
+Attachments picked in the new-session form are stored under a `temp_<uuid>` directory before a
+session exists, and moved to the session's own directory when it is created. Every path that
+reclaims one runs after a form submission — so an upload whose form is never submitted (the tab
+closed, the draft abandoned) keeps its bytes on the durable volume with nothing left to trigger the
+move or the cleanup.
+
+The [orphan sweep](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) that
+reclaims a deleted session's directories deliberately does not take these: it establishes ownership
+by looking the directory name up as a session id, and a `temp_<uuid>` has no id to look up. Sweeping
+one on age alone would delete an upload a user is still composing with. The bytes are bounded by the
+500 MB per-file cap and nothing else.
 
 ### Human messages are not backfilled, and cannot be
 
