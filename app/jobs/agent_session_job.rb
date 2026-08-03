@@ -941,7 +941,18 @@ class AgentSessionJob < ApplicationJob
         # already in use" errors from the Claude CLI.
         session.reload
         runtime_previously_started = session.metadata&.dig("runtime_started") == true
-        is_resume = runtime_previously_started && (follow_up_prompt.present? || reusing_existing_clone)
+        # A resume needs an id to resume INTO. `session_id` is nil for a window after
+        # a failed-resume fresh start on a runtime that mints its own id: Codex's new
+        # rollout UUID is not known until transcript polling reads it back, and
+        # ProcessLifecycleManager#release_stale_runtime_session_id! drops the dead one
+        # rather than leave the poller chasing a rollout that will never grow. Without
+        # this guard a follow-up landing inside that window builds
+        # `codex exec resume <nil>` and dies on a nil argv entry; with it, the
+        # follow-up spawns fresh and carries its prompt, which is what a resume with
+        # no target should degrade to anyway.
+        is_resume = runtime_previously_started &&
+          session.session_id.present? &&
+          (follow_up_prompt.present? || reusing_existing_clone)
 
         # Log the resume decision for debugging (helps diagnose "Session ID already in use" errors)
         log_buffer.add(

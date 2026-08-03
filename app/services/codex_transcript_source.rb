@@ -137,6 +137,21 @@ class CodexTranscriptSource < TranscriptSource
     []
   end
 
+  # @see TranscriptSource#rotates_transcript_files?
+  #
+  # Codex rollouts are append-only and immutable: a rollout file is written once,
+  # only ever grows, and is finally compressed in place. `codex exec` mints a NEW
+  # rollout UUID for every non-resumed run, so when a resume fails and Zimmer
+  # fresh-starts the turn (ProcessLifecycleManager#handle_failed_resume_recovery)
+  # the conversation continues in a brand-new, initially tiny file.
+  #
+  # A shorter read therefore never means "we lost history" — it means "we are now
+  # reading the next rollout", and everything in it is conversation the user has
+  # not seen.
+  def rotates_transcript_files?
+    true
+  end
+
   private
 
   # Select a rollout before this session's own Codex UUID has been captured.

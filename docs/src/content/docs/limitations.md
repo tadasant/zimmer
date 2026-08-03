@@ -772,6 +772,22 @@ without.
 
 Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 
+### A fresh-started Codex session has no runtime id until its first poll
+
+After a failed resume, `ProcessLifecycleManager#release_stale_runtime_session_id!` clears
+`sessions.session_id` so transcript polling stops chasing the abandoned rollout. Codex mints the
+replacement UUID itself, and Zimmer only learns it when `capture_runtime_session_id!` reads it off
+the new rollout — a window of one poll interval where the session has no runtime id at all.
+
+Inside that window `is_resume` is forced false (`AgentSessionJob` requires `session_id.present?`),
+so a follow-up arriving right then spawns fresh and carries its prompt instead of resuming. That is
+the correct degradation — a resume with no target cannot work — but it is a turn that restarts
+rather than continues, and the user sees the prompt replayed in the timeline.
+
+Reattachment also depends on `CodexTranscriptSource#fallback_transcript` matching the rollout's
+recorded `cwd` against the session's `working_directory`. A session whose clone moves in the same
+window has no way to find its own rollout and waits until one appears.
+
 ### The approval gate can only be verified as far as Zimmer's own doorstep
 
 `CliSpawnEnv#apply_elicitation_env` gives both runtimes `ELICITATION_REQUEST_URL` and
@@ -794,8 +810,10 @@ Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 
 ### Shared code still says "Claude"
 
-`TranscriptPollerService` logs *"Waiting for Claude CLI to create transcript directory…"* for every
-runtime. `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
+`SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
+
+`TranscriptPollerService`'s waiting log now names the session's own runtime via
+`RuntimeRegistry.label_for`, so it no longer tells a Codex session to wait on the Claude CLI.
 
 Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 
