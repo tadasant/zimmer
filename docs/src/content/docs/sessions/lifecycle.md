@@ -75,7 +75,9 @@ transition, and it does seven things beyond changing status:
    `custom_metadata["github_pull_request_urls"]` is still empty, write one `warning` log to the
    timeline. `GithubPrUrlHook` only records a PR it can see the session open, and an empty list is
    otherwise indistinguishable from "no PR to record" — see
-   [transcript hooks](/extend/transcript-hooks/). Once per session, never raises.
+   [transcript hooks](/extend/transcript-hooks/). Never raises, and once per **session**, not once
+   per event: `fail` and `archive` call it too, and the dedup is on the warning log itself, so a
+   session that pauses, warns, and later archives says it once.
 2. `cleanup_running_job` — clears `running_job_id`.
 3. `fire_ao_event_triggers("session_needs_input")` — wakes anything watching this session.
 4. `enqueue_debounced_needs_input_push_notification` — see below.
@@ -153,10 +155,26 @@ event. A silent status flip would be worse than an unwanted push.
 A status-summary fork that fails is harvested (recording the failure on the source session's
 summary) instead of notifying, exactly as on `pause`.
 
+It also runs `warn_if_pr_goal_captured_no_url`, last in the callback so nothing above it can be
+skipped. A session that dies mid-turn never reaches `pause`, so a PR it opened and never named
+would be recorded nowhere at all ([#313](https://github.com/tadasant/zimmer/issues/313)).
+
 ### `archive` — any state → `archived`
 
 Sets `archived_at`, dismisses notifications, fires `session_archived` triggers, cleans up
-triggers watching this session, and sets a trash expiry.
+triggers watching this session, sets a trash expiry, and — last, for the same reason as on
+`fail` — runs `warn_if_pr_goal_captured_no_url`. A session trashed straight from `needs_input`
+is one nobody is coming back to, so this is where a PR opened and never recorded gets said out
+loud.
+
+Neither this nor `fail` is literally terminal — `resume` runs from `failed` and the three
+`unarchive_to_*` events from `archived` — so the warning keeps `pause`'s point-in-time honesty:
+it says what was true when it was written ("no PR URL **yet**") and, because the dedup is
+once-per-session, it is not retracted if the session is later revived and does open one.
+
+Status-summary forks are carved out inside the hook rather than at the call site. The generator
+strips the goal a fork inherits, but only in `prepare_fork` — a fork abandoned before that point
+still carries the source's "open a PR", so the goal check alone would not have covered it.
 
 The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a short undo
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
