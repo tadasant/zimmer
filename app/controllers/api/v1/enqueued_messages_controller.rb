@@ -96,6 +96,11 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
 
     ActiveRecord::Base.transaction do
       @enqueued_message.destroy!
+      # A bulk decrement transiently puts two rows on the same position unless
+      # the planner happens to visit them in ascending order, and nothing here
+      # pins that order. This is correct only because uniqueness on
+      # (session_id, position) is DEFERRABLE INITIALLY DEFERRED, so the check
+      # runs once at commit against the final state.
       @session.enqueued_messages
               .where("position > ?", position)
               .update_all("position = position - 1")
