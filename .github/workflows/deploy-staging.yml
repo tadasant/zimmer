@@ -41,6 +41,18 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
+      # The self-hosted host runs many runner workers as one OS user, so the
+      # default ~/.docker is shared mutable state across concurrently-running
+      # jobs (see the "Set up Buildx" comment below). Give this job its own.
+      # Exported via $GITHUB_ENV rather than job-level `env:` because the
+      # `runner` context is not available there and would expand to "".
+      - name: Isolate Docker client state for this job
+        run: |
+          cfg="${RUNNER_TEMP}/docker-config"
+          rm -rf "$cfg"
+          mkdir -p "$cfg"
+          echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
+
       - name: Resolve image tag
         id: img
         run: echo "tag=staging-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
@@ -52,12 +64,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `docker buildx create --use` records the chosen builder in a single
+      # current-builder file under $DOCKER_CONFIG, and build-push-action reads
+      # that file to decide which builder to build on. With the shared default
+      # config dir, a concurrent job's `--use` steals it: this job then builds
+      # on the other job's buildkit container, and when that job ends its post
+      # step's `docker buildx rm` kills the container mid-build ("graceful_stop"
+      # GOAWAY, then `no builder "<other-uuid>" found`). The per-job
+      # DOCKER_CONFIG above stops the theft; `builder:` below makes each build
+      # name its own builder explicitly so it can never be inferred wrong.
       - name: Set up Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build & push base image
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: Dockerfile.base
           push: true
@@ -68,6 +91,7 @@ jobs:
       - name: Build & push app image
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           build-args: |
             BASE_IMAGE=ghcr.io/tadasant/zimmer-base:staging
