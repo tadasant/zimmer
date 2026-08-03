@@ -318,6 +318,14 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
     assert_equal [], @source.mcp_log_paths(working_directory: nil)
   end
 
+  # === rotates_transcript_files? ===
+
+  test "rotates_transcript_files? is true because Codex mints a new rollout per run" do
+    # Rollouts are append-only and never truncated, so a shorter read means the
+    # poller moved to the next rollout — new conversation, not lost history.
+    assert @source.rotates_transcript_files?
+  end
+
   private
 
   # Capture everything written to Rails.logger during the block as a String so

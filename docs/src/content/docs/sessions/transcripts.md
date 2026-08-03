@@ -60,11 +60,51 @@ drop the user's prompt.
 
 That guard existing tells you the underlying condition happens.
 
+## Rotation: when a shorter file is *new*, not lost
+
+The guard above assumes one canonical transcript file per session, which is true for Claude Code
+and false for Codex. Codex rollouts are append-only and immutable, and `codex exec` mints a **new**
+rollout UUID for every run that is not a resume — so when a resume fails and Zimmer fresh-starts
+the turn, the conversation continues in a brand-new, initially tiny file.
+
+`TranscriptSource#rotates_transcript_files?` is what tells the two apart: `false` for Claude
+(shorter means *lost*, refuse and repair), `true` for Codex (shorter means *next file*, carry
+history forward).
+
+On a rotation the poller folds the whole stored transcript into an immutable prefix and records
+its length in `metadata["transcript_carryover_event_count"]`, alongside
+`metadata["transcript_source_path"]`. Later polls re-derive the prefix as the first N lines of
+what is stored — the stored transcript is always `carryover + live` — so the timeline reads as one
+continuous conversation across any number of rotations. Requiring the *path* to change is what
+keeps a partially flushed read of the same file from duplicating history.
+
+:::caution[This was a real freeze, not a theoretical one]
+Before rotation was handled, a fresh-started Codex session went permanently silent. The live
+rollout was shorter than `broadcast_message_count`, so `new_messages[broadcast_count..]` returned
+`nil` and nothing broadcast; the regression guard refused to persist and flagged
+`transcript_regression_detected` once, silencing the log too. Nothing cleared that state, so the
+session streamed stale content until a deploy recreated the clone — which is why sessions appeared
+frozen for tens of minutes and then caught up all at once.
+:::
+
+The other half of the same failure is the id the poller looks the file up by. Codex mints its own
+rollout UUID, so after a fresh start the stored `session_id` names an abandoned rollout;
+`ProcessLifecycleManager#release_stale_runtime_session_id!` drops it so
+`CodexTranscriptSource#find_main_transcript` falls back to matching on the session's clone path and
+finds the live rollout. Without that, the locator kept returning the dead file and
+`capture_runtime_session_id!` could never learn the new UUID — it reads that UUID from a file the
+locator would never hand it.
+
 ## Broadcast bookkeeping
 
 The poller only broadcasts `new_messages[broadcast_count..]`, where `broadcast_count` comes from
 `metadata["broadcast_message_count"]` (recomputed from the stored transcript when nil). This is
 what prevents the entire transcript from replaying into your browser on every poll.
+
+Note the sharp edge in that expression: Ruby returns `nil`, not `[]`, when the index is past the
+end of the array. Any change that can make the parsed transcript *shorter* than `broadcast_count`
+therefore stops the timeline dead rather than degrading — which is exactly how the rotation bug
+above stayed invisible.
 
 There is also an ownership guard: the poller skips if `session.running_job_id != job_id`,
 which is what stops two monitoring jobs from double-broadcasting the same session.
