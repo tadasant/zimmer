@@ -37,7 +37,12 @@ class SpotSessionHold
     def hold_if_needed(session, log_buffer: nil, images: nil, files: nil)
       return false unless session.spot?
 
-      decision = SpotGateService.evaluate
+      # candidate_sessions: 1 — the same forecast SpotGateService.allow_start?
+      # makes. This is a start decision, so it has to count the session it is
+      # deciding about; the argument-free evaluate is the informational reading
+      # for /settings and would let every spot session through whenever the
+      # running fleet happened to be empty.
+      decision = SpotGateService.evaluate(candidate_sessions: 1)
       if decision.allowed?
         clear(session)
         return false

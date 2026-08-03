@@ -18,6 +18,32 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     Session.create!(git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis, status: :waiting)
   end
 
+  # Regression: the hold path and SpotGateService.allow_start? must make the SAME
+  # forecast. When hold_if_needed called the argument-free evaluate, it used the
+  # informational reading — which excludes the candidate — so a session
+  # allow_start? refused was never actually held, and the gate did nothing.
+  test "the hold path makes the same decision as allow_start?" do
+    account = ClaudeAccount.create!(email: "hold-parity@example.com", runtime: "claude_code",
+                                    oauth_config: { "x" => 1 }, is_current: true)
+    now = Time.current
+    util = 0.66
+    [ 120, 90, 60, 30 ].each do |mins|
+      ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: util, utilization_7d: 0.10,
+        reset_5h: now + 2.hours, reset_7d: now + 2.days, active_session_count: 1,
+        trigger: "usage_sample", created_at: now - mins.minutes)
+      util += 0.02
+    end
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: 0.74, utilization_7d: 0.10,
+      reset_5h: now + 2.hours, reset_7d: now + 2.days, active_session_count: 1,
+      trigger: "usage_sample", created_at: now)
+    @setting.update!(spot_gating_enabled: true,
+                     spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    refute SpotGateService.allow_start?(session)
+    assert SpotSessionHold.hold_if_needed(session), "hold_if_needed must hold what allow_start? refuses"
+  end
+
   test "a priority session is never held" do
     session = build_session(SessionGenesis::WEB_UI)
     SpotGateService.stub(:evaluate, held_decision) do
