@@ -35,6 +35,8 @@ module Mcp
 
       PLUGINS_DESC = 'List of plugin names to enable for this session. Plugins extend agent capabilities with additional integrations. Example: ["my-plugin"]'
 
+      HOOKS_DESC = 'List of catalog hook IDs to enable for this session. Hooks are shell commands the agent runtime fires on lifecycle events, so a hook that is noise for the task is worth dropping. Omitting hooks takes the agent root\'s default_hooks; pass [] to attach none. Example: ["git-push-ci-reminder"]'
+
       CONFIG_DESC = <<~TEXT.strip
         Additional configuration as a JSON object. Use `config.model` to choose the agent model for this session (e.g. {"model": "gpt-5.6-terra"} for a codex runtime, or {"model": "fable"} for claude_code). The model must be valid for the resolved agent_runtime; call get_configs to see each agent root's default_model. When omitted, the session uses the agent root's default_model, then the global session default configured on the Settings page, then the runtime's catalog default; a model that is not valid for the resolved runtime is replaced by that fallback. An explicit config.model always takes precedence.
       TEXT
@@ -62,10 +64,11 @@ module Mcp
 
         **Agent Roots:** Use `agent_root` to specify which preconfigured agent root to use. The API resolves git_root, branch, subdirectory, default_model, and other defaults from the agent root configuration.
 
-        **Defaults from Agent Roots:** The agent root defines `default_mcp_servers`, `default_skills`, and optionally a `default_goal`. Omitting `mcp_servers`, `skills`, or `plugins` means the session takes the root's defaults for that list. Passing an explicit empty array (`[]`) means the session gets NONE of that artifact — omitted and `[]` are two different requests, not the same one.
+        **Defaults from Agent Roots:** The agent root defines `default_mcp_servers`, `default_skills`, `default_hooks`, `default_plugins`, and optionally a `default_goal`. Omitting `mcp_servers`, `skills`, `plugins`, or `hooks` means the session takes the root's defaults for that list. Passing an explicit empty array (`[]`) means the session gets NONE of that artifact — omitted and `[]` are two different requests, not the same one.
 
         - **MCP servers:** Start with `default_mcp_servers`. Drop servers the task doesn't need (least-privilege) by passing the narrowed list; pass `[]` when the task needs no servers at all. When this connection is restricted to specific agent roots, you cannot add or remove servers — the list you pass must match the root's defaults exactly, and `[]` is rejected unless the root has no defaults.
         - **Skills:** Start with `default_skills`. You can freely add skills beyond the defaults. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
+        - **Hooks:** Start with `default_hooks`. Drop one when it fires on work this session won't do (a CI-reminder hook on a docs-only task, say) by passing the narrowed list, or `[]` for none.
 
         **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku`/`fable` for claude_code, `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` for codex). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
 
@@ -93,6 +96,7 @@ module Mcp
           mcp_servers: { type: "array", items: { type: "string" }, description: MCP_SERVERS_DESC },
           skills: { type: "array", items: { type: "string" }, description: SKILLS_DESC },
           plugins: { type: "array", items: { type: "string" }, description: PLUGINS_DESC },
+          hooks: { type: "array", items: { type: "string" }, description: HOOKS_DESC },
           config: { type: "object", description: CONFIG_DESC },
           custom_metadata: { type: "object", description: CUSTOM_METADATA_DESC },
           parent_session_id: { type: "integer", description: PARENT_SESSION_ID_DESC },
@@ -181,6 +185,7 @@ module Mcp
         attrs[:mcp_servers] = string_array(args["mcp_servers"]) if explicit_list?(args, "mcp_servers")
         attrs[:catalog_skills] = string_array(args["skills"]) if explicit_list?(args, "skills")
         attrs[:catalog_plugins] = string_array(args["plugins"]) if explicit_list?(args, "plugins")
+        attrs[:catalog_hooks] = string_array(args["hooks"]) if explicit_list?(args, "hooks")
         attrs[:config] = args["config"] if args["config"].is_a?(Hash)
         attrs[:custom_metadata] = args["custom_metadata"] if args["custom_metadata"].is_a?(Hash)
         attrs[:parent_session_id] = args["parent_session_id"] unless args["parent_session_id"].nil?
@@ -211,9 +216,7 @@ module Mcp
         session.mcp_servers = root.default_mcp_servers || [] unless explicit_list?(args, "mcp_servers")
         session.catalog_skills = root.default_skills || [] unless explicit_list?(args, "skills")
         session.catalog_plugins = root.default_plugins || [] unless explicit_list?(args, "plugins")
-        # Hooks are not a start_session parameter, so there is no explicit-empty
-        # case to preserve: the column is always at its default here.
-        session.catalog_hooks = root.default_hooks || [] if session.catalog_hooks.blank?
+        session.catalog_hooks = root.default_hooks || [] unless explicit_list?(args, "hooks")
         session.metadata = (session.metadata || {}).merge("agent_root_key" => agent_root_name)
 
         return if session.config&.dig("model").present?
