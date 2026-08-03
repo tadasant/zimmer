@@ -373,7 +373,7 @@ class SessionStatusSummaryGenerator
     row.with_lock do
       next unless may_record_outcome?(row)
 
-      row.update!(state: "failed", error: error.to_s.truncate(500), fork_session: nil)
+      row.update!(state: "failed", error: error.to_s.truncate(SessionStatusSummary::MAX_ERROR_CHARS), fork_session: nil)
     end
   rescue StandardError => e
     @logger.error("Failed to record status summary failure", error: e.message)
