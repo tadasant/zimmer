@@ -266,6 +266,17 @@ signal_death_retries_exhausted`. AO-initiated SIGKILLs (the hung-process termina
 escalating SIGTERM→SIGKILL) are excluded by the `recovery_termination_initiated` guard
 upstream of this check.
 
+Failed resume is separate from process death. Claude reports it as a successful
+exit with "No conversation found"; Codex reports it as a failed exit with "no
+rollout found". In both cases Zimmer starts a fresh runtime process against the
+same Zimmer session id. The prompt for that fresh start is chosen from the most
+durable in-flight source: `sent_message`, then `active_follow_up_prompt`, then
+`pending_follow_up_prompt`, then the original `session.prompt`. `AgentSessionJob`
+sets `active_follow_up_prompt` for every follow-up turn before it clears the
+pending marker, including automated deploy continuations and status-summary
+forks that never had a pending marker. That slot is removed when the turn
+finishes normally.
+
 :::danger[Every one of those questions is answered by a regex against CLI prose]
 There is no structured exit signal. Zimmer determines *why* a session died by string-matching
 English:
