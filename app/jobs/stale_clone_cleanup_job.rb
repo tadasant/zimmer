@@ -20,6 +20,7 @@
 #
 class StaleCloneCleanupJob < ApplicationJob
   include DatabaseRetry
+  include DurableSessionStorage
   queue_as :default
 
   # Grace period before considering an archived clone "stale" and eligible for cleanup
@@ -120,8 +121,10 @@ class StaleCloneCleanupJob < ApplicationJob
     end
 
     # Reclaim the durable per-session scratch directory alongside the clone.
-    # It holds only reconstructable cross-step state, so delete it outright.
-    if Dir.exist?(SessionScratchDirectory.path_for(session.id))
+    # Unlike the trash path, this job only sees sessions that are genuinely
+    # abandoned — archived over an hour ago with no trash deadline, or failed
+    # for a day — so there is no restore to preserve it for.
+    if scratch_dir_exists?(session.id)
       SessionScratchDirectory.cleanup_for(session.id)
       Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale scratch dir for session #{session.id}"
       cleaned_anything = true
@@ -131,7 +134,7 @@ class StaleCloneCleanupJob < ApplicationJob
     # lifecycle. It now lives on the shared ~/.zimmer volume (see
     # FileStorageService.storage_root), so it is no longer wiped by container
     # recreation and must be reaped explicitly or it accumulates forever.
-    if attachments_exist?(session.id)
+    if prompt_attachments_exist?(session.id)
       FileStorageService.cleanup_for(session.id)
       ImageStorageService.cleanup_for(session.id)
       Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale prompt attachments for session #{session.id}"
@@ -154,14 +157,6 @@ class StaleCloneCleanupJob < ApplicationJob
     end
 
     true
-  end
-
-  # Whether any durable prompt-attachment storage exists for the session.
-  def attachments_exist?(session_id)
-    Dir.exist?(FileStorageService.new(session_id: session_id).session_dir) ||
-      Dir.exist?(ImageStorageService.new(session_id: session_id).session_dir)
-  rescue ArgumentError
-    false
   end
 
   # Filesystem-level sweep: finds clone directories not referenced by any active

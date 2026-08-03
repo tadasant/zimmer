@@ -110,7 +110,10 @@ Shared scrubbing (`CliSpawnEnv`):
   **This list is a denylist, not an allowlist.** Sessions are plain child processes of the
   worker, so anything else in Zimmer's environment is inherited verbatim — a new secret in
   `env.secret` is one `env` away from a transcript until it is named here.
-- Sets `AO_SESSION_SCRATCH_DIR` — a durable per-session scratch directory.
+- Sets `AO_SESSION_SCRATCH_DIR` — a durable per-session scratch directory. It lives on the
+  `zimmer_data` volume, so it survives restarts and deploys, and it survives an archive/unarchive
+  round trip intact. It is deleted when the session's trash retention expires — see
+  [how long scratch lasts](/limitations/#a-sessions-scratch-directory-survives-archive-but-only-for-the-trash-window).
 - Sets `ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` — where an MCP
   server sends an [approval request](/sessions/elicitation/#where-the-request-goes-and-what-happens-when-it-cant-get-there),
   and who is asking. A value in the clone's `.env` wins.

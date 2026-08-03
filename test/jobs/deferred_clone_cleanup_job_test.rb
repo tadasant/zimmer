@@ -22,41 +22,68 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(@clone_path) if @clone_path && File.directory?(@clone_path)
   end
 
-  test "cleans up clone and clears trash_after when clone is clean" do
+  test "cleans up clone and clears trash_after when clone is clean and nothing else is retained" do
     assert File.directory?(@clone_path), "Clone should exist before cleanup"
 
-    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
-
-    assert_not File.directory?(@clone_path), "Clone should be deleted after cleanup"
-
-    # trash_after should be cleared for clean clones (no artifacts to retain)
-    @session.reload
-    assert_nil @session.trash_after, "trash_after should be cleared for clean clones"
-
-    # Verify log was created
-    log = @session.logs.find_by("content LIKE ?", "%Clone deleted%")
-    assert_not_nil log
-    assert_equal "info", log.level
-    assert_includes log.content, "no unpushed state"
-  end
-
-  test "reclaims the durable per-session scratch dir when reaping the clone" do
     original = ENV["AGENT_SCRATCH_DIR"]
-    Dir.mktmpdir("deferred-scratch") do |scratch_base|
+    Dir.mktmpdir("deferred-no-scratch") do |scratch_base|
+      # Empty scratch base: this session has nothing durable left to retain.
       ENV["AGENT_SCRATCH_DIR"] = scratch_base
-      scratch_path = SessionScratchDirectory.ensure_for(@session.id)
-      File.write(File.join(scratch_path, "state.txt"), "reconstructable")
-      assert Dir.exist?(scratch_path), "scratch dir should exist before cleanup"
 
       DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
-      assert_not Dir.exist?(scratch_path), "scratch dir should be deleted after cleanup"
+      assert_not File.directory?(@clone_path), "Clone should be deleted after cleanup"
+
+      # trash_after should be cleared for clean clones (no artifacts to retain)
+      @session.reload
+      assert_nil @session.trash_after, "trash_after should be cleared for clean clones"
+
+      # Verify log was created
+      log = @session.logs.find_by("content LIKE ?", "%Clone deleted%")
+      assert_not_nil log
+      assert_equal "info", log.level
+      assert_includes log.content, "no unpushed state"
     ensure
       original.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = original
     end
   end
 
-  test "reclaims scratch even when there is no clone on disk" do
+  test "leaves the durable per-session scratch dir intact when reaping the clone" do
+    original = ENV["AGENT_SCRATCH_DIR"]
+    Dir.mktmpdir("deferred-scratch") do |scratch_base|
+      ENV["AGENT_SCRATCH_DIR"] = scratch_base
+      scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+      handoff = File.join(scratch_path, "state.txt")
+      File.write(handoff, "cross-step state")
+
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+      assert_not File.directory?(@clone_path), "clone should still be reaped"
+      assert File.exist?(handoff), "scratch contents must survive the undo window so unarchive can find them"
+      assert_equal "cross-step state", File.read(handoff)
+    ensure
+      original.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = original
+    end
+  end
+
+  test "holds trash_after open for the retention period when scratch is retained" do
+    original = ENV["AGENT_SCRATCH_DIR"]
+    Dir.mktmpdir("deferred-scratch-retention") do |scratch_base|
+      ENV["AGENT_SCRATCH_DIR"] = scratch_base
+      SessionScratchDirectory.ensure_for(@session.id)
+
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+      @session.reload
+      assert_not_nil @session.trash_after,
+        "trash_after must stay set so EmptyTrashJob eventually reaps scratch and StaleCloneCleanupJob leaves it alone"
+      assert_in_delta SessionStateMachine::TRASH_RETENTION_PERIOD.from_now, @session.trash_after, 60
+    ensure
+      original.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = original
+    end
+  end
+
+  test "leaves scratch intact even when there is no clone on disk" do
     original = ENV["AGENT_SCRATCH_DIR"]
     Dir.mktmpdir("deferred-scratch-noclone") do |scratch_base|
       ENV["AGENT_SCRATCH_DIR"] = scratch_base
@@ -65,29 +92,36 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
 
       DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
-      assert_not Dir.exist?(scratch_path), "scratch dir should be deleted even with no clone"
+      assert Dir.exist?(scratch_path), "scratch dir should survive even when there is no clone"
+      @session.reload
+      assert_not_nil @session.trash_after, "a session with only scratch left still needs a trash deadline"
     ensure
       original.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = original
     end
   end
 
-  test "reclaims durable prompt attachments when reaping the clone" do
+  test "leaves durable prompt attachments intact when reaping the clone" do
+    original = ENV["AGENT_SCRATCH_DIR"]
     file_service = FileStorageService.new(session_id: @session.id)
     image_service = ImageStorageService.new(session_id: @session.id)
-    begin
+    Dir.mktmpdir("deferred-attachments") do |scratch_base|
+      # Isolate scratch so only the attachments are retained here.
+      ENV["AGENT_SCRATCH_DIR"] = scratch_base
+
       file_service.store(data: "notes", filename: "notes.md")
       png = [ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A ].pack("C*") + ("x" * 32)
       image_service.store(data: Base64.strict_encode64(png), filename: "shot.png")
-      assert Dir.exist?(file_service.session_dir), "file attachments should exist before cleanup"
-      assert Dir.exist?(image_service.session_dir), "image attachments should exist before cleanup"
 
       DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
-      assert_not Dir.exist?(file_service.session_dir), "file attachments should be reaped with the clone"
-      assert_not Dir.exist?(image_service.session_dir), "image attachments should be reaped with the clone"
+      assert Dir.exist?(file_service.session_dir), "file attachments should outlive the clone"
+      assert Dir.exist?(image_service.session_dir), "image attachments should outlive the clone"
+      @session.reload
+      assert_not_nil @session.trash_after, "retained attachments must hold the trash deadline open"
     ensure
       file_service.cleanup!
       image_service.cleanup!
+      original.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = original
     end
   end
 
