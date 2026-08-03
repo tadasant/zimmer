@@ -131,7 +131,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `custom_metadata` |
-| `DELETE` | `/sessions/:id` | → 204 |
+| `DELETE` | `/sessions/:id` | → 204. Hard delete, not archive: the row and its associations go, and so do the session's [scratch directory and prompt attachments](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}` |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off |
 | `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal` (≤50,000), `force_immediate`, `acting_session_id`. 202 if the session is running (queued); 200 otherwise. `goal` takes effect on every path — see below |
