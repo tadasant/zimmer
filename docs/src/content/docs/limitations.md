@@ -1796,12 +1796,13 @@ the merge gate. What *does* run in CI is the cheap half, `test/migrations/schema
 dumps are in the running Active Record version's format, and `schema.rb` is at the newest migration
 on disk.
 
-**And it already found one.** 🔴 `db/migrate/` is not replayable from zero:
-`20260613193000_add_session_maintenance_indexes` builds a partial index on `sessions.transcript`, and
-nothing in `db/migrate/` ever creates that column — `db/schema.rb` declares it, so every environment
-got it from a schema load. A from-zero `db:migrate` dies there with `PG::UndefinedColumn`. That is the
-exact divergence this section warns about, sitting in the tree unnoticed because nothing migrates from
-zero.
+**It found one real drift case.** `db/migrate/` was not replayable from zero because two
+`sessions` columns existed in `db/schema.rb` without a migration. `sessions.transcript` made
+`20260613193000_add_session_maintenance_indexes` fail with `PG::UndefinedColumn` when it built its
+partial index, while `sessions.repository_name` was a quieter divergence: from-zero databases simply
+lacked a column that prompt-building code reads. `20260613192900_add_missing_session_columns_for_migration_replay`
+adds both columns idempotently before that index migration, so existing schema-loaded databases no-op
+and fresh migration replays create the columns in time.
 
 The format half is fixed. `db/schema.rb` was an `ActiveRecord::Schema[8.0]` dump under Rails 8.1, so
 every `db:migrate` reformatted all ~450 lines (the 8.1 dumper alphabetizes) and every migration PR
