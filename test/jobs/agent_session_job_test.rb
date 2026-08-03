@@ -5033,8 +5033,31 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "exit code: 2", @session.metadata["exit_status"]
 
     log_contents = @session.logs.reload.map(&:content).join("\n")
-    assert_match(/Session job ended with failed session status: exit code: 2/, log_contents)
+    assert_match(/Session job ended with failed session status: process_failed — exit code: 2/, log_contents)
     refute_match(/Session job completed successfully/, log_contents)
+  end
+
+  # The completion log keeps the classification token AND the prose. Every failure
+  # that records an exit_status also records a failure_reason, so an either/or
+  # would mean the token log search groups on was never actually logged.
+  test "failed_session_detail joins the classification token with the actionable prose" do
+    job = AgentSessionJob.new
+    session = Session.new(metadata: {
+      "failure_reason" => "exception",
+      "exception_message" => "Errno::ENOENT: No such file or directory"
+    })
+
+    assert_equal "exception — Errno::ENOENT: No such file or directory",
+      job.send(:failed_session_detail, session)
+  end
+
+  test "failed_session_detail falls back to the reason alone, then to unknown failure" do
+    job = AgentSessionJob.new
+
+    assert_equal "transcript_unavailable",
+      job.send(:failed_session_detail, Session.new(metadata: { "failure_reason" => "transcript_unavailable" }))
+    assert_equal "unknown failure", job.send(:failed_session_detail, Session.new(metadata: {}))
+    assert_equal "unknown failure", job.send(:failed_session_detail, Session.new(metadata: nil))
   end
 
   test "should set failure_reason to sigterm_retries_exhausted when SIGTERM retries are exhausted" do

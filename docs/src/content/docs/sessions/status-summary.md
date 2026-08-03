@@ -221,6 +221,14 @@ A fork that fails, or comes back with nothing usable, records the reason on the 
 leaves the previous blurb in place — a stale-but-real summary beats an empty panel. The fork is
 archived either way; a fork left behind holds a full copy of a repository.
 
+The recorded reason folds together the fork's `failure_reason`, `exit_status`, and
+`exception_message`, capped at `SessionStatusSummary::MAX_ERROR_CHARS`. All three are included
+because the failure paths write different subsets — a process death records a reason and an exit
+status, an exception death records a reason and an exception message and no exit status. The fork is
+hidden, so anything left only in its metadata is invisible to the person reading the panel: before
+this, a Codex fork killed by `Resume failed and no prompt available for fresh start recovery`
+surfaced as the bare, unactionable `The summary fork failed.`
+
 The reason is written onto the row **as it exists in the database**, and only when the failing run
 still holds the claim. A handler whose only job is to record a failure must not be able to fail the
 way the thing it is recording failed — when it did, the failure went unrecorded, the record stayed

@@ -1577,7 +1577,7 @@ class AgentSessionJob < ApplicationJob
       session.reload
       if session.failed?
         log_buffer.add(
-          "#{job_type} job ended with failed session status: #{session.metadata&.dig("exit_status").presence || session.metadata&.dig("failure_reason").presence || "unknown failure"}",
+          "#{job_type} job ended with failed session status: #{failed_session_detail(session)}",
           level: "warning"
         )
         log_buffer.add(
@@ -1681,6 +1681,28 @@ class AgentSessionJob < ApplicationJob
   end
 
   private
+
+  # The actionable "why" for a session that reached a failed terminal status.
+  #
+  # Both halves are kept because they answer different questions and every failure
+  # that records one records the other: `failure_reason` is the classification
+  # token log search and alerting group on (`process_failed`,
+  # `sigterm_retries_exhausted`, `transcript_unavailable`, …), while `exit_status`
+  # and `exception_message` carry the free prose that names the actual cause. An
+  # either/or would have meant the token was never logged in practice.
+  #
+  # Truncated for the same reason the metadata writer truncates: `exit_status` can
+  # be built from an arbitrary-length exception string.
+  def failed_session_detail(session)
+    metadata = session.metadata || {}
+    detail = [
+      metadata["failure_reason"].presence,
+      metadata["exit_status"].presence,
+      metadata["exception_message"].presence
+    ].compact.join(" — ")
+
+    detail.presence&.truncate(EXCEPTION_MESSAGE_MAX_CHARS) || "unknown failure"
+  end
 
   # Attempt to recover from a transient git clone failure during session startup
   # by re-enqueuing the whole job on a backed-off horizon, instead of hard-failing
