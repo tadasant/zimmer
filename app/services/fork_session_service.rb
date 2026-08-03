@@ -50,6 +50,24 @@ class ForkSessionService
   # can change underneath it.
   DEPENDENCY_DIRECTORIES = [ "vendor/bundle", "**/node_modules" ].freeze
 
+  # What a fork's title is built from — see #generate_forked_title.
+  FORK_TITLE_PREFIX = "Fork of "
+  TITLE_OMISSION = "…"
+
+  # The cap a generated title has to fit, read off Session's own validator
+  # rather than restated here: a change to the model's limit must not leave this
+  # service composing titles the model then rejects, which fails the fork
+  # deterministically. It reads the `maximum` off every length validator on
+  # :title and takes the smallest, so a context-scoped one narrows the budget
+  # too; nil means no length validator declares a maximum, and nothing is
+  # truncated.
+  def self.title_length_limit
+    Session.validators_on(:title)
+      .select { |validator| validator.is_a?(ActiveModel::Validations::LengthValidator) }
+      .filter_map { |validator| validator.options[:maximum] }
+      .min
+  end
+
   attr_reader :source_session, :message_index, :file_system, :extra_metadata, :copy_exclusions
 
   # @param extra_metadata [Hash] merged into the forked session's metadata at
@@ -118,7 +136,13 @@ class ForkSessionService
       new_session_id: new_session_id,
       truncated_transcript: truncated_transcript
     )
-    return Result.new(success?: false, error: "Failed to create forked session record") unless forked_session
+    unless forked_session
+      # The clone was copied in full before this point, and no record was
+      # written to claim it — so nothing but OrphanCloneFilesystemCleanupJob's
+      # 48h sweep would ever collect it.
+      discard_partial_clone(new_clone_path)
+      return Result.new(success?: false, error: "Failed to create forked session record")
+    end
 
     # Write truncated transcript to the new location
     write_transcript_success = write_transcript_file(
@@ -346,70 +370,91 @@ class ForkSessionService
     end
   end
 
+  # Returning nil has to mean "no record exists", because the caller disposes of
+  # the copied clone on that answer — so the session and its two log rows are
+  # written in one transaction. Without it, a log insert that fails leaves a
+  # committed Session whose metadata names a clone the caller then deletes, and
+  # a retried block creates a second Session for the same fork.
   def create_forked_session(new_clone_path:, new_working_directory:, new_session_id:, truncated_transcript:)
     with_db_retry do
-      # Build metadata for the new session
-      # IMPORTANT: runtime_started must be set to true because we're creating a
-      # transcript file with the new session_id. When the user sends their first
-      # follow-up message, AgentSessionJob checks this flag to determine whether
-      # to use --resume vs --session-id. Since the transcript file already exists,
-      # Claude CLI MUST use --resume mode, otherwise it will fail with
-      # "Session ID already in use" error.
-      new_metadata = {
-        "clone_path" => new_clone_path,
-        "working_directory" => new_working_directory,
-        "full_clone_path" => new_working_directory,
-        "forked_from_session_id" => source_session.id,
-        "forked_at_message_index" => message_index,
-        "broadcast_message_count" => @truncated_message_count, # Set to transcript length to prevent replay
-        "runtime_started" => true # Required for --resume mode on first follow-up
-      }.merge(extra_metadata)
+      Session.transaction do
+        # Build metadata for the new session
+        # IMPORTANT: runtime_started must be set to true because we're creating a
+        # transcript file with the new session_id. When the user sends their first
+        # follow-up message, AgentSessionJob checks this flag to determine whether
+        # to use --resume vs --session-id. Since the transcript file already exists,
+        # Claude CLI MUST use --resume mode, otherwise it will fail with
+        # "Session ID already in use" error.
+        new_metadata = {
+          "clone_path" => new_clone_path,
+          "working_directory" => new_working_directory,
+          "full_clone_path" => new_working_directory,
+          "forked_from_session_id" => source_session.id,
+          "forked_at_message_index" => message_index,
+          "broadcast_message_count" => @truncated_message_count, # Set to transcript length to prevent replay
+          "runtime_started" => true # Required for --resume mode on first follow-up
+        }.merge(extra_metadata)
 
-      # Create the forked session
-      forked_session = Session.create!(
-        agent_runtime: source_session.agent_runtime,
-        git_root: source_session.git_root,
-        branch: source_session.branch,
-        subdirectory: source_session.subdirectory,
-        execution_provider: source_session.execution_provider,
-        mcp_servers: source_session.mcp_servers,
-        catalog_skills: source_session.catalog_skills,
-        catalog_hooks: source_session.catalog_hooks,
-        catalog_plugins: source_session.catalog_plugins,
-        config: source_session.config,
-        goal: source_session.goal,
-        is_autonomous: source_session.is_autonomous,
-        session_notes: source_session.session_notes,
-        session_notes_updated_at: source_session.session_notes_updated_at,
-        session_id: new_session_id,
-        status: :needs_input,
-        transcript: truncated_transcript,
-        metadata: new_metadata,
-        title: generate_forked_title
-      )
+        # Create the forked session
+        forked_session = Session.create!(
+          agent_runtime: source_session.agent_runtime,
+          git_root: source_session.git_root,
+          branch: source_session.branch,
+          subdirectory: source_session.subdirectory,
+          execution_provider: source_session.execution_provider,
+          mcp_servers: source_session.mcp_servers,
+          catalog_skills: source_session.catalog_skills,
+          catalog_hooks: source_session.catalog_hooks,
+          catalog_plugins: source_session.catalog_plugins,
+          config: source_session.config,
+          goal: source_session.goal,
+          is_autonomous: source_session.is_autonomous,
+          session_notes: source_session.session_notes,
+          session_notes_updated_at: source_session.session_notes_updated_at,
+          session_id: new_session_id,
+          status: :needs_input,
+          transcript: truncated_transcript,
+          metadata: new_metadata,
+          title: generate_forked_title
+        )
 
-      # Create a log entry for the forked session
-      forked_session.logs.create!(
-        content: "Session forked from session ##{source_session.id} at message #{message_index + 1}",
-        level: "info"
-      )
+        # Create a log entry for the forked session
+        forked_session.logs.create!(
+          content: "Session forked from session ##{source_session.id} at message #{message_index + 1}",
+          level: "info"
+        )
 
-      # Also log in the source session
-      source_session.logs.create!(
-        content: "Session forked to session ##{forked_session.id} at message #{message_index + 1}",
-        level: "info"
-      )
+        # Also log in the source session
+        source_session.logs.create!(
+          content: "Session forked to session ##{forked_session.id} at message #{message_index + 1}",
+          level: "info"
+        )
 
-      forked_session
+        forked_session
+      end
     end
   rescue => e
     @logger.error("Failed to create forked session record", error: e.message)
     nil
   end
 
+  # A fork's title is the source's under a prefix — and it has to survive
+  # Session's own length validation, which the source title may have spent all
+  # of. A source title over 92 characters composes one over the cap, and titles
+  # that long are legal and routine, so the base is truncated to whatever the
+  # prefix leaves, with an ellipsis so the result still reads as the session it
+  # forked.
   def generate_forked_title
     base_title = source_session.title.presence || "Session #{source_session.id}"
-    "Fork of #{base_title}"
+    limit = self.class.title_length_limit
+    return "#{FORK_TITLE_PREFIX}#{base_title}" if limit.nil?
+
+    # A cap too small to hold the prefix and an omission leaves nothing to
+    # budget with, so the whole composed title is truncated instead.
+    budget = limit - FORK_TITLE_PREFIX.length
+    return "#{FORK_TITLE_PREFIX}#{base_title}".truncate(limit, omission: TITLE_OMISSION) if budget < TITLE_OMISSION.length
+
+    "#{FORK_TITLE_PREFIX}#{base_title.truncate(budget, omission: TITLE_OMISSION)}"
   end
 
   def write_transcript_file(new_working_directory:, new_session_id:, truncated_transcript:)

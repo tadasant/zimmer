@@ -86,7 +86,9 @@ Three things keep that from failing a fork:
 - **A failed fork cleans up after itself.** The partial destination is removed rather than left for
   `OrphanCloneFilesystemCleanupJob`, which ignores anything younger than 48 hours. A retry only
   proceeds once the destination is confirmed gone — `rm_rf` reports nothing when it removes part of a
-  tree, and a copy into a destination that still exists nests or merges rather than failing.
+  tree, and a copy into a destination that still exists nests or merges rather than failing. The same
+  holds for a fork that fails *after* the copy succeeded: if the session record does not save, or the
+  transcript cannot be written, the copied clone is discarded on the way out rather than stranded.
 
 A summary fork's clone is therefore **not a runnable checkout** — `.bundle/config` still points at the
 `vendor/bundle` that is no longer there. See [Limitations](/limitations/#a-status-summary-forks-clone-is-missing-its-installed-dependencies-and-does-not-know-it).
@@ -96,6 +98,20 @@ before it. The copy takes real time, and a session that archived during it would
 of a clone `DeferredCloneCleanupJob` is about to delete. Such a fork is archived immediately, the
 claim below is released so the record does not sit in `pending` behind a fork that will never answer,
 and nothing is recorded against the summary.
+
+### The fork's title has to fit the cap the source title already fills
+
+A fork is titled `Fork of <source title>`, and `Session` caps a title at 100 characters. A source
+title over 92 characters therefore composes a title the model rejects, and the fork fails on
+`Session.create!` — deterministically, since no retry can produce a shorter title. Titles that long
+are legal and routine: a router sets them through `start_session`, where "under 70 characters" is
+guidance and not enforcement, and `SessionTitleJob` cuts its own generated titles at the full 100.
+
+`ForkSessionService#generate_forked_title` truncates the base title, with an ellipsis, to whatever
+the prefix leaves. The budget is read off `Session`'s own length validator
+(`ForkSessionService.title_length_limit`) rather than restated, so changing the model's cap cannot
+leave the service composing titles the model then refuses. A fork of a fork spends the prefix twice
+against the same cap, so a long title erodes by 8 characters and an ellipsis each time it is forked.
 
 ### One generation at a time
 
