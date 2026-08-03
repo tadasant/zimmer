@@ -46,15 +46,21 @@ bin/rails test test/models/session_test.rb
 
 ### Capturing log output in a test
 
-Attach a sink — `Rails.logger.broadcast_to(sink)` / `stop_broadcasting_to(sink)` —
-rather than assigning `Rails.logger`. Assignment is invisible to anything holding a
-reference to the original logger, and Rails hands out several: most importantly
-`Rails.application.env_config["action_dispatch.logger"]`, which is memoized once per
-process and merged over every request env, and is what `ActionDispatch::DebugExceptions`
-writes an unhandled exception to. A test that assigns `Rails.logger` therefore *misses*
-exactly the ERROR records a logging test usually exists to assert on. `test_helper.rb`
-resolves `env_config` before the parallel workers fork so that entry is always the real
-boot logger; see issue #337 for the flake that taught us this.
+Use `capture_log_entries` (`test/support/log_capture_helpers.rb`), which attaches a
+sink with `Rails.logger.broadcast_to`. Do not assign `Rails.logger`. Assignment is
+invisible to anything holding a reference to the original logger, and Rails hands out
+several: most importantly `Rails.application.env_config["action_dispatch.logger"]`,
+which is memoized once per process and merged over every request env, and is what
+`ActionDispatch::DebugExceptions` writes an unhandled exception to. A test that assigns
+`Rails.logger` therefore *misses* exactly the ERROR records a logging test usually
+exists to assert on. `test_helper.rb` resolves `env_config` before the parallel workers
+fork so that entry is always the real boot logger; see issue #337 for the flake that
+taught us this.
+
+`test/contracts/log_capture_contract_test.rb` enforces the rule for tests that can
+issue a request (`test/integration`, `test/controllers`, `test/system`, `test/e2e`).
+Unit tests elsewhere still use the older assign-and-restore idiom; it is inert there
+because they never build a request env, but new code should not add more of it.
 
 ## Known coupling: the agent-artifact catalog
 
