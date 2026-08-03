@@ -331,4 +331,53 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
       session.destroy
     end
   end
+
+  # (session_id, position) uniqueness is DEFERRABLE INITIALLY DEFERRED.
+  #
+  # Every renumbering path on this table transiently puts two rows on the same
+  # position — a bulk `position = position - 1` is only collision-free if rows
+  # are visited in ascending position order, and nothing in a bulk UPDATE pins
+  # the planner's scan order. Deferring the check to commit makes the
+  # intermediate state legal without weakening the invariant. See
+  # db/migrate/20260803170000_defer_enqueued_message_position_uniqueness.rb.
+  test "position uniqueness constraint is deferred" do
+    constraint = ActiveRecord::Base.connection
+                                   .unique_constraints("enqueued_messages")
+                                   .find { |c| c.column == [ "session_id", "position" ] }
+
+    assert constraint, "expected a unique constraint on (session_id, position)"
+    assert_equal :deferred, constraint.deferrable
+  end
+
+  test "deferred constraint tolerates a transient duplicate position" do
+    session = sessions(:running)
+    messages = (1..3).map { |i| session.enqueued_messages.create!(content: "m#{i}", position: i) }
+
+    # The hazardous order: 3 -> 2 lands while another row still holds 2. Under a
+    # non-deferred unique index this raises RecordNotUnique on the first move.
+    messages[0].destroy!
+    messages[2].update_column(:position, 2)
+    messages[1].update_column(:position, 1)
+
+    # Prove the end state is actually committable, not merely unchecked: forcing
+    # the deferred constraint to IMMEDIATE runs the check the COMMIT would run.
+    ActiveRecord::Base.connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
+    assert_equal [ 1, 2 ], session.enqueued_messages.ordered.pluck(:position)
+  end
+
+  test "duplicate positions are still rejected, at commit time" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "first", position: 1)
+    second = session.enqueued_messages.create!(content: "second", position: 2)
+
+    assert_raises(ActiveRecord::RecordNotUnique) do
+      ActiveRecord::Base.transaction(requires_new: true) do
+        # Deferred: the write itself succeeds and leaves two rows on position 1.
+        second.update_column(:position, 1)
+        # Whatever the transaction would have hit at COMMIT, hit here instead.
+        ActiveRecord::Base.connection.execute("SET CONSTRAINTS ALL IMMEDIATE")
+      end
+    end
+  end
 end

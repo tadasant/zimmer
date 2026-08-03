@@ -182,6 +182,46 @@ class Api::V1::EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_equal 2, @msg3.reload.position
   end
 
+  # Regression for #353. The delete path renumbers with a single bulk
+  # `position = position - 1`, which is collision-free only if rows are visited
+  # in ascending position order. Nothing in the statement pins that order, so
+  # the bug showed up as an intermittent 500 whenever the planner picked a
+  # different one.
+  #
+  # This reproduces that plan through the real HTTP path: rewriting the rows
+  # high-position-first leaves their live heap tuples laid out high-position-first
+  # too, and disabling index/bitmap scans forces a seq scan, which walks the heap
+  # in that order. Under a non-deferred unique index this is a PG::UniqueViolation.
+  #
+  # The layout is asserted rather than assumed. Page pruning can hand a rewritten
+  # tuple a recycled line pointer, and while that cannot reverse a descending
+  # write sequence into an ascending one, ascending is the single order that
+  # cannot collide — so the assertion below is what keeps this test from passing
+  # while exercising nothing. The planner-independent proof lives in
+  # EnqueuedMessageTest#test_deferred_constraint_tolerates_a_transient_duplicate_position.
+  test "should renumber positions after delete even when the scan order is descending" do
+    tail = (4..8).map { |i| @session.enqueued_messages.create!(content: "Message #{i}", position: i, status: "pending") }
+
+    (tail.reverse + [ @msg3, @msg2 ]).each { |m| m.update_column(:content, "#{m.content} (rewritten)") }
+
+    conn = ActiveRecord::Base.connection
+    conn.execute("SET LOCAL enable_indexscan = off")
+    conn.execute("SET LOCAL enable_bitmapscan = off")
+
+    scan_order = @session.enqueued_messages
+                         .where("position > ?", @msg1.position)
+                         .order(Arel.sql("ctid"))
+                         .pluck(:position)
+    assert_not_equal scan_order.sort, scan_order,
+                     "heap layout did not take: the renumber would visit rows in ascending position order, " \
+                     "the one order that cannot collide, so this test is not exercising the bug"
+
+    delete api_v1_session_enqueued_message_path(@session, @msg1), headers: @headers
+    assert_response :no_content
+
+    assert_equal (1..7).to_a, @session.enqueued_messages.ordered.pluck(:position)
+  end
+
   # Reorder tests
   test "should reorder message to new position" do
     patch reorder_api_v1_session_enqueued_message_path(@session, @msg3), params: {
