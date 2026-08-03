@@ -11,9 +11,15 @@
 # 4 days). It also cleans up
 # any clones that somehow survived (belt-and-suspenders).
 #
+# It is also where the session's scratch directory and prompt attachments are
+# reaped. That state has no remote to be rebuilt from, so deleting it at the end
+# of the undo window would make archive irreversible for it while archive stays
+# reversible for everything else — see DurableSessionStorage.
+#
 # Runs every hour via GoodJob cron.
 class EmptyTrashJob < ApplicationJob
   include DatabaseRetry
+  include DurableSessionStorage
   queue_as :default
 
   def perform
@@ -45,6 +51,14 @@ class EmptyTrashJob < ApplicationJob
     if artifact_service.cleanup_artifacts(session.id)
       cleaned_anything = true
       cleanup_details << "artifacts deleted"
+    end
+
+    # The retention window is over, so the state that archive held on to for a
+    # possible unarchive can go.
+    removed = cleanup_durable_session_storage(session.id)
+    if removed.any?
+      cleaned_anything = true
+      cleanup_details.concat(removed)
     end
 
     # Also clean up clone if it somehow still exists (belt-and-suspenders)
