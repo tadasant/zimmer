@@ -16,7 +16,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
       expires_in: 3600
     }.to_json)
 
-    Net::HTTP.stub(:post_form, successful_response) do
+    stub_token_post(successful_response) do
       RefreshMcpOauthTokensJob.perform_now
     end
 
@@ -31,7 +31,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     # Ensure it expires well beyond the 1-hour window
     credential.update!(expires_at: 3.hours.from_now)
 
-    Net::HTTP.stub(:post_form, ->(*) { raise "Should not attempt refresh" }) do
+    stub_token_post(->(*) { raise "Should not attempt refresh" }) do
       RefreshMcpOauthTokensJob.perform_now
     end
 
@@ -51,7 +51,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     # token endpoint is never contacted at all. (A state-only assertion would also
     # pass if refresh were attempted and merely failed, so it wouldn't prove the
     # throttle.)
-    Net::HTTP.expects(:post_form).never
+    McpOauthService.any_instance.expects(:post_form).never
 
     RefreshMcpOauthTokensJob.perform_now
 
@@ -65,7 +65,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     credential = mcp_oauth_credentials(:expired)
     # expired fixture has no refresh_token
 
-    Net::HTTP.stub(:post_form, ->(*) { raise "Should not attempt refresh" }) do
+    stub_token_post(->(*) { raise "Should not attempt refresh" }) do
       RefreshMcpOauthTokensJob.perform_now
     end
   end
@@ -82,7 +82,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
       error_description: "Grant not found"
     }.to_json)
 
-    Net::HTTP.expects(:post_form).once.returns(failed_response)
+    McpOauthService.any_instance.expects(:post_form).once.returns(failed_response)
 
     log_output = capture_rails_logs do
       # Should not raise
@@ -103,7 +103,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     assert_not_includes log_output, "ERROR"
 
     # No refresh_token left → filtered out of later scheduled runs
-    Net::HTTP.expects(:post_form).never
+    McpOauthService.any_instance.expects(:post_form).never
     RefreshMcpOauthTokensJob.perform_now
   end
 
@@ -118,7 +118,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     failed_response.stubs(:body).returns({ error: "temporarily_unavailable" }.to_json)
 
     log_output = capture_rails_logs do
-      Net::HTTP.stub(:post_form, failed_response) do
+      stub_token_post(failed_response) do
         # Should not raise
         RefreshMcpOauthTokensJob.perform_now
       end
@@ -141,7 +141,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     failed_response.stubs(:code).returns("401")
     failed_response.stubs(:body).returns({ error: "invalid_client" }.to_json)
 
-    Net::HTTP.expects(:post_form).once.returns(failed_response)
+    McpOauthService.any_instance.expects(:post_form).once.returns(failed_response)
 
     log_output = capture_rails_logs do
       RefreshMcpOauthTokensJob.perform_now
@@ -162,7 +162,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
     log_output = capture_rails_logs do
       assert_enqueued_with(job: RefreshMcpOauthTokensJob) do
-        Net::HTTP.stub(:post_form, ->(*) { raise Net::OpenTimeout, "could not connect" }) do
+        stub_token_post(->(*) { raise Net::OpenTimeout, "could not connect" }) do
           # Should not raise
           RefreshMcpOauthTokensJob.perform_now
         end
@@ -189,7 +189,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
     log_output = capture_rails_logs do
       assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
-        Net::HTTP.stub(:post_form, ->(*) { raise Net::ReadTimeout, "Connection timed out" }) do
+        stub_token_post(->(*) { raise Net::ReadTimeout, "Connection timed out" }) do
           # Should not raise
           RefreshMcpOauthTokensJob.perform_now
         end
@@ -216,7 +216,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
     log_output = capture_rails_logs do
       assert_enqueued_with(job: RefreshMcpOauthTokensJob) do
-        Net::HTTP.stub(:post_form, ->(*) { raise Net::OpenTimeout, "boom" }) do
+        stub_token_post(->(*) { raise Net::OpenTimeout, "boom" }) do
           RefreshMcpOauthTokensJob.perform_now(retry_credential_ids: [ credential.id ], attempt: 1)
         end
       end
@@ -232,7 +232,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
     log_output = capture_rails_logs do
       assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
-        Net::HTTP.stub(:post_form, ->(*) { raise Net::ReadTimeout, "boom" }) do
+        stub_token_post(->(*) { raise Net::ReadTimeout, "boom" }) do
           RefreshMcpOauthTokensJob.perform_now(retry_credential_ids: [ credential.id ], attempt: 1)
         end
       end
@@ -250,7 +250,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
     log_output = capture_rails_logs do
       assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
-        Net::HTTP.stub(:post_form, ->(*) { raise Net::OpenTimeout, "could not connect" }) do
+        stub_token_post(->(*) { raise Net::OpenTimeout, "could not connect" }) do
           RefreshMcpOauthTokensJob.perform_now(
             retry_credential_ids: [ credential.id ],
             attempt: RefreshMcpOauthTokensJob::MAX_RETRIES
@@ -269,7 +269,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
     log_output = capture_rails_logs do
       assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
-        Net::HTTP.stub(:post_form, ->(*) { raise ArgumentError, "unexpected bug" }) do
+        stub_token_post(->(*) { raise ArgumentError, "unexpected bug" }) do
           RefreshMcpOauthTokensJob.perform_now
         end
       end
@@ -298,7 +298,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
     # The reconciled token is no longer expiring within the window, so the job must
     # NOT contact the token endpoint with the stale DB refresh token.
-    Net::HTTP.expects(:post_form).never
+    McpOauthService.any_instance.expects(:post_form).never
 
     with_claude_runtime_store(entries) do
       RefreshMcpOauthTokensJob.perform_now

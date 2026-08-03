@@ -206,11 +206,10 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
   test "refresh! includes the RFC 8707 resource parameter when resource is present" do
     credential = mcp_oauth_credentials(:expired_with_refresh)
     credential.update!(resource: "https://mcp.notion.com")
-    captured_params = nil
 
     response = build_token_response({ "access_token" => "new-tok", "expires_in" => 3600 })
 
-    Net::HTTP.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
+    captured_params = stub_token_post(response) do
       assert credential.refresh!
     end
 
@@ -220,11 +219,10 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
   test "refresh! omits the resource parameter when resource is blank" do
     credential = mcp_oauth_credentials(:expired_with_refresh)
     credential.update!(resource: nil)
-    captured_params = nil
 
     response = build_token_response({ "access_token" => "new-tok", "expires_in" => 3600 })
 
-    Net::HTTP.stub(:post_form, ->(_uri, params) { captured_params = params; response }) do
+    captured_params = stub_token_post(response) do
       assert credential.refresh!
     end
 
@@ -245,7 +243,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
       }
     })
 
-    Net::HTTP.stub(:post_form, ->(_uri, _params) { response }) do
+    stub_token_post(response) do
       assert credential.refresh!
     end
 
@@ -262,7 +260,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     # A malformed/empty 200 must not null out a working credential.
     response = build_token_response({ "ok" => false, "error" => "internal_error" })
 
-    Net::HTTP.stub(:post_form, ->(_uri, _params) { response }) do
+    stub_token_post(response) do
       assert_not credential.refresh!
     end
 
@@ -278,7 +276,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
 
     response = build_error_response(401, { "error" => "invalid_grant" })
 
-    Net::HTTP.stub(:post_form, response) do
+    stub_token_post(response) do
       assert_not credential.refresh!
     end
 
@@ -300,7 +298,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
 
     response = build_error_response(401, { "error" => "invalid_grant" })
 
-    Net::HTTP.stub(:post_form, response) do
+    stub_token_post(response) do
       assert_not credential.refresh!
     end
 
@@ -322,7 +320,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     response = build_raw_response(400, html_body)
 
     logged = capture_logger_levels do
-      Net::HTTP.stub(:post_form, response) do
+      stub_token_post(response) do
         assert_not credential.refresh!
       end
     end
@@ -342,7 +340,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     response = build_raw_response(401, "Unauthorized")
 
     logged = capture_logger_levels do
-      Net::HTTP.stub(:post_form, response) do
+      stub_token_post(response) do
         assert_not credential.refresh!
       end
     end
@@ -361,7 +359,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     response = build_raw_response(503, "Service Unavailable")
 
     logged = capture_logger_levels do
-      Net::HTTP.stub(:post_form, response) do
+      stub_token_post(response) do
         assert_not credential.refresh!
       end
     end
@@ -381,7 +379,7 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     response = build_raw_response(429, "Too Many Requests")
 
     logged = capture_logger_levels do
-      Net::HTTP.stub(:post_form, response) do
+      stub_token_post(response) do
         assert_not credential.refresh!
       end
     end
@@ -394,6 +392,39 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     credential.reload
     assert_equal original_refresh_token, credential.refresh_token
     assert credential.can_refresh?
+  end
+
+  # Every other refresh! test stubs the post itself, so nothing there would notice if
+  # the refresh went back to an unbounded `Net::HTTP.post_form`. This one exercises the
+  # real posting path down to Net::HTTP.start: the refresh runs unattended from cron
+  # (RefreshMcpOauthTokensJob), so a token endpoint that accepts the connection and
+  # never answers would otherwise hold a GoodJob thread forever. It also pins the RFC
+  # 8707 resource indicator into the encoded form body — audience-binding servers
+  # (e.g. Notion) reject refreshed tokens minted without it.
+  test "refresh! bounds the token request at REQUEST_TIMEOUT and still sends the resource indicator" do
+    credential = mcp_oauth_credentials(:expired_with_refresh)
+    credential.update!(token_endpoint: "https://auth.example.com/oauth/token", resource: "https://mcp.notion.com")
+
+    captured_kwargs = nil
+    captured_request = nil
+    response = build_token_response({ "access_token" => "new-tok", "expires_in" => 3600 })
+    fake_http = Object.new
+    fake_http.define_singleton_method(:request) { |req| captured_request = req; response }
+
+    Net::HTTP.stub(:start, ->(_host, _port, **kwargs, &block) { captured_kwargs = kwargs; block.call(fake_http) }) do
+      assert credential.refresh!
+    end
+
+    assert_equal McpOauthService::REQUEST_TIMEOUT, captured_kwargs[:open_timeout]
+    assert_equal McpOauthService::REQUEST_TIMEOUT, captured_kwargs[:read_timeout]
+    assert_equal true, captured_kwargs[:use_ssl]
+
+    assert_equal "/oauth/token", captured_request.path
+    assert_equal "application/x-www-form-urlencoded", captured_request["Content-Type"]
+    form = URI.decode_www_form(captured_request.body).to_h
+    assert_equal "refresh_token", form["grant_type"]
+    assert_equal credential.client_id, form["client_id"]
+    assert_equal "https://mcp.notion.com", form["resource"]
   end
 
   private

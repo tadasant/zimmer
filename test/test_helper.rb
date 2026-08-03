@@ -188,6 +188,7 @@ module ActiveSupport
     include FixtureHelpers
     include BroadcastHelpers
     include LogCaptureHelpers
+    include McpOauthTestHelpers
 
     # Add more helper methods to be used by all tests here...
   end
