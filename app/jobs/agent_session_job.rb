@@ -400,7 +400,8 @@ class AgentSessionJob < ApplicationJob
         # with this exact prompt instead of losing the deploy/trigger/status
         # summary continuation and parking the session in needs_input.
         pending_follow_up_prompt = session.metadata&.dig("pending_follow_up_prompt").presence
-        active_follow_up_prompt = pending_follow_up_prompt || follow_up_prompt
+        follow_up_prompt = pending_follow_up_prompt || follow_up_prompt
+        active_follow_up_prompt = build_prompt_with_goal(follow_up_prompt, session)
         pending_keys = pending_follow_up_prompt.present? ? %w[pending_follow_up_prompt pending_follow_up_sent_at] : []
         session.merge_metadata!({ "active_follow_up_prompt" => active_follow_up_prompt }, pending_keys)
       else
@@ -1416,7 +1417,11 @@ class AgentSessionJob < ApplicationJob
                 log_buffer.flush
                 return
               end
-              session.remove_metadata!("active_follow_up_prompt")
+              session.remove_metadata!(%w[
+                active_follow_up_prompt
+                transcript_recovery_expected
+                transcript_recovery_base_line_count
+              ])
               session.pause! if session.may_pause?
               # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
               @broadcast_service.session_status(session)
@@ -1443,7 +1448,10 @@ class AgentSessionJob < ApplicationJob
                 "process_failed"
               end
               session.update!(
-                metadata: (session.metadata || {}).merge(
+                metadata: (session.metadata || {}).except(
+                  "transcript_recovery_expected",
+                  "transcript_recovery_base_line_count"
+                ).merge(
                   "failure_reason" => failure_reason,
                   "exit_status" => exit_decision.error_message
                 )
