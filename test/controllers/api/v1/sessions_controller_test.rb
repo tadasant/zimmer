@@ -689,6 +689,38 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
+  # The reported repro for #340: the delete endpoint used to leave the session's
+  # durable scratch dir and prompt attachments on the volume, unreachable by any
+  # later query because their only key was the id of the row it had just removed.
+  test "should delete the session's scratch dir and prompt attachments" do
+    session = sessions(:running)
+    env_backup = %w[AGENT_SCRATCH_DIR AGENT_FILES_DIR AGENT_IMAGES_DIR].index_with { |key| ENV[key] }
+    scratch_base = Dir.mktmpdir("api-destroy-scratch")
+    files_base = Dir.mktmpdir("api-destroy-files")
+    images_base = Dir.mktmpdir("api-destroy-images")
+    ENV["AGENT_SCRATCH_DIR"] = scratch_base
+    ENV["AGENT_FILES_DIR"] = files_base
+    ENV["AGENT_IMAGES_DIR"] = images_base
+
+    scratch = SessionScratchDirectory.ensure_for(session.id)
+    File.write(File.join(scratch, "pipeline-state.json"), "{}")
+    file_service = FileStorageService.new(session_id: session.id)
+    file_service.store(data: "notes", filename: "notes.md")
+    image_service = ImageStorageService.new(session_id: session.id)
+    png = [ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A ].pack("C*") + ("x" * 32)
+    image_service.store(data: Base64.strict_encode64(png), filename: "shot.png")
+
+    delete api_v1_session_path(session.id), headers: @headers
+
+    assert_response :no_content
+    assert_not Dir.exist?(scratch), "DELETE should reclaim the session's scratch dir"
+    assert_not Dir.exist?(file_service.session_dir), "DELETE should reclaim the session's prompt files"
+    assert_not Dir.exist?(image_service.session_dir), "DELETE should reclaim the session's prompt images"
+  ensure
+    env_backup&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    [ scratch_base, files_base, images_base ].compact.each { |dir| FileUtils.rm_rf(dir) }
+  end
+
   # Archive tests
   test "should archive running session" do
     session = sessions(:running)
