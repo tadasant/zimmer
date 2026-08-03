@@ -101,15 +101,24 @@ class Routing404Test < ActionDispatch::IntegrationTest
     refute_match(/\bFATAL\b/, log, "routing miss must not be logged at FATAL")
   end
 
+  # Attaches a sink to Rails.logger rather than replacing it. Replacing it captures
+  # strictly less: DebugExceptions — the middleware that would log a RoutingError at
+  # ERROR, which is the whole thing these assertions rule out — writes to
+  # env_config["action_dispatch.logger"], a value memoized once per process (see
+  # test_helper.rb) and merged over every request env. A swapped-in logger is not that
+  # object, so the assertions below would pass without ever being able to see the record
+  # they forbid. Replacing it also used to leave that memo pointing at this throwaway
+  # logger for the rest of the worker, which is what made the ERROR-record control in
+  # csrf_failure_logging_test.rb fail at random (#337).
   def capture_log_output
-    original_logger = Rails.logger
     log_output = StringIO.new
-    Rails.logger = Logger.new(log_output)
+    sink = Logger.new(log_output)
+    Rails.logger.broadcast_to(sink)
 
     yield
 
     log_output.string
   ensure
-    Rails.logger = original_logger
+    Rails.logger.stop_broadcasting_to(sink)
   end
 end

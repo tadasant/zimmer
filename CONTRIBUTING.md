@@ -44,6 +44,18 @@ Run targeted tests locally rather than the whole suite:
 bin/rails test test/models/session_test.rb
 ```
 
+### Capturing log output in a test
+
+Attach a sink — `Rails.logger.broadcast_to(sink)` / `stop_broadcasting_to(sink)` —
+rather than assigning `Rails.logger`. Assignment is invisible to anything holding a
+reference to the original logger, and Rails hands out several: most importantly
+`Rails.application.env_config["action_dispatch.logger"]`, which is memoized once per
+process and merged over every request env, and is what `ActionDispatch::DebugExceptions`
+writes an unhandled exception to. A test that assigns `Rails.logger` therefore *misses*
+exactly the ERROR records a logging test usually exists to assert on. `test_helper.rb`
+resolves `env_config` before the parallel workers fork so that entry is always the real
+boot logger; see issue #337 for the flake that taught us this.
+
 ## Known coupling: the agent-artifact catalog
 
 Zimmer's session model validates a session's `agent_root` (and `catalog_skills`)

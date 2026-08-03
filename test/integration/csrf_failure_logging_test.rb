@@ -179,6 +179,15 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
   # proves two things at once — the assertions above are not vacuous, and the
   # capture harness really does observe the middleware's ERROR record.
   test "without the handler the same request emits an ERROR record and no INFO line" do
+    # This is the one example whose subject is the middleware rather than the
+    # controller, so it is the one that depends on capture_log_entries reaching
+    # DebugExceptions. DebugExceptions logs to env_config["action_dispatch.logger"];
+    # the sink is attached to Rails.logger. State that they are the same object rather
+    # than assuming it — a regression should name the broken invariant instead of
+    # surfacing as an inexplicably absent ERROR record, which is how #337 presented.
+    assert_same Rails.logger, Rails.application.env_config["action_dispatch.logger"],
+      "the capture harness cannot observe DebugExceptions unless these are one logger"
+
     entries = without_csrf_rescue_handler do
       capture_log_entries do
         patch mark_read_notification_path(notifications(:default_notification))
@@ -198,8 +207,8 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
 
   # rescue_handlers is a class_attribute, so assigning here defines the value on
   # ApplicationController and every descendant reading through it, and restoring it
-  # afterwards fully reverts. Examples within a parallel worker run sequentially, so
-  # this cannot leak into a concurrently-executing test.
+  # afterwards fully reverts. parallelize() forks processes and examples within a
+  # worker run sequentially, so the window is closed before any other example runs.
   def without_csrf_rescue_handler
     original = ApplicationController.rescue_handlers
     ApplicationController.rescue_handlers =
