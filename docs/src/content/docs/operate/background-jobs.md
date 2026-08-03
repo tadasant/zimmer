@@ -83,14 +83,23 @@ fenced:
 | Guard | Effect |
 | --- | --- |
 | `SESSION_ID_DIR` (`/\A[1-9]\d{0,17}\z/`) | Only directories named like a session id are candidates. Excludes the `temp_<uuid>` pre-session upload dirs and anything too long for a bigint |
-| `Session.where(id: candidates)` | Asks "which of *these* ids exist?", never "list every id" — a directory goes only when Postgres said that primary key is gone |
+| `Session.unscoped.where(id: candidates)` | Asks "which of *these* ids exist?", never "list every id" — a directory goes only when Postgres said that primary key is gone. `unscoped` because this query decides deletions, so a `default_scope` added later must not be able to hide a live row from it |
 | Listing before querying | A session created between the two is in the answer; the ordering that could miss one is impossible |
 | `ORPHAN_AGE_THRESHOLD` (1 hour) | A directory younger than an hour survives regardless, so a scratch dir created before its row committed is safe |
-| Empty `sessions` table | Aborts the whole sweep — that is what a restored-but-unseeded database looks like, and the one shape where "no row owns this" is a lie about every directory at once |
+| Empty `sessions` table | Aborts the whole sweep. This catches only the *completely* empty case — a restore from a stale snapshot still has rows and passes it, and `ORPHAN_SWEEP_LIMIT` is the real backstop there |
 | `ORPHAN_SWEEP_LIMIT` (200 per root) | Caps one run's blast radius; the overflow is logged and picked up next hour |
-| Test environment | A root is swept only when its `AGENT_*_DIR` override points somewhere explicit. The defaults resolve onto the developer's real `~/.zimmer` volume, which the test database knows nothing about |
+| Only the deployment that owns the volume | A root inside the durable volume (the parent of `ClonesDirectory.base`) is swept only in production and staging. Anywhere else it is swept only if it has been relocated clear of that volume — see below |
 
 Every removal is logged with its path and mtime before the bytes go.
+
+That last row is the one worth understanding, because it is not about environment names being tidy.
+The hazard is a process whose database does not describe the volume it is looking at. `bin/rails
+test` runs against `zimmer_test`; `bin/dev` runs against `zimmer_development` **and runs this job on
+an hourly cron in-process**. Both resolve the default roots to `~/.zimmer` — which, on a machine
+that also hosts a real Zimmer, is the volume holding live sessions' scratch. Unfenced, either would
+compute every one of those as an orphan. Scratch and prompt attachments have no remote to be
+re-fetched from, so that is unrecoverable, which is why the fence is on the *path* rather than on
+whether some `AGENT_*_DIR` happens to be set.
 
 ## The zombie reaper only takes what nobody is waiting for
 

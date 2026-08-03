@@ -101,11 +101,14 @@ class StaleCloneCleanupJobSessionDirSweepTest < ActiveJob::TestCase
     assert Dir.exist?(oversized), "a numeric name too long for a bigint id must survive"
   end
 
-  test "aborts the sweep when the sessions table is empty" do
+  test "aborts the sweep when the sessions table has no rows" do
     scratch, files, images = seed_all_roots(@orphan_id)
     backdate(scratch, files, images)
 
-    StaleCloneCleanupJob.any_instance.stubs(:any_sessions_exist?).returns(false)
+    # Stub the relation, not the predicate: the guard itself has to be the thing
+    # under test, or rewriting it to something always-true would stay green.
+    Session.stubs(:unscoped).returns(Session.none)
+    assert_not StaleCloneCleanupJob.new.send(:any_sessions_exist?)
 
     StaleCloneCleanupJob.perform_now
 
@@ -114,31 +117,81 @@ class StaleCloneCleanupJobSessionDirSweepTest < ActiveJob::TestCase
     assert Dir.exist?(images)
   end
 
-  test "sweeps the same roots the writers write to" do
-    labels_to_roots = StaleCloneCleanupJob.new.send(:session_directory_roots).to_h { |label, root, _env| [ label, root ] }
+  test "removes at most ORPHAN_SWEEP_LIMIT directories from a root per run" do
+    over_limit = StaleCloneCleanupJob::ORPHAN_SWEEP_LIMIT + 1
+    orphans = (1..over_limit).map do |offset|
+      dir = File.join(@scratch_base, (@orphan_id + offset).to_s)
+      FileUtils.mkdir_p(dir)
+      dir
+    end
+    backdate(*orphans)
 
-    assert_equal SessionScratchDirectory.base, labels_to_roots["scratch"]
-    assert_equal FileStorageService.base_dir, labels_to_roots["prompt files"]
-    assert_equal ImageStorageService.base_dir, labels_to_roots["prompt images"]
-    assert_equal File.dirname(FileStorageService.new(session_id: 1).session_dir), labels_to_roots["prompt files"]
-    assert_equal File.dirname(SessionScratchDirectory.path_for(1)), labels_to_roots["scratch"]
+    StaleCloneCleanupJob.perform_now
+
+    survivors = orphans.count { |dir| Dir.exist?(dir) }
+    assert_equal 1, survivors, "the cap should leave exactly one orphan for the next run"
+
+    StaleCloneCleanupJob.perform_now
+
+    assert_equal 0, orphans.count { |dir| Dir.exist?(dir) }, "the next run should take the remainder"
   end
 
-  test "refuses to sweep a root that is not explicitly relocated under test" do
+  test "sweeps the same roots the writers write to" do
+    labels_to_roots = StaleCloneCleanupJob.new.send(:session_directory_roots).to_h
+
+    # Each assert is against the directory a writer would actually create, so a
+    # root swapped for its sibling (storage_root instead of base_dir, say) fails.
+    assert_equal File.dirname(SessionScratchDirectory.path_for(1)), labels_to_roots["scratch"]
+    assert_equal File.dirname(FileStorageService.new(session_id: 1).session_dir), labels_to_roots["prompt files"]
+    assert_equal File.dirname(ImageStorageService.new(session_id: 1).session_dir), labels_to_roots["prompt images"]
+  end
+
+  test "refuses to sweep a root inside the durable volume outside production and staging" do
+    # Make the tmp scratch base look like it lives on the durable volume by
+    # pointing the clones base (whose parent defines that volume) inside it.
+    ClonesDirectory.stubs(:base).returns(File.join(@scratch_base, "clones"))
+    orphan = File.join(@scratch_base, @orphan_id.to_s)
+    FileUtils.mkdir_p(orphan)
+    backdate(orphan)
+
+    StaleCloneCleanupJob.perform_now
+
+    assert Dir.exist?(orphan),
+      "a root on the durable volume must not be swept by an environment whose database does not describe it"
+
     job = StaleCloneCleanupJob.new
+    assert_not job.send(:sweepable_root?, "scratch", @scratch_base)
+    assert job.send(:sweepable_root?, "prompt files", @files_base),
+      "a root relocated clear of the durable volume is still swept"
+  end
 
-    assert job.send(:sweepable_root?, "scratch", @scratch_base, "AGENT_SCRATCH_DIR")
+  test "sweeps a root inside the durable volume when this is the deployment that owns it" do
+    ClonesDirectory.stubs(:base).returns(File.join(@scratch_base, "clones"))
+    Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new("production"))
 
-    ENV.delete("AGENT_SCRATCH_DIR")
-    assert_not job.send(:sweepable_root?, "scratch", @scratch_base, "AGENT_SCRATCH_DIR"),
-      "under test an un-relocated root resolves onto the real ~/.zimmer volume and must never be swept"
+    assert StaleCloneCleanupJob.new.send(:sweepable_root?, "scratch", @scratch_base)
   end
 
   test "skips a root that does not exist" do
     job = StaleCloneCleanupJob.new
 
-    assert_not job.send(:sweepable_root?, "scratch", File.join(@scratch_base, "nope"), "AGENT_SCRATCH_DIR")
-    assert_not job.send(:sweepable_root?, "scratch", nil, "AGENT_SCRATCH_DIR")
+    assert_not job.send(:sweepable_root?, "scratch", File.join(@scratch_base, "nope"))
+    assert_not job.send(:sweepable_root?, "scratch", nil)
+  end
+
+  test "keeps sweeping the remaining roots when one cannot be listed" do
+    file_service = FileStorageService.new(session_id: @orphan_id)
+    file_service.store(data: "notes", filename: "notes.md")
+    backdate(file_service.session_dir)
+    FileUtils.mkdir_p(File.join(@scratch_base, @orphan_id.to_s))
+
+    File.chmod(0o000, @scratch_base)
+
+    assert_nothing_raised { StaleCloneCleanupJob.perform_now }
+    assert_not Dir.exist?(file_service.session_dir),
+      "an unlistable root must not stop the sweep from reaching the others"
+  ensure
+    File.chmod(0o755, @scratch_base)
   end
 
   private

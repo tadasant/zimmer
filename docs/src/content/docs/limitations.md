@@ -1271,7 +1271,8 @@ them was left. [#340](https://github.com/tadasant/zimmer/issues/340) closed that
 `after_destroy_commit` on `Session` plus a filesystem-level
 [orphan sweep](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) over the
 three per-session roots, the equivalent of what `ClonesDirectory.base` has always had. The sweep
-runs hourly, so a delete that skips the callback costs at most an hour rather than forever.
+runs hourly and ignores anything younger than `ORPHAN_AGE_THRESHOLD`, so a delete that skips the
+callback costs a couple of hours rather than forever.
 
 The archive/unarchive half of that used to be false in the other direction:
 `DeferredCloneCleanupJob` deleted scratch about ten seconds after archive, and
