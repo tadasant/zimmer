@@ -737,6 +737,38 @@ class SessionTest < ActiveSupport::TestCase
     assert individual_replaced, "Expected child session to broadcast its own card to sessions_index_individual"
   end
 
+  test "creating a spawned child broadcasts a refreshed provenance panel to the parent detail page" do
+    parent = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Parent",
+      title: "Parent",
+      status: :needs_input
+    )
+    broadcasts = []
+    Turbo::StreamsChannel.stubs(:broadcast_replace_to).with do |stream, **options|
+      broadcasts << [ stream, options ]
+      true
+    end
+
+    child = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Child",
+      title: "Spawned child",
+      parent_session_id: parent.id,
+      status: :waiting
+    )
+
+    parent_broadcast = broadcasts.find do |stream, options|
+      stream == "session_#{parent.id}_status" &&
+        options[:target] == "session_#{parent.id}_provenance"
+    end
+
+    assert parent_broadcast, "Expected parent detail provenance panel to be replaced when a child is spawned"
+    assert_includes parent_broadcast.last[:html], "Spawned child"
+    assert_includes parent_broadcast.last[:html], "/sessions/#{child.id}"
+    refute_includes parent_broadcast.last[:html], "has spawned none"
+  end
+
   test "status update triggers broadcast callback" do
     session = sessions(:running)
     original_status = session.status

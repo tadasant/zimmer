@@ -49,6 +49,32 @@ class SessionUncleLinkTest < ActiveSupport::TestCase
     assert SessionUncleLink.new(session: b, uncle_session: a).valid?
   end
 
+  test "creating an uncle edge broadcasts refreshed provenance panels across the joined hierarchy" do
+    junior = create_session
+    senior = create_session
+    broadcasts = []
+    Turbo::StreamsChannel.stubs(:broadcast_replace_to).with do |stream, **options|
+      broadcasts << [ stream, options ]
+      true
+    end
+
+    SessionUncleLink.create!(session: junior, uncle_session: senior)
+
+    junior_broadcast = broadcasts.find do |stream, options|
+      stream == "session_#{junior.id}_status" &&
+        options[:target] == "session_#{junior.id}_provenance"
+    end
+    senior_broadcast = broadcasts.find do |stream, options|
+      stream == "session_#{senior.id}_status" &&
+        options[:target] == "session_#{senior.id}_provenance"
+    end
+
+    assert junior_broadcast, "Expected junior provenance panel to refresh when an uncle edge is recorded"
+    assert senior_broadcast, "Expected senior provenance panel to refresh when an uncle edge is recorded"
+    assert_includes junior_broadcast.last[:html], "also senior:"
+    assert_includes junior_broadcast.last[:html], "##{senior.id}"
+  end
+
   # Unlike parent_session_id (SET NULL), an edge with one end missing asserts
   # nothing — so it goes away with either session, by row-level delete too.
   test "a row level delete of either session removes the edge" do
