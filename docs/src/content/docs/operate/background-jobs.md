@@ -270,6 +270,22 @@ on the queue it watches, or the outage it exists to report would starve it into 
 `SystemHealthMonitorJob` documents the same rule inverted — it watches `default`, so it runs on
 `pollers`.
 
+### "N active / M registered" workers
+
+The worker line in the queue-backlog alert (and on `/health`) comes from
+`HealthMonitorService#worker_statistics`, which counts a `GoodJob::Process` row as active when its
+heartbeat is newer than `HealthMonitorService::WORKER_ACTIVE_INTERVAL` — aliased to GoodJob's own
+`GoodJob::Process::EXPIRED_INTERVAL`, 5 minutes.
+
+That has to clear the renew cadence, not match it. A capsule refreshes its row every
+`STALE_INTERVAL + jitter` — 30 to 33 seconds — and the refresh is gated on the capsule holding a
+lock and runs on the shared 2-thread executor, so it slips further under load. A threshold at or
+below the cadence reports a perfectly healthy worker as down a meaningful fraction of the time,
+which is what made a real backlog alert read "Workers: 1 active / 2 registered" during the
+2026-08-02 incident. `EXPIRED_INTERVAL` is the point at which GoodJob itself gives up: it deletes
+the row and releases the jobs it had locked. A worker inactive by this measure is one GoodJob is
+about to reap.
+
 ## Retry and recovery machinery
 
 | Service | What it handles |
