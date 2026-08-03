@@ -182,6 +182,32 @@ class Api::V1::EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_equal 2, @msg3.reload.position
   end
 
+  # Regression for #353. The delete path renumbers with a single bulk
+  # `position = position - 1`, which is collision-free only if rows are visited
+  # in ascending position order. Nothing in the statement pins that order, so
+  # the bug showed up as an intermittent 500 whenever the planner picked a
+  # different one.
+  #
+  # This reproduces that plan deterministically: rewriting the rows
+  # high-position-first leaves their live heap tuples laid out in descending
+  # position order, and disabling index/bitmap scans forces a seq scan, which
+  # walks the heap in exactly that order. Under a non-deferred unique index this
+  # is a guaranteed PG::UniqueViolation.
+  test "should renumber positions after delete even when the scan order is descending" do
+    tail = (4..8).map { |i| @session.enqueued_messages.create!(content: "Message #{i}", position: i, status: "pending") }
+
+    (tail.reverse + [ @msg3, @msg2 ]).each { |m| m.update_column(:content, "#{m.content} (rewritten)") }
+
+    conn = ActiveRecord::Base.connection
+    conn.execute("SET LOCAL enable_indexscan = off")
+    conn.execute("SET LOCAL enable_bitmapscan = off")
+
+    delete api_v1_session_enqueued_message_path(@session, @msg1), headers: @headers
+    assert_response :no_content
+
+    assert_equal (1..7).to_a, @session.enqueued_messages.ordered.pluck(:position)
+  end
+
   # Reorder tests
   test "should reorder message to new position" do
     patch reorder_api_v1_session_enqueued_message_path(@session, @msg3), params: {
