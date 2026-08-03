@@ -244,32 +244,29 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_includes result.forked_session.title, "Fork of Session #{@source_session.id}"
   end
 
-  # A fork's title is the source's under a prefix, and Session caps a title's
-  # length — so a source title within 8 characters of that cap composes a fork
-  # title the model rejects, and the fork fails deterministically: no retry can
-  # produce a shorter title. Titles that close to the cap are legal and routine
-  # (routers set them via start_session, where the length guidance is guidance).
+  # A fork's title is the source's under an 8-character prefix, and Session caps
+  # a title at 100 — so a source title over 92 characters composes a fork title
+  # the model rejects, and the fork fails deterministically: no retry can produce
+  # a shorter title. Titles that long are legal and routine (routers set them via
+  # start_session, where "under 70 characters" is guidance, not enforcement).
   test "a source title that fills the budget exactly is carried over whole" do
-    limit = ForkSessionService.title_length_limit
-    base = "a" * (limit - ForkSessionService::FORK_TITLE_PREFIX.length)
+    base = "a" * 92
     @source_session.update!(title: base)
 
     result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: @mock_fs)
 
     assert result.success?, result.error
     assert_equal "Fork of #{base}", result.forked_session.title
-    assert_equal limit, result.forked_session.title.length
+    assert_equal 100, result.forked_session.title.length
   end
 
   test "a source title one character past the budget is truncated rather than failing the fork" do
-    limit = ForkSessionService.title_length_limit
-    base = "a" * (limit - ForkSessionService::FORK_TITLE_PREFIX.length + 1)
-    @source_session.update!(title: base)
+    @source_session.update!(title: "a" * 93)
 
     result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: @mock_fs)
 
     assert result.success?, result.error
-    assert_equal limit, result.forked_session.title.length
+    assert_equal 100, result.forked_session.title.length
     assert result.forked_session.title.end_with?("…"), "the truncation should read as one: #{result.forked_session.title}"
   end
 
@@ -304,6 +301,33 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
 
     assert result.success?, result.error
     assert_equal 40, result.forked_session.title.length
+  end
+
+  test "a model that caps nothing leaves the title untruncated" do
+    Session.stubs(:validators_on).returns([])
+    @source_session.title = "c" * 60
+
+    assert_nil ForkSessionService.title_length_limit
+    result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?, result.error
+    assert_equal "Fork of #{"c" * 60}", result.forked_session.title
+  end
+
+  # A cap with no room for the prefix leaves no budget to truncate against, and
+  # the composed title has to be cut instead — the one case where the fork's
+  # title stops reading as "Fork of ...".
+  test "a cap too small to hold the prefix truncates the composed title" do
+    Session.stubs(:validators_on).returns([
+      ActiveModel::Validations::LengthValidator.new(attributes: [ :title ], maximum: 6)
+    ])
+    @source_session.title = "d" * 60
+
+    result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?, result.error
+    assert_equal 6, result.forked_session.title.length
+    assert_equal "Fork …", result.forked_session.title
   end
 
   test "sets runtime_started flag in forked session metadata for resume mode" do
@@ -682,6 +706,28 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
   # record does not save, nothing claims that copy — and
   # OrphanCloneFilesystemCleanupJob ignores anything younger than 48h, so a whole
   # working tree sits on disk for two days per failed fork.
+  # The caller disposes of the clone when record creation answers nil, so nil
+  # has to mean no record exists. A log insert that fails after the session row
+  # was written would otherwise leave a live session whose metadata names a
+  # clone the caller then deletes.
+  test "a record creation that fails partway writes no session at all" do
+    fs = failing_copy_adapter(@mock_fs, failures: 0)
+    Log.any_instance.stubs(:save!).raises(ActiveRecord::RecordInvalid.new(Log.new))
+
+    assert_no_difference -> { Session.count } do
+      result = ForkSessionService.call(
+        source_session: @source_session,
+        message_index: 1,
+        file_system: fs
+      )
+
+      assert_not result.success?
+      assert_equal "Failed to create forked session record", result.error
+    end
+
+    assert_no_partial_clones(fs)
+  end
+
   test "a fork whose record cannot be created leaves no clone behind" do
     fs = failing_copy_adapter(@mock_fs, failures: 0)
     ForkSessionService.any_instance.stubs(:create_forked_session).returns(nil)
