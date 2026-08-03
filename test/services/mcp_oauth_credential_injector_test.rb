@@ -46,7 +46,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
         expires_in: 3600
       }.to_json)
 
-      Net::HTTP.stub(:post_form, successful_refresh_response) do
+      stub_token_post(successful_refresh_response) do
         injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
 
         # Before check_credentials_status, the credential is expired
@@ -93,7 +93,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       failed_refresh_response.stubs(:code).returns("401")
       failed_refresh_response.stubs(:body).returns({ error: "invalid_grant" }.to_json)
 
-      Net::HTTP.stub(:post_form, failed_refresh_response) do
+      stub_token_post(failed_refresh_response) do
         injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
         status = injector.check_credentials_status
 
@@ -125,8 +125,8 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       })
       credential.update_column(:credential_key, expected_key)
 
-      # Net::HTTP.post_form should NOT be called since there's no refresh token
-      Net::HTTP.stub(:post_form, ->(*) { raise "Should not attempt refresh without refresh_token" }) do
+      # The refresh post should NOT be attempted since there's no refresh token
+      stub_token_post(->(*) { raise "Should not attempt refresh without refresh_token" }) do
         injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
         status = injector.check_credentials_status
 
@@ -158,8 +158,8 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       })
       credential.update_column(:credential_key, expected_key)
 
-      # Net::HTTP.post_form should NOT be called for active tokens
-      Net::HTTP.stub(:post_form, ->(*) { raise "Should not refresh active token" }) do
+      # The refresh post should NOT be attempted for active tokens
+      stub_token_post(->(*) { raise "Should not refresh active token" }) do
         injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
         status = injector.check_credentials_status
 
@@ -230,7 +230,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
         expires_in: 3600
       }.to_json)
 
-      Net::HTTP.stub(:post_form, successful_refresh_response) do
+      stub_token_post(successful_refresh_response) do
         injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
         injector.check_credentials_status
 
@@ -263,7 +263,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       credential.update_column(:credential_key, expected_key)
 
       # Stub the HTTP call to raise a timeout error
-      Net::HTTP.stub(:post_form, ->(*) { raise Timeout::Error, "Connection timed out" }) do
+      stub_token_post(->(*) { raise Timeout::Error, "Connection timed out" }) do
         injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
 
         # Should not raise, should handle gracefully
@@ -303,7 +303,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       failed_refresh_response.stubs(:body).returns({ error: "invalid_grant" }.to_json)
 
       PreregisteredOauthConfig.stub(:find_for_server, nil) do
-        Net::HTTP.stub(:post_form, failed_refresh_response) do
+        stub_token_post(failed_refresh_response) do
           injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
           status = injector.check_credentials_status
 
@@ -338,7 +338,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       credential.update_column(:credential_key, expected_key)
 
       PreregisteredOauthConfig.stub(:find_for_server, nil) do
-        Net::HTTP.stub(:post_form, ->(*) { raise "Should not refresh active token" }) do
+        stub_token_post(->(*) { raise "Should not refresh active token" }) do
           injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
           status = injector.check_credentials_status
 
@@ -372,7 +372,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       credential.update_column(:credential_key, expected_key)
 
       PreregisteredOauthConfig.stub(:find_for_server, nil) do
-        Net::HTTP.stub(:post_form, ->(*) { raise "Should not attempt refresh" }) do
+        stub_token_post(->(*) { raise "Should not attempt refresh" }) do
           injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
           status = injector.check_credentials_status
 
@@ -407,7 +407,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       credential.update_column(:credential_key, expected_key)
 
       PreregisteredOauthConfig.stub(:find_for_server, nil) do
-        Net::HTTP.stub(:post_form, ->(*) { raise "Should not attempt refresh without token_endpoint" }) do
+        stub_token_post(->(*) { raise "Should not attempt refresh without token_endpoint" }) do
           injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
           status = injector.check_credentials_status
 
