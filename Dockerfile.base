@@ -122,7 +122,7 @@ RUN npm install --prefix /opt/air-cli \
 # ao-upgrade-codex skill (mirrors the ao-upgrade-air pattern).
 # `codex --version` runs in the build so a broken install fails fast.
 RUN set -eo pipefail; \
-    for i in 1 2 3; do npm install -g @openai/codex@0.135.0 && break || { echo "codex install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
+    for i in 1 2 3; do npm install -g @openai/codex@0.146.0 && break || { echo "codex install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
     codex --version
 
 # Create rails user for security (non-root runtime)
