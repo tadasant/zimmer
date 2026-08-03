@@ -2788,7 +2788,12 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal [ "screenshots-videos" ], session.catalog_plugins
   end
 
-  test "create_from_agent_root! can preserve an explicit empty mcp_servers override" do
+  # This path's callers are the dashboard quick prompt, the chat bubble, and
+  # Trigger — whose mcp_servers column is `default: [], null: false`, so [] is an
+  # untouched trigger rather than a request for none. It deliberately does NOT
+  # record an explicit-empty choice; the surfaces that can express one
+  # (start_session, POST /api/v1/sessions, the new-session form) do it themselves.
+  test "create_from_agent_root! does not treat an empty mcp_servers argument as a deliberate none" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo.git",
       default_branch: "main",
@@ -2800,15 +2805,42 @@ class SessionTest < ActiveSupport::TestCase
     )
     AgentRootsConfig.stubs(:find!).with("test-root").returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
+    ServersConfig.stubs(:exists?).returns(true)
 
     session = Session.create_from_agent_root!(
       agent_root_name: "test-root",
       prompt: "Test",
-      mcp_servers: [],
-      preserve_empty_mcp_servers: true
+      mcp_servers: []
     )
 
-    assert_equal [], session.mcp_servers
+    assert_equal [ "zimmer-sessions" ], session.mcp_servers
+    refute session.mcp_servers_explicitly_empty?
+  end
+
+  # An empty mcp_servers column means two different things — a deliberate "no
+  # servers" and a resolve that landed empty by accident — and McpServerBackfill
+  # heals only the second. This flag is what separates them.
+  test "record_explicit_mcp_servers flags an empty list and clears the flag for a non-empty one" do
+    ServersConfig.stubs(:exists?).returns(true)
+    session = Session.new(git_root: "https://github.com/test/repo", branch: "main")
+
+    refute session.mcp_servers_explicitly_empty?
+
+    session.record_explicit_mcp_servers([])
+    assert session.mcp_servers_explicitly_empty?
+
+    session.record_explicit_mcp_servers([ "context7" ])
+    refute session.mcp_servers_explicitly_empty?
+    refute session.metadata.key?(Session::EXPLICIT_EMPTY_MCP_SERVERS_KEY)
+  end
+
+  test "record_explicit_mcp_servers preserves the rest of the metadata hash" do
+    session = Session.new(git_root: "https://github.com/test/repo", branch: "main", metadata: { "agent_root_key" => "zimmer" })
+
+    session.record_explicit_mcp_servers([])
+
+    assert_equal "zimmer", session.metadata["agent_root_key"]
+    assert session.mcp_servers_explicitly_empty?
   end
 
   test "create_from_agent_root! falls back to defaults for all columns when omitted" do

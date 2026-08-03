@@ -237,6 +237,13 @@ class SessionsController < ApplicationController
   def create
     @session = Session.new(session_params)
 
+    # The form always submits an mcp_servers key (the multi-select emits a blank
+    # hidden input when nothing is selected), so an empty list here is a user who
+    # deliberately picked no servers. Recorded before save so McpServerBackfill
+    # doesn't read the empty column as an accident and restore the root's
+    # defaults when the job starts.
+    @session.record_explicit_mcp_servers(@session.mcp_servers) if session_params.key?(:mcp_servers)
+
     # Check if this is a clone-only session (no prompt)
     is_clone_only = @session.prompt.blank?
 
@@ -2131,6 +2138,11 @@ class SessionsController < ApplicationController
 
     result = with_db_retry do
       old_servers = @session.mcp_servers || []
+
+      # Clearing the list has to be recorded as deliberate, or McpServerBackfill
+      # reads the empty column as an accident and restores the root's defaults
+      # the next time the config is regenerated.
+      @session.record_explicit_mcp_servers(mcp_servers)
 
       if @session.update(mcp_servers: mcp_servers)
         # Log the change

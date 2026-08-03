@@ -204,6 +204,30 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal [ "context7" ], session.reload.mcp_servers
   end
 
+  # Clearing the list already returned "(none)" before this fix, and then the job
+  # started and McpServerBackfill restored the root's defaults. Recording the
+  # choice is what makes the cleared list survive to job start.
+  test "change_mcp_servers records an emptied list as a deliberate none" do
+    session = sessions(:needs_input)
+    session.update!(mcp_servers: [ "context7" ])
+
+    result = @tool.call("action" => "change_mcp_servers", "session_id" => session.id, "mcp_servers" => [])
+
+    assert_includes result, "## MCP Servers Updated"
+    assert_equal [], session.reload.mcp_servers
+    assert session.mcp_servers_explicitly_empty?
+  end
+
+  test "change_mcp_servers clears the deliberate-none flag when servers are added back" do
+    session = sessions(:needs_input)
+    @tool.call("action" => "change_mcp_servers", "session_id" => session.id, "mcp_servers" => [])
+    assert session.reload.mcp_servers_explicitly_empty?
+
+    @tool.call("action" => "change_mcp_servers", "session_id" => session.id, "mcp_servers" => [ "context7" ])
+
+    refute session.reload.mcp_servers_explicitly_empty?
+  end
+
   test "change_mcp_servers rejects servers outside the catalog" do
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "change_mcp_servers", "session_id" => sessions(:needs_input).id, "mcp_servers" => [ "not-a-server" ])

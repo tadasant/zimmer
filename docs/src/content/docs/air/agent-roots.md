@@ -37,6 +37,36 @@ The `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`,
 computes them by [inverting `default_in_roots`](/air/overview/#default_in_roots--the-inversion) from
 each artifact's own entry.
 
+### Omitting a list is not the same as asking for an empty one
+
+On the three surfaces that create a session against a root — the MCP `start_session` tool, `POST
+/api/v1/sessions`, and the new-session form — an **omitted** `mcp_servers`/`skills`/`plugins` takes
+the root's defaults, while an explicit **`[]`** takes none of that artifact. They are two different
+requests and Zimmer keeps them apart.
+
+This matters most for MCP servers, because a root's defaults can carry real privilege (SSH access to
+a production host, a secrets store). A caller that narrows to `[]` is asking for least privilege, and
+silently handing it the full default set instead is the failure mode this distinction exists to
+prevent.
+
+An empty `mcp_servers` column is otherwise ambiguous: it is also where a session lands when the
+catalog resolve was incomplete at create time, which `McpServerBackfill` heals by restoring the
+root's current defaults. Zimmer therefore records a deliberate "none" on the session
+(`metadata.mcp_servers_explicitly_empty`), and the heal skips those sessions — so an explicit `[]`
+survives to job start rather than being restored when the runtime config is regenerated. Every path
+that lets someone name the list sets it, including the mid-life ones (`change_mcp_servers`, `PATCH
+/api/v1/sessions/:id/mcp_servers`, and the session page's editor).
+
+Two things are deliberately outside that rule:
+
+- **`Session.create_from_agent_root!`** (the dashboard quick prompt, the chat bubble, and
+  [triggers](/sessions/triggers/)) treats `nil` and `[]` alike as "take the defaults". A `Trigger`'s
+  `mcp_servers` column is `default: [], null: false`, so `[]` there is an untouched trigger rather
+  than a request for none — reading it as "no servers" would strip every existing trigger's servers.
+- **Injected servers** (the self-session server, and the subagent-spawning server for roots that
+  declare `default_subagent_roots`) are added by `SelfSessionInjector`, not by this resolution. A
+  session spawned with `mcp_servers: []` still receives them, by design.
+
 ## The ten roots that ship
 
 | Root | Invocable | Repo | Notes |
