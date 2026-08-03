@@ -144,6 +144,12 @@ class Session < ApplicationRecord
   # Broadcast custom_metadata changes to session detail page (e.g., github_pull_request_statuses)
   after_update_commit :broadcast_custom_metadata_change, if: :saved_change_to_custom_metadata?
 
+  # A newly-spawned child changes the hierarchy and human-message scope for
+  # every open detail page in that lineage. The fresh GET path already computes
+  # this correctly; this keeps already-open pages from staying on the solitary
+  # snapshot they rendered before the child existed.
+  after_create_commit :broadcast_provenance_change_to_hierarchy, if: -> { lineage_parent_id.present? }
+
   # Define the enum for status column - this provides helper methods and query scopes
   # AASM uses this enum for state transitions with enum: true option
   # Order must match database integer values:
@@ -1700,6 +1706,28 @@ class Session < ApplicationRecord
     Rails.logger.error "[Session] Broadcast custom metadata change failed for session #{id}: #{e.message}"
     ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "custom_metadata_change" })
   end
+
+  def broadcast_provenance_change_to_hierarchy
+    SessionHierarchy.new(self).session_ids.each do |viewer_id|
+      viewer = Session.find_by(id: viewer_id)
+      next unless viewer
+
+      html = SessionsController.render(
+        partial: "sessions/session_hierarchy",
+        locals: { agent_session: viewer }
+      )
+
+      Turbo::StreamsChannel.broadcast_replace_to(
+        "session_#{viewer.id}_status",
+        target: "session_#{viewer.id}_provenance",
+        html: html
+      )
+    end
+  rescue => e
+    Rails.logger.error "[Session] Broadcast provenance change failed for session #{id}: #{e.message}"
+    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "provenance_change" })
+  end
+  public :broadcast_provenance_change_to_hierarchy
 
   # Build locals hash for metadata partial broadcasts.
   # Includes the select data that the partial needs to render edit buttons.
