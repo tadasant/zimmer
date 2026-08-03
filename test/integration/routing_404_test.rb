@@ -11,52 +11,53 @@ class Routing404Test < ActionDispatch::IntegrationTest
   # answers before the router is ever consulted — no RoutingError, no ERROR line,
   # and the tab actually gets an icon.
   test "GET /favicon.ico serves the icon and does not log at ERROR" do
-    log = capture_log_output do
+    entries = capture_log_entries do
       get "/favicon.ico"
     end
 
     assert_response :success
     assert_equal "\x00\x00\x01\x00".b, response.body.byteslice(0, 4).b, "should be an ICO container"
-    assert_no_error_logged(log)
+    assert_no_error_logged(entries)
   end
 
   test "unmatched HTML path returns 404 without raising or logging at ERROR" do
-    log = capture_log_output do
+    entries = capture_log_entries do
       get "/this-route-does-not-exist-12345"
     end
 
     assert_response :not_found
     # Served from the static 404 page.
     assert_match(/Page Not Found|404/i, response.body)
-    assert_no_error_logged(log)
+    assert_no_error_logged(entries)
   end
 
   test "unmatched API path returns JSON 404 without logging at ERROR" do
-    log = capture_log_output do
+    entries = capture_log_entries do
       get "/api/v1/this-endpoint-does-not-exist"
     end
 
     assert_response :not_found
     body = JSON.parse(response.body)
     assert_equal "Not Found", body["error"]
-    assert_no_error_logged(log)
+    assert_no_error_logged(entries)
   end
 
   test "unmatched route logs at INFO for observability" do
-    log = capture_log_output do
+    entries = capture_log_entries do
       get "/some-missing-path"
     end
 
-    assert_match(/Unmatched route 404: GET \/some-missing-path/, log)
+    assert entries.any? { |_severity, message| message.match?(/Unmatched route 404: GET \/some-missing-path/) },
+      "expected an attributable INFO record for the miss, got: #{entries.inspect}"
   end
 
   test "non-GET unmatched path is also handled by the catch-all" do
-    log = capture_log_output do
+    entries = capture_log_entries do
       post "/no-such-action-here"
     end
 
     assert_response :not_found
-    assert_no_error_logged(log)
+    assert_no_error_logged(entries)
   end
 
   test "non-GET request to the bare root is handled, not a RoutingError" do
@@ -64,13 +65,13 @@ class Routing404Test < ActionDispatch::IntegrationTest
     # also matches the bare root path; a non-optional glob would miss / and let a
     # non-GET root request raise ActionController::RoutingError (logged at ERROR).
     %i[post put patch delete].each do |verb|
-      log = capture_log_output do
+      entries = capture_log_entries do
         process(verb, "/")
       end
 
       assert_response :not_found, "#{verb.upcase} / should be a clean 404"
       assert_equal "errors", @controller.controller_name, "#{verb.upcase} / should reach ErrorsController"
-      assert_no_error_logged(log)
+      assert_no_error_logged(entries)
     end
   end
 
@@ -82,34 +83,28 @@ class Routing404Test < ActionDispatch::IntegrationTest
     original = ActionController::Base.allow_forgery_protection
     ActionController::Base.allow_forgery_protection = true
 
-    log = capture_log_output do
+    entries = capture_log_entries do
       post "/no-such-action-here-with-csrf"
     end
 
     assert_response :not_found
-    refute_match(/InvalidAuthenticityToken/, log, "non-GET 404 must not raise a CSRF error")
-    assert_no_error_logged(log)
+    refute entries.any? { |_severity, message| message.include?("InvalidAuthenticityToken") },
+      "non-GET 404 must not raise a CSRF error: #{entries.inspect}"
+    assert_no_error_logged(entries)
   ensure
     ActionController::Base.allow_forgery_protection = original
   end
 
   private
 
-  def assert_no_error_logged(log)
-    refute_match(/RoutingError/, log, "routing miss must not surface a RoutingError")
-    refute_match(/\bERROR\b/, log, "routing miss must not be logged at ERROR")
-    refute_match(/\bFATAL\b/, log, "routing miss must not be logged at FATAL")
-  end
-
-  def capture_log_output
-    original_logger = Rails.logger
-    log_output = StringIO.new
-    Rails.logger = Logger.new(log_output)
-
-    yield
-
-    log_output.string
-  ensure
-    Rails.logger = original_logger
+  # Asserts on the severity a log alert actually counts, not on a formatted line: a
+  # message body is free to contain the word "ERROR" at any severity (see the hostile
+  # user-agent example in csrf_failure_logging_test.rb), and capture_log_entries sees
+  # everything the app logs during the block, not just the record under test.
+  def assert_no_error_logged(entries)
+    refute entries.any? { |_severity, message| message.include?("RoutingError") },
+      "routing miss must not surface a RoutingError: #{entries.inspect}"
+    assert_empty entries.select { |severity, _message| %w[ERROR FATAL].include?(severity) },
+      "routing miss must not be logged at ERROR or FATAL: #{entries.inspect}"
   end
 end

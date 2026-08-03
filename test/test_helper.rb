@@ -141,6 +141,35 @@ end
 # the setting.
 Rails.application.eager_load!
 
+# Resolve the Rack env template once here, before parallelize() forks its workers.
+#
+# Rails::Application#env_config memoizes its hash — including
+# "action_dispatch.logger" => Rails.logger — the first time anything asks for it, and
+# Rails::Engine#build_request merges that hash *over* every request env. So the logger
+# ActionDispatch::DebugExceptions writes an unhandled exception to is fixed, for the
+# life of the process, to whatever Rails.logger was at that first call. It cannot be
+# overridden per request.
+#
+# Left lazy, the first *request* in a worker wins that race. A test that swaps
+# Rails.logger around a request — the common capture idiom — then leaves the memo
+# pointing at its throwaway StringIO logger for the rest of the worker, and every later
+# example there sees a request complete, sees the diagnostics page render, and sees no
+# ERROR record at all, because the middleware is logging somewhere nobody is listening.
+# Which worker got poisoned, and whether it also drew a test that observes middleware
+# ERROR records, depended entirely on the random --seed ordering — the mechanism behind
+# the flaky CsrfFailureLoggingTest control in issue #337.
+#
+# Resolving it here pins the entry to the real boot-time BroadcastLogger in every
+# worker, so Rails.logger and the middleware's logger are the same object no matter
+# what any example does afterwards.
+#
+# The same call freezes the rest of env_config at its boot values — show_exceptions,
+# show_detailed_exceptions, log_rescued_responses, the CSP objects, the cookie salts.
+# Nothing in the suite mutates config.action_dispatch.* mid-run, and nothing may start
+# to: a request reads this hash, not the config object, so such a mutation would be
+# silently ignored rather than half-applied depending on ordering.
+Rails.application.env_config
+
 module ActiveSupport
   class TestCase
     # Run tests in parallel. CI sets PARALLEL_WORKERS to throttle system test jobs
@@ -158,6 +187,7 @@ module ActiveSupport
     include AssertionHelpers
     include FixtureHelpers
     include BroadcastHelpers
+    include LogCaptureHelpers
 
     # Add more helper methods to be used by all tests here...
   end
