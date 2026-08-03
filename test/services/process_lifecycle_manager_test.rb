@@ -1376,6 +1376,56 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_match(/Context length error detected on successful exit/, log_contents)
   end
 
+  # ===========================================================================
+  # Stale runtime session id release after a failed-resume fresh start
+  # ===========================================================================
+  #
+  # Codex ignores the --session-id Zimmer passes and mints a new rollout UUID, so
+  # after a fresh start the stored id names a rollout the new process will never
+  # write to. Leaving it in place deadlocks transcript polling: the locator keeps
+  # returning the abandoned rollout, and the only code that would learn the new
+  # UUID reads it from a file the locator never hands over.
+  #
+  # NOTE: these tests are deliberately above the `private` below. A `test` block
+  # after it defines a private method that Minitest silently never runs — see
+  # https://github.com/tadasant/zimmer/issues/350.
+
+  test "release_stale_runtime_session_id! clears the id for a runtime that mints its own (Codex)" do
+    @session.update!(agent_runtime: "codex")
+    @session.update_column(:session_id, "abandoned-rollout-uuid")
+    manager = create_manager
+
+    manager.send(:release_stale_runtime_session_id!)
+    @log_buffer.flush
+
+    assert_nil @session.reload.session_id,
+      "the dead rollout id must be released so the locator falls back to the clone path"
+    assert_match(/Releasing stale runtime session id abandoned-rollout-uuid/,
+      @session.logs.pluck(:content).join("\n"))
+  end
+
+  test "release_stale_runtime_session_id! leaves a Claude session id untouched" do
+    @session.update!(agent_runtime: "claude_code")
+    @session.update_column(:session_id, "claude-authoritative-uuid")
+    manager = create_manager
+
+    manager.send(:release_stale_runtime_session_id!)
+
+    assert_equal "claude-authoritative-uuid", @session.reload.session_id,
+      "Claude honors the supplied --session-id, so it stays authoritative across a fresh start"
+  end
+
+  test "release_stale_runtime_session_id! is a no-op when there is no id to release" do
+    @session.update!(agent_runtime: "codex")
+    @session.update_column(:session_id, nil)
+    manager = create_manager
+
+    Session.any_instance.expects(:update_column).never
+    manager.send(:release_stale_runtime_session_id!)
+
+    assert_nil @session.reload.session_id
+  end
+
   private
 
   # Helper to calculate the transcript directory for the test session

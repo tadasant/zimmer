@@ -831,6 +831,8 @@ class ProcessLifecycleManager
 
     add_log("Fresh start recovery successful, spawned PID #{new_pid}", level: "info")
 
+    release_stale_runtime_session_id!
+
     # Update session metadata with new process PID and re-set runtime_started
     with_db_retry do
       session.merge_metadata!("process_pid" => new_pid, "runtime_started" => true)
@@ -852,6 +854,35 @@ class ProcessLifecycleManager
     @logger.error("Failed resume recovery failed", error: e.message)
     @mutex.synchronize { @state = :idle }
     ExitDecision.new(action: :failed, error_message: error_msg)
+  end
+
+  # Drop the runtime session id that the just-failed resume was targeting, for
+  # runtimes that mint their own.
+  #
+  # A fresh start is a new conversation as far as the CLI is concerned. Codex
+  # ignores the `--session-id` Zimmer passes and mints a new rollout UUID, so the
+  # id still stored on the session now names a rollout this process will never
+  # write to — the very rollout the resume just failed to find.
+  #
+  # Leaving it in place deadlocks transcript polling: CodexTranscriptSource#
+  # find_main_transcript prefers the rollout whose filename carries the stored
+  # id, so the poller keeps reading the abandoned file, and the only code that
+  # would learn the new UUID (TranscriptPollerService#capture_runtime_session_id!)
+  # reads it from a file the locator will never hand it. Clearing the id makes the
+  # locator fall back to matching on this session's clone path, which finds the
+  # live rollout and re-attaches within one poll.
+  #
+  # A no-op for Claude Code, which honors the supplied `--session-id`, so its
+  # stored id stays authoritative across a fresh start.
+  def release_stale_runtime_session_id!
+    return unless TranscriptRuntime.normalizer_for(session).mints_own_session_id?
+    return if session.session_id.blank?
+
+    add_log(
+      "Releasing stale runtime session id #{session.session_id} so transcript polling re-attaches to the new transcript",
+      level: "info"
+    )
+    with_db_retry { session.update_column(:session_id, nil) }
   end
 
   # Wait briefly and re-check if session is still running

@@ -81,7 +81,7 @@ class TranscriptPollerService
       unless @session.metadata&.dig("transcript_waiting_logged")
         with_db_retry do
           @session.logs.create!(
-            content: "Waiting for Claude CLI to create transcript directory...",
+            content: "Waiting for #{runtime_label} to create transcript directory...",
             level: "info"
           )
         end
@@ -146,20 +146,37 @@ class TranscriptPollerService
     # Read the transcript content. Routing through the source (not the raw file
     # system) lets runtimes transparently decode their on-disk format — e.g.
     # Codex stores compressed `.jsonl.zst` rollouts that the source decompresses.
-    transcript_content = @source.read(main_transcript_file)
+    #
+    # `live_content` is what the runtime's CURRENT process is writing. For a
+    # runtime that rotates transcript files (Codex) that is only the tail of the
+    # conversation, so `transcript_content` below re-attaches the history the
+    # earlier rollouts hold.
+    live_content = @source.read(main_transcript_file)
+    live_events = parse_transcript_lines(live_content)
 
     # Poll and store subagent transcripts (agent-*.jsonl files)
     # Then update metadata from the main transcript
     poll_subagent_transcripts
-    update_subagent_metadata_from_transcript(transcript_content)
+    update_subagent_metadata_from_transcript(live_content)
 
     # Poll MCP server logs and update connection status.
     # Claude Code reads its CLI cache log files; Codex derives status from the
     # rollout transcript content, so pass it through to the runtime's detector.
-    poll_mcp_logs(transcript_content)
+    # Deliberately the LIVE content, not the carried-over transcript: MCP
+    # connection state describes the process running now, and replaying a prior
+    # rollout's connect/fail events would resurrect a dead run's status.
+    poll_mcp_logs(live_content)
+
+    # Re-attach history when the runtime has rotated to a new transcript file, so
+    # a fresh-started Codex turn continues the session instead of appearing to
+    # freeze on the last thing the previous rollout said. No-op for runtimes that
+    # keep one canonical file (Claude), and a no-op for Codex until a rotation
+    # actually happens. See #carryover_prefix.
+    carryover = carryover_prefix(main_transcript_file, live_content, metadata_updates)
+    transcript_content = carryover.present? ? carryover + live_content : live_content
 
     # Parse the transcript to find messages
-    new_messages = parse_transcript_lines(transcript_content)
+    new_messages = carryover.present? ? parse_transcript_lines(transcript_content) : live_events
 
     # Capture the runtime's own session id from the transcript and persist it
     # when it differs from what we stored at spawn. This is essential for Codex:
@@ -174,7 +191,13 @@ class TranscriptPollerService
     # SOURCE session's id, which would overwrite the fork's id, collide with the
     # unique session_id index (RecordNotUnique), and fail every poll until the
     # session is wrongly marked transcript_unavailable.
-    capture_runtime_session_id!(new_messages)
+    #
+    # Fed `live_events`, never the carried-over `new_messages`: the extractor takes
+    # the FIRST session id it sees, and a carried-over transcript begins with the
+    # PREVIOUS rollout's `session_meta` line. Passing the combined events would
+    # write the abandoned rollout's UUID back over the live one on every poll and
+    # point the next resume at a rollout that no longer exists.
+    capture_runtime_session_id!(live_events)
 
     # Track how many messages we've already broadcast.
     # When broadcast_message_count is nil (cleared during session recovery/restart),
@@ -308,6 +331,97 @@ class TranscriptPollerService
       @session.update_column(:session_id, runtime_id)
     end
     @logger.info("Captured runtime session id from transcript", runtime_session_id: runtime_id)
+  end
+
+  # Human-readable name of the runtime whose transcript we are waiting on. The
+  # waiting log said "Claude CLI" for every runtime, which reads as a bug report
+  # against the wrong CLI on a Codex session (#54).
+  def runtime_label
+    RuntimeRegistry.label_for(@session.agent_runtime)
+  end
+
+  # History to prepend to the live transcript file, for runtimes that rotate.
+  #
+  # This is the fix for the "session frozen for tens of minutes" failure. When a
+  # Codex resume fails, ProcessLifecycleManager fresh-starts the turn and the CLI
+  # mints a NEW rollout file holding only that turn. The poller then reads a file
+  # far shorter than the session's history, and two things went wrong at once:
+  #
+  #   1. `new_messages[broadcast_count..]` is nil whenever the live file has fewer
+  #      events than `broadcast_message_count` (Ruby returns nil past the end), so
+  #      NOTHING was ever broadcast — the timeline stopped dead.
+  #   2. The regression guard below refused to persist the shorter transcript and
+  #      flagged `transcript_regression_detected` once, silencing even the log.
+  #
+  # Nothing cleared that state, so the session streamed stale content until a
+  # deploy recreated the clone. Observed in production on session 2256:
+  # `broadcast_message_count` 227 against a 56-line live rollout.
+  #
+  # The runtime's own file semantics tell us which reading is right, so this is
+  # gated on `rotates_transcript_files?` — a shorter file means "new rollout" for
+  # Codex and "lost history, repair it" for Claude. On rotation the whole stored
+  # transcript becomes an immutable prefix, recorded as an event count so later
+  # polls can re-derive it as the first N lines of what is stored (the stored
+  # transcript is always `carryover + live`). Rotations compound: each one folds
+  # the previous carryover into the new one.
+  #
+  # @param main_transcript_file [String] the file the poller resolved this cycle
+  # @param live_content [String] that file's decoded contents
+  # @param metadata_updates [Hash] batch of metadata writes to add to
+  # @return [String] the history prefix, or "" when there is none
+  def carryover_prefix(main_transcript_file, live_content, metadata_updates)
+    return "" unless @source.rotates_transcript_files?
+
+    stored = @session.transcript.to_s
+    carryover = extract_carryover(stored, @session.metadata&.dig("transcript_carryover_event_count").to_i)
+    last_path = @session.metadata&.dig("transcript_source_path")
+    metadata_updates["transcript_source_path"] = main_transcript_file if last_path != main_transcript_file
+
+    # Only a switch to a DIFFERENT file can be a rotation. Requiring the path to
+    # change keeps a short read of the same append-only file (a partially flushed
+    # write, a compressed/uncompressed sibling swap) from duplicating history.
+    # A session with no recorded path yet is the one exception: that is either a
+    # first poll (stored is blank, nothing to carry) or a session already frozen
+    # by this bug before the fix shipped, which we do want to heal.
+    return carryover if stored.blank?
+    return carryover if last_path == main_transcript_file
+    return carryover unless Session.transcript_regression?(stored, carryover + live_content)
+
+    rotated = ensure_trailing_newline(stored)
+    metadata_updates["transcript_carryover_event_count"] = Session.transcript_line_count(rotated)
+    @logger.warn(
+      "Runtime rotated to a new transcript file; carrying stored history forward",
+      carried_events: Session.transcript_line_count(rotated),
+      live_events: Session.transcript_line_count(live_content),
+      transcript_file: main_transcript_file
+    )
+
+    # The stored transcript is whole again by construction, so the marker that
+    # said otherwise must not outlive the repair.
+    if @session.metadata&.dig("transcript_regression_detected")
+      with_db_retry { @session.remove_metadata!([ "transcript_regression_detected" ]) }
+    end
+
+    rotated
+  end
+
+  # The first `count` lines of the stored transcript — the history carried over
+  # from transcript files the runtime has already abandoned.
+  def extract_carryover(stored, count)
+    return "" unless count.positive? && stored.present?
+
+    lines = stored.lines.first(count)
+    return "" if lines.empty?
+
+    ensure_trailing_newline(lines.join)
+  end
+
+  # Guarantee a JSONL seam: without the terminator the carryover's last event and
+  # the live file's first event would concatenate into one unparseable line.
+  def ensure_trailing_newline(content)
+    return content if content.blank? || content.end_with?("\n")
+
+    "#{content}\n"
   end
 
   # Broadcast new messages via BroadcastService
