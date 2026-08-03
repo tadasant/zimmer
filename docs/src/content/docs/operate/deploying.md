@@ -173,15 +173,16 @@ the first exceeds the second.
 
 ## The Docker images
 
-**`Dockerfile.base` → `ghcr.io/tadasant/zimmer-base`** — the heavy one, rebuilt monthly (cron
-`0 6 1 * *`) or on demand. From `ruby:3.4.6-slim`, it bakes in:
+**`Dockerfile.base` → `ghcr.io/tadasant/zimmer-base`** — the heavy one, rebuilt by
+`release-image.yml` before the app image when `Dockerfile.base` changes, and also rebuilt monthly
+(cron `0 6 1 * *`) or on demand. From `ruby:3.4.6-slim`, it bakes in:
 
 - Gems, pre-bundled to `/usr/local/bundle` with bootsnap precompiled
 - Node.js 22, the Docker CLI, `gh`, the 1Password CLI, `uv`/`uvx`
 - Playwright + Chromium and Puppeteer + Chrome (for browser-automation MCP servers)
 - The npm and Python MCP packages listed in `mcp.json` (`bin/preinstall-mcp-packages`)
 - The AIR CLI `@pulsemcp/air-cli@0.13.0` + adapters → `/opt/air-cli`
-- The Codex CLI `@openai/codex@0.135.0` and Claude Code (via `claude.ai/install.sh`)
+- The Codex CLI `@openai/codex@0.146.0` and Claude Code (via `claude.ai/install.sh`)
 
 **`Dockerfile` → `ghcr.io/tadasant/zimmer`** — the app image. Copies the app onto the base, re-runs
 `bundle install` (which catches Gemfile drift against the base), precompiles assets, drops to
@@ -239,8 +240,8 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
-| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | builds and pushes `zimmer:{version, latest, sha-…}` |
-| `build-base-image.yml` | manual + monthly cron | rebuilds the base image |
+| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}` |
+| `build-base-image.yml` | manual + monthly cron | rebuilds the base image outside the normal release path |
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
 | `ghcr-retention.yml` | weekly cron | prunes GHCR to ≤50 versions |

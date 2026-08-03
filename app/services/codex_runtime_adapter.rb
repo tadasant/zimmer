@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "open3"
+require "timeout"
+
 # CodexRuntimeAdapter — the RuntimeCliAdapter implementation for OpenAI's Codex
 # CLI (`codex`). It is the Codex counterpart to ClaudeCliAdapter: it builds the
 # command, prepares the environment, and spawns the process, returning the pid
@@ -62,6 +65,9 @@ class CodexRuntimeAdapter
 
   class CodexCliError < StandardError; end
 
+  GPT_5_6_MODEL_PREFIX = "gpt-5.6-"
+  MINIMUM_GPT_5_6_CLI_VERSION = Gem::Version.new("0.146.0")
+
   # The stderr log the Codex process writes inside its working directory. Part of
   # the RuntimeCliAdapter contract — callers that rebuild a stderr path
   # (Session#stderr_log_path, CodexMcpStatusDetector) read it from here.
@@ -112,6 +118,7 @@ class CodexRuntimeAdapter
     # --output-last-message path both join onto it, so the guard has to run here
     # rather than at spawn time to keep its actionable message.
     self.class.validate_working_dir!(working_dir)
+    validate_model_cli_compatibility!(model)
 
     write_system_prompt(working_dir, append_system_prompt)
 
@@ -140,6 +147,7 @@ class CodexRuntimeAdapter
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
              append_system_prompt: nil, model: nil, auto_compact_window: nil)
     self.class.validate_working_dir!(working_dir)
+    validate_model_cli_compatibility!(model)
 
     write_system_prompt(working_dir, append_system_prompt)
 
@@ -156,6 +164,18 @@ class CodexRuntimeAdapter
   # The CLI binary this adapter spawns. Part of the RuntimeCliAdapter contract.
   def binary_name
     "codex"
+  end
+
+  def installed_cli_version
+    stdout, _stderr, status = Timeout.timeout(10) do
+      Open3.capture3(binary_name, "--version")
+    end
+    return nil unless SubprocessStatus.success?(status)
+
+    match = stdout.to_s.match(/(\d+\.\d+\.\d+)/)
+    match ? Gem::Version.new(match[1]) : nil
+  rescue Errno::ENOENT, Errno::EACCES, Timeout::Error, ArgumentError
+    nil
   end
 
   # A concise, human-readable summary of the command this adapter spawns, for
@@ -222,6 +242,19 @@ class CodexRuntimeAdapter
     images.each do |image|
       cmd << "-i" << image[:path]
     end
+  end
+
+  def validate_model_cli_compatibility!(model)
+    return unless model.to_s.start_with?(GPT_5_6_MODEL_PREFIX)
+
+    version = installed_cli_version
+    return if version && version >= MINIMUM_GPT_5_6_CLI_VERSION
+
+    installed = version ? version.to_s : "unknown"
+    raise CodexCliError,
+      "Configured model #{model} requires Codex CLI >= #{MINIMUM_GPT_5_6_CLI_VERSION}; " \
+      "installed version is #{installed}. Rebuild the Zimmer base image or upgrade " \
+      "@openai/codex before starting Codex sessions with gpt-5.6 models."
   end
 
   # Path Codex writes the final assistant message to. A runtime-independent
