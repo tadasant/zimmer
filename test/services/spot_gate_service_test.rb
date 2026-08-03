@@ -90,6 +90,20 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert SpotGateService.evaluate(now: @now).allowed?
   end
 
+  test "the start gate counts the session being asked about" do
+    # 4% per session-hour, 2 hours left, currently at 74%. With nothing running,
+    # the informational forecast is flat at 74% — but starting one session adds
+    # 4% x 1 x 2h = 8%, landing at 82% and over the 80% ceiling. A gate that
+    # ignored the candidate would let it start.
+    seed_history(current_5h: 0.74, current_7d: 0.05)
+
+    informational = SpotGateService.evaluate(now: @now)
+    assert informational.allowed?, "the dashboard reading describes the fleet as it stands"
+
+    spot = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s", genesis: SessionGenesis::GITHUB_ISSUE)
+    refute SpotGateService.allow_start?(spot), "the start decision must include the candidate session"
+  end
+
   test "allow_start? never consults the gate for a priority session" do
     seed_history(current_5h: 0.99, current_7d: 0.99)
     priority = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", genesis: SessionGenesis::WEB_UI)
