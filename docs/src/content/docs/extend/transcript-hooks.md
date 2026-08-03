@@ -97,10 +97,13 @@ Zimmer never learns about, with every GitHub integration quietly switched off fo
 either is visible in the UI.
 
 The backstop for the second direction: when a session whose **goal asks for a pull request to be
-opened** finishes a turn (`pause`) with an empty list, the hook writes one `warning` log into the
-session timeline saying no PR URL has been captured. Once per session, not once per turn — and the
-goal match is a phrase match ("open a PR", "the PR is open", the `open-pr` skill), not a bare
-mention, because the catalog's read-only goal says *"do not create files, PRs, or branches"*.
+opened** comes to rest with an empty list, the hook writes one `warning` log into the session
+timeline saying no PR URL has been captured. All three rest states call it — `pause`, `fail` and
+`archive` — because `pause` is recoverable (another turn can still open the PR) and the other two
+are not. Once per session, not once per event: the dedup is on the warning log, so extra call sites
+cost nothing in timeline spam. The goal match is a phrase match ("open a PR", "the PR is open", the
+`open-pr` skill), not a bare mention, because the catalog's read-only goal says *"do not create
+files, PRs, or branches"*.
 :::
 
 ### `GithubCommentAuthorshipHook`

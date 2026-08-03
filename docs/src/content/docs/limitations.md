@@ -1883,8 +1883,9 @@ Heuristics have two failure directions and neither announces itself:
   opened through a path the hook can't see — an MCP GitHub tool, the web UI — and never mentioned in
   the agent's prose lands here.
 
-The warning log a PR-flavored goal gets on `pause` covers the second case only, and only when the
-goal happens to mention pull requests. There is no check at all for the first.
+The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
+covers the second case only, and only when the goal happens to mention pull requests. There is no
+check at all for the first.
 
 Narrowed in [#214](https://github.com/tadasant/zimmer/issues/214) and widened in
 [#89](https://github.com/tadasant/zimmer/issues/89).
