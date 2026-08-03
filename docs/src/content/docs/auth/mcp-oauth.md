@@ -168,8 +168,10 @@ secret and relies on the persisted `code_verifier`; when a secret *is* configure
 `client_secret_post` behavior is preserved.
 
 Every outbound call `McpOauthService` makes — probe, discovery, DCR, and the token exchange itself —
-sets `open_timeout` and `read_timeout` to `REQUEST_TIMEOUT` (30 seconds). An auth server that accepts
-the connection and then never answers fails the exchange rather than holding a request thread.
+sets `open_timeout` and `read_timeout` to `REQUEST_TIMEOUT` (30 seconds). `McpOauthCredential#refresh!`
+posts its refresh grant through the same helper, so the unattended path carries the same bound as the
+interactive one. An auth server that accepts the connection and then never answers fails the exchange
+rather than holding a request thread — or, on the cron path, a GoodJob thread.
 
 ### Manual (paste-back) completion
 
