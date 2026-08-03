@@ -18,6 +18,15 @@
 #
 # `USING INDEX` adopts the existing index rather than rebuilding it, so this is
 # a catalog-only change — no table scan, no window without an enforced unique.
+# It still takes an ACCESS EXCLUSIVE lock for the length of the catalog update,
+# which is brief but does queue behind any in-flight reader of the table.
+#
+# One consequence worth knowing before reaching for it: Postgres declines to
+# infer a deferrable-constraint-backed index as an ON CONFLICT arbiter, so
+# `upsert` / `insert_all(unique_by:)` / `create_or_find_by` keyed on
+# (session_id, position) will not resolve against this constraint. Nothing on
+# enqueued_messages upserts today; a future caller that wants to must name a
+# different arbiter.
 class DeferEnqueuedMessagePositionUniqueness < ActiveRecord::Migration[8.1]
   CONSTRAINT_NAME = "index_enqueued_messages_on_session_id_and_position"
 

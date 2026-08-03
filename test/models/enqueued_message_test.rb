@@ -349,7 +349,7 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     assert_equal :deferred, constraint.deferrable
   end
 
-  test "renumbering survives rows moving in descending position order" do
+  test "deferred constraint tolerates a transient duplicate position" do
     session = sessions(:running)
     messages = (1..3).map { |i| session.enqueued_messages.create!(content: "m#{i}", position: i) }
 
