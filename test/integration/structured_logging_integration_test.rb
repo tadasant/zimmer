@@ -93,18 +93,4 @@ class StructuredLoggingIntegrationTest < ActionDispatch::IntegrationTest
       assert timeline.first["timestamp"] <= timeline.last["timestamp"]
     end
   end
-
-  private
-
-  def capture_log_output
-    original_logger = Rails.logger
-    log_output = StringIO.new
-    Rails.logger = Logger.new(log_output)
-
-    yield
-
-    log_output.string
-  ensure
-    Rails.logger = original_logger
-  end
 end
