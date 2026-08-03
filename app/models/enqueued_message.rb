@@ -19,6 +19,13 @@ class EnqueuedMessage < ApplicationRecord
   # Reorder message to a new position
   # Updates positions of other messages in the same session to maintain sequential ordering
   # Uses a temporary position (0) to avoid unique constraint violations during swap
+  #
+  # Unlike the bulk decrement on the DELETE paths, this method never depends on
+  # the query planner: it parks the moving row at 0, then shifts its neighbours
+  # one row per statement in an order Ruby pins explicitly (ascending when
+  # moving down, descending when moving up), so no write ever lands on a
+  # position another row still holds. It was already safe before
+  # (session_id, position) uniqueness became deferrable, and it stays safe.
   def reorder_to(new_position)
     return if new_position == position
 

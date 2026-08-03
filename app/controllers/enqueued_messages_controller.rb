@@ -170,7 +170,9 @@ class EnqueuedMessagesController < ApplicationController
         # Delete the message
         @enqueued_message.destroy!
 
-        # Re-number remaining messages with higher positions
+        # Re-number remaining messages with higher positions. Correct under any
+        # scan order only because (session_id, position) uniqueness is deferred
+        # to commit — see the DELETE path in Api::V1::EnqueuedMessagesController.
         @session.enqueued_messages
                 .where("position > ?", position)
                 .update_all("position = position - 1")

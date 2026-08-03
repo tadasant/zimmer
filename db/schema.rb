@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_02_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_03_170000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -141,8 +141,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_02_120000) do
     t.bigint "session_id", null: false
     t.string "status", default: "pending", null: false
     t.datetime "updated_at", null: false
-    t.index ["session_id", "position"], name: "index_enqueued_messages_on_session_id_and_position", unique: true
     t.index ["session_id", "status"], name: "index_enqueued_messages_on_session_id_and_status"
+    t.unique_constraint ["session_id", "position"], deferrable: :deferred, name: "index_enqueued_messages_on_session_id_and_position"
   end
 
   create_table "good_job_batches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
