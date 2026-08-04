@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "open3"
+require "tmpdir"
 
 class CloneArtifactServiceTest < ActiveSupport::TestCase
   # Records every log call so a test can assert the level a message was logged at.
@@ -33,9 +34,29 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # CloneArtifactService writes to ~/.zimmer/artifacts/<session_id>, derived from
+  # $HOME. That is a machine-global namespace: it is shared by all 8 parallel
+  # workers of a run AND by every other test-unit job running concurrently on the
+  # persistent self-hosted runner, which all see the same $HOME. A random
+  # session_id made a collision unlikely but not impossible — the id space was
+  # 100_000 wide and this file draws from it once per test. On a collision, one
+  # test's teardown rm_rf'd the artifacts directory another test was still
+  # writing into, so create_artifacts died on Errno::ENOENT and returned
+  # success? == false. That is the flake in run 30858630006: a bare
+  # `assert result.success?` reported it as "Expected false to be truthy" and
+  # threw the ENOENT away.
+  #
+  # Pinning $HOME to a private tmpdir per test gives each one its own artifacts
+  # root, so there is no shared namespace left to collide on — no matter how many
+  # workers or CI jobs run at once. It also stops the suite writing into the
+  # runner's real home, where a killed run leaves directories behind forever.
   setup do
+    @original_home = ENV["HOME"]
+    @home_dir = Dir.mktmpdir("clone-artifact-home")
+    ENV["HOME"] = @home_dir
+
     @service = CloneArtifactService.new
-    @session_id = rand(900_000..999_999) # Unique per test run to avoid parallel contamination
+    @session_id = rand(900_000..999_999)
     @bare_path = nil
     @repo_path = nil
   end
@@ -43,8 +64,10 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
   teardown do
     FileUtils.rm_rf(@repo_path) if @repo_path && File.directory?(@repo_path)
     FileUtils.rm_rf(@bare_path) if @bare_path && File.directory?(@bare_path)
-    artifacts_dir = @service.artifacts_path_for(@session_id)
-    FileUtils.rm_rf(artifacts_dir) if File.directory?(artifacts_dir)
+    # Restore $HOME before removing the sandbox: the artifacts under it go with
+    # the directory, so there is nothing left to clean up by path.
+    @original_home.nil? ? ENV.delete("HOME") : ENV["HOME"] = @original_home
+    FileUtils.remove_entry(@home_dir) if @home_dir && File.directory?(@home_dir)
   end
 
   # === check_dirty_state tests ===
@@ -145,7 +168,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
 
     result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
 
-    assert result.success?
+    assert result.success?, result.error
     assert File.directory?(result.artifacts_path)
 
     metadata = read_artifact_metadata(result.artifacts_path)
@@ -158,7 +181,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
 
     result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
 
-    assert result.success?
+    assert result.success?, result.error
 
     metadata = read_artifact_metadata(result.artifacts_path)
     assert metadata["has_working_tree_patch"]
@@ -174,7 +197,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
 
     result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
 
-    assert result.success?
+    assert result.success?, result.error
 
     metadata = read_artifact_metadata(result.artifacts_path)
     assert metadata["has_bundle"]
@@ -242,7 +265,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     fresh_clone = create_fresh_clone
     result = @service.apply_artifacts(session_id: @session_id, clone_path: fresh_clone)
 
-    assert result.success?
+    assert result.success?, result.error
     assert result.applied_working_tree?
     restored = File.join(fresh_clone, "latin1_notes.txt")
     assert File.exist?(restored)
@@ -262,13 +285,13 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     end
 
     create_result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
-    assert create_result.success?
+    assert create_result.success?, create_result.error
     assert read_artifact_metadata(create_result.artifacts_path)["has_working_tree_patch"]
 
     fresh_clone = create_fresh_clone
     result = @service.apply_artifacts(session_id: @session_id, clone_path: fresh_clone)
 
-    assert result.success?
+    assert result.success?, result.error
     assert result.applied_working_tree?
     restored = File.join(fresh_clone, "image.bin")
     assert File.exist?(restored)
@@ -282,7 +305,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
 
     result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
 
-    assert result.success?
+    assert result.success?, result.error
 
     metadata = read_artifact_metadata(result.artifacts_path)
     assert_not metadata["has_bundle"]
@@ -307,7 +330,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     # Apply artifacts
     result = @service.apply_artifacts(session_id: @session_id, clone_path: fresh_clone)
 
-    assert result.success?
+    assert result.success?, result.error
     assert result.applied_bundle?
 
     # Verify the unpushed commit is now in the fresh clone
@@ -330,7 +353,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     # Apply artifacts
     result = @service.apply_artifacts(session_id: @session_id, clone_path: fresh_clone)
 
-    assert result.success?
+    assert result.success?, result.error
     assert result.applied_working_tree?
 
     # Verify dirty file exists in fresh clone
@@ -343,7 +366,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
   test "apply_artifacts returns success with no-ops when no artifacts exist" do
     result = @service.apply_artifacts(session_id: @session_id, clone_path: "/tmp/whatever")
 
-    assert result.success?
+    assert result.success?, result.error
     assert_not result.applied_bundle?
     assert_not result.applied_working_tree?
   end
@@ -387,6 +410,20 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     path = @service.artifacts_path_for(42)
 
     assert_includes path, ".zimmer/artifacts/42"
+  end
+
+  # Guards the sandbox described in setup. Everything this file writes must land
+  # under the per-test $HOME; the moment an artifact escapes into the real
+  # ~/.zimmer/artifacts, parallel workers and co-running CI jobs share a
+  # directory again and the rm_rf race is back.
+  test "artifacts are written under the per-test HOME sandbox, not the real home" do
+    create_test_repo(dirty: true, unpushed_commits: true)
+
+    result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+
+    assert result.success?, result.error
+    assert result.artifacts_path.start_with?(@home_dir),
+      "expected artifacts under the sandboxed HOME #{@home_dir}, got #{result.artifacts_path}"
   end
 
   private
