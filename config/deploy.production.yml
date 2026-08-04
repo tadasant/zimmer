@@ -16,8 +16,14 @@ servers:
       init: true
       volume:
         # Durable named volumes shared by web + worker, surviving Kamal deploys.
+        # Every runtime's own conversation state belongs here: Claude Code keeps its
+        # transcripts under ~/.claude, Codex keeps its rollouts (plus auth.json and the
+        # thread store) under CODEX_HOME. A runtime home left on the container layer is
+        # destroyed by each deploy, which makes the next `resume` fail with "no rollout
+        # found" and restarts the conversation from zero.
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
+        - codex_home:/home/rails/.codex
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
         # The PRODUCTION catalog + its encrypted credentials, delivered to the host by
@@ -37,6 +43,7 @@ servers:
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
+        - codex_home:/home/rails/.codex
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
         - /var/run/docker.sock:/var/run/docker.sock
