@@ -564,8 +564,7 @@ abstraction, unwired from `app/`; whether to build against that seam or delete i
 [#172](https://github.com/tadasant/zimmer/issues/172).
 
 Fixed in [#49](https://github.com/tadasant/zimmer/issues/49) as far as a fix goes here: the false
-advertisement is gone. The live remainder — whether to build against the `lib/execution/` seam or
-delete it — is [#172](https://github.com/tadasant/zimmer/issues/172).
+advertisement is gone. The live remainder is #172, above.
 
 ### Anyone in the workspace can trigger an agent via bot-mention, by default
 

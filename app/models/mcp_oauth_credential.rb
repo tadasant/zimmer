@@ -144,11 +144,12 @@ class McpOauthCredential < ApplicationRecord
       resource: resource
     }.compact
 
-    # Post through McpOauthService rather than `Net::HTTP.post_form`, which takes no
-    # timeouts: this runs unattended from cron (RefreshMcpOauthTokensJob), so a token
-    # endpoint that accepts the connection and then never answers would hold a GoodJob
-    # thread forever. The service's post_form bounds both the connect and the read at
-    # McpOauthService::REQUEST_TIMEOUT, the same bound the initial exchange uses.
+    # Post through McpOauthService, whose post_form bounds both the connect and the
+    # read at McpOauthService::REQUEST_TIMEOUT — the same bound the initial exchange
+    # uses. `Net::HTTP.post_form` cannot be given timeouts and falls back to
+    # Net::HTTP's 60-second defaults, which are per-read: a token endpoint that
+    # answers slowly enough holds a GoodJob thread for as long as it likes, and this
+    # runs unattended from cron (RefreshMcpOauthTokensJob).
     oauth = McpOauthService.new
     response = oauth.post_form(uri, params)
 

@@ -394,13 +394,13 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     assert credential.can_refresh?
   end
 
-  # Every other refresh! test stubs the post itself, so nothing there would notice if
-  # the refresh went back to an unbounded `Net::HTTP.post_form`. This one exercises the
-  # real posting path down to Net::HTTP.start: the refresh runs unattended from cron
-  # (RefreshMcpOauthTokensJob), so a token endpoint that accepts the connection and
-  # never answers would otherwise hold a GoodJob thread forever. It also pins the RFC
-  # 8707 resource indicator into the encoded form body — audience-binding servers
-  # (e.g. Notion) reject refreshed tokens minted without it.
+  # Every other refresh! test stubs the post itself, so nothing there would notice a
+  # refresh posting through `Net::HTTP.post_form`, which cannot be given timeouts and
+  # falls back to Net::HTTP's per-read 60s defaults. This one exercises the real
+  # posting path down to Net::HTTP.start, where the bound is observable — the refresh
+  # runs unattended from cron (RefreshMcpOauthTokensJob), on a GoodJob thread. It also
+  # pins the RFC 8707 resource indicator into the encoded form body: audience-binding
+  # servers (e.g. Notion) reject refreshed tokens minted without it.
   test "refresh! bounds the token request at REQUEST_TIMEOUT and still sends the resource indicator" do
     credential = mcp_oauth_credentials(:expired_with_refresh)
     credential.update!(token_endpoint: "https://auth.example.com/oauth/token", resource: "https://mcp.notion.com")
@@ -424,6 +424,8 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     form = URI.decode_www_form(captured_request.body).to_h
     assert_equal "refresh_token", form["grant_type"]
     assert_equal credential.client_id, form["client_id"]
+    assert_equal credential.client_secret, form["client_secret"]
+    assert_equal credential.refresh_token, form["refresh_token"]
     assert_equal "https://mcp.notion.com", form["resource"]
   end
 
