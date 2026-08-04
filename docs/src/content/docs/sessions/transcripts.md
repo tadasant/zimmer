@@ -95,6 +95,21 @@ finds the live rollout. Without that, the locator kept returning the dead file a
 `capture_runtime_session_id!` could never learn the new UUID — it reads that UUID from a file the
 locator would never hand it.
 
+## Rotation repairs the timeline, not the agent's memory
+
+Carryover keeps *Zimmer's* view of the conversation whole. It does nothing for the runtime's own
+view: a fresh start is a new conversation, and the new process is handed only the prompt that
+triggered it. So the two halves of a lost rollout fail differently — the timeline still reads
+correctly, while the agent answers as though the conversation never happened.
+
+That makes the durability of the runtime home a correctness property, not an ops nicety.
+`resume` resolves a conversation by its file on disk — `~/.claude` for Claude Code, `CODEX_HOME`
+for Codex — so a runtime home on the container's writable layer is destroyed by every deploy, and
+the following turn cannot resume. Both homes are mounted as durable named volumes (see
+[Deploying](/operate/deploying/)); `test/config/runtime_home_volumes_test.rb` pins that for every
+registered runtime and every role, because the symptom of getting it wrong is not an error — it is
+an agent with amnesia and a timeline that still looks fine.
+
 ## Broadcast bookkeeping
 
 The poller only broadcasts `new_messages[broadcast_count..]`, where `broadcast_count` comes from
