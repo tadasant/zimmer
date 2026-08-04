@@ -144,14 +144,21 @@ class McpOauthCredential < ApplicationRecord
       resource: resource
     }.compact
 
-    response = Net::HTTP.post_form(uri, params)
+    # Post through McpOauthService, whose post_form bounds both the connect and the
+    # read at McpOauthService::REQUEST_TIMEOUT — the same bound the initial exchange
+    # uses. `Net::HTTP.post_form` cannot be given timeouts and falls back to
+    # Net::HTTP's 60-second defaults, which are per-read: a token endpoint that
+    # answers slowly enough holds a GoodJob thread for as long as it likes, and this
+    # runs unattended from cron (RefreshMcpOauthTokensJob).
+    oauth = McpOauthService.new
+    response = oauth.post_form(uri, params)
 
     if response.code == "200"
       token_data = JSON.parse(response.body)
       # Unwrap the same nested shapes the initial exchange handles (e.g. Slack rotation
       # returns the user token under authed_user.access_token). Reading the top level
       # blindly would store nil and destroy a working credential on the next cron run.
-      tokens = McpOauthService.new.extract_tokens(token_data)
+      tokens = oauth.extract_tokens(token_data)
 
       unless tokens && tokens["access_token"].present?
         Rails.logger.error "[McpOauthCredential] Token refresh returned no usable access token for #{server_name} (#{credential_key})"

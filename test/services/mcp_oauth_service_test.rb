@@ -604,7 +604,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     fake_http.define_singleton_method(:request) { |req| captured_request = req; response }
 
     Net::HTTP.stub(:start, ->(_host, _port, **kwargs, &block) { captured_kwargs = kwargs; block.call(fake_http) }) do
-      @service.send(:post_form, URI("https://auth.example.com/oauth/token?x=1"), { code: "abc", scope: "a b" })
+      @service.post_form(URI("https://auth.example.com/oauth/token?x=1"), { code: "abc", scope: "a b" })
     end
 
     assert_equal McpOauthService::REQUEST_TIMEOUT, captured_kwargs[:open_timeout]
@@ -613,6 +613,26 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     assert_equal "/oauth/token?x=1", captured_request.path
     assert_equal "application/x-www-form-urlencoded", captured_request["Content-Type"]
     assert_equal({ "code" => "abc", "scope" => "a b" }, URI.decode_www_form(captured_request.body).to_h)
+    assert_nil captured_request["Authorization"], "an endpoint without userinfo must not carry credentials"
+  end
+
+  # Some providers document client_secret_basic as userinfo on the token endpoint.
+  # `Net::HTTP.post_form` turned that into an Authorization header on its own; a
+  # hand-built request does not, and dropping it makes the grant fail as an opaque
+  # 401 — which McpOauthCredential classifies as permanent and answers by discarding
+  # the refresh token.
+  test "post_form carries token-endpoint userinfo as basic auth" do
+    captured_request = nil
+
+    response = Net::HTTPSuccess.new("1.1", "200", "OK")
+    fake_http = Object.new
+    fake_http.define_singleton_method(:request) { |req| captured_request = req; response }
+
+    Net::HTTP.stub(:start, ->(_host, _port, **_kwargs, &block) { block.call(fake_http) }) do
+      @service.post_form(URI("https://client-id:s3cret@auth.example.com/oauth/token"), { code: "abc" })
+    end
+
+    assert_equal "Basic #{[ "client-id:s3cret" ].pack("m0")}", captured_request["Authorization"]
   end
 
   # --- extract_tokens (nested Slack authed_user shape) ---
