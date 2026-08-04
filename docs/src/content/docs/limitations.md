@@ -808,9 +808,9 @@ window has no way to find its own rollout and waits until one appears.
 
 ### A fresh start after a lost rollout is silent, and the agent has no history
 
-`CODEX_HOME` is now a durable volume, so a deploy no longer destroys every in-flight Codex
-conversation. A rollout can still go missing — a recreated volume, a disk sweep, Codex's own
-retention — and when it does, `ProcessLifecycleManager#handle_failed_resume_recovery` starts a new
+`CODEX_HOME` is a durable volume, so a deploy does not destroy in-flight Codex conversations. A
+rollout can still go missing — a recreated volume, a disk sweep, Codex's own retention — and when
+it does, `ProcessLifecycleManager#handle_failed_resume_recovery` starts a new
 conversation carrying only the prompt that triggered it. Zimmer's timeline stays whole (the poller
 carries the stored transcript forward), the process exits 0, and the session parks in `needs_input`
 exactly as a completed turn does. Nothing in the *conversation* says the history is gone.
