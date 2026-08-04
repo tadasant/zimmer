@@ -26,11 +26,13 @@ class SettingsController < ApplicationController
     # its own id/title/description and current enablement.
     @extensions = Zimmer::ExtensionRegistry.experimental
 
-    # The spot gate card. `@spot_decision` is the live gate evaluation — the same
-    # object AgentSessionJob acts on, so what the page shows is exactly what a
-    # spot session starting right now would get, not a re-derivation that could
-    # drift from it.
+    # The spot gate card. This is the forecast for the fleet AS IT STANDS — it
+    # does not add the session a start decision would be about, so with an idle
+    # fleet it reads flat. `@spot_start_decision` is what a spot session starting
+    # right now would actually get; the card shows both so the difference is
+    # visible rather than a surprise.
     @spot_decision = SpotGateService.evaluate
+    @spot_start_decision = SpotGateService.evaluate(candidate_sessions: 1)
     @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
     @genesis_counts = Session.genesis_counts
   end

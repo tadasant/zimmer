@@ -85,6 +85,14 @@ class SpotGateService
     end
   end
 
+  # The answer for a priority session: it starts, and nothing about quota was
+  # consulted to decide that.
+  ALWAYS_ALLOWED = Decision.new(
+    allowed: true, reason: "priority",
+    detail: "Priority sessions are never gated on quota headroom.",
+    forecast_5h: nil, forecast_7d: nil, rate: nil, active_sessions: nil
+  ).freeze
+
   class << self
     # Whether `session` may start now. Priority sessions short-circuit without
     # touching the database beyond their own genesis.
@@ -96,9 +104,18 @@ class SpotGateService
     # understatement is total: the forecast would equal current utilization and
     # the first spot session would start however steep the burn rate.
     def allow_start?(session)
-      return true unless session.spot?
+      start_decision(session).allowed?
+    end
 
-      evaluate(candidate_sessions: 1).allowed?
+    # The Decision for starting `session`, and the single seam the production
+    # path goes through — SpotSessionHold calls this, so `allow_start?` is a read
+    # of live behavior rather than a parallel implementation that could drift.
+    #
+    # A priority session is answered without touching the quota tables at all.
+    def start_decision(session)
+      return ALWAYS_ALLOWED unless session.spot?
+
+      evaluate(candidate_sessions: 1)
     end
 
     # `candidate_sessions` is 0 for the informational read on /settings and over
@@ -173,7 +190,14 @@ class SpotGateService
         forecast_5h: five_hour, forecast_7d: weekly, rate: rate, active_sessions: sessions
       )
     end
-  rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError => e
+  # StandardError, deliberately broad. ActiveRecord::ConnectionNotEstablished and
+  # its ConnectionTimeoutError subclass descend from AdapterError, NOT from
+  # StatementInvalid — and pool exhaustion is very reachable with a fleet of
+  # concurrent AgentSessionJobs. Anything narrower lets the exception escape into
+  # AgentSessionJob, which marks the session `failed`. A spot session must never
+  # be failed by the thing whose entire promise is that it only defers.
+  rescue StandardError => e
+    Rails.logger.warn("[SpotGateService] Could not evaluate (#{e.class}: #{e.message}); allowing the session")
     allow("unavailable", "Could not evaluate the spot gate (#{e.class}); allowing the session.")
   end
 
@@ -199,6 +223,11 @@ class SpotGateService
 
   def forecast(current:, reset_at:, rate:, sessions:, threshold_pct:)
     return nil if current.nil?
+    # No reset time means we do not know how long this window has left, and
+    # projecting a 5-hour burn rate over the 24-hour cap would manufacture a
+    # breach out of a missing field. An unknown horizon is a monitoring gap, and
+    # a monitoring gap allows.
+    return nil if reset_at.nil?
 
     threshold = threshold_pct.to_f / 100.0
     hours = horizon_hours(reset_at)
@@ -214,8 +243,6 @@ class SpotGateService
   end
 
   def horizon_hours(reset_at)
-    return MAX_HORIZON / 3600.0 if reset_at.nil?
-
     hours = (reset_at - @now) / 3600.0
     return 0.0 if hours.negative?
 

@@ -27,7 +27,7 @@ class GenesisClassesController < ApplicationController
     setting.set_genesis_class(genesis, klass)
 
     if setting.save
-      affected = Session.where(genesis: genesis).where.not(status: :archived).count
+      affected = Session.genesis_count_for(genesis)
       redirect_to settings_path(anchor: "spot-gate"),
         notice: "#{SessionGenesis.label(genesis)} is now #{klass}. " \
                 "#{affected} live #{'session'.pluralize(affected)} reclassified."

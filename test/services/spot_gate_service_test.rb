@@ -140,6 +140,46 @@ class SpotGateServiceTest < ActiveSupport::TestCase
       "the one-click promotion has to take effect for sessions that already exist"
   end
 
+  # Regression: ActiveRecord::ConnectionNotEstablished descends from AdapterError,
+  # not StatementInvalid, so a narrow rescue let it escape into AgentSessionJob —
+  # which marks the session `failed`. The gate must never fail a session.
+  test "any error while evaluating allows the session rather than escaping" do
+    seed_history(current_5h: 0.99, current_7d: 0.99)
+
+    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid, RuntimeError ].each do |klass|
+      ClaudeUsageRateService.stub(:call, ->(*) { raise klass, "boom" }) do
+        decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
+        assert decision.allowed?, "#{klass} must not be able to hold a session"
+        assert_equal "unavailable", decision.reason
+      end
+    end
+  end
+
+  # Regression: a nil reset used to fall back to the 24h cap, so a 5-hour burn
+  # rate got projected over a day and manufactured a breach out of a missing field.
+  test "a window with no reset time is skipped rather than projected over the cap" do
+    seed_history(current_5h: 0.70, current_7d: 0.10)
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: @account,
+      utilization_5h: 0.70, utilization_7d: 0.10,
+      reset_5h: nil, reset_7d: @now + 2.days,
+      active_session_count: 1, trigger: "usage_sample", created_at: @now + 1.second
+    )
+
+    decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
+    assert_nil decision.forecast_5h, "an unknown horizon is a monitoring gap, not a breach"
+    assert decision.allowed?
+  end
+
+  test "a priority session is answered without consulting quota at all" do
+    seed_history(current_5h: 0.99, current_7d: 0.99)
+    priority = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", genesis: SessionGenesis::WEB_UI)
+
+    decision = SpotGateService.start_decision(priority)
+    assert decision.allowed?
+    assert_equal "priority", decision.reason
+  end
+
   test "a passed reset reads as zero utilization, matching effective_utilization" do
     seed_history(current_5h: 0.10, current_7d: 0.10)
     # Latest reading: both windows pinned at 99% but already past their reset, so

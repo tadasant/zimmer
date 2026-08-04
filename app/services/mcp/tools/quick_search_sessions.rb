@@ -170,6 +170,12 @@ module Mcp
         ActiveModel::Type::Boolean.new.cast(value) == true
       end
 
+      # Read once per call rather than once per result row — see the same note in
+      # ApiSessionSerialization.
+      def genesis_class_overrides
+        @genesis_class_overrides ||= AppSetting.current.genesis_class_overrides || {}
+      end
+
       def format_session(session)
         lines = [
           "### #{session.title} (ID: #{session.id})",
@@ -179,7 +185,7 @@ module Mcp
         ]
 
         lines << "- **Slug:** #{session.slug}" if session.slug.present?
-        lines << "- **Genesis:** #{session.genesis_key} (#{session.priority_class})"
+        lines << "- **Genesis:** #{session.genesis_key} (#{session.priority_class(genesis_class_overrides)})"
         lines << "- **Category:** #{session.category.name}" if session.category
         lines << "- **Repository:** #{session.git_root}" if session.git_root.present?
         lines << "- **Branch:** #{session.branch}" if session.branch.present?

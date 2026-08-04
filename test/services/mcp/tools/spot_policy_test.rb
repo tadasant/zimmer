@@ -108,9 +108,10 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_raises(Mcp::ToolError) { action(action: "promote_genesis", genesis: "carrier_pigeon") }
   end
 
-  test "an out-of-range threshold is rejected by the model validation" do
-    assert_raises(ActiveRecord::RecordInvalid) do
+  test "an out-of-range threshold comes back as a readable tool error" do
+    error = assert_raises(Mcp::ToolError) do
       action(action: "set_gating", five_hour_threshold_pct: 150)
     end
+    assert_match(/Invalid thresholds/, error.message)
   end
 end
