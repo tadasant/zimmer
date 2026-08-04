@@ -7881,7 +7881,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     result = job.send(:build_prompt_with_goal, "Fix the bug", worker)
 
     assert_includes result, "<session-hierarchy>"
-    assert_includes result, "- ##{router.id} [zimmer-router] Route it"
+    assert_includes result, "- ##{router.id} [zimmer-router] {unknown · priority} Route it"
     assert_includes result, "← this session"
     assert_includes result, "does NOT mean \"most recently talked to\""
 

@@ -210,6 +210,9 @@ Rails.application.routes.draw do
   get "settings", to: "settings#show", as: :settings
   patch "settings/catalog_pins", to: "catalog_pins#update", as: :catalog_pins
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
+  # One click per genesis kind — the promote/demote buttons on the spot gate card.
+  patch "settings/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
+  delete "settings/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 
   # Quotas page (per-runtime via ?runtime=claude_code|codex)
   get "quotas", to: "quotas#show", as: :quotas

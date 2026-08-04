@@ -43,6 +43,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_03_170000) do
     t.string "default_model"
     t.string "default_runtime"
     t.jsonb "extension_states", default: {}, null: false
+    t.jsonb "genesis_class_overrides", default: {}, null: false
+    t.integer "spot_gate_five_hour_threshold_pct", default: 80, null: false
+    t.integer "spot_gate_weekly_threshold_pct", default: 80, null: false
+    t.boolean "spot_gating_enabled", default: false, null: false
     t.integer "uncategorized_position", default: 0, null: false
     t.datetime "updated_at", null: false
   end
@@ -74,6 +78,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_03_170000) do
   end
 
   create_table "claude_account_quota_snapshots", force: :cascade do |t|
+    t.integer "active_session_count"
     t.bigint "claude_account_id", null: false
     t.datetime "created_at", null: false
     t.string "overage_disabled_reason"
@@ -387,6 +392,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_03_170000) do
     t.jsonb "custom_metadata", default: {}
     t.string "execution_provider", default: "local_filesystem", null: false
     t.boolean "favorited", default: false, null: false
+    t.string "genesis"
     t.string "git_root"
     t.text "goal"
     t.boolean "heartbeat_enabled", default: false, null: false
@@ -425,6 +431,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_03_170000) do
     t.index ["created_at"], name: "index_sessions_on_created_at"
     t.index ["execution_provider"], name: "index_sessions_on_execution_provider"
     t.index ["favorited"], name: "index_sessions_on_favorited"
+    t.index ["genesis"], name: "index_sessions_on_genesis"
     t.index ["heartbeat_enabled"], name: "index_sessions_on_heartbeat_enabled", where: "heartbeat_enabled"
     t.index ["id"], name: "index_sessions_on_id_where_transcript_present", where: "(transcript IS NOT NULL)"
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"

@@ -35,6 +35,11 @@ class Api::V1::SessionsController < Api::BaseController
     # Filter by agent_runtime
     scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
 
+    # Filter by scheduling class / genesis. Resolved live through SessionGenesis,
+    # so a genesis promoted in Settings moves its sessions here immediately.
+    scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
+    scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
+
     # Exclude archived unless requested
     scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
 
@@ -81,6 +86,10 @@ class Api::V1::SessionsController < Api::BaseController
   #   - custom_metadata: Custom user metadata (JSON)
   def create
     @session = Session.new(session_params.except(:agent_root))
+    # Machine-created. When the caller passed a parent_session_id this is an agent
+    # continuing an existing line of work, so assign_genesis inherits that parent's
+    # genesis and leaves `api` alone; `api` is only what a parentless call gets.
+    @session.genesis = SessionGenesis::API if @session.parent_session_id.blank?
 
     # Recorded before save so the job starting moments later can tell a
     # deliberate "no MCP servers" from a column that landed empty by accident.
@@ -997,6 +1006,11 @@ class Api::V1::SessionsController < Api::BaseController
 
     # Filter by agent_runtime
     scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
+
+    # Filter by scheduling class / genesis. Resolved live through SessionGenesis,
+    # so a genesis promoted in Settings moves its sessions here immediately.
+    scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
+    scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
 
     # Exclude archived unless requested
     scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"

@@ -58,7 +58,12 @@ class QuotaSnapshotService
       reset_7d: result.reset_7d,
       overage_status: result.overage_status,
       overage_disabled_reason: result.overage_disabled_reason,
-      trigger: trigger
+      trigger: trigger,
+      # Captured here because nothing else can reconstruct it later: session
+      # status is mutable and keeps no history, so a reading taken today cannot
+      # be attributed to a number of sessions tomorrow. ClaudeUsageRateService
+      # divides utilization consumed by the session-hours this number implies.
+      active_session_count: ClaudeUsageRateService.active_session_count
     )
   end
   private_class_method :create_snapshot

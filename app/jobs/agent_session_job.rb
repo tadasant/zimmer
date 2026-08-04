@@ -316,6 +316,17 @@ class AgentSessionJob < ApplicationJob
         end
       end
 
+      # Hold a spot session at the starting line when the Claude Code forecast
+      # says there is no headroom for it. Gated here rather than at creation so
+      # the session still exists, is visible, and simply starts later — the job
+      # re-enqueues itself with a delay. Only a first start is gated; a follow-up,
+      # a monitoring resume, and a clone-only setup all pass through.
+      if !resume_monitoring && !clone_only && follow_up_prompt.blank? &&
+         SpotSessionHold.hold_if_needed(session, log_buffer: log_buffer, images: images, files: files)
+        log_buffer.flush
+        return
+      end
+
       # Reclassify a follow-up/recovery prompt for a session that never
       # established a Claude session_id as a FRESH START.
       #

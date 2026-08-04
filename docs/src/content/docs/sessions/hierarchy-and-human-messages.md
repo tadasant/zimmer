@@ -99,6 +99,23 @@ traversal's own `seen` guards, which stop a cycle from hanging a render but do n
 An edge is a record *about* a delivery, never a precondition of it. If recording fails, the follow-up
 still lands and the failure is logged.
 
+### Genesis on every node
+
+Each node also carries its **genesis** — where that session's line of work came from — and the
+scheduling class the genesis currently resolves to. The web panel renders it as a `genesis · class`
+pill beside the agent-root pill; `to_outline`, which the prompt block and `get_session` both use,
+renders it in braces:
+
+```
+- #101 [zimmer-router] {web_ui · priority} Add spot vs priority classification
+  - #102 [zimmer] {web_ui · priority} Implement the genesis column ← this session
+```
+
+Genesis is inherited down a spawn edge, so a branch normally shares one — which is exactly why it
+belongs on every node rather than only on the session being viewed: "this whole branch is spot" is
+then readable at a glance, and an outlier stands out instead of surprising someone later. See
+[Spot and priority](/sessions/spot-and-priority/).
+
 ### Origin, and roots
 
 `origin` is the root of the **spawn** chain, and stays single-valued. It is deliberately blind to

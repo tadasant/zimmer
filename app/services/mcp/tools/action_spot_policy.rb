@@ -1,0 +1,144 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    # The write half of the spot/priority surface — everything the spot gate card
+    # on /settings can do, reachable by an agent.
+    #
+    # Follows ActionSession's dispatch shape: one `action` argument validated
+    # against a constant, one private method per action.
+    class ActionSpotPolicy < Tool
+      tool_name "action_spot_policy"
+
+      ACTIONS = %w[
+        set_gating
+        promote_genesis
+        demote_genesis
+        reset_genesis_classes
+      ].freeze
+
+      description <<~DESC
+        Change Zimmer's spot/priority scheduling policy. Read the current state first with `get_spot_policy`.
+
+        **Actions:**
+        - **set_gating**: Turn the spot gate on or off and set the two thresholds. Any of `enabled`,
+          `five_hour_threshold_pct` and `weekly_threshold_pct` may be given; omitted ones are left alone.
+          With the gate on, a spot session starts only while BOTH windows are forecast to stay under
+          their ceiling. With it off, spot sessions start like any other.
+        - **promote_genesis**: Make a genesis kind `priority` (requires `genesis`). This is the one-click
+          promotion: it reclassifies every session from that genesis, including ones that already exist,
+          because a session's class is derived from its genesis rather than stored on the row.
+        - **demote_genesis**: Make a genesis kind `spot` (requires `genesis`).
+        - **reset_genesis_classes**: Drop every override and return all genesis kinds to their defaults.
+
+        Genesis keys: `web_ui`, `slack`, `github_issue`, `github_label`, `schedule`, `ao_event`, `api`,
+        `unknown`.
+
+        **Use cases:**
+        - Promote `github_issue` to priority for a day when the issue backlog matters more than quota
+        - Turn gating on before a long unattended run, off when you want everything to go now
+        - Raise or lower the thresholds
+      DESC
+
+      input_schema({
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ACTIONS,
+            description: "The action to perform"
+          },
+          genesis: {
+            type: "string",
+            enum: SessionGenesis::KEYS,
+            description: "Genesis kind. Required for promote_genesis and demote_genesis."
+          },
+          enabled: {
+            type: "boolean",
+            description: "set_gating: whether the spot gate holds sessions at all."
+          },
+          five_hour_threshold_pct: {
+            type: "integer",
+            minimum: 0,
+            maximum: 100,
+            description: "set_gating: forecast ceiling for the 5-hour window, 0-100."
+          },
+          weekly_threshold_pct: {
+            type: "integer",
+            minimum: 0,
+            maximum: 100,
+            description: "set_gating: forecast ceiling for the weekly window, 0-100."
+          }
+        },
+        required: [ "action" ]
+      })
+
+      def call(args)
+        action = require_arg(args, :action)
+        raise ToolError, "Unknown action: #{action}. Valid actions: #{ACTIONS.join(', ')}" unless ACTIONS.include?(action)
+
+        case action
+        when "set_gating" then set_gating(args)
+        when "promote_genesis" then set_genesis_class(args, SessionGenesis::PRIORITY)
+        when "demote_genesis" then set_genesis_class(args, SessionGenesis::SPOT)
+        when "reset_genesis_classes" then reset_genesis_classes
+        end
+      end
+
+      private
+
+      def set_gating(args)
+        setting = AppSetting.editable
+        changes = []
+
+        unless args["enabled"].nil?
+          setting.spot_gating_enabled = ActiveModel::Type::Boolean.new.cast(args["enabled"])
+          changes << "gating #{setting.spot_gating_enabled ? 'enabled' : 'disabled'}"
+        end
+        if args["five_hour_threshold_pct"]
+          setting.spot_gate_five_hour_threshold_pct = args["five_hour_threshold_pct"]
+          changes << "5-hour limit #{setting.spot_gate_five_hour_threshold_pct}%"
+        end
+        if args["weekly_threshold_pct"]
+          setting.spot_gate_weekly_threshold_pct = args["weekly_threshold_pct"]
+          changes << "weekly limit #{setting.spot_gate_weekly_threshold_pct}%"
+        end
+
+        raise ToolError, "Nothing to change: pass enabled, five_hour_threshold_pct or weekly_threshold_pct" if changes.empty?
+
+        # Surface a bad threshold as a message the caller can act on rather than
+        # as an internal error, matching every other validation in this tool.
+        raise ToolError, "Invalid thresholds: #{setting.errors.full_messages.join(', ')}" unless setting.save
+        "Spot policy updated: #{changes.join(', ')}.\n\n#{decision_summary}"
+      end
+
+      def set_genesis_class(args, klass)
+        genesis = require_arg(args, :genesis)
+        raise ToolError, "Unknown genesis: #{genesis}. Valid: #{SessionGenesis::KEYS.join(', ')}" unless SessionGenesis.valid?(genesis)
+
+        setting = AppSetting.editable
+        setting.set_genesis_class(genesis, klass)
+        setting.save!
+
+        affected = Session.genesis_count_for(genesis)
+        "#{SessionGenesis.label(genesis)} (`#{genesis}`) is now **#{klass}**. " \
+          "#{affected} live session(s) reclassified.\n\n#{decision_summary}"
+      end
+
+      def reset_genesis_classes
+        setting = AppSetting.editable
+        setting.reset_genesis_classes
+        setting.save!
+
+        "All genesis kinds reset to their default classes.\n\n#{decision_summary}"
+      end
+
+      # Every write echoes back what the gate now decides, so a caller does not
+      # have to make a second call to learn whether its change took effect.
+      def decision_summary
+        decision = SpotGateService.evaluate
+        "Spot sessions are now #{decision.allowed? ? 'running' : 'HELD'} (`#{decision.reason}`): #{decision.detail}"
+      end
+    end
+  end
+end

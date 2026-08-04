@@ -115,6 +115,16 @@
           <%= agent_session.agent_root_key %>
         </div>
       <% end %>
+      <%# Genesis and the class it resolves to, so a filtered list is legible at a
+          glance and a spot session held for headroom can be recognized without
+          opening it. `genesis_class_overrides` comes from the view-level cache in
+          the helper so a page of 50 cards reads AppSetting once. %>
+      <div class="text-xs mb-2">
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 font-medium <%= agent_session.spot?(cached_genesis_overrides) ? "bg-gray-100 text-gray-600" : "bg-indigo-50 text-indigo-700" %>"
+              title="Genesis: <%= agent_session.genesis_label %> — classified <%= agent_session.priority_class(cached_genesis_overrides) %>">
+          <%= agent_session.genesis_key %> · <%= agent_session.priority_class(cached_genesis_overrides) %>
+        </span>
+      </div>
     </div>
 
     <!-- Footer Actions -->

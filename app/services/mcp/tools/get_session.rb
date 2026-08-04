@@ -138,6 +138,22 @@ module Mcp
 
       private
 
+      # Why a spot session is sitting in `waiting`. Emitted only when a hold is
+      # actually recorded, so an ordinary session's output is unchanged — but when
+      # it IS held, an agent reading its own session must be able to tell "deferred
+      # for quota headroom, will start by itself" apart from "stuck".
+      def spot_hold_lines(session)
+        detail = session.metadata&.dig(SpotSessionHold::HELD_DETAIL)
+        return [] if detail.blank?
+
+        retry_at = session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT)
+        [
+          "- **Held for quota headroom:** #{detail}",
+          "- **Hold re-check at:** #{retry_at.presence || 'unknown'}",
+          "- **Holds so far:** #{session.metadata&.dig(SpotSessionHold::HELD_COUNT).to_i}"
+        ]
+      end
+
       # The cached Status blurb, with the staleness count that decides whether to
       # trust it. Read-only here: nothing about calling get_session generates a
       # summary, exactly as viewing the session page does not.
@@ -263,6 +279,12 @@ module Mcp
 
         lines << "- **Slug:** #{session.slug}" if session.slug.present?
         lines << "- **Category:** #{session.category.name}" if session.category
+        # Genesis and the class it resolves to. Present on the session itself as
+        # well as on every hierarchy node, because the single most common question
+        # is about THIS session and reading it off a tree of one is awkward.
+        lines << "- **Genesis:** #{session.genesis_key} (#{session.genesis_label})"
+        lines << "- **Scheduling class:** #{session.priority_class}"
+        lines.concat(spot_hold_lines(session))
 
         lines << ""
         lines << "### Git Configuration"
