@@ -34,40 +34,48 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # CloneArtifactService writes to ~/.zimmer/artifacts/<session_id>, derived from
-  # $HOME. That is a machine-global namespace: it is shared by all 8 parallel
-  # workers of a run AND by every other test-unit job running concurrently on the
-  # persistent self-hosted runner, which all see the same $HOME. A random
-  # session_id made a collision unlikely but not impossible — the id space was
-  # 100_000 wide and this file draws from it once per test. On a collision, one
-  # test's teardown rm_rf'd the artifacts directory another test was still
-  # writing into, so create_artifacts died on Errno::ENOENT and returned
-  # success? == false. That is the flake in run 30858630006: a bare
-  # `assert result.success?` reported it as "Expected false to be truthy" and
-  # threw the ENOENT away.
+  # The sandbox owns the isolation, so the id carries none of it and is fixed:
+  # nothing in this file depends on chance.
+  SESSION_ID = 900_001
+
+  # Every test runs under a private $HOME, so the artifacts root
+  # CloneArtifactService derives from it (~/.zimmer/artifacts/<session_id>)
+  # belongs to that test alone.
   #
-  # Pinning $HOME to a private tmpdir per test gives each one its own artifacts
-  # root, so there is no shared namespace left to collide on — no matter how many
-  # workers or CI jobs run at once. It also stops the suite writing into the
-  # runner's real home, where a killed run leaves directories behind forever.
+  # Without the sandbox that root is a machine-global namespace: all 8 parallel
+  # workers of a run share it, and so does every other test-unit job running
+  # concurrently on the persistent self-hosted runner. Keying the directory off a
+  # random session id only narrows the odds rather than closing them — two tests
+  # holding the same id share a directory, and one test's teardown rm_rf can land
+  # inside the other's create_artifacts, which then dies on Errno::ENOENT and
+  # returns success? == false. A private $HOME deletes the shared namespace
+  # instead of betting against it, and keeps the suite out of the runner's real
+  # home, where a killed run leaves artifact directories behind for good.
+  #
+  # Weigh this before widening what runs under the sandbox: constants that bake
+  # Dir.home at class-load time (ClaudeAuthProvider::CLAUDE_JSON_PATH,
+  # QuotaCheckService::CREDENTIALS_PATH) would freeze a tmpdir path for the rest
+  # of the worker process if they were first autoloaded here. Nothing this file
+  # touches reaches them, and CI eager-loads the whole graph at boot.
   setup do
     @original_home = ENV["HOME"]
     @home_dir = Dir.mktmpdir("clone-artifact-home")
     ENV["HOME"] = @home_dir
 
     @service = CloneArtifactService.new
-    @session_id = rand(900_000..999_999)
+    @session_id = SESSION_ID
     @bare_path = nil
     @repo_path = nil
   end
 
   teardown do
+    # Restore $HOME first. Minitest skips the rest of a teardown block that
+    # raises, and a cleanup failure below must not leave the worker pointed at a
+    # tmpdir for every test file it runs afterwards.
+    @original_home.nil? ? ENV.delete("HOME") : ENV["HOME"] = @original_home
+    FileUtils.rm_rf(@home_dir) if @home_dir
     FileUtils.rm_rf(@repo_path) if @repo_path && File.directory?(@repo_path)
     FileUtils.rm_rf(@bare_path) if @bare_path && File.directory?(@bare_path)
-    # Restore $HOME before removing the sandbox: the artifacts under it go with
-    # the directory, so there is nothing left to clean up by path.
-    @original_home.nil? ? ENV.delete("HOME") : ENV["HOME"] = @original_home
-    FileUtils.remove_entry(@home_dir) if @home_dir && File.directory?(@home_dir)
   end
 
   # === check_dirty_state tests ===
@@ -417,7 +425,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
   # ~/.zimmer/artifacts, parallel workers and co-running CI jobs share a
   # directory again and the rm_rf race is back.
   test "artifacts are written under the per-test HOME sandbox, not the real home" do
-    create_test_repo(dirty: true, unpushed_commits: true)
+    create_test_repo(dirty: true)
 
     result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
 
