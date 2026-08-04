@@ -62,7 +62,7 @@ Zimmer is reachable only over your tailnet. The droplet joins it at boot and the
 
 Zimmer runs coding agents, so it needs at least one agent harness logged in. Without this, sessions spawn but no agent runs.
 
-- An **Anthropic account** for Claude Code, and/or an **OpenAI account** for Codex. Like the GitHub login above, this is an OAuth flow you run inside the container after the first deploy (`claude /login` / `codex login`, [step 10](#stand-it-up)). Claude's credentials persist on the `claude_home` volume; **Codex's do not** — nothing mounts `~/.codex`, so a `codex login` is wiped by the next deploy unless you add a volume for it. See [agent harness credentials](/auth/harness/).
+- An **Anthropic account** for Claude Code, and/or an **OpenAI account** for Codex. Like the GitHub login above, this is an OAuth flow you run inside the container after the first deploy (`claude /login` / `codex login`, [step 10](#stand-it-up)). Both persist across deploys: Claude's credentials on the `claude_home` volume, Codex's on `codex_home` (which also carries its rollout transcripts and thread store). See [agent harness credentials](/auth/harness/).
 
 ### Effectively required: a Cloudflare zone for HTTPS
 
@@ -131,7 +131,7 @@ With the prerequisites in hand, the rest is mechanical. Do it yourself, or hand 
     claude /login          # and/or: codex login
     ```
 
-    For `gh` and `claude` this is **once, not per deploy**: `gh`'s token lands in `~/.config/gh` and Claude's in `~/.claude`, both durable named volumes (`gh_config`, `claude_home`) shared by `web` and `worker` and re-attached across Kamal container swaps. Confirm with `gh auth status` and `claude whoami`; the UI surfaces the same state (`CliStatusService` refreshes it every two minutes).
+    This is **once, not per deploy**: `gh`'s token lands in `~/.config/gh`, Claude's in `~/.claude`, and Codex's in `~/.codex` — all durable named volumes (`gh_config`, `claude_home`, `codex_home`) shared by `web` and `worker` and re-attached across Kamal container swaps. Confirm with `gh auth status` and `claude whoami`; the UI surfaces the same state (`CliStatusService` refreshes it every two minutes).
 
     :::caution[Skip this and every session fails]
     Without `gh auth login`, the first thing a session does — clone the repo — fails, and the agent never starts. Without a harness login, the session spawns but no agent runs. Neither failure shows up in the deploy's `/up` health check.
@@ -220,7 +220,7 @@ Then do the following, pausing to confirm with me at each step that produces ext
    gh auth login          # GitHub: the sole source of git auth
    claude /login          # and/or: codex login
 
-   Explain that the gh and claude tokens persist on the gh_config and claude_home volumes, so those are one-time and not per-deploy — but there is NO ~/.codex volume, so a codex login is wiped by the next deploy unless I add one. Until I do the gh login, every session fails at the clone step even though /up is green. Do not call the setup complete until I confirm 'gh auth status' succeeds inside the container.
+   Explain that the gh, claude, and codex tokens persist on the gh_config, claude_home, and codex_home volumes, so all three logins are one-time and not per-deploy. Until I do the gh login, every session fails at the clone step even though /up is green. Do not call the setup complete until I confirm 'gh auth status' succeeds inside the container.
 
 10. Tell me what's left to make it mine. The instance will be running Zimmer's own small in-image catalog, not my agent roots / MCP servers / skills. Point me at docs/src/content/docs/air/artifacts.md ("Pointing an instance at your own catalog"): I deliver my catalog to a persistent host dir, bind-mount it into BOTH the web and worker roles, and set AIR_CONFIG to the mounted air.production.json. Warn me that only production.rb guards AIR_CONFIG with a File.exist? fallback — staging.rb reads it straight through, and deploy.staging.yml sets RAILS_ENV=staging — so on this staging-shaped deploy I must deliver the catalog files BEFORE setting AIR_CONFIG, or the app resolves zero roots. Offer to wire it up as a follow-up, but do not attempt it now.
 
