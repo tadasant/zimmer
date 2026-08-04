@@ -423,15 +423,18 @@ still a session running on the previous deploy's CLI. Recovery respawns driven b
 `ProcessLifecycleManager#handle_exit` (SIGTERM retry, context-length compaction) do not re-check
 the gate; they only happen after a spawn that did.
 
-Tracked in [#122](https://github.com/tadasant/zimmer/issues/122).
+Fixed in [#122](https://github.com/tadasant/zimmer/issues/122), which added the readiness gate. The
+escape hatch above is what that fix deliberately left open.
 
-### The tailnet reaper no-ops without credentials, and says nothing
+### The tailnet reaper still no-ops without credentials — it just says so now
 
-`scripts/tailnet-reap-node.sh` does nothing when `TS_API_CLIENT_*` are unset, so the MagicDNS name
-drifts to `zimmer-staging-1`, `-2`, … The health check compensates by trying every online peer with
-that name — so it works, and you accumulate dead nodes with no error.
+`scripts/tailnet-reap-node.sh` skips cleanup when `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET` are
+unset, so the MagicDNS name drifts to `zimmer-staging-1`, `-2`, … The health check compensates by
+trying every online peer with that name — so it works, and you accumulate dead nodes. What changed is
+the silence: the script now emits `::warning::` annotations naming the drift and the two secrets that
+would stop it, on the unset path and on a failed token exchange alike.
 
-Tracked in [#123](https://github.com/tadasant/zimmer/issues/123).
+Fixed in [#123](https://github.com/tadasant/zimmer/issues/123).
 
 ### The CI-failure alert can't be exercised from a PR
 
@@ -511,7 +514,9 @@ gap: no `User` model, no owner column, nothing for a policy object to compare. T
 `# TODO: Add proper authorization checks` comments that used to imply otherwise are now a single
 explicit note at the top of the class explaining why there is nothing to check.
 
-Tracked in [#42](https://github.com/tadasant/zimmer/issues/42) and [#44](https://github.com/tadasant/zimmer/issues/44).
+Fixed in [#42](https://github.com/tadasant/zimmer/issues/42) — the panel is behind the Basic realm —
+and [#44](https://github.com/tadasant/zimmer/issues/44), which replaced the authorization TODOs with
+the note. What is above is the perimeter model itself, which no issue is open against.
 
 ### Nothing is encrypted at rest
 
@@ -539,16 +544,6 @@ Rotation requires a restart. No record of which key did what.
 
 Tracked in [#46](https://github.com/tadasant/zimmer/issues/46).
 
-### The OAuth refresh grant has no timeout
-
-`McpOauthService` bounds every call it makes at 30 seconds, including the initial token exchange. The
-*refresh* grant does not: `McpOauthCredential#refresh!` still posts with a bare `Net::HTTP.post_form`.
-An auth server that accepts the connection and never answers pins whatever is refreshing —
-`McpOauthCredentialInjector` on the session-spawn path, or `RefreshMcpOauthTokensJob` on cron, where it
-holds a GoodJob worker.
-
-Tracked in [#48](https://github.com/tadasant/zimmer/issues/48).
-
 ### Agents run unsandboxed on the app host
 
 Agents run as the app user, on the app host, with the app's git and `gh` credentials, spawned with
@@ -568,7 +563,8 @@ Building one is a real project — a new runner, new images, credential brokerin
 abstraction, unwired from `app/`; whether to build against that seam or delete it is
 [#172](https://github.com/tadasant/zimmer/issues/172).
 
-Tracked in [#49](https://github.com/tadasant/zimmer/issues/49).
+Fixed in [#49](https://github.com/tadasant/zimmer/issues/49) as far as a fix goes here: the false
+advertisement is gone. The live remainder is #172, above.
 
 ### Anyone in the workspace can trigger an agent via bot-mention, by default
 
@@ -799,7 +795,8 @@ now is that the failure is not silent on Zimmer's side — the system prompt of 
 while the gate is down says so, so a redaction is never read as a policy decision. A session already
 running when the gate breaks reads the status from its spawn and will not learn of it.
 
-Tracked in [#55](https://github.com/tadasant/zimmer/issues/55).
+Fixed in [#55](https://github.com/tadasant/zimmer/issues/55). What survives is the edge of what Zimmer
+can verify from its own side, which no issue closes.
 
 ### Extension env contributions are unreachable from Codex
 
@@ -871,12 +868,6 @@ Tracked in [#58](https://github.com/tadasant/zimmer/issues/58). None of this can
 no public API to fix it against — so the issue asks for a canary that fails loudly when one of these
 facts stops being true.
 
-### The rotation safety check fails open
-
-`account_rotation_service.rb:437` — `return true if stored_config.blank? # Can't verify, assume ok`.
-
-Tracked in [#61](https://github.com/tadasant/zimmer/issues/61).
-
 ---
 
 ## MCP
@@ -903,7 +894,8 @@ configs, so a change to Zimmer's side of the algorithm fails loudly and names th
 It cannot detect the other direction: if Claude Code changes *its* algorithm, the canary stays green
 and lookups start missing.
 
-Tracked in [#62](https://github.com/tadasant/zimmer/issues/62).
+Fixed in [#62](https://github.com/tadasant/zimmer/issues/62), which added that canary. The direction it
+cannot cover is permanent — there is no public spec to pin the other side against.
 
 ### Codex MCP status reimplements a Rust function in Ruby
 
@@ -1067,7 +1059,8 @@ asserts every `@pulsemcp/air-*` pin and the version marker match `AIR_CLI_VERSIO
 catalog configs are identical outside `description`. A mismatched marker would otherwise make every
 fresh container throw away its baked-in AIR install and re-download the CLI on a session's launch path.
 
-Tracked in [#68](https://github.com/tadasant/zimmer/issues/68).
+Fixed in [#68](https://github.com/tadasant/zimmer/issues/68), which added that parity test. The
+duplication above is what the test guards rather than removes.
 
 ### Five roots point at a different repository
 
@@ -1535,7 +1528,8 @@ tick that lands. What it does not fix is the delay. A `last_message_ts` cursor m
 message that should have fired it. After five deferrals (about fifteen minutes) the job stops
 deferring, alerts, and lets the ordinary once-a-minute cron take over.
 
-Tracked in [#77](https://github.com/tadasant/zimmer/issues/77).
+Fixed in [#77](https://github.com/tadasant/zimmer/issues/77). The delay above is what that fix traded
+the dropped ticks for.
 
 ### `thread_ts` is not supported for bot mentions
 
@@ -1710,7 +1704,8 @@ opaque strings with no owner, so the bucket separates keys, not people. And it r
 keys, where one global bucket capped it at one per 30 seconds for the whole instance. With
 `API_KEYS` holding a handful of strings that is the right trade, but it is a trade.
 
-Tracked in [#99](https://github.com/tadasant/zimmer/issues/99).
+Fixed in [#99](https://github.com/tadasant/zimmer/issues/99). The two consequences above are the trade
+that fix made, not a defect left behind it.
 
 ### A follow-up `goal` can set but never clear
 
@@ -1746,7 +1741,8 @@ app). X compares the two, so the value has to reach both call sites — it does 
 exist on your X app. **Registering it is a manual step on X's developer portal**; there is no API for
 it, so setting the variable to an unregistered URI fails at consent time with an opaque error.
 
-Tracked in [#104](https://github.com/tadasant/zimmer/issues/104).
+Fixed in [#104](https://github.com/tadasant/zimmer/issues/104) as far as code reaches: the variable is
+sent on both call sites. Registering the URI is X's manual step and stays.
 
 ---
 

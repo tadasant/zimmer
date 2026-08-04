@@ -346,6 +346,32 @@ class McpOauthService
     redirect_uri.present? && redirect_uri != build_redirect_uri
   end
 
+  # Posts form-encoded params with the same timeouts every other outbound call here
+  # uses. `Net::HTTP.post_form` cannot be given timeouts at all: it falls back to
+  # Net::HTTP's 60-second defaults, which is both twice this bound and per-read, so a
+  # server that answers a byte at a time stretches it indefinitely.
+  #
+  # `basic_auth` is the one thing `post_form` does that a hand-built request does not
+  # inherit: an endpoint carrying userinfo (`https://id:secret@host/token`, how some
+  # providers document client_secret_basic) authenticates through the URL. Dropping it
+  # would turn such a refresh into an opaque 401, which classifies as permanent and
+  # discards the refresh token.
+  #
+  # Public because `McpOauthCredential#refresh!` posts its refresh grant through
+  # here too — the refresh is the same request to the same token endpoint as the
+  # initial exchange, and it runs unattended from cron, so it must carry the same
+  # bound.
+  def post_form(uri, params)
+    request = Net::HTTP::Post.new(uri.request_uri)
+    request.set_form_data(params)
+    request.basic_auth(uri.user, uri.password) if uri.user
+
+    Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https",
+      open_timeout: REQUEST_TIMEOUT, read_timeout: REQUEST_TIMEOUT) do |http|
+      http.request(request)
+    end
+  end
+
   private
 
   # Probes a server for OAuth requirement by making a request and checking response
@@ -449,19 +475,6 @@ class McpOauthService
       client_secret: client_secret,
       resource: resource
     )
-  end
-
-  # Posts form-encoded params with the same timeouts every other outbound call here
-  # uses. `Net::HTTP.post_form` cannot be given timeouts, and an auth server that
-  # accepts the connection and then never answers would hold the thread forever.
-  def post_form(uri, params)
-    request = Net::HTTP::Post.new(uri.request_uri)
-    request.set_form_data(params)
-
-    Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https",
-      open_timeout: REQUEST_TIMEOUT, read_timeout: REQUEST_TIMEOUT) do |http|
-      http.request(request)
-    end
   end
 
   # Fetches JSON from a URL with timeout
