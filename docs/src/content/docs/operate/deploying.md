@@ -28,7 +28,7 @@ flowchart TB
                 WRK["worker<br/>bundle exec good_job start<br/>(no published port)"]
                 RDS["redis:7 accessory<br/>(cache only)"]
                 DBS["postgres:16 accessory<br/>(staging DB)"]
-                VOL[("named volumes<br/>zimmer_data · claude_home<br/>gh_config · claude_local")]
+                VOL[("named volumes<br/>zimmer_data · claude_home · codex_home<br/>gh_config · claude_local")]
             end
             TS["tailscaled<br/>MagicDNS: zimmer-staging"]
         end
@@ -125,8 +125,10 @@ before it reports success.
 Both roles mount the same durable named volumes, so state survives a deploy and a container recreate:
 
 - `zimmer_data` → `/home/rails/.zimmer` — the clones (`~/.zimmer/clones`) and scratch.
-- `claude_home` → `~/.claude` — the shared credentials file the entire
-  [account-rotation system](/auth/harness/) hinges on.
+- `claude_home` → `~/.claude` — Claude Code's transcripts, plus the shared credentials file
+  the entire [account-rotation system](/auth/harness/) hinges on.
+- `codex_home` → `~/.codex` (`CODEX_HOME`) — Codex's rollout transcripts, `auth.json`, and
+  thread store.
 - `gh_config` → `~/.config/gh` — the GitHub CLI's stored auth (from an interactive `gh auth login`).
   On staging the durable credential is instead `GH_TOKEN`, minted for the non-primary `tadasant-test`
   account and resolved from the Parameter Store into the process environment on every boot and poll
@@ -512,8 +514,8 @@ Two things follow from this that did not used to be true:
 - **Rollback is one command.** `kamal rollback <version> -d staging` (the host retains the last 5
   images).
 - **State survives a deploy.** `web` and `worker` share durable named volumes (`zimmer_data`,
-  `claude_home`, `gh_config`, `claude_local`), which are re-attached to each new container instead of
-  being destroyed with the droplet.
+  `claude_home`, `codex_home`, `gh_config`, `claude_local`), which are re-attached to each new
+  container instead of being destroyed with the droplet.
 
 ### What changed, and why
 

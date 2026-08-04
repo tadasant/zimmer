@@ -76,7 +76,8 @@ RUN mkdir -p /tmp/agent-orchestrator-images /tmp/agent-orchestrator-files && \
 #
 # Docker only seeds a fresh named volume with the image directory's ownership when
 # that mountpoint already EXISTS in the image. The base image creates ~/.config and
-# ~/.codex but NOT ~/.zimmer, ~/.config/gh, ~/.claude, or ~/.local -- so those
+# ~/.codex (the latter already rails-owned, which is what lets the codex_home volume
+# come up writable) but NOT ~/.zimmer, ~/.config/gh, ~/.claude, or ~/.local -- so those
 # volumes would come up root:root and uid 1000 could not write them. Every agent
 # session would then fail to clone (and `gh auth` would fail) while /up still
 # returned 200 -- a silent failure the health check cannot see.
