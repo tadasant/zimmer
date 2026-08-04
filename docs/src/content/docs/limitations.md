@@ -1166,50 +1166,59 @@ reads a conversation and never builds or boots anything. Two edges come with tha
 
 Neither affects a user-initiated fork, which copies the tree whole.
 
-### Terminating a session's process leaks a zombie, takes ~15–25 seconds, and always escalates to SIGKILL
+### Terminating a process Zimmer did not spawn falls back to a liveness check that lies
 
-`ProcessTerminationService` decides whether a process is still alive with `Process.kill(0, pid)`. For
-a child we spawned ourselves that keeps succeeding after the child dies, because an unreaped child
-holds its pid as a zombie. Every liveness gate in the termination ladder therefore answers "still
-running" for a process that exited on the first SIGTERM: it receives a second SIGTERM and two
-SIGKILLs, the ladder burns its full sequence of 3-second waits in a GoodJob thread, and it returns
-`:error` — *"could not be terminated"* — for a process it killed successfully, leaving the child
-defunct.
+`ProcessTerminationService` answers "is this still running?" with a non-blocking `wait`, which reaps
+as a side effect and so cannot be fooled by an exited child holding its own pid as a zombie. That
+answer is only available for a pid that is **our** child. For anything else `wait` raises `ECHILD`
+and the service falls back to `Process.kill(0, pid)`.
 
-This is the leak `ZombieReaperJob` keeps collecting. The reaper now picks it up within a couple of
-cron ticks and names the command in a warn line, so it is bounded and self-reporting rather than
-unbounded and silent — but the defect is upstream and unfixed. It is not fixed in place because the
-obvious repair (reaping to make the liveness check truthful) consumes an exit status that
-`AgentSessionJob`'s monitoring loop is still waiting for on the "Prompt is too long" recovery path,
-which would send that session to `needs_input` instead of compaction. The fix has to make liveness
-zombie-aware without stealing the status, and it has to keep the group SIGKILL that currently cleans
-up grandchildren (MCP servers, `node`, `gh`) as a side effect of the bug.
+Two things follow from that fallback. In a multi-container deploy each container has its own PID
+namespace, so signal 0 reports `ESRCH` for a process that is running perfectly well next door —
+`SessionRecoveryService` says so in its own header, and calls its `force_terminate_hung_process` path
+best-effort for exactly that reason: the signal may land nowhere, and the process is then the
+container runtime's problem. And within one namespace, a pid the OS has since recycled reads as
+alive; `process_info` compares uid and process state but never the command, so a recycled pid owned
+by the same user is indistinguishable from the agent that used to hold it.
 
-Tracked in [#280](https://github.com/tadasant/zimmer/issues/280).
+Routing termination to the container that owns the pid is the fix, and it is not written.
 
-### A headless `claude -p` call that times out leaves its child defunct
+Tracked in [#365](https://github.com/tadasant/zimmer/issues/365).
 
-`NativeClaudePrintRunner#terminate_process` sends SIGTERM and returns; the `Timeout` has already
-unwound the only `wait`, so nothing collects the child. `ZombieReaperJob` picks it up on its next
-tick and now names the command in a warn-level line, so it is self-reporting rather than silent —
-but it is still a leak. Latent: the timeout path has no production hits.
+### Not every session `metadata` writer is atomic, and the whole-column writers are the majority
 
-Tracked in [#281](https://github.com/tadasant/zimmer/issues/281).
+`Session#merge_metadata!` and friends push the merge into PostgreSQL as one statement, so they cannot
+erase keys they did not name. See [Metadata races](/sessions/spawning/#metadata-races).
 
-### Not every session `metadata` writer is atomic
+They are not what most of the app does. Counted against this commit, `app/` holds **34 atomic call
+sites across 15 files** and **92 whole-column read-modify-writes across 27 files** — the
+`update!(metadata: (session.metadata || {}).merge(…))` shape that rewrites the entire column from a
+snapshot the caller read earlier. `AgentSessionJob` alone has 23 of them against 11 atomic calls.
+That is not a handful of stragglers, and anyone scoping
+[#70](https://github.com/tadasant/zimmer/issues/70) off a smaller number will under-estimate it
+substantially.
 
-Most writers — follow-up delivery, the interrupt flag, the spawn and respawn `process_pid` writes,
-the retry counters, the GitHub pollers, the transcript hooks — merge in PostgreSQL as one statement
-and so cannot erase keys they did not name. See [Metadata races](/sessions/spawning/#metadata-races).
+Where a lost update is genuinely harmless: the terminal failure paths. 22 of the 92 write
+`failure_reason` or `exit_status`, and 13 of `AgentSessionJob`'s 23 are immediately followed by
+`session.fail!` — the session is ending, so a neighbouring key erased on the way out changes nothing.
+Naming those keys is not a clean proxy on its own, though: the `exit_status` write on the auth-outage
+park path is a whole-column write onto a session that is being *paused*, not failed, and will run
+again.
 
-Three groups still rebuild the whole column from a snapshot. The terminal failure paths
-(`failure_reason`, `exit_status`, and friends) — nothing correctness-critical is lost there, since the
-session is being failed at that point. The `resume!` state-machine callbacks, which use
-`update_column` and fire no callbacks today. And `TranscriptPollerService`, which batches `metadata`
-in with `transcript` and `last_timeline_entry_at` on every poll of a live turn — the most frequent
-metadata writer there is, and the reason `interrupt_terminate_pid` is harder to lose than it was
-rather than impossible to lose. No amount of atomic merging serializes two writers of the *same* key
-either.
+Where it is not harmless, the writers are on live sessions and some are hot:
+
+- `TranscriptPollerService` — four whole-column writes, two of them on the poll of a live turn
+  (`update_columns` on the metadata-only path, and the batch that carries `transcript` and
+  `last_timeline_entry_at` together). This is the worker's single most frequent metadata writer, and
+  it is why `interrupt_terminate_pid` is *harder* to lose than it was rather than impossible.
+- `AgentSessionJob`'s `"paused_by" => "recovery"` writes, its `clone_retry_count` writes, and the
+  `mcp_retry` park — all on a session that keeps running afterwards.
+- The `resume!` state-machine callbacks in `SessionStateMachine`, eight of them, which write with
+  `update_column` and fire no callbacks at all.
+- Both session controllers (19 sites between them) and the MCP `action_session` tool, which write
+  from the web process while the job's monitoring loop is writing from the worker.
+
+No amount of atomic merging serializes two writers of the *same* key either — last writer still wins.
 
 Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
 
@@ -1226,12 +1235,6 @@ Nearly every callback is wrapped in a bare `rescue` that logs and swallows, so c
 while the state advances anyway.
 
 Tracked in [#73](https://github.com/tadasant/zimmer/issues/73).
-
-### The session page auto-refreshes with a `<meta>` tag
-
-`session.rb:573` — a 5-second meta-refresh window, in a Hotwire app.
-
-Tracked in [#102](https://github.com/tadasant/zimmer/issues/102).
 
 ### Elicitations expire in 10 minutes
 
