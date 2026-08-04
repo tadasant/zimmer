@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class QueueRecoveryModeTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   setup do
     AppSetting.delete_all
     GoodJob::Setting.delete_all
@@ -106,8 +108,40 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     end
   end
 
+  test "extending without a reason keeps the reason and actor already on record" do
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(reason: "trigger stampede", actor: "web UI", ttl: 30.minutes)
+    end
+
+    travel_to Time.utc(2026, 8, 3, 12, 20, 0) do
+      status = QueueRecoveryMode.enter!(ttl: 30.minutes)
+
+      assert_equal "trigger stampede", status.reason, "an incident does not stop having a cause"
+      assert_equal "web UI", status.entered_by
+    end
+  end
+
+  test "an extension pages rather than colliding with the original entry alert" do
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(reason: "trigger stampede", ttl: 30.minutes)
+    end
+
+    alerts = capture_alerts do
+      travel_to(Time.utc(2026, 8, 3, 12, 20, 0)) { QueueRecoveryMode.enter!(ttl: 30.minutes) }
+    end
+
+    assert_equal 1, alerts.size
+    assert_equal "Queue recovery mode extended", alerts.first[:title]
+    # entered_at is deliberately preserved across an extension, so the expiry has to
+    # be in the dedup key or AlertService swallows every extension for an hour.
+    refute_equal(
+      "queue_recovery_mode_entered:2026-08-03T12:00:00Z",
+      alerts.first[:dedup_key]
+    )
+  end
+
   test "enter refuses when GoodJob pauses are disabled, rather than faking a halt" do
-    QueueRecoveryMode.stubs(:enabled?).returns(false)
+    GoodJob.configuration.stubs(:enable_pauses).returns(false)
 
     assert_raises(QueueRecoveryMode::NotAvailable) { QueueRecoveryMode.enter! }
     assert_empty GoodJob.paused(:queues)
@@ -133,11 +167,39 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
 
   test "exit still unpauses when GoodJob pauses have since been disabled" do
     QueueRecoveryMode.enter!
-    QueueRecoveryMode.stubs(:enabled?).returns(false)
+    GoodJob.configuration.stubs(:enable_pauses).returns(false)
 
     QueueRecoveryMode.exit!
 
     assert_empty GoodJob.paused(:queues)
+  end
+
+  # The one failure here that no timer resolves. Clearing the metadata would leave
+  # the queue paused with nothing left that would ever lift it.
+  test "a failed unpause keeps the metadata so the backstop retries, and pages" do
+    QueueRecoveryMode.enter!(reason: "x")
+    GoodJob.stubs(:unpause).with(queue: "pollers").raises(ActiveRecord::StatementInvalid, "boom")
+    GoodJob.stubs(:unpause).with(queue: "triggers").returns(true)
+    GoodJob.stubs(:unpause).with(queue: "default").returns(true)
+
+    alerts = capture_alerts { QueueRecoveryMode.exit! }
+
+    assert QueueRecoveryMode.active?, "the mode must stay on record while a queue is still halted"
+    assert_includes GoodJob.paused(:queues), "pollers"
+    assert_equal 1, alerts.size
+    assert_includes alerts.first[:title], "could NOT resume pollers"
+  end
+
+  test "expire_if_due! reports false when a queue could not be unpaused" do
+    travel_to Time.utc(2026, 8, 3, 12, 0, 0) do
+      QueueRecoveryMode.enter!(ttl: 10.minutes)
+    end
+    GoodJob.stubs(:unpause).raises(ActiveRecord::StatementInvalid, "boom")
+
+    travel_to Time.utc(2026, 8, 3, 12, 11, 0) do
+      refute QueueRecoveryMode.expire_if_due!,
+        "a backstop that did not actually resume must not claim it did"
+    end
   end
 
   test "exit survives a queue that was already unpaused by hand" do
@@ -237,6 +299,16 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     assert_includes alerts.first[:details], "TTL backstop"
   end
 
+  test "the deferred alert path hands the Slack post to a job" do
+    QueueRecoveryMode.enter!(reason: "x")
+    AlertService.unstub(:raise_alert)
+    AlertService.stubs(:raise_alert).returns(true)
+
+    assert_enqueued_with(job: QueueRecoveryModeAlertJob) do
+      QueueRecoveryMode.exit!(defer_alert: true)
+    end
+  end
+
   test "exiting a mode that was never on does not page" do
     AlertService.unstub(:raise_alert)
     AlertService.expects(:raise_alert).never
@@ -267,15 +339,23 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     refute status.active?
     assert_nil status.entered_at
     assert_nil status.expires_in
-    assert_empty status.paused_queues
+    assert_empty QueueRecoveryMode.paused_queues
   end
 
-  test "status reports a queue an operator paused by hand in the GoodJob dashboard" do
+  test "a queue an operator paused by hand shows in paused_queues without claiming the mode is on" do
     GoodJob.pause(queue: "pollers")
 
-    status = QueueRecoveryMode.status
+    refute QueueRecoveryMode.status.active?, "Zimmer did not enter the mode, so it must not claim it did"
+    assert_includes QueueRecoveryMode.paused_queues, "pollers",
+      "but the truth about the queue must still show"
+    assert_includes QueueRecoveryMode.status.as_json[:paused_queues], "pollers"
+  end
 
-    refute status.active?, "Zimmer did not enter the mode, so it must not claim it did"
-    assert_includes status.paused_queues, "pollers", "but the truth about the queue must still show"
+  # The banner is rendered on every page, so building a Status must not cost a
+  # `good_job_settings` read on top of the settings read it already does.
+  test "status does not query GoodJob's pauses" do
+    QueueRecoveryMode.expects(:paused_queues).never
+
+    QueueRecoveryMode.status
   end
 end
