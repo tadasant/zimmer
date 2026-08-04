@@ -24,6 +24,22 @@
   </div>
 
   <div class="px-4 py-5 sm:p-6">
+    <%# What GoodJob actually has paused, which is not always what Zimmer intended:
+        a queue an operator paused by hand in /jobs, or one a failed exit could not
+        lift. When the mode is off this is the only place that condition is visible. %>
+    <% stray = QueueRecoveryMode.paused_queues - (recovery.active? ? recovery.halted_queues : []) %>
+    <% if stray.any? %>
+      <div class="mb-6 bg-red-50 border border-red-200 rounded-md p-3">
+        <p class="text-sm text-red-800">
+          <span class="font-medium">Paused outside this control:</span>
+          <span class="font-mono"><%= stray.join(", ") %></span>.
+          Either paused by hand, or a resume that failed to lift them. Jobs on
+          <%= stray.size == 1 ? "it" : "them" %> are not running.
+          <%= link_to "Unpause in the GoodJob dashboard", "/jobs", class: "underline font-medium" %>.
+        </p>
+      </div>
+    <% end %>
+
     <% if recovery.active? %>
       <dl class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         <div>

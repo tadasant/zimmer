@@ -17,12 +17,24 @@ class HealthControllerQueueRecoveryModeTest < ActionDispatch::IntegrationTest
 
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
+
+    # The web backstop throttles itself with a process-local monotonic clock, which
+    # no amount of travel_to moves. Clear it so each test gets the first request.
+    ApplicationController.recovery_mode_reconciled_at = nil
   end
 
   teardown do
     Rails.cache.clear
     Rails.cache = @original_cache
     GoodJob::Setting.delete_all
+    ApplicationController.recovery_mode_reconciled_at = nil
+  end
+
+  test "the backstop check is throttled to one per process interval" do
+    QueueRecoveryMode.expects(:expire_if_due!).once.returns(false)
+
+    get root_path
+    get root_path
   end
 
   test "entering from the dashboard halts the demand-side queues and not agents" do
