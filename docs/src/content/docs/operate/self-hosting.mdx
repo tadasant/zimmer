@@ -137,10 +137,6 @@ With the prerequisites in hand, the rest is mechanical. Do it yourself, or hand 
     Without `gh auth login`, the first thing a session does — clone the repo — fails, and the agent never starts. Without a harness login, the session spawns but no agent runs. Neither failure shows up in the deploy's `/up` health check.
     :::
 
-    :::caution[Codex does not persist — there is no `~/.codex` volume]
-    `codex login` writes to `$CODEX_HOME` (`~/.codex`), and the Kamal config mounts no volume there — so the credentials live in the container's writable layer and are **wiped by the next deploy**. Claude Code is the harness that survives a container swap today. If you rely on Codex, add a `codex_home:/home/rails/.codex` volume to both roles in `config/deploy.<env>.yml`.
-    :::
-
 11. **Make it yours: point it at your own catalog.** You now have a working Zimmer — running *Zimmer's* [catalog](/air/overview/). The image ships a small, self-contained one, and a stock deploy (staging included) serves exactly that. It is deliberately minimal; it is not meant to be your catalog. Your agent roots, your MCP servers, and your skills live in a catalog you own.
 
     Deliver it to the box and point the app at it with `AIR_CONFIG`. The wiring exists today in `config/deploy.production.yml`; a staging-shaped deploy ships neither the mounts nor the env var, so you add them:

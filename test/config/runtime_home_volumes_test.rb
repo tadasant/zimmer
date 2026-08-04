@@ -24,10 +24,15 @@ require "yaml"
 # the table so a newly registered runtime fails here until its home is declared, rather
 # than shipping with a home that silently evaporates on the next deploy.
 class RuntimeHomeVolumesTest < ActiveSupport::TestCase
-  DEPLOY_FILES = {
-    "config/deploy.production.yml" => %w[web worker],
-    "config/deploy.staging.yml" => %w[web worker]
-  }.freeze
+  # Discovered rather than listed, for the same reason the runtime axis is: a new
+  # deploy destination must be covered the moment it exists. `config/deploy.yml` is
+  # the merged base and declares no `volume:` key of its own, so the glob's exclusion
+  # of it (it has no `.<env>.` segment) is correct rather than incidental. Roles come
+  # from each file's own `servers`, so a third role is covered too.
+  DEPLOY_FILES = Rails.root.glob("config/deploy.*.yml").to_h do |path|
+    file = path.relative_path_from(Rails.root).to_s
+    [ file, YAML.safe_load(ERB.new(path.read).result, aliases: true).fetch("servers").keys ]
+  end.freeze
 
   # The container path each runtime keeps its conversation state in. Codex's is read
   # out of the image rather than hardcoded, because `CodexHome.path` resolves it from
@@ -99,9 +104,15 @@ class RuntimeHomeVolumesTest < ActiveSupport::TestCase
 
   def runtime_homes = RUNTIME_HOMES.keys.map { |runtime| runtime_home(runtime) }
 
+  # A nil home would make `assert_includes mounted, nil` pass against a volume entry
+  # that has no container path — the one way these assertions could go quiet — so an
+  # unresolvable home is an error here rather than a silently weakened test.
   def runtime_home(runtime)
     value = RUNTIME_HOMES.fetch(runtime)
-    value.is_a?(Symbol) ? send(value) : value
+    resolved = value.is_a?(Symbol) ? send(value) : value
+    raise "Could not resolve the #{runtime} runtime home (#{value.inspect})" if resolved.blank?
+
+    resolved
   end
 
   def codex_home_from_image
