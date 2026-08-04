@@ -118,7 +118,13 @@ class ClaudeUsageRateService
     window_start = @now - @lookback
     consumed_5h = 0.0
     consumed_7d = 0.0
-    session_hours = 0.0
+    # One denominator per window, not one shared. The 5-hour window resets every
+    # five hours and the weekly one does not, so inside a 6-hour lookback a pair
+    # routinely straddles a 5h reset while the 7d counter runs straight through.
+    # Sharing a denominator would credit those hours to the 5h rate while its
+    # numerator got nothing, understating it exactly when it matters most.
+    session_hours_5h = 0.0
+    session_hours_7d = 0.0
     samples = 0
 
     snapshots_by_account(window_start).each_value do |series|
@@ -134,18 +140,25 @@ class ClaudeUsageRateService
         rise_7d = positive_rise(earlier.utilization_7d, later.utilization_7d, earlier.reset_7d, later.reset_7d)
         next if rise_5h.nil? && rise_7d.nil?
 
-        consumed_5h += rise_5h || 0.0
-        consumed_7d += rise_7d || 0.0
-        session_hours += pair_session_hours
+        if rise_5h
+          consumed_5h += rise_5h
+          session_hours_5h += pair_session_hours
+        end
+        if rise_7d
+          consumed_7d += rise_7d
+          session_hours_7d += pair_session_hours
+        end
         samples += 1
       end
     end
 
     Result.new(
-      rate_5h: session_hours.positive? ? consumed_5h / session_hours : nil,
-      rate_7d: session_hours.positive? ? consumed_7d / session_hours : nil,
+      rate_5h: session_hours_5h.positive? ? consumed_5h / session_hours_5h : nil,
+      rate_7d: session_hours_7d.positive? ? consumed_7d / session_hours_7d : nil,
       sample_count: samples,
-      session_hours: session_hours,
+      # Reported as the 5-hour window's observed span, which is the one the
+      # dashboard shows the rate for.
+      session_hours: session_hours_5h,
       lookback: @lookback,
       window_start: window_start
     )

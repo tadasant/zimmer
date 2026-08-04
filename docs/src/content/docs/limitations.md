@@ -2051,6 +2051,31 @@ sustained burn, not a circuit breaker on a spike.
 
 ---
 
+## A held spot session has exactly one thread back to life
+
+`SpotSessionHold` defers by re-enqueueing `AgentSessionJob` with a delay, and that single delayed
+GoodJob row is the *only* thing that ever restarts the session. GoodJob persists it, so it survives
+a worker restart or a deploy — but if it is discarded (retries exhausted on an unrelated exception,
+a manual queue purge, a failed deserialization), the session sits in `waiting` indefinitely with a
+banner whose "next check" time is permanently in the past. `DeploymentRecoveryJob` will not pick it
+up: that only claims sessions carrying `metadata["paused_by"] == "recovery"`, which a held session
+does not have. `spot_hold_count` is recorded but nothing acts on it. A sweep for `waiting` sessions
+whose `spot_hold_retry_at` is well past would close this.
+
+---
+
+## The genesis backfill runs in one transaction
+
+`AddGenesisToSessions` does an `add_index` plus four full-table `UPDATE`s — one of them looped up to
+ten times over a self-join — inside a single migration transaction, holding a lock on `sessions`
+throughout. The lineage passes also filter on `metadata::jsonb->>'forked_from_session_id'`, which no
+index can serve because `metadata` is `json` rather than `jsonb`. On a small deployment this is a
+second; on a large `sessions` table it is a write-blocking pause. It was left transactional
+deliberately — a half-applied backfill would leave rows classified by nothing — but a deployment
+with a large table should expect the lock.
+
+---
+
 ## Only a session's first start is gated
 
 `SpotSessionHold` runs on the new-session path only. A follow-up, a monitoring resume and a

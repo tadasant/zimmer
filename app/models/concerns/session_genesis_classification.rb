@@ -61,7 +61,19 @@ module SessionGenesisClassification
     # Count of sessions per genesis, for the settings table. Archived rows are
     # excluded so the number describes live work, not all history.
     def genesis_counts
-      where.not(status: :archived).group(:genesis).count
+      counts = where.not(status: :archived).group(:genesis).count
+      # `priority_classified` folds a NULL genesis into the default key, so the
+      # counts have to as well — otherwise an unbackfilled row lands under a nil
+      # key nothing renders and the "N sessions reclassified" figure is short.
+      nulls = counts.delete(nil).to_i
+      counts[SessionGenesis::DEFAULT_KEY] = counts[SessionGenesis::DEFAULT_KEY].to_i + nulls if nulls.positive?
+      counts
+    end
+
+    # Live sessions whose stored genesis is `key`, counting NULL rows under the
+    # default key for the same reason.
+    def genesis_count_for(key)
+      genesis_counts[key.to_s].to_i
     end
   end
 

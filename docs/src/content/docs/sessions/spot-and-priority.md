@@ -114,8 +114,13 @@ utilization is pinned at the cap and therefore useless as a rate signal.
 With gating on, a spot session starts only while **both** forecasts stay under their ceilings:
 
 ```
-forecast = utilization now + (rate × sessions running × hours left in window)
+forecast = utilization now + (rate × sessions × hours left in window)
 ```
+
+`sessions` is the running fleet **plus the session being decided about**. A gate answers "if I start
+this, where does the window land", and the fleet does not include it yet — with an idle fleet, a
+forecast built on the running count alone is flat and could never breach. The reading on `/settings`
+deliberately uses the fleet as it stands (and says so), and shows the start decision beside it.
 
 `hours left` is the time to that window's own reset, capped at 24 hours — a weekly window can have six
 days left, and multiplying a per-hour rate out that far produces a number with no predictive content.

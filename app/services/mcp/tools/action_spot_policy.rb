@@ -106,7 +106,9 @@ module Mcp
 
         raise ToolError, "Nothing to change: pass enabled, five_hour_threshold_pct or weekly_threshold_pct" if changes.empty?
 
-        setting.save!
+        # Surface a bad threshold as a message the caller can act on rather than
+        # as an internal error, matching every other validation in this tool.
+        raise ToolError, "Invalid thresholds: #{setting.errors.full_messages.join(', ')}" unless setting.save
         "Spot policy updated: #{changes.join(', ')}.\n\n#{decision_summary}"
       end
 
@@ -118,7 +120,7 @@ module Mcp
         setting.set_genesis_class(genesis, klass)
         setting.save!
 
-        affected = Session.where(genesis: genesis).where.not(status: :archived).count
+        affected = Session.genesis_count_for(genesis)
         "#{SessionGenesis.label(genesis)} (`#{genesis}`) is now **#{klass}**. " \
           "#{affected} live session(s) reclassified.\n\n#{decision_summary}"
       end
