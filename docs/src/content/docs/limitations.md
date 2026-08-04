@@ -1198,19 +1198,20 @@ That is not a handful of stragglers, and anyone scoping
 [#70](https://github.com/tadasant/zimmer/issues/70) off a smaller number will under-estimate it
 substantially.
 
-Where a lost update is genuinely harmless: the terminal failure paths. 22 of the 92 write
-`failure_reason` or `exit_status`, and 13 of `AgentSessionJob`'s 23 are immediately followed by
-`session.fail!` — the session is ending, so a neighbouring key erased on the way out changes nothing.
-Naming those keys is not a clean proxy on its own, though: the `exit_status` write on the auth-outage
-park path is a whole-column write onto a session that is being *paused*, not failed, and will run
-again.
+Where a lost update is genuinely harmless: the terminal failure paths. 21 of the 92 name
+`failure_reason` or `exit_status` in their payload, and 13 of `AgentSessionJob`'s 23 are immediately
+followed by `session.fail!` — the session is ending, so a neighbouring key erased on the way out
+changes nothing. Naming those keys is not a clean proxy on its own, though. Two of the 21 are on
+sessions that keep going: `AgentSessionJob` writes `exit_status` onto a session it is *parking* for an
+auth outage, and `McpOauthResumeService#resume!` clears `failure_reason` on the way back to
+`waiting` — a whole-column write on a session about to be re-enqueued.
 
 Where it is not harmless, the writers are on live sessions and some are hot:
 
-- `TranscriptPollerService` — four whole-column writes, two of them on the poll of a live turn
-  (`update_columns` on the metadata-only path, and the batch that carries `transcript` and
-  `last_timeline_entry_at` together). This is the worker's single most frequent metadata writer, and
-  it is why `interrupt_terminate_pid` is *harder* to lose than it was rather than impossible.
+- `TranscriptPollerService` — four whole-column writes, three of them inside `poll_and_broadcast`
+  itself (two `update_columns` on the metadata-only paths, and the batch that carries `transcript`
+  and `last_timeline_entry_at` together). This is the worker's single most frequent metadata writer,
+  and it is why `interrupt_terminate_pid` is *harder* to lose than it was rather than impossible.
 - `AgentSessionJob`'s `"paused_by" => "recovery"` writes, its `clone_retry_count` writes, and the
   `mcp_retry` park — all on a session that keeps running afterwards.
 - The `resume!` state-machine callbacks in `SessionStateMachine`, eight of them, which write with
