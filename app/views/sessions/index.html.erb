@@ -267,6 +267,9 @@
               fresh search include trashed sessions without the user toggling anything. %>
           <%= hidden_field_tag :show_archived, (@show_archived ? "true" : "false") if @show_archived_explicit %>
           <%= hidden_field_tag :show_blocked, "true" if @show_blocked %>
+          <%# The spot/priority control lives outside this form (it is a set of links,
+              not a field), so carry the current choice across a search submit. %>
+          <%= hidden_field_tag :priority_class, @priority_class_filter if @priority_class_filter.present? %>
           <div class="flex flex-col gap-3">
             <!-- Search Input -->
             <div class="flex-1">
@@ -292,7 +295,7 @@
           </div>
 
           <!-- Advanced Search Accordion -->
-          <% advanced_active = @search_contents || @agent_root_filter.present? %>
+          <% advanced_active = @search_contents || @agent_root_filter.present? || @genesis_filter.present? %>
           <details class="text-sm"<%= " open" if advanced_active %>>
             <summary class="cursor-pointer text-gray-600 hover:text-gray-900 select-none">
               Advanced Search<%= " (active)" if advanced_active %>
@@ -312,6 +315,19 @@
                   </datalist>
                 </div>
               </div>
+              <div>
+                <label for="genesis" class="block text-gray-600 mb-1">Genesis</label>
+                <%# The segmented control above filters by CLASS (spot vs priority).
+                    This narrows to one exact origin, which the class filter cannot
+                    express — matching quick_search_sessions' `genesis` argument. %>
+                <%= select_tag :genesis,
+                      options_for_select(
+                        SessionGenesis::KINDS.map { |k| [ "#{k.label} (#{k.key})", k.key ] },
+                        @genesis_filter
+                      ),
+                      include_blank: "Any genesis",
+                      class: "block w-full max-w-sm px-3 py-2 border border-gray-300 rounded-md leading-5 bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" %>
+              </div>
               <label class="inline-flex items-center cursor-pointer">
                 <%= check_box_tag :search_contents, "1", @search_contents, class: "h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded" %>
                 <span class="ml-2 text-gray-600">Search transcript contents</span>
@@ -319,6 +335,46 @@
             </div>
           </details>
         <% end %>
+      </div>
+
+      <!-- Spot / priority filter -->
+      <%# A first-class segmented control rather than a row in Advanced Search:
+          "is this session spot or priority" is a question about scheduling that
+          gets asked while quota is tight, and burying it two clicks deep would
+          make the answer arrive after the decision. Each option is a link that
+          preserves every other active filter. %>
+      <div class="flex items-center justify-between bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200">
+        <div class="flex items-center text-sm text-gray-600">
+          <span>Scheduling class</span>
+          <% if @priority_class_filter.present? %>
+            <span class="ml-2 text-xs text-gray-400">showing <%= @priority_class_filter %> only</span>
+          <% end %>
+        </div>
+        <%
+          class_link_params = lambda do |value|
+            {
+              priority_class: value,
+              q: @search_query.presence,
+              agent_root: @agent_root_filter.presence,
+              genesis: @genesis_filter.presence,
+              search_contents: @search_contents ? "1" : nil,
+              show_blocked: @show_blocked ? "true" : nil,
+              show_archived: @show_archived_explicit ? (@show_archived ? "true" : "false") : nil
+            }
+          end
+        %>
+        <div class="inline-flex rounded-lg bg-gray-100 p-1 gap-1" role="group" aria-label="Filter by scheduling class">
+          <% [ [ nil, "All" ], [ SessionGenesis::PRIORITY, "Priority" ], [ SessionGenesis::SPOT, "Spot" ] ].each do |(value, label)| %>
+            <% active = @priority_class_filter.presence == value %>
+            <%= link_to label, root_path(class_link_params.call(value)),
+                  "aria-pressed": active.to_s,
+                  id: "priority-class-filter-#{value || 'all'}",
+                  class: [
+                    "px-3 py-1.5 text-sm font-medium rounded-md whitespace-nowrap transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500",
+                    (active ? "bg-white text-indigo-700 shadow-sm" : "text-gray-600 hover:text-gray-900 hover:bg-white/60")
+                  ].join(" ") %>
+          <% end %>
+        </div>
       </div>
 
       <!-- Trash Filter -->
@@ -337,9 +393,9 @@
           <% if @show_archived %>
             <%# Pass show_archived=false explicitly so it survives an active search, where
                 an omitted param would otherwise re-default trash back on. %>
-            <%= link_to "Hide Trash", root_path(show_archived: "false", show_blocked: @show_blocked ? "true" : nil, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+            <%= link_to "Hide Trash", root_path(show_archived: "false", show_blocked: @show_blocked ? "true" : nil, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil, priority_class: @priority_class_filter.presence, genesis: @genesis_filter.presence), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
           <% else %>
-            <%= link_to "Show Trash", root_path(show_archived: "true", show_blocked: @show_blocked ? "true" : nil, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+            <%= link_to "Show Trash", root_path(show_archived: "true", show_blocked: @show_blocked ? "true" : nil, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil, priority_class: @priority_class_filter.presence, genesis: @genesis_filter.presence), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
           <% end %>
         </div>
       </div>
@@ -361,9 +417,9 @@
               re-defaults trash on during an active search. %>
           <% archived_param = @show_archived ? "true" : "false" %>
           <% if @show_blocked %>
-            <%= link_to "Hide Blocked", root_path(show_archived: archived_param, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+            <%= link_to "Hide Blocked", root_path(show_archived: archived_param, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil, priority_class: @priority_class_filter.presence, genesis: @genesis_filter.presence), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
           <% else %>
-            <%= link_to "Show Blocked", root_path(show_blocked: true, show_archived: archived_param, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+            <%= link_to "Show Blocked", root_path(show_blocked: true, show_archived: archived_param, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil, priority_class: @priority_class_filter.presence, genesis: @genesis_filter.presence), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
           <% end %>
         </div>
       </div>

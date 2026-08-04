@@ -1,0 +1,195 @@
+<%# The spot gate: the policy, the live forecast it acts on, and one button per
+    genesis kind to move it between spot and priority. %>
+<div class="bg-white shadow-sm rounded-lg border border-gray-200" id="spot-gate">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <h2 class="text-lg font-medium text-gray-900">Spot vs priority</h2>
+    <p class="mt-1 text-sm text-gray-500">
+      Every session is classified by its <strong>genesis</strong> — where the work came from. Priority
+      sessions always start. Spot sessions start only while both Claude Code quota windows are forecast
+      to stay under the ceilings below; when they are not, a spot session waits and starts later.
+      It is never cancelled.
+    </p>
+  </div>
+
+  <div class="px-4 py-5 sm:px-6 space-y-6">
+    <%# ---- The policy form ---- %>
+    <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <div class="text-sm font-medium text-gray-900">Hold spot sessions when forecast exceeds the limits</div>
+          <p class="mt-1 text-sm text-gray-500">
+            Off means spot sessions start like any other and the thresholds are ignored.
+          </p>
+        </div>
+        <input type="hidden" name="app_setting[spot_gating_enabled]" value="0">
+        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+          <span class="sr-only">Toggle spot gating</span>
+          <input type="checkbox"
+                 name="app_setting[spot_gating_enabled]"
+                 id="app_setting_spot_gating_enabled"
+                 value="1"
+                 class="sr-only peer"
+                 role="switch"
+                 aria-label="Hold spot sessions when forecast exceeds the limits"
+                 <%= "checked" if @app_setting.spot_gating_enabled %>>
+          <div class="w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-2 peer-focus:ring-indigo-500 peer-checked:bg-indigo-600 transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:border after:border-gray-300 after:shadow after:transition-all peer-checked:after:translate-x-5"></div>
+        </label>
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label for="app_setting_spot_gate_five_hour_threshold_pct" class="block text-sm font-medium text-gray-700 mb-2">
+            5-hour window limit (%)
+          </label>
+          <input type="number"
+                 name="app_setting[spot_gate_five_hour_threshold_pct]"
+                 id="app_setting_spot_gate_five_hour_threshold_pct"
+                 value="<%= @app_setting.spot_gate_five_hour_threshold_pct %>"
+                 min="0" max="100" step="1"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+        </div>
+        <div>
+          <label for="app_setting_spot_gate_weekly_threshold_pct" class="block text-sm font-medium text-gray-700 mb-2">
+            Weekly window limit (%)
+          </label>
+          <input type="number"
+                 name="app_setting[spot_gate_weekly_threshold_pct]"
+                 id="app_setting_spot_gate_weekly_threshold_pct"
+                 value="<%= @app_setting.spot_gate_weekly_threshold_pct %>"
+                 min="0" max="100" step="1"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+          Save spot policy
+        </button>
+      </div>
+    <% end %>
+
+    <%# ---- The live forecast ---- %>
+    <div class="rounded-md border <%= @spot_decision.allowed? ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50" %> p-4" id="spot-gate-status">
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold <%= @spot_decision.allowed? ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800" %>">
+          <%= @spot_decision.allowed? ? "Spot sessions running" : "Spot sessions held" %>
+        </span>
+        <span class="text-xs text-gray-500 font-mono"><%= @spot_decision.reason %></span>
+      </div>
+      <p class="mt-2 text-sm text-gray-700"><%= @spot_decision.detail %></p>
+      <%# The reading above describes the fleet as it stands. A start decision adds
+          the session it is about, so with an idle fleet the two differ — show both
+          rather than let the difference surprise someone. %>
+      <p class="mt-1 text-sm <%= @spot_start_decision.allowed? ? "text-gray-500" : "text-amber-800 font-medium" %>" id="spot-gate-start-decision">
+        A spot session starting right now would be
+        <strong><%= @spot_start_decision.allowed? ? "started" : "held" %></strong>.
+      </p>
+
+      <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 text-sm">
+        <div>
+          <dt class="text-gray-500">Active sessions</dt>
+          <dd class="font-medium text-gray-900" id="spot-active-sessions"><%= @spot_decision.active_sessions %></dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">Usage rate / session-hour</dt>
+          <dd class="font-medium text-gray-900" id="spot-usage-rate">
+            <% if @spot_decision.rate&.rate_5h_pct %>
+              <%= number_with_precision(@spot_decision.rate.rate_5h_pct, precision: 2) %>% of 5h
+            <% else %>
+              <span class="text-gray-400">not measurable yet</span>
+            <% end %>
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">5-hour forecast</dt>
+          <dd class="font-medium text-gray-900" id="spot-forecast-5h">
+            <% if @spot_decision.forecast_5h %>
+              <%= number_with_precision(@spot_decision.forecast_5h.projected_pct, precision: 1) %>%
+              <span class="text-gray-400 font-normal">now <%= number_with_precision(@spot_decision.forecast_5h.current_pct, precision: 1) %>%</span>
+            <% else %>
+              <span class="text-gray-400">—</span>
+            <% end %>
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">Weekly forecast</dt>
+          <dd class="font-medium text-gray-900" id="spot-forecast-7d">
+            <% if @spot_decision.forecast_7d %>
+              <%= number_with_precision(@spot_decision.forecast_7d.projected_pct, precision: 1) %>%
+              <span class="text-gray-400 font-normal">now <%= number_with_precision(@spot_decision.forecast_7d.current_pct, precision: 1) %>%</span>
+            <% else %>
+              <span class="text-gray-400">—</span>
+            <% end %>
+          </dd>
+        </div>
+      </dl>
+      <% if @spot_decision.rate %>
+        <p class="mt-2 text-xs text-gray-500">
+          Rate measured from <%= pluralize(@spot_decision.rate.sample_count, "usable sample pair") %>
+          over <%= number_with_precision(@spot_decision.rate.session_hours, precision: 1) %> observed session-hours
+          in the last <%= (@spot_decision.rate.lookback / 3600).round %>h.
+        </p>
+      <% end %>
+    </div>
+
+    <%# ---- One click per genesis ---- %>
+    <div>
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-medium text-gray-900">Genesis classes</h3>
+        <%= button_to "Reset to defaults", reset_genesis_classes_path, method: :delete,
+              form: { data: { turbo: false } },
+              class: "text-xs text-gray-500 hover:text-gray-800 underline" %>
+      </div>
+      <p class="mt-1 text-sm text-gray-500">
+        Changing a genesis reclassifies every session from that genesis at once, including ones
+        that already exist.
+      </p>
+
+      <div class="mt-3 overflow-hidden border border-gray-200 rounded-md">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th scope="col" class="px-4 py-2 text-left font-medium text-gray-500">Genesis</th>
+              <th scope="col" class="px-4 py-2 text-left font-medium text-gray-500">Class</th>
+              <th scope="col" class="px-4 py-2 text-right font-medium text-gray-500">Live sessions</th>
+              <th scope="col" class="px-4 py-2 text-right font-medium text-gray-500">Action</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100 bg-white">
+            <% SessionGenesis::KINDS.each do |kind| %>
+              <% current = @genesis_classes[kind.key] %>
+              <% overridden = current != kind.default_class %>
+              <tr id="genesis-row-<%= kind.key %>">
+                <td class="px-4 py-3 align-top">
+                  <div class="font-medium text-gray-900"><%= kind.label %></div>
+                  <div class="text-xs text-gray-400 font-mono"><%= kind.key %></div>
+                  <p class="mt-1 text-xs text-gray-500 max-w-xl"><%= kind.description %></p>
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold <%= current == SessionGenesis::PRIORITY ? "bg-indigo-100 text-indigo-800" : "bg-gray-100 text-gray-700" %>"
+                        data-genesis-class="<%= kind.key %>">
+                    <%= current %>
+                  </span>
+                  <% if overridden %>
+                    <div class="mt-1 text-xs text-amber-600">changed from <%= kind.default_class %></div>
+                  <% end %>
+                </td>
+                <td class="px-4 py-3 align-top text-right text-gray-700">
+                  <%= @genesis_counts[kind.key].to_i %>
+                </td>
+                <td class="px-4 py-3 align-top text-right">
+                  <% target = current == SessionGenesis::PRIORITY ? SessionGenesis::SPOT : SessionGenesis::PRIORITY %>
+                  <%= button_to "Make #{target}",
+                        genesis_class_path(genesis: kind.key, priority_class: target),
+                        method: :patch,
+                        form: { data: { turbo: false } },
+                        class: "inline-flex items-center rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1" %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>

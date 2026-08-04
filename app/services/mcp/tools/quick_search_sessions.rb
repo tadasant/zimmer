@@ -57,6 +57,16 @@ module Mcp
             type: "string",
             description: "Filter results by agent runtime."
           },
+          priority_class: {
+            type: "string",
+            enum: SessionGenesis::CLASSES,
+            description: "Filter by scheduling class. \"priority\" sessions always start; \"spot\" sessions start only while there is forecast Claude Code headroom. Resolved live from each session's genesis, so a genesis promoted in Settings moves its sessions here immediately."
+          },
+          genesis: {
+            type: "string",
+            enum: SessionGenesis::KEYS,
+            description: "Filter by genesis — where the session's line of work came from. One of: #{SessionGenesis::KEYS.join(', ')}."
+          },
           show_archived: {
             type: "boolean",
             description: "Include archived sessions in results. Default: false"
@@ -124,6 +134,20 @@ module Mcp
         end
 
         scope = scope.where(agent_runtime: args["agent_runtime"]) if args["agent_runtime"].present?
+
+        if (klass = args["priority_class"].presence)
+          unless SessionGenesis::CLASSES.include?(klass)
+            raise ToolError, "Invalid priority_class: #{klass}. Valid: #{SessionGenesis::CLASSES.join(', ')}"
+          end
+          scope = scope.priority_classified(klass)
+        end
+
+        if (genesis = args["genesis"].presence)
+          unless SessionGenesis.valid?(genesis)
+            raise ToolError, "Invalid genesis: #{genesis}. Valid: #{SessionGenesis::KEYS.join(', ')}"
+          end
+          scope = scope.with_genesis(genesis)
+        end
         scope = scope.where.not(status: :archived) unless truthy?(args["show_archived"])
 
         query = args["query"].to_s.strip
@@ -146,6 +170,12 @@ module Mcp
         ActiveModel::Type::Boolean.new.cast(value) == true
       end
 
+      # Read once per call rather than once per result row — see the same note in
+      # ApiSessionSerialization.
+      def genesis_class_overrides
+        @genesis_class_overrides ||= AppSetting.current.genesis_class_overrides || {}
+      end
+
       def format_session(session)
         lines = [
           "### #{session.title} (ID: #{session.id})",
@@ -155,6 +185,7 @@ module Mcp
         ]
 
         lines << "- **Slug:** #{session.slug}" if session.slug.present?
+        lines << "- **Genesis:** #{session.genesis_key} (#{session.priority_class(genesis_class_overrides)})"
         lines << "- **Category:** #{session.category.name}" if session.category
         lines << "- **Repository:** #{session.git_root}" if session.git_root.present?
         lines << "- **Branch:** #{session.branch}" if session.branch.present?

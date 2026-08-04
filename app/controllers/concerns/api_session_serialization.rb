@@ -13,6 +13,13 @@ module ApiSessionSerialization
 
   private
 
+  # The per-genesis override map, read once per request. `session_json` is called
+  # in a map over as many as 100 records, and priority_class derives rather than
+  # reads a column — without this each row would re-query app_settings.
+  def genesis_class_overrides
+    @genesis_class_overrides ||= AppSetting.current.genesis_class_overrides || {}
+  end
+
   def session_json(session, include_transcript: false)
     json = {
       id: session.id,
@@ -20,6 +27,11 @@ module ApiSessionSerialization
       title: session.title,
       status: session.status,
       agent_runtime: session.agent_runtime,
+      # Where this session's line of work came from, and the scheduling class
+      # that genesis resolves to. Derived on read, so a genesis promoted in
+      # Settings changes this for existing sessions too.
+      genesis: session.genesis_key,
+      priority_class: session.priority_class(genesis_class_overrides),
       prompt: session.prompt,
       git_root: session.git_root,
       branch: session.branch,
@@ -115,7 +127,9 @@ module ApiSessionSerialization
           depth: node.depth,
           parent_session_id: node.parent_id,
           uncle_session_ids: node.uncles,
-          current: node.current?
+          current: node.current?,
+          genesis: node.genesis,
+          priority_class: node.priority_class
         }
       end
     }

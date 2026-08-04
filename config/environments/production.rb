@@ -212,6 +212,11 @@ Rails.application.configure do
       class: "QuotaResetCheckerJob",
       description: "Check if quota-exceeded accounts have reset and restore them to active"
     },
+    claude_usage_sampler: {
+      cron: "*/15 * * * *", # Every 15 minutes
+      class: "ClaudeUsageSamplerJob",
+      description: "Sample the serving Claude account's quota so the per-session usage rate has a time series"
+    },
     refresh_runtime_auth_tokens: {
       cron: "*/5 * * * *", # Every 5 minutes (min rotation_interval across runtimes)
       class: "RefreshRuntimeAuthTokensJob",

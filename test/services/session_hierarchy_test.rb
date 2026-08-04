@@ -193,8 +193,9 @@ class SessionHierarchyTest < ActiveSupport::TestCase
 
     outline = SessionHierarchy.new(worker).to_outline
 
-    assert_match(/\A- ##{router.id} \[zimmer-router\] Router\n/, outline)
-    assert_match(/^  - ##{worker.id} \[zimmer\] Worker ← this session$/, outline)
+    # Each node also carries {genesis · class} — see SessionGenesis.
+    assert_match(/\A- ##{router.id} \[zimmer-router\] \{unknown · priority\} Router\n/, outline)
+    assert_match(/^  - ##{worker.id} \[zimmer\] \{unknown · priority\} Worker ← this session$/, outline)
   end
 
   # --- Uncle edges: the graph is a DAG ---------------------------------------

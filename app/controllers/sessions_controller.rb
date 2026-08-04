@@ -90,7 +90,15 @@ class SessionsController < ApplicationController
     @search_query = params[:q].to_s.strip
     @search_contents = params[:search_contents] == "1"
     @agent_root_filter = params[:agent_root].to_s.strip
-    @search_active = @search_query.present? || @agent_root_filter.present?
+    # Spot/priority filter. Blank means "both". Validated against the known
+    # classes so a hand-edited URL narrows to nothing rather than raising.
+    @priority_class_filter = params[:priority_class].to_s.strip
+    @priority_class_filter = "" unless SessionGenesis::CLASSES.include?(@priority_class_filter)
+    # Narrowing to one exact origin, which the spot/priority control cannot express.
+    @genesis_filter = params[:genesis].to_s.strip
+    @genesis_filter = "" unless SessionGenesis.valid?(@genesis_filter)
+    @search_active = @search_query.present? || @agent_root_filter.present? ||
+                     @priority_class_filter.present? || @genesis_filter.present?
 
     # Whether the user explicitly chose a trash visibility (e.g. clicked
     # "Show Trash"/"Hide Trash"). When they did, honor it verbatim. When they did
@@ -133,6 +141,14 @@ class SessionsController < ApplicationController
 
     if @agent_root_filter.present?
       sessions = filter_sessions_by_agent_root(sessions, @agent_root_filter)
+    end
+
+    if @priority_class_filter.present?
+      sessions = sessions.priority_classified(@priority_class_filter)
+    end
+
+    if @genesis_filter.present?
+      sessions = sessions.with_genesis(@genesis_filter)
     end
 
     # Resolve which view the dashboard renders in: the category-grouped grid, or
@@ -236,6 +252,8 @@ class SessionsController < ApplicationController
 
   def create
     @session = Session.new(session_params)
+    # The new-session form is a human at a keyboard in the Zimmer web app.
+    @session.genesis = SessionGenesis::WEB_UI
 
     # The form always submits an mcp_servers key (the multi-select emits a blank
     # hidden input when nothing is selected), so an empty list here is a user who
@@ -406,6 +424,7 @@ class SessionsController < ApplicationController
         agent_root_name: Session::ROUTER_AGENT_ROOT,
         prompt: prompt,
         metadata: { source: "quick_prompt" },
+        genesis: SessionGenesis::WEB_UI,
         skip_enqueue: true
       )
 
@@ -503,6 +522,11 @@ class SessionsController < ApplicationController
         prompt: augmented_prompt,
         parent_session_id: parent_session_id,
         metadata: { source: "chat_bubble", original_prompt: prompt, current_url: current_url },
+        # Declared, not inherited: the chat bubble carries a parent session so the
+        # conversation threads, but a human typed this. Letting it inherit would
+        # classify Tadas's own message spot whenever he opened the bubble from a
+        # spot session's page.
+        genesis: SessionGenesis::WEB_UI,
         skip_enqueue: true
       )
 

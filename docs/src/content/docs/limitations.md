@@ -2030,6 +2030,73 @@ and resume.
 
 ---
 
+## The spot gate cannot see spend it never sampled
+
+`ClaudeUsageRateService` differentiates `ClaudeAccountQuotaSnapshot` rows, so its resolution is
+whatever the sampling cadence happens to be. `ClaudeUsageSamplerJob` reads the serving account every
+15 minutes, which is enough for a rate but not for a spike: a burst that starts and finishes inside
+one 15-minute gap is invisible, and the forecast that follows is built on a rate that never saw it.
+
+Two consequences worth knowing:
+
+- The gate reacts on a 15-minute lag at best. Twenty spot sessions launched at once all evaluate
+  against the same pre-burst rate and all start.
+- A pair of readings that straddles a window reset is dropped rather than clamped, because the
+  counters slide downward on their own and the difference measures nothing. If resets happen to line
+  up with the sample cadence, usable pairs get scarce and the gate falls open on
+  `insufficient_data`.
+
+Both are deliberate — the alternative is a gate that guesses — but they mean the gate is a brake on
+sustained burn, not a circuit breaker on a spike.
+
+---
+
+## A held spot session has exactly one thread back to life
+
+`SpotSessionHold` defers by re-enqueueing `AgentSessionJob` with a delay, and that single delayed
+GoodJob row is the *only* thing that ever restarts the session. GoodJob persists it, so it survives
+a worker restart or a deploy — but if it is discarded (retries exhausted on an unrelated exception,
+a manual queue purge, a failed deserialization), the session sits in `waiting` indefinitely with a
+banner whose "next check" time is permanently in the past. `DeploymentRecoveryJob` will not pick it
+up: that only claims sessions carrying `metadata["paused_by"] == "recovery"`, which a held session
+does not have. `spot_hold_count` is recorded but nothing acts on it. A sweep for `waiting` sessions
+whose `spot_hold_retry_at` is well past would close this.
+
+---
+
+## The genesis backfill runs in one transaction
+
+`AddGenesisToSessions` does an `add_index` plus four full-table `UPDATE`s — one of them looped up to
+ten times over a self-join — inside a single migration transaction, holding a lock on `sessions`
+throughout. The lineage passes also filter on `metadata::jsonb->>'forked_from_session_id'`, which no
+index can serve because `metadata` is `json` rather than `jsonb`. On a small deployment this is a
+second; on a large `sessions` table it is a write-blocking pause. It was left transactional
+deliberately — a half-applied backfill would leave rows classified by nothing — but a deployment
+with a large table should expect the lock.
+
+---
+
+## Only a session's first start is gated
+
+`SpotSessionHold` runs on the new-session path only. A follow-up, a monitoring resume and a
+clone-only setup all pass through regardless of forecast, so a long-running spot session keeps
+spending after the gate has closed behind it. Interrupting a conversation already underway would
+strand it half-done and waste the tokens already spent, so this is the intended trade — but "spot
+sessions are held" means "not started", not "not running".
+
+---
+
+## Genesis backfill cannot recover what was never recorded
+
+The migration that added `sessions.genesis` reconstructs it from `metadata->>'source'`, the
+trigger's condition types, and the lineage edge. The new-session form and the REST API never
+stamped anything, so pre-migration rows from those two paths are indistinguishable and land on
+`unknown` — which classifies **priority**. Old automated work created over the API therefore reads
+as priority until it is archived. The failure mode is "runs anyway", which is the right way round,
+but the historical counts on the Settings page are not a reliable census of what was automated.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

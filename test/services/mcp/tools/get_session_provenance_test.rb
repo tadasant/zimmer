@@ -52,8 +52,9 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
     assert_includes output, "### Session Hierarchy"
     assert_includes output, "- **Origin session:** ##{router.id}"
     assert_includes output, "- **Sessions in this hierarchy:** 2"
-    assert_includes output, "- ##{router.id} [zimmer-router] Route it"
-    assert_includes output, "  - ##{worker.id} [zimmer] Do it ← this session"
+    # Each node carries its genesis and the class it resolves to — see SessionGenesis.
+    assert_includes output, "- ##{router.id} [zimmer-router] {unknown · priority} Route it"
+    assert_includes output, "  - ##{worker.id} [zimmer] {unknown · priority} Do it ← this session"
     assert_includes output, "NOT \"most recently talked to\""
   end
 
