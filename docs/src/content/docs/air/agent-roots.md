@@ -40,9 +40,9 @@ each artifact's own entry.
 ### Omitting a list is not the same as asking for an empty one
 
 On the three surfaces that create a session against a root — the MCP `start_session` tool, `POST
-/api/v1/sessions`, and the new-session form — an **omitted** `mcp_servers`/`skills`/`plugins` takes
-the root's defaults, while an explicit **`[]`** takes none of that artifact. They are two different
-requests and Zimmer keeps them apart.
+/api/v1/sessions`, and the new-session form — an **omitted**
+`mcp_servers`/`skills`/`plugins`/`hooks` takes the root's defaults, while an explicit **`[]`** takes
+none of that artifact. They are two different requests and Zimmer keeps them apart.
 
 This matters most for MCP servers, because a root's defaults can carry real privilege (SSH access to
 a production host, a secrets store). A caller that narrows to `[]` is asking for least privilege, and

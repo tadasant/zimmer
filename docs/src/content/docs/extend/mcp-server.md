@@ -227,7 +227,9 @@ Like `change_mcp_servers`, these persist to the session and take effect the next
 config is prepared — they do not hot-reconfigure a running process. An empty array is a value, not
 an absence, on both sides of a session's life: `change_mcp_servers` with `[]` clears the list, and
 `start_session` with `[]` launches with none — the same request means the same thing at launch time
-and at change time.
+and at change time. `start_session` names the same four lists (`mcp_servers`, `skills`, `plugins`,
+`hooks`), so a hook that is noise for the task is dropped at launch rather than corrected by a
+follow-up `change_hooks` — which, for a clone-only session, would race the job start.
 
 Two tools deliver a message to a session that already exists, and both let you choose whether to
 interrupt. `action_session` `follow_up` queues the prompt when the session is `running` and sends it
