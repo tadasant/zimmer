@@ -114,6 +114,18 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
       "release-image.yml: a `continue-on-error` build with no retry gated on its outcome would " \
       "publish nothing and still report the release as green"
 
+    # Each of the next three would otherwise leave a workflow that publishes nothing
+    # and reports the release green: a retry that also swallows its own failure, a
+    # retry placed before the step it reads (`outcome` is empty there, so it always
+    # skips), and a retry gated on the attempt having *succeeded*.
+    assert_nil retried["continue-on-error"],
+      "release-image.yml: the retry is the attempt that must fail the job — two failed builds " \
+      "cannot both be swallowed"
+    assert_operator steps.index(first), :<, steps.index(retried),
+      "release-image.yml: the retry must come after the attempt whose outcome it reads"
+    assert_equal "steps.build.outcome == 'failure'", retried["if"],
+      "release-image.yml: the retry must fire on failure of the first attempt, and only that"
+
     assert_equal first["with"], retried["with"],
       "release-image.yml: the retry must build and tag exactly what the first attempt did"
   end
