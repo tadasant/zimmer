@@ -184,7 +184,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
   # === Real Claude CLI Format Tests ===
   # These tests validate against the ACTUAL format produced by Claude CLI.
   # If these tests fail, either Claude CLI changed its format or our parsing is wrong.
-  # See GitHub issue #638 for context on why these tests are critical.
+  # See GitHub issue pulsemcp/agents#638 for context on why these tests are critical.
 
   test "parse_log_file handles real Claude CLI JSONL format" do
     # This is the ACTUAL format Claude CLI produces - copied from real log output
@@ -481,7 +481,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     assert_equal true, @session.custom_metadata["should_fail_session"]
   end
 
-  # === Timestamp Filtering Tests (Issue #716) ===
+  # === Timestamp Filtering Tests (Issue pulsemcp/agents#716) ===
   # These tests validate that stale MCP log entries from previous session runs
   # are filtered out when restarting a session.
 
@@ -607,7 +607,7 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
   end
 
   test "poll with min_timestamp filters stale logs from real scenario" do
-    # This test simulates the real issue from GitHub #716:
+    # This test simulates the real issue from GitHub pulsemcp/agents#716:
     # - Session failed on 12/24 due to MCP connection failure
     # - User restarts on 12/28
     # - Old 12/24 logs should NOT cause immediate failure

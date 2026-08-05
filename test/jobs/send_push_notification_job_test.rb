@@ -373,7 +373,7 @@ class SendPushNotificationJobTest < ActiveJob::TestCase
     end
   end
 
-  # === Retry idempotency (issue #3027) ===
+  # === Retry idempotency (issue pulsemcp/pulsemcp#3027) ===
   #
   # GoodJob retries can re-enter perform with identical args after a partial
   # failure (e.g. WebPushService timeout). Without dedup, each retry would

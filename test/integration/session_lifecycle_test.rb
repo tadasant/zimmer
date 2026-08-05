@@ -213,7 +213,7 @@ class SessionLifecycleTest < IntegrationTestCase
     assert_select "turbo-frame[id^='session_']:not(#session_detail)", 3
   end
 
-  # Tests for Issue #586: Enqueued messages auto-processing
+  # Tests for Issue pulsemcp/agents#586: Enqueued messages auto-processing
 
   test "enqueued message is processed when session has dirty state from AASM update_all" do
     # Create a running session

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Adds a runtime discriminator to the account pool so Zimmer can hold accounts for
-# more than one agent runtime (Claude Code today; Codex via #3780). Existing rows
+# more than one agent runtime (Claude Code today; Codex via pulsemcp/pulsemcp#3780). Existing rows
 # are Claude Code accounts, so the column defaults to "claude_code" and the
 # default backfills every existing row.
 class AddRuntimeToClaudeAccounts < ActiveRecord::Migration[8.0]

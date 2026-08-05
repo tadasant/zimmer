@@ -92,7 +92,7 @@ class ClaudeTranscriptSourceTest < ActiveSupport::TestCase
     # Regression guard: a truncated/malformed transcript line is expected and
     # self-resolving during live polling (a line read mid-flush). It must NOT
     # log at ERROR, which trips the critical Zimmer error-logs paging alert that
-    # keys on severity_text=ERROR. See issue #4685.
+    # keys on severity_text=ERROR. See issue pulsemcp/pulsemcp#4685.
     serialized = "{\"a\":1}\n{\"b\": truncated"
     log = capture_log_output do
       assert_equal [ { "a" => 1 } ], @source.parse_events(serialized)

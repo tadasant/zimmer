@@ -188,7 +188,7 @@ class MockProcessManagerTest < ActiveSupport::TestCase
     end
   end
 
-  # === Tests for spawn_with_tracking (Issue #326) ===
+  # === Tests for spawn_with_tracking (Issue pulsemcp/agents#326) ===
 
   test "spawn_with_tracking records process in registry" do
     pid = @manager.spawn_with_tracking("test-command", correlation_id: "abc123")
@@ -228,7 +228,7 @@ class MockProcessManagerTest < ActiveSupport::TestCase
     assert_not_nil info[:correlation_id]
   end
 
-  # === Tests for kill_process_group (Issue #326) ===
+  # === Tests for kill_process_group (Issue pulsemcp/agents#326) ===
 
   test "kill_process_group records group kill" do
     pid = @manager.spawn("test")
@@ -269,7 +269,7 @@ class MockProcessManagerTest < ActiveSupport::TestCase
     end
   end
 
-  # === Tests for tracked_processes (Issue #326) ===
+  # === Tests for tracked_processes (Issue pulsemcp/agents#326) ===
 
   test "tracked_processes returns all tracked processes" do
     pid1 = @manager.spawn_with_tracking("test1")
@@ -288,7 +288,7 @@ class MockProcessManagerTest < ActiveSupport::TestCase
     assert_empty tracked
   end
 
-  # === Tests for untrack_process (Issue #326) ===
+  # === Tests for untrack_process (Issue pulsemcp/agents#326) ===
 
   test "untrack_process removes process from tracking" do
     pid = @manager.spawn_with_tracking("test")
@@ -305,7 +305,7 @@ class MockProcessManagerTest < ActiveSupport::TestCase
     assert_nil removed
   end
 
-  # === Tests for wait integration with tracking (Issue #326) ===
+  # === Tests for wait integration with tracking (Issue pulsemcp/agents#326) ===
 
   test "wait removes process from tracking" do
     pid = @manager.spawn_with_tracking("test")
@@ -316,7 +316,7 @@ class MockProcessManagerTest < ActiveSupport::TestCase
     assert_nil @manager.get_tracked_process(pid)
   end
 
-  # === Tests for set_process_gid (Issue #326) ===
+  # === Tests for set_process_gid (Issue pulsemcp/agents#326) ===
 
   test "set_process_gid allows setting process group id" do
     pid = @manager.spawn("test")

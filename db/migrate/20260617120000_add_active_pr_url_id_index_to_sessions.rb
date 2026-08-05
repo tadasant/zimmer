@@ -11,7 +11,7 @@
 # the whole `sessions` table and sort by id than to use that index plus heap-check
 # `status`. On the production table that seq scan touched ~3000 buffers and ~8500
 # rows to return ~10 live sessions, spiking to 1–2.3s under load and tripping the
-# [DatabaseSlow]/[DatabaseChoke] alert (issue #4403).
+# [DatabaseSlow]/[DatabaseChoke] alert (issue pulsemcp/pulsemcp#4403).
 #
 # This partial index on `id` whose predicate mirrors `Session.with_github_prs`
 # exactly contains only the handful of active-PR sessions, in id order, so the

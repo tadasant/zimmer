@@ -359,7 +359,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     # 2. Without this, MCP servers won't be available in the forked session
     # 3. The source clone's .mcp.json may have stale paths or may not exist
     #
-    # Bug reference: Issue #580 - forked sessions weren't starting MCP tools because
+    # Bug reference: forked sessions weren't starting MCP tools because
     # the .mcp.json wasn't being generated during fork, and the follow-up prompt
     # code path doesn't generate MCP config (only fresh session creation does).
 
@@ -592,7 +592,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     # broadcast_message_count must equal the number of messages in the truncated
     # transcript. If set to 0 (as it was before this fix), the TranscriptPollerService
     # will re-broadcast ALL forked messages when the user sends their first follow-up,
-    # causing a "message replay" effect identical to the bug fixed in PR #1388.
+    # causing a "message replay" effect identical to the bug fixed in PR pulsemcp/agents#1388.
     #
     # The fix ensures that forked messages (already rendered server-side on the show
     # page via build_timeline_items) are treated as "already broadcast" so only

@@ -83,7 +83,7 @@ class AuthWarmupServiceTest < ActiveSupport::TestCase
     claude_json = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
     assert_equal claude_current.email, claude_json["oauthAccount"]
 
-    # Shared owner marker (the #4183 invariant) is stamped to the warmed account.
+    # Shared owner marker (the pulsemcp/pulsemcp#4183 invariant) is stamped to the warmed account.
     assert_equal claude_current.email, ClaudeAccount.credentials_owner_email
 
     # --- Codex identity written for the DB-current account (fixture: codex_primary) ---

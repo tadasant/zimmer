@@ -511,7 +511,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "explicit config.model wins over the agent_root's default_model" do
-    # Regression for #3963: an explicit config.model in the create request must
+    # Regression for pulsemcp/pulsemcp#3963: an explicit config.model in the create request must
     # be persisted verbatim rather than being clobbered by the agent root's
     # default_model. This blocks selecting a non-default model (e.g. Codex
     # gpt-5.4) when spawning via the API.

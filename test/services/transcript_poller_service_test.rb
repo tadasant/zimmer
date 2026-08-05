@@ -37,7 +37,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal ::SolidCable.polling_interval.to_f, TranscriptPollerService.cable_polling_interval
   end
 
-  # === Tests for runtime-pluggable MCP status detector resolution (#3991) ===
+  # === Tests for runtime-pluggable MCP status detector resolution (pulsemcp/pulsemcp#3991) ===
 
   test "resolves the Claude Code MCP status detector for a claude_code session" do
     @session.update!(agent_runtime: "claude_code")
@@ -57,7 +57,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_same injected, service.mcp_status_detector
   end
 
-  # === Tests for broadcast error handling (Issue #321) ===
+  # === Tests for broadcast error handling (Issue pulsemcp/agents#321) ===
   # Ensure broadcast failures don't stop transcript polling or crash jobs
 
   test "broadcast_new_messages should not raise when Turbo broadcast fails" do
@@ -153,7 +153,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     service.send(:broadcast_running_loader)
   end
 
-  # === Tests for return value behavior (Issue #316) ===
+  # === Tests for return value behavior (Issue pulsemcp/agents#316) ===
   # Ensure poll_and_broadcast returns appropriate values for tracking failures
 
   test "poll_and_broadcast returns false when working_directory is missing" do
@@ -230,7 +230,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal false, result, "Should return false when exception occurs"
   end
 
-  # === Tests for path sanitization (Issue #385) ===
+  # === Tests for path sanitization (Issue pulsemcp/agents#385) ===
   # Ensure underscores are replaced with dashes to match Claude CLI behavior
 
   test "get_transcript_directory replaces underscores with dashes in path" do
@@ -262,7 +262,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal expected_path, result, "All special characters (/, ., _) should be replaced with dashes"
   end
 
-  # === Tests for nested agent transcript handling (Issue #405) ===
+  # === Tests for nested agent transcript handling (Issue pulsemcp/agents#405) ===
   # Ensure main transcript is selected by session_id, not by mtime
 
   test "find_main_transcript_file returns session_id file when present" do
@@ -745,7 +745,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     original_codex_home.nil? ? ENV.delete("CODEX_HOME") : ENV["CODEX_HOME"] = original_codex_home
   end
 
-  # === Tests for extract_subagent_links (Issue #509) ===
+  # === Tests for extract_subagent_links (Issue pulsemcp/agents#509) ===
   # Ensure Array toolUseResult values don't crash the subagent linking logic
 
   test "extract_subagent_links handles Hash toolUseResult with agentId" do
@@ -822,7 +822,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     )
 
     # Build transcript messages with Array toolUseResult (e.g., from TodoWrite)
-    # This is the exact scenario from Issue #509 that caused TypeError
+    # This is the exact scenario from Issue pulsemcp/agents#509 that caused TypeError
     messages = [
       {
         "type" => "user",
@@ -1634,7 +1634,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
       "broadcast_message_count should be recovered to stored transcript count (2)"
   end
 
-  # === Runtime session id capture (#3884) ===
+  # === Runtime session id capture (pulsemcp/pulsemcp#3884) ===
   # Codex mints its own rollout/thread UUID and ignores the Zimmer-supplied id; the
   # poller must capture that UUID from the transcript so resume can target it.
   # Claude honors the Zimmer-supplied id, so capture is gated off for it entirely
