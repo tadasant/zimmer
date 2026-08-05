@@ -29,6 +29,12 @@ class SessionStatusSummary < ApplicationRecord
 
   STATES = %w[idle pending ready failed].freeze
 
+  # Hard cap on stored `error` text. The failure detail is composed from a fork's
+  # metadata, which can carry an arbitrary-length exception string, and the panel
+  # renders it inline — so every writer truncates to this before storing rather
+  # than each picking its own number.
+  MAX_ERROR_CHARS = 500
+
   validates :state, inclusion: { in: STATES }
 
   # How long an in-flight generation may sit before a new request is allowed to

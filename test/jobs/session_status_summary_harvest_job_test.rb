@@ -147,6 +147,66 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     assert fork.reload.archived?
   end
 
+  test "a failed fork records its exit status on the source summary" do
+    fork = build_fork
+    fork.update!(
+      metadata: fork.metadata.merge(
+        "failure_reason" => "process_failed",
+        "exit_status" => "Resume failed and no prompt available for fresh start recovery"
+      )
+    )
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id, failed: true)
+
+    record = @source.reload.status_summary
+    assert_equal "failed", record.state
+    assert_equal(
+      "The summary fork failed: process_failed — Resume failed and no prompt available for fresh start recovery",
+      record.error
+    )
+    assert fork.reload.archived?
+  end
+
+  test "an exception-killed fork surfaces its exception message, not the bare word exception" do
+    # The exception path writes failure_reason + exception_message and never an
+    # exit_status, so folding in only the exit status would leave the panel showing
+    # "The summary fork failed: exception" — as opaque as no detail at all.
+    fork = build_fork
+    fork.update!(
+      metadata: fork.metadata.merge(
+        "failure_reason" => "exception",
+        "exception_message" => "ActiveRecord::RecordInvalid: Agent root is not in the catalog"
+      )
+    )
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id, failed: true)
+
+    assert_equal(
+      "The summary fork failed: exception — ActiveRecord::RecordInvalid: Agent root is not in the catalog",
+      @source.reload.status_summary.error
+    )
+  end
+
+  test "a failed fork's recorded error is capped at the stored-error limit" do
+    fork = build_fork
+    fork.update!(
+      metadata: fork.metadata.merge(
+        "failure_reason" => "process_failed",
+        "exit_status" => "x" * 5_000
+      )
+    )
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id, failed: true)
+
+    error = @source.reload.status_summary.error
+    assert_equal SessionStatusSummary::MAX_ERROR_CHARS, error.length,
+      "an arbitrarily long exit_status must not be stored verbatim on the panel"
+    assert error.start_with?("The summary fork failed: process_failed — ")
+  end
+
   test "a fork with no answer of its own records a failure" do
     fork = build_fork
     fork.update_column(:transcript, transcript_of("Ship the thing", "Opened the PR"))
