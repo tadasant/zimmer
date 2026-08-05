@@ -49,7 +49,7 @@ class UnarchiveSessionService
     # on a stale in-memory archived? from before a concurrent caller won. The
     # cheap-path bail-out below avoids wasting a git clone on the loser; the
     # row-locked check in transition_to_needs_input remains the correctness
-    # gate. See issues #3720 and #4600.
+    # gate. See issues pulsemcp/pulsemcp#3720 and pulsemcp/pulsemcp#4600.
     session.reload
 
     # A concurrent unarchive caller (an overlapping recurring-trigger fire, or a
@@ -60,14 +60,14 @@ class UnarchiveSessionService
     # return an idempotent success here rather than falling through to
     # validate_inputs — which returns "Session is not in trash" for a
     # running/waiting winner, making Trigger#resuscitate_session! raise the
-    # spurious .error that trips the agent-orchestrator-logs alert (#4600). This
+    # spurious .error that trips the agent-orchestrator-logs alert (pulsemcp/pulsemcp#4600). This
     # mirrors the row-locked short-circuit in transition_to_needs_input, and must
     # stay in sync with it: the loser can reload here BEFORE it passes
     # validate_inputs (this check) or AFTER, once it holds the lock (that check).
     #
     # We key on BOTH archived_at being cleared AND the status having left
     # :archived so we never mask the abnormal "status advanced but archived_at
-    # still populated" row that #3720's guard ordering protects — that row falls
+    # still populated" row that pulsemcp/pulsemcp#3720's guard ordering protects — that row falls
     # through to validate_inputs and returns a clean failure, unchanged.
     if !session.archived? && session.archived_at.nil?
       @logger.info(
@@ -379,7 +379,7 @@ class UnarchiveSessionService
   # archived_at and then race the AASM guard. The losing caller observes that
   # the winner already unarchived the session (needs_input, or advanced past it
   # to running/waiting) and returns success rather than raising in
-  # Trigger#resuscitate_session!. See issues #3720 and #4600.
+  # Trigger#resuscitate_session!. See issues pulsemcp/pulsemcp#3720 and pulsemcp/pulsemcp#4600.
   def transition_to_needs_input
     with_db_retry do
       session.with_lock do
@@ -396,7 +396,8 @@ class UnarchiveSessionService
         # Trigger#resuscitate_session!. We key on BOTH archived_at being cleared
         # AND the status having left :archived so we never short-circuit the
         # abnormal "status advanced but archived_at still populated" row that
-        # #3720's guard-ordering protects. See issues #3720 and #4600.
+        # pulsemcp/pulsemcp#3720's guard-ordering protects. See
+        # pulsemcp/pulsemcp#3720 and pulsemcp/pulsemcp#4600.
         if !session.archived? && session.archived_at.nil?
           @logger.info(
             "Session already unarchived by a concurrent caller — treating as idempotent success",

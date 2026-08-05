@@ -28,7 +28,7 @@
 # context_length_error? and api_error_for_retry? still return false because the
 # Codex-specific signals are not yet characterized in Zimmer: Codex's
 # context-length stderr strings differ from Claude's, and the Codex transcript
-# error envelope shape is owned by the Codex transcript source (#3779). Unlike a
+# error envelope shape is owned by the Codex transcript source (pulsemcp/pulsemcp#3779). Unlike a
 # failed resume, those conditions surface as ordinary non-zero exits that
 # ProcessLifecycleManager already classifies as failures — so deferring here is
 # safe (the failure is reported, not hidden). As the Codex transcript pipeline
@@ -96,14 +96,14 @@ class CodexRetryStrategy
   end
 
   # Codex transcript API-error envelope parsing is owned by the Codex transcript
-  # source (#3779); until it lands there is nothing to classify.
+  # source (pulsemcp/pulsemcp#3779); until it lands there is nothing to classify.
   def api_error_for_retry?(working_dir:)
     false
   end
 
   # Codex's mid-session auth-invalidation signature (the analog of Claude Code's
   # "Not logged in / Please run /login") is not yet characterized in Zimmer — its
-  # transcript error envelope is owned by the Codex transcript source (#3779).
+  # transcript error envelope is owned by the Codex transcript source (pulsemcp/pulsemcp#3779).
   # Until then there is nothing to classify, so an invalidated Codex turn falls
   # through to the generic failure path (surfaced, not hidden), exactly as
   # #api_error_for_retry? does.
