@@ -2435,7 +2435,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
   end
 
-  # Test fallback process detection (Issue #316)
+  # Test fallback process detection (Issue pulsemcp/agents#316)
   test "should detect dead process via signal check when wait fails" do
     job = AgentSessionJob.new
 
@@ -2483,7 +2483,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_not_nil warning_log
   end
 
-  # Test transcript polling failure tracking (Issue #316)
+  # Test transcript polling failure tracking (Issue pulsemcp/agents#316)
   test "should fail session after consecutive transcript poll failures" do
     job = AgentSessionJob.new
 
@@ -2602,7 +2602,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_nil @session.metadata["failure_reason"]
   end
 
-  # Test that nil poll results don't affect failure count (Issue #316)
+  # Test that nil poll results don't affect failure count (Issue pulsemcp/agents#316)
   test "should not reset transcript poll failure count on nil poll result" do
     job = AgentSessionJob.new
 

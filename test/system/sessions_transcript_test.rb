@@ -2,7 +2,8 @@ require "application_system_test_case"
 
 class SessionsTranscriptTest < ApplicationSystemTestCase
   # Test transcript display in session detail page
-  # Per Issue #57, transcript and activity logs are now consolidated into a unified timeline
+  # Per Issue pulsemcp/agents#57, transcript and activity logs are now consolidated
+  # into a unified timeline
   test "session show page displays conversation and activity timeline section" do
     session = sessions(:running)
 

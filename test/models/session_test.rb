@@ -1831,7 +1831,8 @@ class SessionTest < ActiveSupport::TestCase
   end
 
   # === Tests for broadcast_status_change error handling ===
-  # Issue #321: Ensure broadcast failures don't prevent session updates from background jobs
+  # Issue pulsemcp/agents#321: Ensure broadcast failures don't prevent session updates
+  # from background jobs
 
   test "broadcast_status_change has error handling that logs and does not raise" do
     session = sessions(:running)
@@ -2120,7 +2121,7 @@ class SessionTest < ActiveSupport::TestCase
   end
 
   # === Tests for recently_recovered? method ===
-  # Issue #275: Auto-refresh Turbo Streams after session recovery
+  # Issue pulsemcp/agents#275: Auto-refresh Turbo Streams after session recovery
 
   test "recently_recovered? returns true when recovery log exists within 5 seconds" do
     session = sessions(:running)
