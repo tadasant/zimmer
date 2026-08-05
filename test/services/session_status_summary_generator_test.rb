@@ -93,21 +93,17 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       agent_runtime: "codex",
       transcript: file_fixture("codex_rollout.jsonl").read
     )
-    prompts = []
-    Session.any_instance.stubs(:deliver_follow_up!).with do |prompt, *|
-      prompts << prompt
-      true
-    end
 
     fork = generate.fork_session
+    prompt = fork.reload.metadata["pending_follow_up_prompt"]
 
     assert_equal false, fork.metadata["runtime_started"]
     assert_equal "codex", fork.agent_runtime
-    assert_equal 1, prompts.size
-    assert_match(/Conversation so far:/, prompts.first)
-    assert_match(/List the files in the current directory\./, prompts.first)
-    assert_match(/The directory contains a single file: `README\.md`\./, prompts.first)
-    assert_no_match(/"response_item"/, prompts.first)
+    assert_match(/Write the Status panel/, prompt)
+    assert_match(/Conversation so far:/, prompt)
+    assert_match(/List the files in the current directory\./, prompt)
+    assert_match(/The directory contains a single file: `README\.md`\./, prompt)
+    assert_no_match(/"response_item"/, prompt)
   end
 
   test "a Claude summary fork remains resumable and does not inline the transcript" do

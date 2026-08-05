@@ -120,9 +120,22 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
     cleaned.truncate(MAX_SUMMARY_CHARS)
   end
 
+  # Why the hidden summary fork died, in terms the source session's reader can act on.
+  #
+  # The user never sees the fork, so anything left only in its metadata is invisible.
+  # All three keys are folded in because each failure path writes a different subset:
+  # a process death records `failure_reason` + `exit_status`, while an exception death
+  # records `failure_reason` ("exception") + `exception_message` and no exit status —
+  # which on its own renders as the useless bare word "exception".
   def failure_reason(fork)
-    reason = fork.metadata&.dig("failure_reason").presence
-    reason ? "The summary fork failed: #{reason}" : "The summary fork failed."
+    metadata = fork.metadata || {}
+    detail = [
+      metadata["failure_reason"].presence,
+      metadata["exit_status"].presence,
+      metadata["exception_message"].presence
+    ].compact.join(" — ")
+
+    detail.present? ? "The summary fork failed: #{detail}".truncate(SessionStatusSummary::MAX_ERROR_CHARS) : "The summary fork failed."
   end
 
   def archive_fork(fork)

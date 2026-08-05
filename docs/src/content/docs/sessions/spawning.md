@@ -280,6 +280,13 @@ pending marker, including automated deploy continuations and status-summary
 forks that never had a pending marker. That slot is removed when the turn
 finishes normally.
 
+When the job itself finishes, it reports the terminal status it actually reached. A job whose
+monitor loop already moved the session to `failed` closes its log at `warning` naming the
+`failure_reason`, `exit_status`, and `exception_message` it recorded — not `Session job completed
+successfully`. That success line was previously written unconditionally, so a Codex session killed
+by a failed resume ended its log claiming it had finished fine, which is precisely what a frozen
+session looks like from the outside.
+
 :::danger[Every one of those questions is answered by a regex against CLI prose]
 There is no structured exit signal. Zimmer determines *why* a session died by string-matching
 English:
