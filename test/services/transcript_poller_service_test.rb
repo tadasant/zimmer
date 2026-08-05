@@ -642,6 +642,65 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal "long-codex-thread", @session.session_id
   end
 
+  test "poll_and_broadcast does not duplicate already-carried history when recovering a session that rotated before" do
+    # The two mechanisms meet here: the stored transcript already begins with a
+    # carryover prefix from an earlier rotation, and the recovery rollout is
+    # longer than everything stored, so rotation does not re-attach anything and
+    # the recovery path does the merge. Merging onto the poller's carryover-
+    # prefixed content instead of the live rollout would repeat that prefix.
+    carried = (1..5).map { |i|
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Carried #{i}" } ] } }.to_json
+    }
+    pre_recovery_tail = (1..3).map { |i|
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Turn A #{i}" } ] } }.to_json
+    }
+    stored_transcript = (carried + pre_recovery_tail).join("\n")
+
+    abandoned_rollout = "#{CodexHome.sessions_path}/2026/08/03/rollout-2026-08-03T09-00-00-rollout-a.jsonl"
+
+    @session.update!(
+      agent_runtime: "codex",
+      transcript: stored_transcript,
+      metadata: {
+        "working_directory" => "/tmp/test-clone",
+        "broadcast_message_count" => 8,
+        "transcript_carryover_event_count" => 5,
+        "transcript_source_path" => abandoned_rollout,
+        "transcript_recovery_expected" => true,
+        "transcript_recovery_base_line_count" => 8
+      }
+    )
+    @session.update_column(:session_id, "rollout-a")
+
+    recovered_file = "#{CodexHome.sessions_path}/2026/08/03/rollout-2026-08-03T10-39-42-rollout-b.jsonl"
+    recovered_transcript = ([
+      { "type" => "session_meta", "payload" => { "id" => "rollout-b", "cwd" => "/tmp/test-clone" } }.to_json
+    ] + (1..9).map { |i|
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Recovered #{i}" } ] } }.to_json
+    }).join("\n")
+
+    @mock_file_system.mkdir_p(File.dirname(recovered_file))
+    @mock_file_system.write(recovered_file, recovered_transcript)
+
+    mock_broadcast_service = mock("BroadcastService")
+    mock_broadcast_service.stubs(:remove_empty_timeline_message)
+    mock_broadcast_service.stubs(:running_loader)
+    mock_broadcast_service.expects(:timeline_message).times(10)
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system, broadcast_service: mock_broadcast_service)
+
+    assert_equal true, service.poll_and_broadcast
+
+    @session.reload
+    assert_equal 1, @session.transcript.scan("Carried 1").length,
+      "the earlier rotation's carryover must appear once, not once per merge path"
+    assert_equal 1, @session.transcript.scan("Turn A 1").length
+    assert_equal stored_transcript + "\n" + recovered_transcript, @session.transcript
+    assert_equal 18, @session.metadata["broadcast_message_count"]
+    assert_equal true, @session.metadata["transcript_recovery_segment_appended"]
+    assert_equal "rollout-b", @session.session_id
+  end
+
   test "poll_and_broadcast updates stored transcript when filesystem transcript grows" do
     initial_transcript = (1..2).map { |i| %({"type":"user","message":{"role":"user","content":"msg #{i}"}}) }.join("\n")
 
@@ -892,6 +951,8 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal 2, broadcasts.length, "both events from the new rollout must reach the timeline"
     assert_equal 7, @session.metadata["broadcast_message_count"]
     assert_equal 5, @session.metadata["transcript_carryover_event_count"]
+    assert_nil @session.metadata["transcript_recovery_segment_appended"],
+      "a plain rotation is not a failed-resume recovery and must not claim to be one"
   ensure
     original_codex_home.nil? ? ENV.delete("CODEX_HOME") : ENV["CODEX_HOME"] = original_codex_home
   end

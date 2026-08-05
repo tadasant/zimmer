@@ -201,7 +201,16 @@ class TranscriptPollerService
     # point the next resume at a rollout that no longer exists.
     capture_runtime_session_id!(live_events)
 
-    transcript_content, new_messages = merge_recovery_segment_if_needed(transcript_content, new_messages, metadata_updates)
+    # Runs AFTER #carryover_prefix on purpose, and is told what that call did:
+    # the two overlap on a recovery rollout (see #merge_recovery_segment_if_needed),
+    # and which one re-attached the history decides who records the marker.
+    transcript_content, new_messages = merge_recovery_segment_if_needed(
+      transcript_content,
+      live_content,
+      new_messages,
+      metadata_updates,
+      history_carried_over: carryover.present?
+    )
 
     # Track how many messages we've already broadcast.
     # When broadcast_message_count is nil (cleared during session recovery/restart),
@@ -319,11 +328,21 @@ class TranscriptPollerService
   # This overlaps #carryover_prefix on purpose. Rotation covers the recovery
   # rollouts it can recognize — a new file path holding fewer events than the
   # stored transcript — and this covers the one it cannot: a recovered rollout
-  # LONGER than what is stored is not a regression, so rotation leaves it alone
-  # and only the recovery marker knows the stored history must survive.
-  def merge_recovery_segment_if_needed(transcript_content, new_messages, metadata_updates)
+  # LONGER than what is stored is not a regression, so rotation does not
+  # re-attach anything there, and only the recovery marker knows the stored
+  # history must survive.
+  #
+  # `history_carried_over` says whether #carryover_prefix put the stored history
+  # in front of the live rollout on this poll, which is what makes the marker a
+  # statement about the session rather than about which path happened to fire.
+  def merge_recovery_segment_if_needed(transcript_content, live_content, new_messages, metadata_updates, history_carried_over:)
     return [ transcript_content, new_messages ] unless @session.metadata&.dig("transcript_recovery_expected")
     return [ transcript_content, new_messages ] unless @normalizer.mints_own_session_id?
+    # Same reason #carryover_prefix bails on one: the legacy Array transcript
+    # format is not JSONL text, and slicing `.to_s` of an Array would splice
+    # Ruby's inspect output into the stored transcript.
+    return [ transcript_content, new_messages ] if @session.transcript.is_a?(Array)
+
     base_line_count = @session.metadata&.dig("transcript_recovery_base_line_count").to_i
     stored_base = @session.transcript.to_s.lines.first(base_line_count).join
     return [ transcript_content, new_messages ] if stored_base.blank?
@@ -336,20 +355,22 @@ class TranscriptPollerService
       # re-attached it earlier in this same poll. A recovery rollout SHORTER
       # than the stored transcript is also a file rotation, and the rotation
       # path runs first, so it is the one that re-attaches the history there.
-      # Record the marker in that case too — it describes what happened to the
-      # session, not which of the two mechanisms happened to fire.
-      if metadata_updates.key?("transcript_carryover_event_count")
-        metadata_updates["transcript_recovery_segment_appended"] = true
-      end
+      # Record the marker in that case too.
+      record_recovery_segment(metadata_updates) if history_carried_over
 
       return [ transcript_content, new_messages ]
     end
 
-    merged_transcript = join_transcripts(stored_base, transcript_content)
+    # Built from the LIVE rollout, not from `transcript_content`: that already
+    # carries whatever prefix #carryover_prefix supplied, and reaching this line
+    # means the recorded boundary is longer than that prefix — a shorter one
+    # would be a prefix of it and would have satisfied the start_with? above.
+    # Prepending to `transcript_content` would therefore duplicate the carried
+    # history, and `stored_base` subsumes it in every case that gets here.
+    merged_transcript = join_transcripts(stored_base, live_content)
     merged_messages = parse_transcript_lines(merged_transcript)
 
-    metadata_updates["transcript_recovery_segment_appended"] = true
-    metadata_updates["transcript_regression_detected"] = nil
+    record_recovery_segment(metadata_updates)
 
     @logger.info(
       "Appending recovered runtime transcript segment",
@@ -359,6 +380,20 @@ class TranscriptPollerService
     )
 
     [ merged_transcript, merged_messages ]
+  end
+
+  # Record that a recovery segment is part of the stored transcript, and retire
+  # the regression flag the pre-recovery polls may have raised.
+  #
+  # Both writes are conditional because the merge above re-runs on every poll of
+  # a recovery rollout: writing them unconditionally would keep `metadata_updates`
+  # non-empty and force a metadata UPDATE on each poll after nothing changed.
+  def record_recovery_segment(metadata_updates)
+    unless @session.metadata&.dig("transcript_recovery_segment_appended")
+      metadata_updates["transcript_recovery_segment_appended"] = true
+    end
+
+    metadata_updates["transcript_regression_detected"] = nil if @session.metadata&.dig("transcript_regression_detected")
   end
 
   def join_transcripts(prefix, suffix)
