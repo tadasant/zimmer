@@ -776,11 +776,12 @@ class ProcessLifecycleManager
     # --resume means this turn never reached the runtime's durable conversation, so
     # the fresh start must replay the prompt that spawned the failed resume:
     #
-    # - sent_message: web follow-ups keep this until transcript polling confirms
-    #   the user message landed.
     # - active_follow_up_prompt: AgentSessionJob moves trigger/deploy/heartbeat
     #   recovery prompts here while delivering the turn, after clearing the
-    #   "not picked up yet" pending marker.
+    #   "not picked up yet" pending marker. It holds the expanded prompt Zimmer
+    #   attempted to deliver to the runtime, including goal/notes/provenance.
+    # - sent_message: web follow-ups keep this until transcript polling confirms
+    #   the user message landed.
     # - pending_follow_up_prompt: fallback for paths that have stamped a prompt
     #   but have not yet reached AgentSessionJob's delivery handoff.
     # - session.prompt: original prompt for a barely-started session with no
@@ -790,8 +791,8 @@ class ProcessLifecycleManager
     # lose its recovery prompt after Codex rejects `thread/resume` with "no rollout
     # found", parking the session in needs_input with unfinished side effects.
     recovery_prompt =
-      session.metadata&.dig("sent_message").presence ||
       session.metadata&.dig("active_follow_up_prompt").presence ||
+      session.metadata&.dig("sent_message").presence ||
       session.metadata&.dig("pending_follow_up_prompt").presence ||
       session.prompt
 
@@ -802,9 +803,19 @@ class ProcessLifecycleManager
       return ExitDecision.new(action: :failed, error_message: error_msg)
     end
 
-    # Reset runtime_started so future spawns use --session-id instead of --resume
+    recovery_base_line_count = session.transcript_line_count
+
+    # Reset runtime_started so future spawns use --session-id instead of --resume.
+    # Mark the transcript as a deliberate recovery segment: runtimes that mint a
+    # new local conversation (Codex) may write a fresh transcript after this
+    # spawn, and the poller must append that segment instead of replacing the
+    # stored history.
     with_db_retry do
-      session.merge_metadata!("runtime_started" => false)
+      session.merge_metadata!(
+        "runtime_started" => false,
+        "transcript_recovery_expected" => true,
+        "transcript_recovery_base_line_count" => recovery_base_line_count
+      )
     end
 
     add_log("Recovering from failed resume: starting fresh CLI session with recovered prompt", level: "info")
