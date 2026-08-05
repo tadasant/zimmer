@@ -1,8 +1,8 @@
 <%= turbo_frame_tag "trigger_#{trigger.id}" do %>
   <li class="hover:bg-gray-50">
     <div class="px-6 py-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center space-x-4">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex items-center gap-4 min-w-0">
           <!-- Trigger Type Icon(s) -->
           <div class="flex-shrink-0 flex -space-x-1">
             <% condition_types = trigger.trigger_conditions.map(&:condition_type).uniq %>
@@ -45,8 +45,8 @@
 
           <!-- Trigger Info -->
           <div class="min-w-0 flex-1">
-            <div class="flex items-center space-x-2">
-              <%= link_to trigger.name, trigger_path(trigger), class: "text-sm font-medium text-gray-900 hover:text-indigo-600 truncate", data: { turbo: false } %>
+            <div class="flex flex-wrap items-center gap-2">
+              <%= link_to trigger.name, trigger_path(trigger), class: "text-sm font-medium text-gray-900 hover:text-indigo-600 break-words min-w-0", data: { turbo: false } %>
               <!-- Status Badge -->
               <% if trigger.enabled? %>
                 <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
@@ -73,7 +73,7 @@
                 </span>
               <% end %>
             </div>
-            <div class="mt-1 flex items-center space-x-4 text-sm text-gray-500">
+            <div class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500">
               <span class="flex items-center">
                 <svg class="mr-1 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
@@ -99,7 +99,7 @@
         </div>
 
         <!-- Actions -->
-        <div class="flex items-center space-x-2">
+        <div class="flex items-center gap-2 sm:flex-shrink-0">
           <%= button_to toggle_trigger_path(trigger), method: :post, class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md #{trigger.enabled? ? 'text-gray-700 bg-white hover:bg-gray-50' : 'text-green-700 bg-green-50 hover:bg-green-100'}", data: { turbo_frame: "trigger_#{trigger.id}" } do %>
             <% if trigger.enabled? %>
               <svg class="mr-1 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

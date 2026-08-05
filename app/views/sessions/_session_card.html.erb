@@ -94,16 +94,16 @@
     <!-- Title and Agent Root -->
     <div class="mb-3">
       <% if agent_session.title.present? %>
-        <div class="flex items-center gap-2 mb-1" data-controller="editable-title" data-editable-title-session-id-value="<%= agent_session.id %>" data-editable-title-title-value="<%= agent_session.title %>">
-          <h3 class="text-lg font-semibold text-gray-900 flex-grow" data-editable-title-target="display"<%= " title=\"#{h(agent_session.prompt)}\"".html_safe if agent_session.prompt.present? %>>
+        <div class="flex items-center gap-2 mb-1 min-w-0" data-controller="editable-title" data-editable-title-session-id-value="<%= agent_session.id %>" data-editable-title-title-value="<%= agent_session.title %>">
+          <h3 class="text-lg font-semibold text-gray-900 flex-grow min-w-0 break-words" data-editable-title-target="display"<%= " title=\"#{h(agent_session.prompt)}\"".html_safe if agent_session.prompt.present? %>>
             <%= agent_session.title %>
           </h3>
-          <button type="button" class="text-gray-400 hover:text-gray-600" data-action="click->editable-title#edit">
+          <button type="button" class="text-gray-400 hover:text-gray-600 shrink-0" data-action="click->editable-title#edit">
             <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
               <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
             </svg>
           </button>
-          <input type="text" class="hidden text-lg font-semibold text-gray-900 border-b-2 border-indigo-500 focus:outline-none flex-grow" data-editable-title-target="input" data-action="keydown->editable-title#handleKeydown blur->editable-title#save" />
+          <input type="text" class="hidden text-lg font-semibold text-gray-900 border-b-2 border-indigo-500 focus:outline-none flex-grow min-w-0" data-editable-title-target="input" data-action="keydown->editable-title#handleKeydown blur->editable-title#save" />
         </div>
       <% elsif agent_session.prompt.present? %>
         <h3 class="text-sm font-medium text-gray-600 line-clamp-2" title="<%= agent_session.prompt %>">
@@ -111,7 +111,7 @@
         </h3>
       <% end %>
       <% if agent_session.agent_root_key.present? %>
-        <div class="text-xs text-gray-500 mb-2 font-mono">
+        <div class="text-xs text-gray-500 mb-2 font-mono break-words">
           <%= agent_session.agent_root_key %>
         </div>
       <% end %>
@@ -130,13 +130,13 @@
     <!-- Footer Actions -->
     <% pr_urls = agent_session.custom_metadata&.dig("github_pull_request_urls") || [] %>
     <div class="mt-auto pt-4 border-t border-gray-200">
-      <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex flex-wrap items-center gap-2 min-w-0">
           <% if pr_urls.present? %>
             <%= render "sessions/github_pr_link", agent_session: agent_session %>
           <% end %>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center justify-end gap-2">
           <%# Mark as blocked by / Unblock %>
           <% if agent_session.blocked_by_session_id.present? %>
             <%= button_to unmark_blocked_session_path(agent_session), method: :patch, class: "inline-flex items-center px-2.5 py-1.5 border border-amber-300 text-xs font-medium rounded-md text-amber-700 bg-amber-50 hover:bg-amber-100", title: "Blocked by ##{agent_session.blocked_by_session_id} — click to unblock", data: { turbo_frame: "_top" } do %>
