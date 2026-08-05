@@ -217,7 +217,7 @@ class FileStorageService
   # single storage_root, so one worker's teardown `cleanup!` would wipe the
   # session directory another worker is still reading from — producing
   # intermittent ENOENT errors. Keying the root by Process.pid gives each worker
-  # an isolated tree. See issues #3455 and #3741.
+  # an isolated tree. See issues pulsemcp/pulsemcp#3455 and pulsemcp/pulsemcp#3741.
   def self.base_dir
     return storage_root unless Rails.env.test?
 

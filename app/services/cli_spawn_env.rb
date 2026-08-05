@@ -8,7 +8,7 @@
 #   1. Load the per-clone `.env` file (KEY=VALUE) so the agent sees the
 #      session's configured environment.
 #   2. Clear inherited database/bundler variables so the child process uses its
-#      own configuration instead of Zimmer's (issues #500 and #569).
+#      own configuration instead of Zimmer's (issues pulsemcp/agents#500 and pulsemcp/agents#569).
 #
 # Both ClaudeCliAdapter and CodexRuntimeAdapter include this module. Adapters
 # layer their own runtime-specific env vars (Claude's CLAUDE_CODE_* flags, MCP
@@ -97,10 +97,10 @@ module CliSpawnEnv
   # When spawning agent CLI processes, child processes inherit the parent's
   # environment. This can cause issues:
   #
-  # 1. Database isolation (issue #500): If the parent is a development Rails server,
+  # 1. Database isolation (issue pulsemcp/agents#500): If the parent is a development Rails server,
   #    tests in the child would use the development database configuration.
   #
-  # 2. Bundler isolation (issue #569): If the parent is running under Bundler,
+  # 2. Bundler isolation (issue pulsemcp/agents#569): If the parent is running under Bundler,
   #    Ruby commands in the child would load gems from the parent's bundle path
   #    instead of the child's own bundle.
   #

@@ -1,7 +1,7 @@
 # Real implementation of ProcessManager using Ruby's Process module
 # This is the production implementation that spawns and manages actual OS processes.
 #
-# Enhanced capabilities (Issue #326):
+# Enhanced capabilities (Issue pulsemcp/agents#326):
 # - Track process ownership (UID/GID) when spawning via ProcessRegistry
 # - Support process group management for reliable termination
 # - Provide detailed diagnostics when operations fail via ProcessDiagnostics

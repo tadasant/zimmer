@@ -5,7 +5,7 @@
 # surfaces at package *extraction* time (a half-written tar tree) or later at
 # module-*resolution* time (a require/import that can't be satisfied).
 #
-# Background (see GitHub issues #3924 / #4109):
+# Background (see GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109):
 #   Zimmer isolates the npm cache per clone via NPM_CONFIG_CACHE=<working_dir>/.npm-cache
 #   (ClaudeCliAdapter#configure_mcp_env). When concurrent or retried `npx`
 #   invocations race into the same shared `_npx/<hash>` directory, the extraction

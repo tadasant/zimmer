@@ -8,7 +8,7 @@
 # - Simulate process failures and edge cases
 # - Isolate business logic from OS process APIs
 #
-# Enhanced capabilities (Issue #326):
+# Enhanced capabilities (Issue pulsemcp/agents#326):
 # - Track process ownership (UID/GID) when spawning
 # - Support process group management for reliable termination
 # - Provide detailed diagnostics when operations fail

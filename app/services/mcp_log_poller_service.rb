@@ -29,7 +29,7 @@ class McpLogPollerService
   # @param min_timestamp [Time, nil] Optional minimum timestamp to filter log entries.
   #   If provided, log entries older than this timestamp will be ignored. This is used
   #   to filter out stale logs from previous session runs when restarting a session.
-  #   See GitHub issue #716 for context.
+  #   See GitHub issue pulsemcp/agents#716 for context.
   def initialize(session, file_system: nil, min_timestamp: nil)
     @session = session
     @file_system = file_system || RealFileSystemAdapter.new
@@ -160,7 +160,8 @@ class McpLogPollerService
 
   # Determine server connection status from logs
   # Only considers log entries newer than min_timestamp (if set) to filter out stale logs
-  # from previous session runs. This is critical for session restarts - see GitHub issue #716.
+  # from previous session runs. This is critical for session restarts - see
+  # pulsemcp/agents#716.
   #
   # Processes all log entries to find the final connection state. Claude Code has built-in
   # retry logic for MCP connections, so a transient failure followed by success should be

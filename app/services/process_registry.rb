@@ -4,7 +4,7 @@
 # This enables tracking process ownership (UID/GID), correlation IDs, and provides
 # diagnostics when operations fail.
 #
-# Features (Issue #326):
+# Features (Issue pulsemcp/agents#326):
 # - Track process owner UID/GID when spawning
 # - Store correlation IDs for log correlation
 # - Record spawn time and command for debugging
