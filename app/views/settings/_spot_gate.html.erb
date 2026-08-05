@@ -145,7 +145,43 @@
         that already exist.
       </p>
 
-      <div class="mt-3 overflow-hidden border border-gray-200 rounded-md">
+      <%# A four-column table does not fit a phone, and its Action cell holds the only
+          control here — so below `sm` the same rows render as stacked cards, keeping
+          the button on screen. Both renderings derive their state from
+          `genesis_kind_state` so they cannot disagree. `data-genesis-class` lives on
+          the table alone, so a selector for it matches exactly once. %>
+      <div class="mt-3 divide-y divide-gray-100 border border-gray-200 rounded-md sm:hidden">
+        <% SessionGenesis::KINDS.each do |kind| %>
+          <% current, target, overridden, badge = genesis_kind_state(kind, @genesis_classes) %>
+          <div class="p-4" id="genesis-card-<%= kind.key %>">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-medium text-gray-900 break-words"><%= kind.label %></div>
+                <div class="text-xs text-gray-400 font-mono break-all"><%= kind.key %></div>
+              </div>
+              <span class="inline-flex flex-shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-semibold <%= badge %>">
+                <span class="sr-only">Class:</span><%= current %>
+              </span>
+            </div>
+            <% if overridden %>
+              <div class="mt-1 text-xs text-amber-600">changed from <%= kind.default_class %></div>
+            <% end %>
+            <p class="mt-2 text-xs text-gray-500"><%= kind.description %></p>
+            <div class="mt-3 flex items-center justify-between gap-3">
+              <span class="text-xs text-gray-500">
+                <%= pluralize(@genesis_counts[kind.key].to_i, "live session") %>
+              </span>
+              <%= button_to "Make #{target}",
+                    genesis_class_path(genesis: kind.key, priority_class: target),
+                    method: :patch,
+                    form: { data: { turbo: false }, class: "flex-shrink-0" },
+                    class: "inline-flex items-center rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1" %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+
+      <div class="mt-3 hidden overflow-x-auto border border-gray-200 rounded-md sm:block">
         <table class="min-w-full divide-y divide-gray-200 text-sm">
           <thead class="bg-gray-50">
             <tr>
@@ -157,8 +193,7 @@
           </thead>
           <tbody class="divide-y divide-gray-100 bg-white">
             <% SessionGenesis::KINDS.each do |kind| %>
-              <% current = @genesis_classes[kind.key] %>
-              <% overridden = current != kind.default_class %>
+              <% current, target, overridden, badge = genesis_kind_state(kind, @genesis_classes) %>
               <tr id="genesis-row-<%= kind.key %>">
                 <td class="px-4 py-3 align-top">
                   <div class="font-medium text-gray-900"><%= kind.label %></div>
@@ -166,7 +201,7 @@
                   <p class="mt-1 text-xs text-gray-500 max-w-xl"><%= kind.description %></p>
                 </td>
                 <td class="px-4 py-3 align-top">
-                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold <%= current == SessionGenesis::PRIORITY ? "bg-indigo-100 text-indigo-800" : "bg-gray-100 text-gray-700" %>"
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold <%= badge %>"
                         data-genesis-class="<%= kind.key %>">
                     <%= current %>
                   </span>
@@ -178,7 +213,6 @@
                   <%= @genesis_counts[kind.key].to_i %>
                 </td>
                 <td class="px-4 py-3 align-top text-right">
-                  <% target = current == SessionGenesis::PRIORITY ? SessionGenesis::SPOT : SessionGenesis::PRIORITY %>
                   <%= button_to "Make #{target}",
                         genesis_class_path(genesis: kind.key, priority_class: target),
                         method: :patch,

@@ -9,10 +9,10 @@
         Back to Triggers
       <% end %>
 
-      <div class="flex justify-between items-start">
-        <div>
-          <div class="flex items-center space-x-3">
-            <h1 class="text-3xl font-bold text-gray-900"><%= @trigger.name %></h1>
+      <div class="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-start">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 break-words min-w-0"><%= @trigger.name %></h1>
             <% if @trigger.enabled? %>
               <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                 Enabled
@@ -44,7 +44,7 @@
           </p>
         </div>
 
-        <div class="flex items-center space-x-2">
+        <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
           <button type="button" data-action="click->trigger-invoke#toggle" class="inline-flex items-center px-4 py-2 border border-indigo-300 text-sm font-medium rounded-md text-indigo-700 bg-indigo-50 hover:bg-indigo-100">
             <svg class="mr-1.5 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
               <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
