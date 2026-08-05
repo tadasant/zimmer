@@ -87,6 +87,28 @@ what is stored — the stored transcript is always `carryover + live` — so the
 continuous conversation across any number of rotations. Requiring the *path* to change is what
 keeps a partially flushed read of the same file from duplicating history.
 
+### Rotation and the recovery marker overlap
+
+A failed-resume recovery rollout is usually *both* things at once: a recovery segment and a
+rotation to a new file. The two mechanisms are keyed on different signals, so which one re-attaches
+the history depends on the shape of the recovery rollout:
+
+- **Shorter than the stored transcript** — that is a regression on a new path, so rotation sees it
+  and carries the history forward. It gets there first, in the same poll.
+- **Longer than the stored transcript** — not a regression, so rotation re-attaches nothing (it
+  still replays the prefix an *earlier* rotation recorded, and still stamps the new
+  `transcript_source_path`). Only the recovery marker knows the stored history has to survive, so
+  the recovery path rebuilds the transcript as `recovery boundary + live rollout`. Rebuilding from
+  the live rollout rather than from what rotation handed it is what keeps an already-carried prefix
+  from being counted twice.
+
+Either way the poll records `metadata["transcript_recovery_segment_appended"]`. The marker is a
+statement about the session — a recovery happened and its segment is in the stored transcript — not
+about which of the two mechanisms happened to fire. Unlike `transcript_recovery_expected` and
+`transcript_recovery_base_line_count`, which are turn-scoped and cleared when the turn exits, this
+one is sticky and diagnostic: it stays set for the life of the session, and nothing in the app
+reads it.
+
 :::caution[This was a real freeze, not a theoretical one]
 Before rotation was handled, a fresh-started Codex session went permanently silent. The live
 rollout was shorter than `broadcast_message_count`, so `new_messages[broadcast_count..]` returned
