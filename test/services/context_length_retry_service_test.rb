@@ -453,7 +453,7 @@ class ContextLengthRetryServiceTest < ActiveSupport::TestCase
   end
 
   # ============================================================================
-  # Transcript-Based Error Detection Tests (Issue #615)
+  # Transcript-Based Error Detection Tests (Issue pulsemcp/agents#615)
   # ============================================================================
 
   test "detects context length error from transcript API error message" do

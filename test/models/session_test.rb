@@ -910,7 +910,7 @@ class SessionTest < ActiveSupport::TestCase
     assert broadcast_called, "Expected broadcast to be called when title changes even if transcript also changes"
   end
 
-  # Test broadcast_remove when session is archived (Issue #701)
+  # Test broadcast_remove when session is archived (Issue pulsemcp/agents#701)
   # When a session is archived, the index page filters it out by default,
   # so we need to broadcast a REMOVE action instead of REPLACE
   test "should broadcast remove when session is archived" do
@@ -1523,7 +1523,7 @@ class SessionTest < ActiveSupport::TestCase
     assert_match(/^fix-api-database-issues-\d{8}-\d{4}$/, session.slug)
   end
 
-  # Regression for issue #4379: String#parameterize preserves underscores, but the
+  # Regression for issue pulsemcp/pulsemcp#4379: String#parameterize preserves underscores, but the
   # slug validation only permits /\A[a-z0-9-]+\z/. An underscore-bearing title used
   # to produce an invalid slug, raising RecordInvalid and logging a noisy .error.
   test "generate_slug_from_title! folds underscores in title into hyphens" do
@@ -2225,7 +2225,7 @@ class SessionTest < ActiveSupport::TestCase
   end
 
   # === Tests for throttled last_timeline_entry_at broadcasts ===
-  # Issue #499: Session cards should update last_timeline_entry_at with throttling
+  # Issue pulsemcp/agents#499: Session cards should update last_timeline_entry_at with throttling
 
   test "should_broadcast_to_index? returns true when last_timeline_entry_at changes and no previous broadcast" do
     session = sessions(:running)

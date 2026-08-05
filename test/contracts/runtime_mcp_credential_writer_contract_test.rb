@@ -5,7 +5,7 @@ require "test_helper"
 # Shared contract test for the RuntimeMcpCredentialWriter interface.
 #
 # Every runtime MCP credential writer (ClaudeMcpCredentialWriter today;
-# CodexMcpCredentialWriter in #3782) must satisfy the same contract so
+# CodexMcpCredentialWriter in pulsemcp/pulsemcp#3782) must satisfy the same contract so
 # McpOauthCredentialInjector can depend on the interface rather than a concrete
 # runtime sink.
 #

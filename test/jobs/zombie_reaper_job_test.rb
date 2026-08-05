@@ -102,7 +102,7 @@ class ZombieReaperJobTest < ActiveJob::TestCase
 
     # Simulate the waiter going away: the claim is still there, but nothing has
     # called wait on it for longer than the staleness window. Left unhandled,
-    # this is how zombies accumulated in tadasant/zimmer-catalog#3549.
+    # this is how zombies accumulated in pulsemcp/pulsemcp#3549.
     ChildWaiterRegistry.instance.heartbeat(
       pid,
       at: ChildWaiterRegistry.monotonic_now - ZombieReaperJob::LIVE_WAITER_STALE_AFTER - 1

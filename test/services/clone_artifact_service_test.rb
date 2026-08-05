@@ -137,7 +137,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
   # invocation raises Errno::ENOENT. This is a benign TOCTOU race with the
   # concurrent cleanup that is about to delete the clone anyway, so it must log
   # at .info (not .error, which pages on-call) and still return clean.
-  # See GitHub issue #4410.
+  # See GitHub issue pulsemcp/pulsemcp#4410.
   test "check_dirty_state logs .info and returns clean when clone vanishes mid-check (ENOENT)" do
     create_test_repo
     logger = RecordingLogger.new

@@ -249,7 +249,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
     assert_no_match(/Parameters:/, response.body)
   end
 
-  # Regression for the OpenTranscripts refactor (PR #3942 / commit 0a00cec4):
+  # Regression for the OpenTranscripts refactor (PR pulsemcp/pulsemcp#3942 / commit 0a00cec4):
   # an assistant line carrying only tool_use/thinking blocks (no text) normalizes
   # into a content-less AssistantMessage that must NOT surface as a bare
   # "Assistant" row, while its Thinking/ToolCall rows still render.

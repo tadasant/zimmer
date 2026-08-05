@@ -3,7 +3,7 @@ require "application_system_test_case"
 # Comprehensive system tests for the queued messages feature workflow.
 # These tests cover the full lifecycle of queueing and processing messages.
 #
-# See issue #592 for bug report: duplicate sends, lost messages, stuck UI.
+# See issue pulsemcp/agents#592 for bug report: duplicate sends, lost messages, stuck UI.
 class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
   # Test 1: Queue message while agent is running
   test "can queue message while agent is running" do
