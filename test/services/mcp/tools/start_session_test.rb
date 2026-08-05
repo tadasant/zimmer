@@ -181,10 +181,59 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     session = Session.order(:id).last
     assert_equal [], session.catalog_skills
     assert_equal [], session.catalog_plugins
-    # Hooks are not a start_session parameter, so they still come from the root.
-    assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
     # An untouched list is unaffected by another list being cleared.
+    assert_equal [ "git-push-ci-reminder" ], session.catalog_hooks
     assert_equal [ "context7" ], session.mcp_servers
+  end
+
+  test "an omitted hooks array takes the root's default hooks" do
+    stub_root_with_defaults
+
+    @tool.call("agent_root" => "test-root", "title" => "Default hooks")
+
+    assert_equal [ "git-push-ci-reminder" ], Session.order(:id).last.catalog_hooks
+  end
+
+  # An explicit [] has to survive apply_agent_root_defaults!. A `.blank?` test
+  # there cannot tell "asked for none" from "not asked yet", so it hands back the
+  # root's defaults to a caller that asked for neither.
+  test "an explicit empty hooks array attaches no hooks" do
+    stub_root_with_defaults
+
+    @tool.call("agent_root" => "test-root", "title" => "No hooks", "hooks" => [])
+
+    session = Session.order(:id).last
+    assert_equal [], session.catalog_hooks
+    # Clearing hooks leaves the other lists on the root's defaults.
+    assert_equal [ "zimmer-run-tests" ], session.catalog_skills
+    assert_equal [ "context7" ], session.mcp_servers
+  end
+
+  test "an explicit hooks array overrides the root's default hooks" do
+    stub_root_with_defaults
+
+    @tool.call("agent_root" => "test-root", "title" => "Named hooks", "hooks" => [ "some-hook" ])
+
+    assert_equal [ "some-hook" ], Session.order(:id).last.catalog_hooks
+  end
+
+  # Hooks carry no privilege, so a restricted connection constrains mcp_servers
+  # only and leaves the hook list to the caller.
+  test "a restricted connection may narrow the hooks it spawns with" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    result = tool.call(
+      "agent_root" => "test-root",
+      "title" => "Restricted, no hooks",
+      "mcp_servers" => [ "context7" ],
+      "hooks" => []
+    )
+
+    assert_includes result, "## Session Started Successfully"
+    assert_equal [], Session.order(:id).last.catalog_hooks
   end
 
   # The restricted path already rejected [] before this fix, and must keep doing
