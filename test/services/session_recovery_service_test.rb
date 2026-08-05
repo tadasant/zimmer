@@ -152,7 +152,7 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
   end
 
   test "recover with running process enqueues job with correct arguments" do
-    # Regression test for issue #337: ensure resume_monitoring is passed as
+    # Regression test for issue pulsemcp/agents#337: ensure resume_monitoring is passed as
     # keyword argument, not as positional argument (which would make follow_up_prompt a Hash)
     mock_pm = Object.new
     mock_pm.define_singleton_method(:running?) { |pid| pid == 12345 }

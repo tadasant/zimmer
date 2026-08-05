@@ -548,7 +548,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session = sessions(:running)
     get session_url(session)
     assert_response :success
-    # Prompt is no longer displayed on session detail page per Issue #57
+    # Prompt is no longer displayed on session detail page per Issue pulsemcp/agents#57
     # Check that session status is displayed instead (shown inline in header)
     assert_match session.status.titleize, response.body
   end
@@ -773,7 +773,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get session_url(session)
 
     assert_response :success
-    # Session info is displayed inline in header per Issue #57
+    # Session info is displayed inline in header per Issue pulsemcp/agents#57
     assert_match /Model:/, response.body
   end
 

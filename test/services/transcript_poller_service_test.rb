@@ -57,7 +57,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_same injected, service.mcp_status_detector
   end
 
-  # === Tests for broadcast error handling (Issue #321) ===
+  # === Tests for broadcast error handling (Issue pulsemcp/agents#321) ===
   # Ensure broadcast failures don't stop transcript polling or crash jobs
 
   test "broadcast_new_messages should not raise when Turbo broadcast fails" do
@@ -153,7 +153,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     service.send(:broadcast_running_loader)
   end
 
-  # === Tests for return value behavior (Issue #316) ===
+  # === Tests for return value behavior (Issue pulsemcp/agents#316) ===
   # Ensure poll_and_broadcast returns appropriate values for tracking failures
 
   test "poll_and_broadcast returns false when working_directory is missing" do
