@@ -201,7 +201,7 @@ class SessionsFollowUpTest < ApplicationSystemTestCase
     # Visit the session page
     visit session_path(session)
 
-    # Prompt is no longer displayed on session detail page per Issue #57
+    # Prompt is no longer displayed on session detail page per Issue pulsemcp/agents#57
     # Should see session info instead
     assert_text "Model:"
 

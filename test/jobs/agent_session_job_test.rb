@@ -1211,7 +1211,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "a failed prepare! must leave the session's configured servers intact"
   end
 
-  # Regression for issue #4745 / prod session 10163: an unresolved ${VAR} required
+  # Regression for issue pulsemcp/pulsemcp#4745 / prod session 10163: an unresolved ${VAR} required
   # by a selected MCP server used to escape as a plain AirPrepareError, crash the
   # job, log at .error, and page the critical "Zimmer ERROR logs present" Grafana rule.
   # It's a session-configuration problem, so the job must fail the session
@@ -2435,7 +2435,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
   end
 
-  # Test fallback process detection (Issue #316)
+  # Test fallback process detection (Issue pulsemcp/agents#316)
   test "should detect dead process via signal check when wait fails" do
     job = AgentSessionJob.new
 
@@ -2483,7 +2483,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_not_nil warning_log
   end
 
-  # Test transcript polling failure tracking (Issue #316)
+  # Test transcript polling failure tracking (Issue pulsemcp/agents#316)
   test "should fail session after consecutive transcript poll failures" do
     job = AgentSessionJob.new
 
@@ -2602,7 +2602,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_nil @session.metadata["failure_reason"]
   end
 
-  # Test that nil poll results don't affect failure count (Issue #316)
+  # Test that nil poll results don't affect failure count (Issue pulsemcp/agents#316)
   test "should not reset transcript poll failure count on nil poll result" do
     job = AgentSessionJob.new
 
@@ -2774,8 +2774,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # Test session validation for resume - missing transcript file (soft warning)
-  # Issue #504: Missing transcript cache should NOT fail the session - we already have
-  # most history in session.transcript from polling (every ~5 seconds)
+  # Issue pulsemcp/agents#504: Missing transcript cache should NOT fail the session -
+  # we already have most history in session.transcript from polling (every ~5 seconds)
   test "continues session with warning when transcript file is missing on resume" do
     session_uuid = SecureRandom.uuid
     clone_path = "/tmp/test-clone"
@@ -2838,7 +2838,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # Test session validation for resume - empty transcript file (soft warning)
-  # Issue #504: Empty transcript cache should NOT fail the session - we already have
+  # Issue pulsemcp/agents#504: Empty transcript cache should NOT fail the session - we already have
   # most history in session.transcript from polling (every ~5 seconds)
   test "continues session with warning when transcript file is empty on resume" do
     session_uuid = SecureRandom.uuid
@@ -2913,7 +2913,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # Test session validation for resume - transcript file read fails (soft warning)
-  # Issue #504: Failed transcript read should NOT fail the session
+  # Issue pulsemcp/agents#504: Failed transcript read should NOT fail the session
   test "continues session with warning when transcript file read fails on resume" do
     session_uuid = SecureRandom.uuid
     clone_path = "/tmp/test-clone"
@@ -3377,7 +3377,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # SIGTERM Auto-Retry Tests (Issue #408)
+  # SIGTERM Auto-Retry Tests (Issue pulsemcp/agents#408)
   # ============================================================================
 
   test "should auto-retry on SIGTERM exit code 143 when session is running" do
@@ -3775,7 +3775,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # Git Clone Error Handling Tests (Issue #424)
+  # Git Clone Error Handling Tests (Issue pulsemcp/agents#424)
   # ============================================================================
 
   test "should handle GitCloneService::GitError and transition session to failed" do
@@ -3822,7 +3822,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # Job-level retry for TRANSIENT clone failures (session #9439)
+  # Job-level retry for TRANSIENT clone failures (session 9439)
   # ============================================================================
 
   test "transient clone failure on startup schedules a delayed retry instead of failing" do
@@ -4246,7 +4246,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # Direct Signal Termination Tests (Issue #420)
+  # Direct Signal Termination Tests (Issue pulsemcp/agents#420)
   # Tests for processes killed directly by signal (termsig == 15) rather than
   # shell-wrapped exit code 143
   # ============================================================================
@@ -4474,11 +4474,11 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # ECHILD Handling Tests (Issue #426)
+  # ECHILD Handling Tests (Issue pulsemcp/agents#426)
   # ============================================================================
 
   test "should fall through to signal-based detection when wait raises ECHILD for non-child process" do
-    # This tests the fix for Issue #426:
+    # This tests the fix for Issue pulsemcp/agents#426:
     # When resume_monitoring a process spawned by a different job, Process.wait2 raises ECHILD
     # because the process is not a child of the current Ruby process. The fix catches this
     # exception at the call site and falls through to signal-based detection.
@@ -4638,7 +4638,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert wait_call_count >= 4, "Should have made multiple wait calls before process exited"
   end
 
-  # Tests for SIGTERM retry counter reset functionality (issue #459)
+  # Tests for SIGTERM retry counter reset functionality (issue pulsemcp/agents#459)
   test "SIGTERM_RETRY_RESET_THRESHOLD constant is defined" do
     assert_equal 60, AgentSessionJob::SIGTERM_RETRY_RESET_THRESHOLD
   end
@@ -4879,7 +4879,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # Failure Reason Tracking Tests (Issue #503)
+  # Failure Reason Tracking Tests (Issue pulsemcp/agents#503)
   # ============================================================================
 
   test "should set failure_reason to exception when generic error occurs" do
@@ -5089,7 +5089,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # Context Length Error Auto-Compact Tests (Issue #543)
+  # Context Length Error Auto-Compact Tests (Issue pulsemcp/agents#543)
   # ============================================================================
 
   # Note: context_length_error? helper method has been moved to ProcessLifecycleManager
@@ -5183,7 +5183,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal 1, @session.metadata["compact_retry_count"]
     assert_not_nil @session.metadata["last_compact_at"]
 
-    # Verify /compact command was sent, followed by auto-continuation (Issue #618)
+    # Verify /compact command was sent, followed by auto-continuation (Issue pulsemcp/agents#618)
     # After /compact completes successfully, the system auto-continues with a follow-up prompt
     assert_equal 2, mock_cli_adapter.resumed_sessions.length
     assert_equal "/compact", mock_cli_adapter.resumed_sessions.first[:prompt]
@@ -5412,7 +5412,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # Bug #550 - Pause/interrupt feature fixes
+  # Bug pulsemcp/agents#550 - Pause/interrupt feature fixes
   # ============================================================================
 
   # Bug 1: Monitoring loop exits immediately when session transitions to needs_input
@@ -5482,7 +5482,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # The loop should have exited quickly after detecting needs_input (within a few iterations)
     assert poll_count < 10, "Expected loop to exit quickly when session became needs_input, but had #{poll_count} iterations"
 
-    # Verify running_job_id was cleared (key fix for Bug #550)
+    # Verify running_job_id was cleared (key fix for Bug pulsemcp/agents#550)
     @session.reload
     assert_nil @session.running_job_id, "Expected running_job_id to be cleared when loop exits for needs_input"
 
@@ -5887,7 +5887,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # Tests for process_next_enqueued_message_if_available
-  # Issue #586: Enqueued messages not processed when session transitions to needs_input
+  # Issue pulsemcp/agents#586: Enqueued messages not processed when session
+  # transitions to needs_input
 
   test "process_next_enqueued_message_if_available processes pending message when session is needs_input" do
     @session.update!(status: :needs_input)
@@ -6016,7 +6017,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   test "process_next_enqueued_message_if_available handles dirty session state from AASM update_all" do
-    # This test verifies the fix for issue #586
+    # This test verifies the fix for issue pulsemcp/agents#586
     # AASM with skip_validation_on_save uses update_all which doesn't clear dirty tracking
     # The fix adds session.reload BEFORE session.lock! to clear dirty state
 
@@ -6128,7 +6129,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal 2, msg3.position, "Third message should now be at position 2"
   end
 
-  # Tests for issue #599: ensure enqueued messages are processed when resume_monitoring fails
+  # Tests for issue pulsemcp/agents#599: ensure enqueued messages are processed when
+  # resume_monitoring fails
   test "resume_monitoring failure path drains enqueued message queue" do
     session_uuid = SecureRandom.uuid
     clone_path = "/tmp/test-clone"
@@ -8202,7 +8204,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # ============================================================================
-  # MCP Elicitation Block Tests (Issue #4561)
+  # MCP Elicitation Block Tests (Issue pulsemcp/pulsemcp#4561)
   #
   # When an in-flight MCP tool call triggers a confirmation elicitation, the
   # session flips running -> needs_input via block_on_elicitation WITHOUT killing

@@ -1042,7 +1042,7 @@ class TriggerTest < ActiveSupport::TestCase
     assert_match(/Clone failed/, error.message)
   end
 
-  # Trigger-wiring coverage for GitHub issue #4600.
+  # Trigger-wiring coverage for GitHub issue pulsemcp/pulsemcp#4600.
   #
   # This exercises how create_session! HANDLES the resuscitation race outcome:
   # when UnarchiveSessionService reports the target session as an already-active
@@ -1052,7 +1052,7 @@ class TriggerTest < ActiveSupport::TestCase
   # session and enqueuing the prompt.
   #
   # The service's OWN race handling — returning success rather than a failure for
-  # an already-advanced winner — is what the #4600 fix changed, and it is covered
+  # an already-advanced winner — is what the pulsemcp/pulsemcp#4600 fix changed, and it is covered
   # directly, without stubbing the service, by the entry-path and
   # transition_to_needs_input tests in
   # test/services/unarchive_session_service_test.rb. Here the service is stubbed
@@ -1085,7 +1085,7 @@ class TriggerTest < ActiveSupport::TestCase
     # ...but the winning fire has already unarchived it and its job advanced the
     # row to running with archived_at cleared. Model that observable effect by
     # advancing the row when the (stubbed) service is invoked, and returning the
-    # benign success Result the real service produces for this race (#4600). The
+    # benign success Result the real service produces for this race (pulsemcp/pulsemcp#4600). The
     # mutation is guarded on archived? so it is a safe idempotent no-op even if
     # Mocha evaluates the matcher block more than once.
     UnarchiveSessionService.stubs(:call).with do |args|
@@ -2367,7 +2367,7 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal false, wake_trigger.last_follow_up_dropped?
   end
 
-  # === Tests for the bookkeeping-write TOCTOU race (issue #3919) ===
+  # === Tests for the bookkeeping-write TOCTOU race (issue pulsemcp/pulsemcp#3919) ===
   #
   # Internal bookkeeping writes (last_triggered_at / last_session_id) must NOT
   # run create-time/presence validations. A sibling wake firing concurrently

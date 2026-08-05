@@ -548,7 +548,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session = sessions(:running)
     get session_url(session)
     assert_response :success
-    # Prompt is no longer displayed on session detail page per Issue #57
+    # Prompt is no longer displayed on session detail page per Issue pulsemcp/agents#57
     # Check that session status is displayed instead (shown inline in header)
     assert_match session.status.titleize, response.body
   end
@@ -773,7 +773,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get session_url(session)
 
     assert_response :success
-    # Session info is displayed inline in header per Issue #57
+    # Session info is displayed inline in header per Issue pulsemcp/agents#57
     assert_match /Model:/, response.body
   end
 
@@ -1421,7 +1421,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(session)
   end
 
-  # NOTE: This test was updated as part of issue #592 fix.
+  # NOTE: This test was updated as part of issue pulsemcp/agents#592 fix.
   # Previously, follow_up on a running session would pause and send immediately.
   # Now, to prevent race conditions, follow_up on a running session queues the message.
   test "should queue follow up on running session instead of sending immediately" do
@@ -1737,7 +1737,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_not_nil session.running_job_id, "running_job_id should be set by the controller on follow-up"
   end
 
-  # Test for the fix to #592 - follow_up should queue messages when session is running
+  # Test for the fix to pulsemcp/agents#592 - follow_up should queue messages when
+  # session is running
   # This prevents race conditions where form action is set incorrectly
   test "follow_up should queue message instead of sending when session is running" do
     session = sessions(:running)

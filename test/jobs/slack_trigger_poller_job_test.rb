@@ -784,7 +784,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
   # When a new_message condition has thread_ts configured, it monitors new REPLIES
   # in that specific thread instead of new top-level channel messages. This is the
   # fix for feeds whose posts arrive as thread replies (e.g. a daily digest thread),
-  # which conversations.history-based channel polling never surfaces (issue #4335).
+  # which conversations.history-based channel polling never surfaces (issue pulsemcp/pulsemcp#4335).
 
   test "fetch_new_thread_replies establishes baseline (newest reply) on first poll" do
     # Slack's conversations.replies is NOT globally sorted across pages, so the

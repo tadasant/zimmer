@@ -407,7 +407,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     assert_equal "github://pulsemcp/ai-artifacts@bbb", second["catalogs"][0]
   end
 
-  # Regression for #4113: parallel test workers (and, in production, every web /
+  # Regression for pulsemcp/pulsemcp#4113: parallel test workers (and, in production, every web /
   # GoodJob process) share one filesystem. If the rewritten pin config were
   # written to a single fixed tmp/air.effective.json, two processes pinning
   # different refs would clobber each other's file and a reader could load a

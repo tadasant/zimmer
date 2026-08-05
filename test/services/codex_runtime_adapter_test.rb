@@ -117,7 +117,8 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     # where Codex's bwrap-backed workspace-write sandbox (selected by --full-auto)
     # cannot create a user namespace, so every shell command fails. We must use
     # the explicit bypass flag instead (the Codex analog to Claude's
-    # --dangerously-skip-permissions). Regressing this re-breaks all tool use (#3884).
+    # --dangerously-skip-permissions). Regressing this re-breaks all tool use
+    # (pulsemcp/pulsemcp#3884).
     command = @adapter.send(:build_command,
       prompt: "hi", working_dir: "/clone/dir", images: nil, model: nil)
     assert_includes command, "--dangerously-bypass-approvals-and-sandbox"
@@ -296,7 +297,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     # `codex exec` accepts `--cd <dir>`, but `codex exec resume` does NOT — it
     # aborts with "unexpected argument '--cd' found", which previously failed
     # every Codex follow-up/resume turn. The working dir comes from the spawned
-    # process's chdir instead. build_command (fresh) still uses --cd. (#3884)
+    # process's chdir instead. build_command (fresh) still uses --cd. (pulsemcp/pulsemcp#3884)
     resume = @adapter.send(:build_resume_command,
       session_id: "uuid", prompt: "go", working_dir: "/clone/dir", images: nil, model: nil)
     assert_not_includes resume, "--cd"
@@ -648,7 +649,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   # ProcessLifecycleManager and the retry services pass auto_compact_window to
   # whichever runtime adapter is selected. Codex has no auto-compaction concept,
   # so it must accept the kwarg without error and never leak it into the command.
-  # Omitting it regressed Codex spawn (spawn_failed: unknown keyword) — #3884.
+  # Omitting it regressed Codex spawn (spawn_failed: unknown keyword) — pulsemcp/pulsemcp#3884.
 
   test "execute accepts auto_compact_window without leaking it into the command" do
     result = @adapter.execute(

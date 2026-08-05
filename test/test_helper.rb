@@ -5,7 +5,7 @@ require "rails/test_help"
 # Safeguard: Fail fast if tests are not running against the test database.
 # This prevents accidental pollution of development/production databases when
 # tests are run via Zimmer or other spawned processes that may
-# inherit environment variables from the parent process. See issue #500.
+# inherit environment variables from the parent process. See issue pulsemcp/agents#500.
 unless Rails.env.test?
   abort <<~ERROR
     \e[31m

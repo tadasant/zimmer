@@ -1130,7 +1130,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   end
 
   # ===========================================================================
-  # Compact Continuation Tests (Issue #618)
+  # Compact Continuation Tests (Issue pulsemcp/agents#618)
   # ===========================================================================
 
   test "handle_exit auto-continues when pending_compact_continuation is set" do
@@ -1294,7 +1294,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   end
 
   # ===========================================================================
-  # Context Length Error Detection Tests (Issue #615)
+  # Context Length Error Detection Tests (Issue pulsemcp/agents#615)
   # ===========================================================================
 
   test "retry_strategy.context_length_error? detects error from transcript API error when stderr is empty" do
@@ -2201,7 +2201,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # ===========================================================================
   # Account-rotation continuation when the clone directory is gone (regression)
   #
-  # Production incident (issue #4623): a session hit its Claude account quota,
+  # Production incident (issue pulsemcp/pulsemcp#4623): a session hit its Claude account quota,
   # ProcessLifecycleManager rotated to a fresh account, then tried to resume — but
   # the clone directory had already been removed by the clone GC after the session
   # was torn down. The CLI adapter raised Errno::ENOENT opening claude_stderr.log

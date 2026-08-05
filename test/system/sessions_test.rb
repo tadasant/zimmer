@@ -173,7 +173,7 @@ class SessionsTest < ApplicationSystemTestCase
     click_button "Create Session"
 
     assert_text "Session created successfully"
-    # Prompt is no longer displayed on session detail page per Issue #57
+    # Prompt is no longer displayed on session detail page per Issue pulsemcp/agents#57
     assert_text "Model:"
   end
 
@@ -194,7 +194,7 @@ class SessionsTest < ApplicationSystemTestCase
     click_button "Create Session"
 
     assert_text "Session created successfully"
-    # Prompt is no longer displayed on session detail page per Issue #57
+    # Prompt is no longer displayed on session detail page per Issue pulsemcp/agents#57
 
     # Should see all selected servers in the header (MCP info is inline)
     assert_text "MCP:"
@@ -264,7 +264,8 @@ class SessionsTest < ApplicationSystemTestCase
 
     visit session_path(session)
 
-    # Should display session information (prompt is no longer displayed per Issue #57)
+    # Should display session information (prompt is no longer displayed per
+    # Issue pulsemcp/agents#57)
     # Status is displayed inline in header
     assert_text session.status.titleize
   end
@@ -298,7 +299,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     click_button "Create Session"
 
-    # Prompt is no longer displayed on session detail page per Issue #57
+    # Prompt is no longer displayed on session detail page per Issue pulsemcp/agents#57
     # Should see session information inline in header
     assert_text "Model:"
     assert_text "MCP:"
@@ -421,7 +422,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Should be on show page with success message
     assert_text "Session created successfully"
-    # Prompt is no longer displayed on session detail page per Issue #57
+    # Prompt is no longer displayed on session detail page per Issue pulsemcp/agents#57
 
     # Should see session details inline in header
     assert_text "Model:"
@@ -887,7 +888,8 @@ class SessionsTest < ApplicationSystemTestCase
     assert_selector "[data-mcp-server-select-target='selectedContainer'] span", text: additional_server.title
   end
 
-  # === Tests for the session recovery banner (Issue #275, #102) ===
+  # === Tests for the session recovery banner
+  # (Issue pulsemcp/agents#275, pulsemcp/agents#102) ===
 
   test "session show page displays recovery banner when recently recovered" do
     session = Session.create!(

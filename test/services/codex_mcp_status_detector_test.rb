@@ -219,7 +219,7 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
     assert_equal "2026-05-29T21:39:13.000Z", statuses["playwright-custom"][:connected_at]
   end
 
-  # === min_timestamp filtering (stale-run guard, issue #716 analogue) ===
+  # === min_timestamp filtering (stale-run guard, issue pulsemcp/agents#716 analogue) ===
 
   test "poll skips function calls older than min_timestamp" do
     content = rollout(
@@ -382,7 +382,7 @@ class CodexMcpStatusDetectorTest < ActiveSupport::TestCase
 
   test "count-based detection ignores init lines older than min_timestamp" do
     # Stale init lines from a prior run of the same session must not green the pill
-    # (issue #716 analogue).
+    # (issue pulsemcp/agents#716 analogue).
     stderr_path = File.join(@working_dir, "codex_stderr.log")
     @mock_file_system.write(stderr_path, [
       rmcp_init_line(timestamp: "2026-05-29T21:00:00.000Z"),

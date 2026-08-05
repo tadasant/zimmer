@@ -141,7 +141,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
     assert_equal "main", session.branch  # Defaults to main
   end
 
-  # Test the scenario described in issue #283
+  # Test the scenario described in issue pulsemcp/agents#283
   test "issue 283 - agents agent root should not get agent-orchestrator subdirectory" do
     # Simulate user selecting "Agents" agent root from dropdown
     # This should NOT set subdirectory to agent-orchestrator

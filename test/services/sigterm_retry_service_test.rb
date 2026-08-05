@@ -422,7 +422,7 @@ class SigtermRetryServiceTest < ActiveSupport::TestCase
     assert_equal :exhausted, result
   end
 
-  # Tests for conversation_exists? and fresh spawn fallback (issue #413)
+  # Tests for conversation_exists? and fresh spawn fallback (issue pulsemcp/agents#413)
 
   test "uses resume when transcript has assistant messages" do
     setup_transcript_directory
