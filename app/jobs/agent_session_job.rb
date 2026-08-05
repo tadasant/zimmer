@@ -134,7 +134,7 @@ class AgentSessionJob < ApplicationJob
   # (e.g. curl 28 low-speed aborts, GitHub 5xx during an incident) can outlast it.
   # When that happens the clone raises GitCloneService::TransientGitError, and
   # rather than hard-fail the session — forcing a human to notice and manually
-  # restart, as happened to daily-pipeline session #9439 — we re-enqueue the whole
+  # restart, as happened to daily-pipeline session 9439 — we re-enqueue the whole
   # job on a longer, backed-off horizon so the transient condition has time to
   # clear. The delays escalate and the budget is bounded so a genuinely broken
   # repo/network eventually fails loudly instead of retrying forever. Permanent
@@ -277,7 +277,7 @@ class AgentSessionJob < ApplicationJob
     # runtime so every log line names the binary that is actually running.
     runtime_label = RuntimeRegistry.label_for(session.agent_runtime)
 
-    # Diagnostic logging for job entry (Fix #5 from issue #424)
+    # Diagnostic logging for job entry (Fix 5 from pulsemcp/agents#424)
     log_buffer.add(
       "[DIAGNOSTIC] Job started: session_id=#{session_id}, follow_up=#{follow_up_prompt.present?}, resume_monitoring=#{resume_monitoring}, clone_only=#{clone_only}",
       level: "debug"
@@ -358,7 +358,7 @@ class AgentSessionJob < ApplicationJob
       # "Cannot pause session: no process found" errors if user clicks Pause early).
       #
       # job_started_at is used to filter out stale MCP log entries from previous runs
-      # when restarting a session. See GitHub issue #716.
+      # when restarting a session. See GitHub issue pulsemcp/agents#716.
       session.update!(job_id: job_id, running_job_id: job_id)
       session.merge_metadata!("job_started_at" => Time.current.iso8601)
 
@@ -775,7 +775,7 @@ class AgentSessionJob < ApplicationJob
             return  # Handle completely here, don't re-raise to avoid duplicate state transitions
           end
 
-          # Validate clone directory exists before proceeding (Fix #2 from issue #424)
+          # Validate clone directory exists before proceeding (Fix 2 from pulsemcp/agents#424)
           unless @file_system.exists?(clone_path) && @file_system.directory?(clone_path)
             error_msg = "Clone directory does not exist after GitCloneService.create_clone: #{clone_path}"
             log_buffer.add(error_msg, level: "error")
@@ -1262,7 +1262,7 @@ class AgentSessionJob < ApplicationJob
           # keep supervising that live process — do NOT break here. If the job exits
           # while the process is still running, the `ensure` block terminates it,
           # killing its child MCP subprocess and surfacing the pending tool call to
-          # the client as `-32000 Connection closed` (issue #4561). Instead we keep
+          # the client as `-32000 Connection closed` (issue pulsemcp/pulsemcp#4561). Instead we keep
           # looping; when the elicitation resolves (or expires), the after_commit
           # reconciliation fires unblock_from_elicitation (needs_input -> running),
           # this loop's next reload sees running, and monitoring resumes seamlessly
@@ -1320,7 +1320,8 @@ class AgentSessionJob < ApplicationJob
           log_buffer.flush
 
           # Clear running_job_id immediately to prevent duplicate polling if a new job starts.
-          # This fixes Bug #550 where old and new jobs could poll simultaneously during
+          # This fixes pulsemcp/agents#550, where old and new jobs could poll
+          # simultaneously during
           # the pause + follow-up transition. The running_job_id check at job start (line ~166)
           # relies on this being cleared promptly.
           session.update!(running_job_id: nil)
@@ -1572,7 +1573,7 @@ class AgentSessionJob < ApplicationJob
         # 5. Reset retry counters if process has been running successfully
         # for SIGTERM_RETRY_RESET_THRESHOLD seconds since the last retry.
         # This prevents premature failure when multiple errors are separated by
-        # periods of successful operation (see issue #459).
+        # periods of successful operation (see issue pulsemcp/agents#459).
         check_and_reset_sigterm_retry_counter(session, last_sigterm_retry_at, log_buffer)
         check_and_reset_api_error_retry_counter(session, last_api_error_retry_at, log_buffer)
         check_and_reset_signal_death_retry_counter(session, last_signal_death_at, log_buffer)
@@ -1677,7 +1678,7 @@ class AgentSessionJob < ApplicationJob
           # needs_input with its agent process intentionally still alive, holding
           # the in-flight MCP tool call open. Terminating it here would kill the
           # child MCP subprocess and surface the pending call as `-32000 Connection
-          # closed` (issue #4561). The monitoring loop keeps supervising this case
+          # closed` (issue pulsemcp/pulsemcp#4561). The monitoring loop keeps supervising this case
           # and normally never exits while blocked, so this branch is only reached
           # on an abnormal early exit (e.g. an unexpected exception). In that case
           # we leave the process alive: recovery will re-attach a monitoring job,
@@ -2061,7 +2062,7 @@ class AgentSessionJob < ApplicationJob
   # Poll the transcript file and broadcast new messages
   # Returns true on success, false on error, nil on waiting state
   def poll_and_broadcast_transcript(session)
-    # Skip polling if another job has taken over this session (Bug #550)
+    # Skip polling if another job has taken over this session (Bug pulsemcp/agents#550)
     # This prevents duplicate broadcasts during job transitions
     session.reload
     if session.running_job_id.present? && session.running_job_id != job_id
@@ -2359,7 +2360,7 @@ class AgentSessionJob < ApplicationJob
       # directory-import/subpath-export failure such as ERR_UNSUPPORTED_DIR_IMPORT).
       # A corrupt cache otherwise sticks (npx treats it as "installed"), so the
       # retry would crash identically; removing the tree forces a fresh, complete
-      # install on the next attempt (GitHub issues #3924 / #4109).
+      # install on the next attempt (GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109).
       heal_partial_npx_cache(session, failed_servers, log_buffer)
 
       mcp_retry_count = (session.metadata&.dig("mcp_retry_count") || 0).to_i
@@ -2379,7 +2380,7 @@ class AgentSessionJob < ApplicationJob
       # orphaned by MCP failure after all retries are exhausted. The intermediate,
       # self-healing detection (McpStatusPersisting) logs at .info so transient flaps
       # don't page on-call — this terminal failure is what the global prod-ERROR
-      # alert should fire on. See GitHub issues #3924 / #4109.
+      # alert should fire on. See GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109.
       Rails.logger.error(
         "MCP servers failed to connect — session orphaned after #{MAX_MCP_CONNECTION_RETRIES} retries " \
         "| session_id=#{session.id} failed_servers=#{failed_servers.map { |s| s["name"] }.join(",")}"

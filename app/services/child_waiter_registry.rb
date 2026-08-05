@@ -18,7 +18,7 @@
 # The heartbeat is the part that matters most. A bare claim would protect a pid
 # forever — including one whose waiter is gone — and its zombie would never be
 # collected, which is the failure mode that produced the original incident
-# (tadasant/zimmer-catalog#3549: 6,032 zombies over ~2 days). The heartbeat lets
+# (pulsemcp/pulsemcp#3549: 6,032 zombies over ~2 days). The heartbeat lets
 # the reaper distinguish "someone is waiting" from "someone was supposed to be
 # waiting and is gone", and reap only the latter.
 #

@@ -57,7 +57,7 @@ class GitCloneService
     /fetch-pack: unexpected disconnect/,
     /unexpected EOF/,
     # Slow / interrupted transfer signatures. These co-occurred with the patterns
-    # above in the sustained slow-clone that hard-failed session #9439 (curl 28
+    # above in the sustained slow-clone that hard-failed session 9439 (curl 28
     # from GIT_HTTP_LOW_SPEED_TIME aborting a stalled fetch), but each can also
     # surface on its own. All three are unambiguous transfer failures — never
     # emitted for a permanent condition like bad auth or a missing repo/branch —

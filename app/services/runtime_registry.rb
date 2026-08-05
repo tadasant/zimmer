@@ -8,15 +8,16 @@
 # reading/normalizing its transcript (TranscriptSource + TranscriptNormalizer),
 # and contributing runtime-specific system-prompt guidance
 # (RuntimePromptContribution). Today every one of those seams resolves to a
-# Claude Code implementation. As the OpenAI Codex runtime lands (#3766), the
-# Codex bundle is registered here and callers transparently get the right
-# classes for whichever runtime a session declares.
+# Claude Code implementation. As the OpenAI Codex runtime lands
+# (pulsemcp/pulsemcp#3766), the Codex bundle is registered here and callers
+# transparently get the right classes for whichever runtime a session declares.
 #
 # The registry stores CLASSES, not instances — different call sites instantiate
 # with different dependencies (file_system, process_manager, etc.). Roles that
 # don't yet have a dedicated class (config preparer, auth provider, MCP
 # credential writer) are left nil; the Phase-1 issues that introduce them
-# (#3773, #3774) populate the corresponding bundle slots.
+# (pulsemcp/pulsemcp#3773, pulsemcp/pulsemcp#3774) populate the corresponding
+# bundle slots.
 module RuntimeRegistry
   # The default runtime for sessions that don't specify one. Keeping this aligned
   # with the Session#agent_runtime column default preserves byte-identical
@@ -59,18 +60,21 @@ module RuntimeRegistry
     prompt_contribution_class: ClaudeRuntimePromptContribution,
     config_post_processor_class: ClaudeMcpConfigPostProcessor,
     mcp_credential_writer_class: ClaudeMcpCredentialWriter,
-    # Populated by forthcoming Phase-1 issues (#3773 config preparer, #3774 auth
-    # provider). nil until those classes exist.
+    # Populated by forthcoming Phase-1 issues (pulsemcp/pulsemcp#3773 config
+    # preparer, pulsemcp/pulsemcp#3774 auth provider). nil until those classes
+    # exist.
     config_preparer_class: nil,
     auth_provider_class: nil
   ).freeze
 
-  # OpenAI Codex runtime (#3766). CodexRuntimeAdapter (#3777) implements the CLI
-  # seam, CodexRetryStrategy classifies its exits, CodexConfigTomlPostProcessor
-  # (#3778) rewrites the `.codex/config.toml` AIR writes, the transcript
-  # source + normalizer (#3779) parse Codex rollouts, and CodexMcpCredentialWriter
-  # (#3782) is the MCP credential sink. The remaining slots — prompt contribution
-  # (#3783), config preparer, auth provider (#3780) — are populated by sibling
+  # OpenAI Codex runtime (pulsemcp/pulsemcp#3766). CodexRuntimeAdapter
+  # (pulsemcp/pulsemcp#3777) implements the CLI seam, CodexRetryStrategy
+  # classifies its exits, CodexConfigTomlPostProcessor (pulsemcp/pulsemcp#3778)
+  # rewrites the `.codex/config.toml` AIR writes, the transcript source +
+  # normalizer (pulsemcp/pulsemcp#3779) parse Codex rollouts, and
+  # CodexMcpCredentialWriter (pulsemcp/pulsemcp#3782) is the MCP credential sink.
+  # The remaining slots — prompt contribution (pulsemcp/pulsemcp#3783), config
+  # preparer, auth provider (pulsemcp/pulsemcp#3780) — are populated by sibling
   # Phase-2 issues and stay nil until those classes land, exactly as the Claude
   # bundle leaves its pending slots nil. Registering the runtime here also makes
   # it selectable in the new-session form — AgentRootsConfig.available_runtimes

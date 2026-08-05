@@ -4,11 +4,11 @@
 # This is the single seam where the transcript pipeline branches on runtime.
 # TranscriptPollerService, Session, SessionsController, and BroadcastService all
 # obtain their source/normalizer here rather than instantiating the Claude
-# classes directly, so adding a runtime (e.g. OpenAI Codex, see #3779) is a
+# classes directly, so adding a runtime (e.g. OpenAI Codex, see pulsemcp/pulsemcp#3779) is a
 # matter of teaching this resolver to return the new pair.
 #
 # The runtime branch is resolved through RuntimeRegistry, keyed on the session's
-# `agent_runtime`. Adding a runtime (e.g. OpenAI Codex, see #3779) is a matter of
+# `agent_runtime`. Adding a runtime (e.g. OpenAI Codex, see pulsemcp/pulsemcp#3779) is a matter of
 # registering its transcript source/normalizer classes in RuntimeRegistry.
 module TranscriptRuntime
   module_function

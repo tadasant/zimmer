@@ -77,7 +77,7 @@ class SendPushNotificationJob < ApplicationJob
       return
     end
 
-    # Idempotency for retries (issue #3027): GoodJob retries can re-enter
+    # Idempotency for retries (issue pulsemcp/pulsemcp#3027): GoodJob retries can re-enter
     # `perform` with the same args after a partial failure. Without dedup, each
     # retry would insert another Notification row visible on /notifications.
     notification, created = find_or_create_notification(session, notification_type, transition_marker)

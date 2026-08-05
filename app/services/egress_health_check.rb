@@ -16,7 +16,7 @@ require "resolv"
 # platform.claude.com, and every login silently failed. By querying the first
 # nameserver in resolv.conf directly, this reproduces the CLI's real resolution
 # path and lights the banner on the same condition, instead of a human noticing
-# hours later. See PR #4714 / issue #4712.
+# hours later. See PR pulsemcp/pulsemcp#4714 / issue pulsemcp/pulsemcp#4712.
 #
 # The probe result is run through hysteresis and persisted to the shared Redis
 # cache by EgressHealthCheckJob; the layout banner reads it via `.status`.

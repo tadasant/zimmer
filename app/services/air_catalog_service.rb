@@ -475,8 +475,8 @@ class AirCatalogService
     # and keeps production behavior identical (each process maintains its own
     # local copy, regenerated when the DB fingerprint changes).
     #
-    # This is the same class of shared-tmp-file race that issue #3455/#3741 hit
-    # for FileStorageService; keep the path process-unique. See issue #4113.
+    # This is the same class of shared-tmp-file race that issue pulsemcp/pulsemcp#3455/#3741 hit
+    # for FileStorageService; keep the path process-unique. See issue pulsemcp/pulsemcp#4113.
     #
     # No cleanup job reaps these files: a process overwrites its own file on
     # every fingerprint change, so a single process never accumulates more than

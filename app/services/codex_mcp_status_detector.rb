@@ -2,7 +2,7 @@
 #
 # Codex does NOT write per-server log files the way Claude Code does (so the
 # file-based McpLogPollerService produces nothing for Codex — that is the root
-# cause of #3991, where Codex status pills stay gray forever). Instead, the
+# cause of pulsemcp/pulsemcp#3991, where Codex status pills stay gray forever). Instead, the
 # authoritative "connected" signal lives in the rollout transcript itself:
 #
 #   Codex records an MCP tool call in two ways, either of which proves the server
@@ -38,7 +38,7 @@
 # connected, so all trackable servers are marked connected. This never
 # false-greens a broken server: a server that fails to start emits no init line,
 # so the count stays below the expected total and the threshold is not met. See
-# the #3991 follow-up.
+# the pulsemcp/pulsemcp#3991 follow-up.
 #
 # Failed detection (best-effort): Codex surfaces MCP startup failures on the CLI's
 # stderr, which Zimmer captures to `<working_directory>/codex_stderr.log`. We scan it
@@ -74,7 +74,7 @@ class CodexMcpStatusDetector
   # @param file_system [Object] File system adapter (for testing)
   # @param min_timestamp [Time, nil] Optional minimum timestamp. Rollout events
   #   older than this are ignored so a restarted session doesn't read connection
-  #   state from a previous run (see issue #716 for the Claude analogue).
+  #   state from a previous run (see issue pulsemcp/agents#716 for the Claude analogue).
   def initialize(session, file_system: nil, min_timestamp: nil)
     @session = session
     @file_system = file_system || RealFileSystemAdapter.new

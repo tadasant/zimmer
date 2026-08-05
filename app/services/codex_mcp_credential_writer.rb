@@ -3,7 +3,7 @@
 # Writes resolved MCP OAuth credentials into the store the OpenAI Codex CLI
 # reads, so MCP servers configured for a Codex-runtime session authenticate the
 # same way they do for Claude Code. This is the Codex implementation of the
-# RuntimeMcpCredentialWriter contract (see #3782); the OAuth machinery that
+# RuntimeMcpCredentialWriter contract (see pulsemcp/pulsemcp#3782); the OAuth machinery that
 # produces ResolvedMcpCredential objects stays runtime-agnostic.
 #
 # == Codex bug workarounds (remove when fixed upstream) ==
