@@ -4,7 +4,7 @@
 # they expire.
 #
 # Runs on a GoodJob cron and fans out across every registered
-# RuntimeAuthProvider (Claude Code today; Codex via #3780). For each runtime it
+# RuntimeAuthProvider (Claude Code today; Codex via pulsemcp/pulsemcp#3780). For each runtime it
 # reconciles the filesystem identity, syncs the current account's tokens, recovers
 # accounts stuck in needs_reauth, and refreshes any account whose token expires
 # within REFRESH_THRESHOLD. All runtime-specific behavior (token endpoint, refresh

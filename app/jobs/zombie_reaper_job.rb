@@ -3,7 +3,7 @@
 # Reaps zombie subprocesses left behind by code that spawned a child and never
 # waited on it.
 #
-# See tadasant/zimmer-catalog#3549 for the original incident: 6,032 zombies
+# See pulsemcp/pulsemcp#3549 for the original incident: 6,032 zombies
 # accumulated under the worker over ~2 days, degrading session startup until the
 # worker container was restarted.
 #

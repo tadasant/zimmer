@@ -7,7 +7,7 @@
 # - Child process enumeration
 # - Permission and ownership analysis
 #
-# Features (Issue #326):
+# Features (Issue pulsemcp/agents#326):
 # - Process tree visualization for debugging
 # - Detailed diagnostics when operations fail
 # - Cross-platform support (macOS/Linux)

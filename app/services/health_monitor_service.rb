@@ -571,7 +571,7 @@ class HealthMonitorService
   # Computes the average in the database via AVG(EXTRACT(EPOCH ...)) rather than
   # materializing every matching sessions.* row into Ruby. Over a 7-day window
   # under concurrent write load the row-loading version blocked >5s and tripped
-  # the database-instrumentation .error threshold (see issue #4357).
+  # the database-instrumentation .error threshold (see issue pulsemcp/pulsemcp#4357).
   #
   # @return [Integer, nil] Average duration in seconds, or nil when there are no
   #   matching sessions (AVG over an empty set is NULL, so `.pick` returns nil).

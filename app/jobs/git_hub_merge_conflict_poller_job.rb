@@ -19,7 +19,7 @@ require "open3"
 # common in the seconds-to-minute after a push or force-push while GitHub
 # recomputes mergeability — without debounce, a single stale false enqueues a
 # "resolve merge conflicts" nudge against a PR that is actually clean, burning
-# the session's turn (see sessions 7235 and 3889 / PR #4064). The cost is up to
+# the session's turn (see sessions 7235 and 3889). The cost is up to
 # one extra poll interval (~2 min) of latency before a genuine, persistent
 # conflict is reported.
 #

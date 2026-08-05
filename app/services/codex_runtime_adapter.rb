@@ -21,7 +21,7 @@ require "timeout"
 #   stdout (out: NULL) and let the transcript pipeline read Codex's own rollout
 #   JSONL file (~/.codex/sessions/YYYY/MM/DD/rollout-*-<uuid>.jsonl) — the single
 #   source of truth, mirroring how the Claude transcript flow works. Transcript
-#   reading itself is #3779.
+#   reading itself is pulsemcp/pulsemcp#3779.
 # - `--dangerously-bypass-approvals-and-sandbox` skips all approval prompts AND
 #   disables Codex's own sandbox. This is the Codex analog to Claude's
 #   `--dangerously-skip-permissions`. We must NOT use `--full-auto` here:
@@ -31,7 +31,7 @@ require "timeout"
 #   namespaces, so bwrap aborts ("No permissions to create a new namespace") and
 #   EVERY model-issued shell command fails before executing — the agent can do
 #   nothing. The Codex docs explicitly intend this flag for "environments that are
-#   externally sandboxed", which is exactly Zimmer's model (#3884).
+#   externally sandboxed", which is exactly Zimmer's model (pulsemcp/pulsemcp#3884).
 # - `--cd/-C <dir>` sets the working directory. NOTE: only `codex exec` accepts
 #   this; the `codex exec resume` subcommand rejects `--cd`, so resume relies on
 #   the spawned process's chdir instead (see #build_resume_command).
@@ -46,15 +46,15 @@ require "timeout"
 #   there is no `--session-id` flag. `#execute` therefore ignores the inbound
 #   session_id for command construction. The UUID is captured downstream (from
 #   the rollout file / first JSONL event) and passed back into `#resume`. That
-#   capture lives with the transcript pipeline (#3779).
+#   capture lives with the transcript pipeline (pulsemcp/pulsemcp#3779).
 # - MCP config: Codex reads MCP servers from ~/.codex/config.toml; there is no
 #   `--mcp-config` flag. `#execute`/`#resume` accept `mcp_config_path` to honor
 #   the shared contract but do not pass it on the command line. Writing the
-#   Codex MCP config is #3778.
+#   Codex MCP config is pulsemcp/pulsemcp#3778.
 # - System prompt: Codex has no `--append-system-prompt` flag. It automatically
 #   reads `AGENTS.md` from the working directory, so an `append_system_prompt` is
 #   delivered by writing that file before spawn. The *content* of that prompt is
-#   built by the Codex prompt contribution (#3783); this adapter only delivers it.
+#   built by the Codex prompt contribution (pulsemcp/pulsemcp#3783); this adapter only delivers it.
 # - No `CLAUDE_CODE_*` env vars (disable-cron / auto-memory / auto-compact) — they
 #   have no Codex equivalent.
 # - disallowed_tools is empty: Codex has no tool-blocking flag; the sandbox +
@@ -102,7 +102,7 @@ class CodexRuntimeAdapter
   #   but not passed to Codex, which generates its own session UUID (see class doc)
   # @param working_dir [String] Working directory for the process
   # @param mcp_config_path [String, nil] Accepted for contract symmetry; Codex
-  #   reads MCP servers from ~/.codex/config.toml, so this is not used here (#3778)
+  #   reads MCP servers from ~/.codex/config.toml, so this is not used here (pulsemcp/pulsemcp#3778)
   # @param images [Array<Hash>, nil] Array of image hashes with a :path key
   # @param append_system_prompt [String, nil] Written to AGENTS.md before spawn
   # @param model [String, nil] Model to use (e.g., "gpt-5.4")
@@ -110,7 +110,7 @@ class CodexRuntimeAdapter
   #   ClaudeCliAdapter but unused: auto-compaction is a Claude Code concept driven
   #   by the CLAUDE_CODE_AUTO_COMPACT_WINDOW env var, which Codex has no analog for.
   #   ProcessLifecycleManager and the retry services pass it uniformly to whichever
-  #   runtime adapter is selected, so the kwarg must exist here (#3884).
+  #   runtime adapter is selected, so the kwarg must exist here (pulsemcp/pulsemcp#3884).
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def execute(prompt:, session_id:, working_dir:, mcp_config_path: nil, images: nil,
               append_system_prompt: nil, model: nil, auto_compact_window: nil)
@@ -137,12 +137,13 @@ class CodexRuntimeAdapter
   # @param working_dir [String] Working directory for the process
   # @param prompt [String, nil] Follow-up prompt to send
   # @param images [Array<Hash>, nil] Array of image hashes with a :path key
-  # @param mcp_config_path [String, nil] Accepted for contract symmetry; not used (#3778)
+  # @param mcp_config_path [String, nil] Accepted for contract symmetry; not used
+  #   (pulsemcp/pulsemcp#3778)
   # @param append_system_prompt [String, nil] Written to AGENTS.md before spawn
   # @param model [String, nil] Model to use (e.g., "gpt-5.4")
   # @param auto_compact_window [Integer, nil] Accepted for contract symmetry with
   #   ClaudeCliAdapter but unused (see #execute) — Codex has no auto-compact-window
-  #   concept. Continuations and retry services pass it uniformly (#3884).
+  #   concept. Continuations and retry services pass it uniformly (pulsemcp/pulsemcp#3884).
   # @return [Hash] { pid: Integer, stderr_log_path: String }
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
              append_system_prompt: nil, model: nil, auto_compact_window: nil)
@@ -224,7 +225,7 @@ class CodexRuntimeAdapter
   # The working directory is instead established by spawn_process's
   # `chdir: working_dir`, so we simply omit `--cd` here. Running from that cwd
   # also keeps Codex's cwd-based session filtering aligned with the original
-  # session, while the explicit UUID makes the lookup precise regardless (#3884).
+  # session, while the explicit UUID makes the lookup precise regardless (pulsemcp/pulsemcp#3884).
   def build_resume_command(session_id:, prompt:, working_dir:, images:, model:)
     cmd = [ "codex", "exec", "resume", session_id, "--json", "--dangerously-bypass-approvals-and-sandbox" ]
     cmd << "-m" << model if model.present?
@@ -266,7 +267,7 @@ class CodexRuntimeAdapter
   # Deliver an append_system_prompt to Codex by writing AGENTS.md, which Codex
   # reads automatically from the working directory (its only system-prompt seam —
   # there is no CLI flag analog to Claude's --append-system-prompt). The prompt
-  # content is built by the Codex prompt contribution (#3783); this adapter only
+  # content is built by the Codex prompt contribution (pulsemcp/pulsemcp#3783); this adapter only
   # delivers it.
   #
   # The Zimmer-managed prompt is written below AgentsMdWriter::ZIMMER_SECTION_MARKER, and
@@ -353,8 +354,8 @@ class CodexRuntimeAdapter
   # line on stderr once per connected MCP server. CodexMcpStatusDetector counts
   # these lines to turn the MCP status pill green for servers that connected but
   # were never called — the rollout records no other evidence for them (see the
-  # #3991 follow-up). `warn` keeps Codex's own ERROR/WARN output (needed for MCP
-  # failure detection and the auth-failure surfacing in #4036) while `rmcp=info`
+  # pulsemcp/pulsemcp#3991 follow-up). `warn` keeps Codex's own ERROR/WARN output (needed for MCP
+  # failure detection and the auth-failure surfacing in pulsemcp/pulsemcp#4036) while `rmcp=info`
   # surfaces the init line; `rmcp=info` alone would suppress those error lines.
   # An explicit RUST_LOG from the session .env is respected.
   def ensure_rmcp_logging(env_vars)

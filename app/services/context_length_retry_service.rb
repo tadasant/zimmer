@@ -131,7 +131,7 @@ class ContextLengthRetryService
     # Check stderr first (original behavior)
     return true if context_length_error_in_stderr?(stderr_log_path)
 
-    # Check transcript for API errors (for issue #615)
+    # Check transcript for API errors (for issue pulsemcp/agents#615)
     return true if context_length_error_in_transcript?(working_directory)
 
     # Check transcript for regular assistant messages (for prompt-too-long hang detection)

@@ -106,7 +106,8 @@ module McpStatusPersisting
         # corrupt npx cache along the way), and in production these failures
         # overwhelmingly self-heal on retry — the dominant signature is the
         # `npx`-launched plugin servers (e.g. playwright-custom, remote-fs-screenshots)
-        # racing on the shared `_npx` cache (GitHub issues #3924 / #4109).
+        # racing on the shared `_npx` cache (pulsemcp/pulsemcp#3924 and
+        # pulsemcp/pulsemcp#4109).
         #
         # Per the logging philosophy (CLAUDE.md), an intermediate attempt that has
         # downstream retry logic logs at .info; the .error that pages on-call is

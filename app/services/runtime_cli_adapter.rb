@@ -3,7 +3,7 @@
 # RuntimeCliAdapter — the contract every agent-runtime CLI adapter implements.
 #
 # An adapter is the single seam through which Zimmer spawns a coding-agent CLI
-# process (today: `claude`; forthcoming: `codex`, see #3777). It builds the
+# process (today: `claude`; forthcoming: `codex`, see pulsemcp/pulsemcp#3777). It builds the
 # command, injects the environment, spawns the process, and reports back the
 # pid plus the stderr log path the monitoring loop should tail.
 # ProcessLifecycleManager depends on this contract via dependency injection and
@@ -82,7 +82,7 @@
 #   Runtime-specific environment variables to inject into the spawned process.
 #   Defaults to {}. ClaudeCliAdapter injects its env vars inline in spawn_process
 #   (CLAUDE_CODE_DISABLE_CRON, MCP_TIMEOUT, etc. — explicitly out of scope of the
-#   #3766 refactor) and leaves this default in place; the hook is the declarative
+#   pulsemcp/pulsemcp#3766 refactor) and leaves this default in place; the hook is the declarative
 #   seam for runtimes that prefer to contribute env vars this way.
 #
 # The shared contract is exercised by

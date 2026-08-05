@@ -6,7 +6,7 @@
 # These classifiers are Claude-specific: they recognize Claude CLI's stderr
 # strings ("No conversation found with session ID"), Claude's context-length
 # error patterns, and Anthropic API error envelopes recorded in the transcript.
-# Other runtimes (e.g. Codex, see #3777) provide their own strategy via their
+# Other runtimes (e.g. Codex, see pulsemcp/pulsemcp#3777) provide their own strategy via their
 # adapter's #retry_strategy factory.
 #
 # Generic, OS-level exit classification (e.g. SIGTERM detection) stays in

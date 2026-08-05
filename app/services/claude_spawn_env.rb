@@ -37,8 +37,8 @@ module ClaudeSpawnEnv
     env_vars = load_env_file(working_dir)
 
     # Clear inherited environment variables that could interfere with the
-    # spawned process — database vars (test isolation, #500) and Bundler vars
-    # (gem path conflicts, #569). Setting them to nil unsets them in the child.
+    # spawned process — database vars (test isolation, pulsemcp/agents#500) and Bundler vars
+    # (gem path conflicts, pulsemcp/agents#569). Setting them to nil unsets them in the child.
     env_vars = clear_inherited_env_vars(env_vars)
 
     # Zimmer's baseline is MCP tool search OFF — spawned sessions run with

@@ -55,7 +55,7 @@ class ElicitationEndpoint
     # received, so the poll URL follows the request URL automatically.
     #
     # ELICITATION_ENABLED — whether a server gates a given action stays that server's
-    # decision. Session #867's server was already attempting the POST without it, so
+    # decision. Session 867's server was already attempting the POST without it, so
     # the defect was the address, not the enablement; forcing it on would newly block
     # sessions on approvals across every server at once, which is a rollout, not a fix.
     #

@@ -10,7 +10,7 @@
 # that quietly breaks one channel — the poller simply finds nothing new and
 # stays quiet. Nobody notices until the downstream automation that depended on
 # the trigger is conspicuously absent (which is exactly how the #data-updates
-# anomaly-review net went dark for days; see issue #4335).
+# anomaly-review net went dark for days; see issue pulsemcp/pulsemcp#4335).
 #
 # This job closes that gap. Once an hour it asks Slack, for each enabled
 # new_message condition, "what is the newest message in the source you monitor?"

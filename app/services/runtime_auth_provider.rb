@@ -2,7 +2,7 @@
 
 # RuntimeAuthProvider — the contract for a coding-agent runtime's login-credential lifecycle.
 #
-# Zimmer drives agent CLIs (today: `claude`; forthcoming: `codex`, see #3766) that
+# Zimmer drives agent CLIs (today: `claude`; forthcoming: `codex`, see pulsemcp/pulsemcp#3766) that
 # authenticate against their vendor without an API key by reading login
 # credentials from a canonical filesystem location. Zimmer maintains a pool of
 # accounts per runtime, rotates between them when quotas are hit, and keeps the

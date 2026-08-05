@@ -9,7 +9,7 @@
 # are written so the spawned CLI can read them — is the one runtime-specific
 # piece. Claude Code reads ~/.claude/.credentials.json (and, on macOS, the
 # Keychain); OpenAI Codex reads ~/.codex/.credentials.json with a different
-# schema (see #3782). This module is the single seam the injector writes
+# schema (see pulsemcp/pulsemcp#3782). This module is the single seam the injector writes
 # through, so adding a runtime means implementing this contract rather than
 # branching the injector.
 #

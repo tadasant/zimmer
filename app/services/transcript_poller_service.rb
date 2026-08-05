@@ -47,7 +47,8 @@ class TranscriptPollerService
     # routes all file/format and event-shape decisions through these.
     @source = TranscriptRuntime.source_for(session, file_system: @file_system)
     @normalizer = TranscriptRuntime.normalizer_for(session)
-    # Parse job_started_at from session metadata to filter stale MCP logs (see issue #716)
+    # Parse job_started_at from session metadata to filter stale MCP logs
+    # (see pulsemcp/agents#716)
     # This ensures that when a session is restarted, old MCP failure logs don't cause
     # immediate failure before the new MCP connection has a chance to succeed.
     min_timestamp = job_started_at_from_metadata(session)
@@ -185,8 +186,9 @@ class TranscriptPollerService
     # `codex exec resume <uuid>` requires. Without capturing it, resume targets
     # the stale Zimmer UUID and Codex aborts with "no rollout found for thread id",
     # failing every follow-up turn. Gated on the runtime trait so it runs only for
-    # runtimes that mint their own id (#3884). Claude honors the Zimmer-supplied id, so
-    # capturing is both unnecessary and actively harmful there: a forked Claude
+    # runtimes that mint their own id (pulsemcp/pulsemcp#3884). Claude honors the
+    # Zimmer-supplied id, so capturing is both unnecessary and actively harmful
+    # there: a forked Claude
     # session's transcript is copied from its source and its early lines carry the
     # SOURCE session's id, which would overwrite the fork's id, collide with the
     # unique session_id index (RecordNotUnique), and fail every poll until the
