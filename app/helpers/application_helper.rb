@@ -129,6 +129,22 @@ module ApplicationHelper
     status if status && status["status"] == "degraded"
   end
 
+  # Queue recovery mode's snapshot for the global banner, memoized for the
+  # request so the layout and any panel on the page agree. Never raises — the
+  # service already swallows read failures and returns an inactive status.
+  def queue_recovery_mode_status
+    @queue_recovery_mode_status ||= QueueRecoveryMode.status
+  end
+
+  # "42 min" / "3 min" / "under a minute" for the banner's auto-resume countdown.
+  def queue_recovery_mode_countdown(status)
+    seconds = status.expires_in
+    return "unknown" if seconds.nil?
+    return "under a minute" if seconds < 60
+
+    "#{(seconds / 60.0).round} min"
+  end
+
   # Format a stored iso8601 timestamp for the egress banner as "HH:MM UTC".
   # Tolerant of a malformed value so the banner never crashes on bad cache data.
   def egress_banner_time(iso8601)

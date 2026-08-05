@@ -24,6 +24,7 @@ From `config.good_job.cron`:
 | 30s | `GitHubPullRequestPollerJob` | Poll PR state and CI status on sessions with a PR URL; tell a session when its PR merges |
 | 30s | `GithubCommentPollerJob` | Poll PR review comments |
 | 1m | `SlackTriggerPollerJob` | Poll Slack channels for trigger conditions |
+| 1m | `QueueRecoveryModeExpiryJob` | Lift queue recovery mode once its TTL has elapsed |
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
 | 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
 | 2m | `GitHubMergeConflictPollerJob` | Detect merge conflicts on open PRs |
@@ -265,6 +266,60 @@ cursor that only advances for units that finished, and those writes are batched 
 unwinding mid-sweep would skip them and replay finished units as duplicate sessions. The unit
 rescues record the failure instead, the sweep completes its bookkeeping, and the deferral happens
 once at the end.
+
+## Queue recovery mode
+
+The escape hatch for a queue that has run away from you. `QueueRecoveryMode` halts job **execution**
+on the demand-side queues — `pollers`, `triggers` and `default` — and deliberately leaves `agents`
+running.
+
+That asymmetry is the whole design. Pausing every queue would also pause `agents`, which is where
+`AgentSessionJob` lives, so the mode would halt the very investigation it exists to enable. `agents`
+is not a source of queue demand either: it holds one long-running job per session, and sessions are
+started by a human or by an already-running agent, never by the backlog. So while recovery mode is
+on you can still start a session, and that session can still run, look at `/jobs`, disable a
+stampeding trigger, and archive runaway sessions — with nothing new arriving behind it.
+
+:::caution[Not session recovery]
+"Recovery" elsewhere in Zimmer means recovering *sessions* after a deploy or a crash
+(`DeploymentRecoveryJob`, `CleanupOrphanedSessionsJob`, `metadata["paused_by"] = "recovery"`). Queue
+recovery mode is unrelated and never touches session state. The noun is qualified everywhere —
+class, column, route, MCP action, UI copy — so the two do not read as the same thing.
+:::
+
+**The halt is GoodJob's own.** `GoodJob.pause(queue:)` writes to `good_job_settings` and
+`GoodJob::Job.exclude_paused` applies it inside the dequeue query. It requires
+`config.good_job.enable_pauses`, which `config/application.rb` turns on — without it GoodJob accepts
+the pause rows and ignores them, so `QueueRecoveryMode.enter!` refuses rather than reporting a halt
+that isn't happening. Zimmer's own metadata (who, why, when it auto-exits) lives in
+`app_settings.queue_recovery_mode`.
+
+**Jobs are frozen, not discarded.** Enqueue keeps working and cron keeps ticking; only execution
+stops. Everything waiting drains when the mode is lifted. The periodic jobs that would otherwise
+pile up are already singletons (`total_limit: 1`), so at most one of each poller can be waiting.
+
+**It always ends.** Every entry carries a TTL — 60 minutes by default, clamped to 5 minutes–4 hours;
+re-entering extends it. Two independent paths act on that TTL, because each covers the other's
+failure mode:
+
+| Path | Where it runs | What kills it |
+| --- | --- | --- |
+| `QueueRecoveryModeExpiryJob` (1m cron) | the `agents` queue — the one queue the mode does not pause | all 16 `agents` threads busy with long sessions, which is exactly the runaway-session incident |
+| `ApplicationController#reconcile_queue_recovery_mode` | the web process, throttled to one check per 30s | no web traffic at all |
+
+On top of both, `QueueRecoveryMode.status` computes `active` from the clock, so no surface can report
+a halt for a window that has already elapsed even if neither path has run yet.
+
+**It is loud.** A Slack alert on enter, extend and exit (the auto-exit says it was the TTL and not a
+person), an amber banner on every page, and a panel on `/health`. Note that halting `pollers` also
+halts `SystemHealthMonitorJob`, so the "Queue backlog critical" page stops firing while the mode is
+on — deliberate, since that backlog is now the operator's own doing.
+
+**Surfaces.** `/health` (enter, extend, resume), `POST /api/v1/health/enter_queue_recovery_mode` and
+`exit_queue_recovery_mode`, and the MCP `action_health` actions `enter_queue_recovery_mode` /
+`exit_queue_recovery_mode`. None of them are behind the shared `HealthActionCooldown`: that throttle
+fails closed when the cache is unavailable, and an overloaded instance is exactly when the cache is
+least trustworthy — a lock on the escape hatch is worse than an unthrottled two-row write.
 
 ## Trigger-poll liveness
 

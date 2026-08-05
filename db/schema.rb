@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_03_170000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_03_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -44,6 +44,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_03_170000) do
     t.string "default_runtime"
     t.jsonb "extension_states", default: {}, null: false
     t.jsonb "genesis_class_overrides", default: {}, null: false
+    t.jsonb "queue_recovery_mode", default: {}, null: false
     t.integer "spot_gate_five_hour_threshold_pct", default: 80, null: false
     t.integer "spot_gate_weekly_threshold_pct", default: 80, null: false
     t.boolean "spot_gating_enabled", default: false, null: false

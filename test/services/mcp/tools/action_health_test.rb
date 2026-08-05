@@ -153,4 +153,64 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
 
     assert_includes tool_for("key_one").call("action" => "cli_refresh"), "## CLI Refresh Queued"
   end
+  # === Queue recovery mode ===
+
+  test "enter_queue_recovery_mode halts the demand-side queues and says agents is still live" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Setting.delete_all
+    AppSetting.delete_all
+
+    result = @tool.call(
+      "action" => "enter_queue_recovery_mode",
+      "reason" => "trigger stampede",
+      "ttl_minutes" => 30
+    )
+
+    assert_includes result, "## Queue Recovery Mode ON"
+    assert_includes result, "pollers"
+    # The caller is usually the investigating session; it has to be told that its
+    # own queue keeps running, and that jobs are frozen rather than dropped.
+    assert_includes result, "agent sessions start and run normally"
+    assert_includes result, "frozen, not discarded"
+    assert_equal QueueRecoveryMode::HALTED_QUEUES.sort, GoodJob.paused(:queues).sort
+    refute_includes GoodJob.paused(:queues), "agents"
+  ensure
+    GoodJob::Setting.delete_all
+  end
+
+  test "exit_queue_recovery_mode resumes processing" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Setting.delete_all
+    AppSetting.delete_all
+    @tool.call("action" => "enter_queue_recovery_mode", "reason" => "x")
+
+    result = @tool.call("action" => "exit_queue_recovery_mode")
+
+    assert_includes result, "## Queue Recovery Mode OFF"
+    assert_empty GoodJob.paused(:queues)
+  ensure
+    GoodJob::Setting.delete_all
+  end
+
+  # The escape hatch, and above all the way back out of it, must not be gated by a
+  # throttle that fails closed exactly when the cache is struggling.
+  test "the queue recovery mode actions are not rate limited" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Setting.delete_all
+    AppSetting.delete_all
+    HealthActionCooldown.new(HealthActionCooldown.fingerprint("key_one")).record("cleanup_processes")
+
+    assert_includes @tool.call("action" => "enter_queue_recovery_mode"), "## Queue Recovery Mode ON"
+    assert_includes @tool.call("action" => "exit_queue_recovery_mode"), "## Queue Recovery Mode OFF"
+  ensure
+    GoodJob::Setting.delete_all
+  end
+
+  test "enter_queue_recovery_mode raises rather than reporting a halt GoodJob would ignore" do
+    QueueRecoveryMode.stubs(:enabled?).returns(false)
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "enter_queue_recovery_mode") }
+
+    assert_includes error.message, "enable_pauses"
+  end
 end

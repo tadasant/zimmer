@@ -23,7 +23,65 @@ class ApplicationController < ActionController::Base
   # enforcement for every descendant controller with no visible symptom.
   rescue_from ActionController::InvalidAuthenticityToken, with: :invalid_authenticity_token
 
+  before_action :reconcile_queue_recovery_mode
+
   private
+
+  # The web-process half of QueueRecoveryMode's TTL backstop.
+  #
+  # QueueRecoveryModeExpiryJob is the primary path, but it runs on the `agents`
+  # queue and sixteen long-running sessions can occupy every thread on it — which
+  # is exactly the incident recovery mode gets entered for. This path needs no
+  # worker thread at all, so the two cover each other.
+  #
+  # Throttled to one check per RECOVERY_MODE_RECONCILE_INTERVAL per process so it is
+  # not a query on every request, and swallowed entirely on failure: a backstop must
+  # never be the reason a page 500s.
+  #
+  # The throttle is a process-local monotonic clock, deliberately NOT Rails.cache.
+  # A cache-based guard would have been worse than none: production's
+  # redis_cache_store wraps writes in a failsafe that RETURNS NIL rather than
+  # raising when Redis is down, so a falsy return would have skipped the check —
+  # switching this backstop off in exactly the degraded conditions it exists for.
+  # A monotonic clock has no such dependency, and per-process is granular enough:
+  # Zimmer runs one Puma process, and an extra check per process costs one indexed
+  # read of a one-row table.
+  #
+  # `defer_alert` because AlertService posts to Slack inline and SlackService may
+  # spend tens of seconds on an unreachable Slack. See QueueRecoveryModeAlertJob.
+  RECOVERY_MODE_RECONCILE_INTERVAL = 30.seconds
+
+  def reconcile_queue_recovery_mode
+    return unless recovery_mode_reconcile_due?
+
+    QueueRecoveryMode.expire_if_due!(defer_alert: true)
+  rescue StandardError => e
+    Rails.logger.error("[queue_recovery_mode] reconcile skipped: #{e.class}: #{e.message}")
+    nil
+  end
+
+  def recovery_mode_reconcile_due?
+    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    last = self.class.recovery_mode_reconciled_at
+
+    return false if last && (now - last) < RECOVERY_MODE_RECONCILE_INTERVAL.to_i
+
+    self.class.recovery_mode_reconciled_at = now
+    true
+  end
+
+  # Shared by every descendant controller: the throttle is about the process, not
+  # about which controller happened to serve the request. Benign to race — the
+  # worst outcome of two threads reading the same stale value is one extra query.
+  class << self
+    def recovery_mode_reconciled_at
+      ApplicationController.instance_variable_get(:@recovery_mode_reconciled_at)
+    end
+
+    def recovery_mode_reconciled_at=(value)
+      ApplicationController.instance_variable_set(:@recovery_mode_reconciled_at, value)
+    end
+  end
 
   def record_not_found
     render file: Rails.public_path.join("404.html"), status: :not_found, layout: false

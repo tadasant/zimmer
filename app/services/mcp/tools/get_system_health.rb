@@ -41,6 +41,7 @@ module Mcp
           "- **Timestamp:** #{Time.current.iso8601}",
           "- **Environment:** #{Rails.env}",
           "- **Ruby Version:** #{RUBY_VERSION}",
+          *queue_recovery_mode_lines,
           "",
           "### Health Details",
           "```json",
@@ -54,6 +55,28 @@ module Mcp
       end
 
       private
+
+      # Stated up front, and stated in BOTH directions. A pending queue depth means
+      # something completely different depending on whether the queues are
+      # deliberately halted — a caller that reads "500 pending jobs" without this
+      # line will diagnose an outage that is actually an operator's escape hatch.
+      # An explicit "Off" rather than an absent line, so a caller asking "are the
+      # queues halted?" can tell "no" from "this report doesn't say".
+      def queue_recovery_mode_lines
+        status = QueueRecoveryMode.status
+
+        unless status.active?
+          return [ "- **Queue Recovery Mode:** Off (background jobs processing normally)" ]
+        end
+
+        [
+          "- **⏸ QUEUE RECOVERY MODE IS ON.** Job execution is halted on " \
+          "#{QueueRecoveryMode::HALTED_QUEUES.join(", ")}; #{QueueRecoveryMode::LIVE_QUEUES.join(", ")} " \
+          "still runs. Pending-job counts below are frozen, not backing up. " \
+          "Auto-exit at #{status.expires_at&.iso8601}." +
+            (status.reason.present? ? " Reason: #{status.reason}" : "")
+        ]
+      end
 
       # CLI status is a secondary section: a failure reading it degrades this
       # section rather than throwing away the health report the caller asked for.
