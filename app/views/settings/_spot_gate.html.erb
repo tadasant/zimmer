@@ -145,7 +145,45 @@
         that already exist.
       </p>
 
-      <div class="mt-3 overflow-hidden border border-gray-200 rounded-md">
+      <%# Narrow screens get a stacked card per genesis: the four-column table puts
+          the Action cell — the only control here — past the right edge of a phone,
+          where an overflow-hidden wrapper made it unreachable rather than merely
+          cramped. Same rows, same buttons, one column. %>
+      <div class="mt-3 divide-y divide-gray-100 border border-gray-200 rounded-md sm:hidden">
+        <% SessionGenesis::KINDS.each do |kind| %>
+          <% current = @genesis_classes[kind.key] %>
+          <% overridden = current != kind.default_class %>
+          <div class="p-4" id="genesis-card-<%= kind.key %>">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-medium text-gray-900 break-words"><%= kind.label %></div>
+                <div class="text-xs text-gray-400 font-mono break-all"><%= kind.key %></div>
+              </div>
+              <span class="inline-flex flex-shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-semibold <%= current == SessionGenesis::PRIORITY ? "bg-indigo-100 text-indigo-800" : "bg-gray-100 text-gray-700" %>"
+                    data-genesis-class="<%= kind.key %>">
+                <%= current %>
+              </span>
+            </div>
+            <% if overridden %>
+              <div class="mt-1 text-xs text-amber-600">changed from <%= kind.default_class %></div>
+            <% end %>
+            <p class="mt-2 text-xs text-gray-500"><%= kind.description %></p>
+            <div class="mt-3 flex items-center justify-between gap-3">
+              <span class="text-xs text-gray-500">
+                <%= pluralize(@genesis_counts[kind.key].to_i, "live session") %>
+              </span>
+              <% target = current == SessionGenesis::PRIORITY ? SessionGenesis::SPOT : SessionGenesis::PRIORITY %>
+              <%= button_to "Make #{target}",
+                    genesis_class_path(genesis: kind.key, priority_class: target),
+                    method: :patch,
+                    form: { data: { turbo: false }, class: "flex-shrink-0" },
+                    class: "inline-flex items-center rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1" %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+
+      <div class="mt-3 hidden overflow-x-auto border border-gray-200 rounded-md sm:block">
         <table class="min-w-full divide-y divide-gray-200 text-sm">
           <thead class="bg-gray-50">
             <tr>

@@ -45,7 +45,7 @@
       <% show_banner = !fs_account_valid || !fs_is_current %>
       <% if show_banner %>
         <div class="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start justify-between">
-          <div class="flex-1">
+          <div class="flex-1 min-w-0 break-words">
             <h3 class="text-sm font-medium text-yellow-800">Filesystem identity mismatch</h3>
             <p class="mt-1 text-sm text-yellow-700">
               Worker filesystem holds OAuth tokens for <span class="font-medium"><%= @filesystem_email %></span>.
