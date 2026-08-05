@@ -1166,12 +1166,15 @@ reads a conversation and never builds or boots anything. Two edges come with tha
 
 Neither affects a user-initiated fork, which copies the tree whole.
 
-### Terminating a process Zimmer did not spawn falls back to a liveness check that lies
+### Terminating a pid that is not this process's child falls back to a liveness check that lies
 
 `ProcessTerminationService` answers "is this still running?" with a non-blocking `wait`, which reaps
 as a side effect and so cannot be fooled by an exited child holding its own pid as a zombie. That
-answer is only available for a pid that is **our** child. For anything else `wait` raises `ECHILD`
-and the service falls back to `Process.kill(0, pid)`.
+answer is only available for a pid that is a child of **the process doing the asking**. For anything
+else `wait` raises `ECHILD` and the service falls back to `Process.kill(0, pid)`. That covers more
+than third-party processes: a session spawned by a previous worker process, a restarted container, or
+an earlier deploy is no longer anyone's child here, and recovering exactly those sessions is what
+`SessionRecoveryService` exists to do.
 
 Two things follow from that fallback. In a multi-container deploy each container has its own PID
 namespace, so signal 0 reports `ESRCH` for a process that is running perfectly well next door —
@@ -1191,20 +1194,22 @@ Tracked in [#365](https://github.com/tadasant/zimmer/issues/365).
 erase keys they did not name. See [Metadata races](/sessions/spawning/#metadata-races).
 
 They are not what most of the app does. Counted against this commit, `app/` holds **34 atomic call
-sites across 15 files** and **92 whole-column read-modify-writes across 27 files** — the
+sites across 15 files** and **93 whole-column read-modify-writes across 27 files** — the
 `update!(metadata: (session.metadata || {}).merge(…))` shape that rewrites the entire column from a
 snapshot the caller read earlier. `AgentSessionJob` alone has 23 of them against 11 atomic calls.
 That is not a handful of stragglers, and anyone scoping
 [#70](https://github.com/tadasant/zimmer/issues/70) off a smaller number will under-estimate it
 substantially.
 
-Where a lost update is genuinely harmless: the terminal failure paths. 21 of the 92 name
+Where a lost update is genuinely harmless: the terminal failure paths. 21 of the 93 name
 `failure_reason` or `exit_status` in their payload, and 13 of `AgentSessionJob`'s 23 are immediately
 followed by `session.fail!` — the session is ending, so a neighbouring key erased on the way out
-changes nothing. Naming those keys is not a clean proxy on its own, though. Two of the 21 are on
-sessions that keep going: `AgentSessionJob` writes `exit_status` onto a session it is *parking* for an
-auth outage, and `McpOauthResumeService#resume!` clears `failure_reason` on the way back to
-`waiting` — a whole-column write on a session about to be re-enqueued.
+changes nothing. Naming those keys is not a clean proxy on its own, though. Four of the 21 are on
+sessions that keep going. `AgentSessionJob` writes `exit_status` onto a session it is *parking* for an
+auth outage. `McpOauthResumeService#resume!` clears `failure_reason` on the way back to `waiting`.
+And `CleanupOrphanedSessionsJob` and `DeploymentRecoveryJob` each strip `failure_reason` while
+stamping `"paused_by" => "recovery"` onto a session they are about to continue — the most alive
+writes in the whole set, since they are resurrecting a `failed` session, not ending one.
 
 Where it is not harmless, the writers are on live sessions and some are hot:
 
@@ -1214,8 +1219,9 @@ Where it is not harmless, the writers are on live sessions and some are hot:
   and it is why `interrupt_terminate_pid` is *harder* to lose than it was rather than impossible.
 - `AgentSessionJob`'s `"paused_by" => "recovery"` writes, its `clone_retry_count` writes, and the
   `mcp_retry` park — all on a session that keeps running afterwards.
-- The `resume!` state-machine callbacks in `SessionStateMachine`, eight of them, which write with
-  `update_column` and fire no callbacks at all.
+- Eight `update_column` metadata writes in `SessionStateMachine`'s AASM callbacks, which fire no
+  callbacks of their own at all — four on `resume`, the rest on `pause`, `block_on_elicitation`, and
+  the needs-input counter.
 - Both session controllers (19 sites between them) and the MCP `action_session` tool, which write
   from the web process while the job's monitoring loop is writing from the worker.
 
