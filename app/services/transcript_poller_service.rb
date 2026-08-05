@@ -201,6 +201,8 @@ class TranscriptPollerService
     # point the next resume at a rollout that no longer exists.
     capture_runtime_session_id!(live_events)
 
+    transcript_content, new_messages = merge_recovery_segment_if_needed(transcript_content, new_messages, metadata_updates)
+
     # Track how many messages we've already broadcast.
     # When broadcast_message_count is nil (cleared during session recovery/restart),
     # recalculate from the stored transcript to avoid re-broadcasting the entire
@@ -305,6 +307,47 @@ class TranscriptPollerService
   # Parse transcript content into raw event hashes via the runtime source.
   def parse_transcript_lines(transcript_content)
     @source.parse_events(transcript_content)
+  end
+
+  # A failed runtime resume can recover by starting a fresh runtime conversation
+  # for the same Zimmer session. Codex then writes a new rollout that starts at
+  # line 1 even though session.transcript already holds the pre-interruption
+  # history. While ProcessLifecycleManager's recovery marker is present, append
+  # any rollout that does not already include the recorded durable boundary
+  # instead of treating it as destructive transcript replacement.
+  def merge_recovery_segment_if_needed(transcript_content, new_messages, metadata_updates)
+    return [ transcript_content, new_messages ] unless @session.metadata&.dig("transcript_recovery_expected")
+    return [ transcript_content, new_messages ] unless @normalizer.mints_own_session_id?
+    base_line_count = @session.metadata&.dig("transcript_recovery_base_line_count").to_i
+    stored_base = @session.transcript.to_s.lines.first(base_line_count).join
+    return [ transcript_content, new_messages ] if stored_base.blank?
+    return [ transcript_content, new_messages ] if transcript_content.to_s.start_with?(stored_base)
+
+    merged_transcript = join_transcripts(stored_base, transcript_content)
+    merged_messages = parse_transcript_lines(merged_transcript)
+
+    metadata_updates["transcript_recovery_segment_appended"] = true
+    metadata_updates["transcript_regression_detected"] = nil
+
+    @logger.info(
+      "Appending recovered runtime transcript segment",
+      base_events: base_line_count,
+      recovered_events: new_messages.length,
+      merged_events: merged_messages.length
+    )
+
+    [ merged_transcript, merged_messages ]
+  end
+
+  def join_transcripts(prefix, suffix)
+    prefix = prefix.to_s
+    suffix = suffix.to_s
+
+    return suffix if prefix.blank?
+    return prefix if suffix.blank?
+
+    separator = prefix.end_with?("\n") ? "" : "\n"
+    "#{prefix}#{separator}#{suffix}"
   end
 
   # Persist the runtime's own session id once it appears in the transcript.
@@ -749,12 +792,9 @@ class TranscriptPollerService
         nil
       end
 
-      # Check if the message text matches the sent_message
-      # Use exact match to avoid false positives (e.g., short common strings like "yes")
-      # Slight whitespace differences are normalized by stripping
       next false unless message_text.present?
 
-      message_text.strip == sent_message.strip
+      sent_message_delivered?(message_text, sent_message)
     end
 
     if found
@@ -762,5 +802,21 @@ class TranscriptPollerService
       metadata_updates["sent_message"] = nil
       metadata_updates["sent_message_at"] = nil
     end
+  end
+
+  def sent_message_delivered?(message_text, sent_message)
+    message_text = message_text.to_s.strip
+    sent_message = sent_message.to_s.strip
+
+    # Use exact raw-message matching to avoid false positives with short common
+    # strings like "yes". Recovery can deliver the expanded runtime prompt
+    # instead; in that case active_follow_up_prompt is the exact prompt sent to
+    # the runtime, and it must still contain the raw follow-up we are clearing.
+    return true if message_text == sent_message
+
+    active_follow_up_prompt = @session.metadata&.dig("active_follow_up_prompt").to_s.strip
+    active_follow_up_prompt.present? &&
+      message_text == active_follow_up_prompt &&
+      active_follow_up_prompt.include?(sent_message)
   end
 end

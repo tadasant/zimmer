@@ -58,7 +58,16 @@ and logs it once via `metadata["transcript_regression_detected"]`. If a *resume*
 unrepairable regression, the resume is refused outright — because resuming would silently
 drop the user's prompt.
 
-That guard existing tells you the underlying condition happens.
+Codex has one extra recovery case. A failed `codex exec resume` can be recovered by starting a
+fresh Codex process for the same Zimmer session, which creates a new rollout beginning at line 1
+with a new runtime thread id. When the poller sees that recovery rollout and it does not already
+include the stored recovery boundary, it appends the new segment instead of treating it as
+destructive replacement, records
+`metadata["transcript_recovery_segment_appended"]`, and broadcasts from the old transcript boundary.
+The same poll also repairs a stale `broadcast_message_count` that points past the new transcript,
+so the recovered messages are not silently skipped.
+
+That guard exists because the underlying condition happens.
 
 ## Rotation: when a shorter file is *new*, not lost
 

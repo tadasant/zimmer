@@ -491,6 +491,99 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
       "Should flag that a regression was detected"
   end
 
+  test "poll_and_broadcast appends Codex failed-resume recovery segment instead of skipping shorter rollout" do
+    stored_transcript = (1..5).map { |i|
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Stored #{i}" } ] } }.to_json
+    }.join("\n")
+
+    @session.update!(
+      agent_runtime: "codex",
+      transcript: stored_transcript,
+      metadata: {
+        "working_directory" => "/tmp/test-clone",
+        "broadcast_message_count" => 5,
+        "transcript_recovery_expected" => true,
+        "transcript_recovery_base_line_count" => 5
+      }
+    )
+    @session.update_column(:session_id, "old-codex-thread")
+
+    transcript_dir = CodexHome.sessions_path
+    recovered_file = "#{transcript_dir}/2026/08/03/rollout-2026-08-03T10-39-42-new-codex-thread.jsonl"
+    recovered_transcript = [
+      { "type" => "session_meta", "payload" => { "id" => "new-codex-thread", "cwd" => "/tmp/test-clone" } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "user", "content" => [ { "type" => "input_text", "text" => "Recovered prompt" } ] } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Recovered answer" } ] } }
+    ].map(&:to_json).join("\n")
+
+    @mock_file_system.mkdir_p(File.dirname(recovered_file))
+    @mock_file_system.write(recovered_file, recovered_transcript)
+
+    mock_broadcast_service = mock("BroadcastService")
+    mock_broadcast_service.stubs(:remove_empty_timeline_message)
+    mock_broadcast_service.stubs(:running_loader)
+    mock_broadcast_service.expects(:timeline_message).times(3)
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system, broadcast_service: mock_broadcast_service)
+    result = service.poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_includes @session.transcript, "Stored 5"
+    assert_includes @session.transcript, "Recovered answer"
+    assert_equal 8, @session.metadata["broadcast_message_count"]
+    assert_equal true, @session.metadata["transcript_recovery_segment_appended"]
+    refute @session.metadata["transcript_regression_detected"]
+    assert_equal "new-codex-thread", @session.session_id
+  end
+
+  test "poll_and_broadcast appends Codex failed-resume recovery segment even when fresh rollout is longer than stored transcript" do
+    stored_transcript = (1..3).map { |i|
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Stored #{i}" } ] } }.to_json
+    }.join("\n")
+
+    @session.update!(
+      agent_runtime: "codex",
+      transcript: stored_transcript,
+      metadata: {
+        "working_directory" => "/tmp/test-clone",
+        "broadcast_message_count" => 3,
+        "transcript_recovery_expected" => true,
+        "transcript_recovery_base_line_count" => 3
+      }
+    )
+    @session.update_column(:session_id, "old-codex-thread")
+
+    transcript_dir = CodexHome.sessions_path
+    recovered_file = "#{transcript_dir}/2026/08/03/rollout-2026-08-03T10-39-42-long-codex-thread.jsonl"
+    recovered_transcript = [
+      { "type" => "session_meta", "payload" => { "id" => "long-codex-thread", "cwd" => "/tmp/test-clone" } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "user", "content" => [ { "type" => "input_text", "text" => "Recovered prompt" } ] } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Recovered answer 1" } ] } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Recovered answer 2" } ] } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Recovered answer 3" } ] } }
+    ].map(&:to_json).join("\n")
+
+    @mock_file_system.mkdir_p(File.dirname(recovered_file))
+    @mock_file_system.write(recovered_file, recovered_transcript)
+
+    mock_broadcast_service = mock("BroadcastService")
+    mock_broadcast_service.stubs(:remove_empty_timeline_message)
+    mock_broadcast_service.stubs(:running_loader)
+    mock_broadcast_service.expects(:timeline_message).times(5)
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system, broadcast_service: mock_broadcast_service)
+    result = service.poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_includes @session.transcript, "Stored 3"
+    assert_includes @session.transcript, "Recovered answer 3"
+    assert_equal 8, @session.metadata["broadcast_message_count"]
+    assert_equal true, @session.metadata["transcript_recovery_segment_appended"]
+    assert_equal "long-codex-thread", @session.session_id
+  end
+
   test "poll_and_broadcast updates stored transcript when filesystem transcript grows" do
     initial_transcript = (1..2).map { |i| %({"type":"user","message":{"role":"user","content":"msg #{i}"}}) }.join("\n")
 
@@ -1363,6 +1456,44 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     # Should clear since the messages match after stripping whitespace
     assert metadata_updates.key?("sent_message"), "sent_message key should be present after whitespace-normalized match"
     assert_nil metadata_updates["sent_message"]
+  end
+
+  test "clear_sent_message_if_found clears sent_message when expanded active prompt is delivered" do
+    expanded_prompt = <<~PROMPT
+      [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
+
+      Continue the recovered turn.
+
+      Goal: Write the status summary and stop.
+    PROMPT
+
+    @session.update!(
+      metadata: {
+        "working_directory" => "/tmp/test-clone",
+        "sent_message" => "Continue the recovered turn.",
+        "sent_message_at" => Time.current.iso8601,
+        "active_follow_up_prompt" => expanded_prompt
+      }
+    )
+
+    messages = [
+      {
+        "type" => "user",
+        "message" => {
+          "role" => "user",
+          "content" => expanded_prompt
+        }
+      }
+    ]
+
+    metadata_updates = {}
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    service.send(:clear_sent_message_if_found, messages, metadata_updates)
+
+    assert metadata_updates.key?("sent_message"), "sent_message should clear when the expanded delivered prompt contains it"
+    assert metadata_updates.key?("sent_message_at"), "sent_message_at should clear with sent_message"
+    assert_nil metadata_updates["sent_message"]
+    assert_nil metadata_updates["sent_message_at"]
   end
 
   test "poll_and_broadcast clears sent_message when found in new transcript messages" do
