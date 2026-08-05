@@ -243,7 +243,7 @@ class SessionsTest < ApplicationSystemTestCase
     assert_text "Model:"
   end
 
-  test "quick prompt desktop submit via cmd+enter keyboard shortcut" do
+  test "quick prompt desktop submit via ctrl+enter keyboard shortcut" do
     visit root_url
 
     # The desktop quick prompt textarea is visible at md+ breakpoints (hidden md:block).
@@ -251,11 +251,19 @@ class SessionsTest < ApplicationSystemTestCase
     textarea = find("textarea[data-quick-prompt-target='textarea']")
     textarea.fill_in with: "Quick prompt keyboard shortcut test"
 
-    # Press Cmd+Enter (Meta+Enter) to submit via the quick-prompt controller
-    textarea.send_keys([ :command, :enter ])
+    # Press Ctrl+Enter to submit via the quick-prompt controller. The controller
+    # also accepts Cmd+Enter, but Linux CI exercises the Ctrl path reliably.
+    quick_prompt_sessions = Session.where("metadata->>'source' = ?", "quick_prompt")
+
+    assert_difference -> { quick_prompt_sessions.count }, 1 do
+      textarea.send_keys([ :control, :enter ])
+      assert_current_path(/\/sessions\/\d+/, wait: 10)
+    end
 
     # Quick prompt creates a router session and redirects to the session page
-    assert_text "Router session created"
+    session = quick_prompt_sessions.order(:id).last
+    assert_equal Session::ROUTER_AGENT_ROOT, session.metadata["agent_root_key"]
+    assert_selector "h1", text: "Session #{session.id}"
   end
 
   # Test session show page
