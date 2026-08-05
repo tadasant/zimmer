@@ -41,4 +41,25 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "## System Health Report"
     assert_includes result, "*Could not fetch CLI status: cache unavailable*"
   end
+  # A pending-job count means something completely different when the queues are
+  # deliberately halted, so the report says which it is — in both directions, so
+  # "no" is distinguishable from "this report doesn't say".
+  test "reports queue recovery mode as off when it is off" do
+    assert_includes @tool.call({}), "**Queue Recovery Mode:** Off"
+  end
+
+  test "leads with queue recovery mode when it is on" do
+    AlertService.stubs(:raise_alert).returns(true)
+    AppSetting.delete_all
+    GoodJob::Setting.delete_all
+    QueueRecoveryMode.enter!(reason: "trigger stampede", actor: "test")
+
+    result = @tool.call({})
+
+    assert_includes result, "QUEUE RECOVERY MODE IS ON"
+    assert_includes result, "frozen, not backing up"
+    assert_includes result, "trigger stampede"
+  ensure
+    GoodJob::Setting.delete_all
+  end
 end

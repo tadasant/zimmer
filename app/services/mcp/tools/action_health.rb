@@ -6,7 +6,10 @@ module Mcp
     # (cleanup_processes, retry_sessions, archive_old) plus the two CLI
     # maintenance jobs from Api::V1::ClisController (refresh, clear_cache).
     class ActionHealth < Tool
-      ACTIONS = %w[cleanup_processes retry_sessions archive_old cli_refresh cli_clear_cache].freeze
+      ACTIONS = %w[
+        cleanup_processes retry_sessions archive_old cli_refresh cli_clear_cache
+        enter_queue_recovery_mode exit_queue_recovery_mode
+      ].freeze
 
       # The three HealthMonitorService actions terminate processes and rewrite rows
       # in bulk, so they carry the same cooldown Api::V1::HealthController enforces
@@ -29,8 +32,21 @@ module Mcp
         - **archive_old**: Archive sessions older than N days (requires "days", default 7)
         - **cli_refresh**: Trigger a background refresh of CLI tool installations
         - **cli_clear_cache**: Clear npm/pip caches and reinstall MCP packages
+        - **enter_queue_recovery_mode**: Halt background job execution on the demand-side
+          queues (`pollers`, `triggers`, `default`) so a runaway backlog can be investigated
+          and cleaned up. The `agents` queue keeps running, so sessions still start and run.
+          Accepts "reason" (free text, shown in the UI banner and the Slack alert) and
+          "ttl_minutes" (auto-exit window, clamped, default #{(QueueRecoveryMode::DEFAULT_TTL / 60).to_i}).
+          Calling it again while active extends the window. This is an INSTANCE-WIDE halt:
+          everything except agent sessions stops until it is lifted.
+        - **exit_queue_recovery_mode**: Resume normal background job processing.
+
+        Note: "queue recovery mode" is about the JOB QUEUES. It is unrelated to session
+        recovery after a deploy or crash, and it never touches session state.
 
         Note: Health actions are rate-limited (30s cooldown between calls, per API key).
+        The two queue recovery mode actions are exempt — the escape hatch, and especially
+        the way back out of it, must work on the first try during an incident.
       DESC
 
       input_schema({
@@ -47,6 +63,19 @@ module Mcp
             minimum: 1,
             maximum: 365,
             description: "Archive sessions older than this many days. For archive_old action. Default: 7"
+          },
+          reason: {
+            type: "string",
+            description: "Why the queues are being halted. For enter_queue_recovery_mode."
+          },
+          # Bounds read from the service rather than re-declared, so a change to
+          # the window cannot leave this schema advertising the old one.
+          ttl_minutes: {
+            type: "number",
+            minimum: (QueueRecoveryMode::MIN_TTL / 60).to_i,
+            maximum: (QueueRecoveryMode::MAX_TTL / 60).to_i,
+            description: "Auto-exit window in minutes. For enter_queue_recovery_mode. " \
+              "Default: #{(QueueRecoveryMode::DEFAULT_TTL / 60).to_i}"
           }
         },
         required: [ "action" ]
@@ -64,6 +93,8 @@ module Mcp
         when "archive_old" then archive_old(args["days"])
         when "cli_refresh" then cli_refresh
         when "cli_clear_cache" then cli_clear_cache
+        when "enter_queue_recovery_mode" then enter_queue_recovery_mode(args)
+        when "exit_queue_recovery_mode" then exit_queue_recovery_mode
         end
 
         record_action(action)
@@ -97,6 +128,43 @@ module Mcp
       def cli_clear_cache
         CacheClearJob.perform_later(reinstall: true)
         "## CLI Cache Clear Queued\n\n- **Message:** Cache clear queued. Caches will be cleared in the worker container and MCP packages reinstalled."
+      end
+
+      # The caller is very often the agent session that was started to look at the
+      # backlog, so the response says in plain terms what is now halted, what is
+      # not, and how long it has — an agent that does not know the window will not
+      # think to extend it.
+      def enter_queue_recovery_mode(args)
+        status = QueueRecoveryMode.enter!(
+          reason: args["reason"],
+          ttl: args["ttl_minutes"].presence&.to_i&.minutes,
+          actor: "MCP action_health"
+        )
+
+        <<~MD
+          ## Queue Recovery Mode ON
+
+          - **Halted queues:** #{QueueRecoveryMode::HALTED_QUEUES.join(", ")}
+          - **Still running:** #{QueueRecoveryMode::LIVE_QUEUES.join(", ")} (agent sessions start and run normally)
+          - **Auto-exit at:** #{status.expires_at&.iso8601} (#{((status.expires_in || 0) / 60.0).ceil} min)
+
+          Enqueued jobs are frozen, not discarded — they resume when the mode is lifted. To
+          act on the cause: disable the stampeding Trigger (`action_trigger`), archive or
+          kill runaway sessions (`action_session`), or discard queued jobs by class from the
+          GoodJob dashboard at `/jobs`. Call `exit_queue_recovery_mode` when done; calling
+          `enter_queue_recovery_mode` again extends the window.
+
+          #{json_block(status)}
+        MD
+      rescue QueueRecoveryMode::NotAvailable => e
+        raise ToolError, e.message
+      end
+
+      def exit_queue_recovery_mode
+        status = QueueRecoveryMode.exit!(actor: "MCP action_health")
+
+        "## Queue Recovery Mode OFF\n\nBackground job processing resumed on " \
+          "#{QueueRecoveryMode::HALTED_QUEUES.join(", ")}.\n\n#{json_block(status)}"
       end
 
       def json_block(payload)

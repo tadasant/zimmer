@@ -1679,6 +1679,36 @@ noted rather than fixed at the source.
 
 ## API
 
+### Queue recovery mode is deliberately outside the health cooldown, and the web control is anonymous
+
+`QueueRecoveryMode` (see [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode)) is
+Zimmer's escape hatch for a runaway job queue: it halts execution on `pollers`, `triggers` and
+`default` for up to four hours. Two things about it are choices rather than oversights, and both cut
+against the grain of the section below.
+
+None of its three surfaces sit behind `HealthActionCooldown`. That throttle **fails closed** when the
+cache cannot enforce it, and an instance overloaded enough to need recovery mode is exactly the
+instance whose Redis is least trustworthy — so the throttle would have locked the escape hatch, and
+above all the way back out of it, precisely when it was needed. A halt is two row-writes and is
+reversible; being unable to resume is not.
+
+And the web control inherits the dashboard's anonymity. `/health` has no authentication at all (see
+[The /health dashboard runs destructive actions
+anonymously](https://github.com/tadasant/zimmer/issues/312) — the whole web UI relies on
+network-level access control), so anyone who can reach the page can halt instance-wide job
+processing, repeatedly and unthrottled. That is a bigger lever than its neighbours on that page, even
+though it is reversible, self-expiring and pages `#eng-alerts` on every transition. The REST and MCP
+equivalents require an API key as usual, and MCP additionally gates on the `health` tool group, which
+the `self_session` set injected into every agent session does not include.
+
+Two knock-on effects worth knowing while the mode is on. Halting `pollers` also halts
+`SystemHealthMonitorJob`, so the "Queue backlog critical" page stops firing — deliberate, since the
+backlog is now the operator's own doing, but it means the mode's own enter/exit alerts are the only
+signal. And enabling `config.good_job.enable_pauses` globally adds three `good_job_settings`
+subqueries to every dequeue poll on all four schedulers; the table holds one row and is indexed on
+`key`, but it is not nothing on a database already under the pressure of
+[#329](https://github.com/tadasant/zimmer/issues/329).
+
 ### The only rate limit is on the health endpoints, and it needs a real cache
 
 `HealthActionCooldown::COOLDOWN = 30.seconds` is the whole of Zimmer's rate limiting. It is keyed in
