@@ -325,10 +325,10 @@ What that buys and what it doesn't:
   read-modify-write can erase a key no matter how carefully that key was written.
 
 Most of the app is still that caller. Counted against this commit, `app/` holds 34 atomic call sites
-across 15 files and 92 whole-column read-modify-writes across 27 files; `AgentSessionJob` alone has 23
+across 15 files and 93 whole-column read-modify-writes across 27 files; `AgentSessionJob` alone has 23
 of the latter against 11 of the former. The conversion is a long way from done — see
 [Not every session `metadata` writer is atomic](/limitations/#not-every-session-metadata-writer-is-atomic-and-the-whole-column-writers-are-the-majority)
-for which of the 92 are harmless and which are not, and
+for which of the 93 are harmless and which are not, and
 [#70](https://github.com/tadasant/zimmer/issues/70) for the work itself.
 
 The one worth knowing here: **`TranscriptPollerService`** batches `metadata` into the same `update!`
