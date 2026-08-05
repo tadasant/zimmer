@@ -535,6 +535,64 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal true, @session.metadata["transcript_recovery_segment_appended"]
     refute @session.metadata["transcript_regression_detected"]
     assert_equal "new-codex-thread", @session.session_id
+    # A recovery rollout shorter than the stored transcript is also a file
+    # rotation, so it is the rotation path that re-attaches the history and
+    # records the carried length. The recovery marker above must still be
+    # recorded: it describes the session, not which mechanism fired.
+    assert_equal 5, @session.metadata["transcript_carryover_event_count"]
+  end
+
+  test "poll_and_broadcast does not re-append the recovery segment on a later poll of the same rollout" do
+    stored_transcript = (1..5).map { |i|
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Stored #{i}" } ] } }.to_json
+    }.join("\n")
+
+    @session.update!(
+      agent_runtime: "codex",
+      transcript: stored_transcript,
+      metadata: {
+        "working_directory" => "/tmp/test-clone",
+        "broadcast_message_count" => 5,
+        "transcript_recovery_expected" => true,
+        "transcript_recovery_base_line_count" => 5
+      }
+    )
+    @session.update_column(:session_id, "old-codex-thread")
+
+    recovered_file = "#{CodexHome.sessions_path}/2026/08/03/rollout-2026-08-03T10-39-42-new-codex-thread.jsonl"
+    recovered_transcript = [
+      { "type" => "session_meta", "payload" => { "id" => "new-codex-thread", "cwd" => "/tmp/test-clone" } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "user", "content" => [ { "type" => "input_text", "text" => "Recovered prompt" } ] } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Recovered answer" } ] } }
+    ].map(&:to_json).join("\n")
+
+    @mock_file_system.mkdir_p(File.dirname(recovered_file))
+    @mock_file_system.write(recovered_file, recovered_transcript)
+
+    first_broadcast_service = mock("BroadcastService")
+    first_broadcast_service.stubs(:remove_empty_timeline_message)
+    first_broadcast_service.stubs(:running_loader)
+    first_broadcast_service.expects(:timeline_message).times(3)
+    TranscriptPollerService.new(@session, file_system: @mock_file_system, broadcast_service: first_broadcast_service).poll_and_broadcast
+
+    @session.reload
+    merged_transcript = @session.transcript
+
+    # Same rollout, unchanged on disk: the recovery marker is still set, so the
+    # second poll must recognize the durable history as already re-attached
+    # rather than appending it a second time.
+    second_broadcast_service = mock("BroadcastService")
+    second_broadcast_service.stubs(:remove_empty_timeline_message)
+    second_broadcast_service.stubs(:running_loader)
+    second_broadcast_service.expects(:timeline_message).never
+    result = TranscriptPollerService.new(@session, file_system: @mock_file_system, broadcast_service: second_broadcast_service).poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_equal merged_transcript, @session.transcript
+    assert_equal 1, @session.transcript.scan("Recovered answer").length
+    assert_equal 8, @session.metadata["broadcast_message_count"]
+    assert_equal true, @session.metadata["transcript_recovery_segment_appended"]
   end
 
   test "poll_and_broadcast appends Codex failed-resume recovery segment even when fresh rollout is longer than stored transcript" do

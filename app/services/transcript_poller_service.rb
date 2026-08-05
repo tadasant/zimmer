@@ -315,13 +315,35 @@ class TranscriptPollerService
   # history. While ProcessLifecycleManager's recovery marker is present, append
   # any rollout that does not already include the recorded durable boundary
   # instead of treating it as destructive transcript replacement.
+  #
+  # This overlaps #carryover_prefix on purpose. Rotation covers the recovery
+  # rollouts it can recognize — a new file path holding fewer events than the
+  # stored transcript — and this covers the one it cannot: a recovered rollout
+  # LONGER than what is stored is not a regression, so rotation leaves it alone
+  # and only the recovery marker knows the stored history must survive.
   def merge_recovery_segment_if_needed(transcript_content, new_messages, metadata_updates)
     return [ transcript_content, new_messages ] unless @session.metadata&.dig("transcript_recovery_expected")
     return [ transcript_content, new_messages ] unless @normalizer.mints_own_session_id?
     base_line_count = @session.metadata&.dig("transcript_recovery_base_line_count").to_i
     stored_base = @session.transcript.to_s.lines.first(base_line_count).join
     return [ transcript_content, new_messages ] if stored_base.blank?
-    return [ transcript_content, new_messages ] if transcript_content.to_s.start_with?(stored_base)
+
+    if transcript_content.to_s.start_with?(stored_base)
+      # The durable boundary is already the prefix of what we are about to
+      # persist, so there is nothing left to append. That happens for two very
+      # different reasons, and only one of them means "no recovery happened":
+      # the rollout genuinely carried the history itself, or #carryover_prefix
+      # re-attached it earlier in this same poll. A recovery rollout SHORTER
+      # than the stored transcript is also a file rotation, and the rotation
+      # path runs first, so it is the one that re-attaches the history there.
+      # Record the marker in that case too — it describes what happened to the
+      # session, not which of the two mechanisms happened to fire.
+      if metadata_updates.key?("transcript_carryover_event_count")
+        metadata_updates["transcript_recovery_segment_appended"] = true
+      end
+
+      return [ transcript_content, new_messages ]
+    end
 
     merged_transcript = join_transcripts(stored_base, transcript_content)
     merged_messages = parse_transcript_lines(merged_transcript)
