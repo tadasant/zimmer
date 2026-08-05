@@ -22,8 +22,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.driver.browser.manage.window.resize_to(1400, 900)
   end
 
-  # A title with no break opportunity is the case that blew the session grid out
-  # to nearly twice the viewport width; keep one in the fixtures below.
+  # A title with no break opportunity is the hardest case for the session grid,
+  # so every fixture below carries one.
   LONG_TOKEN_TITLE = "Fix flaky test_session_state_machine_transitions_from_waiting_to_running".freeze
 
   def create_session(**overrides)
@@ -58,7 +58,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       (function () {
         const W = document.documentElement.clientWidth;
         const clipped = [];
-        document.querySelectorAll("button, a, input, select, textarea, summary, table").forEach((el) => {
+        document.querySelectorAll("button, a, input, select, textarea, summary, table, h1, h2, h3, code, pre").forEach((el) => {
           const cs = getComputedStyle(el);
           if (cs.display === "none" || cs.visibility === "hidden") return;
           const b = el.getBoundingClientRect();
@@ -123,9 +123,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("settings")
   end
 
-  # The spot gate's genesis table is the specific screen that prompted this work:
-  # its Action column — the only control in the table — sat past the right edge of
-  # an overflow-hidden wrapper, so the buttons could not be reached or scrolled to.
+  # The spot gate's genesis rows are the screen this suite exists for: the table's
+  # Action column is the only control there, and it does not fit a phone, so below
+  # `sm` the rows render as stacked cards with the button on screen.
   test "spot gate genesis controls are reachable on a phone" do
     visit settings_path
     assert_text "Genesis classes"
@@ -136,11 +136,14 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     within "#genesis-card-#{kind.key}" do
       button = find("input[type=submit], button", match: :first)
+      # The layout viewport is narrower than the window once a scrollbar is taken
+      # out, so measure against clientWidth rather than the resize_to width.
       right_edge = page.evaluate_script(
         "arguments[0].getBoundingClientRect().right", button.native
       )
-      assert right_edge <= MOBILE_WIDTH,
-        "genesis action button ends at #{right_edge}px, past the #{MOBILE_WIDTH}px viewport"
+      viewport = page.evaluate_script("document.documentElement.clientWidth")
+      assert right_edge <= viewport,
+        "genesis action button ends at #{right_edge}px, past the #{viewport}px viewport"
     end
   end
 
@@ -156,11 +159,35 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("trigger detail")
   end
 
+  # The account card only crowds once several accounts are listed, and the email is
+  # the token that has to wrap — so this owns both rather than leaning on fixtures.
   test "quotas does not overflow horizontally on a phone" do
+    3.times do |i|
+      ClaudeAccount.create!(
+        email: "a-rather-long-account-address-#{i}@subdomain.example.com",
+        status: 0,
+        priority: i
+      )
+    end
+
     visit quotas_path
     assert_selector "h1"
 
     assert_no_horizontal_overflow("quotas")
+  end
+
+  test "health dashboard does not overflow horizontally on a phone" do
+    visit health_dashboard_path
+    assert_selector "h1"
+
+    assert_no_horizontal_overflow("health dashboard")
+  end
+
+  test "CLI tools does not overflow horizontally on a phone" do
+    visit clis_path
+    assert_selector "h1"
+
+    assert_no_horizontal_overflow("CLI tools")
   end
 
   test "connectors does not overflow horizontally on a phone" do
@@ -185,7 +212,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     trigger = create_trigger
     page.driver.browser.manage.window.resize_to(1400, 900)
 
-    [ root_path, settings_path, triggers_path, trigger_path(trigger), quotas_path ].each do |path|
+    [ root_path, new_session_path, settings_path, triggers_path, trigger_path(trigger),
+      quotas_path, health_dashboard_path, clis_path, connectors_path,
+      notifications_path ].each do |path|
       visit path
       doc_overflow, = overflow_report
       assert doc_overflow <= 0, "#{path} scrolls sideways at 1400px (#{doc_overflow}px too wide)"
