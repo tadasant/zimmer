@@ -63,7 +63,7 @@ class BroadcastServiceTest < ActiveSupport::TestCase
     @service.timeline_message(@session, message)
   end
 
-  # Regression for PR #3942 / commit 0a00cec4: a text-less assistant line
+  # Regression for PR pulsemcp/pulsemcp#3942 / commit 0a00cec4: a text-less assistant line
   # (only thinking/tool_use blocks) normalizes into a content-less
   # AssistantMessage that must NOT be streamed as a bare row. Only its Thinking
   # and ToolCall events are broadcast.

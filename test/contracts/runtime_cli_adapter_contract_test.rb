@@ -5,7 +5,7 @@ require "test_helper"
 # Shared contract test for the RuntimeCliAdapter interface.
 #
 # Every runtime CLI adapter (ClaudeCliAdapter today; CodexRuntimeAdapter in
-# #3777) must satisfy the same contract so ProcessLifecycleManager can depend on
+# pulsemcp/pulsemcp#3777) must satisfy the same contract so ProcessLifecycleManager can depend on
 # the interface rather than a concrete runtime. MockClaudeCliAdapter participates
 # too — the seam only works if the test double honors the same surface.
 #

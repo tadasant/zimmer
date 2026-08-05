@@ -1421,7 +1421,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(session)
   end
 
-  # NOTE: This test was updated as part of issue #592 fix.
+  # NOTE: This test was updated as part of issue pulsemcp/agents#592 fix.
   # Previously, follow_up on a running session would pause and send immediately.
   # Now, to prevent race conditions, follow_up on a running session queues the message.
   test "should queue follow up on running session instead of sending immediately" do
@@ -1737,7 +1737,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_not_nil session.running_job_id, "running_job_id should be set by the controller on follow-up"
   end
 
-  # Test for the fix to #592 - follow_up should queue messages when session is running
+  # Test for the fix to pulsemcp/agents#592 - follow_up should queue messages when
+  # session is running
   # This prevents race conditions where form action is set incorrectly
   test "follow_up should queue message instead of sending when session is running" do
     session = sessions(:running)

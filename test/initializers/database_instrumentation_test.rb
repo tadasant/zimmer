@@ -7,7 +7,7 @@ require "test_helper"
 # plumbing or mocks of internal code. We capture the real Rails.logger output
 # and assert on both the emitted level and the message content.
 #
-# The central contract these tests pin (issue #4403): a slow-but-COMPLETED
+# The central contract these tests pin (issue pulsemcp/pulsemcp#4403): a slow-but-COMPLETED
 # query must log at WARN, never ERROR. rules-ao-errors.yaml pages on any single
 # severity_text:ERROR line from agent-orchestrator, so an ERROR here would page
 # the production critical alert on a transient, self-resolving blip.
@@ -40,7 +40,7 @@ class DatabaseInstrumentationTest < ActiveSupport::TestCase
     assert_includes output, "WARN"
     assert_includes output, "[DatabaseChoke]"
     assert_includes output, "6200ms"
-    # The crux of issue #4403: this must NOT page the prod ERROR alert.
+    # The crux of issue pulsemcp/pulsemcp#4403: this must NOT page the prod ERROR alert.
     assert_not_includes output, "ERROR"
   end
 

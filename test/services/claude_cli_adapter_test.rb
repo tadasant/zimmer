@@ -1550,8 +1550,8 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   # ===== INHERITED ENVIRONMENT VARIABLE ISOLATION TESTS =====
   # These tests verify that spawned processes don't inherit configuration
   # from the parent Rails process that could interfere with execution:
-  # - Database config: prevents tests from polluting the dev database (issue #500)
-  # - Bundler config: prevents gem path conflicts in cloned repos (issue #569)
+  # - Database config: prevents tests from polluting the dev database (issue pulsemcp/agents#500)
+  # - Bundler config: prevents gem path conflicts in cloned repos (issue pulsemcp/agents#569)
 
   test "clear_inherited_env_vars sets database env vars to nil when not in .env" do
     env_vars = { "API_KEY" => "secret" }

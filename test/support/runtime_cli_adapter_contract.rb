@@ -12,7 +12,7 @@ module RuntimeCliAdapterContractAssertions
   # Keyword arguments every adapter's #execute must accept. auto_compact_window is
   # a Claude-only concept, but ProcessLifecycleManager and the retry services pass
   # it uniformly to whichever runtime adapter is selected, so every adapter must
-  # accept it (Codex ignores it). Omitting it regressed Codex spawn (#3884).
+  # accept it (Codex ignores it). Omitting it regressed Codex spawn (pulsemcp/pulsemcp#3884).
   EXECUTE_KEYWORDS = %i[prompt session_id working_dir mcp_config_path images append_system_prompt model auto_compact_window].freeze
 
   # Keyword arguments every adapter's #resume must accept.

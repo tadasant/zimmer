@@ -643,7 +643,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_equal @clone_path, @session.metadata["clone_path"]
   end
 
-  # Race-condition coverage for GitHub issue #3720.
+  # Race-condition coverage for GitHub issue pulsemcp/pulsemcp#3720.
   #
   # When a recurring trigger fires while a slow-path clone recreation is
   # already in flight (or any other concurrent unarchive), two callers can
@@ -669,9 +669,9 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_nil @session.archived_at, "archived_at must remain nil (winner's state)"
   end
 
-  # Regression coverage for GitHub issue #4600.
+  # Regression coverage for GitHub issue pulsemcp/pulsemcp#4600.
   #
-  # The #3720 idempotency guard only recognized `needs_input` as the benign
+  # The pulsemcp/pulsemcp#3720 idempotency guard only recognized `needs_input` as the benign
   # "concurrent unarchive already won" state. But the winner's session can
   # advance PAST needs_input to `running` (its resumed job starts) before this
   # loser acquires the row lock. In that case archived_at is already cleared and
@@ -699,7 +699,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
   test "transition_to_needs_input is idempotent when the winner already returned to waiting" do
     # A resuscitated router session that finished its work and returned to
-    # waiting (exactly the session-3843 end state from issue #4600).
+    # waiting (exactly the session-3843 end state from issue pulsemcp/pulsemcp#4600).
     @session.update_column(:status, Session.statuses[:waiting])
     @session.update_column(:archived_at, nil)
 
@@ -714,7 +714,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_nil @session.archived_at
   end
 
-  # Regression coverage for GitHub issue #4600 — the `call` ENTRY path.
+  # Regression coverage for GitHub issue pulsemcp/pulsemcp#4600 — the `call` ENTRY path.
   #
   # transition_to_needs_input is only reached after the loser passes
   # validate_inputs. But call reloads the row on entry, and the winner can
@@ -739,7 +739,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
   end
 
   test "call returns idempotent success on entry when the winner already returned to waiting" do
-    # The session-3843 end state from issue #4600: a resuscitated router session
+    # The session-3843 end state from issue pulsemcp/pulsemcp#4600: a resuscitated router session
     # that finished its work and returned to waiting.
     @session.update_columns(status: Session.statuses[:waiting], archived_at: nil)
 
@@ -754,7 +754,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_nil @session.archived_at
   end
 
-  # The abnormal "status advanced but archived_at still populated" row (#3720)
+  # The abnormal "status advanced but archived_at still populated" row (pulsemcp/pulsemcp#3720)
   # must NOT be masked by the entry short-circuit: call still returns a clean
   # failure so the guard-ordering protection holds end-to-end at the entry point
   # too. archived_at being non-nil keeps the short-circuit from firing.

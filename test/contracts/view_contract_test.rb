@@ -412,7 +412,7 @@ class ViewContractTest < ActionView::TestCase
     end
   end
 
-  # Regression for PR #3942 / commit 0a00cec4: a content-less message event
+  # Regression for PR pulsemcp/pulsemcp#3942 / commit 0a00cec4: a content-less message event
   # (e.g. a Claude assistant line carrying only tool_use/thinking blocks) must
   # render NOTHING — no bare "Assistant" row, no data-timeline-item wrapper that
   # would inflate the infinite-scroll counter. The event is kept in the

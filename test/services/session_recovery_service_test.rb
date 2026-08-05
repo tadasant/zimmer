@@ -236,7 +236,7 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
     mock_poller.verify
   end
 
-  # Tests for issue #599: ensure enqueued messages are processed after recovery
+  # Tests for issue pulsemcp/agents#599: ensure enqueued messages are processed after recovery
   test "recover with stopped process drains enqueued message queue" do
     # Setup: session with enqueued messages and stopped process
     @session.update!(session_id: SecureRandom.uuid)

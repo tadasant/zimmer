@@ -8,7 +8,8 @@ require "mocha/minitest"
 # detected (but not yet terminal) MCP connection failure is logged: it must be
 # .info, because the failure is an intermediate attempt that AgentSessionJob
 # retries with backoff. The .error that pages on-call is reserved for the
-# terminal case in AgentSessionJob (see GitHub issues #3924 / #4109).
+# terminal case in AgentSessionJob (see GitHub issues pulsemcp/pulsemcp#3924 /
+# pulsemcp/pulsemcp#4109).
 class McpStatusPersistingTest < ActiveSupport::TestCase
   # Records every log call so we can assert the level a message was logged at.
   class RecordingLogger

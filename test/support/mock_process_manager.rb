@@ -1,7 +1,7 @@
 # Mock implementation of ProcessManager for testing
 # This allows tests to simulate process behavior without spawning real processes.
 #
-# Enhanced capabilities (Issue #326):
+# Enhanced capabilities (Issue pulsemcp/agents#326):
 # - Mock implementation of spawn_with_tracking for ownership tracking
 # - Mock implementation of kill_process_group for process group termination
 # - Mock process registry for tracking spawned processes

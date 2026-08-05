@@ -4,7 +4,7 @@ require "test_helper"
 # ActionController::RoutingError for an unmatched path, which DebugExceptions logs at
 # ERROR — and a single ERROR line trips the critical "Zimmer ERROR logs
 # present" Grafana alert. The bottom catch-all route converts these into quiet,
-# non-ERROR responses. See GitHub issue #4307.
+# non-ERROR responses. See GitHub issue pulsemcp/pulsemcp#4307.
 class Routing404Test < ActionDispatch::IntegrationTest
   # Browsers request /favicon.ico at the root regardless of what <link rel="icon">
   # advertises. The app ships a real one in public/, so the static file server

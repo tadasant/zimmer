@@ -67,7 +67,7 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
   # on a good code it writes the credentials file and then KEEPS RUNNING (its TUI
   # stays open — no exit, so no PTY EOF). The job must capture as soon as the
   # credentials land via credentials_ready?, not wait for an exit that never
-  # comes. Drives the actual regression #4013's proof never exercised.
+  # comes. Drives the actual regression pulsemcp/pulsemcp#4013's proof never exercised.
   class FakeNonExitingPasteDriver < RuntimeLoginDriver
     def initialize(creds_dir)
       @creds_dir = creds_dir

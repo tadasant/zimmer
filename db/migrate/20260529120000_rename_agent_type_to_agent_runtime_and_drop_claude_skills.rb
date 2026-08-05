@@ -1,7 +1,7 @@
 class RenameAgentTypeToAgentRuntimeAndDropClaudeSkills < ActiveRecord::Migration[8.0]
   def up
     # Rename agent_type -> agent_runtime. The column is the runtime that drives
-    # the session (Claude Code today; Codex forthcoming, see #3766). Existing
+    # the session (Claude Code today; Codex forthcoming, see pulsemcp/pulsemcp#3766). Existing
     # rows already hold "claude_code", so the rename preserves their values.
     rename_column :sessions, :agent_type, :agent_runtime
 
