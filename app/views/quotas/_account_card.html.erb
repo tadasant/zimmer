@@ -1,15 +1,15 @@
 <div class="bg-white shadow-sm rounded-lg border <%= is_current ? 'border-indigo-300 ring-1 ring-indigo-200' : 'border-gray-200' %>">
   <div class="px-4 py-4 sm:px-6">
     <!-- Account header -->
-    <div class="flex items-center justify-between mb-3">
-      <div class="flex items-center space-x-3">
-        <h3 class="text-sm font-semibold text-gray-900"><%= account.email %></h3>
+    <div class="flex flex-col gap-2 mb-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex flex-wrap items-center gap-3 min-w-0">
+        <h3 class="text-sm font-semibold text-gray-900 break-words min-w-0"><%= account.email %></h3>
         <% if is_current %>
           <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">Current</span>
         <% end %>
         <%= account_status_badge(account.status) %>
       </div>
-      <div class="flex items-center space-x-2 text-xs text-gray-400">
+      <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400 sm:flex-shrink-0">
         <% if error.present? %>
           <span class="text-red-500" title="<%= error %>">Probe failed</span>
         <% end %>
