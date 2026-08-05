@@ -58,6 +58,22 @@ posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Sla
 watch. Staging alerts are only distinguishable from production's by the posting bot (*Zimmer
 (Staging)*), so point staging at a different channel if that noise is unwelcome.
 
+### The release build's retry masks a flake, and only on the app-image half
+
+`release-image.yml` builds the app image twice before giving up, because GHCR intermittently 403s or
+404s on the `zimmer-base` layers it is pulling mid-build (see
+[Deploying](/operate/deploying/#the-release-build-retries-once-because-ghcr-throttles-mid-build)).
+That is the right trade for a registry hiccup, but it is still a blind retry: it does not read the
+error, so it cannot tell a throttled pull from a real one, and it buys its quiet by making genuine
+breakage slower to surface — a second full build plus 90 seconds, near-cold because `cache-to` does
+not export from a failed build.
+
+It also covers only the app build. `Check for base image` and `Build & push base image` hit the same
+account-wide rate limit with no retry at all, and they fail *worse*: a throttled `imagetools inspect`
+fails closed into `need_base=true`, which escalates a read hiccup into a full base rebuild and push
+against the registry that is already refusing the account, and fails the job before the app build's
+retry is reached. That path has not been observed failing; both real incidents were the app build.
+
 ### Telemetry is a hard no-op when misconfigured, and says nothing
 
 `config/initializers/otel_logs_exporter.rb` needs **both** `OTEL_LOGS_EXPORTER_ENDPOINT` and
