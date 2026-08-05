@@ -455,19 +455,38 @@ The second one is a lie worth recognizing. It reads as a missing manifest, but u
 returns 404 for content it is simply refusing to serve — the same digest pulls fine minutes later.
 Neither error means the base image was garbage collected, and neither is worth waking anyone for.
 
-`Check for base image` is not the culprit either. It resolves the manifest through
-`docker buildx imagetools inspect` for real, so a throttled check fails closed and rebuilds the base
-image; what fails is the layer fetch *after* it, once the build is already underway.
+`Check for base image` is not what failed. It resolves the manifest through
+`docker buildx imagetools inspect` for real, and in both red runs it passed *correctly* — the image
+genuinely existed. What fails is the layer fetch *after* it, once the build is already underway.
 
 So the app build runs `continue-on-error`, and a second `docker/build-push-action` step gated on
 `steps.build.outcome == 'failure'` repeats it after a 90-second wait. Only two consecutive failures
-fail the release. A run where the first attempt shows amber and the job is green is exactly this: the
-registry hiccuped and the retry absorbed it.
+fail the release. The `continue-on-error` is load-bearing beyond swallowing the first failure: it
+keeps the job green, which is what lets the retry's own implicit `success()` fire at all.
+
+Reading a run that exercised the retry takes one piece of local knowledge: the first attempt renders
+with a red ✗ against a green job, because GitHub has no distinct rendering for a step that failed
+under `continue-on-error`. The `::warning::` annotation from `Wait out the registry throttle` is the
+signal to look for.
+
+The retry is not free, and it is worth knowing which way the cost falls. A build that is genuinely
+broken now takes a second full build plus 90 seconds to go red, and because `cache-to` does not
+export from a failed build the retry is closer to a cold rebuild than a resume. `concurrency:
+release-image` with `cancel-in-progress: false` means the next push waits behind all of that. That is
+the trade: slower bad news, in exchange for not paging anyone over a registry hiccup.
 
 Both attempts take their tag list from the `tags` output of `Compute version` rather than spelling it
-out twice, and `image_build_workflows_test.rb` asserts the pair stays wired together with identical
-inputs — a `continue-on-error` build whose retry got deleted would publish nothing and still report
-the release as green.
+out twice, and `image_build_workflows_test.rb` asserts the pair stays wired together: the retry comes
+after the step it reads, fires only on that step's failure, does not carry `continue-on-error` of its
+own, and builds identical inputs. Each of those, alone, is enough to produce a workflow that publishes
+nothing and reports the release green.
+
+What the retry does **not** cover is the base-image half of the same interaction. `Check for base
+image` and `Build & push base image` are single-shot, and they talk to the same throttled registry —
+so a throttled `imagetools inspect` fails closed into `need_base=true` and escalates a read hiccup
+into a *full base rebuild and push* against a registry that is currently refusing the account. That
+path fails the job before the app build's retry is ever reached. It has not bitten yet; the two
+observed failures were both the app build.
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 

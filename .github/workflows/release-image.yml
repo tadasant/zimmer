@@ -139,9 +139,11 @@ jobs:
       # a human for a build that would pass on a second try.
       #
       # So: attempt, and only fail the job if a second attempt also fails. The
-      # `continue-on-error` first attempt is what lets the retry run; the step
-      # shows amber in the run when it is exercised, which is the signal that GHCR
-      # was throttling. A genuinely broken build fails twice and still fails the job.
+      # `continue-on-error` first attempt is what keeps the job green long enough for
+      # the retry's implicit success() to let it run. An exercised retry still renders
+      # this step with a red ✗ against a green job — the warning annotation from
+      # "Wait out the registry throttle" is the readable signal that it fired. A
+      # genuinely broken build fails twice and still fails the job.
       - name: Build and push
         id: build
         continue-on-error: true
