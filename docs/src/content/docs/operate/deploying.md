@@ -292,7 +292,7 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
-| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}` |
+| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying once](#the-release-build-retries-once-because-ghcr-throttles-mid-build) if GHCR throttles the base-image pull mid-build |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image outside the normal release path |
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
@@ -432,6 +432,42 @@ Setting `DOCKER_CONFIG` per worker in the runner service definitions (in the pri
 instead of once per repo. The in-repo change here stands on its own and does not
 conflict with that.
 :::
+
+### The release build retries once, because GHCR throttles mid-build
+
+`release-image.yml` builds `FROM ghcr.io/tadasant/zimmer-base:latest`, so buildkit is pulling that
+image's layers out of GHCR for the length of the build. When GitHub applies a secondary rate limit to
+the account — which it does across the whole account, not per workflow — those in-flight pulls start
+failing. Two shapes, same cause:
+
+```
+#10 ERROR: failed to copy: httpReadSeeker: failed open: unexpected status from GET request to
+https://ghcr.io/v2/tadasant/zimmer-base/blobs/sha256:…: 403 Forbidden
+denied: permission_denied: … "You have exceeded a secondary rate limit."
+```
+
+```
+ERROR: failed to solve: failed to copy: httpReadSeeker: failed open:
+content at https://ghcr.io/v2/tadasant/zimmer-base/manifests/sha256:… not found: not found
+```
+
+The second one is a lie worth recognizing. It reads as a missing manifest, but under throttling GHCR
+returns 404 for content it is simply refusing to serve — the same digest pulls fine minutes later.
+Neither error means the base image was garbage collected, and neither is worth waking anyone for.
+
+`Check for base image` is not the culprit either. It resolves the manifest through
+`docker buildx imagetools inspect` for real, so a throttled check fails closed and rebuilds the base
+image; what fails is the layer fetch *after* it, once the build is already underway.
+
+So the app build runs `continue-on-error`, and a second `docker/build-push-action` step gated on
+`steps.build.outcome == 'failure'` repeats it after a 90-second wait. Only two consecutive failures
+fail the release. A run where the first attempt shows amber and the job is green is exactly this: the
+registry hiccuped and the retry absorbed it.
+
+Both attempts take their tag list from the `tags` output of `Compute version` rather than spelling it
+out twice, and `image_build_workflows_test.rb` asserts the pair stays wired together with identical
+inputs — a `continue-on-error` build whose retry got deleted would publish nothing and still report
+the release as green.
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 

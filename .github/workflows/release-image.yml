@@ -58,7 +58,16 @@ jobs:
           OFFSET=$(git rev-list --count "${VERSION_SHA}..HEAD")
           PATCH=$((BASE_PATCH + OFFSET))
           VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          # The tag list is emitted here rather than inline in the build step so
+          # the first attempt and the retry below cannot drift apart.
+          {
+            echo "version=${VERSION}"
+            echo "tags<<TAGS_EOF"
+            echo "ghcr.io/tadasant/zimmer:${VERSION}"
+            echo "ghcr.io/tadasant/zimmer:latest"
+            echo "ghcr.io/tadasant/zimmer:sha-${GITHUB_SHA}"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
           echo "Resolved image version: ${VERSION} (floor ${BASE}, +${OFFSET} commits)"
 
       - name: Log in to GHCR
@@ -122,7 +131,20 @@ jobs:
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
 
+      # Buildkit pulls the zimmer-base layers from GHCR while this step runs, and
+      # GHCR throttles: a secondary rate limit against the account surfaces here as
+      # a 403 on a blob, or — for the same throttling — a 404 on the base manifest
+      # buildkit had already resolved seconds earlier. Neither means the base image
+      # is gone, but either fails the release outright, so a registry hiccup pages
+      # a human for a build that would pass on a second try.
+      #
+      # So: attempt, and only fail the job if a second attempt also fails. The
+      # `continue-on-error` first attempt is what lets the retry run; the step
+      # shows amber in the run when it is exercised, which is the signal that GHCR
+      # was throttling. A genuinely broken build fails twice and still fails the job.
       - name: Build and push
+        id: build
+        continue-on-error: true
         uses: docker/build-push-action@v6
         with:
           builder: ${{ steps.buildx.outputs.name }}
@@ -132,10 +154,27 @@ jobs:
           # the bootstrap step above. The Dockerfile defaults BASE_IMAGE to
           # ghcr.io/tadasant/zimmer-base:latest.
           push: true
-          tags: |
-            ghcr.io/tadasant/zimmer:${{ steps.version.outputs.version }}
-            ghcr.io/tadasant/zimmer:latest
-            ghcr.io/tadasant/zimmer:sha-${{ github.sha }}
+          tags: ${{ steps.version.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # GHCR's secondary rate limit asks for "a few minutes"; 90s plus the build's
+      # own runtime is comfortably inside that and cheap next to paging someone.
+      - name: Wait out the registry throttle
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "::warning::Image build failed on the first attempt (usually a transient GHCR pull error against zimmer-base); retrying in 90s."
+          sleep 90
+
+      - name: Build and push (retry)
+        if: steps.build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          pull: true
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

@@ -91,4 +91,30 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
       end
     end
   end
+
+  # The release build pulls the zimmer-base layers from GHCR while it runs, and a
+  # secondary rate limit against the account surfaces there as a 403 on a blob — or,
+  # for the same throttling, a 404 on a manifest buildkit resolved seconds earlier.
+  # Retrying once turns that into a slower green run instead of a page. These
+  # assertions keep the two halves wired together and identical to each other.
+  test "the release image build retries once rather than failing on a registry hiccup" do
+    steps = YAML.load_file(WORKFLOW_DIR.join("release-image.yml"), aliases: true)
+      .dig("jobs", "build-and-push", "steps")
+
+    first = steps.find { |s| s["id"] == "build" }
+    assert first, "release-image.yml: expected the app image build to carry `id: build`"
+    assert_equal true, first["continue-on-error"],
+      "release-image.yml: the first attempt must not fail the job by itself, or the retry never runs"
+
+    retried = steps.find do |step|
+      step["uses"].to_s.start_with?("#{BUILD_ACTION}@") &&
+        step["if"].to_s.include?("steps.build.outcome")
+    end
+    assert retried,
+      "release-image.yml: a `continue-on-error` build with no retry gated on its outcome would " \
+      "publish nothing and still report the release as green"
+
+    assert_equal first["with"], retried["with"],
+      "release-image.yml: the retry must build and tag exactly what the first attempt did"
+  end
 end
