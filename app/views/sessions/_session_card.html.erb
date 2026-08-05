@@ -136,7 +136,7 @@
             <%= render "sessions/github_pr_link", agent_session: agent_session %>
           <% end %>
         </div>
-        <div class="flex flex-wrap items-center justify-end gap-2">
+        <div class="flex flex-wrap items-center gap-2 ml-auto">
           <%# Mark as blocked by / Unblock %>
           <% if agent_session.blocked_by_session_id.present? %>
             <%= button_to unmark_blocked_session_path(agent_session), method: :patch, class: "inline-flex items-center px-2.5 py-1.5 border border-amber-300 text-xs font-medium rounded-md text-amber-700 bg-amber-50 hover:bg-amber-100", title: "Blocked by ##{agent_session.blocked_by_session_id} — click to unblock", data: { turbo_frame: "_top" } do %>
