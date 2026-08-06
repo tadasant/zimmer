@@ -756,6 +756,12 @@ Two related sharp edges:
   it reads `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d`. An auth outage (a rejected identity)
   has no published reset clock at all, so it falls back to a blind `DEFAULT_RETRY_DELAY` of one hour.
 - Codex has no quota API, so a parked Codex session always gets that same blind hour.
+- The early wake that saves an auth park from that hour is only as good as its evidence. It fires
+  when the account rows change — added, removed, restored to active, re-authenticated — and cannot
+  see an outage that heals on Anthropic's side without touching a row; that one still waits out the
+  timer. And the wakes are capped: a session gets `MAX_EARLY_WAKES` (3) of them across its whole
+  life, deliberately not reset by a re-park, so a session that spends its budget on three failed
+  attempts is back on the hourly timer for good.
 
 ### `CodexRetryStrategy` classifies almost nothing
 

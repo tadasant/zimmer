@@ -247,6 +247,11 @@ class Session < ApplicationRecord
   # render an outage banner promising a retry that already happened, and would
   # keep matching AuthOutageParkService.parked_sessions, so a later ordinary
   # sleep could be force-resumed as if it were still parked.
+  #
+  # `auth_outage_early_wakes` is the deliberate exception — it counts how many
+  # times the sweep has already resumed one session on a changed account pool,
+  # and it has to outlive the resume it authorised or it would never bound
+  # anything. See AuthOutageParkService::EARLY_WAKE_COUNT_KEY.
   STALE_RETRY_METADATA_KEYS = (SIGTERM_RETRY_METADATA_KEYS + %w[
     failure_reason
     exit_status
@@ -272,6 +277,7 @@ class Session < ApplicationRecord
     auth_outage_reason
     auth_outage_parked_at
     auth_outage_retry_at
+    auth_outage_pool_fingerprint
     mcp_retry_count
     mcp_last_retry_at
     broadcast_message_count

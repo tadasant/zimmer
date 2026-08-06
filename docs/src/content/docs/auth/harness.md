@@ -445,12 +445,27 @@ For a **quota** park the trigger is only the backstop: `QuotaResetCheckerJob` us
 accounts first and wakes those sessions in the same sweep, and only for a runtime that has an
 available account again, so a session is never woken into the pool that was still empty.
 
-An **auth** park gets no such fast path, and the asymmetry is deliberate. "An account is available"
-is evidence for a quota park — the pool was empty and now is not. It is no evidence at all for an
+An **auth** park gets the same fast path on different evidence. "An account is available" is the
+whole story for a quota park — the pool was empty and now is not. It is no evidence at all for an
 auth park, which is reached precisely when an account *was* available and the runtime rejected its
-credentials anyway. Waking on it would resume the session into the identical failure every 15
-minutes. Those sessions wait for their scheduled retry, which gives `RefreshRuntimeAuthTokensJob`
-time to actually repair the identity.
+credentials anyway; `park_reason_for_pool` picks `AUTH_UNRECOVERABLE` when `pool.available.exists?`,
+so that predicate is true by construction at park time. Waking on it alone would resume the session
+into the identical failure every 15 minutes.
+
+What an auth park waits for instead is the pool's **identities** changing. `park!` records
+`auth_outage_pool_fingerprint` — a digest of every available account's id and stored credentials —
+and the sweep resumes the session only once that stops describing the pool. An account added,
+removed, restored to active, or re-authenticated moves the digest; a rotation stamp, a quota-hit
+counter, or the five-minute filesystem token sync rewriting an unchanged config does not, which is
+why the fingerprint is content-addressed rather than an `updated_at` comparison.
+
+A changed fingerprint is evidence, not proof. A session whose credentials fail for a reason of its
+own rather than the pool's would clear that bar every time an unrelated account rotated a token, so
+`MAX_EARLY_WAKES` (3) caps how many sweep-driven wakes one session may spend. The counter
+(`auth_outage_early_wakes`) is the one `auth_outage_*` key deliberately kept out of
+`STALE_RETRY_METADATA_KEYS`: it has to outlive the resume it authorised, or a re-park would hand
+the session a fresh budget and the cap would bound nothing. Past the cap — and for a park with no
+recorded fingerprint at all — the session falls back to its timer, which is what it had before.
 
 ## Logging in from the UI
 
