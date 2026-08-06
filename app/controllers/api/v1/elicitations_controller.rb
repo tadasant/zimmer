@@ -194,15 +194,21 @@ class Api::V1::ElicitationsController < Api::BaseController
     end
   end
 
-  # Parse the expiration timestamp from meta, falling back to default
+  # The deadline for this request.
+  #
+  # An MCP server that named its own `com.pulsemcp/expires-at` keeps it — it is
+  # the one party that knows how long its call can stay open. Everything else
+  # gets this instance's default: ELICITATION_EXPIRATION_MINUTES if the operator
+  # set it, otherwise the built-in Elicitation::DEFAULT_EXPIRATION. An
+  # unparseable timestamp is treated as if none was sent.
   def parse_expiration(meta)
     if meta["com.pulsemcp/expires-at"].present?
-      Time.zone.parse(meta["com.pulsemcp/expires-at"])
+      Time.zone.parse(meta["com.pulsemcp/expires-at"]) || Elicitation.default_expiration.from_now
     else
-      Elicitation::DEFAULT_EXPIRATION.from_now
+      Elicitation.default_expiration.from_now
     end
   rescue ArgumentError
-    Elicitation::DEFAULT_EXPIRATION.from_now
+    Elicitation.default_expiration.from_now
   end
 
   def broadcast_elicitation_created(session, elicitation)

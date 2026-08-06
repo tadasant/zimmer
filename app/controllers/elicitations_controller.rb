@@ -6,6 +6,15 @@
 # this controller resolves the elicitation and broadcasts the removal of the
 # elicitation banner via Turbo Streams.
 class ElicitationsController < ApplicationController
+  # What the flash says for each resolution. "cancel" is the banner's Dismiss
+  # button: the request is answered with the protocol's cancel action rather than
+  # left pending until it expires.
+  RESOLUTION_NOTICES = {
+    "accept" => "Elicitation accepted.",
+    "decline" => "Elicitation declined.",
+    "cancel" => "Elicitation dismissed — the MCP server was told the request was cancelled."
+  }.freeze
+
   # PATCH /elicitations/:id/respond
   def respond_to_elicitation
     @elicitation = Elicitation.find(params[:id])
@@ -34,7 +43,7 @@ class ElicitationsController < ApplicationController
         render turbo_stream: turbo_stream.remove("elicitation_#{@elicitation.id}")
       end
       format.html do
-        redirect_to @session, notice: "Elicitation #{action_type}."
+        redirect_to @session, notice: RESOLUTION_NOTICES.fetch(action_type)
       end
     end
   end

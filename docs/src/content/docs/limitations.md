@@ -1243,11 +1243,22 @@ while the state advances anyway.
 
 Tracked in [#73](https://github.com/tadasant/zimmer/issues/73).
 
-### Elicitations expire in 10 minutes
+### An elicitation Zimmer never hears the end of leaves the session parked, not resumed
 
-Step away for a coffee and the agent's approval request dies. Not configurable.
+Expiry is no longer a ten-minute fuse: the shipped default is an hour, `ELICITATION_EXPIRATION_MINUTES`
+moves it per instance, and an MCP server's own `_meta["com.pulsemcp/expires-at"]` still wins for its
+own request. A round-trip that ends without a human answer now says so on the session page instead of
+leaving a session that looks merely idle.
 
-Tracked in [#75](https://github.com/tadasant/zimmer/issues/75).
+What remains is the shape of the recovery. A [stranded block](/sessions/elicitation/#when-a-round-trip-ends-without-an-answer)
+— the marker outliving its elicitation, because a state race swallowed the unblock or the MCP server
+died mid-round-trip — is reconciled by leaving the session in `needs_input` with a banner naming what
+happened. Zimmer does not retry the approval or resume the turn on its own: the agent process the
+request belonged to may be gone, and flipping the session to `running` would create a phantom running
+session with no monitoring job. The lost round-trip is surfaced, not replayed; picking it back up is
+a follow-up you send.
+
+Fixed in [#75](https://github.com/tadasant/zimmer/issues/75).
 
 ### A session's slug is claimed by retry, not by construction
 

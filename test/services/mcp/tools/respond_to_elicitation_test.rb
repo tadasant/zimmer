@@ -46,6 +46,25 @@ class Mcp::Tools::RespondToElicitationTest < ActiveSupport::TestCase
     assert_includes output, "- **Action:** decline"
   end
 
+  # Parity with the web banner's Dismiss button: an agent must be able to end a
+  # round-trip it does not intend to answer, rather than leave it to expire.
+  test "cancel resolves the elicitation without recording content" do
+    elicitation = create_elicitation
+
+    output = @tool.call(
+      "request_id" => elicitation.request_id,
+      "action_type" => "cancel",
+      "content" => { "approved" => true }
+    )
+
+    elicitation.reload
+    assert_equal "cancel", elicitation.status
+    assert_nil elicitation.response_content
+    assert_includes output, "## Elicitation Cancelled"
+    assert_includes output, "- **Action:** cancel"
+    assert_not_includes output, "- **Content:**"
+  end
+
   test "unknown request_id raises" do
     error = assert_raises(Mcp::ToolError) do
       @tool.call("request_id" => "missing-req", "action_type" => "accept")

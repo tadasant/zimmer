@@ -27,7 +27,7 @@ sequenceDiagram
     Note over P,M: spawn: ELICITATION_REQUEST_URL + ELICITATION_SESSION_ID<br/>injected by CliSpawnEnv (both runtimes)
     P->>M: tool call
     M->>Z: POST /api/v1/elicitations (UNAUTHENTICATED)<br/>_meta["com.pulsemcp/request-id"] + message
-    Z->>S: create Elicitation (pending, expires in 10 min)
+    Z->>S: create Elicitation (pending, expires per the configured window)
     Z-->>M: 201 {action: "pending", _meta: {poll-url}}
     Note over M: blocked — begins polling
     S->>S: after_commit → sync_elicitation_blocking_state!
@@ -40,7 +40,7 @@ sequenceDiagram
         Z-->>M: {action: "pending"} (+ lazy expiry check)
     end
 
-    U->>Z: PATCH /elicitations/:id/respond (accept | decline)
+    U->>Z: PATCH /elicitations/:id/respond (accept | decline | cancel)
     Z->>S: elicitation.resolve!
     S->>S: after_commit → unblock_from_elicitation!<br/>(needs_input → running)
     Z->>U: Turbo Stream: remove banner
@@ -57,38 +57,71 @@ break the round-trip — the MCP server would poll forever into a corpse. So the
 
 ## Statuses
 
-`pending` → `accept` | `decline` | `expired`.
+`pending` → `accept` | `decline` | `cancel` | `expired`.
 
-There is also a `cancel` status in the model, but no code path ever writes it. It's reserved.
+`accept` and `decline` answer the question. `cancel` is the protocol's "dismissed without
+answering" — the **Dismiss** button on the banner, `action_type: "cancel"` on
+`PATCH …/respond`, and `"cancel"` on the `respond_to_elicitation` MCP tool. It ends the
+round-trip with an outcome the polling server can read, instead of leaving a request nobody
+intends to answer to sit out its full window. `expired` is the clock answering instead of a
+person.
+
+Only an `accept` carries content. Anything sent with a `decline` or a `cancel` is dropped rather
+than stored and later replayed to the MCP server as if it were an answer.
 
 ## Expiry
 
-Default 10 minutes (`Elicitation::DEFAULT_EXPIRATION`), overridable by the MCP server via
-`_meta["com.pulsemcp/expires-at"]`.
+Three sources, highest precedence first:
+
+| Source | Set by | Scope |
+| --- | --- | --- |
+| `_meta["com.pulsemcp/expires-at"]` | the MCP server, per request | that one request |
+| `ELICITATION_EXPIRATION_MINUTES` | the operator, in the deploy environment | this Zimmer instance |
+| `Elicitation::DEFAULT_EXPIRATION` (60 minutes) | shipped default | fallback |
+
+An MCP server that names its own deadline keeps it — it is the one party that knows how long its
+call can stay open. Everything else gets the instance default. A blank, non-numeric, or
+zero/negative `ELICITATION_EXPIRATION_MINUTES` is logged and ignored; a value outside
+1 minute … 7 days is clamped. A deploy never fails over this knob.
+
+The default is an hour, not the ten minutes it used to be: the feature exists to tolerate a human
+who is away from the desk, and a ten-minute fuse failed exactly the case it was for.
+
+The default is applied on the model (`before_validation`), not only in the API controller, so an
+elicitation created from anywhere gets a deadline. One with no `expires_at` at all is invisible to
+both the `active` and the `expired_pending` scope — it would never block its session and nothing
+would ever expire it.
 
 Expiry happens two ways: lazily, on each poll (`expire_if_needed!`), and via
 `CleanupExpiredElicitationsJob` every 5 minutes.
 
-:::caution[Ten minutes is short]
-Step away from your desk for a coffee and the agent's approval request dies. There's no
-configuration for the default; an MCP server has to opt into a longer window itself.
-Tracked in [#75](https://github.com/tadasant/zimmer/issues/75).
-:::
+## When a round-trip ends without an answer
 
-## Stranded blocks
+Two ways an approval request ends with nobody having decided, and both now say so on the session
+page rather than leaving it looking merely idle.
 
-If the reactive unblock is missed, the `blocked_on_elicitation` marker is left set with nothing to
-clear it, and the session sits in `needs_input` showing a phantom "blocked on elicitation" that
-never resolves. This happens when:
+**Expired.** The clock ran out. The MCP server's next poll is answered `expired`, so the agent does
+get an answer of a kind and the session flips back to `running`. Zimmer records
+`metadata["lost_elicitation"]` with reason `expired`, which the session page renders as a banner:
+nobody answered, and the agent continued without approval.
 
-- a swallowed `AASM::InvalidTransition` (a state race) skips the `after` block that would have
-  cleared the marker, or
-- the MCP server crashes or is killed mid-round-trip, so no resolve or expire commit ever fires.
+**Stranded.** The `blocked_on_elicitation` marker outlived its elicitation entirely. This happens
+when a swallowed `AASM::InvalidTransition` (a state race) skips the `after` block that would have
+cleared the marker, or when the MCP server crashes or is killed mid-round-trip so no resolve or
+expire commit ever fires. `CleanupExpiredElicitationsJob` calls `clear_stale_elicitation_block!`
+every 5 minutes to restore the invariant "marker set ⇒ an active elicitation exists".
 
-`CleanupExpiredElicitationsJob` calls `clear_stale_elicitation_block!` to restore the invariant.
-It strips the marker but leaves the session in `needs_input` — flipping a minutes-stale block
-back to `running` would create a phantom running session with no monitoring job. Tracked in
-[#75](https://github.com/tadasant/zimmer/issues/75).
+It strips the marker but leaves the session in `needs_input` — flipping a minutes-stale block back
+to `running` would create a phantom running session with no monitoring job. What used to be missing
+is the *explanation*: a session parked in `needs_input` with the banner gone and nothing to say why
+is indistinguishable from one idling after a normal turn. So a stranded `needs_input` session also
+gets `metadata["lost_elicitation"]` with reason `stranded`, and the page says the round-trip was
+lost and the session is no longer blocked on it. A session that the sweep finds `running` (the
+swallowed-transition case) gets the marker cleared and no banner — its agent never stopped, so
+there is nothing for you to act on.
+
+The marker is dropped the moment the session moves on: a resume, a new elicitation, or an
+elicitation that actually gets answered.
 
 ## Known problems
 

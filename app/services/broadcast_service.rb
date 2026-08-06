@@ -370,6 +370,20 @@ class BroadcastService
     )
   end
 
+  # Re-render the "this approval request was never answered" slot on the session
+  # detail page. The partial renders an empty slot when the session carries no
+  # `lost_elicitation` marker, so one call both raises and dismisses the banner.
+  # @param session [Session] The session to broadcast to
+  def lost_elicitation_banner(session)
+    broadcast_with_retry(
+      method: :broadcast_replace_to,
+      stream: "session_#{session.id}_elicitations",
+      target: "session_#{session.id}_lost_elicitation",
+      partial: "elicitations/lost_elicitation_banner",
+      locals: { session: session }
+    )
+  end
+
   # Broadcast notification badge update
   # This broadcasts to a global channel so any page with the notification badge
   # will receive the update in real-time.
