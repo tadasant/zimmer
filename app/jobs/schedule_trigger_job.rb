@@ -138,7 +138,7 @@ class ScheduleTriggerJob < ApplicationJob
     # One case does not re-arm, and is not claimed to: a raise from the cleanup
     # that FOLLOWS a successful fire (sibling destruction, the auto-delete)
     # lands here with the condition already advanced. The session exists, so
-    # re-firing would duplicate it. #spent_one_time_schedule? is what the alert
+    # re-firing would duplicate it. #spent_one_shot_wake? is what the alert
     # and the UI read to tell the two apart instead of promising a re-arm that
     # would deliver nothing.
     parked = false
@@ -146,7 +146,7 @@ class ScheduleTriggerJob < ApplicationJob
     if is_one_time && trigger
       parked = trigger.mark_failed(e)
       if parked
-        rearmable = !trigger.spent_one_time_schedule?
+        rearmable = !trigger.spent_one_shot_wake?
         Rails.logger.error "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) marked failed after a failed firing — left in place so it stays visible#{rearmable ? ' and can be re-armed' : ' (schedule already consumed; re-arming will not re-fire it)'}"
       end
     end

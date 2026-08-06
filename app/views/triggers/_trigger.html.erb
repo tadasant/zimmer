@@ -102,8 +102,8 @@
             <% if trigger.failed? %>
               <p class="mt-1 text-sm text-red-700 break-words">
                 Fire failed<%= " #{time_ago_in_words(trigger.failed_at)} ago" if trigger.failed_at %> &mdash;
-                <% if trigger.spent_one_time_schedule? %>
-                  its schedule was already consumed, so re-arming will not re-fire it. Kept so the error is not lost.
+                <% if trigger.spent_one_shot_wake? %>
+                  its wake was already consumed, so re-arming will not re-fire it. Kept so the error is not lost.
                 <% else %>
                   it did not run and will not retry on its own. Re-arm to try again.
                 <% end %>
@@ -128,7 +128,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
               </svg>
-              <%= trigger.failed? && !trigger.spent_one_time_schedule? ? "Re-arm" : "Enable" %>
+              <%= trigger.failed? && !trigger.spent_one_shot_wake? ? "Re-arm" : "Enable" %>
             <% end %>
           <% end %>
           <%= link_to edit_trigger_path(trigger), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50", data: { turbo: false } do %>
