@@ -187,15 +187,4 @@ class ScheduleTriggerJob < ApplicationJob
       error: e
     )
   end
-
-  # The alert this is built for is raised from inside a rescue, and it is the
-  # only signal a lost wake produces. AppUrl.base_url reads configuration, so a
-  # deployment that has it wrong would raise here and lose the specific alert to
-  # the generic one in #perform. A degraded link beats no alert.
-  def trigger_url(trigger_id)
-    "#{AppUrl.base_url}/triggers/#{trigger_id}"
-  rescue => e
-    Rails.logger.warn "[ScheduleTriggerJob] Could not build a trigger URL: #{e.class}: #{e.message}"
-    "/triggers/#{trigger_id}"
-  end
 end

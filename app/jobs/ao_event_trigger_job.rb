@@ -24,6 +24,11 @@
 # - Conditions with watched_session_id in configuration ONLY fire when THAT
 #   session transitions. Conditions without watched_session_id fire for any
 #   transitioning autonomous session (broadcast semantics).
+#
+# A fire that raises always alerts. A session-scoped (one-shot) wake is also
+# parked as `failed` rather than left silently enabled, because it fires only on
+# its watched session's transitions and a terminal session has none left. A
+# broadcast condition is recurring and stays enabled. See #handle_fire_failure.
 class AoEventTriggerJob < ApplicationJob
   # Runs on the dedicated `triggers` queue rather than `default`. These wakes are
   # latency-sensitive — a watched session transitioning to needs_input/failed/
@@ -121,6 +126,11 @@ class AoEventTriggerJob < ApplicationJob
           next
         end
 
+        # Flipped once the fire has actually delivered. Everything past that
+        # point is cleanup, and a failure there must not be advertised as
+        # re-armable — re-firing would duplicate the session that already exists.
+        delivered = false
+
         begin
           prompt = trigger.interpolate_prompt(
             event: event_label(event_name, session)
@@ -136,6 +146,7 @@ class AoEventTriggerJob < ApplicationJob
             next
           end
 
+          delivered = true
           condition.update!(last_triggered_at: Time.current)
           if result_session
             Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for session #{session.id} #{event_name}, created/reused session #{result_session.id}"
@@ -172,10 +183,89 @@ class AoEventTriggerJob < ApplicationJob
             end
           end
         rescue => e
-          Rails.logger.error "[AoEventTriggerJob] Error firing trigger #{trigger.id} for session #{session.id}: #{e.message}"
+          handle_fire_failure(
+            condition: condition,
+            trigger: trigger,
+            scoped: scoped,
+            session: session,
+            event_name: event_name,
+            delivered: delivered,
+            error: e
+          )
         end
       end
     end
+  end
+
+  # A fire that raised. Left to itself this used to be one `.error` log line —
+  # no alert, no record, and a trigger still sitting there `enabled` with its
+  # condition unspent, as if it were going to try again.
+  #
+  # For a SESSION-SCOPED condition that "going to try again" is a promise the
+  # event stream cannot keep. The condition is one-shot and fires only on its
+  # watched session's transitions; if that session was already making its last
+  # one — which is exactly the `session_archived` / `session_failed` case agents
+  # schedule most — there is no next transition, and the wake is simply lost.
+  # So park the trigger as `failed`, mirroring ScheduleTriggerJob: it stays
+  # visible at /triggers carrying the error that stopped it, and re-enabling it
+  # re-arms the wake. Parking is also what closes the retry loop (every firing
+  # path filters on `status: "enabled"`), which is why the condition's
+  # last_triggered_at is deliberately left alone — the wake stays unspent, so a
+  # re-arm delivers for real rather than needing a hand-edit first.
+  #
+  # For a BROADCAST condition the shape is the opposite. It is recurring by
+  # nature — any autonomous session's transition fires it — so it is expected to
+  # survive a bad event and fire on the next one. Parking one would silently
+  # stop every future wake, which is this very bug pointed the other way. It
+  # alerts and stays enabled.
+  def handle_fire_failure(condition:, trigger:, scoped:, session:, event_name:, delivered:, error:)
+    trigger_id = trigger.id
+    trigger_name = trigger.name
+
+    parked = scoped && trigger.mark_failed(error)
+
+    Rails.logger.error(
+      "[AoEventTriggerJob] Error firing trigger #{trigger_id} (#{trigger_name}) for session " \
+      "#{session.id} #{event_name}: #{error.message}\n#{error.backtrace&.first(5)&.join("\n")}"
+    )
+
+    retry_note =
+      if parked && !delivered
+        watched_id = condition.watched_session_id
+        "This is a one-shot state-change wake. It is marked *failed* and left in place, so it no " \
+        "longer fires on its own. Re-enable it at #{trigger_url(trigger_id)} to re-arm it — but note " \
+        "it can only re-fire if session ##{watched_id} transitions again, and a session already in a " \
+        "terminal state never will. If so, the requester needs resuming by hand."
+      elsif parked
+        "This is a one-shot state-change wake, and it had already delivered when the error hit — a " \
+        "session was created and only the cleanup behind it failed. The trigger is marked *failed* " \
+        "and left in place, but re-arming it will NOT re-fire it. Check #{trigger_url(trigger_id)} " \
+        "and the sessions it spawned."
+      elsif scoped
+        "This is a one-shot state-change wake and it could NOT be marked failed, so it remains " \
+        "enabled — it will re-fire only if session ##{condition.watched_session_id} transitions " \
+        "again. Check #{trigger_url(trigger_id)} by hand."
+      else
+        "This is a broadcast (recurring) state-change condition: it remains enabled and will fire " \
+        "on the next matching session transition."
+      end
+
+    if parked
+      Rails.logger.error(
+        "[AoEventTriggerJob] One-shot trigger #{trigger_id} (#{trigger_name}) marked failed after a " \
+        "failed firing — left in place so it stays visible" \
+        "#{delivered ? " (wake already delivered; re-arming will not re-fire it)" : " and can be re-armed"}"
+      )
+    end
+
+    AlertService.raise_alert(
+      "State-change wake failed to fire",
+      details: "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to " \
+               "fire for #{event_name} on session ##{session.id}.\n\n#{retry_note}",
+      source: "AoEventTriggerJob",
+      dedup_key: "ao_event_trigger_#{trigger_id}",
+      error: error
+    )
   end
 
   def event_label(event_name, session)

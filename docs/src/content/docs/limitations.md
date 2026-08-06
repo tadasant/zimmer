@@ -1543,15 +1543,22 @@ repo, which is the only signal you get.
 
 ### A failed one-time wake does not retry itself
 
-A one-time scheduled wake whose fire raises is not destroyed: `ScheduleTriggerJob` parks it in the
-`failed` status with the error on the row, leaves it in the list, and alerts. What it does not do
-is try again. Parking is what stops a persistent error (an unhealable agent root, a bad MCP
-reference) from re-firing every minute forever, and Zimmer has no way to tell that class of error
-apart from a blip worth one more attempt — so it makes none and asks you.
+A one-time wake whose fire raises is not destroyed: `ScheduleTriggerJob` (scheduled wakes) and
+`AoEventTriggerJob` (session-scoped state-change wakes) park it in the `failed` status with the
+error on the row, leave it in the list, and alert. What they do not do is try again. Parking is
+what stops a persistent error (an unhealable agent root, a bad MCP reference) from re-firing
+forever, and Zimmer has no way to tell that class of error apart from a blip worth one more
+attempt — so it makes none and asks you.
 
 The wake is late by however long it takes you to notice. Press **Re-arm** on the trigger (or call
-`action_trigger` with `action=toggle`) and it fires within a minute. See
+`action_trigger` with `action=toggle`) and a scheduled wake fires within a minute. See
 [Triggers](/sessions/triggers/#when-a-one-time-fire-fails).
+
+A re-armed **state-change** wake is weaker than that, and the alert says so. It fires on its
+watched session's transitions, so re-arming only delivers if that session transitions *again* —
+and the common case for a failed wake is that the watched session was in the middle of its last
+transition. Then no re-arm helps and the requester has to be resumed by hand. A broadcast
+`ao_event` condition is never parked at all: it is recurring, so it alerts and keeps firing.
 
 Two consequences worth knowing. A failure whose raise came *after* the schedule was consumed — the
 session was created and only the cleanup behind it fell over — cannot be re-armed at all; the
