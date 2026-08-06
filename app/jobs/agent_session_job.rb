@@ -143,10 +143,6 @@ class AgentSessionJob < ApplicationJob
   MAX_CLONE_JOB_RETRIES = 5
   CLONE_JOB_RETRY_DELAYS_SECONDS = [ 30, 60, 120, 300, 600 ].freeze
 
-  # Age threshold for treating an unlocked job as stale. If a job has no lock and
-  # was created longer ago than this, it is considered abandoned (never picked up).
-  STALE_UNLOCKED_JOB_AGE = 2.minutes
-
   # Minimum successful run duration (seconds) before resetting SIGTERM retry counter.
   # When a process runs successfully for this duration after a SIGTERM retry,
   # the retry counter is reset to 0, allowing fresh retries for future SIGTERMs.
@@ -290,24 +286,26 @@ class AgentSessionJob < ApplicationJob
       if session.running_job_id.present? && session.running_job_id != job_id
         existing_job = GoodJob::Job.find_by(active_job_id: session.running_job_id)
         if existing_job && !existing_job.finished_at
-          # Check if the existing job is actually alive — its lock holder must still exist.
-          # When a GoodJob worker is killed (SIGKILL, OOM), jobs remain "locked" in the
-          # database but the lock holder process no longer exists. Without this check,
-          # follow-up jobs silently skip execution because they see a stale "running" job,
-          # causing the session to get stuck with no feedback to the user.
-          stale_lock = existing_job.locked_by_id.present? &&
-                       !GoodJob::Process.exists?(id: existing_job.locked_by_id)
-          unlocked_and_old = existing_job.locked_by_id.nil? &&
-                             existing_job.created_at < STALE_UNLOCKED_JOB_AGE.ago
+          # Is the recorded job actually being executed by something that still exists?
+          #
+          # Both wrong answers here are silent. Treat a live job as dead and two agent
+          # processes run against one clone; treat a dead one as live and the user's
+          # follow-up prompt is dropped with no feedback — the failure this guard exists
+          # to prevent. JobLiveness answers from evidence (the lock holder's presence in
+          # GoodJob's process registry, and whether the job ever started) rather than from
+          # how long ago the job was enqueued; see that class for why a PID check would be
+          # meaningless across Zimmer's web/worker containers.
+          liveness = JobLiveness.status(existing_job)
 
-          if stale_lock || unlocked_and_old
+          if JobLiveness::SUPERSEDABLE_STATUSES.include?(liveness)
             log_buffer.add(
-              "Superseding stale job #{session.running_job_id} (stale_lock=#{stale_lock}, unlocked_old=#{unlocked_and_old})",
+              "Superseding job #{session.running_job_id}: #{JobLiveness.explain(liveness)} (status=#{liveness})",
               level: "warning"
             )
           else
             log_buffer.add(
-              "Skipping job - session already has a running job (ID: #{session.running_job_id})",
+              "Skipping job - session already has a running job (ID: #{session.running_job_id}, " \
+              "status=#{liveness}: #{JobLiveness.explain(liveness)})",
               level: "warning"
             )
             log_buffer.flush
@@ -1807,6 +1805,27 @@ class AgentSessionJob < ApplicationJob
 
     session = Session.find_by(id: session_id)
     return unless session
+
+    # Stand down if another job now owns this session.
+    #
+    # An interrupted row keeps `performed_at` with no lock, which JobLiveness reads as
+    # `:interrupted` — so a follow-up job supersedes it and takes ownership by writing its
+    # own id to `running_job_id`. GoodJob independently re-picks the interrupted row and
+    # raises InterruptError here. The payload never re-runs, but this recovery path would:
+    # it clears `running_job_id` out from under the new owner, pauses the session, and
+    # enqueues a *third* job — two agents against one clone, which is the outcome the
+    # supersede check exists to avoid. Ownership is the arbiter, so let the owner proceed.
+    if session.running_job_id.present? && session.running_job_id != job_id
+      Rails.logger.info(
+        "[AgentSessionJob] Skipping InterruptError recovery for session #{session_id}: " \
+        "job #{session.running_job_id} has taken ownership"
+      )
+      session.logs.create!(
+        content: "Interrupted job superseded by job #{session.running_job_id} — skipping recovery",
+        level: "info"
+      )
+      return
+    end
 
     Rails.logger.info "[AgentSessionJob] Handling InterruptError for session #{session_id}: #{error.message}"
 

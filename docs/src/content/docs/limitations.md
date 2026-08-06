@@ -1237,12 +1237,42 @@ No amount of atomic merging serializes two writers of the *same* key either — 
 
 Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
 
-### A 2-minute magic number guards against prompt loss
+### A killed worker reads as alive for up to 5 minutes, and a follow-up sent in that window is dropped
 
-`STALE_UNLOCKED_JOB_AGE` — a job whose lock is older than 2 minutes is superseded, because otherwise
-"follow-up jobs silently skip execution because they see a stale 'running' job."
+[Stale job supersession](/sessions/spawning/#stale-job-supersession) asks whether the worker holding a
+job's lock is still alive, rather than guessing from the job's age. GoodJob answers that from either an
+advisory lock (released by Postgres the instant the worker's connection dies) or a heartbeat the capsule
+refreshes every 30 seconds and that expires after `GoodJob::Process::EXPIRED_INTERVAL`, 5 minutes. Which
+one applies is GoodJob's `advisory_lock_heartbeat` setting, whose default enables it in **development
+only** — so in production and staging the answer comes from the heartbeat alone, and a worker killed by
+SIGKILL or OOM keeps reading as alive until its row expires.
 
-Tracked in [#71](https://github.com/tadasant/zimmer/issues/71).
+What happens to a follow-up prompt sent inside that window is worth stating plainly, because it is not a
+delay: `AgentSessionJob` sees a live-looking job, logs "Skipping job", and returns. Nothing re-enqueues
+it, so the prompt text is never delivered. It is worse than a dropped message, because
+`deliver_follow_up!` stamps `pending_follow_up_prompt` in the session's metadata first, and
+`CleanupOrphanedSessionsJob` deliberately skips any session carrying that marker — on the assumption
+that a job is about to pick it up. The session can therefore sit `running` with nobody driving it until
+the user sends something else. Outside the 5-minute window the check works and the prompt lands.
+
+Enabling `advisory_lock_heartbeat` in production would collapse the window to nothing, at the cost of
+holding an advisory lock on the Notifier's already-retained connection for the life of every worker.
+`JobLiveness` reads both signals, so flipping the setting needs no code change.
+
+### The liveness probe can also call a live worker dead
+
+The same probe fails in the other direction, and this one is quieter because nothing logs an error. A
+worker that is running but whose `good_job_processes` row goes stale for over 5 minutes — a wedged
+Notifier thread, a lost LISTEN connection, a pool exhausted under the tight budget in
+`config/connection_budget.rb` — is classified `dead_worker`, and its live turn is superseded. Two agent
+processes then run against one clone.
+
+In development, where `advisory_lock_heartbeat` is on, there is a sharper variant: `GoodJob::Process.active`
+only consults the heartbeat for rows registered *without* a lock, so a capsule that registered with one
+and later drops it reads as dead no matter how fresh its heartbeat is, and does not re-acquire on renew.
+
+Both are strictly less likely than the worker actually being dead — which is why the probe is written this
+way — but neither is impossible, and neither announces itself.
 
 ### State-machine side effects fail without surfacing
 

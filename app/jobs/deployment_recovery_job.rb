@@ -126,13 +126,14 @@ class DeploymentRecoveryJob < ApplicationJob
     # Job has an error recorded means orphaned
     return true if job.error.present?
 
-    # Job is not being processed and was created more than 2 minutes ago
-    # (should have started by now if the system were healthy)
-    if job.locked_by_id.blank? && job.scheduled_at.blank? && job.created_at < 2.minutes.ago
-      return true
-    end
-
-    false
+    # Everything else is the same question AgentSessionJob asks before superseding a job:
+    # is anything still executing this? A deploy is precisely when the answer changes —
+    # the container holding the lock is replaced — so ask GoodJob's process registry
+    # rather than inferring death from how long ago the job was enqueued. A job locked by
+    # a capsule that no longer exists is orphaned even though it *looks* locked, which is
+    # the case this job exists to catch; a job merely waiting in a queue behind a slow
+    # deploy is not orphaned, however long it has waited.
+    !JobLiveness.alive?(job)
   end
 
   # Attempt to recover a single session

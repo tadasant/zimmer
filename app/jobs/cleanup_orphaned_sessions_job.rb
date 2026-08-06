@@ -164,16 +164,26 @@ class CleanupOrphanedSessionsJob < ApplicationJob
     # In GoodJob, locked_by_id indicates if a job is being processed
     # Only check this if the job was created more than 5 minutes ago
     # to avoid false positives for jobs that are being queued
+    #
+    # This keeps its own age gate rather than deferring wholesale to JobLiveness, which
+    # treats a queued job as alive until ABANDONED_QUEUED_JOB_AGE. The two want different
+    # postures: AgentSessionJob decides whether to run a rival agent right now, so it errs
+    # toward standing down, while this cron is the safety net whose entire purpose is to
+    # un-stick a session nobody is driving, and waiting half an hour to do that would blunt
+    # it. Only the lock-holder question below is shared.
     if job.created_at < 5.minutes.ago
       is_scheduled = job.scheduled_at.present? && job.scheduled_at > Time.current
       is_locked = job.locked_by_id.present?
       return true if !is_scheduled && !is_locked
 
-      # Even if the job appears locked, check if the lock is stale
-      # (i.e., the locking process no longer exists - can happen after deploys)
+      # Even if the job appears locked, check whether the lock holder is still alive.
+      # A worker killed uncleanly (SIGKILL, OOM, deploy) leaves its good_job_processes
+      # row behind until some later capsule runs GoodJob::Process.cleanup, so asking
+      # whether the row *exists* reports a dead worker as alive. JobLiveness asks
+      # GoodJob's own liveness question instead — advisory lock held, or heartbeat
+      # refreshed recently.
       if is_locked
-        lock_holder_exists = GoodJob::Process.exists?(id: job.locked_by_id)
-        return true unless lock_holder_exists
+        return true unless JobLiveness.lock_holder_alive?(job.locked_by_id)
       end
     end
 
@@ -208,7 +218,7 @@ class CleanupOrphanedSessionsJob < ApplicationJob
       "Job failed: #{job.error.truncate(100)}"
     elsif job&.finished_at.present?
       "Job finished without updating session status"
-    elsif job&.locked_by_id.present? && !GoodJob::Process.exists?(id: job.locked_by_id)
+    elsif job&.locked_by_id.present? && !JobLiveness.lock_holder_alive?(job.locked_by_id)
       "Job held stale lock from dead process (likely due to deploy)"
     elsif is_hung_process
       "No activity for #{((Time.current - session.last_timeline_entry_at) / 60).round} minutes"
