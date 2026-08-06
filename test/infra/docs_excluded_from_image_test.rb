@@ -3,6 +3,7 @@
 require "test_helper"
 require "open3"
 require "tmpdir"
+require "yaml"
 
 # The docs are single-source: the only copy that exists is docs/ in this repo, built by
 # Cloudflare Pages and served at docs.zimmer.tadasant.com. A second copy bundled into the
@@ -38,8 +39,8 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
   IMAGE_ASSERTION = "RUN /rails/scripts/assert-docs-excluded.sh --root /rails"
   CONTEXT_ASSERTION = "RUN /ctx/scripts/assert-docs-excluded.sh --root /ctx"
 
-  def detect(root)
-    Open3.capture2e(SCRIPT.to_s, "--root", root.to_s)
+  def detect(root, env = {})
+    Open3.capture2e(env, SCRIPT.to_s, "--root", root.to_s)
   end
 
   test "the script is executable, since Docker runs it directly" do
@@ -118,6 +119,44 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
     end
   end
 
+  # A scan that could not run is not a scan that found nothing. This is the failure mode
+  # that would make every other assertion here worthless: the guardrail keeps reporting
+  # OK while its own machinery is broken, and it looks exactly like a passing check.
+  test "a scan that cannot run fails loudly instead of reporting a clean tree" do
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "tree/site"))
+      File.write(File.join(dir, "tree/site/package.json"), '{"dependencies":{"@astrojs/starlight":"^0.36.0"}}')
+
+      # A `find` that always errors, ahead of the real one on PATH.
+      FileUtils.mkdir_p(File.join(dir, "bin"))
+      File.write(File.join(dir, "bin/find"), "#!/bin/sh\nexit 9\n")
+      File.chmod(0o755, File.join(dir, "bin/find"))
+
+      output, status = detect(File.join(dir, "tree"), "PATH" => "#{dir}/bin:#{ENV['PATH']}")
+
+      assert_equal 2, status.exitstatus, <<~MSG
+        With a broken `find`, the detector should have exited 2. Instead it exited
+        #{status.exitstatus} on a tree that DOES contain a Starlight dependency. Output:
+
+        #{output}
+      MSG
+    end
+  end
+
+  test "a usage error is refused rather than silently scanning nothing" do
+    _, no_root = Open3.capture2e(SCRIPT.to_s)
+    assert_equal 2, no_root.exitstatus, "Expected --root to be required."
+
+    _, bad_flag = Open3.capture2e(SCRIPT.to_s, "--everything")
+    assert_equal 2, bad_flag.exitstatus, "Expected an unknown argument to be refused."
+
+    _, missing_dir = Open3.capture2e(SCRIPT.to_s, "--root", "/nonexistent-tree")
+    assert_equal 2, missing_dir.exitstatus, <<~MSG
+      Expected a nonexistent --root to exit 2. Treating it as an empty tree would make a
+      typo in either Dockerfile read as "no docs here" forever.
+    MSG
+  end
+
   test "the published image build asserts the invariant against its own filesystem" do
     assert_includes File.read(DOCKERFILE), IMAGE_ASSERTION, <<~MSG
       Dockerfile no longer runs the docs guardrail. This is the assertion that inspects the
@@ -138,14 +177,22 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
   end
 
   test "CI runs the build-context audit and the aggregate gate requires it" do
-    workflow = File.read(CI_WORKFLOW)
+    jobs = YAML.safe_load(File.read(CI_WORKFLOW)).fetch("jobs")
 
-    assert_includes workflow, "image_excludes_docs:", <<~MSG
+    assert_includes jobs.keys, "image_excludes_docs", <<~MSG
       The image_excludes_docs job is gone from ci.yml. Without it, a docs regression is
       only caught by the release build on main -- after merge.
     MSG
-    assert_includes workflow, "--file Dockerfile.docs-audit"
-    assert_match(/needs:(?:.|\n)*?^      - image_excludes_docs$/, workflow, <<~MSG)
+
+    audit_build = jobs.dig("image_excludes_docs", "steps").any? do |step|
+      step["run"].to_s.include?("--file Dockerfile.docs-audit")
+    end
+    assert audit_build, <<~MSG
+      No step in image_excludes_docs builds Dockerfile.docs-audit, so the job passes
+      without asserting anything.
+    MSG
+
+    assert_includes jobs.dig("all-checks-pass", "needs"), "image_excludes_docs", <<~MSG
       all-checks-pass no longer lists image_excludes_docs in `needs:`. It is the single
       required status check for branch protection, so a job missing from it can fail
       without blocking the merge.

@@ -270,22 +270,16 @@ jobs:
 
   # The documentation site is single-source: docs/ in this repo, built by Cloudflare
   # Pages. It must never ALSO be bundled into the published application image, where it
-  # would be a second, drift-prone copy that nobody deploys, nobody reads, and nobody
-  # keeps true. Keeping it out rests entirely on one `/docs` line in .dockerignore
-  # standing in front of the blanket `COPY . .` in Dockerfile.
+  # would be a second, drift-prone copy that nobody deploys and nobody keeps true.
   #
-  # This job asserts the outcome instead of trusting that line. It builds
-  # Dockerfile.docs-audit -- busybox plus `COPY . /ctx` -- against the REAL build context,
-  # and runs scripts/assert-docs-excluded.sh inside the resulting image. Since COPY can
-  # only read from the build context, docs that are not in the context cannot reach the
-  # app image.
+  # This job builds Dockerfile.docs-audit -- busybox plus `COPY . /ctx` -- against the
+  # REAL build context and runs scripts/assert-docs-excluded.sh inside it. `Dockerfile`
+  # runs the SAME script against /rails in its final stage, which is the direct assertion
+  # against the published image and the one that stops a bad image from being pushed; PR
+  # CI does not build the app image, so this job buys that signal before merge for a few
+  # megabytes instead of a multi-GB zimmer-base pull on a shared runner.
   #
-  # `Dockerfile` runs the SAME script against /rails in its final stage: that is the
-  # direct assertion against the published image's own filesystem, and it fails the
-  # release build before anything is pushed. This job exists because PR CI does not build
-  # the app image (pulling the multi-GB zimmer-base for a one-line check is not worth it
-  # on a shared runner), so it buys the same signal for a few megabytes of busybox --
-  # before merge, rather than after.
+  # See docs/operate/deploying.md, "The docs never ship in the image".
   image_excludes_docs:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
@@ -303,6 +297,11 @@ jobs:
           mkdir -p "$cfg"
           echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
       - name: Assert the docs site is absent from the image build context
+        # BUILDX_BUILDER beats the config file, so naming the builder explicitly is what
+        # release-image.yml does for the same reason the isolation above exists: a build
+        # must never be inferred onto a builder some other job owns and will tear down.
+        env:
+          BUILDX_BUILDER: default
         run: docker build --no-cache --file Dockerfile.docs-audit --tag zimmer-docs-audit:${{ github.run_id }} .
       - name: Remove the audit image
         if: always()

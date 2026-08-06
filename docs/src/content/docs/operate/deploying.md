@@ -201,9 +201,11 @@ in `.dockerignore`. That is a fragile place for an invariant to live — reorgan
 the docs to another path, and the second copy comes back silently.
 
 So two checks assert the outcome instead of trusting that line. Both run
-`scripts/assert-docs-excluded.sh`, which fails if it finds a `docs/` directory, an `astro.config.*`,
-or an `@astrojs/starlight` dependency in a package manifest anywhere under the tree it is pointed at
-(skipping `node_modules`, where a vendored Starlight belongs to somebody else's dependency tree):
+`scripts/assert-docs-excluded.sh`, which fails if it finds a top-level `docs/` directory, or —
+anywhere under the tree it is pointed at — an `astro.config.*` or an `@astrojs/starlight` dependency
+in a package manifest (skipping `node_modules`, where a vendored Starlight belongs to somebody else's
+dependency tree). A scan it could not run exits non-zero too: a guardrail that reports OK when its own
+machinery is broken looks exactly like a passing check, which is worse than no check at all.
 
 | Where | Against what | When it fires |
 | --- | --- | --- |
@@ -221,6 +223,13 @@ Because the check is content-based rather than path-based, moving `docs/` to a n
 moving the `.dockerignore` line with it still fails. What it does **not** do is read `.dockerignore`
 and look for a line — a check like that passes happily while a `COPY` reintroduces the docs by
 another route.
+
+:::caution[It matches the docs by their source, not their output]
+`docs/dist/` — the *rendered* HTML Astro emits — carries no `astro.config.*` and no package manifest.
+A copy of the built site at some path other than `docs/` would therefore slip past all three checks.
+`docs/dist/` is gitignored and doubly excluded today, so this is a gap in what the guardrail proves,
+not a hole anything currently walks through.
+:::
 
 Separately, `release-image.yml` carries `paths-ignore: ["**/*.md", "docs/**"]`, so a docs-only push to
 `main` does not build an image at all.

@@ -1,20 +1,15 @@
 # syntax=docker/dockerfile:1
+# check=error=true
 
-# A throwaway image whose only purpose is to materialize the REAL Docker build context
-# -- the same context `Dockerfile` blanket-copies into /rails -- and assert that no copy
-# of the documentation site is in it.
+# A throwaway image whose only purpose is to materialize the REAL Docker build context --
+# the same context `Dockerfile` blanket-copies into /rails -- and assert that no copy of
+# the documentation site is in it. CI's image_excludes_docs job builds this; nothing runs
+# it. The publish-time half of the guardrail is in `Dockerfile` itself.
 #
-# This is the PR-time half of the docs-exclusion guardrail. The publish-time half lives
-# in `Dockerfile` itself, which runs the same script against /rails in the final stage
-# and so fails the build before an image carrying the docs can be pushed. Building the
-# app image on every PR just to make that assertion would mean pulling the multi-GB
-# zimmer-base image (Node, Playwright, gems) on a shared runner for a one-line check;
-# busybox costs a few megabytes and asserts the same property one step earlier.
-#
-# The two are equivalent because `COPY` can only read from the build context: if the
-# docs are not in the context, no COPY in Dockerfile can put them in the image. The gap
-# -- an `ADD` from a URL, a `COPY --from` an outside image, a RUN that fetches them -- is
-# what the Dockerfile-side assertion is there to close.
+# `COPY` can only read from the build context, so docs absent from the context cannot
+# reach the app image -- which is what makes a few megabytes of busybox a fair stand-in
+# on every PR for a multi-GB zimmer-base pull. See docs/operate/deploying.md, "The docs
+# never ship in the image", for what that stand-in does and does not cover.
 #
 # .dockerignore's existing `/Dockerfile*` rule keeps this file itself out of the context.
 #
