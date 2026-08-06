@@ -159,6 +159,30 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("trigger detail")
   end
 
+  # A failed trigger renders an error string it did not choose — an exception
+  # message with no break opportunity is the normal case, not the pathological
+  # one. Both surfaces show it, so both are measured with one in place.
+  UNBREAKABLE_ERROR = "AgentRootsConfig::AgentRootNotFoundError: " \
+    "agent_root_name=zimmer-production-deploy-and-verify-nightly-catalog-resolve not found in catalog".freeze
+
+  test "a failed trigger's error does not overflow horizontally on a phone" do
+    trigger = create_trigger
+    trigger.mark_failed(UNBREAKABLE_ERROR)
+
+    visit triggers_path
+    assert_text "Failed"
+    assert_no_horizontal_overflow("triggers index with a failed trigger")
+    # Uploaded by CI on success too (see the workflow's screenshot step) — an agent
+    # session has no local Postgres, so this is where a PR's UI evidence comes from.
+    page.save_screenshot("tmp/screenshots/proof-triggers-index-failed-375.png")
+
+    visit trigger_path(trigger)
+    assert_text "This trigger failed to fire"
+    assert_no_horizontal_overflow("trigger detail with a failed trigger")
+    assert_button "Re-arm"
+    page.save_screenshot("tmp/screenshots/proof-trigger-detail-failed-375.png")
+  end
+
   # The account card only crowds once several accounts are listed, and the email is
   # the token that has to wrap — so this owns both rather than leaning on fixtures.
   test "quotas does not overflow horizontally on a phone" do

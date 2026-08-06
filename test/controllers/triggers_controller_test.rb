@@ -569,6 +569,44 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to triggers_path
   end
 
+  # === Failed triggers stay visible and re-armable (issue #76) ===
+
+  test "index shows a failed trigger with its error rather than hiding or dropping it" do
+    @trigger.mark_failed(StandardError.new("Agent root 'gone' not found in catalog"))
+
+    get triggers_path
+
+    assert_response :success
+    assert_match @trigger.name, response.body, "the failed trigger is still listed"
+    assert_match "Failed", response.body
+    assert_match "Agent root &#39;gone&#39; not found in catalog", response.body
+    assert_match "Re-arm", response.body
+  end
+
+  test "show explains the failure and offers a re-arm" do
+    @trigger.mark_failed(StandardError.new("Agent root 'gone' not found in catalog"))
+
+    get trigger_path(@trigger)
+
+    assert_response :success
+    assert_match "This trigger failed to fire", response.body
+    assert_match "Agent root &#39;gone&#39; not found in catalog", response.body
+    assert_match "Re-arm", response.body
+  end
+
+  test "toggling a failed trigger re-arms it" do
+    @trigger.mark_failed(StandardError.new("boom"))
+
+    post toggle_trigger_path(@trigger)
+
+    @trigger.reload
+    assert @trigger.enabled?
+    assert_nil @trigger.failed_at
+    assert_nil @trigger.last_error
+    assert_redirected_to triggers_path
+    assert_equal "Trigger re-armed.", flash[:notice]
+  end
+
   test "toggle returns turbo stream when requested" do
     post toggle_trigger_path(@trigger), headers: {
       "Accept" => "text/vnd.turbo-stream.html"

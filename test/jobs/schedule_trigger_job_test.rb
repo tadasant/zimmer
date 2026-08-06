@@ -181,7 +181,15 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert_equal "enabled", @trigger.status, "Recurring trigger should remain enabled after firing"
   end
 
-  test "auto-deletes one-time trigger even when session creation fails" do
+  # === A failed one-time wake survives as a visible record (issue #76) ===
+  #
+  # Destroying the trigger on the failure path leaves a scheduled wake that
+  # errored gone with nothing to show for it: "wake me at 6am to check the
+  # deploy" becomes "you are not woken, and you find out at 9". These pin the
+  # invariant that prevents it — park it as failed, keep it, keep the evidence,
+  # and still never retry in a loop.
+
+  test "marks one-time trigger failed instead of destroying it when session creation fails" do
     one_time_condition = trigger_conditions(:one_time_schedule_condition)
     trigger = one_time_condition.trigger
     trigger_id = trigger.id
@@ -197,8 +205,145 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    assert_not Trigger.exists?(trigger_id), "One-time trigger should be auto-deleted even on failure"
-    assert_not TriggerCondition.exists?(condition_id), "Condition should be cascade-deleted with the trigger"
+    assert Trigger.exists?(trigger_id), "One-time trigger must survive a failed firing"
+    assert TriggerCondition.exists?(condition_id), "Its condition must survive too"
+
+    trigger.reload
+    assert_equal "failed", trigger.status
+    assert trigger.failed?
+    assert_not_nil trigger.failed_at, "failed_at records when the fire failed"
+    assert_includes trigger.last_error, "agent root not found",
+      "last_error must carry the reason the user has to act on"
+    assert_includes trigger.last_error, "StandardError", "last_error names the exception class"
+  end
+
+  test "a failed one-time trigger does not re-fire in a loop" do
+    one_time_condition = trigger_conditions(:one_time_schedule_condition)
+    trigger = one_time_condition.trigger
+    one_time_condition.update!(last_triggered_at: nil)
+
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("persistent error"))
+
+    # One alert per attempted fire, so the alert count IS the retry count.
+    alert_count = 0
+    AlertService.stubs(:raise_alert).with { |_title, **_kwargs| alert_count += 1; true }
+
+    travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
+      ScheduleTriggerJob.perform_now
+      assert_equal 1, alert_count, "the fire is attempted once"
+
+      # Five more ticks: a failed trigger is filtered out by every firing path,
+      # exactly as a disabled one is. Nothing retries, so nothing re-alerts.
+      5.times { ScheduleTriggerJob.perform_now }
+    end
+
+    assert_equal 1, alert_count, "a failed trigger must not be retried (or re-alerted) on later ticks"
+    assert_equal "failed", trigger.reload.status
+  end
+
+  test "re-arming a failed one-time trigger fires it for real" do
+    one_time_condition = trigger_conditions(:one_time_schedule_condition)
+    trigger = one_time_condition.trigger
+    one_time_condition.update!(last_triggered_at: nil)
+
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("transient blip"))
+    AlertService.stubs(:raise_alert)
+
+    travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
+      ScheduleTriggerJob.perform_now
+    end
+
+    trigger.reload
+    assert_equal "failed", trigger.status
+    assert_nil one_time_condition.reload.last_triggered_at,
+      "the schedule is deliberately left due — the status, not the timestamp, is what stops the retry"
+
+    # The user presses Re-arm (or an agent calls action_trigger toggle).
+    Trigger.any_instance.unstub(:create_session!)
+    trigger.toggle!
+
+    assert_equal "enabled", trigger.status
+    assert_nil trigger.failed_at, "re-arming clears the failure state"
+    assert_nil trigger.last_error
+
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    travel_to Time.zone.parse("2026-04-15 19:05:00 UTC") do
+      assert_difference("Session.count", 1) do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+  end
+
+  # The condition is advanced BEFORE the post-fire cleanup runs, so a raise from
+  # #destroy_sibling_wakes! or the auto-delete arrives with the schedule already
+  # spent and the session already created. Parking is still right — the error
+  # must not vanish — but promising a re-arm would be a lie, and acting on it
+  # would duplicate the session.
+  test "a raise after the schedule was consumed parks the trigger without promising a re-arm" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    one_time_condition = trigger_conditions(:one_time_schedule_condition)
+    trigger = one_time_condition.trigger
+    one_time_condition.update!(last_triggered_at: nil)
+
+    Trigger.any_instance.stubs(:destroy_sibling_wakes!).raises(StandardError.new("sibling cleanup blew up"))
+
+    captured_details = nil
+    AlertService.stubs(:raise_alert).with do |_title, **kwargs|
+      captured_details = kwargs[:details]
+      true
+    end
+
+    travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
+      assert_difference("Session.count", 1) do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+
+    trigger.reload
+    assert_equal "failed", trigger.status, "the error must still be recorded, not swallowed"
+    assert_not_nil one_time_condition.reload.last_triggered_at,
+      "the fire got far enough to consume the schedule"
+    assert trigger.spent_one_time_schedule?,
+      "there is nothing left to fire, so the UI must not offer a re-arm that would deliver nothing"
+    assert_match(/will NOT re-fire/, captured_details)
+
+    # And re-arming really does not duplicate the session.
+    Trigger.any_instance.unstub(:destroy_sibling_wakes!)
+    trigger.toggle!
+
+    travel_to Time.zone.parse("2026-04-15 19:05:00 UTC") do
+      assert_no_difference("Session.count") do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+  end
+
+  test "the alert for a failed one-time fire says the trigger was kept and how to re-arm it" do
+    one_time_condition = trigger_conditions(:one_time_schedule_condition)
+    trigger = one_time_condition.trigger
+    one_time_condition.update!(last_triggered_at: nil)
+
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("agent root not found"))
+
+    captured_details = nil
+    AlertService.stubs(:raise_alert).with do |_title, **kwargs|
+      captured_details = kwargs[:details]
+      true
+    end
+
+    travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
+      ScheduleTriggerJob.perform_now
+    end
+
+    assert_not_nil captured_details, "a failed wake must alert, not pass in silence"
+    assert_match(/failed/i, captured_details)
+    assert_match(/re-arm/i, captured_details)
+    assert_includes captured_details, "/triggers/#{trigger.id}",
+      "the alert should link the trigger the user has to re-arm"
   end
 
   test "destroys sibling wake triggers when one-time schedule fires" do
@@ -300,7 +445,8 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    assert_not Trigger.exists?(firing_trigger.id), "firing one-time trigger destroyed even on failure"
+    assert Trigger.exists?(firing_trigger.id), "firing one-time trigger is parked as failed, not destroyed"
+    assert_equal "failed", firing_trigger.reload.status
     assert Trigger.exists?(sibling_wake.id), "siblings should NOT be destroyed when the wake never delivered"
   end
 

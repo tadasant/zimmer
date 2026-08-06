@@ -10,7 +10,12 @@ module Mcp
     # triggers with at least one condition of that type.
     class SearchTriggers < Tool
       TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
-      STATUSES = %w[enabled disabled].freeze
+      # Referenced, not re-declared: a re-declared copy of a model constant is the
+      # drift vector that leaves an agent unable to name a status a human can see.
+      # `failed` is Zimmer's to set — a one-time scheduled fire raised and the
+      # trigger was parked instead of destroyed. Filtering on it is how an agent
+      # finds wakes that never happened.
+      STATUSES = Trigger::STATUSES
 
       tool_name "search_triggers"
 
@@ -35,6 +40,7 @@ module Mcp
         **Use cases:**
         - View configured automations (scheduled tasks, Slack integrations, GitHub watchers, ao_event waiters)
         - Check trigger status and execution history
+        - Find wakes that never fired: filter status=failed (a fire raised; the trigger was parked, not deleted, and can be re-armed with action_trigger toggle)
         - Discover available Slack channels for new triggers
       DESC
 
@@ -93,6 +99,11 @@ module Mcp
           "- **MCP Servers:** #{trigger.mcp_servers.presence&.join(', ') || '(none)'}"
         ]
         lines << "- **Goal:** #{trigger.goal}" if trigger.goal.present?
+        if trigger.failed?
+          lines << "- **Failed At:** #{trigger.failed_at&.iso8601 || 'unknown'}"
+          lines << "- **Last Error:** #{trigger.last_error.presence || '(not recorded)'}"
+          lines << "- **Re-arm:** call action_trigger with action=toggle to clear the failure and put it back in service"
+        end
         lines << "- **Sessions Created:** #{trigger.sessions_created_count}"
         lines << "- **Last Triggered:** #{trigger.last_triggered_at.iso8601}" if trigger.last_triggered_at
         lines.push("", "### Prompt Template", "```", trigger.prompt_template, "```")
