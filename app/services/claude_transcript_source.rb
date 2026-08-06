@@ -62,8 +62,8 @@ class ClaudeTranscriptSource < TranscriptSource
     TranscriptFileLocator.find_main_transcript(session, transcript_directory, file_system: file_system)
   end
 
-  # @see TranscriptSource#read
-  def read(path)
+  # @see TranscriptSource#read_raw
+  def read_raw(path)
     file_system.read(path)
   end
 
