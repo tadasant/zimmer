@@ -297,6 +297,12 @@ weekly window subsumes the 5-hour one: an account at its 5-hour cap is idle for 
 serves again. A window whose reset time has passed reads as 0% on both axes, since the sliding window
 has cleared and the last number Zimmer recorded for it is stale.
 
+A status expires with its window for the same reason a counter does. Past its reset time a card shows
+the green *"Window reset"* line and no status badge at all, rather than the `rejected` the reading
+recorded — that status described a window that no longer exists, and leaving it up puts a red badge
+beside the 0% the same snapshot renders. Before the reset the card counts down instead: *"Resets in
+1d 4h"*, and *"Resets in &lt; 1m"* through the last minute, which has no whole unit left to report.
+
 There is one definition of "spent", and it lives on the snapshot:
 `ClaudeAccountQuotaSnapshot#seven_day_window_spent?` — the API status is blocking (`allowed` and
 `allowed_warning` serve; anything else, including a value Anthropic adds later, blocks), or the
