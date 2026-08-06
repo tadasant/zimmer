@@ -30,8 +30,8 @@ module Mcp
       TRIGGER_TYPES = %w[slack schedule github_label github_issue].freeze
       # Derived from the model, not re-declared, so the tool cannot drift behind
       # it. `failed` is subtracted because it is Zimmer's to set — ScheduleTriggerJob
-      # parks a one-time trigger there when its fire raises, alongside the failed_at
-      # and last_error the UI renders. A caller that could name it here would
+      # and AoEventTriggerJob park a one-shot trigger there when its fire raises,
+      # alongside the failed_at and last_error the UI renders. A caller that could name it here would
       # fabricate a failure with neither, and the trigger page would show a "fire
       # failed" panel for a fire that never happened. search_triggers carries the
       # full list, because filtering on `failed` is exactly the point there.
@@ -47,8 +47,11 @@ module Mcp
         - **update**: Update an existing trigger (requires "id")
         - **delete**: Delete a trigger (requires "id")
         - **toggle**: Enable/disable a trigger (requires "id"). A trigger in the `failed` status —
-          parked there because a one-time scheduled fire raised — toggles back to enabled, which
-          clears the failure and re-arms it (a one-time schedule then fires within a minute).
+          parked there because a one-shot fire raised — toggles back to enabled, which clears the
+          failure and re-arms it. A one-time schedule then fires within a minute. A session-scoped
+          `ao_event` wake is weaker: it only fires when the session it watches transitions AGAIN,
+          so if that session has already finished, re-arming delivers nothing and the session
+          waiting on it must be resumed directly.
 
         **Conditions (OR semantics):** a trigger fires when ANY of its conditions matches.
         Two ways to say so:
