@@ -1135,6 +1135,29 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     TriggerCondition.any_instance.unstub(:update!)
   end
 
+  test "a failure to REPORT a failed fire does not abort the remaining triggers" do
+    # There is no outer per-condition rescue around the fan-out, so a raise from
+    # the reporting path would drop every trigger after this one — one lost wake
+    # becoming several.
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    session = Session.create!(
+      prompt: "Test session",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("original boom"))
+    AlertService.stubs(:raise_alert).raises(StandardError.new("slack is down"))
+
+    assert_nothing_raised do
+      AoEventTriggerJob.perform_now("session_needs_input", session.id)
+    end
+  end
+
   test "a successful fire raises no alert and leaves the trigger enabled" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
