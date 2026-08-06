@@ -1,4 +1,12 @@
 import { Controller } from "@hotwired/stimulus"
+import { draftKey, saveDraft, loadDraft, clearDraft, pruneExpiredDrafts } from "lib/draft_storage"
+
+// How long to wait after the last keystroke before writing the draft. Long
+// enough that a fast typist isn't writing to localStorage on every character,
+// short enough that a reload a moment after typing still finds the text. Any
+// pending write is flushed synchronously when the page is hidden, so the
+// debounce never costs the user a draft.
+const DRAFT_DEBOUNCE_MS = 300
 
 // Character limits are read from data attributes passed from the server
 // to ensure consistency with Session::PROMPT_MAX_LENGTH
@@ -22,6 +30,10 @@ export default class extends Controller {
 
     // Track whether we just submitted the form - if so, don't restore preserved input
     this.justSubmitted = false
+    this.draftDebounceTimer = null
+
+    // Collect drafts for sessions this browser has stopped visiting.
+    pruneExpiredDrafts()
 
     // Check for pending sent message from server (message that was sent but session
     // transitioned to paused/failed before it appeared in transcript)
@@ -58,6 +70,16 @@ export default class extends Controller {
     // Document-level listener as a fallback for when the form is replaced during submission
     this.boundHandleDocumentSubmitEnd = this.handleDocumentSubmitEnd.bind(this)
     document.addEventListener("turbo:submit-end", this.boundHandleDocumentSubmitEnd)
+
+    // Write the draft down the moment the page is taken away. A backgrounded
+    // PWA can be frozen — or discarded outright — before a debounce timer ever
+    // fires, so `visibilitychange` and `pagehide` are the last reliable point
+    // at which the text still exists anywhere. These are the events that make
+    // the difference between "reopened the app and my prompt is there" and
+    // losing the last few seconds of typing.
+    this.boundFlushDraft = this.flushDraft.bind(this)
+    document.addEventListener("visibilitychange", this.boundFlushDraft)
+    window.addEventListener("pagehide", this.boundFlushDraft)
   }
 
   disconnect() {
@@ -73,9 +95,16 @@ export default class extends Controller {
     if (this.boundHandleDocumentSubmitEnd) {
       document.removeEventListener("turbo:submit-end", this.boundHandleDocumentSubmitEnd)
     }
+    if (this.boundFlushDraft) {
+      document.removeEventListener("visibilitychange", this.boundFlushDraft)
+      window.removeEventListener("pagehide", this.boundFlushDraft)
+    }
+    // A disconnect is itself a form of the page going away (a Turbo navigation
+    // replacing the body). Don't leave the last keystrokes in a pending timer.
+    this.flushDraft()
   }
 
-  // Save current input to sessionStorage before Turbo Stream replaces the form
+  // Save current input before a Turbo Stream replaces the form.
   // Only save if this stream is targeting the follow-up form itself
   saveInputToStorage(event) {
     if (!this.sessionIdValue || !event.target) return
@@ -92,11 +121,58 @@ export default class extends Controller {
     const formContainerId = `session_${this.sessionIdValue}_follow_up_form`
     if (targetId !== formContainerId) return
 
-    const key = `followUpPrompt_${this.sessionIdValue}`
-    const value = this.textareaTarget.value
-    if (value && value.trim() !== "") {
-      sessionStorage.setItem(key, value)
+    this.writeDraft()
+  }
+
+  // The key this session's composer draft lives under. Scoped by session id so
+  // a draft written on one session never surfaces on another.
+  get draftStorageKey() {
+    return draftKey(`session:${this.sessionIdValue}`, "followUpPrompt")
+  }
+
+  // Whichever textarea the user is actually typing into holds the truth; on a
+  // phone that is the mobile one, on a laptop the desktop one.
+  currentDraftValue() {
+    const active = this.getActiveTextarea()
+    if (active) return active.value
+    if (this.hasTextareaTarget) return this.textareaTarget.value
+    return ""
+  }
+
+  // Called on every keystroke (debounced) via data-action. This is the change
+  // that makes a draft survive a reload at all: before it, the draft was only
+  // ever written when a Turbo Stream happened to replace the form, so text
+  // typed and then lost to a reload had never been persisted anywhere.
+  saveDraft() {
+    if (this.draftDebounceTimer) clearTimeout(this.draftDebounceTimer)
+    this.draftDebounceTimer = setTimeout(() => {
+      this.draftDebounceTimer = null
+      this.writeDraft()
+    }, DRAFT_DEBOUNCE_MS)
+  }
+
+  // Write any pending draft immediately. Safe to call with nothing pending.
+  flushDraft(event) {
+    // visibilitychange fires for both directions; only the hidden edge is the
+    // "page is being taken away" signal worth acting on.
+    if (event?.type === "visibilitychange" && document.visibilityState !== "hidden") return
+
+    if (this.draftDebounceTimer) {
+      clearTimeout(this.draftDebounceTimer)
+      this.draftDebounceTimer = null
     }
+    this.writeDraft()
+  }
+
+  writeDraft() {
+    if (!this.sessionIdValue) return
+    // After a submit the textarea is intentionally empty — persisting that
+    // would be correct but pointless, and persisting a stale pre-submit value
+    // would resurrect a message the user already sent.
+    if (this.justSubmitted) return
+    if (!this.hasTextareaTarget) return
+
+    saveDraft(this.draftStorageKey, this.currentDraftValue())
   }
 
   // Handle streams that explicitly clear the follow-up prompt textarea
@@ -179,15 +255,31 @@ export default class extends Controller {
     }
   }
 
-  // Restore preserved input from sessionStorage
+  // Restore the persisted draft. Runs on connect, which covers both a Turbo
+  // Stream replacing the form and a full page load after the PWA was reopened.
   restorePreservedInput() {
     if (!this.sessionIdValue) return
-    const key = `followUpPrompt_${this.sessionIdValue}`
-    const preserved = sessionStorage.getItem(key)
-    if (preserved && this.textareaTarget.value === "") {
+
+    const preserved = loadDraft(this.draftStorageKey)
+    if (!preserved) return
+
+    // Restore into BOTH textareas, not just the desktop one. The composer
+    // renders a desktop and a mobile textarea and shows one of them; filling
+    // only `textarea` left a phone user — the case this is for — looking at an
+    // empty box while their text sat in storage.
+    if (this.hasTextareaTarget && this.textareaTarget.value === "") {
       this.textareaTarget.value = preserved
-      // Don't clear it yet - we only clear after successful submission
     }
+    if (this.hasTextareaMobileTarget && this.textareaMobileTarget.value === "") {
+      this.textareaMobileTarget.value = preserved
+    }
+
+    // Let the character counter and any other input-driven UI catch up with
+    // the text that just appeared.
+    const active = this.getActiveTextarea()
+    if (active) active.dispatchEvent(new Event("input", { bubbles: true }))
+
+    // Don't clear it yet - we only clear after successful submission
   }
 
   // Preload pending sent message from server into the textarea
@@ -223,8 +315,13 @@ export default class extends Controller {
   // Clear the preserved input (called after successful submission)
   clearPreservedInput() {
     if (!this.sessionIdValue) return
-    const key = `followUpPrompt_${this.sessionIdValue}`
-    sessionStorage.removeItem(key)
+    // Cancel any in-flight debounced write, or it would land after this and
+    // restore the draft we just cleared.
+    if (this.draftDebounceTimer) {
+      clearTimeout(this.draftDebounceTimer)
+      this.draftDebounceTimer = null
+    }
+    clearDraft(this.draftStorageKey)
   }
 
   // Get the sessionStorage key for undo content
