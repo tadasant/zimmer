@@ -454,6 +454,22 @@ One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{n
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind
 the same `X-API-Key` gate as everything else.
 
+### Transcript content is redacted
+
+Every endpoint that returns or accepts transcript content serves the **redacted** copy —
+`GET /sessions/:id?include_transcript=true`, `GET /sessions/:id/transcript`,
+`POST /sessions/:id/refresh`, the subagent-transcript endpoints, and the transcript archive. Zimmer
+redacts on write, as bytes come off disk, so a credential an agent printed reads back as
+`[REDACTED:<LABEL>]` rather than the value. Content **posted** to
+`/sessions/:session_id/subagent_transcripts` is redacted on the way in as well.
+
+No request parameter, response field, or status code changes because of this — only the bytes inside
+`transcript`. Two consequences worth planning around: a consumer diffing a transcript against the
+file on disk will see the markers, and redaction is irreversible, so the plaintext is not recoverable
+through the API. It is **defense in depth, not a guarantee** — see
+[Transcripts](/sessions/transcripts/) for what it does and does not catch, and keep treating a
+downloaded transcript as secret material.
+
 ### The plain-text transcript
 
 `transcript_text` is a rendered reading copy, not the raw transcript — for that, use
