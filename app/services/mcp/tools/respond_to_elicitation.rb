@@ -3,20 +3,29 @@
 module Mcp
   module Tools
     # Mirrors PATCH /api/v1/elicitations/:request_id/respond — the programmatic
-    # counterpart to a human clicking accept/decline in the web UI. Resolution
+    # counterpart to a human clicking accept/decline/dismiss in the web UI. Resolution
     # and the session-blocking-state reconciliation live on the Elicitation
     # model, so this tool only validates, resolves, and clears the banner.
     class RespondToElicitation < Tool
       tool_name "respond_to_elicitation"
 
+      # Heading for each resolution, mirroring the enum on action_type. Read with a
+      # fallback so a fourth action added to Elicitation::RESOLVE_ACTIONS surfaces
+      # as a plain heading rather than a KeyError mid-tool-call.
+      RESULT_HEADINGS = {
+        "accept" => "Accepted",
+        "decline" => "Declined",
+        "cancel" => "Cancelled"
+      }.freeze
+
       description <<~DESC
-        Respond to a pending Zimmer elicitation request — programmatically accept or decline it so the paused MCP flow that is waiting on it can continue.
+        Respond to a pending Zimmer elicitation request — programmatically accept, decline, or cancel it so the paused MCP flow that is waiting on it can continue.
 
         **Context:** When an MCP server needs human approval (e.g. a write-class action), it creates an *elicitation* and blocks, polling Zimmer until someone responds. Normally a human clicks "accept" / "decline" in the Zimmer web UI. This tool exposes that same resolution over the API, so an agent or automated test can unblock the flow without a human in the loop.
 
         **What it does:**
         - Looks up the elicitation by its public `request_id` (the `com.pulsemcp/request-id` identifier), or by its numeric database primary key — whichever identifier you hold.
-        - Records an `accept` (optionally with a structured `content` payload) or `decline`.
+        - Records an `accept` (optionally with a structured `content` payload), a `decline`, or a `cancel`.
         - Returns the elicitation's resulting poll-response so you can confirm the outcome.
 
         **Example response:**
@@ -31,6 +40,7 @@ module Mcp
         **Enum — action_type:**
         - **accept** — Approve the request; the waiting MCP flow proceeds. Pass optional `content` to supply the structured data the elicitation asked for.
         - **decline** — Reject the request; the waiting MCP flow unblocks with a declined outcome. `content` is ignored.
+        - **cancel** — Dismiss the request without answering it; the waiting MCP flow unblocks with the protocol's cancelled outcome instead of polling until the request expires. `content` is ignored.
 
         **Use cases:**
         - Closed-loop testing of an MCP server's elicitation-gated behavior without a human clicking in the UI.
@@ -50,12 +60,12 @@ module Mcp
           },
           action_type: {
             type: "string",
-            enum: [ "accept", "decline" ],
-            description: 'How to resolve the elicitation. "accept" approves the request and lets the paused MCP flow continue (optionally with structured `content`); "decline" rejects it and unblocks the flow with a declined outcome.'
+            enum: [ "accept", "decline", "cancel" ],
+            description: 'How to resolve the elicitation. "accept" approves the request and lets the paused MCP flow continue (optionally with structured `content`); "decline" rejects it and unblocks the flow with a declined outcome; "cancel" dismisses it without answering, so the flow unblocks as cancelled rather than waiting out the expiry.'
           },
           content: {
             type: "object",
-            description: 'Optional structured JSON object supplied with an "accept" response (e.g. the form fields the elicitation requested). Ignored for "decline". Must be a JSON object, not a scalar or array.'
+            description: 'Optional structured JSON object supplied with an "accept" response (e.g. the form fields the elicitation requested). Ignored for "decline" and "cancel". Must be a JSON object, not a scalar or array.'
           }
         },
         required: [ "request_id", "action_type" ]
@@ -84,7 +94,7 @@ module Mcp
 
         poll_response = elicitation.to_poll_response
         lines = [
-          "## Elicitation #{action_type == 'accept' ? 'Accepted' : 'Declined'}",
+          "## Elicitation #{RESULT_HEADINGS.fetch(action_type) { action_type.titleize }}",
           "",
           # The elicitation's own request_id, not the argument — the argument may
           # be the primary key, and echoing that back under this label would name

@@ -109,6 +109,47 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("session detail")
   end
 
+  # The approval banner is the densest row on the session page: three action
+  # buttons in one flex row, above a request summary that is one unbreakable
+  # `tool_name: message` string. A non-wrapping row puts Dismiss off the edge.
+  #
+  # The two banners are checked on separate sessions because they cannot coexist:
+  # a live elicitation clears any lost-elicitation marker on its session.
+  test "a live approval banner does not overflow horizontally on a phone" do
+    session = create_session(status: :running)
+    Elicitation.create!(
+      session: session,
+      request_id: "req-#{SecureRandom.hex(8)}",
+      mode: "form",
+      message: "Reveal the production database password for the staging migration?",
+      requested_schema: { "type" => "object", "properties" => { "environment" => { "type" => "string" } } },
+      meta: {},
+      tool_name: "op_read",
+      expires_at: 1.hour.from_now
+    )
+
+    visit session_path(session)
+    assert_text "Action Approval Required"
+
+    assert_no_horizontal_overflow("session detail with an approval banner")
+  end
+
+  test "a lost-elicitation banner does not overflow horizontally on a phone" do
+    session = create_session(status: :needs_input, metadata: {
+      "lost_elicitation" => {
+        "reason" => "stranded",
+        "at" => Time.current.iso8601,
+        "request_id" => "req-abc123",
+        "summary" => "op_read: Reveal the production database password for the staging migration"
+      }
+    })
+
+    visit session_path(session)
+    assert_text "Approval request lost"
+
+    assert_no_horizontal_overflow("session detail with a lost-elicitation banner")
+  end
+
   test "new session form does not overflow horizontally on a phone" do
     visit new_session_path
     assert_selector "form"

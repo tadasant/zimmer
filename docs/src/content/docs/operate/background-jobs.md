@@ -32,7 +32,7 @@ From `config.good_job.cron`:
 | 5m | `GithubTriggerHealthCheckJob` | Alert when GitHub trigger polling has silently stopped succeeding |
 | 5m | `CleanupOrphanedSessionsJob` | Sessions marked `running` whose process is gone |
 | 5m | `RefreshRuntimeAuthTokensJob` | Refresh Anthropic/OpenAI OAuth tokens |
-| 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks |
+| 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks (leaving a banner that says the round-trip was lost) |
 | 5m | `ElicitationEndpointHealthCheckJob` | Alert when MCP servers cannot reach the approval endpoint (production and staging only — see below) |
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |

@@ -1,11 +1,11 @@
 import { Controller } from "@hotwired/stimulus"
 
-// Handles elicitation form interactions (Accept/Decline with dynamic form fields).
+// Handles elicitation form interactions (Accept/Decline/Dismiss with dynamic form fields).
 //
 // Collects field values from the dynamically-rendered form based on the JSON Schema,
 // then submits the response via fetch with Turbo Stream accept header.
 export default class extends Controller {
-  static targets = ["field", "fieldsContainer", "acceptButton", "declineButton"]
+  static targets = ["field", "fieldsContainer", "acceptButton", "declineButton", "cancelButton"]
   static values = {
     respondUrl: String,
     schema: Object
@@ -18,6 +18,12 @@ export default class extends Controller {
 
   decline() {
     this.submitResponse("decline", null)
+  }
+
+  // "Dismiss": the protocol's cancel — the user is not answering, and the MCP
+  // server should stop waiting rather than poll until the request expires.
+  cancel() {
+    this.submitResponse("cancel", null)
   }
 
   collectFieldValues() {
@@ -91,6 +97,10 @@ export default class extends Controller {
       this.declineButtonTarget.disabled = true
       this.declineButtonTarget.classList.add("opacity-50", "cursor-not-allowed")
     }
+    if (this.hasCancelButtonTarget) {
+      this.cancelButtonTarget.disabled = true
+      this.cancelButtonTarget.classList.add("opacity-50", "cursor-not-allowed")
+    }
   }
 
   enableButtons() {
@@ -101,6 +111,10 @@ export default class extends Controller {
     if (this.hasDeclineButtonTarget) {
       this.declineButtonTarget.disabled = false
       this.declineButtonTarget.classList.remove("opacity-50", "cursor-not-allowed")
+    }
+    if (this.hasCancelButtonTarget) {
+      this.cancelButtonTarget.disabled = false
+      this.cancelButtonTarget.classList.remove("opacity-50", "cursor-not-allowed")
     }
   }
 }

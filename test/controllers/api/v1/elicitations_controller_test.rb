@@ -83,7 +83,70 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :created
     elicitation = Elicitation.find_by!(request_id: request_id)
     assert_not_nil elicitation.expires_at
-    assert_in_delta 10.minutes.from_now, elicitation.expires_at, 5.seconds
+    assert_in_delta Elicitation::DEFAULT_EXPIRATION.from_now, elicitation.expires_at, 5.seconds
+  end
+
+  test "should use the operator-configured expiration when the server names none" do
+    request_id = "req-#{SecureRandom.hex(8)}"
+
+    with_expiration_env("240") do
+      post api_v1_elicitations_path,
+        params: {
+          message: "Confirm action",
+          _meta: {
+            "com.pulsemcp/request-id" => request_id,
+            "com.pulsemcp/session-id" => @session.id.to_s
+          }
+        },
+        as: :json
+    end
+
+    assert_response :created
+    elicitation = Elicitation.find_by!(request_id: request_id)
+    assert_in_delta 240.minutes.from_now, elicitation.expires_at, 5.seconds
+  end
+
+  test "an MCP server's own expires-at wins over the operator default" do
+    request_id = "req-#{SecureRandom.hex(8)}"
+    server_deadline = 3.minutes.from_now
+
+    with_expiration_env("240") do
+      post api_v1_elicitations_path,
+        params: {
+          message: "Confirm action",
+          _meta: {
+            "com.pulsemcp/request-id" => request_id,
+            "com.pulsemcp/session-id" => @session.id.to_s,
+            "com.pulsemcp/expires-at" => server_deadline.iso8601
+          }
+        },
+        as: :json
+    end
+
+    assert_response :created
+    elicitation = Elicitation.find_by!(request_id: request_id)
+    assert_in_delta server_deadline, elicitation.expires_at, 5.seconds
+  end
+
+  test "an unparseable expires-at falls back to the operator default" do
+    request_id = "req-#{SecureRandom.hex(8)}"
+
+    with_expiration_env("240") do
+      post api_v1_elicitations_path,
+        params: {
+          message: "Confirm action",
+          _meta: {
+            "com.pulsemcp/request-id" => request_id,
+            "com.pulsemcp/session-id" => @session.id.to_s,
+            "com.pulsemcp/expires-at" => "not-a-timestamp"
+          }
+        },
+        as: :json
+    end
+
+    assert_response :created
+    elicitation = Elicitation.find_by!(request_id: request_id)
+    assert_in_delta 240.minutes.from_now, elicitation.expires_at, 5.seconds
   end
 
   test "should use provided expiration" do
@@ -485,7 +548,7 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     elicitation = create_pending_elicitation
 
     patch respond_api_v1_elicitation_path(elicitation.request_id),
-      params: { action_type: "cancel" },
+      params: { action_type: "expired" },
       headers: @headers,
       as: :json
 
@@ -495,6 +558,27 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
 
     elicitation.reload
     assert_equal "pending", elicitation.status
+  end
+
+  # cancel is the protocol's "dismissed without answering". It ends the round-trip
+  # with an outcome the polling MCP server can read, instead of leaving the request
+  # pending until it expires.
+  test "should cancel a pending elicitation" do
+    elicitation = create_pending_elicitation
+
+    patch respond_api_v1_elicitation_path(elicitation.request_id),
+      params: { action_type: "cancel", content: { confirmed: true } },
+      headers: @headers,
+      as: :json
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "cancel", json["action"]
+    assert_nil json["content"], "a cancel answers nothing, so it must not carry content"
+
+    elicitation.reload
+    assert_equal "cancel", elicitation.status
+    assert_nil elicitation.response_content
   end
 
   private
