@@ -131,19 +131,32 @@ jobs:
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
 
-      # Buildkit pulls the zimmer-base layers from GHCR while this step runs, and
-      # GHCR throttles: a secondary rate limit against the account surfaces here as
-      # a 403 on a blob, or — for the same throttling — a 404 on the base manifest
-      # buildkit had already resolved seconds earlier. Neither means the base image
-      # is gone, but either fails the release outright, so a registry hiccup pages
-      # a human for a build that would pass on a second try.
+      # This step talks to GHCR at both ends, and a secondary rate limit against the
+      # account breaks either one. Buildkit PULLS the zimmer-base layers on the way in
+      # — seen as a 403 on a blob, and (same throttling, different mask) as a 404 on a
+      # base manifest buildkit resolved seconds earlier. It PUSHES the finished image
+      # on the way out — seen as a 403 on a HEAD to a zimmer blob. None of the three
+      # means anything is wrong with the images or the credentials, and all three fail
+      # the release outright, so a registry hiccup pages a human over a build that
+      # would pass on the next try.
       #
-      # So: attempt, and only fail the job if a second attempt also fails. The
-      # `continue-on-error` first attempt is what keeps the job green long enough for
-      # the retry's implicit success() to let it run. An exercised retry still renders
-      # this step with a red ✗ against a green job — the warning annotation from
-      # "Wait out the registry throttle" is the readable signal that it fired. A
-      # genuinely broken build fails twice and still fails the job.
+      # So: up to three attempts, backing off 90s then 240s, and only the last one is
+      # allowed to fail the job. Escalating rather than fixed because the throttle is
+      # account-wide and has outlasted a single 90s wait — on 2026-08-06 it took out
+      # this workflow and the prod deploy in a different repo inside the same two
+      # minutes. The `continue-on-error` on the earlier attempts is load-bearing twice
+      # over: it swallows their failure, and it keeps the job green so the implicit
+      # success() on the later attempts' `if` lets them run at all.
+      #
+      # The retry is deliberately blind — it does not read the error, because the same
+      # throttle has already worn three different HTTP shapes and coupling the release
+      # to registry error strings trades a rare wasted rebuild for a missed one. What
+      # the wait steps do instead is PROBE GHCR and say, in an annotation, whether the
+      # registry was answering: a probe that fails points at the registry, a probe that
+      # succeeds points at the build itself. That is the signal to read on a run that
+      # exhausted its attempts, since an exercised retry renders the earlier attempts
+      # with a red ✗ against a green job (GitHub has no separate rendering for a step
+      # that failed under continue-on-error).
       - name: Build and push
         id: build
         continue-on-error: true
@@ -160,16 +173,36 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # GHCR's secondary rate limit asks for "a few minutes"; 90s plus the build's
-      # own runtime is comfortably inside that and cheap next to paging someone.
       - name: Wait out the registry throttle
         if: steps.build.outcome == 'failure'
-        run: |
-          echo "::warning::Image build failed on the first attempt (usually a transient GHCR pull error against zimmer-base); retrying in 90s."
-          sleep 90
+        env:
+          BACKOFF_SECONDS: "90"
+          ATTEMPT: "1"
+        run: .github/scripts/await-ghcr.sh
 
       - name: Build and push (retry)
+        id: retry
+        continue-on-error: true
         if: steps.build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          pull: true
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Wait out the registry throttle (second backoff)
+        if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
+        env:
+          BACKOFF_SECONDS: "240"
+          ATTEMPT: "2"
+        run: .github/scripts/await-ghcr.sh
+
+      - name: Build and push (final attempt)
+        if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
         uses: docker/build-push-action@v6
         with:
           builder: ${{ steps.buildx.outputs.name }}

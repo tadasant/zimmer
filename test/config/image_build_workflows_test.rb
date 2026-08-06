@@ -92,41 +92,84 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
     end
   end
 
-  # The release build pulls the zimmer-base layers from GHCR while it runs, and a
-  # secondary rate limit against the account surfaces there as a 403 on a blob — or,
-  # for the same throttling, a 404 on a manifest buildkit resolved seconds earlier.
-  # Retrying once turns that into a slower green run instead of a page. These
-  # assertions keep the two halves wired together and identical to each other.
-  test "the release image build retries once rather than failing on a registry hiccup" do
-    steps = YAML.load_file(WORKFLOW_DIR.join("release-image.yml"), aliases: true)
+  RELEASE_WORKFLOW = "release-image.yml"
+  # The app image build, and only it: the base-image build in the same job is gated on
+  # `need_base` and tags something else, so key on the shared tag list instead.
+  APP_TAGS = "${{ steps.version.outputs.tags }}"
+
+  def self.release_build_attempts
+    steps = YAML.load_file(WORKFLOW_DIR.join(RELEASE_WORKFLOW), aliases: true)
       .dig("jobs", "build-and-push", "steps")
+    [ steps, steps.select { |s| s.dig("with", "tags") == APP_TAGS } ]
+  end
 
-    first = steps.find { |s| s["id"] == "build" }
-    assert first, "release-image.yml: expected the app image build to carry `id: build`"
-    assert_equal true, first["continue-on-error"],
-      "release-image.yml: the first attempt must not fail the job by itself, or the retry never runs"
+  # The release build talks to GHCR at both ends — it pulls the zimmer-base layers on
+  # the way in and pushes the finished image on the way out — and an account-wide
+  # secondary rate limit has broken both. Retrying turns that into a slower green run
+  # instead of a page, but only while the chain stays wired correctly: every way it can
+  # come unwired ends in a workflow that publishes nothing and reports the release green.
+  test "the release image build retries a registry hiccup and only the last attempt can fail the job" do
+    steps, attempts = self.class.release_build_attempts
 
-    retried = steps.find do |step|
-      step["uses"].to_s.start_with?("#{BUILD_ACTION}@") &&
-        step["if"].to_s.include?("steps.build.outcome")
+    assert_operator attempts.length, :>=, 2,
+      "#{RELEASE_WORKFLOW}: the app image build must have at least one retry, or an account-wide " \
+      "GHCR throttle fails the release outright"
+    assert_equal attempts, attempts.sort_by { |s| steps.index(s) },
+      "#{RELEASE_WORKFLOW}: attempts must appear in order — one placed above the step whose " \
+      "`outcome` it reads sees an empty string there and skips forever"
+
+    attempts.each_with_index do |attempt, i|
+      last = i == attempts.length - 1
+      where = "#{RELEASE_WORKFLOW}: attempt #{i + 1} ('#{attempt['name']}')"
+
+      if last
+        assert_nil attempt["continue-on-error"],
+          "#{where} is the final attempt and must be allowed to fail the job — if every attempt " \
+          "swallows its own failure, a release that published nothing still reports green"
+      else
+        assert_equal true, attempt["continue-on-error"],
+          "#{where} must not fail the job by itself, or the attempts after it never run"
+        assert attempt["id"].present?,
+          "#{where} needs an `id` so the attempts after it can gate on its outcome"
+      end
+
+      # Attempt N runs only if every attempt before it failed. Anything looser (gating
+      # on `success`, or on only the most recent failure) either never fires or fires
+      # when it should not.
+      expected_if = attempts.first(i).map { |prior| "steps.#{prior['id']}.outcome == 'failure'" }.join(" && ")
+      assert_equal expected_if.presence, attempt["if"],
+        "#{where} must be gated on every prior attempt having failed"
+
+      assert_equal attempts.first["with"], attempt["with"],
+        "#{where} must build and tag exactly what the first attempt did"
     end
-    assert retried,
-      "release-image.yml: a `continue-on-error` build with no retry gated on its outcome would " \
-      "publish nothing and still report the release as green"
+  end
 
-    # Each of the next three would otherwise leave a workflow that publishes nothing
-    # and reports the release green: a retry that also swallows its own failure, a
-    # retry placed before the step it reads (`outcome` is empty there, so it always
-    # skips), and a retry gated on the attempt having *succeeded*.
-    assert_nil retried["continue-on-error"],
-      "release-image.yml: the retry is the attempt that must fail the job — two failed builds " \
-      "cannot both be swallowed"
-    assert_operator steps.index(first), :<, steps.index(retried),
-      "release-image.yml: the retry must come after the attempt whose outcome it reads"
-    assert_equal "steps.build.outcome == 'failure'", retried["if"],
-      "release-image.yml: the retry must fire on failure of the first attempt, and only that"
+  # The retry is blind by design, so the backoff steps carry the diagnosis: they probe
+  # GHCR and report whether the registry was answering, which is what tells a human
+  # reading an exhausted run whether to suspect the registry or the build.
+  test "every gap between release build attempts probes GHCR and backs off" do
+    steps, attempts = self.class.release_build_attempts
+    script = Rails.root.join(".github/scripts/await-ghcr.sh")
 
-    assert_equal first["with"], retried["with"],
-      "release-image.yml: the retry must build and tag exactly what the first attempt did"
+    assert script.exist?, "#{RELEASE_WORKFLOW} references #{script.basename}, which does not exist"
+    assert script.executable?,
+      "#{script.basename} must be executable — the workflow invokes it as a bare `run:` command, " \
+      "which fails with 'Permission denied' otherwise"
+
+    attempts.each_cons(2).with_index do |(before, after), i|
+      gap = steps[(steps.index(before) + 1)...steps.index(after)]
+      waiter = gap.find { |s| s["run"].to_s.include?(script.basename.to_s) }
+
+      assert waiter,
+        "#{RELEASE_WORKFLOW}: no #{script.basename} step between attempt #{i + 1} and #{i + 2} — " \
+        "retrying a rate limit with no backoff just spends the next attempt on the same throttle"
+      assert_equal after["if"], waiter["if"],
+        "#{RELEASE_WORKFLOW}: the backoff before attempt #{i + 2} must run under exactly the " \
+        "condition that attempt does, or the two disagree about when a retry is happening"
+      assert waiter.dig("env", "BACKOFF_SECONDS").present? && waiter.dig("env", "ATTEMPT").present?,
+        "#{RELEASE_WORKFLOW}: #{script.basename} requires BACKOFF_SECONDS and ATTEMPT and exits " \
+        "non-zero without them"
+    end
   end
 end
