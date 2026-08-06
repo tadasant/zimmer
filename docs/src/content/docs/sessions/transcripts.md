@@ -1,6 +1,6 @@
 ---
 title: Transcripts
-description: How agent output is captured, normalized into OpenTranscripts, streamed to the UI, and archived — plus subagent transcripts and the regression guard.
+description: How agent output is captured, normalized into OpenTranscripts, redacted, streamed to the UI, and archived — plus subagent transcripts, the drift guard, and the regression guard.
 sidebar:
   order: 4
 ---
@@ -13,7 +13,7 @@ browser. That's the whole loop. Each step has a wrinkle.
 ```mermaid
 flowchart LR
     CLI["Agent CLI<br/>writes JSONL to disk"] --> F["~/.claude/projects/…/*.jsonl<br/>or ~/.codex/…/*.jsonl.zst"]
-    F --> TS["TranscriptSource<br/>locate → read → parse<br/>(Codex: zstd-decompress)"]
+    F --> TS["TranscriptSource<br/>locate → read → redact → parse<br/>(Codex: zstd-decompress)"]
     TS --> TP["TranscriptPollerService"]
     TP --> RG{"transcript<br/>regression?"}
     RG -->|"new file is shorter"| SKIP["refuse to overwrite<br/>log once"]
@@ -38,14 +38,70 @@ vendor-neutral schema vendored from `pulsemcp/ai-artifacts`. Nine event types:
 Every one renders through a single partial (`app/views/timeline_items/_item.html.erb`), keyed on
 type. One raw JSONL line can fan out into several events.
 
-:::caution[OpenTranscripts is a hand-synced copy, and it diverges]
-`docs/OPEN_TRANSCRIPTS.md` (now this page) explicitly said the vendored schema must be manually
-kept in sync with upstream — a silent-drift hazard with no test guarding it. Zimmer's copy also
-diverges intentionally: no secret redaction, per-line normalization with no cross-line
-timestamp carry-forward, and several fields hardcoded to null.
+Zimmer's copy diverges from upstream on purpose: per-line normalization with no cross-line
+timestamp carry-forward, several fields hardcoded to null, Zimmer-internal adornments on every
+event (`sort_time`, `transcript_index`, `event_order`), and redaction applied one layer up
+rather than during conversion. The divergences are listed in `vendor/open_transcripts/README.md`.
 
-The "no secret redaction" part matters if you ever expose a transcript outside your tailnet.
-Tracked in [#51](https://github.com/tadasant/zimmer/issues/51).
+### Keeping the copy honest
+
+A hand-written mirror drifts, and a mirror that drifts silently is how an upstream fix never
+reaches Zimmer. Two checks, one per link in the chain:
+
+| Link | Checked by | When |
+| --- | --- | --- |
+| Zimmer's Ruby ↔ the pinned snapshot | `test/services/open_transcript_drift_test.rb` | every CI run, offline |
+| The snapshot ↔ upstream `main` | `.github/workflows/open-transcripts-drift.yml` | daily, on demand, and on PRs touching the vendored files |
+
+`vendor/open_transcripts/` holds a byte-for-byte snapshot of the upstream files Zimmer mirrors,
+plus `UPSTREAM.json` pinning the commit and a SHA-256 per file. The offline test re-derives those
+digests and asserts that `OpenTranscript` still declares the nine event-type discriminators and
+the schema version the snapshotted spec does. The scheduled workflow re-fetches upstream and fails
+when the bytes have moved; `alert-ci-failure.yml` listens on every workflow in the repo, so that
+failure lands in Slack. Refreshing the snapshot is a deliberate act with a diff to read — the
+procedure is in `vendor/open_transcripts/README.md`.
+
+## Secret redaction
+
+Zimmer hands its agents real credentials. MCP `${VAR}` values are interpolated into `.mcp.json`
+inside the clone, OAuth tokens live in `~/.claude/.credentials.json`, `git` pushes over an
+authenticated remote. An agent that `cat`s one of those files, echoes an environment variable, or
+pastes a `curl -H "Authorization: Bearer …"` into its own reasoning puts that credential in the
+transcript — and the transcript is stored, rendered, and downloadable through the
+transcript-archive API.
+
+`TranscriptRedactor` runs at `TranscriptSource#read`, the one door transcript bytes come through.
+That is deliberately **on write, not on read**: Zimmer stores the whole raw transcript string in
+`sessions.transcript`, so redacting at the read boundary is what keeps a credential out of the
+database rather than only out of the rendered page. Every downstream consumer — the stored row,
+the broadcast timeline, subagent transcripts, the archive API, the title and summary jobs — reads
+what that method returns, so a new consumer cannot forget to redact.
+
+It works in two tiers:
+
+- **Known values.** Every `${VAR}` the AIR catalog's MCP servers reference, resolved through the
+  same `SecretProviders` chain that injects them into a session, plus the OAuth tokens Zimmer
+  holds in its own database. Exact string matches: no false positives, and they cover
+  Zimmer-specific credential formats no regex could know about.
+- **Shapes.** High-confidence patterns — `sk-ant-oat01…`, `ghp_…`, `xoxb-…`, JWTs, PEM blocks,
+  `Authorization: Bearer …`, credentials embedded in a URL, and a value sitting immediately after
+  a name that says "credential". Ported from the upstream reference redactor and extended with
+  what this system actually handles.
+
+Redaction preserves line count exactly (the regression and rotation guards below compare line
+counts) and leaves no reversible fragment of the original.
+
+:::caution[Defense in depth, not a guarantee — transcripts are still secret material]
+The redactor lowers the blast radius of a transcript that escapes. It does not make one safe to
+expose. It cannot recognize a credential with no recognizable shape that Zimmer never issued: a
+password an agent read out of someone else's config file, the body of an `op read`, a session
+cookie from a browser automation run. Transcripts are also served by an endpoint with
+[no authorization check](https://github.com/tadasant/zimmer/issues/44). Keep treating them as
+secret material.
+
+Redaction is irreversible and applies from the moment it shipped. Rows written before that still
+hold whatever was captured; `bin/rails open_transcripts:redact_stored` rewrites them (it previews
+by default — pass `DRY_RUN=0` to apply).
 :::
 
 ## The regression guard

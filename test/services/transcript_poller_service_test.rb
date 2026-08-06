@@ -364,6 +364,26 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal 2, subagent.message_count
   end
 
+  test "poll_subagent_transcripts redacts secrets before storing" do
+    @session.update!(metadata: { "working_directory" => "/tmp/test-clone" })
+
+    transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", "-tmp-test-clone")
+    token = "sk-ant-oat01-#{'A1b2C3d4E5' * 4}"
+
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(
+      "#{transcript_dir}/agent-leaky.jsonl",
+      %({"type":"user","content":"here is #{token}"}\n)
+    )
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    service.send(:poll_subagent_transcripts)
+
+    subagent = @session.subagent_transcripts.find_by(agent_id: "agent-leaky")
+    refute_includes subagent.transcript, token
+    assert_includes subagent.transcript, "[REDACTED:ANTHROPIC_OAUTH_TOKEN]"
+  end
+
   test "poll_subagent_transcripts updates existing records" do
     @session.update!(metadata: { "working_directory" => "/tmp/test-clone" })
 

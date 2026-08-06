@@ -12,6 +12,12 @@
 # converters). See https://docs.zimmer.tadasant.com/sessions/transcripts/ for the vendored schema doc and the
 # pointer back to the canonical definition.
 #
+# The mirror is not maintained by hope. A pinned snapshot of the upstream files
+# lives in `vendor/open_transcripts/`, `test/services/open_transcript_drift_test.rb`
+# asserts this file still agrees with that snapshot, and a scheduled workflow
+# (`.github/workflows/open-transcripts-drift.yml`) fails when upstream has moved
+# past the snapshot. See `vendor/open_transcripts/README.md`.
+#
 # Representation choices for Zimmer:
 # - Each event is a Ruby Hash with SYMBOL keys for the event's own fields
 #   (:id, :ts, :type, ...). Nested structures that originate from parsed JSON
@@ -21,8 +27,12 @@
 #   :sort_time (a Time for stable ordering), :transcript_index (the source line
 #   index, used by fork-from-here), and :event_order (intra-line fan-out order).
 #   These are ignored by the spec but used by the renderer/controller.
-# - Zimmer does NOT apply the reference converter's secret redaction. It renders raw
-#   content exactly as it always has (documented fidelity note in the PR).
+# - Secret redaction is applied, but one layer up: TranscriptRedactor runs at
+#   TranscriptSource#read, so bytes are already redacted before any normalizer
+#   sees them. That is a deliberate departure from the reference converter, which
+#   redacts while converting — Zimmer stores the raw transcript string too, and
+#   redacting at the read boundary is what keeps a credential out of the database
+#   rather than only out of the rendered events.
 module OpenTranscript
   SCHEMA_VERSION = "0.1"
 

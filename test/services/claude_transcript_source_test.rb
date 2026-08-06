@@ -103,6 +103,29 @@ class ClaudeTranscriptSourceTest < ActiveSupport::TestCase
     refute_match(/\bFATAL\b/, log)
   end
 
+  # === read (the redaction door) ===
+
+  test "read redacts secrets, and read_raw is what it redacts" do
+    path = "#{@transcript_dir}/abc.jsonl"
+    token = "sk-ant-oat01-#{'A1b2C3d4E5' * 4}"
+    line = %({"type":"user","content":"my token is #{token}"}\n)
+    @file_system.write(path, line)
+
+    assert_equal line, @source.read_raw(path), "read_raw must hand back the untouched bytes"
+
+    redacted = @source.read(path)
+    refute_includes redacted, token
+    assert_includes redacted, "[REDACTED:ANTHROPIC_OAUTH_TOKEN]"
+  end
+
+  test "read leaves ordinary transcript content alone" do
+    path = "#{@transcript_dir}/abc.jsonl"
+    content = "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n"
+    @file_system.write(path, content)
+
+    assert_equal content, @source.read(path)
+  end
+
   test "read_events reads the file and parses it" do
     path = "#{@transcript_dir}/abc.jsonl"
     @file_system.write(path, "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n")
