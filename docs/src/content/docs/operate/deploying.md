@@ -188,6 +188,43 @@ the first exceeds the second.
 `bundle install` (which catches Gemfile drift against the base), precompiles assets, drops to
 `USER 1000:1000`, and runs `bin/thrust bin/rails server`.
 
+### The docs never ship in the image
+
+This documentation site is single-source. The only copy that exists is `docs/` in the repository,
+built by Cloudflare Pages and served at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com).
+A second copy bundled into `ghcr.io/tadasant/zimmer` would be one nobody deploys, nobody reads, and
+nobody keeps true — the app never serves it, so nothing would ever surface the drift.
+
+Nothing in `Dockerfile` is selective about this: the build stage does a blanket `COPY . .` and the
+final stage a `COPY --from=build /rails /rails`. The docs stay out because of a single `/docs` line
+in `.dockerignore`. That is a fragile place for an invariant to live — reorganize the file, or move
+the docs to another path, and the second copy comes back silently.
+
+So two checks assert the outcome instead of trusting that line. Both run
+`scripts/assert-docs-excluded.sh`, which fails if it finds a `docs/` directory, an `astro.config.*`,
+or an `@astrojs/starlight` dependency in a package manifest anywhere under the tree it is pointed at
+(skipping `node_modules`, where a vendored Starlight belongs to somebody else's dependency tree):
+
+| Where | Against what | When it fires |
+| --- | --- | --- |
+| `Dockerfile`, final stage | `/rails` — the published image's own filesystem | during the release build, so an image carrying the docs is never pushed |
+| `image_excludes_docs` in `ci.yml` | the real build context, via `Dockerfile.docs-audit` (busybox + `COPY . /ctx`) | on every PR, before merge |
+
+The second is a proxy for the first, and a tight one: `COPY` can only read from the build context, so
+docs absent from the context cannot reach the image. It exists because PR CI does not build the app
+image — pulling the multi-GB `zimmer-base` on a shared runner for a one-line assertion is not worth
+it — and catching the regression after merge is worse than catching it for a few megabytes of
+busybox. The gap between them (an `ADD` from a URL, a `COPY --from` an outside image, a `RUN` that
+fetches the docs over the network) is what the `Dockerfile`-side assertion is there to close.
+
+Because the check is content-based rather than path-based, moving `docs/` to a new directory without
+moving the `.dockerignore` line with it still fails. What it does **not** do is read `.dockerignore`
+and look for a line — a check like that passes happily while a `COPY` reintroduces the docs by
+another route.
+
+Separately, `release-image.yml` carries `paths-ignore: ["**/*.md", "docs/**"]`, so a docs-only push to
+`main` does not build an image at all.
+
 ### Static files in `public/` are not digest stamped
 
 `config.public_file_server.headers` in `production.rb` and `staging.rb` sets the cache header for
@@ -237,7 +274,7 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
+| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}` |

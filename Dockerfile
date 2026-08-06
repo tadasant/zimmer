@@ -50,6 +50,17 @@ FROM base
 COPY --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 COPY --from=build /rails /rails
 
+# The documentation site must never ship inside this image. It is single-source: the one
+# copy that exists is docs/ in this repo, built by Cloudflare Pages. A second copy riding
+# along here would be one nobody deploys, nobody reads, and nobody keeps true.
+#
+# Keeping it out rests entirely on a single `/docs` line in .dockerignore standing in
+# front of the blanket `COPY . .` in the build stage above -- reorganize that file, or
+# move the docs to another path, and the second copy comes back with no signal. This
+# asserts the outcome against the image's own filesystem instead of trusting that line,
+# and it runs during the BUILD, so an image carrying the docs is never pushed.
+RUN /rails/scripts/assert-docs-excluded.sh --root /rails
+
 # Fix ownership of runtime directories for the rails user (user already exists in base)
 RUN mkdir -p db log storage tmp && chown -R rails:rails db log storage tmp
 

@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+
+# A throwaway image whose only purpose is to materialize the REAL Docker build context
+# -- the same context `Dockerfile` blanket-copies into /rails -- and assert that no copy
+# of the documentation site is in it.
+#
+# This is the PR-time half of the docs-exclusion guardrail. The publish-time half lives
+# in `Dockerfile` itself, which runs the same script against /rails in the final stage
+# and so fails the build before an image carrying the docs can be pushed. Building the
+# app image on every PR just to make that assertion would mean pulling the multi-GB
+# zimmer-base image (Node, Playwright, gems) on a shared runner for a one-line check;
+# busybox costs a few megabytes and asserts the same property one step earlier.
+#
+# The two are equivalent because `COPY` can only read from the build context: if the
+# docs are not in the context, no COPY in Dockerfile can put them in the image. The gap
+# -- an `ADD` from a URL, a `COPY --from` an outside image, a RUN that fetches them -- is
+# what the Dockerfile-side assertion is there to close.
+#
+# .dockerignore's existing `/Dockerfile*` rule keeps this file itself out of the context.
+#
+#   docker build --file Dockerfile.docs-audit .
+FROM busybox:stable
+
+COPY . /ctx
+RUN /ctx/scripts/assert-docs-excluded.sh --root /ctx
