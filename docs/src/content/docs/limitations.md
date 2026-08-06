@@ -536,6 +536,15 @@ gap is worth naming precisely:
 - **The generic name-then-value rule over-redacts sometimes.** `api_key: your_api_key_here` in a README
   an agent read gets scrubbed. That is the intended direction of the trade, but it does mean a redacted
   span is not proof a real credential was there.
+- **A redaction reaches the agent's own memory, not just the archive.** When a clone is recreated,
+  `AgentSessionJob#restore_regressed_transcript_if_needed` writes the stored transcript back to the file
+  the runtime reads on `--resume`. That copy is redacted, so the resumed conversation contains
+  `[REDACTED:…]` where the credential was — correct for a credential, and a real loss of context if the
+  span was over-redacted.
+- **Any `${VAR}` the catalog declares is redacted by exact value, whether or not it is a secret.**
+  Today every one of them is (`SLACK_BOT_TOKEN`, `STRAD_API_KEY`, `ZIMMER_PROD_API_KEY`). The first
+  externalized-but-not-secret variable — an org slug, a model id, a base URL — will start being scrubbed
+  out of every transcript that mentions it.
 
 None of this changes what a transcript is. Do not treat one as safe to expose because it has been
 through the redactor; the endpoint serving it still has no authorization check, and redaction lowers the

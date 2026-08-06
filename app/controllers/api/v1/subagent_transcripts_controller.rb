@@ -95,12 +95,18 @@ class Api::V1::SubagentTranscriptsController < Api::BaseController
     @transcript = @session.subagent_transcripts.find(params[:id])
   end
 
+  # Transcript content arriving over the API lands in the same column the
+  # archive endpoint serves, so it goes through the same redaction the poller's
+  # ingest path applies (TranscriptSource#read). Redaction is idempotent, so a
+  # caller that already redacted loses nothing by passing through here.
   def transcript_params
-    params.permit(
+    permitted = params.permit(
       :agent_id, :tool_use_id, :transcript, :filename,
       :message_count, :subagent_type, :description, :status,
       :duration_ms, :total_tokens, :tool_use_count
     )
+    permitted[:transcript] = TranscriptRedactor.redact(permitted[:transcript]) if permitted.key?(:transcript)
+    permitted
   end
 
   def transcript_json(transcript, include_transcript: false)

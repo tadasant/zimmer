@@ -759,7 +759,11 @@ module Mcp
         transcript_file = Dir.exist?(transcript_dir) ? TranscriptFileLocator.find_main_transcript(session, transcript_dir) : nil
         raise ToolError, "No transcript files found on filesystem" unless transcript_file
 
-        content = File.read(transcript_file)
+        # Through the runtime's TranscriptSource, not File.read: that is where
+        # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
+        # transcript over the redacted one the poller stored. It also decompresses a
+        # Codex .zst rollout, which a raw read would have stored as binary.
+        content = TranscriptRuntime.source_for(session).read(transcript_file)
         message_count = count_transcript_messages(content)
 
         # Never let a refresh shrink the stored transcript: a shorter filesystem
@@ -867,7 +871,12 @@ module Mcp
         transcript_file = TranscriptFileLocator.find_main_transcript(session, transcript_dir)
         return false unless transcript_file
 
-        content = File.read(transcript_file)
+        # Through the runtime's TranscriptSource, not File.read — see #refresh.
+        # The equality short-circuit below is why this matters twice over: it
+        # compares against the poller's redacted copy, so a raw read here would
+        # never compare equal once a redaction has fired, and the two writers
+        # would overwrite each other on every pass.
+        content = TranscriptRuntime.source_for(session).read(transcript_file)
         return false if session.transcript == content
 
         message_count = count_transcript_messages(content)

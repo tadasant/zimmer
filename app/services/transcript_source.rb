@@ -75,11 +75,16 @@ class TranscriptSource
 
   # Read the decoded, secret-redacted transcript bytes for a path.
   #
-  # This is the one door transcript bytes come through, which is why redaction
-  # sits here rather than at each persistence site. Everything downstream — the
-  # stored `sessions.transcript`, the broadcast timeline, the archive API, the
-  # title and summary jobs — reads what this returns, so a new consumer cannot
-  # forget to redact. See TranscriptRedactor for what is and is not covered.
+  # Redaction sits here because this is where transcript bytes are pulled off
+  # disk. **Anything that persists transcript content must come through here**,
+  # not through a bare `File.read` — the manual-refresh paths in
+  # SessionsController, Api::V1::SessionsController and Mcp::Tools::ActionSession
+  # all route through it for exactly that reason. A raw read at any of them
+  # writes an unredacted transcript over the redacted one the poller stored, and
+  # (because the refresh paths compare stored content to file content) leaves the
+  # two writers overwriting each other on every pass.
+  #
+  # See TranscriptRedactor for what is and is not covered.
   #
   # Redaction preserves line count exactly, so the poller's regression and
   # rotation arithmetic is unaffected.
