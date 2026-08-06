@@ -1,0 +1,65 @@
+name: OpenTranscripts drift
+
+# `app/services/open_transcript.rb` is a hand-written mirror of the OpenTranscripts
+# v0.1 spec in pulsemcp/ai-artifacts. A hand-written mirror drifts, and a mirror that
+# drifts silently is how an upstream fix — including a security fix to the reference
+# redactor — never reaches Zimmer.
+#
+# This job re-fetches every file pinned in vendor/open_transcripts/UPSTREAM.json and
+# fails when the bytes no longer match. It runs:
+#
+#   - daily on a schedule, because upstream moves on its own timetable, not Zimmer's;
+#   - on demand, so a refresh can be verified without waiting for the schedule;
+#   - on any PR that touches the vendored snapshot, the mirror, or this check itself.
+#
+# Deliberately NOT on every PR: an upstream commit would then turn every unrelated
+# pull request red, and a check that blocks unrelated work is a check people route
+# around. Failures still surface loudly — .github/workflows/alert-ci-failure.yml
+# listens on `workflows: ["*"]` and posts any failed workflow in this repo to Slack.
+#
+# The offline half of the guard (does Zimmer's Ruby still agree with the snapshot?)
+# lives in test/services/open_transcript_drift_test.rb and runs on every CI run.
+
+on:
+  schedule:
+    # 07:00 UTC daily — before the working day, after upstream's.
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+  pull_request:
+    branches: [main]
+    paths:
+      - "vendor/open_transcripts/**"
+      - "app/services/open_transcript.rb"
+      - "app/services/transcript_redactor.rb"
+      - "scripts/check_open_transcripts_drift.rb"
+      - ".github/workflows/open-transcripts-drift.yml"
+  push:
+    branches: [main]
+    paths:
+      - "vendor/open_transcripts/**"
+      - "app/services/open_transcript.rb"
+      - "app/services/transcript_redactor.rb"
+      - "scripts/check_open_transcripts_drift.rb"
+      - ".github/workflows/open-transcripts-drift.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-transcripts-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    # Fork PRs cannot be trusted to run repo code on the self-hosted pool; scheduled
+    # and push events on main carry no pull_request payload and always run.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.6"
+          self-hosted: true
+      - name: Compare vendored snapshot against upstream
+        run: ruby scripts/check_open_transcripts_drift.rb

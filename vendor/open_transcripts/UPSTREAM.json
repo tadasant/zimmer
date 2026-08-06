@@ -1,0 +1,33 @@
+{
+  "repository": "pulsemcp/ai-artifacts",
+  "branch": "main",
+  "ref": "2eb7b83c283c7f87a00fb87ff446304c21dc4cda",
+  "captured_at": "2026-08-06",
+  "files": [
+    {
+      "local": "schemas/events.md",
+      "upstream": "references/open-transcripts/schemas/events.md",
+      "sha256": "a2b7d3b0825e0508ac154efe014171468a83dae0216822548f82ee98f2b77741"
+    },
+    {
+      "local": "schemas/transcript.md",
+      "upstream": "references/open-transcripts/schemas/transcript.md",
+      "sha256": "a04695f69afdda22512ce275027f8ba13e5a95c10e67572b224dd6be348061e6"
+    },
+    {
+      "local": "open_transcripts.py",
+      "upstream": "skills/agent-transcript-analysis/1-acquire/get-claude-code-transcript-from-local/open_transcripts.py",
+      "sha256": "fa435f9c18ac6f018234709017926e6e09a9a0b4480eea7190a74437f4812ba3"
+    },
+    {
+      "local": "redaction.py",
+      "upstream": "skills/agent-transcript-analysis/1-acquire/get-claude-code-transcript-from-local/redaction.py",
+      "sha256": "f78dd95b57f39c69fd94176bdaf1e65366b01bf62f4e60d6eb17d26da28300ef"
+    },
+    {
+      "local": "cc_jsonl.py",
+      "upstream": "skills/agent-transcript-analysis/1-acquire/get-claude-code-transcript-from-local/cc_jsonl.py",
+      "sha256": "ddead1103e5ae93cf6863175ff8766ad392bfedb8fafc045852e6c72d62b1538"
+    }
+  ]
+}
