@@ -63,6 +63,7 @@ not in Terraform — Terraform only provisions the host.
 | `CLAUDE_CONFIG_DIR` | Login isolation only (a scratch dir during the login flow) |
 | `AIR_CONFIG` | Which `air.json` to resolve. Always wins over the per-environment default. |
 | `AIR_CATALOG_REF` | Staging-only catalog pinning |
+| `ELICITATION_EXPIRATION_MINUTES` | How long a new [elicitation](/sessions/elicitation/#expiry) (an MCP server's approval request) stays answerable, in minutes. Default 60. An MCP server that sends its own `_meta["com.pulsemcp/expires-at"]` keeps it; this sets the default for everything else. Blank is treated as unset; a non-numeric or zero/negative value is logged and ignored; anything above the 7-day ceiling is clamped |
 | `X_OAUTH_REDIRECT_URI` | The callback `XOauthBootstrap` sends on both the consent request and the token exchange. Default `http://localhost:8080/callback`. Whatever you set must already be registered on the X app — that registration is a manual step on X's developer portal |
 
 ### Paths
@@ -127,7 +128,7 @@ Claude Code. The old `docs/REST_API.md` documented the intended chain; the behav
 | Plugins per session | 50 |
 | API pagination | default 25, max 100 |
 | MCP server startup timeout | 180,000 ms (3 min) |
-| Elicitation expiry | 10 minutes |
+| Elicitation expiry ceiling (`ELICITATION_EXPIRATION_MINUTES`) | 7 days |
 | `needs_input` push debounce | 60 seconds |
 | Trash retention (dirty clones) | 4 days |
 | Large-prompt stream-json threshold | 100 KB |

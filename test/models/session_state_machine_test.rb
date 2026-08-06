@@ -1628,6 +1628,59 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not session.clear_stale_elicitation_block!
   end
 
+  test "clear_stale_elicitation_block! surfaces the lost round-trip instead of a silently idle session" do
+    session = sessions(:running)
+    elicitation = create_blocking_elicitation(session)
+    assert_equal "needs_input", session.reload.status
+    elicitation.update_column(:status, "expired") # strand: marker set, none active
+
+    session.reload.clear_stale_elicitation_block!
+
+    session.reload
+    assert session.lost_elicitation?,
+      "a session parked in needs_input must say WHY, not just drop the phantom marker"
+    assert_equal "stranded", session.lost_elicitation["reason"]
+    assert_equal elicitation.request_id, session.lost_elicitation["request_id"]
+    assert_equal "needs_input", session.status
+    assert_match(/round-trip lost/i, session.logs.order(:id).last.content)
+  end
+
+  test "clear_stale_elicitation_block! does not raise a banner on a session whose agent never stopped" do
+    session = sessions(:running)
+    elicitation = create_blocking_elicitation(session)
+    assert_equal "needs_input", session.reload.status
+    elicitation.update_column(:status, "expired")
+    # A swallowed InvalidTransition can leave the marker on a session that is back
+    # to running. Nothing is waiting on the user there, so nothing should be shown.
+    session.reload.update_column(:status, "running")
+
+    session.reload.clear_stale_elicitation_block!
+
+    session.reload
+    assert_not session.blocked_on_elicitation?, "the stale marker is still cleared"
+    assert_not session.lost_elicitation?, "a live session has nothing for the user to act on"
+  end
+
+  test "lost_elicitation_at survives a malformed stored timestamp" do
+    session = sessions(:running)
+    session.update_column(:metadata, { "lost_elicitation" => { "reason" => "stranded", "at" => "not-a-time" } })
+
+    assert session.reload.lost_elicitation?
+    assert_nil session.lost_elicitation_at,
+      "a bad stored value must render as an absent timestamp, not raise inside a Turbo broadcast"
+  end
+
+  test "resuming a session clears the lost elicitation banner" do
+    session = sessions(:running)
+    session.record_lost_elicitation!(reason: "stranded")
+    session.update_column(:status, "needs_input")
+    assert session.reload.lost_elicitation?
+
+    session.resume!
+
+    assert_not session.reload.lost_elicitation?
+  end
+
   test "blocked_on_elicitation scope selects only sessions carrying the marker" do
     blocked = sessions(:running)
     create_blocking_elicitation(blocked)

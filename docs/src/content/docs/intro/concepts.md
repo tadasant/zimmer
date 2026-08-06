@@ -139,7 +139,10 @@ An MCP server asking the *human* a question mid-session — "which environment s
 to?" The agent process stays alive and blocked; the session flips to `needs_input`; a banner
 appears in the UI; your answer is polled back by the MCP server.
 
-Elicitations expire after 10 minutes.
+Elicitations expire after an hour by default (`ELICITATION_EXPIRATION_MINUTES` moves it; an MCP
+server can name its own deadline per request). One that ends without an answer — expired, or a
+round-trip that never completed — says so on the session page instead of leaving the session
+looking idle.
 
 → [Elicitation](/sessions/elicitation/)
 

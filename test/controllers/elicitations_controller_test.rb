@@ -71,6 +71,35 @@ class ElicitationsControllerTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "elicitation_#{elicitation.id}"
   end
 
+  # The banner's Dismiss button. It ends the round-trip with the protocol's cancel
+  # action, so the polling MCP server stops waiting instead of sitting on a request
+  # nobody intends to answer.
+  test "should cancel a pending elicitation" do
+    elicitation = create_pending_elicitation
+
+    patch respond_elicitation_path(elicitation),
+      params: { action_type: "cancel" }
+
+    assert_redirected_to session_path(elicitation.session)
+    assert_match(/dismissed/i, flash[:notice])
+    elicitation.reload
+    assert_equal "cancel", elicitation.status
+    assert_nil elicitation.response_content
+    assert_not_nil elicitation.responded_at
+  end
+
+  test "cancelling the last pending elicitation unblocks the session" do
+    elicitation = create_pending_elicitation
+    assert_equal "needs_input", @session.reload.status
+
+    patch respond_elicitation_path(elicitation), params: { action_type: "cancel" }
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_not @session.blocked_on_elicitation?
+    assert_not @session.lost_elicitation?, "a dismissal is an answer, not a lost round-trip"
+  end
+
   test "should reject invalid action_type" do
     elicitation = create_pending_elicitation
 

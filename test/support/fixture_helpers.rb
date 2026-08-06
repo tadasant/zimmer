@@ -152,4 +152,28 @@ module FixtureHelpers
 
     session
   end
+
+  # Run a block with the operator's elicitation-expiry knob set (or, with nil,
+  # explicitly unset), restoring whatever was there before.
+  #
+  # Sets the real variable rather than stubbing ENV#[]: `Elicitation.default_expiration`
+  # reads it per call, and a partial mocha stub on ENV#[] would break every other
+  # ENV read the code path makes.
+  #
+  # @param value [String, nil] minutes, as the operator would write it
+  def with_expiration_env(value)
+    previous = ENV[Elicitation::EXPIRATION_ENV_VAR]
+    if value.nil?
+      ENV.delete(Elicitation::EXPIRATION_ENV_VAR)
+    else
+      ENV[Elicitation::EXPIRATION_ENV_VAR] = value
+    end
+    yield
+  ensure
+    if previous.nil?
+      ENV.delete(Elicitation::EXPIRATION_ENV_VAR)
+    else
+      ENV[Elicitation::EXPIRATION_ENV_VAR] = previous
+    end
+  end
 end

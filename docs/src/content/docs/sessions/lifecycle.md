@@ -107,7 +107,7 @@ session id to resume into, a live process to reattach to — are established or 
 `failure_reason` when it cannot. The state machine does not re-check them, so a resume you
 ask for is a resume the job gets to attempt.
 Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
-`blocked_on_elicitation` marker, any `pending_sleep`, and, importantly, it
+`blocked_on_elicitation` and `lost_elicitation` markers, any `pending_sleep`, and, importantly, it
 cancels pending one-time wake-up triggers targeting this session, so a scheduled wake
 doesn't fire on a session you already resumed by hand.
 
@@ -136,12 +136,17 @@ the flip back.
 :::caution[Stranded elicitation blocks are a real failure mode]
 If the reactive unblock is missed — a swallowed `AASM::InvalidTransition` from a state race, or
 the MCP server crashing mid-round-trip — the marker is left set with nothing to clear it, and
-the session sits in `needs_input` showing a phantom "blocked on elicitation" forever.
+the session sits in `needs_input` showing a phantom "blocked on elicitation".
 
 `CleanupExpiredElicitationsJob` sweeps for this every 5 minutes and calls
 `clear_stale_elicitation_block!`, which strips the marker and leaves the session
 in `needs_input`; flipping it to `running` would create a phantom running session with no
 monitoring job. A minutes-old stranded block has no live round-trip to resume into.
+
+Leaving it there and saying nothing is its own lie, though — a session parked in `needs_input`
+with no banner reads as merely idle. So a stranded `needs_input` session gets a
+`lost_elicitation` marker naming what happened, which the session page renders as a banner. See
+[Elicitation](/sessions/elicitation/#when-a-round-trip-ends-without-an-answer).
 :::
 
 ### `fail` — `waiting | running | needs_input → failed`

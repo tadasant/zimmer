@@ -94,8 +94,10 @@
           </div>
         <% end %>
 
-        <%# Action buttons %>
-        <div class="flex items-center gap-2">
+        <%# Action buttons. Wrapping is load-bearing: three controls do not fit the
+            ~327px this banner gets inside a 375px phone screen, and a non-wrapping
+            row puts the last one off the right edge, unreachable. %>
+        <div class="flex flex-wrap items-center gap-2">
           <button type="button"
                   data-action="click->elicitation-form#accept"
                   data-elicitation-form-target="acceptButton"
@@ -113,6 +115,16 @@
               <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
             </svg>
             Decline
+          </button>
+          <%# Cancel is the protocol's "dismissed without answering": the MCP server
+              stops waiting and the agent is told nobody decided, rather than the
+              request sitting until it expires. %>
+          <button type="button"
+                  data-action="click->elicitation-form#cancel"
+                  data-elicitation-form-target="cancelButton"
+                  title="Dismiss without answering — the MCP server is told the request was cancelled"
+                  class="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-md text-amber-800 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500">
+            Dismiss
           </button>
         </div>
       </div>

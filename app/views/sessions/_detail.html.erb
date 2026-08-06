@@ -327,10 +327,16 @@
     </div>
 
       <%# Elicitation banners - shown above the follow-up form when MCP servers need user approval %>
-      <div id="session_<%= @session.id %>_elicitations" class="px-2 sm:px-6 lg:px-8 space-y-2">
-        <% @session.elicitations.active.each do |elicitation| %>
-          <%= render "elicitations/elicitation_banner", elicitation: elicitation, session: @session %>
-        <% end %>
+      <div class="px-2 sm:px-6 lg:px-8 space-y-2">
+        <%# An approval request that ended without an answer, so a session parked in
+            needs_input says why instead of looking merely idle. %>
+        <%= render "elicitations/lost_elicitation_banner", session: @session %>
+
+        <div id="session_<%= @session.id %>_elicitations" class="space-y-2">
+          <% @session.elicitations.active.each do |elicitation| %>
+            <%= render "elicitations/elicitation_banner", elicitation: elicitation, session: @session %>
+          <% end %>
+        </div>
       </div>
 
       <!-- Follow-up Prompt Input (Sticky at bottom) -->
