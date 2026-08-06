@@ -7,6 +7,24 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     @test_dir = Rails.root.join("tmp", "test_clones_#{SecureRandom.hex(8)}")
     FileUtils.mkdir_p(@test_dir)
 
+    # Most tests here call create_clone without an explicit clone_path, which
+    # resolves ClonesDirectory.base — the REAL ~/.zimmer/clones on a machine that
+    # also hosts a Zimmer. Point it at a per-test temp root instead. Two reasons,
+    # and the second is the serious one: the suite should not litter the durable
+    # volume, and the pre-clone disk guard can ask OrphanCloneFilesystemCleanupJob
+    # to prune, which decides orphan-hood against the *connected* database — here
+    # `zimmer_test`, which knows nothing about the sessions that own those clones.
+    # (OrphanCloneFilesystemCleanupJob#reclaimable_root? fences that too; this is
+    # the belt to its braces.)
+    @clones_base = File.join(@test_dir, "clones_base")
+    FileUtils.mkdir_p(@clones_base)
+    ClonesDirectory.stubs(:base).returns(@clones_base)
+
+    # The guard shells out to df/du. The tests that care about it below override
+    # this stub; the ~20 integration clones here should not each pay for it, nor
+    # depend on how much room the CI host happens to have.
+    CloneDiskGuard.stubs(:ensure_space!)
+
     # Create a test git repository for integration tests
     @test_repo_path = create_test_git_repository("main")
     @test_repo_with_branches = create_test_git_repository_with_branches
@@ -50,7 +68,7 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     assert_includes path, "claude-add-feature"
     refute_includes path, "claude/add-feature"
     # The path should be a flat directory under the clones base path
-    assert_equal File.join(File.expand_path("~"), ".zimmer", "clones"), File.dirname(path)
+    assert_equal ClonesDirectory.base, File.dirname(path)
   end
 
   test "should sanitize multiple slashes in branch name for clone path" do
@@ -59,12 +77,15 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     # The directory name itself should not contain slashes from the branch
     refute_includes File.basename(path), "/"
     # Verify it's still a flat directory under clones
-    assert_equal File.join(File.expand_path("~"), ".zimmer", "clones"), File.dirname(path)
+    assert_equal ClonesDirectory.base, File.dirname(path)
   end
 
-  test "should generate path in ~/.zimmer/clones directory" do
+  test "should generate path under the resolved clones base directory" do
+    # Resolved through ClonesDirectory rather than rebuilt, which is the whole
+    # point of that module: writers and the GC must never disagree about where
+    # clones live.
     path = GitCloneService.send(:generate_clone_path, "test-repo", "main")
-    assert_includes path, ".zimmer/clones"
+    assert_equal ClonesDirectory.base, File.dirname(path)
   end
 
   # Test git command execution concepts (without actual git calls)
@@ -478,8 +499,7 @@ class GitCloneServiceTest < ActiveSupport::TestCase
 
   test "cleans up partial clone on branch failure" do
     # Get the base clone directory to check for leftover clones
-    home_dir = File.expand_path("~")
-    base_clone_dir = File.join(home_dir, ".zimmer", "clones")
+    base_clone_dir = ClonesDirectory.base
 
     # Capture existing directories before the clone attempt
     # Use a Set for efficient lookup and to handle parallel test isolation
@@ -506,8 +526,7 @@ class GitCloneServiceTest < ActiveSupport::TestCase
   end
 
   test "cleans up partial clone on repository failure" do
-    home_dir = File.expand_path("~")
-    base_clone_dir = File.join(home_dir, ".zimmer", "clones")
+    base_clone_dir = ClonesDirectory.base
 
     # Capture existing directories before the clone attempt
     # Use a Set for efficient lookup and to handle parallel test isolation
@@ -531,8 +550,7 @@ class GitCloneServiceTest < ActiveSupport::TestCase
   end
 
   test "cleans up partial clone on subdirectory failure" do
-    home_dir = File.expand_path("~")
-    base_clone_dir = File.join(home_dir, ".zimmer", "clones")
+    base_clone_dir = ClonesDirectory.base
 
     # Capture existing directories before the clone attempt
     # Use a Set for efficient lookup and to handle parallel test isolation

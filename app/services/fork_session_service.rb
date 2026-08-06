@@ -240,8 +240,10 @@ class ForkSessionService
   rescue => e
     @logger.error("Failed to create forked clone", error: e.message)
     # Whatever got written before the failure belongs to nobody:
-    # OrphanCloneFilesystemCleanupJob ignores anything younger than its 48h
-    # threshold, so a partial clone left here sits on disk for two days.
+    # OrphanCloneFilesystemCleanupJob's scheduled sweep ignores anything younger
+    # than its 48h threshold, so a partial clone left here sits on disk for two
+    # days unless the volume comes under enough pressure to trigger that job's
+    # 2h reclamation path.
     discard_partial_clone(new_clone_path)
     nil
   end
