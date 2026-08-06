@@ -23,6 +23,13 @@ class GitCloneService
   # AgentSessionJob's job-level clone retry.
   class TransientGitError < GitError; end
 
+  # Raised when the clones volume cannot accommodate the clone (see
+  # CloneDiskGuard). Subclasses GitError so existing `rescue
+  # GitCloneService::GitError` paths keep working, but is deliberately NOT
+  # transient: retrying a full disk on a 5-second backoff accomplishes nothing,
+  # and the message is written to tell a human what to do instead.
+  class InsufficientDiskSpaceError < GitError; end
+
   # Hard wall-clock cap for a single git subprocess. A stalled clone — e.g. a
   # half-open HTTPS connection during fetch-pack that never sends a TCP reset —
   # would otherwise block the calling thread forever. Because GitCloneService
@@ -120,6 +127,11 @@ class GitCloneService
       # Ensure parent directory exists
       file_system.mkdir_p(File.dirname(clone_path))
 
+      # Refuse to start a clone the volume cannot hold. Prunes orphaned clones
+      # first, so the common "disk filled with abandoned clones" case self-heals;
+      # raises with an actionable message when it cannot.
+      ensure_disk_space!(repo_url, File.dirname(clone_path))
+
       # Clone the repository directly with the specified branch.
       # Retries on transient network/server errors (e.g., GitHub 5xx).
       run_git_clone_with_retry(repo_url, branch, clone_path)
@@ -145,7 +157,13 @@ class GitCloneService
       # whether a longer-horizon retry is warranted. run_git_clone_with_retry
       # raises TransientGitError once its own retries are exhausted; a bare
       # GitError (or any other error) means "don't retry — permanent".
-      error_class = e.is_a?(TransientGitError) ? TransientGitError : GitError
+      # InsufficientDiskSpaceError is preserved for the same reason in reverse:
+      # it is permanent by construction and carries an actionable message.
+      error_class = case e
+      when TransientGitError then TransientGitError
+      when InsufficientDiskSpaceError then InsufficientDiskSpaceError
+      else GitError
+      end
       raise error_class, "Failed to create clone: #{e.message}"
     end
 
@@ -163,6 +181,15 @@ class GitCloneService
     end
 
     private
+
+    # Translate the guard's refusal into a GitError subclass so it flows through
+    # the callers' existing rescue paths (AgentSessionJob fails the session and
+    # surfaces the message in its log) instead of escaping as an unhandled error.
+    def ensure_disk_space!(repo_url, base)
+      CloneDiskGuard.ensure_space!(repository_url: repo_url, base: base)
+    rescue CloneDiskGuard::InsufficientDiskSpaceError => e
+      raise InsufficientDiskSpaceError, e.message
+    end
 
     # Run `git clone` with bounded retries for transient failures.
     # Non-transient failures (auth, missing branch, missing repo) raise immediately.

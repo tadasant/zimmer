@@ -103,6 +103,31 @@ compute every one of those as an orphan. Scratch and prompt attachments have no 
 re-fetched from, so that is unrecoverable, which is why the fence is on the *path* rather than on
 whether some `AGENT_*_DIR` happens to be set.
 
+## Clone pruning has a second, urgent gear
+
+`OrphanCloneFilesystemCleanupJob` is on the hourly cleanup cron, and on that schedule it is
+patient: `AGE_THRESHOLD` is 48 hours and `BATCH_LIMIT` is 20 directories per run. That is the right
+posture for a background sweep and the wrong one for a disk filling up in an afternoon, so the same
+job has a second entry point.
+
+`OrphanCloneFilesystemCleanupJob.reclaim_space(target_free_bytes:, clones_base:)` is called
+synchronously by [`CloneDiskGuard`](/sessions/spawning/#the-pre-clone-disk-guard) when a session is
+about to clone into a volume that cannot hold it. It lowers **only** the age bar
+(`PRESSURE_AGE_THRESHOLD`, 2 hours) and the batch cap (`PRESSURE_BATCH_LIMIT`, 100), and it stops
+the moment the volume reports enough free space.
+
+Everything else is shared with the scheduled sweep, deliberately — a pruner that deletes a live
+session's working directory is a far worse outcome than the disk pressure it was relieving:
+
+| Guard | Effect |
+| --- | --- |
+| Tracked-path check | A directory whose basename matches **any** session row's `metadata->>'clone_path'` is never a candidate, whatever that session's status. Only directories with no owning row at all are eligible |
+| `Session.live_clone_paths` | A second, age-independent check: a clone owned by a non-terminal session is never touched |
+| `PRESSURE_AGE_THRESHOLD` (2 hours) | Covers the startup race where a clone exists but its session has not yet persisted `clone_path`. That window is bounded by `GIT_CLONE_TIMEOUT_SECONDS` (300s) plus bounded retries — under ten minutes at worst — so two hours is more than an order of magnitude of headroom, and still more conservative than `StaleCloneCleanupJob`'s equivalent sweep at one hour |
+| Stop-at-target | Space is re-probed after every removal, so a run under pressure deletes the fewest directories that clear the requirement, oldest first |
+
+A removal that raises is logged and skipped; the run continues with the next candidate.
+
 ## The zombie reaper only takes what nobody is waiting for
 
 `ZombieReaperJob` runs every 5 minutes in the same process as `AgentSessionJob`'s monitoring loop
