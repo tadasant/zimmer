@@ -1682,13 +1682,18 @@ class AgentSessionJobTest < ActiveJob::TestCase
   test "handle_interrupt_error pauses running session and attempts auto-continue" do
     # Set up a running session with the metadata needed for auto-continue
     @session.start!
+    job = AgentSessionJob.new(@session.id)
+
+    # running_job_id must be THIS job's id. GoodJob re-picks the same row to raise the
+    # InterruptError, and ActiveJob's job_id round-trips through serialized_params — so the
+    # interrupted instance is the recorded owner. A different id means somebody else has
+    # taken the session over, which handle_interrupt_error deliberately declines to undo.
     @session.update!(
-      running_job_id: "test-job-id",
+      running_job_id: job.job_id,
       session_id: SecureRandom.uuid,
       metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
     )
 
-    job = AgentSessionJob.new(@session.id)
     error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
     job.send(:handle_interrupt_error, error)
 
@@ -1737,9 +1742,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
   test "handle_interrupt_error falls back to needs_input when auto-continue cannot proceed" do
     # Session without session_id or working_directory — auto-continue should skip
     @session.start!
-    @session.update!(running_job_id: "test-job-id")
-
     job = AgentSessionJob.new(@session.id)
+    @session.update!(running_job_id: job.job_id)
+
     error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
     job.send(:handle_interrupt_error, error)
 
