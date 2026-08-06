@@ -135,10 +135,15 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
 
       # Attempt N runs only if every attempt before it failed. Anything looser (gating
       # on `success`, or on only the most recent failure) either never fires or fires
-      # when it should not.
+      # when it should not. The first attempt has nothing to wait on, so it carries no
+      # `if` at all.
       expected_if = attempts.first(i).map { |prior| "steps.#{prior['id']}.outcome == 'failure'" }.join(" && ")
-      assert_equal expected_if.presence, attempt["if"],
-        "#{where} must be gated on every prior attempt having failed"
+      if expected_if.empty?
+        assert_nil attempt["if"], "#{where} is the first attempt and must run unconditionally"
+      else
+        assert_equal expected_if, attempt["if"],
+          "#{where} must be gated on every prior attempt having failed"
+      end
 
       assert_equal attempts.first["with"], attempt["with"],
         "#{where} must build and tag exactly what the first attempt did"
