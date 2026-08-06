@@ -193,6 +193,105 @@ class ElicitationTest < ActiveSupport::TestCase
     assert_match(/Invalid action/, error.message)
   end
 
+  test "resolve! transitions from pending to cancel" do
+    elicitation = create_pending_elicitation
+
+    elicitation.resolve!(action: "cancel")
+
+    assert_equal "cancel", elicitation.status
+    assert_not_nil elicitation.responded_at
+  end
+
+  test "resolve! drops content sent with a cancel" do
+    elicitation = create_pending_elicitation
+
+    elicitation.resolve!(action: "cancel", content: { "confirmed" => true })
+
+    assert_nil elicitation.response_content,
+      "a cancel answers nothing — storing content would replay it to the MCP server as an answer"
+  end
+
+  test "to_poll_response for a cancelled elicitation reports the protocol's cancel action" do
+    elicitation = create_pending_elicitation
+    elicitation.resolve!(action: "cancel")
+
+    response = elicitation.to_poll_response
+
+    assert_equal "cancel", response[:action]
+    assert_nil response[:content]
+  end
+
+  # === Expiry configuration ===
+
+  test "default_expiration falls back to the built-in window when unconfigured" do
+    with_expiration_env(nil) do
+      assert_equal Elicitation::DEFAULT_EXPIRATION, Elicitation.default_expiration
+    end
+  end
+
+  test "the built-in window is long enough to survive stepping away from the desk" do
+    assert_operator Elicitation::DEFAULT_EXPIRATION, :>=, 30.minutes
+  end
+
+  test "default_expiration honors the operator's configured minutes" do
+    with_expiration_env("90") do
+      assert_equal 90.minutes, Elicitation.default_expiration
+    end
+  end
+
+  test "default_expiration ignores a non-numeric configured value" do
+    with_expiration_env("soon") do
+      assert_equal Elicitation::DEFAULT_EXPIRATION, Elicitation.default_expiration
+    end
+  end
+
+  test "default_expiration ignores a zero or negative configured value" do
+    with_expiration_env("0") do
+      assert_equal Elicitation::DEFAULT_EXPIRATION, Elicitation.default_expiration
+    end
+
+    with_expiration_env("-5") do
+      assert_equal Elicitation::DEFAULT_EXPIRATION, Elicitation.default_expiration
+    end
+  end
+
+  test "default_expiration clamps a configured value above the ceiling" do
+    with_expiration_env((Elicitation::MAX_EXPIRATION.in_minutes.to_i + 1).to_s) do
+      assert_equal Elicitation::MAX_EXPIRATION, Elicitation.default_expiration
+    end
+  end
+
+  test "an elicitation created without an expiry gets the configured default" do
+    with_expiration_env("120") do
+      elicitation = Elicitation.create!(
+        session: @session,
+        request_id: "req-#{SecureRandom.hex(8)}",
+        mode: "form",
+        message: "Confirm action",
+        requested_schema: {}
+      )
+
+      assert_in_delta 120.minutes.from_now, elicitation.expires_at, 5.seconds
+    end
+  end
+
+  test "an explicit expiry is never overwritten by the default" do
+    deadline = 3.minutes.from_now
+
+    with_expiration_env("120") do
+      elicitation = Elicitation.create!(
+        session: @session,
+        request_id: "req-#{SecureRandom.hex(8)}",
+        mode: "form",
+        message: "Confirm action",
+        requested_schema: {},
+        expires_at: deadline
+      )
+
+      assert_in_delta deadline, elicitation.expires_at, 1.second
+    end
+  end
+
   # === expire_if_needed! ===
 
   test "expire_if_needed! expires a pending elicitation past its expiration" do
@@ -303,6 +402,54 @@ class ElicitationTest < ActiveSupport::TestCase
     end
 
     assert_equal "running", @session.reload.status
+  end
+
+  # === Surfacing a round-trip that ended without an answer ===
+
+  test "expiring an elicitation records why the session's approval request went unanswered" do
+    elicitation = create_pending_elicitation
+    assert_equal "needs_input", @session.reload.status
+
+    travel_to 2.hours.from_now do
+      elicitation.expire_if_needed!
+    end
+
+    lost = @session.reload.lost_elicitation
+    assert @session.lost_elicitation?
+    assert_equal "expired", lost["reason"]
+    assert_equal elicitation.request_id, lost["request_id"]
+    assert_match(/send_email/, lost["summary"])
+  end
+
+  test "an answered elicitation leaves no lost marker behind" do
+    elicitation = create_pending_elicitation
+
+    elicitation.resolve!(action: "accept", content: { "confirmed" => true })
+
+    assert_not @session.reload.lost_elicitation?
+  end
+
+  test "a dismissed (cancelled) elicitation is a real answer, not a lost round-trip" do
+    elicitation = create_pending_elicitation
+
+    elicitation.resolve!(action: "cancel")
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_not @session.lost_elicitation?
+  end
+
+  test "a fresh elicitation clears the previous one's lost marker" do
+    expiring = create_pending_elicitation
+    travel_to 2.hours.from_now do
+      expiring.expire_if_needed!
+    end
+    assert @session.reload.lost_elicitation?
+
+    create_pending_elicitation
+
+    assert_not @session.reload.lost_elicitation?,
+      "a live approval request supersedes whatever the previous one died of"
   end
 
   test "session stays needs_input while any pending elicitation remains" do

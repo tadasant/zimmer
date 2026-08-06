@@ -386,8 +386,9 @@ unthrottled. `GET /health` is unaffected. See
 - `POST /elicitations` — **UNAUTHENTICATED**. Requires `_meta["com.pulsemcp/request-id"]` and
   `message`. → 201.
 - `GET /elicitations/:request_id` — **UNAUTHENTICATED**. Auto-expires past `expires_at`.
-- `PATCH /elicitations/:id/respond` — authenticated. `action_type` ∈ `accept | decline`, optional
-  `content`. `:id` is either the `request_id` or the numeric primary key, so the identifier you
+- `PATCH /elicitations/:id/respond` — authenticated. `action_type` ∈ `accept | decline | cancel`,
+  optional `content` (kept only for `accept`; `cancel` is the protocol's "dismissed without
+  answering"). `:id` is either the `request_id` or the numeric primary key, so the identifier you
   already hold — from a poll response or from the web UI's own `/elicitations/:id/respond` route —
   works here too.
 
@@ -403,7 +404,7 @@ Note the parameter is `action_type`, not `action` — `action` is a Rails reserv
 script or agent resolve the request, which unblocks the owning session (`needs_input` → `running`).
 It answers 200 with the poll response — `action`, `content`, and a `_meta` carrying
 `com.pulsemcp/request-id` and `com.pulsemcp/responded-at` — or 404 when nothing matches the
-identifier, 422 when the elicitation is already resolved or `action_type` is not one of the two.
+identifier, 422 when the elicitation is already resolved or `action_type` is not one of the three.
 
 ## Categories
 

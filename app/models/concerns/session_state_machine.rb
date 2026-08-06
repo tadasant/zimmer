@@ -99,6 +99,7 @@ module SessionStateMachine
           clear_stale_mcp_failure_metadata
           clear_paused_by_metadata
           clear_blocked_on_elicitation_marker
+          clear_lost_elicitation_marker
           clear_pending_sleep
           reset_elapsed_time_counter
           mark_notifications_stale
@@ -127,6 +128,8 @@ module SessionStateMachine
         after do
           log_state_change("Session blocked on MCP elicitation, waiting for user response")
           set_blocked_on_elicitation_marker
+          # A live request supersedes whatever the previous one died of.
+          clear_lost_elicitation_marker
           fire_ao_event_triggers("session_needs_input")
         end
       end
@@ -143,6 +146,11 @@ module SessionStateMachine
         transitions from: :needs_input, to: :running, guard: :blocked_on_elicitation?
         after do
           clear_blocked_on_elicitation_marker
+          # The round-trip completed, so any earlier "this one was lost" banner is
+          # stale. An expiry re-records it right after this runs (see
+          # Elicitation#sync_session_elicitation_state) — expiry is an unblock the
+          # user still needs told about.
+          clear_lost_elicitation_marker
           mark_notifications_stale
           log_state_change("Session unblocked from MCP elicitation, resuming agent turn")
         end
@@ -284,6 +292,91 @@ module SessionStateMachine
     metadata&.dig("blocked_on_elicitation") == true
   end
 
+  # The last approval round-trip that ended without a human answer, or nil.
+  #
+  # Written by `record_lost_elicitation!` and cleared the moment the session moves
+  # on (a resume, a new block, a resolved elicitation). Shape:
+  #
+  #   { "reason" => "expired" | "stranded", "at" => iso8601,
+  #     "request_id" => String | nil, "summary" => String | nil }
+  #
+  # @return [Hash, nil]
+  def lost_elicitation
+    marker = metadata&.dig("lost_elicitation")
+    marker.is_a?(Hash) ? marker : nil
+  end
+
+  # Whether this session's last approval request ended without an answer — it
+  # expired, or its round-trip was lost. Drives the session-detail banner that
+  # replaces the phantom: a session sitting in needs_input with nothing on screen
+  # to say why.
+  def lost_elicitation?
+    lost_elicitation.present?
+  end
+
+  # When the lost round-trip was recorded, or nil when there is nothing to show.
+  # Parsed here rather than in the view so a malformed stored value renders as an
+  # absent timestamp instead of raising inside a Turbo broadcast.
+  def lost_elicitation_at
+    raw = lost_elicitation&.dig("at")
+    return nil if raw.blank?
+
+    Time.zone.parse(raw.to_s)
+  rescue ArgumentError, TypeError
+    nil
+  end
+
+  # Record that an approval round-trip ended without a human answer.
+  #
+  # Two reasons reach here:
+  #
+  # - "expired" — the clock ran out. The MCP server's next poll is answered
+  #   `expired`, so the agent does get an answer of a kind, and the session flips
+  #   back to running. The user still needs to know their approval request went
+  #   unanswered and the agent proceeded without it.
+  # - "stranded" — the marker outlived its elicitation entirely (see
+  #   `clear_stale_elicitation_block!`). There is no round-trip left to complete.
+  #
+  # Best-effort by design: this is an explanation attached to a state that has
+  # already been reconciled, so a write failure must not take the reconciliation
+  # (or the caller's commit) down with it.
+  #
+  # @param reason [String] "expired" or "stranded"
+  # @param elicitation [Elicitation, nil] the request that was lost, when known
+  # @return [Boolean] true if the marker was written
+  def record_lost_elicitation!(reason:, elicitation: nil)
+    marker = {
+      "reason" => reason,
+      "at" => Time.current.iso8601,
+      "request_id" => elicitation&.request_id,
+      "summary" => elicitation&.summary
+    }.compact
+
+    update_column(:metadata, (metadata || {}).merge("lost_elicitation" => marker))
+    log_state_change(
+      reason == "expired" ?
+        "Elicitation expired without a response — the agent was told the approval request timed out" :
+        "Elicitation round-trip lost — the approval request was never answered and no longer has an MCP server waiting on it"
+    )
+    broadcast_lost_elicitation_banner
+    true
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to record lost elicitation for session #{id}: #{e.message}"
+    false
+  end
+
+  # Drop the lost-elicitation marker. Called wherever the session moves past the
+  # dead round-trip: a resume, a fresh block, or an elicitation that actually got
+  # answered.
+  def clear_lost_elicitation_marker
+    return unless metadata&.key?("lost_elicitation")
+
+    update_column(:metadata, metadata.except("lost_elicitation"))
+    broadcast_lost_elicitation_banner
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to clear lost elicitation marker for session #{id}: #{e.message}"
+  end
+
   # Whether a one-time wake-up targeting this session is still ahead of it — i.e.
   # the session is deliberately asleep, waiting for its `wake_me_up_later` /
   # `wake_me_up_when_session_changes_state` trigger.
@@ -374,6 +467,13 @@ module SessionStateMachine
   # :running would create a phantom running session with no monitoring job (an
   # orphan) and could trigger a recovery nudge that retries the failed action.
   #
+  # Stripping the marker alone would still leave a lie on screen: a session parked
+  # in needs_input with nothing to say why, indistinguishable from one idling after
+  # a normal turn. So a needs_input session also gets a `lost_elicitation` marker
+  # naming what happened, which the session page renders as a banner. A `running`
+  # session gets the marker cleared only — its agent never stopped, so there is
+  # nothing for the user to act on and a banner would be noise.
+  #
   # @return [Boolean] true if a stale marker was cleared, false otherwise
   def clear_stale_elicitation_block!
     cleared = false
@@ -389,6 +489,14 @@ module SessionStateMachine
       clear_blocked_on_elicitation_marker
       log_state_change("Cleared stale elicitation block: marker was set with no active elicitation remaining")
       cleared = true
+
+      # Written under the same lock as the clear above, so the two metadata
+      # writes on this one JSON column can't interleave with a concurrent one.
+      # The elicitation named is this session's most recent — the request the
+      # stranded marker was almost certainly holding open.
+      if needs_input?
+        record_lost_elicitation!(reason: "stranded", elicitation: elicitations.order(:created_at).last)
+      end
     end
     cleared
   end
@@ -611,6 +719,16 @@ module SessionStateMachine
     Rails.logger.info "[SessionStateMachine] Cleared blocked_on_elicitation marker for session #{id}"
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to clear blocked_on_elicitation marker: #{e.message}"
+  end
+
+  # Re-render the lost-elicitation banner slot on any open session page. The
+  # partial renders nothing when the marker is absent, so the same call both
+  # raises and dismisses the banner. Guarded: a broadcast failure must not fail
+  # the reconciliation that produced it.
+  def broadcast_lost_elicitation_banner
+    BroadcastService.new.lost_elicitation_banner(self)
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to broadcast lost elicitation banner for session #{id}: #{e.message}"
   end
 
   # Clear paused_by metadata when resuming a session.

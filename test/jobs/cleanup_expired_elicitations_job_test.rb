@@ -69,6 +69,33 @@ class CleanupExpiredElicitationsJobTest < ActiveJob::TestCase
       "A stranded block must stay in needs_input for the user, not flip to running"
   end
 
+  test "the sweep leaves a stranded session explaining itself rather than looking idle" do
+    elicitation = create_active_then_expired_elicitation
+    assert_equal "needs_input", @session.reload.status
+    elicitation.update_column(:status, "expired")
+
+    CleanupExpiredElicitationsJob.perform_now
+
+    @session.reload
+    assert @session.lost_elicitation?,
+      "the session page must be able to say the approval request was lost"
+    assert_equal "stranded", @session.lost_elicitation["reason"]
+    assert_equal elicitation.request_id, @session.lost_elicitation["request_id"]
+  end
+
+  test "expiring a blocking elicitation records the expiry on its session" do
+    elicitation = create_active_then_expired_elicitation
+    assert_equal "needs_input", @session.reload.status
+
+    CleanupExpiredElicitationsJob.perform_now
+
+    assert_equal "expired", elicitation.reload.status
+    @session.reload
+    assert_equal "running", @session.status, "the agent's poll gets an answer, so the turn continues"
+    assert_equal "expired", @session.lost_elicitation["reason"],
+      "the user still needs told their approval request went unanswered"
+  end
+
   test "does not reconcile a session that is legitimately blocked on an active elicitation" do
     create_pending_elicitation_blocking_session
     assert_equal "needs_input", @session.reload.status
