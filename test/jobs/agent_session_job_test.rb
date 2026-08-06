@@ -1704,6 +1704,36 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "Expected warning log about worker shutdown interruption"
   end
 
+  test "handle_interrupt_error stands down when another job has taken ownership" do
+    # An interrupted row (performed_at set, lock gone) reads as :interrupted, so a follow-up
+    # job supersedes it and writes its own id to running_job_id. GoodJob independently
+    # re-picks the interrupted row and raises InterruptError here. The payload does not
+    # re-run, but this recovery path would clear running_job_id out from under the new
+    # owner, pause the session, and enqueue a third job — two agents on one clone.
+    @session.start!
+    successor_job_id = SecureRandom.uuid
+    @session.update!(
+      running_job_id: successor_job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+
+    job = AgentSessionJob.new(@session.id)
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert_equal "running", @session.status, "the successor's turn must not be paused out from under it"
+    assert_equal successor_job_id, @session.running_job_id, "ownership must stay with the successor"
+    assert @session.logs.any? { |log| log.content.include?("superseded by job #{successor_job_id}") },
+      "expected a log recording that recovery stood down"
+    assert_not @session.logs.any? { |log| log.content.include?("interrupted by worker shutdown") },
+      "the recovery path should not have run at all"
+  end
+
   test "handle_interrupt_error falls back to needs_input when auto-continue cannot proceed" do
     # Session without session_id or working_directory — auto-continue should skip
     @session.start!
@@ -2182,7 +2212,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       performed_at: 1.minute.ago
     )
 
-    AgentSessionJob.new.perform(@session.id)
+    perform_session_job(@session)
 
     @session.reload
     assert_not_nil skip_log(@session), "Should have logged that job was skipped"
@@ -2291,6 +2321,43 @@ class AgentSessionJobTest < ActiveJob::TestCase
     session.logs.find { |log| log.content.include?("Skipping job") }
   end
 
+  # Run the job end to end with the spawn side fully mocked.
+  #
+  # Without this, a job that gets past the supersede guard falls through to a real
+  # `git clone https://github.com/test/repo.git`. On a runner without DNS egress that is
+  # not just slow — "Could not resolve host" matches GitCloneService's transient patterns,
+  # so it burns the whole CLONE_RETRY_DELAYS_SECONDS ladder in real Kernel.sleep before
+  # giving up, and nothing asserts the outcome either way.
+  def perform_session_job(session)
+    job = AgentSessionJob.new
+    mock_fs = MockFileSystemAdapter.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = mock_fs
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+    job.process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+      TranscriptPollerService.stub(:new, ->(_session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(session.id)
+        end
+      end
+    end
+  end
+
   test "supersedes a job whose lock holder is dead, however recently it was enqueued" do
     # THE PROMPT-LOSS REGRESSION. A worker is SIGKILLed mid-run and its good_job_processes
     # row is still sitting there, so the old check — "does a row with this id exist?" —
@@ -2305,7 +2372,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       performed_at: 20.seconds.ago
     )
 
-    AgentSessionJob.new.perform(@session.id)
+    perform_session_job(@session)
     @session.reload
 
     assert_nil skip_log(@session), "must not skip: the lock holder is gone, so the prompt would be lost"
@@ -2324,7 +2391,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       locked_by_id: nil
     )
 
-    AgentSessionJob.new.perform(@session.id)
+    perform_session_job(@session)
     @session.reload
 
     assert_nil skip_log(@session), "must not skip: the worker died mid-execution"
@@ -2341,7 +2408,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       performed_at: 2.hours.ago
     )
 
-    AgentSessionJob.new.perform(@session.id)
+    perform_session_job(@session)
     @session.reload
 
     assert_not_nil skip_log(@session), "an agent turn that has been running for hours is not stale"
@@ -2354,7 +2421,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # a second agent process against the same clone.
     register_running_job(@session, created_at: 10.minutes.ago, scheduled_at: 10.minutes.ago)
 
-    AgentSessionJob.new.perform(@session.id)
+    perform_session_job(@session)
     @session.reload
 
     assert_not_nil skip_log(@session), "a queued job is alive no matter how long the queue is"
@@ -2366,7 +2433,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # to 10 minutes out. Under the age heuristic that job read as stale within 2 minutes.
     register_running_job(@session, created_at: 5.minutes.ago, scheduled_at: 10.minutes.from_now)
 
-    AgentSessionJob.new.perform(@session.id)
+    perform_session_job(@session)
     @session.reload
 
     assert_not_nil skip_log(@session)
@@ -2381,7 +2448,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       scheduled_at: JobLiveness::ABANDONED_QUEUED_JOB_AGE.ago - 5.minutes
     )
 
-    AgentSessionJob.new.perform(@session.id)
+    perform_session_job(@session)
     @session.reload
 
     assert_nil skip_log(@session)

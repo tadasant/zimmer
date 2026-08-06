@@ -297,7 +297,7 @@ class AgentSessionJob < ApplicationJob
           # meaningless across Zimmer's web/worker containers.
           liveness = JobLiveness.status(existing_job)
 
-          if JobLiveness::DEAD_STATUSES.include?(liveness)
+          if JobLiveness::SUPERSEDABLE_STATUSES.include?(liveness)
             log_buffer.add(
               "Superseding job #{session.running_job_id}: #{JobLiveness.explain(liveness)} (status=#{liveness})",
               level: "warning"
@@ -1805,6 +1805,27 @@ class AgentSessionJob < ApplicationJob
 
     session = Session.find_by(id: session_id)
     return unless session
+
+    # Stand down if another job now owns this session.
+    #
+    # An interrupted row keeps `performed_at` with no lock, which JobLiveness reads as
+    # `:interrupted` — so a follow-up job supersedes it and takes ownership by writing its
+    # own id to `running_job_id`. GoodJob independently re-picks the interrupted row and
+    # raises InterruptError here. The payload never re-runs, but this recovery path would:
+    # it clears `running_job_id` out from under the new owner, pauses the session, and
+    # enqueues a *third* job — two agents against one clone, which is the outcome the
+    # supersede check exists to avoid. Ownership is the arbiter, so let the owner proceed.
+    if session.running_job_id.present? && session.running_job_id != job_id
+      Rails.logger.info(
+        "[AgentSessionJob] Skipping InterruptError recovery for session #{session_id}: " \
+        "job #{session.running_job_id} has taken ownership"
+      )
+      session.logs.create!(
+        content: "Interrupted job superseded by job #{session.running_job_id} — skipping recovery",
+        level: "info"
+      )
+      return
+    end
 
     Rails.logger.info "[AgentSessionJob] Handling InterruptError for session #{session_id}: #{error.message}"
 
