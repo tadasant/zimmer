@@ -448,7 +448,9 @@ class ElicitationTest < ActiveSupport::TestCase
 
   test "expiring one of two concurrent elicitations does not claim the round-trip ended" do
     first = create_pending_elicitation
-    second = create_pending_elicitation
+    # Outlives the travel below, so it is still active when the first expires —
+    # otherwise both fall past their deadline and the session legitimately unblocks.
+    create_pending_elicitation.update!(expires_at: 6.days.from_now)
     assert_equal "needs_input", @session.reload.status
 
     travel_to 2.hours.from_now do
