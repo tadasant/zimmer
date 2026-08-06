@@ -37,6 +37,52 @@ Everything goes through `RuntimeAuthProvider.for(runtime)` → `ClaudeAuthProvid
 | Rotation | `AccountRotationService`, 5-minute interval | inline in the provider, 24h |
 | Identity check on capture | email must match | none |
 
+## Deleting an account keeps its history
+
+Delete is a real delete: the `claude_accounts` row goes, and the account leaves the pool.
+What does **not** go is the record of how it behaved. Its quota snapshots, its login
+attempts, and every rotation event pointing at it are detached (`dependent: :nullify`)
+rather than destroyed.
+
+That is not tidiness, it is a diagnosis problem. The operator response to a misbehaving
+account is "delete it and re-authenticate" — the two buttons sit side by side on every
+`/quotas` card — and the cascade used to take the evidence with it. On 2026-07-31 an
+account was deleted and re-added, and the replacement row read `Quota snapshots: None`
+plus one login attempt: indistinguishable from an account that had never once completed
+a call. The row was thirty minutes old and said nothing about the credential at all.
+
+`:restrict_with_error` would have preserved the same history by refusing the delete, and
+was rejected on those grounds: any account old enough to be worth diagnosing has history,
+so Delete would become a control that only ever errors.
+
+A detached row still has to name who it was for, or it preserves bytes rather than
+evidence. Each carries the identity at write time:
+
+| Table | Carries | Why |
+| --- | --- | --- |
+| `claude_account_quota_snapshots` | `account_email`, `account_runtime` | a reading attributable to nobody answers nothing |
+| `runtime_login_attempts` | `account_email` | "did this credential ever log in?" outlives the account |
+| `account_rotation_events` | `rotated_from_email`, `rotated_to_email`, `runtime` | the pool moved *from* and *to* something, and `/quotas` filters the table by runtime |
+
+The rotation table's `runtime` column is load-bearing. `/quotas` used to scope rotation
+history by joining to the target account's runtime, which an event whose target has been
+deleted cannot satisfy — so preserving the event without it would have dropped the event
+off the page it exists to inform. The preserved emails also restore a distinction the old
+`:nullify` on `rotated_from_id` erased: a nil source with no email is a rotation that
+genuinely had no source (a bootstrap), and a nil source *with* an email is one whose
+source was deleted. The page labels the second kind "deleted".
+
+Two consequences worth knowing:
+
+- Re-adding the same email creates a **new** account row that inherits none of the old
+  one's history. The history is still there, attached to the email rather than to the new
+  id — readable in the rotation log and in `/supervisor`, not on the new card. The
+  `.ao-credentials-owner.json` marker is keyed by email and so *is* inherited, which is
+  the same identity mismatch [#241](https://github.com/tadasant/zimmer/issues/241) closes
+  with: filesystem ownership and history disagree about what "the same account" means.
+- `claude_accounts:clear_all` / `codex_accounts:clear_all` still destroy everything. They
+  are the deliberate start-over affordance, and they say so.
+
 ## The refresh loop
 
 `RefreshRuntimeAuthTokensJob` runs every 5 minutes:
@@ -522,9 +568,11 @@ Those 10 attempts back off — 2s, 4s, 8s, 16s, then 30s each — so the budget 
 minutes instead of the twenty seconds a flat 2s cadence spent it in. A deploy, a lid closing, or a
 wifi handover is shorter than that, and a login that would have completed is no longer abandoned
 over one. The backoff never schedules past `expires_at`, so the deadline message stays as prompt as
-it was. And `login_status` answers a poll for a row that no
-longer exists (pruned after its retention window, or cascaded away with a deleted account) with a
-terminal panel rather than a `404` — a `404` reads to the poller as a network blip.
+it was. And `login_status` answers a poll it cannot render a
+panel for — the row pruned after its retention window, or its account deleted mid-login,
+leaving the attempt detached — with a terminal panel rather than a `404`, which reads to the
+poller as a network blip. `RuntimeLoginJob` treats the same case as a terminal failure: there
+is no account left to capture credentials into.
 
 :::caution[The login flow is screen-scraping a TUI]
 The command string (`claude auth login --claudeai`), the authorize-URL host regex, and the literal

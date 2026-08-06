@@ -1,5 +1,7 @@
 primary_recent:
   claude_account: primary
+  account_email: tadas@tadasant.com
+  account_runtime: claude_code
   subscription_type: claude_max
   rate_limit_tier: tier_4
   utilization_5h: 0.45
@@ -14,6 +16,8 @@ primary_recent:
 
 secondary_recent:
   claude_account: secondary
+  account_email: sam@tadasant.com
+  account_runtime: claude_code
   subscription_type: claude_max
   rate_limit_tier: tier_4
   utilization_5h: 0.70
@@ -28,6 +32,8 @@ secondary_recent:
 
 exceeded_snapshot:
   claude_account: exceeded
+  account_email: exceeded@example.com
+  account_runtime: claude_code
   subscription_type: claude_max
   rate_limit_tier: tier_4
   utilization_5h: 1.0

@@ -10,12 +10,38 @@
 #
 # The trigger field records why the snapshot was taken: "rotation", "bootstrap",
 # "manual_refresh", "page_view", or "scheduled".
+#
+# A snapshot outlives the account it was taken for: deleting a ClaudeAccount
+# nullifies `claude_account_id` rather than destroying the reading, so the
+# account's history survives the delete-and-re-authenticate loop. `account_email`
+# and `account_runtime` are captured at write time, because a nulled foreign key
+# alone would leave a reading attributable to nobody.
 class ClaudeAccountQuotaSnapshot < ApplicationRecord
-  belongs_to :claude_account
+  belongs_to :claude_account, optional: true
 
-  validates :claude_account, presence: true
+  # Required to create, allowed to become nil later. A snapshot with no account
+  # is only ever the residue of a deleted one, never something written that way.
+  validates :claude_account, presence: true, on: :create
+
+  before_validation :capture_account_identity, on: :create
 
   scope :recent, -> { order(created_at: :desc) }
+
+  # Readings still attached to a live account. The rate metric walks consecutive
+  # pairs per account, and orphans from different deleted accounts share the same
+  # nil key — pairing across them would invent consumption that never happened.
+  scope :attached, -> { where.not(claude_account_id: nil) }
+
+  # Who this reading was taken for, whether or not that account still exists.
+  def account_label
+    claude_account&.email || account_email
+  end
+
+  # The account this reading belonged to has since been deleted, leaving the row
+  # behind as history.
+  def detached?
+    claude_account_id.nil?
+  end
 
   # The `anthropic-ratelimit-unified-*-status` values that mean the window is
   # still serving. "allowed_warning" is an account approaching its cap, not one
@@ -71,5 +97,12 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
       snapshot_at: created_at,
       trigger: trigger
     }
+  end
+
+  private
+
+  def capture_account_identity
+    self.account_email ||= claude_account&.email
+    self.account_runtime ||= claude_account&.runtime
   end
 end

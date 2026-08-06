@@ -77,10 +77,14 @@ namespace :codex_accounts do
     event_count = event_scope.count
 
     # Wrap in a transaction so partial deletes don't leave orphaned data.
-    # Delete dependent records first to avoid FK constraint violations.
+    # Delete dependent records first to avoid FK constraint violations. This task
+    # is the deliberate "wipe it and start over" affordance, so it destroys the
+    # history a single-account delete deliberately preserves — including the login
+    # attempts whose foreign key would otherwise block the delete outright.
     ActiveRecord::Base.transaction do
       event_scope.delete_all
       ClaudeAccountQuotaSnapshot.where(claude_account_id: codex_ids).delete_all
+      RuntimeLoginAttempt.where(claude_account_id: codex_ids).delete_all
       ClaudeAccount.for_runtime(CodexAuthProvider::RUNTIME).delete_all
     end
 

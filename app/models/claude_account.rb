@@ -48,9 +48,21 @@ class ClaudeAccount < ApplicationRecord
 
   enum :status, { active: 0, quota_exceeded: 1, needs_reauth: 2 }
 
+  # Every association here is :nullify, and deliberately so. An account's quota
+  # snapshots, login attempts, and rotation events are the only record of whether
+  # it was ever healthy, and the operator gesture that most needs that record —
+  # "delete it and re-authenticate", two adjacent buttons on every /quotas card —
+  # is precisely the one that used to destroy it. Deleting an account must remain
+  # possible (:restrict_with_error would turn the Delete button into a dead
+  # control for any account old enough to matter), so the history outlives the
+  # row instead of blocking its removal.
+  #
+  # The orphans stay interpretable because each child row denormalizes the
+  # account's identity (email, and the runtime that scopes it) at write time.
+  # See ClaudeAccountQuotaSnapshot, RuntimeLoginAttempt, and AccountRotationEvent.
   has_many :quota_snapshots,
     class_name: "ClaudeAccountQuotaSnapshot",
-    dependent: :destroy
+    dependent: :nullify
   has_many :rotation_events_from,
     class_name: "AccountRotationEvent",
     foreign_key: :rotated_from_id,
@@ -58,8 +70,8 @@ class ClaudeAccount < ApplicationRecord
   has_many :rotation_events_to,
     class_name: "AccountRotationEvent",
     foreign_key: :rotated_to_id,
-    dependent: :destroy
-  has_many :runtime_login_attempts, dependent: :destroy
+    dependent: :nullify
+  has_many :runtime_login_attempts, dependent: :nullify
 
   # Email uniqueness is scoped to runtime: the same person can hold one account
   # per runtime (e.g. a claude_code AND a codex account for tadas@tadasant.com).

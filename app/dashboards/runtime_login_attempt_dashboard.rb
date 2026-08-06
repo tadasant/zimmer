@@ -6,6 +6,7 @@ class RuntimeLoginAttemptDashboard < Administrate::BaseDashboard
   ATTRIBUTE_TYPES = {
     id: Field::Number,
     claude_account: Field::BelongsTo,
+    account_email: Field::String,
     runtime: Field::String,
     status: Field::String,
     pid: Field::Number,
@@ -21,6 +22,7 @@ class RuntimeLoginAttemptDashboard < Administrate::BaseDashboard
   COLLECTION_ATTRIBUTES = %i[
     id
     claude_account
+    account_email
     runtime
     status
     created_at
@@ -29,6 +31,7 @@ class RuntimeLoginAttemptDashboard < Administrate::BaseDashboard
   SHOW_PAGE_ATTRIBUTES = %i[
     id
     claude_account
+    account_email
     runtime
     status
     pid
