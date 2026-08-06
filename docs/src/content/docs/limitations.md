@@ -1889,6 +1889,25 @@ Also:
   dropped during the window are gone — the page catches up on its next reload, not retroactively.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 - Push notifications don't work on anything without the Push API (iOS Safari outside standalone PWA).
+- Reopening the installed PWA reloads the page, and Zimmer cannot stop it. iOS discards a
+  backgrounded standalone PWA's web view under memory pressure, so reopening is a fresh navigation;
+  Zimmer additionally reloads a session screen that comes back visible with a dead ActionCable
+  connection, because a stale `<turbo-cable-stream-source>` otherwise leaves the page silently
+  frozen. What survives the reload is the follow-up composer's text: it autosaves to `localStorage`
+  as you type (a 300ms debounce, flushed immediately on `visibilitychange`/`pagehide`) and is
+  restored on load. Scroll position, expanded panels and the other text fields on the page are not
+  preserved — the composer draft is the only state carried across.
+- A composer draft sits in `localStorage` for up to 7 days with no UI to clear it, and nothing
+  removes it when the session is archived or you sign out. On a shared browser that is a prompt
+  someone else can read. If `localStorage` is full the write fails silently and the previously
+  stored, shorter draft stays behind — so a restore can hand back an older version of the text
+  rather than nothing at all.
+- The other text-entry surfaces — enqueued-message edit, dashboard notes, editable title and goal,
+  the notes popover, elicitation forms — do not persist drafts across a reload. Notes have their own
+  autosave; the rest lose in-progress text if the page is rebuilt under them.
+- `start_url` in the web manifest is `/`, so a cold relaunch of the PWA lands on the dashboard rather
+  than the session you were reading. The composer draft is keyed by session id and is still there
+  when you navigate back, but you have to navigate back.
 - The OAuth login poller gives up after 10 consecutive failed polls. Those 10 attempts back off (2s,
   4s, 8s, 16s, then 30s each) and so span about three minutes, which covers a deploy or a wifi
   handover — but an outage longer than that abandons the login and you have to start over. The panel
