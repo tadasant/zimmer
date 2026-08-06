@@ -186,16 +186,28 @@ class QuotasHelperTest < ActionView::TestCase
   # The reported bug: minutes are the finest unit, so the last minute before a
   # reset had no whole unit to report and joined to "". The card interpolates
   # this after a label, so the page rendered "Resets in" and nothing else.
+  # Frozen, because the boundary is the assertion. `1.minute.from_now` is read
+  # before the helper reads Time.current, so under a running clock the gap is a
+  # few microseconds under a minute and lands on the branch below it — the
+  # 60-second boundary is not reachable at all without holding time still.
   test "time_until_reset names the sub-minute window instead of returning blank" do
-    assert_equal "< 1m", time_until_reset(30.seconds.from_now)
+    freeze_time { assert_equal "< 1m", time_until_reset(30.seconds.from_now) }
   end
 
   test "time_until_reset names the sub-minute window one second before reset" do
-    assert_equal "< 1m", time_until_reset(1.second.from_now)
+    freeze_time { assert_equal "< 1m", time_until_reset(1.second.from_now) }
+  end
+
+  test "time_until_reset names the sub-minute window at the last instant before reset" do
+    freeze_time { assert_equal "< 1m", time_until_reset(Time.current + 0.001) }
   end
 
   test "time_until_reset switches to whole minutes at exactly one minute" do
-    assert_equal "1m", time_until_reset(1.minute.from_now)
+    freeze_time { assert_equal "1m", time_until_reset(1.minute.from_now) }
+  end
+
+  test "time_until_reset reports a window reset at exactly the reset instant" do
+    freeze_time { assert_equal "Window reset", time_until_reset(Time.current) }
   end
 
   # The guarantee the view depends on: no reset time, at any distance, may
@@ -206,9 +218,11 @@ class QuotasHelperTest < ActionView::TestCase
     offsets = [ 0.5, 1, 30, 59, 59.9, 60, 61, 90, 3599, 3600, 3601, 86_399, 86_400,
                86_430, 90_000, 7.days.to_i, 30.days.to_i ]
 
-    offsets.each do |seconds|
-      result = time_until_reset(Time.current + seconds)
-      assert_predicate result.strip, :present?, "time_until_reset rendered blank for +#{seconds}s"
+    freeze_time do
+      offsets.each do |seconds|
+        result = time_until_reset(Time.current + seconds)
+        assert_predicate result.strip, :present?, "time_until_reset rendered blank for +#{seconds}s"
+      end
     end
   end
 
@@ -232,7 +246,7 @@ class QuotasHelperTest < ActionView::TestCase
   end
 
   test "window_status_badge drops a status whose window resets exactly now" do
-    assert_nil window_status_badge("rejected", Time.current)
+    freeze_time { assert_nil window_status_badge("rejected", Time.current) }
   end
 
   # reset_window_line tests
