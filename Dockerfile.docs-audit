@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# check=error=true
+
+# A throwaway image whose only purpose is to materialize the REAL Docker build context --
+# the same context `Dockerfile` blanket-copies into /rails -- and assert that no copy of
+# the documentation site is in it. CI's image_excludes_docs job builds this; nothing runs
+# it. The publish-time half of the guardrail is in `Dockerfile` itself.
+#
+# `COPY` can only read from the build context, so docs absent from the context cannot
+# reach the app image -- which is what makes a few megabytes of busybox a fair stand-in
+# on every PR for a multi-GB zimmer-base pull. See docs/operate/deploying.md, "The docs
+# never ship in the image", for what that stand-in does and does not cover.
+#
+# .dockerignore's existing `/Dockerfile*` rule keeps this file itself out of the context.
+#
+#   docker build --file Dockerfile.docs-audit .
+FROM busybox:stable
+
+COPY . /ctx
+RUN /ctx/scripts/assert-docs-excluded.sh --root /ctx
