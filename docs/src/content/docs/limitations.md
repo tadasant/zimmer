@@ -1229,12 +1229,20 @@ No amount of atomic merging serializes two writers of the *same* key either — 
 
 Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
 
-### A 2-minute magic number guards against prompt loss
+### Detecting a dead worker takes up to 5 minutes
 
-`STALE_UNLOCKED_JOB_AGE` — a job whose lock is older than 2 minutes is superseded, because otherwise
-"follow-up jobs silently skip execution because they see a stale 'running' job."
+Superseding a dead job no longer runs off a 2-minute age guess (see
+[Stale job supersession](/sessions/spawning/#stale-job-supersession)) — it asks whether the worker
+holding the job's lock is still alive. But GoodJob's process registry is only as current as its
+heartbeat: a capsule refreshes its row every 30 seconds and is considered expired after
+`GoodJob::Process::EXPIRED_INTERVAL`, 5 minutes. So a follow-up prompt sent in the window right
+after a worker is killed still waits for that interval to elapse before the new job takes over.
 
-Tracked in [#71](https://github.com/tadasant/zimmer/issues/71).
+Turning on GoodJob's `advisory_lock_heartbeat` in production would collapse that window to nothing —
+the lock is released by Postgres the instant the worker's connection dies — at the cost of holding
+an advisory lock on the Notifier's connection for the life of every worker. Zimmer runs GoodJob's
+default, which enables it in development only. `JobLiveness` reads both signals, so flipping the
+setting needs no code change.
 
 ### State-machine side effects fail without surfacing
 
