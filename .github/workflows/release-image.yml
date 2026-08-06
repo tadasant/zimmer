@@ -173,7 +173,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # `continue-on-error` for the same reason the attempts carry it, and it matters
+      # more here: a backoff step that exits non-zero — a dropped env key, an exec bit
+      # lost in checkout — would flip the job to failed, and the implicit success() on
+      # every later `if` would then skip the remaining attempts AND the prod notify.
+      # The whole retry chain would sit there intact and unreachable. A probe that
+      # cannot run should cost the backoff, not the release.
       - name: Wait out the registry throttle
+        continue-on-error: true
         if: steps.build.outcome == 'failure'
         env:
           BACKOFF_SECONDS: "90"
@@ -195,6 +202,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Wait out the registry throttle (second backoff)
+        continue-on-error: true
         if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
         env:
           BACKOFF_SECONDS: "240"
