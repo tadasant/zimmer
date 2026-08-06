@@ -7,6 +7,11 @@
 # 2. Checks if each condition's schedule is due
 # 3. Creates sessions (or reuses existing ones) for due conditions
 # 4. Updates the condition's last_triggered_at timestamp
+#
+# A fire that raises never destroys anything. A one-time trigger is parked as
+# `failed` — visible, re-armable, and skipped by every firing path — rather than
+# deleted along with the wake it never delivered. See the rescue in
+# #process_condition.
 class ScheduleTriggerJob < ApplicationJob
   # Runs on the dedicated `triggers` queue (alongside AoEventTriggerJob) rather
   # than `default`. This is the time-based trigger-firing path — it fires the
@@ -103,37 +108,58 @@ class ScheduleTriggerJob < ApplicationJob
       Rails.logger.info "[ScheduleTriggerJob] Trigger #{trigger_id} fired but created no session (no reusable target session)"
     end
   rescue => e
-    # Always advance last_triggered_at to prevent infinite retry loops.
-    # Without this, a persistent error (e.g. invalid MCP server reference)
-    # causes the condition to fire every minute indefinitely. (For one-time
-    # triggers we destroy the trigger below, which cascade-destroys this
-    # condition — but advancing first is harmless and keeps the recurring
-    # path simple.)
-    unless condition.update(last_triggered_at: Time.current)
-      Rails.logger.error "[ScheduleTriggerJob] Failed to advance last_triggered_at for condition #{condition.id}: #{condition.errors.full_messages.join(", ")}"
-    end
-
-    # Capture identifiers before any potential destroy so log/alert messages
-    # remain meaningful even after the trigger row is gone.
-    trigger_id = condition.trigger&.id || condition.trigger_id
-    trigger_name = condition.trigger&.name || "unknown"
+    trigger = condition.trigger
+    trigger_id = trigger&.id || condition.trigger_id
+    trigger_name = trigger&.name || "unknown"
     is_one_time = condition.one_time_schedule?
 
-    # One-time triggers must be deleted even on failure — otherwise they
-    # remain in the database forever, never firing again (last_triggered_at
-    # was just set, so schedule_due? returns false). Deletion keeps the
-    # triggers list clean of single-shot tombstones.
-    if is_one_time
-      condition.trigger&.destroy!
-      Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) auto-deleted after failed firing"
+    # Both branches below must leave the condition NOT due on the next tick —
+    # otherwise a persistent error (an unhealable agent root, an invalid MCP
+    # reference) fires every minute forever. They solve it differently because
+    # they want different things afterwards.
+    #
+    # One-time: park the trigger as `failed`. Every firing path filters on
+    #   `status: "enabled"`, so a failed trigger is skipped just as a disabled
+    #   one is — the retry loop is closed by the STATUS, which means
+    #   last_triggered_at can be left alone. That is deliberate: the schedule
+    #   stays due, so re-enabling the trigger (the "Re-arm" button, or
+    #   action_trigger's toggle) fires it for real on the next tick with no
+    #   further edits. The trigger stays in the list either way, carrying the
+    #   error that stopped it, instead of vanishing with the wake it owed.
+    #   Parking is per-TRIGGER while the failure is per-CONDITION, so a trigger
+    #   that also carries other conditions stops firing on those too. That is
+    #   strictly gentler than what this branch used to do — destroy the trigger,
+    #   cascading its conditions with it — and a one-time schedule sharing a
+    #   trigger with anything else is not a shape Zimmer's own wake tools create.
+    #
+    # Recurring: advance last_triggered_at and leave the trigger enabled. A
+    #   recurring schedule is expected to survive a bad tick and try again on
+    #   its next interval, which is exactly what the timestamp bump gives it.
+    parked = false
+    if is_one_time && trigger
+      parked = trigger.mark_failed!(e)
+      Rails.logger.error "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) marked failed after a failed firing — left in place so it stays visible and can be re-armed" if parked
+    end
+
+    # Recurring conditions, and the belt-and-braces case where parking the
+    # trigger did not persist: fall back to the timestamp guard so a failure
+    # can never leave the condition firing on every tick.
+    unless parked
+      unless condition.update(last_triggered_at: Time.current)
+        Rails.logger.error "[ScheduleTriggerJob] Failed to advance last_triggered_at for condition #{condition.id}: #{condition.errors.full_messages.join(", ")}"
+      end
     end
 
     backtrace = e.backtrace&.first(5)&.join("\n")
 
-    retry_note = if is_one_time
-      "One-time trigger has been auto-deleted. Re-create it manually to retry."
+    retry_note = if is_one_time && parked
+      "The one-time trigger is marked *failed* and left in place — it will not fire again on its own. " \
+      "Re-enable it at #{AppUrl.base_url}/triggers/#{trigger_id} to re-arm it (it fires within a minute)."
+    elsif is_one_time
+      "The one-time trigger could not be marked failed; last_triggered_at was advanced instead to prevent " \
+      "infinite retries. Re-create it manually to retry."
     else
-      "The trigger will attempt again on its next scheduled interval."
+      "last_triggered_at advanced to prevent infinite retries. The trigger will attempt again on its next scheduled interval."
     end
 
     Rails.logger.error "[ScheduleTriggerJob] Failed to create session for condition #{condition.id} on trigger #{trigger_id} (#{trigger_name}): #{e.message}\n#{backtrace}"
@@ -141,7 +167,7 @@ class ScheduleTriggerJob < ApplicationJob
     AlertService.raise_alert(
       "Schedule trigger session creation failed",
       details: "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to create a session.\n\n" \
-               "last_triggered_at advanced to prevent infinite retries. #{retry_note}",
+               "#{retry_note}",
       source: "ScheduleTriggerJob",
       dedup_key: "schedule_trigger_session_#{trigger_id}",
       error: e

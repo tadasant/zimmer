@@ -47,6 +47,22 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     assert_not_includes output, "### CI Failure Handler"
   end
 
+  # A one-time wake that failed to fire is parked as `failed` rather than deleted
+  # (issue #76). An agent has to be able to find it and read why, or the record is
+  # only half of a fix.
+  test "filters by failed status and shows why the fire failed" do
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.mark_failed!(StandardError.new("Agent root 'gone' not found in catalog"))
+
+    listing = @tool.call("status" => "failed")
+    assert_includes listing, "### CI Failure Handler"
+    assert_includes listing, "**Status:** failed"
+
+    detail = @tool.call("id" => trigger.id)
+    assert_includes detail, "- **Last Error:** StandardError: Agent root 'gone' not found in catalog"
+    assert_includes detail, "action_trigger with action=toggle"
+  end
+
   test "paginates" do
     output = @tool.call("per_page" => 1, "page" => 2)
 

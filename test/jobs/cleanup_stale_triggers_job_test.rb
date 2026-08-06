@@ -117,6 +117,59 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     assert_not Trigger.exists?(lapsed.id), "lapsed one-time schedule trigger should be destroyed"
   end
 
+  # === Failed triggers are tombstones, not litter (issue #76) ===
+  #
+  # A trigger ScheduleTriggerJob parked as `failed` has, by construction, a
+  # scheduled_at in the past and will never fire again on its own — so the
+  # lapsed-schedule heuristic matches every one of them. Sweeping it would delete
+  # the evidence an hour later and re-create the silent loss the parking exists to
+  # prevent.
+
+  test "preserves a failed one-time schedule trigger the user has not dealt with yet" do
+    requester = make_session(status: :waiting)
+
+    failed = Trigger.create!(
+      name: "Failed wake",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 2.hours.ago.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    failed.mark_failed!(StandardError.new("agent root not found"))
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(failed.id),
+      "a failed trigger must survive the lapsed-schedule sweep so the user can still see and re-arm it"
+    assert_equal "failed", failed.reload.status
+  end
+
+  test "preserves a failed trigger even when its target session is archived" do
+    target = make_session(status: :archived)
+    watched = make_session(status: :running)
+
+    failed = Trigger.create!(
+      name: "Failed wake on archived target",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go {{event}}",
+      reuse_session: true,
+      last_session_id: target.id,
+      trigger_conditions_attributes: [
+        { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id } }
+      ]
+    )
+    failed.mark_failed!(StandardError.new("boom"))
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(failed.id), "only the user clears a failed trigger"
+  end
+
   test "does not destroy triggers whose one-time schedule is in the future" do
     requester = make_session(status: :waiting)
 

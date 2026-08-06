@@ -14,6 +14,14 @@
 # 2. Triggers with at least one one-time schedule condition whose scheduled_at
 #    is more than 1 hour in the past. ScheduleTriggerJob should have destroyed
 #    these on its next tick; if they linger, something went wrong.
+#
+# Triggers in the `failed` status are exempt from BOTH sweeps. A failed trigger
+# is a deliberate tombstone: ScheduleTriggerJob parked it there precisely so the
+# user would see that a wake did not fire and could re-arm it. It lapsed by
+# definition — its scheduled_at is in the past and it will never fire on its own
+# — so heuristic 2 would match every one of them and quietly delete the evidence
+# an hour later, which is the bug this job would be re-introducing rather than
+# catching. Only the user clears a failed trigger.
 class CleanupStaleTriggersJob < ApplicationJob
   queue_as :default
 
@@ -38,6 +46,7 @@ class CleanupStaleTriggersJob < ApplicationJob
   def destroy_archived_target_triggers
     candidates = Trigger
       .where(reuse_session: true, resuscitate_archived: false)
+      .where.not(status: "failed")
       .where.not(last_session_id: nil)
       .joins(:last_session)
       .where(last_session: { status: "archived" })
@@ -89,7 +98,7 @@ class CleanupStaleTriggersJob < ApplicationJob
 
     return 0 if candidate_ids.empty?
 
-    Trigger.where(id: candidate_ids).includes(:trigger_conditions).find_each do |trigger|
+    Trigger.where(id: candidate_ids).where.not(status: "failed").includes(:trigger_conditions).find_each do |trigger|
       # Only destroy if EVERY condition is a one-time schedule whose
       # scheduled_at is past the cutoff (timezone-aware). If the trigger has
       # any other kind of condition (recurring schedule, slack, ao_event),

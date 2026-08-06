@@ -55,12 +55,21 @@ class TriggersController < ApplicationController
     redirect_to triggers_path, notice: "Trigger deleted successfully."
   end
 
-  # Toggle trigger enabled/disabled status
+  # Toggle trigger enabled/disabled status. Toggling a `failed` trigger re-arms
+  # it: Trigger#enable! clears the failure state, and a one-time schedule whose
+  # condition was deliberately left un-advanced is due again immediately.
   def toggle
+    was_failed = @trigger.failed?
     @trigger.toggle!
 
+    notice = if was_failed
+      "Trigger re-armed."
+    else
+      "Trigger #{@trigger.enabled? ? 'enabled' : 'disabled'}."
+    end
+
     respond_to do |format|
-      format.html { redirect_to triggers_path, notice: "Trigger #{@trigger.enabled? ? 'enabled' : 'disabled'}." }
+      format.html { redirect_to triggers_path, notice: notice }
       format.turbo_stream do
         render turbo_stream: turbo_stream.replace(
           "trigger_#{@trigger.id}",

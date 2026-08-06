@@ -6,7 +6,18 @@
 # When ANY of its conditions fire, the trigger creates or reuses a session
 # using its configured session template (agent_root, prompt, MCP servers, etc.).
 class Trigger < ApplicationRecord
-  STATUSES = %w[enabled disabled].freeze
+  # `failed` is set by the system, never by a user: a fire raised and the trigger
+  # was parked rather than deleted. It is a third state and not a flavour of
+  # `disabled`, because the two answer different questions — "you turned this
+  # off" versus "this tried to run and could not". Every firing path filters on
+  # `status: "enabled"`, so a failed trigger fires no more than a disabled one,
+  # which is what keeps a persistent error from becoming a retry storm.
+  STATUSES = %w[enabled disabled failed].freeze
+
+  # Bound on the error text kept in `last_error`. Enough for a class + message
+  # and the odd validation list; not a place to store a backtrace (the backtrace
+  # goes to the log and to the alert's snippet).
+  MAX_LAST_ERROR_CHARS = 1000
 
   # --- Burst control -------------------------------------------------------
   #
@@ -78,6 +89,7 @@ class Trigger < ApplicationRecord
 
   scope :enabled, -> { where(status: "enabled") }
   scope :disabled, -> { where(status: "disabled") }
+  scope :failed, -> { where(status: "failed") }
 
   # Scopes that filter by condition type (returns triggers that have at least one condition of that type)
   scope :with_slack_conditions, -> { joins(:trigger_conditions).where(trigger_conditions: { condition_type: "slack" }).distinct }
@@ -93,20 +105,57 @@ class Trigger < ApplicationRecord
     status == "disabled"
   end
 
+  # A fire raised and the trigger was parked instead of destroyed. See
+  # ScheduleTriggerJob's rescue for the one path that sets this.
+  def failed?
+    status == "failed"
+  end
+
+  # Enabling is also how a failed trigger is RE-ARMED, so it clears the failure
+  # state. For a one-time schedule that is the whole re-arm: the failure path
+  # deliberately leaves the condition's last_triggered_at alone, so the schedule
+  # is still due and the next tick fires it for real.
   def enable!
-    update!(status: "enabled")
+    update!(status: "enabled", failed_at: nil, last_error: nil)
   end
 
   def disable!
     update!(status: "disabled")
   end
 
+  # Enabled → disabled; anything else (disabled, failed) → enabled. Re-arming a
+  # failed trigger is the same gesture as switching a disabled one back on.
   def toggle!
     if enabled?
       disable!
     else
       enable!
     end
+  end
+
+  # Park this trigger with the error that stopped it, instead of destroying it.
+  #
+  # Uses update_columns for the same reason the other bookkeeping writes here do:
+  # a failure write must not itself be blocked by validations (the trigger may
+  # have had its conditions cascade-deleted by a concurrent sibling cleanup, and
+  # `validates :trigger_conditions, presence:` would then raise). Recording that
+  # a wake failed is strictly more important than the record being re-validated.
+  #
+  # @return [Boolean] whether the failure was persisted
+  def mark_failed!(error)
+    now = Time.current
+    update_columns(
+      status: "failed",
+      failed_at: now,
+      last_error: format_last_error(error),
+      updated_at: now
+    )
+    true
+  rescue => e
+    Rails.logger.error(
+      "[Trigger#mark_failed!] Could not park trigger #{id} as failed: #{e.class}: #{e.message}"
+    )
+    false
   end
 
   # Returns the condition types present on this trigger
@@ -294,6 +343,13 @@ class Trigger < ApplicationRecord
   end
 
   private
+
+  # "ClassName: message", bounded. Accepts an exception or a plain string so
+  # callers don't have to care which they have.
+  def format_last_error(error)
+    text = error.is_a?(Exception) ? "#{error.class}: #{error.message}" : error.to_s
+    text.truncate(MAX_LAST_ERROR_CHARS)
+  end
 
   def clear_enqueue_messages_without_reuse_session
     self.enqueue_messages = false unless reuse_session
