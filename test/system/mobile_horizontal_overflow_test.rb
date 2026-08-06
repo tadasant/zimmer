@@ -245,6 +245,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # render — so this is the widest row in the widest tree the fixture builds.
     assert_selector "#{list} > li[data-current][data-depth='4']"
     # Captured before the assertions so a failing run uploads the broken layout too.
+    # Scrolled into view first: a screenshot is of the viewport, and the panel sits
+    # below the fold on a phone.
+    scroll_into_center(find(list))
     page.save_screenshot("tmp/screenshots/proof-session-hierarchy-375.png")
 
     # Deliberately first: the document not scrolling sideways is exactly what made
