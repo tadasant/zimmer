@@ -393,6 +393,9 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
 
     QuotaResetCheckerJob.perform_now
 
+    assert ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).available.exists?,
+      "the pool must have an available account, so the decline is the fingerprint guard and not the pool guard"
+    assert claude_accounts(:exceeded).reload.quota_exceeded?, "nothing was restored, so no identity changed"
     assert_equal "waiting", parked.reload.status
   end
 
@@ -420,7 +423,7 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
 
   def create_parked_session(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
     session = Session.create!(
-      prompt: "Parked by quota exhaustion",
+      prompt: "Parked by an auth outage",
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",

@@ -447,25 +447,34 @@ available account again, so a session is never woken into the pool that was stil
 
 An **auth** park gets the same fast path on different evidence. "An account is available" is the
 whole story for a quota park — the pool was empty and now is not. It is no evidence at all for an
-auth park, which is reached precisely when an account *was* available and the runtime rejected its
-credentials anyway; `park_reason_for_pool` picks `AUTH_UNRECOVERABLE` when `pool.available.exists?`,
-so that predicate is true by construction at park time. Waking on it alone would resume the session
-into the identical failure every 15 minutes.
+auth park, which is what `park_reason_for_pool` answers whenever the pool *does* have something
+available and the runtime rejected it anyway (and as the fallback when the pool is empty or
+unreadable). For the common case that predicate is true by construction at park time, so waking on
+it alone would resume the session into the identical failure every 15 minutes.
 
-What an auth park waits for instead is the pool's **identities** changing. `park!` records
-`auth_outage_pool_fingerprint` — a digest of every available account's id and stored credentials —
-and the sweep resumes the session only once that stops describing the pool. An account added,
+What an auth park waits for instead is the pool's **credentials** changing. `park!` records
+`auth_outage_pool_fingerprint` — a digest of every available account's id and stored `oauth_config`,
+HMAC'd with the app secret because the fingerprint lands in session metadata that agents can read
+back — and the sweep resumes the session only once that stops describing the pool. An account added,
 removed, restored to active, or re-authenticated moves the digest; a rotation stamp, a quota-hit
-counter, or the five-minute filesystem token sync rewriting an unchanged config does not, which is
-why the fingerprint is content-addressed rather than an `updated_at` comparison.
+counter, or a sync that adopts an identical config does not, which is why it is content-addressed
+rather than an `updated_at` comparison.
 
-A changed fingerprint is evidence, not proof. A session whose credentials fail for a reason of its
-own rather than the pool's would clear that bar every time an unrelated account rotated a token, so
-`MAX_EARLY_WAKES` (3) caps how many sweep-driven wakes one session may spend. The counter
-(`auth_outage_early_wakes`) is the one `auth_outage_*` key deliberately kept out of
-`STALE_RETRY_METADATA_KEYS`: it has to outlive the resume it authorised, or a re-park would hand
-the session a fresh budget and the cap would bound nothing. Past the cap — and for a park with no
-recorded fingerprint at all — the session falls back to its timer, which is what it had before.
+It is a coarse signal, not a repair detector, and the code says so. The same digest also moves when
+`RefreshRuntimeAuthTokensJob`'s five-minute `sync_current_account_tokens!` adopts a token the CLI
+rotated on disk for the current account — which says nothing about a parked session's identity
+problem. So the fingerprint decides *whether there is anything new to try*, and a budget decides
+*how often one session may act on it*: `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h). The
+timer alone would wake a parked session roughly six times in that window, so the fast path is a
+bounded multiple of the spawn rate the session already had rather than an open loop.
+
+The budget lives in `auth_outage_early_wakes` — a list of wake timestamps, pruned to the window on
+every write, and the one `auth_outage_*` key deliberately kept out of `STALE_RETRY_METADATA_KEYS`.
+It has to outlive the resume it paid for, or a re-park would hand the session a fresh budget and the
+cap would bound nothing. It is charged inside `resume_parked!`'s transaction, under the same row
+lock as the resume: charging afterwards would race the job that resume enqueues for the metadata
+column, and a failed charge would silently un-bound the cap. Past the budget — and for a park with
+no recorded fingerprint at all — the session falls back to its timer, which is what it had before.
 
 ## Logging in from the UI
 

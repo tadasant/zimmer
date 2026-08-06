@@ -338,10 +338,42 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "waiting", @session.reload.status
   end
 
+  # The pool the session failed against can be empty — park_reason_for_pool
+  # answers AUTH_UNRECOVERABLE for a pool with nothing available and nothing
+  # merely throttled, which is what a fleet of needs_reauth accounts looks like.
+  test "an auth-outage park against an empty pool is woken by the first account added" do
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    assert @session.reload.metadata[AuthOutageParkService::POOL_FINGERPRINT_KEY].present?,
+      "An empty pool still has a fingerprint to compare against"
+
+    create_account(email: "first-login@example.com", status: :active)
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "running", @session.reload.status
+  end
+
+  # A park that could not read the pool records no fingerprint, and the sweep
+  # will not wake on an absent one.
+  test "a park whose pool could not be read records no fingerprint" do
+    AuthOutageParkService.stubs(:pool_fingerprint).returns(nil)
+    @session.update!(status: :needs_input)
+
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    assert_nil @session.reload.metadata[AuthOutageParkService::POOL_FINGERPRINT_KEY]
+  end
+
+  # ===========================================================================
+  # The early-wake budget
+  #
   # A session whose auth is broken for a reason of its own rather than the
-  # pool's passes the fingerprint guard every time an unrelated account rotates
-  # a token. The budget is what stops that from being an unbounded slow spin,
-  # and it has to survive the resume it authorised to bound anything at all.
+  # pool's clears the fingerprint guard every time the pool's credentials move —
+  # including the 5-minute sync adopting a token the CLI rotated on disk. The
+  # budget is what keeps that a bounded multiple of the spawn rate the timer
+  # alone would have produced, rather than an open loop.
+  # ===========================================================================
+
   test "an auth-outage park spends a bounded number of early wakes across re-parks" do
     create_account(email: "dead-token@example.com", status: :active)
     @session.update!(status: :needs_input)
@@ -351,7 +383,8 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
       create_account(email: "churn-#{i}@example.com", status: :active)
 
       assert_equal 1, AuthOutageParkService.wake_parked_sessions!, "wake #{i + 1} should be granted"
-      assert_equal i + 1, @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_COUNT_KEY]
+      assert_equal i + 1, @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_LOG_KEY].size,
+        "the wake must be charged, and survive the resume that spent it"
 
       @session.update!(status: :needs_input)
     end
@@ -364,6 +397,26 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "waiting", @session.reload.status
   end
 
+  # A lifetime counter would punish a session for recovering: the budget is
+  # spent by successful wakes too, so three good recoveries over three days
+  # would leave it on the hourly timer for good.
+  test "early wakes outside the window do not count against the budget" do
+    create_account(email: "dead-token@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    @session.update!(metadata: @session.metadata.merge(
+      AuthOutageParkService::EARLY_WAKE_LOG_KEY => Array.new(AuthOutageParkService::MAX_EARLY_WAKES) do
+        (AuthOutageParkService::EARLY_WAKE_WINDOW + 1.hour).ago.utc.iso8601
+      end
+    ))
+
+    create_account(email: "freshly-added@example.com", status: :active)
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_equal 1, @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_LOG_KEY].size,
+      "Lapsed entries are pruned rather than accumulating forever"
+  end
+
   # The budget is auth-only: a quota park wakes on unambiguous evidence and has
   # no loop to bound.
   test "quota parks are not charged against the early-wake budget" do
@@ -372,13 +425,23 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     park!
 
     assert_equal 1, AuthOutageParkService.wake_parked_sessions!
-    assert_nil @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_COUNT_KEY]
+    assert_nil @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_LOG_KEY]
   end
 
-  # The counter is the one auth_outage_* key that must outlive the resume.
-  test "the early-wake budget is not cleared by an ordinary resume" do
-    assert_not_includes Session::STALE_RETRY_METADATA_KEYS, AuthOutageParkService::EARLY_WAKE_COUNT_KEY
-    assert_not_includes AuthOutageParkService::OUTAGE_METADATA_KEYS, AuthOutageParkService::EARLY_WAKE_COUNT_KEY
+  # The log is the one auth_outage_* key that must outlive the resume it paid
+  # for — every other resume path clears the rest through STALE_RETRY_METADATA_KEYS.
+  test "the early-wake budget survives an ordinary resume" do
+    create_account(email: "dead-token@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    create_account(email: "freshly-added@example.com", status: :active)
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+
+    # Stand in for a user follow-up / trigger fire: the shared clear-then-resume
+    # shape every caller uses.
+    @session.reload.update!(metadata: @session.metadata.except(*Session::STALE_RETRY_METADATA_KEYS))
+
+    assert_equal 1, @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_LOG_KEY].size
   end
 
   test "waking is idempotent under a repeated sweep" do
