@@ -116,6 +116,13 @@ useful than a confident guess, and it's an issue waiting to be filed.
 The site is live at [docs.zimmer.tadasant.com](https://docs.zimmer.tadasant.com), built from `docs/`
 by Cloudflare Pages. Every push to `main` redeploys it, and every PR gets a preview URL.
 
+That is the *only* place the docs are deployed. They are deliberately kept out of the published
+application image — `.dockerignore` excludes `/docs`, and two CI checks assert that the exclusion
+held rather than trusting the line, so a second drift-prone copy cannot start shipping inside the
+product. If you move `docs/`, move that `.dockerignore` line with it; the checks are content-based
+and will fail the build if you don't. See
+[The docs never ship in the image](/operate/deploying/#the-docs-never-ship-in-the-image).
+
 **Re-creating the Pages project from scratch** (you need a human with Cloudflare access):
 
 1. Cloudflare Dashboard → **Workers & Pages** → **Create** → **Pages** → **Connect to Git** → pick

@@ -268,6 +268,45 @@ jobs:
         run: npm run build
         working-directory: docs
 
+  # The documentation site is single-source: docs/ in this repo, built by Cloudflare
+  # Pages. It must never ALSO be bundled into the published application image, where it
+  # would be a second, drift-prone copy that nobody deploys and nobody keeps true.
+  #
+  # This job builds Dockerfile.docs-audit -- busybox plus `COPY . /ctx` -- against the
+  # REAL build context and runs scripts/assert-docs-excluded.sh inside it. `Dockerfile`
+  # runs the SAME script against /rails in its final stage, which is the direct assertion
+  # against the published image and the one that stops a bad image from being pushed; PR
+  # CI does not build the app image, so this job buys that signal before merge for a few
+  # megabytes instead of a multi-GB zimmer-base pull on a shared runner.
+  #
+  # See docs/operate/deploying.md, "The docs never ship in the image".
+  image_excludes_docs:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      # The self-hosted host runs many runner workers as one OS user, so the default
+      # ~/.docker is shared mutable state: a concurrent job's `docker buildx create --use`
+      # records itself as the current builder there, and this build would then run on a
+      # builder that job tears down when it finishes. release-image.yml isolates its
+      # Docker client state for exactly this reason.
+      - name: Isolate Docker client state for this job
+        run: |
+          cfg="${RUNNER_TEMP}/docker-config"
+          rm -rf "$cfg"
+          mkdir -p "$cfg"
+          echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
+      - name: Assert the docs site is absent from the image build context
+        # BUILDX_BUILDER beats the config file, so naming the builder explicitly is what
+        # release-image.yml does for the same reason the isolation above exists: a build
+        # must never be inferred onto a builder some other job owns and will tear down.
+        env:
+          BUILDX_BUILDER: default
+        run: docker build --no-cache --file Dockerfile.docs-audit --tag zimmer-docs-audit:${{ github.run_id }} .
+      - name: Remove the audit image
+        if: always()
+        run: docker image rm --force zimmer-docs-audit:${{ github.run_id }} || true
+
   # Standalone unit tests for the GHCR retention selector. Pure Ruby, no Rails
   # boot required, so it runs fast and independently of the app suite.
   retention_logic:
@@ -311,6 +350,7 @@ jobs:
       - test-unit
       - test-system
       - docs_site
+      - image_excludes_docs
       - retention_logic
     steps:
       - name: Verify no required check failed or was cancelled

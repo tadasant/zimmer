@@ -52,4 +52,11 @@
 
 # The documentation site is a standalone Astro project deployed to Cloudflare
 # Pages. The Rails image never serves it.
+#
+# This line is all that stands between the docs and the blanket `COPY . .` in
+# Dockerfile, so it does not stand alone: scripts/assert-docs-excluded.sh asserts
+# the outcome, from Dockerfile and from CI's image_excludes_docs job. Move the
+# docs and you must move this line with them -- the checks find the docs by
+# content, not by this path, and will fail the build.
+# See docs/operate/deploying.md, "The docs never ship in the image".
 /docs
