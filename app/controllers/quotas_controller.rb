@@ -137,6 +137,10 @@ class QuotasController < ApplicationController
   # is the current one, activate the next available account in that runtime (or
   # leave the runtime with no current account if none remain). The worker's
   # before-spawn reconciliation backfills the filesystem from the DB.
+  #
+  # The account row goes; its history does not. Quota snapshots, login attempts,
+  # and rotation events are nullified rather than destroyed, and each carries the
+  # account's email — see ClaudeAccount's associations.
   def destroy_account
     account = ClaudeAccount.find(params[:id])
     runtime = account.runtime
@@ -150,8 +154,12 @@ class QuotasController < ApplicationController
       next_account = next_activatable_account(runtime)
       if next_account
         RuntimeAuthProvider.for(runtime).activate!(next_account)
+        # The source account is already gone, so it can only be named by the
+        # email preserved on the event — which is what tells the rotation table
+        # this move came from a deleted account rather than from nowhere.
         AccountRotationEvent.create(
           rotated_from: nil,
+          rotated_from_email: email,
           rotated_to: next_account,
           reason: "deleted_current_account",
           source: "manual"
@@ -245,12 +253,14 @@ class QuotasController < ApplicationController
   def login_status
     attempt = RuntimeLoginAttempt.find_by(id: params[:attempt_id])
 
-    # The row is gone — pruned after its retention window, or cascaded away with a
-    # deleted account. Raising RecordNotFound here would 404 the poller, which
-    # counts it as a transient network error and silently gives up a few ticks
-    # later, freezing the panel on whatever it last rendered. Answer with a
-    # terminal panel instead so the user is told what happened.
-    return render_lost_attempt(params[:attempt_id]) if attempt.nil?
+    # The row is gone (pruned after its retention window), or its account was
+    # deleted mid-login and the row was detached to preserve the history. Either
+    # way there is no panel left to repaint. Raising RecordNotFound here would
+    # 404 the poller, which counts it as a transient network error and silently
+    # gives up a few ticks later, freezing the panel on whatever it last
+    # rendered. Answer with a terminal panel instead so the user is told what
+    # happened.
+    return render_lost_attempt(params[:attempt_id]) if attempt.nil? || attempt.claude_account.nil?
 
     account = attempt.claude_account
 
@@ -281,6 +291,8 @@ class QuotasController < ApplicationController
     attempt = RuntimeLoginAttempt.find(params[:attempt_id])
     code = params[:code].to_s.strip
 
+    return render_lost_attempt(attempt.id) if attempt.claude_account.nil?
+
     if code.present? && !attempt.terminal?
       attempt.update!(pasted_code: code)
     end
@@ -295,6 +307,8 @@ class QuotasController < ApplicationController
   def cancel_login
     attempt = RuntimeLoginAttempt.find(params[:attempt_id])
     attempt.update!(status: "canceled", pasted_code: nil) unless attempt.terminal?
+
+    return render_lost_attempt(attempt.id) if attempt.claude_account.nil?
 
     render_login_panel(attempt.claude_account)
   end
@@ -331,10 +345,11 @@ class QuotasController < ApplicationController
       html: render_to_string(partial: "quotas/spot_gate", formats: [ :html ]))
   end
 
-  # Answer a poll for an attempt row that no longer exists. We can't name the
-  # account (that link died with the row), so target the login-attempt element the
-  # poller itself lives on. The replacement carries no Stimulus controller, so
-  # polling stops — with a message on screen instead of a frozen spinner.
+  # Answer a poll for an attempt row that no longer exists, or whose account was
+  # deleted out from under it. We can't name the account either way, so target
+  # the login-attempt element the poller itself lives on. The replacement carries
+  # no Stimulus controller, so polling stops — with a message on screen instead
+  # of a frozen spinner.
   def render_lost_attempt(attempt_id)
     render turbo_stream: turbo_stream.replace(
       "login_attempt_#{attempt_id.to_i}",
@@ -398,14 +413,18 @@ class QuotasController < ApplicationController
     end
   end
 
-  # Rotation events whose target account belongs to the given runtime. Rotation
-  # history is shared across runtimes in one table, so filter to the current tab.
-  # The runtime filter is applied in SQL *before* the limit so each runtime gets
-  # its own most-recent slice — filtering after AccountRotationEvent.recent's
-  # LIMIT 50 would let a busy runtime crowd the other off the page entirely.
+  # Rotation events belonging to the given runtime. Rotation history is shared
+  # across runtimes in one table, so filter to the current tab. The runtime
+  # filter is applied in SQL *before* the limit so each runtime gets its own
+  # most-recent slice — filtering after AccountRotationEvent.recent's LIMIT 50
+  # would let a busy runtime crowd the other off the page entirely.
+  #
+  # The filter reads the event's own `runtime` column rather than joining to the
+  # target account, so an event whose accounts have since been deleted still
+  # appears on the page it exists to inform.
   def rotation_events_for(runtime)
     AccountRotationEvent
-      .where(rotated_to: ClaudeAccount.for_runtime(runtime))
+      .for_runtime(runtime)
       .order(created_at: :desc)
       .limit(50)
       .includes(:rotated_from, :rotated_to)

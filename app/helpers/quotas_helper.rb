@@ -1,6 +1,21 @@
 # frozen_string_literal: true
 
 module QuotasHelper
+  # One side of a rotation-history row. A deleted account keeps its email —
+  # preserved on the event itself — and is labelled as deleted, so the row reads
+  # as "the pool moved off an account that no longer exists" rather than as the
+  # pool having moved from nowhere. An em dash means there genuinely was no
+  # account on that side (a bootstrap, or an activation with nothing current).
+  def rotation_account_label(email, deleted: false)
+    return "—" if email.blank?
+    return email unless deleted
+
+    safe_join([
+      email,
+      tag.span("deleted", class: "ml-1 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-500")
+    ])
+  end
+
   def utilization_bar_color(value)
     return "bg-gray-300" if value.nil?
 
