@@ -12,9 +12,11 @@ module Mcp
       TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
       # Referenced, not re-declared: a re-declared copy of a model constant is the
       # drift vector that leaves an agent unable to name a status a human can see.
-      # `failed` is Zimmer's to set — a one-time scheduled fire raised and the
-      # trigger was parked instead of destroyed. Filtering on it is how an agent
-      # finds wakes that never happened.
+      # `failed` is Zimmer's to set — a one-shot fire raised and the trigger was
+      # parked instead of destroyed. Both wake shapes park there: a one-time
+      # schedule (ScheduleTriggerJob) and a session-scoped ao_event
+      # (AoEventTriggerJob). Filtering on it is how an agent finds wakes that
+      # never happened.
       STATUSES = Trigger::STATUSES
 
       tool_name "search_triggers"
