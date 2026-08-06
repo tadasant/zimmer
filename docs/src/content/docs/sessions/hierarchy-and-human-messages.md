@@ -291,11 +291,12 @@ messages, badged `this session` or `elsewhere`, with a link to the authoring ses
 permalink where there is one. An empty record renders an explicit empty state explaining what absence
 means, rather than showing nothing.
 
-A node carries more than fits a phone in one line — an agent-root pill, the title, `#id · status`, the
-genesis pill, sometimes an uncle pill — so below `sm:` the node wraps onto as many lines as it needs,
-titles wrap rather than truncate, and the depth indent shrinks to 8px per level and stops growing after
-three levels. From `sm:` up the indent is the full 20px per level and a node stays on one line. The
-indent is a cue, not the meaning: the `└` glyph and this page say what nesting is.
+A node carries an agent-root pill, the title, `#id · status`, the genesis pill and sometimes an uncle
+pill, which is more than fits a phone in one line. So a node wraps onto as many lines as it needs at
+any width, and a title wraps rather than truncating — a session title is usually the one field a reader
+is scanning for, and Zimmer's titles are the sort an ellipsis would eat. The depth indent is 8px per
+level below `sm:` and the full 20px per level from `sm:` up; every level stays distinct at both widths,
+which at `MAX_DEPTH` costs a phone 64px of a roughly 343px row.
 
 An open detail screen refreshes this panel when the hierarchy changes or when a human message is
 recorded anywhere in that hierarchy, so it does not stay pinned to the tree it rendered on first load.
