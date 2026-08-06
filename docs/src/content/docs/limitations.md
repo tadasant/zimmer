@@ -1897,6 +1897,11 @@ Also:
   as you type (a 300ms debounce, flushed immediately on `visibilitychange`/`pagehide`) and is
   restored on load. Scroll position, expanded panels and the other text fields on the page are not
   preserved — the composer draft is the only state carried across.
+- A composer draft sits in `localStorage` for up to 7 days with no UI to clear it, and nothing
+  removes it when the session is archived or you sign out. On a shared browser that is a prompt
+  someone else can read. If `localStorage` is full the write fails silently and the previously
+  stored, shorter draft stays behind — so a restore can hand back an older version of the text
+  rather than nothing at all.
 - The other text-entry surfaces — enqueued-message edit, dashboard notes, editable title and goal,
   the notes popover, elicitation forms — do not persist drafts across a reload. Notes have their own
   autosave; the rest lose in-progress text if the page is rebuilt under them.
