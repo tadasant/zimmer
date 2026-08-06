@@ -496,6 +496,23 @@ class BroadcastServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # === lost_elicitation_banner tests ===
+
+  # One slot, re-rendered. The partial draws nothing when the session carries no
+  # marker, so raising and dismissing the banner are the same call.
+  test "lost_elicitation_banner replaces the session's lost-elicitation slot" do
+    @mock_channel.expects(:broadcast_replace_to).with(
+      "session_#{@session.id}_elicitations",
+      has_entries(
+        target: "session_#{@session.id}_lost_elicitation",
+        partial: "elicitations/lost_elicitation_banner",
+        locals: { session: @session }
+      )
+    )
+
+    @service.lost_elicitation_banner(@session)
+  end
+
   # === notification_badge tests ===
 
   test "notification_badge broadcasts replace to global notification_badge stream" do

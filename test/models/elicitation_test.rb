@@ -255,6 +255,13 @@ class ElicitationTest < ActiveSupport::TestCase
     end
   end
 
+  test "summary is bounded, so an unauthenticated create cannot copy a huge message onto a session" do
+    elicitation = create_pending_elicitation
+    elicitation.update!(message: "x" * 5_000)
+
+    assert_operator elicitation.summary.length, :<=, Elicitation::SUMMARY_LIMIT
+  end
+
   test "default_expiration clamps a configured value above the ceiling" do
     with_expiration_env((Elicitation::MAX_EXPIRATION.in_minutes.to_i + 1).to_s) do
       assert_equal Elicitation::MAX_EXPIRATION, Elicitation.default_expiration
@@ -433,6 +440,61 @@ class ElicitationTest < ActiveSupport::TestCase
     elicitation = create_pending_elicitation
 
     elicitation.resolve!(action: "cancel")
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_not @session.lost_elicitation?
+  end
+
+  test "expiring one of two concurrent elicitations does not claim the round-trip ended" do
+    first = create_pending_elicitation
+    second = create_pending_elicitation
+    assert_equal "needs_input", @session.reload.status
+
+    travel_to 2.hours.from_now do
+      first.expire_if_needed!
+    end
+
+    @session.reload
+    assert_equal "needs_input", @session.status, "still blocked on the second request"
+    assert_not @session.lost_elicitation?,
+      "the agent is still waiting on another approval — saying it continued without one would be false"
+  end
+
+  test "an expiry on an archived session raises no banner for a reader who is gone" do
+    elicitation = create_pending_elicitation
+    @session.reload.update_column(:status, "archived")
+
+    travel_to 2.hours.from_now do
+      elicitation.expire_if_needed!
+    end
+
+    assert_not @session.reload.lost_elicitation?
+  end
+
+  test "a fresh elicitation clears the lost marker of a session paused for a normal turn" do
+    expiring = create_pending_elicitation
+    travel_to 2.hours.from_now do
+      expiring.expire_if_needed!
+    end
+    # The agent finished its turn after the expiry, so the session is back in
+    # needs_input by a normal pause — a state block_on_elicitation cannot fire from.
+    @session.reload.pause!
+    assert @session.reload.lost_elicitation?
+
+    create_pending_elicitation
+
+    assert_not @session.reload.lost_elicitation?,
+      "a live approval request must never render under a banner saying the last one was lost"
+  end
+
+  test "answering an elicitation clears a lost marker left by an earlier one" do
+    elicitation = create_pending_elicitation
+    # A banner left over from an earlier request, still on screen when this one
+    # gets answered. The unblock is what has to clear it.
+    @session.reload.record_lost_elicitation!(reason: "expired")
+
+    elicitation.resolve!(action: "accept", content: { "confirmed" => true })
 
     @session.reload
     assert_equal "running", @session.status

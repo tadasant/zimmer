@@ -1,10 +1,10 @@
 require "application_system_test_case"
 
-# An approval request that ends without a human answer used to leave nothing on
-# screen. The elicitation banner disappears, the session stays parked in
-# needs_input, and the page reads as merely idle — the "phantom blocked" state.
-# This asserts the session page says which of the two things happened, in words
-# that tell the user whether the agent carried on or is waiting on them.
+# An approval request that ends without a human answer leaves nothing else on
+# screen: the elicitation banner is gone, and the session sits parked in
+# needs_input reading as merely idle — the "phantom blocked" state. This asserts
+# the session page says which of the two endings happened, in words that tell the
+# user whether the agent carried on or is waiting on them.
 class LostElicitationBannerTest < ApplicationSystemTestCase
   def session_with_lost_elicitation(reason:, **overrides)
     Session.create!({
@@ -40,7 +40,7 @@ class LostElicitationBannerTest < ApplicationSystemTestCase
     assert_text "reply below to tell the agent how to proceed"
   end
 
-  test "a session with a live approval round-trip shows no lost banner" do
+  test "a session with no lost round-trip on record shows no banner" do
     session = Session.create!(
       title: "Healthy session",
       prompt: "Ship it",

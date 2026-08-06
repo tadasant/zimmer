@@ -201,14 +201,27 @@ class Api::V1::ElicitationsController < Api::BaseController
   # gets this instance's default: ELICITATION_EXPIRATION_MINUTES if the operator
   # set it, otherwise the built-in Elicitation::DEFAULT_EXPIRATION. An
   # unparseable timestamp is treated as if none was sent.
+  #
+  # The server's value is held to the same MIN/MAX bounds the operator's is. This
+  # endpoint is unauthenticated by protocol necessity, so a deadline already in
+  # the past would mint an elicitation that is born expired — one that resolves
+  # straight into the "this approval request expired" banner on a session the
+  # caller does not own — and one years out would pin a session in needs_input.
   def parse_expiration(meta)
-    if meta["com.pulsemcp/expires-at"].present?
-      Time.zone.parse(meta["com.pulsemcp/expires-at"]) || Elicitation.default_expiration.from_now
-    else
-      Elicitation.default_expiration.from_now
-    end
-  rescue ArgumentError
-    Elicitation.default_expiration.from_now
+    requested = parse_requested_expiration(meta)
+    return Elicitation.default_expiration.from_now if requested.nil?
+
+    requested.clamp(Elicitation::MIN_EXPIRATION.from_now, Elicitation::MAX_EXPIRATION.from_now)
+  end
+
+  # The server's own timestamp, or nil when it sent none or sent nonsense.
+  def parse_requested_expiration(meta)
+    raw = meta["com.pulsemcp/expires-at"]
+    return nil if raw.blank?
+
+    Time.zone.parse(raw.to_s)
+  rescue ArgumentError, TypeError
+    nil
   end
 
   def broadcast_elicitation_created(session, elicitation)

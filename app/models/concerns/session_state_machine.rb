@@ -128,8 +128,6 @@ module SessionStateMachine
         after do
           log_state_change("Session blocked on MCP elicitation, waiting for user response")
           set_blocked_on_elicitation_marker
-          # A live request supersedes whatever the previous one died of.
-          clear_lost_elicitation_marker
           fire_ao_event_triggers("session_needs_input")
         end
       end
@@ -343,8 +341,11 @@ module SessionStateMachine
   #
   # @param reason [String] "expired" or "stranded"
   # @param elicitation [Elicitation, nil] the request that was lost, when known
+  # @param broadcast [Boolean] false to write the marker without pushing the
+  #   banner, for a caller holding a lock or an open transaction that will
+  #   broadcast once it has committed
   # @return [Boolean] true if the marker was written
-  def record_lost_elicitation!(reason:, elicitation: nil)
+  def record_lost_elicitation!(reason:, elicitation: nil, broadcast: true)
     marker = {
       "reason" => reason,
       "at" => Time.current.iso8601,
@@ -358,7 +359,7 @@ module SessionStateMachine
         "Elicitation expired without a response — the agent was told the approval request timed out" :
         "Elicitation round-trip lost — the approval request was never answered and no longer has an MCP server waiting on it"
     )
-    broadcast_lost_elicitation_banner
+    broadcast_lost_elicitation_banner if broadcast
     true
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to record lost elicitation for session #{id}: #{e.message}"
@@ -436,6 +437,12 @@ module SessionStateMachine
   # active elicitation is gone.
   def sync_elicitation_blocking_state!
     if elicitations.active.exists?
+      # Unconditional, and outside the transition: a live request supersedes
+      # whatever the previous one died of, whether or not this session is in a
+      # state that can fire block_on_elicitation. A session already needs_input
+      # from a normal pause takes no transition here, and would otherwise show a
+      # stale "the request was lost" banner directly above a live approval form.
+      clear_lost_elicitation_marker
       block_on_elicitation! if may_block_on_elicitation?
     elsif blocked_on_elicitation?
       unblock_from_elicitation! if may_unblock_from_elicitation?
@@ -477,6 +484,7 @@ module SessionStateMachine
   # @return [Boolean] true if a stale marker was cleared, false otherwise
   def clear_stale_elicitation_block!
     cleared = false
+    surfaced = false
     # Lock the row and re-read inside the transaction before clearing. The sweep
     # loads the session, then clears the marker — an elicitation created (or the
     # marker re-armed) in that window would otherwise be silently clobbered
@@ -494,10 +502,19 @@ module SessionStateMachine
       # writes on this one JSON column can't interleave with a concurrent one.
       # The elicitation named is this session's most recent — the request the
       # stranded marker was almost certainly holding open.
+      #
+      # The banner is NOT pushed from in here: broadcasting inside the lock would
+      # publish HTML for state a rollback could still discard, and its retry
+      # backoff would sleep with the row locked.
       if needs_input?
-        record_lost_elicitation!(reason: "stranded", elicitation: elicitations.order(:created_at).last)
+        surfaced = record_lost_elicitation!(
+          reason: "stranded",
+          elicitation: elicitations.order(:created_at).last,
+          broadcast: false
+        )
       end
     end
+    broadcast_lost_elicitation_banner if surfaced
     cleared
   end
 

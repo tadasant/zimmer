@@ -43,7 +43,7 @@ class ElicitationsController < ApplicationController
         render turbo_stream: turbo_stream.remove("elicitation_#{@elicitation.id}")
       end
       format.html do
-        redirect_to @session, notice: RESOLUTION_NOTICES.fetch(action_type)
+        redirect_to @session, notice: RESOLUTION_NOTICES.fetch(action_type) { "Elicitation resolved: #{action_type}." }
       end
     end
   end
