@@ -130,18 +130,25 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
       "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
     ), "page scrolls horizontally at #{PHONE_VIEWPORT.first}px"
 
-    # Probe 2: nothing sticks out past the right edge. Catches what Probe 1
-    # cannot — a clipping ancestor, and the fixed-position mobile drawer itself.
+    # Probe 2: nothing in the trigger bar sticks out past the right edge. This
+    # catches what Probe 1 cannot — a clipping ancestor hides the overflow from
+    # `scrollWidth`, leaving a control off-screen *and* unreachable.
+    #
+    # Scoped to the trigger bar rather than the whole document on purpose. Run
+    # page-wide it also reports the session-hierarchy panel (issue #390) and the
+    # off-canvas panels that are parked at `translate-x-full` by design, neither
+    # of which this diff touches.
     overflowing = page.evaluate_script(<<~JS)
       (function () {
         const limit = document.documentElement.clientWidth;
-        return Array.from(document.querySelectorAll("*"))
+        const root = document.querySelector("[data-bottom-drawer-target='trigger']");
+        if (!root) return ["trigger bar not found"];
+        return [root].concat(Array.from(root.querySelectorAll("*")))
           .filter((el) => el.getBoundingClientRect().right > limit + 1)
-          .slice(0, 20)
           .map((el) => `${el.tagName.toLowerCase()}.${el.classList.value}`);
       })()
     JS
-    assert_empty overflowing, "elements overflow the right edge: #{overflowing.inspect}"
+    assert_empty overflowing, "trigger bar overflows the right edge: #{overflowing.inspect}"
   ensure
     page.driver.browser.manage.window.resize_to(1400, 900)
   end
