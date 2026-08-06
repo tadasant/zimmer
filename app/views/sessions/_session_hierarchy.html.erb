@@ -43,19 +43,38 @@
     <div class="border-t border-gray-200 px-4 sm:px-6 py-3">
       <ul class="space-y-1" id="session_<%= agent_session.id %>_hierarchy">
         <% hierarchy.nodes.each do |node| %>
-          <li style="padding-left: <%= node.depth * 20 %>px">
-            <span class="inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm <%= node.current? ? "bg-indigo-50 ring-1 ring-indigo-200" : "hover:bg-gray-50" %>">
+          <%# The indent is two values rather than one. 20px per level reads well on a
+              laptop and eats the row on a phone: at 375px a row has roughly 343px to
+              work with, so a depth-4 node would start 80px in before its first pill.
+              Below `sm:` it is 8px per level capped at three levels — the `└` glyph
+              carries "child of" on its own once the row wraps — and from `sm:` up it
+              is the unchanged depth × 20px. Two custom properties because an inline
+              style cannot carry a media query and the depth is per-node. %>
+          <li class="pl-[var(--node-indent-phone)] sm:pl-[var(--node-indent)]"
+              style="--node-indent-phone: <%= [ node.depth, 3 ].min * 8 %>px; --node-indent: <%= node.depth * 20 %>px">
+            <%# `flex-wrap` is the load-bearing class, not `min-w-0` alone. A node is an
+                agent-root badge, a title, an id · status, a genesis pill and sometimes an
+                uncle pill; the combined min-content width of everything but the title
+                already exceeds a phone row, so making only the title shrink still leaves
+                the tail off screen — and off screen here meant unreachable: the document
+                reported no sideways scroll to bring it back. Wrapping puts the whole
+                node on screen at any width. %>
+            <span class="inline-flex flex-wrap items-center gap-2 max-w-full rounded-md px-2 py-1 text-sm <%= node.current? ? "bg-indigo-50 ring-1 ring-indigo-200" : "hover:bg-gray-50" %>">
               <% if node.depth.positive? %>
                 <span class="text-gray-300 select-none" aria-hidden="true">└</span>
               <% end %>
-              <span class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600" title="Agent root">
+              <span class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 min-w-0 max-w-full break-words" title="Agent root">
                 <%= node.agent_root_label %>
               </span>
+              <%# `break-words`, not `truncate`: the title is what identifies the node, and
+                  Zimmer's titles are the unbreakable kind (`fix_session_state_machine_…`).
+                  Truncating would hide the one field a reader scans the tree for; wrapping
+                  costs a line and keeps it legible. %>
               <% if node.current? %>
-                <span class="font-semibold text-gray-900"><%= node.label %></span>
+                <span class="font-semibold text-gray-900 min-w-0 max-w-full break-words"><%= node.label %></span>
                 <span class="text-xs font-medium text-indigo-700">this session</span>
               <% else %>
-                <%= link_to node.label, session_path(node.id), class: "text-indigo-600 hover:text-indigo-800 hover:underline" %>
+                <%= link_to node.label, session_path(node.id), class: "text-indigo-600 hover:text-indigo-800 hover:underline min-w-0 max-w-full break-words" %>
               <% end %>
               <span class="text-xs text-gray-400">#<%= node.id %> · <%= node.status %></span>
               <%# Genesis, on every node. It is inherited down a lineage, so showing
@@ -72,7 +91,7 @@
                   Silently omitting it would hide the thing that widened this
                   session's human-message scope. %>
               <% if node.uncles? %>
-                <span class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200"
+                <span class="inline-flex flex-wrap items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200 max-w-full"
                       title="Queued or interrupted this session, so Zimmer treats it as an additional parent">
                   also senior:
                   <% node.uncles.each_with_index do |uncle_id, index| %><%= "," if index.positive? %>

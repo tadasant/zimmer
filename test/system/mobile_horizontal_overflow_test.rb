@@ -213,7 +213,15 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # Depth 2, the deepest node, so it carries the largest indent — and an uncle
     # edge, so it also renders the widest node the panel can produce.
     worker = with_agent_root(create_session(status: :running, parent_session_id: router.id), "zimmer")
-    SessionUncleLink.create!(session: worker, uncle_session: origin)
+    # The uncle is a sibling rather than an ancestor. An uncle edge is walked
+    # downward like a spawn edge, so an uncle nearer the root would re-seat the
+    # current session at a shallower depth and quietly change the indent this
+    # test is measuring.
+    sibling = with_agent_root(
+      create_session(title: "Re-route the stalled worker", status: :needs_input, parent_session_id: router.id),
+      "zimmer-router"
+    )
+    SessionUncleLink.create!(session: worker, uncle_session: sibling)
 
     visit session_path(worker)
     assert_text "Session hierarchy"
