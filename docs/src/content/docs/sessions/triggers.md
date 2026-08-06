@@ -289,15 +289,28 @@ one — that status, not a bumped timestamp, is what closes the infinite-retry l
 Which is why the failure path deliberately leaves the condition's `last_triggered_at` alone.
 The schedule stays *due*, so pressing **Re-arm** on the trigger (or calling `action_trigger`
 with `action=toggle`) clears the failure and the wake fires for real on the next minute's tick.
-No edit, no re-creation.
+No edit, no re-creation. Every route off `failed` — the toggle, the edit form, the REST API,
+`action_trigger` — clears `failed_at` and `last_error`, so a recovered trigger never keeps
+advertising the failure it recovered from.
 
-`CleanupStaleTriggersJob` skips failed triggers in both of its sweeps. A parked trigger is
-lapsed by definition, so the lapsed-schedule heuristic would otherwise delete the evidence an
-hour later — reintroducing exactly the silent loss the parking exists to prevent. Only you
-clear a failed trigger.
+One failure does not re-arm, and does not pretend to. A raise from the cleanup that *follows* a
+successful fire (sibling destruction, the auto-delete) arrives with the schedule already consumed
+and the session already created, so re-firing would duplicate it. `Trigger#rearm_fires_immediately?`
+is what the trigger page and the alert read to tell the two apart: in that case they say the
+schedule was consumed and ask you to check the session rather than offering a re-arm that would
+deliver nothing.
 
-Recurring schedules are unchanged: a bad tick advances `last_triggered_at`, the trigger stays
-enabled, and it tries again on its next interval.
+`CleanupStaleTriggersJob` skips failed triggers in both of its sweeps, and
+`Trigger#destroy_sibling_wakes!` skips them too. A parked trigger is lapsed by definition, so the
+lapsed-schedule heuristic matches every one of them; and in the triple-wake pattern below, a
+sibling that fires successfully later would otherwise delete the record of the one that tried and
+could not. Both would delete the evidence as a side effect, which is the silent loss the parking
+exists to prevent. Only you clear a failed trigger — which also means nothing bounds how many
+accumulate, so a systemic fault leaves a list to clear by hand
+([Limitations](/limitations/#a-failed-one-time-wake-does-not-retry-itself)).
+
+A recurring schedule behaves differently on a bad tick: it advances `last_triggered_at`, stays
+enabled, and tries again on its next interval.
 
 ### `ao_event`
 

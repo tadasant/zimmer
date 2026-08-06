@@ -28,10 +28,14 @@ module Mcp
     class ActionTrigger < Tool
       ACTIONS = %w[create update delete toggle].freeze
       TRIGGER_TYPES = %w[slack schedule github_label github_issue].freeze
-      # Referenced, not re-declared, so the tool cannot drift behind the model.
-      # `failed` is reachable here for symmetry, but it is Zimmer's to set:
-      # ScheduleTriggerJob parks a one-time trigger there when its fire raises.
-      STATUSES = Trigger::STATUSES
+      # Derived from the model, not re-declared, so the tool cannot drift behind
+      # it. `failed` is subtracted because it is Zimmer's to set — ScheduleTriggerJob
+      # parks a one-time trigger there when its fire raises, alongside the failed_at
+      # and last_error the UI renders. A caller that could name it here would
+      # fabricate a failure with neither, and the trigger page would show a "fire
+      # failed" panel for a fire that never happened. search_triggers carries the
+      # full list, because filtering on `failed` is exactly the point there.
+      STATUSES = (Trigger::STATUSES - %w[failed]).freeze
 
       tool_name "action_trigger"
 

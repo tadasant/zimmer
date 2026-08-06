@@ -9,9 +9,9 @@
 # 4. Updates the condition's last_triggered_at timestamp
 #
 # A fire that raises never destroys anything. A one-time trigger is parked as
-# `failed` — visible, re-armable, and skipped by every firing path — rather than
-# deleted along with the wake it never delivered. See the rescue in
-# #process_condition.
+# `failed` — visible, skipped by every firing path, and re-armable unless the
+# schedule was already consumed — rather than deleted along with the wake it
+# never delivered. See the rescue in #process_condition.
 class ScheduleTriggerJob < ApplicationJob
   # Runs on the dedicated `triggers` queue (alongside AoEventTriggerJob) rather
   # than `default`. This is the time-based trigger-firing path — it fires the
@@ -127,18 +127,28 @@ class ScheduleTriggerJob < ApplicationJob
     #   further edits. The trigger stays in the list either way, carrying the
     #   error that stopped it, instead of vanishing with the wake it owed.
     #   Parking is per-TRIGGER while the failure is per-CONDITION, so a trigger
-    #   that also carries other conditions stops firing on those too. That is
-    #   strictly gentler than what this branch used to do — destroy the trigger,
-    #   cascading its conditions with it — and a one-time schedule sharing a
+    #   that also carries other conditions stops firing on those too — which
+    #   bounds the blast radius to one trigger, and a one-time schedule sharing a
     #   trigger with anything else is not a shape Zimmer's own wake tools create.
     #
     # Recurring: advance last_triggered_at and leave the trigger enabled. A
     #   recurring schedule is expected to survive a bad tick and try again on
     #   its next interval, which is exactly what the timestamp bump gives it.
+    #
+    # One case does not re-arm, and is not claimed to: a raise from the cleanup
+    # that FOLLOWS a successful fire (sibling destruction, the auto-delete)
+    # lands here with the condition already advanced. The session exists, so
+    # re-firing would duplicate it. #spent_one_time_schedule? is what the alert
+    # and the UI read to tell the two apart instead of promising a re-arm that
+    # would deliver nothing.
     parked = false
+    rearmable = false
     if is_one_time && trigger
-      parked = trigger.mark_failed!(e)
-      Rails.logger.error "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) marked failed after a failed firing — left in place so it stays visible and can be re-armed" if parked
+      parked = trigger.mark_failed(e)
+      if parked
+        rearmable = !trigger.spent_one_time_schedule?
+        Rails.logger.error "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) marked failed after a failed firing — left in place so it stays visible#{rearmable ? ' and can be re-armed' : ' (schedule already consumed; re-arming will not re-fire it)'}"
+      end
     end
 
     # Recurring conditions, and the belt-and-braces case where parking the
@@ -152,9 +162,13 @@ class ScheduleTriggerJob < ApplicationJob
 
     backtrace = e.backtrace&.first(5)&.join("\n")
 
-    retry_note = if is_one_time && parked
+    retry_note = if is_one_time && parked && rearmable
       "The one-time trigger is marked *failed* and left in place — it will not fire again on its own. " \
-      "Re-enable it at #{AppUrl.base_url}/triggers/#{trigger_id} to re-arm it (it fires within a minute)."
+      "Re-enable it at #{trigger_url(trigger_id)} to re-arm it (it fires within a minute)."
+    elsif is_one_time && parked
+      "The one-time trigger is marked *failed* and left in place, but its schedule was already consumed " \
+      "before the error — the session may well have been created and only the cleanup after it failed. " \
+      "Re-arming will NOT re-fire it. Check #{trigger_url(trigger_id)} and the sessions it spawned."
     elsif is_one_time
       "The one-time trigger could not be marked failed; last_triggered_at was advanced instead to prevent " \
       "infinite retries. Re-create it manually to retry."
@@ -172,5 +186,16 @@ class ScheduleTriggerJob < ApplicationJob
       dedup_key: "schedule_trigger_session_#{trigger_id}",
       error: e
     )
+  end
+
+  # The alert this is built for is raised from inside a rescue, and it is the
+  # only signal a lost wake produces. AppUrl.base_url reads configuration, so a
+  # deployment that has it wrong would raise here and lose the specific alert to
+  # the generic one in #perform. A degraded link beats no alert.
+  def trigger_url(trigger_id)
+    "#{AppUrl.base_url}/triggers/#{trigger_id}"
+  rescue => e
+    Rails.logger.warn "[ScheduleTriggerJob] Could not build a trigger URL: #{e.class}: #{e.message}"
+    "/triggers/#{trigger_id}"
   end
 end

@@ -183,10 +183,10 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
   # === A failed one-time wake survives as a visible record (issue #76) ===
   #
-  # The old behaviour destroyed the trigger on the failure path, so a scheduled
-  # wake that errored was gone with nothing to show for it: "wake me at 6am to
-  # check the deploy" became "you are not woken, and you find out at 9". These
-  # tests pin the replacement: park it as failed, keep it, keep the evidence,
+  # Destroying the trigger on the failure path leaves a scheduled wake that
+  # errored gone with nothing to show for it: "wake me at 6am to check the
+  # deploy" becomes "you are not woken, and you find out at 9". These pin the
+  # invariant that prevents it — park it as failed, keep it, keep the evidence,
   # and still never retry in a loop.
 
   test "marks one-time trigger failed instead of destroying it when session creation fails" do
@@ -271,6 +271,52 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
     travel_to Time.zone.parse("2026-04-15 19:05:00 UTC") do
       assert_difference("Session.count", 1) do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+  end
+
+  # The condition is advanced BEFORE the post-fire cleanup runs, so a raise from
+  # #destroy_sibling_wakes! or the auto-delete arrives with the schedule already
+  # spent and the session already created. Parking is still right — the error
+  # must not vanish — but promising a re-arm would be a lie, and acting on it
+  # would duplicate the session.
+  test "a raise after the schedule was consumed parks the trigger without promising a re-arm" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    one_time_condition = trigger_conditions(:one_time_schedule_condition)
+    trigger = one_time_condition.trigger
+    one_time_condition.update!(last_triggered_at: nil)
+
+    Trigger.any_instance.stubs(:destroy_sibling_wakes!).raises(StandardError.new("sibling cleanup blew up"))
+
+    captured_details = nil
+    AlertService.stubs(:raise_alert).with do |_title, **kwargs|
+      captured_details = kwargs[:details]
+      true
+    end
+
+    travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
+      assert_difference("Session.count", 1) do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+
+    trigger.reload
+    assert_equal "failed", trigger.status, "the error must still be recorded, not swallowed"
+    assert_not_nil one_time_condition.reload.last_triggered_at,
+      "the fire got far enough to consume the schedule"
+    assert trigger.spent_one_time_schedule?,
+      "there is nothing left to fire, so the UI must not offer a re-arm that would deliver nothing"
+    assert_match(/will NOT re-fire/, captured_details)
+
+    # And re-arming really does not duplicate the session.
+    Trigger.any_instance.unstub(:destroy_sibling_wakes!)
+    trigger.toggle!
+
+    travel_to Time.zone.parse("2026-04-15 19:05:00 UTC") do
+      assert_no_difference("Session.count") do
         ScheduleTriggerJob.perform_now
       end
     end

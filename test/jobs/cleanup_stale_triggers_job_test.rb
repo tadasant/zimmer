@@ -139,7 +139,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
         { condition_type: "schedule", configuration: { "scheduled_at" => 2.hours.ago.iso8601, "timezone" => "UTC" } }
       ]
     )
-    failed.mark_failed!(StandardError.new("agent root not found"))
+    failed.mark_failed(StandardError.new("agent root not found"))
 
     CleanupStaleTriggersJob.perform_now
 
@@ -163,7 +163,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
         { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id } }
       ]
     )
-    failed.mark_failed!(StandardError.new("boom"))
+    failed.mark_failed(StandardError.new("boom"))
 
     CleanupStaleTriggersJob.perform_now
 
