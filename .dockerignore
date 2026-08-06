@@ -60,4 +60,3 @@
 # against the final image in Dockerfile and against the build context in CI's
 # image_excludes_docs job. Move the docs and you must move this line with them --
 # the checks look for the docs by content, not by this path, and will fail.
-/docs
