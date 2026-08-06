@@ -183,6 +183,102 @@ class QuotasHelperTest < ActionView::TestCase
     assert_match(/m/, result)
   end
 
+  # The reported bug: minutes are the finest unit, so the last minute before a
+  # reset had no whole unit to report and joined to "". The card interpolates
+  # this after a label, so the page rendered "Resets in" and nothing else.
+  # Frozen, because the boundary is the assertion. `1.minute.from_now` is read
+  # before the helper reads Time.current, so under a running clock the gap is a
+  # few microseconds under a minute and lands on the branch below it — the
+  # 60-second boundary is not reachable at all without holding time still.
+  test "time_until_reset names the sub-minute window instead of returning blank" do
+    freeze_time { assert_equal "< 1m", time_until_reset(30.seconds.from_now) }
+  end
+
+  test "time_until_reset names the sub-minute window one second before reset" do
+    freeze_time { assert_equal "< 1m", time_until_reset(1.second.from_now) }
+  end
+
+  test "time_until_reset names the sub-minute window at the last instant before reset" do
+    freeze_time { assert_equal "< 1m", time_until_reset(Time.current + 0.001) }
+  end
+
+  test "time_until_reset switches to whole minutes at exactly one minute" do
+    freeze_time { assert_equal "1m", time_until_reset(1.minute.from_now) }
+  end
+
+  test "time_until_reset reports a window reset at exactly the reset instant" do
+    freeze_time { assert_equal "Window reset", time_until_reset(Time.current) }
+  end
+
+  # The guarantee the view depends on: no reset time, at any distance, may
+  # render as blank or whitespace after the "Resets in" label. Walks the whole
+  # range rather than the boundaries alone, because the empty join came from a
+  # combination of components rather than from one special-cased input.
+  test "time_until_reset never renders blank for any offset" do
+    offsets = [ 0.5, 1, 30, 59, 59.9, 60, 61, 90, 3599, 3600, 3601, 86_399, 86_400,
+               86_430, 90_000, 7.days.to_i, 30.days.to_i ]
+
+    freeze_time do
+      offsets.each do |seconds|
+        result = time_until_reset(Time.current + seconds)
+        assert_predicate result.strip, :present?, "time_until_reset rendered blank for +#{seconds}s"
+      end
+    end
+  end
+
+  # window_status_badge tests
+  #
+  # A status describes the window that was open when the reading was taken.
+  # After that window's reset time the card corrects the counter to 0.0% and
+  # prints "Window reset" — a red "Rejected" badge left beside them contradicts
+  # both, and outlives the window it described.
+
+  test "window_status_badge renders the status while the window is still open" do
+    assert_match(/Rejected/, window_status_badge("rejected", 1.day.from_now))
+  end
+
+  test "window_status_badge renders the status when there is no reset time" do
+    assert_match(/Allowed/, window_status_badge("allowed", nil))
+  end
+
+  test "window_status_badge drops a status whose window has already reset" do
+    assert_nil window_status_badge("rejected", 1.hour.ago)
+  end
+
+  test "window_status_badge drops a serving status whose window has already reset too" do
+    # The rule is about the window, not about the colour of the badge: "allowed"
+    # read off a window that has since cleared is no more a fact than "rejected".
+    assert_nil window_status_badge("allowed", 1.hour.ago)
+  end
+
+  test "window_status_badge drops a status whose window resets exactly now" do
+    freeze_time { assert_nil window_status_badge("rejected", Time.current) }
+  end
+
+  # reset_window_line tests
+
+  test "reset_window_line renders nothing without a reset time" do
+    assert_nil reset_window_line(nil)
+  end
+
+  test "reset_window_line reports a window that has already reset" do
+    line = reset_window_line(1.hour.ago)
+    assert_match(/Window reset/, line)
+    assert_match(/text-green-500/, line)
+  end
+
+  test "reset_window_line reports the wait to a window still open" do
+    freeze_time do
+      line = reset_window_line(2.hours.from_now + 30.minutes)
+      assert_match(/Resets in 2h 30m/, line)
+      assert_match(/text-gray-400/, line)
+    end
+  end
+
+  test "reset_window_line carries a value in the last minute before a reset" do
+    freeze_time { assert_match(/Resets in &lt; 1m/, reset_window_line(30.seconds.from_now)) }
+  end
+
   # utilization_percentage_text tests
 
   test "utilization_percentage_text shows 0.0% for zero" do

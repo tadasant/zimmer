@@ -68,7 +68,7 @@
           <div class="flex items-center justify-between mb-1">
             <div class="flex items-center space-x-2">
               <span class="text-xs font-medium text-gray-600">5h</span>
-              <%= quota_status_badge(snapshot.status_5h) %>
+              <%= window_status_badge(snapshot.status_5h, snapshot.reset_5h) %>
             </div>
             <span class="text-xs font-semibold text-gray-900">
               <% u5h = effective_utilization(snapshot.utilization_5h, snapshot.reset_5h) %>
@@ -79,13 +79,7 @@
             <div class="<%= utilization_bar_color(u5h) %> h-2 rounded-full transition-all duration-300"
                  style="width: <%= u5h ? [(u5h * 100).round(1), 100].min : 0 %>%"></div>
           </div>
-          <% if snapshot.reset_5h %>
-            <% if snapshot.reset_5h <= Time.current %>
-              <p class="mt-0.5 text-xs text-green-500">Window reset</p>
-            <% else %>
-              <p class="mt-0.5 text-xs text-gray-400">Resets in <%= time_until_reset(snapshot.reset_5h) %></p>
-            <% end %>
-          <% end %>
+          <%= reset_window_line(snapshot.reset_5h) %>
           <%# The bar above reads as headroom the account cannot spend once its
               weekly allowance is gone. Name the gap here, so the card and the
               pool's 5-hour figure tell the same story. %>
@@ -99,7 +93,7 @@
           <div class="flex items-center justify-between mb-1">
             <div class="flex items-center space-x-2">
               <span class="text-xs font-medium text-gray-600">7d</span>
-              <%= quota_status_badge(snapshot.status_7d) %>
+              <%= window_status_badge(snapshot.status_7d, snapshot.reset_7d) %>
             </div>
             <span class="text-xs font-semibold text-gray-900">
               <% u7d = effective_utilization(snapshot.utilization_7d, snapshot.reset_7d) %>
@@ -110,13 +104,7 @@
             <div class="<%= utilization_bar_color(u7d) %> h-2 rounded-full transition-all duration-300"
                  style="width: <%= u7d ? [(u7d * 100).round(1), 100].min : 0 %>%"></div>
           </div>
-          <% if snapshot.reset_7d %>
-            <% if snapshot.reset_7d <= Time.current %>
-              <p class="mt-0.5 text-xs text-green-500">Window reset</p>
-            <% else %>
-              <p class="mt-0.5 text-xs text-gray-400">Resets in <%= time_until_reset(snapshot.reset_7d) %></p>
-            <% end %>
-          <% end %>
+          <%= reset_window_line(snapshot.reset_7d) %>
         </div>
       </div>
 
