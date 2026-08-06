@@ -160,6 +160,26 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     assert_nil attempt.pid
   end
 
+  test "fails an attempt whose account was deleted before the job ran" do
+    # The attempt row outlives its account now (it is that account's history), so
+    # the job can dequeue and find nothing to capture credentials into. It must
+    # resolve the row terminally instead of spawning a CLI for nobody.
+    account = ClaudeAccount.create!(
+      email: "runtime-login-job-deleted@example.com", runtime: "codex",
+      status: :needs_reauth, is_current: false, priority: 62
+    )
+    attempt = account.runtime_login_attempts.create!(runtime: "codex", pasted_code: "secret-code")
+    account.destroy!
+
+    assert_nothing_raised { RuntimeLoginJob.perform_now(attempt.id) }
+
+    attempt.reload
+    assert_equal "failed", attempt.status
+    assert_nil attempt.pid
+    assert_nil attempt.pasted_code
+    assert_match(/deleted/, attempt.error_message)
+  end
+
   test "happy path: surfaces the URL, captures credentials, and marks succeeded" do
     attempt = @account.runtime_login_attempts.create!(runtime: "codex")
 

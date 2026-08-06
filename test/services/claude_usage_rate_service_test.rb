@@ -35,6 +35,19 @@ class ClaudeUsageRateServiceTest < ActiveSupport::TestCase
     assert_in_delta 5.0, result.rate_5h_pct, 0.01
   end
 
+  test "ignores readings whose account has been deleted" do
+    # Orphaned snapshots all share a nil account id, so pairing across them would
+    # splice two accounts' readings into one series and invent the consumption
+    # between them.
+    snapshot(minutes_ago: 90, util_5h: 0.10, sessions: 2).update_column(:claude_account_id, nil)
+    snapshot(minutes_ago: 30, util_5h: 0.90, sessions: 2).update_column(:claude_account_id, nil)
+
+    result = ClaudeUsageRateService.call(now: @now)
+
+    assert_equal 0, result.sample_count
+    assert_nil result.rate_5h
+  end
+
   test "skips a pair that straddles a window reset" do
     # reset_5h moves forward: the later reading counts against a new allowance,
     # so the difference between the two measures nothing.

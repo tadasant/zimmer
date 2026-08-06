@@ -742,6 +742,55 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_match "no active account", flash[:notice]
   end
 
+  test "destroy_account preserves the account's quota snapshots, login attempts, and rotation events" do
+    # Regression guard for #241: "delete it and re-authenticate" used to destroy
+    # the only evidence of whether the account had ever been healthy.
+    secondary = claude_accounts(:secondary)
+    email = secondary.email
+    snapshot = secondary.quota_snapshots.create!(trigger: "page_view", utilization_7d: 0.4)
+    attempt = secondary.runtime_login_attempts.create!(runtime: "claude_code", status: "succeeded")
+    event = AccountRotationEvent.create!(rotated_to: secondary, reason: "quota_exceeded", source: "automatic")
+
+    delete destroy_account_quotas_path(secondary)
+
+    assert_equal email, snapshot.reload.account_email
+    assert_nil snapshot.claude_account_id
+    assert_equal email, attempt.reload.account_email
+    assert_nil attempt.claude_account_id
+    assert_equal email, event.reload.to_email
+    assert_nil event.rotated_to_id
+  end
+
+  test "destroy_account records the deleted account as the source of the replacement rotation" do
+    primary = claude_accounts(:primary)
+    email = primary.email
+
+    delete destroy_account_quotas_path(primary)
+
+    event = AccountRotationEvent.last
+    assert_equal "deleted_current_account", event.reason
+    assert_equal email, event.from_email
+    assert event.from_deleted?, "the pool moved off a deleted account, not off nothing"
+  end
+
+  test "the rotation log renders events whose accounts have been deleted" do
+    secondary = claude_accounts(:secondary)
+    AccountRotationEvent.create!(
+      rotated_from: claude_accounts(:primary),
+      rotated_to: secondary,
+      reason: "deleted_account_event",
+      source: "automatic"
+    )
+    secondary.destroy!
+
+    get quotas_url(runtime: "claude_code")
+
+    assert_response :success
+    assert_select "td", text: "deleted_account_event"
+    assert_select "td", text: /#{Regexp.escape(secondary.email)}/
+    assert_select "span", text: "deleted"
+  end
+
   test "should route DELETE /quotas/account/:id" do
     assert_routing(
       { method: :delete, path: "/quotas/account/1" },
@@ -957,9 +1006,8 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "login_status answers a poll for an attempt whose row is gone instead of 404ing" do
-    # #241: deleting an account cascades its login attempts away. A 404 here reads
-    # to the Stimulus poller as a transient network error, so it silently gives up
-    # a few ticks later and freezes the panel on its last frame.
+    # A 404 here reads to the Stimulus poller as a transient network error, so it
+    # silently gives up a few ticks later and freezes the panel on its last frame.
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "completing")
     attempt_id = attempt.id
@@ -972,6 +1020,33 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       assert_select "div[data-controller=?]", "quotas-login-poller", count: 0
       assert_match(/no longer being tracked/, response.body)
     end
+  end
+
+  test "login_status answers a poll for an attempt whose account was deleted" do
+    # #241: the attempt row now survives the account it was made against, so this
+    # poll finds a row with no account to render a panel for. It must resolve the
+    # poller rather than raising on nil.
+    account = ClaudeAccount.create!(email: "detached-login@example.com", runtime: "claude_code", priority: 99)
+    attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "completing")
+    account.destroy!
+
+    get login_status_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_select "turbo-stream[target=?]", "login_attempt_#{attempt.id}"
+    assert_match(/no longer being tracked/, response.body)
+  end
+
+  test "cancel_login resolves an attempt whose account was deleted" do
+    account = ClaudeAccount.create!(email: "detached-cancel@example.com", runtime: "claude_code", priority: 99)
+    attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_code")
+    account.destroy!
+
+    post cancel_login_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_equal "canceled", attempt.reload.status
+    assert_select "turbo-stream[target=?]", "login_attempt_#{attempt.id}"
   end
 
   # The pasted code is single-use and credential-adjacent. It used to be left for
