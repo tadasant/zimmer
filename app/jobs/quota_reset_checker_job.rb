@@ -18,7 +18,10 @@
 # `waiting`, and each carries a timer-based wake-up trigger as a backstop.
 # Once the pool is healthy again there is no reason to make them wait out that
 # timer, so this job resumes them directly — the accounts and the sessions that
-# were blocked on them recover together.
+# were blocked on them recover together. Restoring an account is also what
+# changes the pool fingerprint an auth-unrecoverable park waits on, so the
+# sweep covers both park reasons; see AuthOutageParkService.wake_parked_sessions!
+# for the evidence each one requires.
 class QuotaResetCheckerJob < ApplicationJob
   # Restore accounts when utilization drops below 100%.
   # The previous 80% threshold was too conservative — it blocked restoration

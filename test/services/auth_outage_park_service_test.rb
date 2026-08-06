@@ -67,6 +67,17 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "UTC", condition.configuration["timezone"]
   end
 
+  # The fingerprint is the record of which identities failed this session — the
+  # only thing wake_parked_sessions! can compare a recovered pool against.
+  test "records a fingerprint of the pool that failed the session" do
+    create_account(email: "present@example.com", status: :active)
+
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    assert_equal AuthOutageParkService.pool_fingerprint("claude_code"),
+      @session.reload.metadata[AuthOutageParkService::POOL_FINGERPRINT_KEY]
+  end
+
   # Creating the trigger while the session is still running is what makes the
   # session dormant: Trigger#sleep_target_session_if_applicable sets
   # pending_sleep, and the pause callback then transitions needs_input → waiting.
@@ -211,18 +222,163 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "needs_input", @session.reload.status
   end
 
+  # ===========================================================================
+  # wake_parked_sessions! — auth parks
+  #
   # An auth park is reached precisely when an account WAS available and the
-  # runtime rejected its credentials anyway, so "an account is available" is not
-  # evidence the outage cleared. Waking on it would resume into the identical
-  # failure every 15 minutes — the same loop this whole change exists to stop.
-  test "an auth-outage park is not woken merely because an account exists" do
+  # runtime rejected its credentials anyway (AuthRecoveryCoordinator picks
+  # AUTH_UNRECOVERABLE when `pool.available.exists?`), so "an account is
+  # available" is true by construction at park time and cannot be the whole
+  # guard. What it needs on top is evidence the pool's identities have moved.
+  # ===========================================================================
+
+  # The 2026-07-31 incident, in miniature: sessions parked against a dead
+  # identity, the pool restored 25 minutes later, and every one of them sat out
+  # its ~1h timer because the sweep never looked at them.
+  test "an auth-outage park is woken once the pool gains an identity it has not tried" do
+    create_account(email: "dead-token@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    assert_equal "waiting", @session.reload.status
+
+    create_account(email: "freshly-added@example.com", status: :active)
+
+    resumed = nil
+    assert_enqueued_with(job: AgentSessionJob) do
+      resumed = AuthOutageParkService.wake_parked_sessions!
+    end
+
+    assert_equal 1, resumed
+    assert_equal "running", @session.reload.status
+    assert_includes @session.logs.where(level: "warning").last.content, "The login pool changed"
+  end
+
+  # The same fix the old comment said the timer was buying time for — the
+  # token-refresh cron repairing the identity in place — now wakes the session
+  # instead of being waited out.
+  test "an auth-outage park is woken when the failing account's credentials are replaced" do
+    account = create_account(email: "reauthed@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    account.update!(oauth_config: { "credentials_json" => { "claudeAiOauth" => { "accessToken" => "fresh" } } })
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "running", @session.reload.status
+  end
+
+  # A restored quota_exceeded account changes the set of identities that can
+  # serve the runtime, which is the exact signal QuotaResetCheckerJob produces
+  # immediately before it calls this sweep.
+  test "an auth-outage park is woken when a quota-exceeded account is restored to active" do
+    account = create_account(email: "restorable@example.com", status: :quota_exceeded)
+    create_account(email: "dead-token@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    account.update!(status: :active)
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "running", @session.reload.status
+  end
+
+  # The loop the old `reason:` scoping existed to prevent: nothing about the
+  # pool has changed, so resuming would walk into the identical rejection every
+  # 15 minutes, forever.
+  test "an auth-outage park is not woken while the pool is the one that rejected it" do
     create_account(email: "present@example.com", status: :active)
     @session.update!(status: :needs_input)
     park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
 
     assert_equal 0, AuthOutageParkService.wake_parked_sessions!
     assert_equal "waiting", @session.reload.status,
-      "Auth parks wait for their scheduled retry, not for the quota sweep"
+      "An unchanged pool is no evidence the credentials work now"
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!,
+      "and it stays that way on every subsequent sweep"
+  end
+
+  # Churn that is not an identity change — a rotation stamp, a quota-hit
+  # counter, the 5-minute filesystem token sync rewriting an unchanged config —
+  # moves updated_at and must not read as "the pool recovered".
+  test "an auth-outage park is not woken by account churn that leaves the credentials alone" do
+    account = create_account(email: "busy@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    account.update!(last_rotated_to_at: Time.current, quota_hit_count: 3, is_current: true)
+    account.update!(oauth_config: account.oauth_config)
+
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "waiting", @session.reload.status
+  end
+
+  # An account that appears but cannot serve anything is not a recovery.
+  test "an auth-outage park is not woken by a new account that is not available" do
+    create_account(email: "dead-token@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    create_account(email: "locked-out@example.com", status: :needs_reauth)
+
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "waiting", @session.reload.status
+  end
+
+  # Parked before the fingerprint existed (or by a park whose pool read failed):
+  # there is nothing to compare against, and "wake anyway" is the resume loop.
+  test "an auth-outage park with no recorded fingerprint is left to its timer" do
+    create_account(email: "present@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    @session.update!(metadata: @session.metadata.except(AuthOutageParkService::POOL_FINGERPRINT_KEY))
+
+    create_account(email: "freshly-added@example.com", status: :active)
+
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "waiting", @session.reload.status
+  end
+
+  # A session whose auth is broken for a reason of its own rather than the
+  # pool's passes the fingerprint guard every time an unrelated account rotates
+  # a token. The budget is what stops that from being an unbounded slow spin,
+  # and it has to survive the resume it authorised to bound anything at all.
+  test "an auth-outage park spends a bounded number of early wakes across re-parks" do
+    create_account(email: "dead-token@example.com", status: :active)
+    @session.update!(status: :needs_input)
+
+    AuthOutageParkService::MAX_EARLY_WAKES.times do |i|
+      park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+      create_account(email: "churn-#{i}@example.com", status: :active)
+
+      assert_equal 1, AuthOutageParkService.wake_parked_sessions!, "wake #{i + 1} should be granted"
+      assert_equal i + 1, @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_COUNT_KEY]
+
+      @session.update!(status: :needs_input)
+    end
+
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    create_account(email: "churn-again@example.com", status: :active)
+
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!,
+      "Past the budget the session falls back to its timer instead of spinning"
+    assert_equal "waiting", @session.reload.status
+  end
+
+  # The budget is auth-only: a quota park wakes on unambiguous evidence and has
+  # no loop to bound.
+  test "quota parks are not charged against the early-wake budget" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_nil @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_COUNT_KEY]
+  end
+
+  # The counter is the one auth_outage_* key that must outlive the resume.
+  test "the early-wake budget is not cleared by an ordinary resume" do
+    assert_not_includes Session::STALE_RETRY_METADATA_KEYS, AuthOutageParkService::EARLY_WAKE_COUNT_KEY
+    assert_not_includes AuthOutageParkService::OUTAGE_METADATA_KEYS, AuthOutageParkService::EARLY_WAKE_COUNT_KEY
   end
 
   test "waking is idempotent under a repeated sweep" do

@@ -37,9 +37,10 @@ require "automated_prompts"
 #
 # QuotaResetCheckerJob calls .wake_parked_sessions! after it restores accounts,
 # so a session usually resumes as soon as the pool recovers rather than waiting
-# out the full timer. The trigger is the backstop for the case where the checker
-# never restores anything (no snapshot, a runtime with no quota API, or an
-# outage that heals on Anthropic's side without changing account status).
+# out the full timer. Both park reasons get that fast path, on different
+# evidence — see .wake_parked_sessions!. The trigger is the backstop for the
+# case where nothing observable changes (no snapshot, a runtime with no quota
+# API, or an outage that heals on Anthropic's side without touching an account).
 class AuthOutageParkService
   include DatabaseRetry
 
@@ -54,7 +55,24 @@ class AuthOutageParkService
     auth_outage_reason
     auth_outage_parked_at
     auth_outage_retry_at
+    auth_outage_pool_fingerprint
   ].freeze
+
+  # Identity fingerprint of the runtime's usable accounts at the moment of the
+  # park. Comparing it against the pool's fingerprint now is what tells an
+  # AUTH_UNRECOVERABLE park whether anything has actually changed since the
+  # credentials that failed it. See .wake_parked_sessions!.
+  POOL_FINGERPRINT_KEY = "auth_outage_pool_fingerprint"
+
+  # How many times the sweep may wake one session early on an
+  # AUTH_UNRECOVERABLE park before it stops trying and leaves it to the timer.
+  #
+  # Deliberately NOT in OUTAGE_METADATA_KEYS: the counter has to survive the
+  # resume it authorises, or a session whose identity problem is its own rather
+  # than the pool's would earn a fresh budget on every re-park and spin for as
+  # long as the pool keeps changing underneath it.
+  EARLY_WAKE_COUNT_KEY = "auth_outage_early_wakes"
+  MAX_EARLY_WAKES = 3
 
   # Fallback wait when no reset time is known — an auth outage has no published
   # clock, and Anthropic's 5-hour quota window means an hour is a reasonable
@@ -120,34 +138,114 @@ class AuthOutageParkService
     nil
   end
 
-  # Resume every quota-parked session whose runtime has a usable account again.
+  # Resume every parked session whose runtime can plausibly serve it again.
   # Called by QuotaResetCheckerJob right after it restores quota_exceeded
   # accounts to active, so the accounts and the sessions blocked on them recover
   # together instead of the sessions waiting out a timer for a condition that
   # has already cleared.
   #
-  # Scoped to QUOTA_EXHAUSTED deliberately. "An account is available again" is
-  # evidence for a quota park — the pool was empty and now is not — but it is no
-  # evidence at all for an AUTH_UNRECOVERABLE park, which is reached precisely
-  # when an account WAS available and the runtime rejected its credentials
-  # anyway. Waking those here would resume them into the identical failure every
-  # 15 minutes forever. They wait for their scheduled retry, which gives the
-  # token-refresh cron time to actually fix the identity.
+  # == The two reasons need different evidence ==
+  #
+  # "An account is available again" is the whole story for a QUOTA_EXHAUSTED
+  # park: the pool was empty, now it is not, go.
+  #
+  # It is no evidence at all for an AUTH_UNRECOVERABLE park. That reason is
+  # reached precisely when an account WAS available and the runtime rejected its
+  # credentials anyway — AuthRecoveryCoordinator#park_reason_for_pool picks it
+  # when `pool.available.exists?` — so "an available account exists" is true by
+  # construction at park time. Waking on it alone would resume the session into
+  # the identical failure every 15 minutes forever.
+  #
+  # The evidence an auth park actually needs is that the pool's *identities*
+  # changed since it was parked: an account added, removed, restored to active,
+  # or re-authenticated. That is what POOL_FINGERPRINT_KEY records at park time
+  # and what .pool_fingerprint answers for now, and it is exactly the set of
+  # events that can turn a rejected identity into a working one. No change, no
+  # wake — the session keeps its timer, which is what it had before.
+  #
+  # A changed fingerprint is evidence, not proof: a session whose credentials
+  # fail for a reason of its own rather than the pool's would pass the guard
+  # every time an unrelated account rotated its token, so MAX_EARLY_WAKES caps
+  # how many of these a single session may consume. Past the cap it falls back
+  # to the timer, which is the behaviour it had before this fast path existed.
+  #
+  # An outage that heals on the vendor's side without touching any account row
+  # is not visible to this sweep and still waits out its timer. That backstop is
+  # why the trigger exists.
   #
   # @return [Integer] number of sessions resumed
   def self.wake_parked_sessions!(logger: nil)
     logger ||= StructuredLogger.new({ service: "AuthOutageParkService" })
     resumed = 0
 
-    parked_sessions(reason: QUOTA_EXHAUSTED).find_each do |session|
+    parked_sessions.find_each do |session|
+      reason = session.metadata&.dig("auth_outage_reason")
       next unless runtime_has_available_account?(session.agent_runtime)
+      next if reason == AUTH_UNRECOVERABLE && !auth_park_wakeable?(session, logger)
 
       if resume_parked!(session, logger)
         resumed += 1
+        consume_early_wake!(session, logger) if reason == AUTH_UNRECOVERABLE
       end
     end
 
     resumed
+  end
+
+  # Has anything changed for an AUTH_UNRECOVERABLE park since it was parked, and
+  # does it still have early-wake budget left?
+  def self.auth_park_wakeable?(session, logger)
+    parked_fingerprint = session.metadata&.dig(POOL_FINGERPRINT_KEY)
+    # Parked before the fingerprint was recorded (an older park, or one whose
+    # fingerprint could not be computed). There is nothing to compare against,
+    # and "wake anyway" is the resume loop, so the timer remains its way back.
+    return false if parked_fingerprint.blank?
+
+    current = pool_fingerprint(session.agent_runtime)
+    return false if current.blank? || current == parked_fingerprint
+
+    used = session.metadata.fetch(EARLY_WAKE_COUNT_KEY, 0).to_i
+    if used >= MAX_EARLY_WAKES
+      logger.info("Auth-outage park has spent its early wakes — leaving it to the timer",
+        session_id: session.id, early_wakes: used)
+      return false
+    end
+
+    true
+  end
+
+  # A digest of the identities that can serve this runtime right now: every
+  # available account's id plus a digest of its stored credentials.
+  #
+  # Content-addressed on purpose. `updated_at` churns for reasons that are not
+  # identity changes — a rotation stamping last_rotated_to_at, a quota_hit_count
+  # bump, the 5-minute filesystem token sync rewriting an unchanged config — and
+  # every one of those would read as "the pool changed" and wake the session.
+  # The credential bytes move only when an account is added, removed, restored
+  # to active, or has its token genuinely refreshed.
+  #
+  # @return [String, nil] nil if the pool could not be read at all
+  def self.pool_fingerprint(runtime)
+    parts = RuntimeAuthProvider.for(runtime).accounts.available.map do |account|
+      "#{account.id}:#{Digest::SHA256.hexdigest(account.oauth_config.to_json)}"
+    end
+
+    Digest::SHA256.hexdigest(parts.sort.join("|"))
+  rescue => e
+    Rails.logger.info "[AuthOutageParkService] Could not fingerprint the #{runtime} pool: #{e.message}"
+    nil
+  end
+
+  # Spend one of the session's early wakes. Written after the resume rather than
+  # before it so a wake that never happened costs nothing — and on the reloaded
+  # row, because resume_parked! has just rewritten the metadata (the counter
+  # survives that clear; it is not a stale-retry key).
+  def self.consume_early_wake!(session, logger)
+    session.reload
+    used = session.metadata&.dig(EARLY_WAKE_COUNT_KEY).to_i
+    session.update!(metadata: (session.metadata || {}).merge(EARLY_WAKE_COUNT_KEY => used + 1))
+  rescue => e
+    logger.warn("Failed to record an auth-outage early wake", session_id: session.id, error: e.message)
   end
 
   # Sessions currently dormant because of an auth outage.
@@ -198,16 +296,26 @@ class AuthOutageParkService
 
     return false if reason.blank? || !session.reload.running?
 
-    session.logs.create!(
-      level: "warning",
-      content: "Login pool recovered (#{reason.tr('_', ' ')}) — resuming this session automatically."
-    )
+    session.logs.create!(level: "warning", content: resume_message(reason))
     AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
     logger.info("Resumed session parked for auth outage", session_id: session.id, reason: reason)
     true
   rescue => e
     logger.warn("Failed to resume parked session", session_id: session.id, error: e.message)
     false
+  end
+
+  # What the user reads in the session log when the sweep resumes them. The two
+  # reasons resumed on different evidence, so they say different things: a quota
+  # park waited for the pool to refill, an auth park waited for the identities in
+  # it to change.
+  def self.resume_message(reason)
+    if reason == AUTH_UNRECOVERABLE
+      "The login pool changed since this session was parked (auth unrecoverable) — " \
+        "resuming automatically to try the new credentials."
+    else
+      "Login pool recovered (#{reason.tr('_', ' ')}) — resuming this session automatically."
+    end
   end
 
   private
@@ -248,19 +356,27 @@ class AuthOutageParkService
   end
 
   def record_outage!(reason, retry_at)
+    outage = {
+      "auth_outage_reason" => reason,
+      "auth_outage_parked_at" => Time.current.iso8601,
+      "auth_outage_retry_at" => retry_at.utc.iso8601
+    }
+
+    # The pool that just failed this session. wake_parked_sessions! wakes an
+    # AUTH_UNRECOVERABLE park only once this stops describing the pool. Omitted
+    # rather than written as nil when the pool cannot be read: an absent
+    # fingerprint means "nothing to compare against", which the sweep reads as
+    # "leave this one to its timer".
+    fingerprint = self.class.pool_fingerprint(session.agent_runtime)
+    outage[POOL_FINGERPRINT_KEY] = fingerprint if fingerprint.present?
+
     with_db_retry do
       # Reload first: schedule_wake! ran Trigger's auto-sleep callback, which
       # wrote pending_sleep straight to the row. Merging into the in-memory copy
       # would clobber it — and pending_sleep is the whole mechanism by which a
       # parked session actually goes dormant.
       session.reload
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "auth_outage_reason" => reason,
-          "auth_outage_parked_at" => Time.current.iso8601,
-          "auth_outage_retry_at" => retry_at.utc.iso8601
-        )
-      )
+      session.update!(metadata: (session.metadata || {}).merge(outage))
     end
   end
 
