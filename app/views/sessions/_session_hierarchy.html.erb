@@ -41,7 +41,7 @@
     </summary>
 
     <div class="border-t border-gray-200 px-4 sm:px-6 py-3">
-      <ul class="space-y-1">
+      <ul class="space-y-1" id="session_<%= agent_session.id %>_hierarchy">
         <% hierarchy.nodes.each do |node| %>
           <li style="padding-left: <%= node.depth * 20 %>px">
             <span class="inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm <%= node.current? ? "bg-indigo-50 ring-1 ring-indigo-200" : "hover:bg-gray-50" %>">
