@@ -114,6 +114,9 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
     assert_operator attempts.length, :>=, 2,
       "#{RELEASE_WORKFLOW}: the app image build must have at least one retry, or an account-wide " \
       "GHCR throttle fails the release outright"
+    assert_operator attempts.length, :<=, 4,
+      "#{RELEASE_WORKFLOW}: more attempts than this is not more resilience — the backoffs are " \
+      "serialised inside one job that the next push queues behind"
     assert_equal attempts, attempts.sort_by { |s| steps.index(s) },
       "#{RELEASE_WORKFLOW}: attempts must appear in order — one placed above the step whose " \
       "`outcome` it reads sees an empty string there and skips forever"
@@ -122,8 +125,14 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
       last = i == attempts.length - 1
       where = "#{RELEASE_WORKFLOW}: attempt #{i + 1} ('#{attempt['name']}')"
 
+      # Retrying a build that was never going to publish is the failure this whole
+      # chain is supposed to prevent, and identical-`with` alone does not catch it:
+      # `push: false` on every attempt keeps them consistent with each other.
+      assert_equal true, attempt.dig("with", "push"),
+        "#{where} must push — three builds that publish nothing still report green"
+
       if last
-        assert_nil attempt["continue-on-error"],
+        assert_not attempt["continue-on-error"],
           "#{where} is the final attempt and must be allowed to fail the job — if every attempt " \
           "swallows its own failure, a release that published nothing still reports green"
       else
@@ -150,6 +159,25 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
     end
   end
 
+  # Every attempt reads its tags from one output so the attempts cannot drift apart —
+  # which also means nothing in the chain would notice that output quietly losing a
+  # tag. Production's auto-upgrade keys on the version tag, so dropping it publishes a
+  # green release that nothing rolls out to.
+  test "the release version step emits all three image tags the attempts share" do
+    steps, = self.class.release_build_attempts
+    compute = steps.find { |s| s["id"] == "version" }
+    assert compute, "#{RELEASE_WORKFLOW}: expected the version step to carry `id: version`"
+
+    run = compute["run"].to_s
+    assert_match(/tags<<\w+/, run,
+      "#{RELEASE_WORKFLOW}: the attempts read `tags` from this step, which must emit it as a " \
+      "heredoc — a single-line output cannot carry three tags")
+    [ "${VERSION}", "latest", "sha-${GITHUB_SHA}" ].each do |tag|
+      assert_includes run, "ghcr.io/tadasant/zimmer:#{tag}",
+        "#{RELEASE_WORKFLOW}: the `tags` output must still publish the :#{tag} tag"
+    end
+  end
+
   # The retry is blind by design, so the backoff steps carry the diagnosis: they probe
   # GHCR and report whether the registry was answering, which is what tells a human
   # reading an exhausted run whether to suspect the registry or the build.
@@ -172,9 +200,23 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
       assert_equal after["if"], waiter["if"],
         "#{RELEASE_WORKFLOW}: the backoff before attempt #{i + 2} must run under exactly the " \
         "condition that attempt does, or the two disagree about when a retry is happening"
-      assert waiter.dig("env", "BACKOFF_SECONDS").present? && waiter.dig("env", "ATTEMPT").present?,
-        "#{RELEASE_WORKFLOW}: #{script.basename} requires BACKOFF_SECONDS and ATTEMPT and exits " \
-        "non-zero without them"
+
+      # A backoff step that exits non-zero fails the job, and every later step — the
+      # remaining attempts and the prod notify — then skips on its implicit success().
+      # The probe reports; it must not be able to decide.
+      assert_equal true, waiter["continue-on-error"],
+        "#{RELEASE_WORKFLOW}: the backoff before attempt #{i + 2} must not be able to fail the " \
+        "job, or a broken probe takes the whole retry chain down with it"
+
+      assert waiter.dig("env", "ATTEMPT").present?,
+        "#{RELEASE_WORKFLOW}: #{script.basename} requires ATTEMPT and exits non-zero without it"
+      backoff = waiter.dig("env", "BACKOFF_SECONDS").to_s
+      assert_match(/\A\d+\z/, backoff,
+        "#{RELEASE_WORKFLOW}: BACKOFF_SECONDS is passed straight to `sleep`, so a non-numeric " \
+        "value fails the step at runtime rather than at review time")
+      assert_operator backoff.to_i, :>=, 30,
+        "#{RELEASE_WORKFLOW}: a backoff this short does not outlast a GHCR secondary rate limit, " \
+        "so the retry it guards just spends itself on the same throttle"
     end
   end
 end
