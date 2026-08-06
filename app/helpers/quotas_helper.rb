@@ -31,6 +31,35 @@ module QuotasHelper
     "#{(value * 100).round(1)}%"
   end
 
+  # The status badge for one window on an account card, or nothing.
+  #
+  # A recorded status describes the window that was open when the reading was
+  # taken. Once that window's reset time has passed the window is gone, and the
+  # status is no longer a fact about the account — the same rule
+  # ClaudeAccountQuotaSnapshot.effective_utilization applies to the counter, and
+  # ClaudeAccountQuotaSnapshot#seven_day_window_spent? applies to the status.
+  # Keeping the badge would leave the card claiming "Rejected" beside the 0.0%
+  # and the green "Window reset" line the same snapshot renders. Drop it and let
+  # that line carry the state; a fresh probe supplies the next real status.
+  def window_status_badge(status, reset_time)
+    return if reset_time && reset_time <= Time.current
+
+    quota_status_badge(status)
+  end
+
+  # The line under a utilization bar saying where the window stands: reset
+  # already, or a countdown to when it will be. One definition, because the
+  # two branches have to agree on what "passed" means.
+  def reset_window_line(reset_time)
+    return if reset_time.nil?
+
+    if reset_time <= Time.current
+      tag.p("Window reset", class: "mt-0.5 text-xs text-green-500")
+    else
+      tag.p("Resets in #{time_until_reset(reset_time)}", class: "mt-0.5 text-xs text-gray-400")
+    end
+  end
+
   def quota_status_badge(status)
     if status == "allowed"
       tag.span("Allowed",
@@ -85,11 +114,19 @@ module QuotasHelper
     eff_5h.nil? || eff_5h < 1.0
   end
 
+  # A human duration until a window resets. Never returns an empty string: the
+  # caller interpolates it after a label ("Resets in ..."), so a blank answer
+  # renders as a label with nothing after it.
+  #
+  # Minutes are the finest unit shown, which leaves the last minute before a
+  # reset with no whole unit to report — every component floors to zero and the
+  # join produces "". That last minute is named explicitly instead.
   def time_until_reset(reset_time)
     return "N/A" if reset_time.nil?
 
     diff = reset_time - Time.current
     return "Window reset" if diff <= 0
+    return "< 1m" if diff < 1.minute
 
     days = (diff / 1.day).floor
     hours = ((diff % 1.day) / 1.hour).floor
