@@ -1642,7 +1642,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal "stranded", session.lost_elicitation["reason"]
     assert_equal elicitation.request_id, session.lost_elicitation["request_id"]
     assert_equal "needs_input", session.status
-    assert_match(/round-trip lost/i, session.logs.order(:created_at).last.content)
+    assert_match(/round-trip lost/i, session.logs.order(:id).last.content)
   end
 
   test "clear_stale_elicitation_block! does not raise a banner on a session whose agent never stopped" do
@@ -1659,6 +1659,15 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.reload
     assert_not session.blocked_on_elicitation?, "the stale marker is still cleared"
     assert_not session.lost_elicitation?, "a live session has nothing for the user to act on"
+  end
+
+  test "lost_elicitation_at survives a malformed stored timestamp" do
+    session = sessions(:running)
+    session.update_column(:metadata, { "lost_elicitation" => { "reason" => "stranded", "at" => "not-a-time" } })
+
+    assert session.reload.lost_elicitation?
+    assert_nil session.lost_elicitation_at,
+      "a bad stored value must render as an absent timestamp, not raise inside a Turbo broadcast"
   end
 
   test "resuming a session clears the lost elicitation banner" do

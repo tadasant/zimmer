@@ -80,9 +80,15 @@ Three sources, highest precedence first:
 | `Elicitation::DEFAULT_EXPIRATION` (60 minutes) | shipped default | fallback |
 
 An MCP server that names its own deadline keeps it — it is the one party that knows how long its
-call can stay open. Everything else gets the instance default. A blank, non-numeric, or
-zero/negative `ELICITATION_EXPIRATION_MINUTES` is logged and ignored; a value outside
-1 minute … 7 days is clamped. A deploy never fails over this knob.
+call can stay open. Everything else gets the instance default. A blank
+`ELICITATION_EXPIRATION_MINUTES` is treated as unset; a non-numeric or zero/negative one is logged
+and ignored. A deploy never fails over this knob.
+
+Every deadline, whoever names it, is held to `MIN_EXPIRATION`…`MAX_EXPIRATION` (1 minute … 7 days).
+That bounds the MCP server's own `expires-at` too, because it arrives on an unauthenticated
+endpoint: a timestamp already in the past would mint an elicitation that is born expired — one
+that resolves straight into the "this approval request expired" banner on a session the caller does
+not own — and one years out would pin a session in `needs_input`.
 
 The default is an hour, not the ten minutes it used to be: the feature exists to tolerate a human
 who is away from the desk, and a ten-minute fuse failed exactly the case it was for.
@@ -133,6 +139,12 @@ protocol — the MCP child process has no API key.
 The consequence: anyone who can reach the host can create an elicitation prompt for any session
 id, or enumerate and poll any elicitation by `request_id`. Only `PATCH …/respond` is
 authenticated.
+
+That reach now extends past the transient banner: an elicitation that ends unanswered leaves a
+`lost_elicitation` marker on the session, whose `summary` is the caller's own `tool_name` and
+`message`, rendered in Zimmer's voice. It is escaped, truncated to
+`Elicitation::SUMMARY_LIMIT` (300 characters) on write, and cleared the moment the session moves
+on — but it is text a stranger can put on a session page.
 
 The old `docs/ELICITATION_FLOW.md` claimed the opposite — that both endpoints inherit API-key auth
 and showed `X-API-Key` in its request samples. That was wrong.

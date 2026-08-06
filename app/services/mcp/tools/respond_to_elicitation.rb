@@ -9,7 +9,9 @@ module Mcp
     class RespondToElicitation < Tool
       tool_name "respond_to_elicitation"
 
-      # Heading for each resolution, mirroring the enum on action_type.
+      # Heading for each resolution, mirroring the enum on action_type. Read with a
+      # fallback so a fourth action added to Elicitation::RESOLVE_ACTIONS surfaces
+      # as a plain heading rather than a KeyError mid-tool-call.
       RESULT_HEADINGS = {
         "accept" => "Accepted",
         "decline" => "Declined",
@@ -92,7 +94,7 @@ module Mcp
 
         poll_response = elicitation.to_poll_response
         lines = [
-          "## Elicitation #{RESULT_HEADINGS.fetch(action_type)}",
+          "## Elicitation #{RESULT_HEADINGS.fetch(action_type) { action_type.titleize }}",
           "",
           # The elicitation's own request_id, not the argument — the argument may
           # be the primary key, and echoing that back under this label would name
