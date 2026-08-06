@@ -481,26 +481,41 @@ one can fail the job.
 The backoff escalates rather than repeating because the throttle is account-wide and has outlasted a
 single 90-second wait. `continue-on-error` on the earlier attempts is load-bearing twice over: it
 swallows their failure, and it keeps the job green so that the implicit `success()` on the later
-attempts' `if` lets them run at all.
+attempts' `if` lets them run at all. The two backoff steps between them carry it for the second reason
+only — a probe that exits non-zero would otherwise fail the job, and every later step, including the
+remaining attempts and the production notify, would skip on its own implicit `success()`. The retry
+chain would sit there intact and unreachable.
 
 The retry is **blind** — it does not inspect the error. That is deliberate. The same throttle has
 already worn three different HTTP shapes, and gating on an error signature would trade a rare wasted
 rebuild for a missed retry the next time GitHub picks a fourth. Instead the gap between attempts runs
-`.github/scripts/await-ghcr.sh`, which probes GHCR with an authenticated manifest read and reports, as
-a workflow annotation, whether the registry was answering:
+`.github/scripts/await-ghcr.sh`, which reads a manifest from each package the build touches — the base
+image it pulls `FROM` and the app repository it pushes to, since a throttle need not hit both — and
+reports the result as a workflow annotation:
 
-- **Probe fails** — GHCR was refusing this account. The registry is the suspect.
-- **Probe succeeds** — the registry was fine and the build itself is the suspect. Read the build log.
+- **Either probe refused** — GHCR was refusing this account, and the annotation says which package.
+  The registry is the suspect.
+- **Both answered** — the build itself is the likelier suspect, so read the build log. Note this is
+  evidence, not a verdict: both probes are *reads*, so they cannot clear a write-side throttle, which
+  is the exact shape the 2026-08-06 push failure took. Check whether the build died on the pull or the
+  push before concluding.
 
 That is the line to look for on a run that exhausted its attempts, because the attempts themselves are
 unhelpful to read: a step that failed under `continue-on-error` renders with a red ✗ against a green
 job, since GitHub has no separate rendering for it.
 
-The retry is not free, and it is worth knowing which way the cost falls. A genuinely broken build now
-takes three full builds plus 330 seconds to go red, and because `cache-to` does not export from a
-failed build each retry is closer to a cold rebuild than a resume. `concurrency: release-image` with
-`cancel-in-progress: false` means the next push waits behind all of it. That is the trade: slower bad
-news, in exchange for not paging anyone over a registry hiccup.
+The retry is not free, and the cost is lopsided in a useful direction. Every attempt runs on the same
+buildkit instance — `builder:` names the one this job created, and it lives for the whole job — so a
+retry resumes from that builder's local cache rather than starting cold. A **push**-side failure is
+therefore cheap to retry: the image is already built, and the second attempt re-does little more than
+the export. A base-**pull** failure early in the graph is the expensive one, because there is nothing
+cached to resume from yet. (The GHA cache is no help either way on a retry: `cache-to` exports nothing
+from a failed build.)
+
+The floor is the backoff itself. A genuinely broken build — one that fails for an ordinary reason and
+will fail three times — now takes 330 seconds of waiting plus three builds to go red, and
+`concurrency: release-image` with `cancel-in-progress: false` makes the next push queue behind all of
+it. That is the trade: slower bad news, in exchange for not paging anyone over a registry hiccup.
 
 Every attempt takes its tag list from the `tags` output of `Compute version` rather than spelling it
 out three times, and `image_build_workflows_test.rb` asserts the chain stays wired: attempts in order,
