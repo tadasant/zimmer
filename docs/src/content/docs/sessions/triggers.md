@@ -273,12 +273,44 @@ minute-resolution. That is the cadence chosen for the job, not a platform limit 
 cron with a seconds field works, and three other pollers use it
 ([Background jobs](/operate/background-jobs/)).
 
-:::danger[A failed one-time wake is unrecoverable]
-`ScheduleTriggerJob` always advances `last_triggered_at` on error, to avoid an infinite retry
-loop, and destroys one-time triggers even when the fire failed. If your scheduled wake-up
-errors, it's gone; you have to recreate it. Nothing tells you.
-Tracked in [#76](https://github.com/tadasant/zimmer/issues/76).
-:::
+#### When a one-time fire fails
+
+A one-time trigger whose fire raises is **not** destroyed. `ScheduleTriggerJob` parks it in
+the `failed` status, records `failed_at` and `last_error` on the row, and alerts. The trigger
+stays in the list at `/triggers` with a red **Failed** badge and the error that stopped it, so
+"wake me at 6am to check the deploy" cannot quietly become "you are not woken, and you find out
+at 9".
+
+`failed` is a third status alongside `enabled` and `disabled`, not a flavour of `disabled`:
+"you turned this off" and "this tried to run and could not" are different facts. Every firing
+path filters on `status = "enabled"`, so a failed trigger fires no more often than a disabled
+one — that status, not a bumped timestamp, is what closes the infinite-retry loop.
+
+Which is why the failure path deliberately leaves the condition's `last_triggered_at` alone.
+The schedule stays *due*, so pressing **Re-arm** on the trigger (or calling `action_trigger`
+with `action=toggle`) clears the failure and the wake fires for real on the next minute's tick.
+No edit, no re-creation. Every route off `failed` — the toggle, the edit form, the REST API,
+`action_trigger` — clears `failed_at` and `last_error`, so a recovered trigger never keeps
+advertising the failure it recovered from.
+
+One failure does not re-arm, and does not pretend to. A raise from the cleanup that *follows* a
+successful fire (sibling destruction, the auto-delete) arrives with the schedule already consumed
+and the session already created, so re-firing would duplicate it. `Trigger#rearm_fires_immediately?`
+is what the trigger page and the alert read to tell the two apart: in that case they say the
+schedule was consumed and ask you to check the session rather than offering a re-arm that would
+deliver nothing.
+
+`CleanupStaleTriggersJob` skips failed triggers in both of its sweeps, and
+`Trigger#destroy_sibling_wakes!` skips them too. A parked trigger is lapsed by definition, so the
+lapsed-schedule heuristic matches every one of them; and in the triple-wake pattern below, a
+sibling that fires successfully later would otherwise delete the record of the one that tried and
+could not. Both would delete the evidence as a side effect, which is the silent loss the parking
+exists to prevent. Only you clear a failed trigger — which also means nothing bounds how many
+accumulate, so a systemic fault leaves a list to clear by hand
+([Limitations](/limitations/#a-failed-one-time-wake-does-not-retry-itself)).
+
+A recurring schedule behaves differently on a bad tick: it advances `last_triggered_at`, stays
+enabled, and tries again on its next interval.
 
 ### `ao_event`
 

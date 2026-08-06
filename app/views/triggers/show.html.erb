@@ -17,6 +17,10 @@
               <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                 Enabled
               </span>
+            <% elsif @trigger.failed? %>
+              <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                Failed
+              </span>
             <% else %>
               <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
                 Disabled
@@ -54,6 +58,8 @@
           <%= button_to toggle_trigger_path(@trigger), method: :post, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md #{@trigger.enabled? ? 'text-gray-700 bg-white hover:bg-gray-50' : 'text-green-700 bg-green-50 hover:bg-green-100'}" do %>
             <% if @trigger.enabled? %>
               Disable
+            <% elsif @trigger.failed? && !@trigger.spent_one_time_schedule? %>
+              Re-arm
             <% else %>
               Enable
             <% end %>
@@ -67,6 +73,40 @@
         </div>
       </div>
     </div>
+
+    <!-- Failure Panel -->
+    <% if @trigger.failed? %>
+      <div class="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
+        <div class="flex gap-3">
+          <svg class="h-5 w-5 flex-shrink-0 text-red-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+          </svg>
+          <div class="min-w-0">
+            <h3 class="text-sm font-medium text-red-800">
+              This trigger failed to fire<%= " #{time_ago_in_words(@trigger.failed_at)} ago" if @trigger.failed_at %>
+            </h3>
+            <% if @trigger.spent_one_time_schedule? %>
+              <p class="mt-1 text-sm text-red-700">
+                The schedule had already been consumed when the error hit, so the session it was meant to create
+                may well exist and only the bookkeeping after it failed. <strong>Re-arming will not re-fire it.</strong>
+                It is kept here so the error is not lost &mdash; check the sessions below, then delete this trigger
+                once you have.
+              </p>
+            <% else %>
+              <p class="mt-1 text-sm text-red-700">
+                The session it should have created was never created. It has been left here rather than deleted so
+                you can see what happened. It will not retry on its own &mdash; fix the cause if there is one, then
+                press <strong>Re-arm</strong> above to put it back in service. A one-time schedule fires within a
+                minute of being re-armed.
+              </p>
+            <% end %>
+            <% if @trigger.last_error.present? %>
+              <pre class="mt-2 overflow-x-auto rounded bg-red-100 p-2 text-xs text-red-900 whitespace-pre-wrap break-words"><%= @trigger.last_error %></pre>
+            <% end %>
+          </div>
+        </div>
+      </div>
+    <% end %>
 
     <!-- Invoke Panel -->
     <div data-trigger-invoke-target="panel" class="hidden mb-6">
