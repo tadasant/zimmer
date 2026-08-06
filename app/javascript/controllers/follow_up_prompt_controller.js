@@ -1,5 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
-import { draftKey, saveDraft, loadDraft, clearDraft, pruneExpiredDrafts } from "lib/draft_storage"
+import { draftKey, saveDraft, loadDraft, clearDraft, pruneExpiredDraftsOnce } from "lib/draft_storage"
 
 // How long to wait after the last keystroke before writing the draft. Long
 // enough that a fast typist isn't writing to localStorage on every character,
@@ -30,19 +30,23 @@ export default class extends Controller {
 
     // Track whether we just submitted the form - if so, don't restore preserved input
     this.justSubmitted = false
+    this.submittedValue = null
     this.draftDebounceTimer = null
+    this.initialized = true
 
     // Collect drafts for sessions this browser has stopped visiting.
-    pruneExpiredDrafts()
+    pruneExpiredDraftsOnce()
 
-    // Check for pending sent message from server (message that was sent but session
-    // transitioned to paused/failed before it appeared in transcript)
-    // This takes priority over sessionStorage preserved input
-    if (this.pendingSentMessageValue && this.pendingSentMessageValue.trim() !== "") {
+    // A stored draft is the user's own most recent text, so it outranks the
+    // server's recovered `sent_message`: the recovered copy is what they sent
+    // before the session stalled, and re-imposing it would discard whatever they
+    // typed since — on exactly the sessions most likely to be reloaded.
+    if (loadDraft(this.draftStorageKey)) {
+      this.restorePreservedInput()
+    } else if (this.pendingSentMessageValue && this.pendingSentMessageValue.trim() !== "") {
       this.preloadPendingSentMessage()
     } else {
-      // Restore any preserved input from sessionStorage (survives Turbo Stream replacements)
-      this.restorePreservedInput()
+      this.updateDraftIndicator()
     }
 
     // Auto-focus the textarea when the controller connects
@@ -55,10 +59,8 @@ export default class extends Controller {
     this.updateMode()
 
     // Listen for Turbo Stream replacements that target our form
-    this.boundSaveInput = this.saveInputToStorage.bind(this)
-    this.boundHandleStreamRender = this.handleStreamRender.bind(this)
+    this.boundSaveInput = this.saveBeforeStreamRender.bind(this)
     document.addEventListener("turbo:before-stream-render", this.boundSaveInput)
-    document.addEventListener("turbo:before-stream-render", this.boundHandleStreamRender)
 
     // Listen for successful form submissions to clear the textarea
     // We use BOTH form-level and document-level listeners for robustness:
@@ -86,9 +88,6 @@ export default class extends Controller {
     if (this.boundSaveInput) {
       document.removeEventListener("turbo:before-stream-render", this.boundSaveInput)
     }
-    if (this.boundHandleStreamRender) {
-      document.removeEventListener("turbo:before-stream-render", this.boundHandleStreamRender)
-    }
     if (this.boundHandleSubmitEnd && this.hasFormTarget) {
       this.formTarget.removeEventListener("turbo:submit-end", this.boundHandleSubmitEnd)
     }
@@ -101,16 +100,18 @@ export default class extends Controller {
     }
     // A disconnect is itself a form of the page going away (a Turbo navigation
     // replacing the body). Don't leave the last keystrokes in a pending timer.
-    this.flushDraft()
+    //
+    // Only when connect() actually ran: Stimulus reuses the instance, so after
+    // an early return the flags below are whatever a previous connect left, and
+    // flushing would persist a textarea this controller never adopted.
+    if (this.initialized) this.flushDraft()
+    this.initialized = false
   }
 
   // Save current input before a Turbo Stream replaces the form.
   // Only save if this stream is targeting the follow-up form itself
-  saveInputToStorage(event) {
+  saveBeforeStreamRender(event) {
     if (!this.sessionIdValue || !event.target) return
-
-    // Don't save if we just submitted - we want the textarea to be cleared
-    if (this.justSubmitted) return
 
     // Check if the stream is targeting our form or textarea
     const streamElement = event.target
@@ -130,20 +131,44 @@ export default class extends Controller {
     return draftKey(`session:${this.sessionIdValue}`, "followUpPrompt")
   }
 
-  // Whichever textarea the user is actually typing into holds the truth; on a
-  // phone that is the mobile one, on a laptop the desktop one.
+  // The composer renders a desktop and a mobile textarea and shows one of them.
+  // They are kept mirrored on every keystroke, so either one can be read for the
+  // draft regardless of which is currently on screen.
+  //
+  // Reading only the *visible* one would be a trap: `getActiveTextarea` falls
+  // back to the desktop textarea whenever the mobile one is hidden, and on a
+  // phone the desktop textarea is empty. Collapsing the drawer and backgrounding
+  // the app would then persist "" over a real draft and delete it.
   currentDraftValue() {
-    const active = this.getActiveTextarea()
-    if (active) return active.value
     if (this.hasTextareaTarget) return this.textareaTarget.value
+    if (this.hasTextareaMobileTarget) return this.textareaMobileTarget.value
     return ""
   }
 
-  // Called on every keystroke (debounced) via data-action. This is the change
-  // that makes a draft survive a reload at all: before it, the draft was only
-  // ever written when a Turbo Stream happened to replace the form, so text
-  // typed and then lost to a reload had never been persisted anywhere.
-  saveDraft() {
+  // Copy what was just typed into the other textarea, so neither is ever left
+  // holding a value the other does not have.
+  mirrorTextareas(source) {
+    if (!source) return
+
+    if (this.hasTextareaTarget && source !== this.textareaTarget) {
+      this.textareaTarget.value = source.value
+    }
+    if (this.hasTextareaMobileTarget && source !== this.textareaMobileTarget) {
+      this.textareaMobileTarget.value = source.value
+    }
+  }
+
+  // Called on every keystroke via data-action. Writing on input is what makes a
+  // draft survive a reload: a stream-render hook alone only fires when the
+  // server happens to replace the form, which is not what a reopened PWA does.
+  scheduleDraftSave(event) {
+    // A restore synthesises an input event to wake the character counter; it is
+    // not the user typing, and re-saving would refresh the draft's expiry.
+    if (this.restoringDraft) return
+
+    this.mirrorTextareas(event?.target)
+    this.updateDraftIndicator()
+
     if (this.draftDebounceTimer) clearTimeout(this.draftDebounceTimer)
     this.draftDebounceTimer = setTimeout(() => {
       this.draftDebounceTimer = null
@@ -166,13 +191,16 @@ export default class extends Controller {
 
   writeDraft() {
     if (!this.sessionIdValue) return
-    // After a submit the textarea is intentionally empty — persisting that
-    // would be correct but pointless, and persisting a stale pre-submit value
-    // would resurrect a message the user already sent.
-    if (this.justSubmitted) return
     if (!this.hasTextareaTarget) return
 
-    saveDraft(this.draftStorageKey, this.currentDraftValue())
+    const value = this.currentDraftValue()
+
+    // Don't re-persist the message currently being submitted — that would
+    // resurrect it on the next load. Anything the user types *while* the submit
+    // is in flight is a new draft and is still worth keeping.
+    if (this.justSubmitted && value === this.submittedValue) return
+
+    saveDraft(this.draftStorageKey, value)
     this.updateDraftIndicator()
   }
 
@@ -201,35 +229,19 @@ export default class extends Controller {
 
   // Handle streams that explicitly clear the follow-up prompt textarea
   // This happens when a message is queued and the server sends turbo_stream.update("follow_up_prompt", "")
-  handleStreamRender(event) {
-    if (!this.sessionIdValue || !event.target) return
-
-    const streamElement = event.target
-    const targetId = streamElement.getAttribute?.("target")
-    const action = streamElement.getAttribute?.("action")
-
-    // If the server is explicitly updating/clearing the follow_up_prompt textarea,
-    // clear our sessionStorage to prevent restoring stale content
-    if (targetId === "follow_up_prompt" && action === "update") {
-      this.clearPreservedInput()
-    }
-  }
-
   // Handle form submission completion (form-level listener)
   // Clear the textarea after successful submission since data-turbo-permanent preserves it
   handleSubmitEnd(event) {
     // Only clear on successful submissions (2xx status codes)
     // The fetchResponse may not exist for non-fetch submissions
     if (event.detail?.success) {
-      if (this.hasTextareaTarget) {
-        this.textareaTarget.value = ""
-      }
-      if (this.hasTextareaMobileTarget) {
-        this.textareaMobileTarget.value = ""
-      }
+      this.clearSubmittedTextareas()
       this.clearPreservedInput()
       // Reset the justSubmitted flag
       this.justSubmitted = false
+      this.submittedValue = null
+      // Whatever the user typed while the submit was in flight is now the draft.
+      this.writeDraft()
     } else {
       // On error, re-enable the buttons and reset text
       if (this.hasSubmitButtonTarget) {
@@ -240,7 +252,26 @@ export default class extends Controller {
       }
       this.updateMode() // This will reset the button text
       this.justSubmitted = false
+      // The send failed, so the text is the user's again — put it back where
+      // they can see it and make sure it is on disk.
+      this.restoreAfterFailedSubmit()
     }
+  }
+
+  // A failed submit leaves the composer empty even though nothing was sent.
+  // Refill it from the value that was submitted and re-persist it.
+  restoreAfterFailedSubmit() {
+    const submitted = this.submittedValue
+    this.submittedValue = null
+    if (!submitted || submitted.trim() === "") return
+
+    if (this.hasTextareaTarget && this.textareaTarget.value === "") {
+      this.textareaTarget.value = submitted
+    }
+    if (this.hasTextareaMobileTarget && this.textareaMobileTarget.value === "") {
+      this.textareaMobileTarget.value = submitted
+    }
+    this.writeDraft()
   }
 
   // Handle form submission completion (document-level listener)
@@ -268,14 +299,17 @@ export default class extends Controller {
       // Find our textarea by ID (it has data-turbo-permanent so it persists)
       const textareaId = `session_${sessionId}_follow_up_textarea`
       const textarea = document.getElementById(textareaId)
-      if (textarea) {
+      if (textarea && textarea.value === this.submittedValue) {
         textarea.value = ""
       }
       this.clearPreservedInput()
       this.justSubmitted = false
+      this.submittedValue = null
+      this.writeDraft()
     } else {
       // On error, reset state
       this.justSubmitted = false
+      this.restoreAfterFailedSubmit()
     }
   }
 
@@ -290,10 +324,9 @@ export default class extends Controller {
       return
     }
 
-    // Restore into BOTH textareas, not just the desktop one. The composer
-    // renders a desktop and a mobile textarea and shows one of them; filling
-    // only `textarea` left a phone user — the case this is for — looking at an
-    // empty box while their text sat in storage.
+    // Restore into BOTH textareas. The composer renders a desktop and a mobile
+    // one and shows whichever fits the viewport, so filling only `textarea`
+    // leaves a phone user looking at an empty box while their text is in storage.
     if (this.hasTextareaTarget && this.textareaTarget.value === "") {
       this.textareaTarget.value = preserved
     }
@@ -301,10 +334,25 @@ export default class extends Controller {
       this.textareaMobileTarget.value = preserved
     }
 
-    // Let the character counter and any other input-driven UI catch up with
-    // the text that just appeared.
-    const active = this.getActiveTextarea()
-    if (active) active.dispatchEvent(new Event("input", { bubbles: true }))
+    // Let the character counter and any other input-driven UI catch up with the
+    // text that just appeared. Guarded, because this event also reaches this
+    // controller's own `scheduleDraftSave`, which would re-stamp `savedAt` and
+    // give the draft a fresh 7 days on every page load — it would then never
+    // expire for as long as the session is opened.
+    this.restoringDraft = true
+    try {
+      // The caret sits at the end after a programmatic assignment. Send it to
+      // the start first, or a draft like "/review" reads as a slash command in
+      // progress and pops the typeahead unbidden on load.
+      const active = this.getActiveTextarea()
+      if (active) {
+        active.selectionStart = 0
+        active.selectionEnd = 0
+        active.dispatchEvent(new Event("input", { bubbles: true }))
+      }
+    } finally {
+      this.restoringDraft = false
+    }
 
     this.updateDraftIndicator()
 
@@ -318,6 +366,18 @@ export default class extends Controller {
     const message = this.pendingSentMessageValue
     if (!message || message.trim() === "") return
 
+    // A stored draft is newer than the server's recovered copy — it is what the
+    // user has typed since. Leave it alone rather than overwriting it with the
+    // message they sent before the session stalled.
+    //
+    // This runs before connect(): Stimulus starts its value observers first, so
+    // the value callback below fires and would otherwise clear the draft before
+    // connect() ever gets the chance to restore it.
+    if (loadDraft(this.draftStorageKey)) {
+      this.restorePreservedInput()
+      return
+    }
+
     // Only preload if textarea is currently empty (don't overwrite user's new input)
     if (this.hasTextareaTarget && this.textareaTarget.value === "") {
       this.textareaTarget.value = message
@@ -329,8 +389,9 @@ export default class extends Controller {
       this.textareaMobileTarget.dispatchEvent(new Event("input", { bubbles: true }))
     }
 
-    // Clear sessionStorage preserved input since we're using server-provided message
-    this.clearPreservedInput()
+    // No draft was in play (checked above), so there is nothing to preserve —
+    // seed the indicator from what was just filled in.
+    this.updateDraftIndicator()
   }
 
   // Handle pendingSentMessage value changes (e.g., from Turbo Stream replacement)
@@ -538,17 +599,21 @@ export default class extends Controller {
       this.submitButtonMobileTarget.textContent = this.sessionRunningValue ? "Queueing..." : "Submitting..."
     }
 
-    // Mark that we just submitted - this prevents saveInputToStorage from
+    // Mark that we just submitted - this prevents saveBeforeStreamRender from
     // re-saving the input when the Turbo Stream response replaces the form
     this.justSubmitted = true
+    this.submittedValue = activeTextarea.value
 
     // Save the submitted content to the undo buffer BEFORE clearing
     // This allows the user to recover their message with Ctrl+Z/Cmd+Z
     // even after navigating away from the page
     this.saveToUndoBuffer(activeTextarea.value)
 
-    // Clear preserved input from sessionStorage before submission
-    this.clearPreservedInput()
+    // The draft is deliberately NOT cleared here. Between requestSubmit() and
+    // turbo:submit-end the message exists only in flight, and this is a phone —
+    // if the OS discards the web view in that window, a draft already deleted is
+    // gone for good (the undo buffer is sessionStorage, which a cold relaunch
+    // also loses). handleSubmitEnd clears it once the server has confirmed.
 
     // Submit the form - requestSubmit() synchronously captures the form data
     // before the async network request begins
@@ -564,10 +629,21 @@ export default class extends Controller {
     // If the submission fails, the error handling in handleSubmitEnd will
     // re-enable the button, but the textarea stays cleared. User can now
     // use Ctrl+Z/Cmd+Z to restore their message from the undo buffer.
-    if (this.hasTextareaTarget) {
+    this.clearSubmittedTextareas()
+    this.updateDraftIndicator()
+  }
+
+  // Empty the composer after a submit, but only where it still holds the text
+  // that was submitted. If the user has already started the next message, that
+  // is theirs — clearing it would be the same data loss this controller exists
+  // to prevent, just with a different trigger.
+  clearSubmittedTextareas() {
+    const submitted = this.submittedValue
+
+    if (this.hasTextareaTarget && this.textareaTarget.value === submitted) {
       this.textareaTarget.value = ""
     }
-    if (this.hasTextareaMobileTarget) {
+    if (this.hasTextareaMobileTarget && this.textareaMobileTarget.value === submitted) {
       this.textareaMobileTarget.value = ""
     }
   }

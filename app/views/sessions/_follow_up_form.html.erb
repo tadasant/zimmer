@@ -141,7 +141,7 @@
                       follow_up_prompt_target: "textarea",
                       character_counter_target: "input",
                       slash_command_target: "textarea",
-                      action: "keydown->follow-up-prompt#handleKeydown keydown->slash-command#handleKeydown input->follow-up-prompt#saveDraft input->character-counter#update input->slash-command#handleInput"
+                      action: "keydown->follow-up-prompt#handleKeydown keydown->slash-command#handleKeydown input->follow-up-prompt#scheduleDraftSave input->character-counter#update input->slash-command#handleInput"
                     } %>
                   <%# Slash command typeahead dropdown %>
                   <div data-slash-command-target="dropdown"
@@ -251,7 +251,7 @@
                     turbo_permanent: true,
                     follow_up_prompt_target: "textareaMobile",
                     slash_command_target: "textarea",
-                    action: "keydown->follow-up-prompt#handleKeydown keydown->slash-command#handleKeydown input->follow-up-prompt#saveDraft input->character-counter#update input->slash-command#handleInput"
+                    action: "keydown->follow-up-prompt#handleKeydown keydown->slash-command#handleKeydown input->follow-up-prompt#scheduleDraftSave input->character-counter#update input->slash-command#handleInput"
                   } %>
                 <%# Slash command typeahead dropdown for mobile %>
                 <div data-slash-command-target="dropdown"

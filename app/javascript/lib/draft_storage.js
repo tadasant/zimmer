@@ -53,11 +53,31 @@ export function saveDraft(key, value, now = Date.now()) {
       storage.removeItem(key)
       return
     }
-    storage.setItem(key, JSON.stringify({ value, savedAt: now }))
+
+    // Stamp when the text last *changed*, not when it was last written. The same
+    // draft is rewritten on every visibility change, page navigation and stream
+    // render, so stamping each write would push the expiry out indefinitely and
+    // the 7-day limit would never actually arrive.
+    const savedAt = unchangedSince(storage, key, value) ?? now
+    storage.setItem(key, JSON.stringify({ value, savedAt }))
   } catch {
     // Quota exceeded, or storage disabled mid-flight. Nothing to do — the
     // user's text is still in the textarea they are looking at.
   }
+}
+
+// The timestamp already stored at `key` if it holds this exact text, otherwise
+// null. Lets a rewrite of unchanged text keep its original age.
+function unchangedSince(storage, key, value) {
+  try {
+    const existing = JSON.parse(storage.getItem(key))
+    if (existing && existing.value === value && typeof existing.savedAt === "number") {
+      return existing.savedAt
+    }
+  } catch {
+    // No usable entry — treat this as a first write.
+  }
+  return null
 }
 
 // Read the draft at `key`, or null if there is none, it has expired, or it was
@@ -107,9 +127,22 @@ export function clearDraft(key) {
   }
 }
 
-// Drop every expired draft. Called on connect so drafts for sessions the user
-// stopped visiting are collected by the act of visiting any other session,
-// rather than needing a sweep the app has no other reason to schedule.
+// Whether this document has already swept. A Stimulus controller connects again
+// on every Turbo Stream form replacement, and the sweep reads and parses every
+// stored draft — with prompts allowed up to 500k characters that is a
+// main-thread cost worth paying once per page, not once per re-render.
+let sweptThisDocument = false
+
+// Drop every expired draft, at most once per document. Called on connect so
+// drafts for sessions the user stopped visiting are collected by the act of
+// visiting any other session, rather than needing a sweep the app has no other
+// reason to schedule.
+export function pruneExpiredDraftsOnce(now = Date.now()) {
+  if (sweptThisDocument) return
+  sweptThisDocument = true
+  pruneExpiredDrafts(now)
+}
+
 export function pruneExpiredDrafts(now = Date.now()) {
   const storage = store()
   if (!storage) return

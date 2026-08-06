@@ -64,7 +64,7 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
   def reload_and_settle
     page.refresh
     open_transcript_panel
-    assert_selector "textarea[name='follow_up_prompt']", visible: :all
+    assert_selector "textarea[name='follow_up_prompt']", visible: :all, wait: 5
   end
 
   test "typed follow-up prompt survives a page reload" do
@@ -83,11 +83,11 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
   end
 
   test "typed follow-up prompt survives a reload at a phone viewport" do
-    # Two bugs this guards. Restore used to fill only the desktop textarea, so on
-    # a phone — where the mobile textarea is the visible one — the text was in
-    # storage but the user saw an empty box. And the phone composer lives behind
-    # a collapsed bottom drawer, so a restored draft has to announce itself on
-    # the trigger bar or it may as well still be lost.
+    # Two things this pins. Restore has to fill the mobile textarea, not just the
+    # desktop one, or a phone user sees an empty box while their text sits in
+    # storage. And the phone composer lives behind a collapsed bottom drawer, so
+    # a restored draft has to announce itself on the trigger bar or it may as
+    # well still be lost.
     page.driver.browser.manage.window.resize_to(*PHONE_VIEWPORT)
     session = create_session
     visit session_path(session)
@@ -157,7 +157,9 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
     session = create_session
     visit session_path(session)
 
-    textarea = type_draft("backgrounded mid-sentence")
+    # A single character, so the write is still inside the 300ms debounce window
+    # when the page is hidden — this asserts the flush, not the timer.
+    textarea = type_draft("x")
 
     # Simulate the OS taking the app away immediately after a keystroke, before
     # the debounce timer would have fired.
@@ -173,8 +175,8 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
       })()
     JS
 
-    assert_equal "backgrounded mid-sentence", stored
-    assert_equal "backgrounded mid-sentence", textarea.value
+    assert_equal "x", stored
+    assert_equal "x", textarea.value
   end
 
   test "drafts do not bleed between sessions" do
@@ -200,7 +202,11 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
     assert_not_empty stored_draft_keys_eventually(expect: :present)
 
     click_button "Send Message"
-    assert_text "a message that gets sent"
+
+    # Wait on something the direct response guarantees rather than on the
+    # optimistic message, which arrives over ActionCable and can be dropped if
+    # the broadcast beats the subscription handshake.
+    assert_button "Queue Message"
 
     # Nothing should be left behind for the next load to restore.
     assert_empty stored_draft_keys_eventually,
@@ -208,6 +214,43 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
 
     reload_and_settle
     assert_composer_value ""
+  end
+
+  test "collapsing the mobile drawer does not delete the draft" do
+    # The composer's two textareas are mirrored precisely so this cannot happen:
+    # once the drawer is collapsed the mobile textarea is hidden, and a save that
+    # read only the visible textarea would read the empty desktop one and persist
+    # "" over a real draft — deleting it at the moment the app is backgrounded.
+    page.driver.browser.manage.window.resize_to(*PHONE_VIEWPORT)
+    session = create_session
+    visit session_path(session)
+
+    open_mobile_drawer
+    type_draft("typed then the drawer was collapsed")
+    assert_not_empty stored_draft_keys_eventually(expect: :present)
+
+    find("[data-bottom-drawer-target='content'] [data-action*='bottom-drawer#close']").click
+    assert_selector "[data-bottom-drawer-target='content']", visible: :hidden
+
+    # Background the app with the drawer shut — the flush must not blank it.
+    page.execute_script(<<~JS)
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true })
+      document.dispatchEvent(new Event("visibilitychange"))
+    JS
+
+    stored = page.evaluate_script(<<~JS)
+      (function() {
+        const key = Object.keys(window.localStorage).find((k) => k.startsWith("zimmerDraft:"))
+        return key ? JSON.parse(window.localStorage.getItem(key)).value : null
+      })()
+    JS
+    assert_equal "typed then the drawer was collapsed", stored
+
+    reload_and_settle
+    assert_selector "[data-follow-up-prompt-target='draftIndicator']",
+      text: "Draft: typed then the drawer was collapsed"
+  ensure
+    page.driver.browser.manage.window.resize_to(1400, 900)
   end
 
   test "clearing the textarea clears the draft rather than restoring stale text" do
