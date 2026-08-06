@@ -11,7 +11,7 @@ const DRAFT_DEBOUNCE_MS = 300
 // Character limits are read from data attributes passed from the server
 // to ensure consistency with Session::PROMPT_MAX_LENGTH
 export default class extends Controller {
-  static targets = ["form", "textarea", "textareaMobile", "submitButton", "submitButtonMobile", "modeIndicator"]
+  static targets = ["form", "textarea", "textareaMobile", "submitButton", "submitButtonMobile", "modeIndicator", "draftIndicator"]
   static values = {
     promptMaxLength: { type: Number, default: 500000 },
     sessionRunning: { type: Boolean, default: false },
@@ -173,6 +173,30 @@ export default class extends Controller {
     if (!this.hasTextareaTarget) return
 
     saveDraft(this.draftStorageKey, this.currentDraftValue())
+    this.updateDraftIndicator()
+  }
+
+  // Show the draft in the collapsed mobile drawer's trigger bar. On a phone the
+  // composer is behind that drawer, so restoring the text into a textarea the
+  // user cannot see would look exactly like still having lost it.
+  updateDraftIndicator() {
+    if (!this.hasDraftIndicatorTarget) return
+
+    const indicator = this.draftIndicatorTarget
+    // On the submit path this runs before the textareas are cleared, so read the
+    // intent rather than the DOM: the message is on its way out, not a draft.
+    const draft = this.justSubmitted ? "" : this.currentDraftValue().trim()
+
+    if (draft === "") {
+      indicator.textContent = indicator.dataset.placeholder || ""
+      indicator.classList.remove("italic")
+      return
+    }
+
+    // Truncated here as well as by `truncate` in the markup: the CSS handles the
+    // visual clip, this keeps the DOM from carrying a 500k-character prompt.
+    indicator.textContent = `Draft: ${draft.length > 80 ? `${draft.slice(0, 80)}…` : draft}`
+    indicator.classList.add("italic")
   }
 
   // Handle streams that explicitly clear the follow-up prompt textarea
@@ -261,7 +285,10 @@ export default class extends Controller {
     if (!this.sessionIdValue) return
 
     const preserved = loadDraft(this.draftStorageKey)
-    if (!preserved) return
+    if (!preserved) {
+      this.updateDraftIndicator()
+      return
+    }
 
     // Restore into BOTH textareas, not just the desktop one. The composer
     // renders a desktop and a mobile textarea and shows one of them; filling
@@ -278,6 +305,8 @@ export default class extends Controller {
     // the text that just appeared.
     const active = this.getActiveTextarea()
     if (active) active.dispatchEvent(new Event("input", { bubbles: true }))
+
+    this.updateDraftIndicator()
 
     // Don't clear it yet - we only clear after successful submission
   }
@@ -322,6 +351,7 @@ export default class extends Controller {
       this.draftDebounceTimer = null
     }
     clearDraft(this.draftStorageKey)
+    this.updateDraftIndicator()
   }
 
   // Get the sessionStorage key for undo content

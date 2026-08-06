@@ -16,7 +16,7 @@ require "application_system_test_case"
 # sessionStorage: a relaunched PWA gets a new browsing session, so sessionStorage
 # would already be empty by the time anything read it.
 class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
-  PHONE_VIEWPORT = [ 390, 844 ].freeze
+  PHONE_VIEWPORT = [ 375, 812 ].freeze
 
   def create_session
     Session.create!(
@@ -26,6 +26,15 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
       git_root: "https://github.com/test/repo.git",
       branch: "main"
     )
+  end
+
+  # Below the sm: breakpoint the composer is collapsed into a bottom drawer, so
+  # the textarea exists but is not visible until the trigger bar is tapped.
+  def open_mobile_drawer
+    return unless page.has_selector?("[data-bottom-drawer-target='trigger'] button", visible: true, wait: 2)
+
+    find("[data-bottom-drawer-target='trigger'] button").click
+    assert_selector "[data-bottom-drawer-target='content']", visible: true
   end
 
   # Type into whichever textarea the layout is actually showing, the way a user
@@ -74,19 +83,65 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
   end
 
   test "typed follow-up prompt survives a reload at a phone viewport" do
-    # The bug this guards: restore used to fill only the desktop textarea, so on
+    # Two bugs this guards. Restore used to fill only the desktop textarea, so on
     # a phone — where the mobile textarea is the visible one — the text was in
-    # storage but the user saw an empty box.
+    # storage but the user saw an empty box. And the phone composer lives behind
+    # a collapsed bottom drawer, so a restored draft has to announce itself on
+    # the trigger bar or it may as well still be lost.
     page.driver.browser.manage.window.resize_to(*PHONE_VIEWPORT)
     session = create_session
     visit session_path(session)
 
+    open_mobile_drawer
     type_draft("typed on a phone")
     assert_not_empty stored_draft_keys_eventually(expect: :present)
 
-    reload_and_settle
+    page.refresh
+    open_transcript_panel
 
+    # The drawer is collapsed again after the reload, so the trigger bar is where
+    # the user learns their draft survived.
+    assert_selector "[data-follow-up-prompt-target='draftIndicator']", text: "Draft: typed on a phone"
+
+    open_mobile_drawer
     assert_composer_value "typed on a phone"
+  ensure
+    page.driver.browser.manage.window.resize_to(1400, 900)
+  end
+
+  test "the draft indicator does not push the trigger bar off a 375px screen" do
+    # A long draft in the collapsed trigger bar is a flex child holding an
+    # unbroken string — the classic way a control ends up off the right edge of a
+    # phone, where it is both invisible and untappable.
+    page.driver.browser.manage.window.resize_to(*PHONE_VIEWPORT)
+    session = create_session
+    visit session_path(session)
+
+    open_mobile_drawer
+    type_draft("a deliberately long follow-up prompt " * 8)
+    assert_not_empty stored_draft_keys_eventually(expect: :present)
+
+    page.refresh
+    open_transcript_panel
+    assert_selector "[data-follow-up-prompt-target='draftIndicator']", text: /Draft:/
+
+    # Probe 1: the document is no wider than the viewport.
+    assert page.evaluate_script(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
+    ), "page scrolls horizontally at #{PHONE_VIEWPORT.first}px"
+
+    # Probe 2: nothing sticks out past the right edge. Catches what Probe 1
+    # cannot — a clipping ancestor, and the fixed-position mobile drawer itself.
+    overflowing = page.evaluate_script(<<~JS)
+      (function () {
+        const limit = document.documentElement.clientWidth;
+        return Array.from(document.querySelectorAll("*"))
+          .filter((el) => el.getBoundingClientRect().right > limit + 1)
+          .slice(0, 20)
+          .map((el) => `${el.tagName.toLowerCase()}.${el.classList.value}`);
+      })()
+    JS
+    assert_empty overflowing, "elements overflow the right edge: #{overflowing.inspect}"
   ensure
     page.driver.browser.manage.window.resize_to(1400, 900)
   end
