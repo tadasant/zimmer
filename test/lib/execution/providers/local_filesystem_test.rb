@@ -19,6 +19,11 @@ module Execution
         @clones_base = File.join(@tmp_root, "clones")
         FileUtils.mkdir_p(@clones_base)
         ClonesDirectory.stubs(:base).returns(@clones_base)
+
+        # The guard shells out to df/du. The two tests below that care about it
+        # override this stub; the rest should not depend on how much room the CI
+        # host happens to have under /tmp.
+        CloneDiskGuard.stubs(:ensure_space!)
       end
 
       teardown do

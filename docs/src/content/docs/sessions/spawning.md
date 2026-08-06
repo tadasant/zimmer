@@ -104,17 +104,25 @@ scratch directory and prompt attachments — degraded every other session on the
 time.
 
 **How much space it asks for.** A flat threshold fits this badly: a 50 MB repo and a 5 GB monorepo
-have very different needs. So the requirement is derived from the most recently written existing
-clone of the *same repository*, which is the best proxy available without a network call for what
-the next clone of that repo will cost, times `SIZE_SAFETY_FACTOR` (2 — one copy for the clone, one
-for what the session writes into it). That measurement is bounded on three sides, because a sizing
-routine that errs pessimistically blocks every session on the host:
+have very different needs. So the requirement is derived from the `.git` directory of the most
+recently written existing clone of the *same repository*, times `SIZE_SAFETY_FACTOR` (2 — one copy
+for the object store, one for the checked-out tree). `.git` specifically, not the whole tree: the
+tree also holds whatever the previous session installed (`node_modules`, `vendor/bundle`, build
+output), none of which the next `git clone --single-branch` will re-download, so sizing it would
+inflate the requirement by an amount that has nothing to do with the clone.
+
+That measurement is bounded on four sides, because a sizing routine that errs pessimistically
+blocks every session on the host:
 
 | Bound | Value | Why |
 | --- | --- | --- |
-| `MINIMUM_FREE_BYTES` | 2 GiB | Floor. A repo never cloned before, or one that cannot be measured, still has to clear it |
-| `MAXIMUM_REQUIRED_BYTES` | 10 GiB | Ceiling. A prior clone that grew pathologically — an agent downloaded a dataset into it — must not become a requirement no healthy disk can satisfy |
+| `MINIMUM_FREE_BYTES` | 2 GiB, `CLONE_MINIMUM_FREE_BYTES` | Floor. A repo never cloned before, or one that cannot be measured, still has to clear it. Overridable so a small host has a lever that is not a redeploy |
+| `MAXIMUM_REQUIRED_BYTES` | 10 GiB | Absolute ceiling. A prior clone that grew pathologically must not become a requirement no healthy disk can satisfy |
+| `MAX_VOLUME_FRACTION` | 0.25 | Relative ceiling. Without it the 2 GiB floor alone turns a 3 GiB disk that was cloning small repos perfectly well into one where nothing can launch |
 | `CLONE_SIZING_TIMEOUT_SECONDS` | 5s | The `du` runs on the launch path; exceeding the deadline falls back to the floor |
+
+The `du` is skipped entirely when free space already exceeds `MAXIMUM_REQUIRED_BYTES` — no
+requirement can ask for more than that, so a healthy host pays one `df` and nothing else.
 
 **It fails open.** If free space cannot be determined at all — `df` missing, unparsable, or timing
 out — the guard permits the clone. A broken measurement must never be the reason no session can

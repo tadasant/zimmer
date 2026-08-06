@@ -181,6 +181,69 @@ class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
     assert_equal 0, OrphanCloneFilesystemCleanupJob.reclaim_space(target_free_bytes: 10_000)
   end
 
+  test "reclaim_space stops when the wall-clock budget is exhausted" do
+    # This loop runs synchronously on the session launch path and cleanup_orphan
+    # tears down Docker Compose first (120s cap each), so an unbounded sweep would
+    # wedge the session in `waiting` for hours.
+    other = File.join(@clones_base, "pulsemcp-main-1770000008-ccccdddd")
+    FileUtils.mkdir_p(other)
+    FileUtils.touch(other, mtime: 4.hours.ago.to_time)
+
+    stub_available_bytes(before: 1_000, after: 1_000)
+    job = OrphanCloneFilesystemCleanupJob.new
+    # First check starts the clock, second reports the budget already blown.
+    job.stubs(:monotonic_now).returns(0).then.returns(OrphanCloneFilesystemCleanupJob::RECLAIM_BUDGET_SECONDS + 1)
+
+    job.reclaim_space(target_free_bytes: 10_000)
+
+    assert File.directory?(@orphan_dir), "no removal should happen once the budget is gone"
+    assert File.directory?(other)
+  end
+
+  test "the durable volume is not reapable outside production or staging" do
+    # Orphan-hood is a set difference against the CONNECTED database. `bin/rails
+    # test` and `bin/dev` both resolve the clones base to ~/.zimmer/clones, so on
+    # a machine that also hosts a real Zimmer they would compute every live clone
+    # as an orphan. This test runs in `test`, which is exactly that case.
+    durable_base = File.join(File.expand_path("~"), ".zimmer", "clones")
+    job = OrphanCloneFilesystemCleanupJob.new
+
+    assert_not job.send(:reclaimable_root?, durable_base)
+  end
+
+  test "the durable volume is reapable in the deployments that own it" do
+    durable_base = File.join(File.expand_path("~"), ".zimmer", "clones")
+    job = OrphanCloneFilesystemCleanupJob.new
+
+    OrphanCloneFilesystemCleanupJob::SWEEPS_DEFAULT_DURABLE_ROOT.each do |env|
+      Rails.stubs(:env).returns(ActiveSupport::StringInquirer.new(env))
+      assert job.send(:reclaimable_root?, durable_base), "#{env} owns the volume and must be able to reap it"
+    end
+  end
+
+  test "a relocated clones base is reapable anywhere" do
+    # The fixture base is already outside ~/.zimmer, which is exactly the
+    # AGENT_CLONES_DIR case: no fence, because no live deployment owns it.
+    assert OrphanCloneFilesystemCleanupJob.new.send(:reclaimable_root?, @clones_base)
+  end
+
+  test "reclaim_space does nothing when the root is fenced" do
+    OrphanCloneFilesystemCleanupJob.any_instance.stubs(:reclaimable_root?).returns(false)
+    OrphanCloneFilesystemCleanupJob.any_instance.expects(:find_orphan_directories).never
+
+    assert_equal 0, OrphanCloneFilesystemCleanupJob.reclaim_space(target_free_bytes: 10_000)
+    assert File.directory?(@orphan_dir)
+  end
+
+  test "the scheduled sweep does nothing when the root is fenced" do
+    OrphanCloneFilesystemCleanupJob.any_instance.stubs(:reclaimable_root?).returns(false)
+    OrphanCloneFilesystemCleanupJob.any_instance.expects(:find_orphan_directories).never
+
+    OrphanCloneFilesystemCleanupJob.new.perform
+
+    assert File.directory?(@orphan_dir)
+  end
+
   test "reclaim_space keeps going when one deletion fails" do
     other = File.join(@clones_base, "pulsemcp-main-1770000006-99990000")
     FileUtils.mkdir_p(other)
