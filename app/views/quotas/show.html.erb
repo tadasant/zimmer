@@ -133,10 +133,10 @@
                       <%= time_ago_in_words(event.created_at) %> ago
                     </td>
                     <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-900">
-                      <%= event.rotated_from&.email || "—" %>
+                      <%= rotation_account_label(event.from_email, deleted: event.from_deleted?) %>
                     </td>
                     <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-900">
-                      <%= event.rotated_to.email %>
+                      <%= rotation_account_label(event.to_email, deleted: event.to_deleted?) %>
                     </td>
                     <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500">
                       <%= event.reason || "—" %>

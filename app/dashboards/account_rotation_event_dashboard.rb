@@ -5,6 +5,9 @@ class AccountRotationEventDashboard < Administrate::BaseDashboard
     id: Field::Number,
     rotated_from: Field::BelongsTo.with_options(class_name: "ClaudeAccount"),
     rotated_to: Field::BelongsTo.with_options(class_name: "ClaudeAccount"),
+    rotated_from_email: Field::String,
+    rotated_to_email: Field::String,
+    runtime: Field::String,
     reason: Field::String,
     source: Field::String,
     triggered_by: Field::String,
@@ -14,8 +17,9 @@ class AccountRotationEventDashboard < Administrate::BaseDashboard
 
   COLLECTION_ATTRIBUTES = %i[
     id
-    rotated_from
-    rotated_to
+    rotated_from_email
+    rotated_to_email
+    runtime
     reason
     source
     created_at
@@ -25,6 +29,9 @@ class AccountRotationEventDashboard < Administrate::BaseDashboard
     id
     rotated_from
     rotated_to
+    rotated_from_email
+    rotated_to_email
+    runtime
     reason
     source
     triggered_by
