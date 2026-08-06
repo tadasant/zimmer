@@ -47,6 +47,18 @@ class ApplicationJob < ActiveJob::Base
 
   discard_interrupt_quietly
 
+  # A `/triggers/:id` link for an alert. The alerts this serves are raised from
+  # inside a rescue, and for a lost wake they are the ONLY signal a human gets.
+  # AppUrl.base_url reads configuration, so a deployment that has it wrong would
+  # raise here and lose the specific alert to whatever generic handler is above
+  # it. A degraded relative link beats no alert.
+  def trigger_url(trigger_id)
+    "#{AppUrl.base_url}/triggers/#{trigger_id}"
+  rescue => e
+    Rails.logger.warn "[#{self.class.name}] Could not build a trigger URL: #{e.class}: #{e.message}"
+    "/triggers/#{trigger_id}"
+  end
+
   # Set up correlation ID and context for structured logging
   # This allows tracing operations across multiple jobs and services
   around_perform do |job, block|
