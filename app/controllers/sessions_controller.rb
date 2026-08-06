@@ -1064,7 +1064,11 @@ class SessionsController < ApplicationController
 
         if main_transcript_file
           # Read and update transcript
-          transcript_content = File.read(main_transcript_file)
+          # Through the runtime's TranscriptSource, not File.read: that is where
+          # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
+          # transcript over the redacted one the poller stored. It also decompresses a
+          # Codex .zst rollout, which a raw read would have stored as binary.
+          transcript_content = TranscriptRuntime.source_for(@session).read(main_transcript_file)
 
           # Parse transcript to count messages
           message_count = count_transcript_messages(transcript_content)
@@ -1290,8 +1294,12 @@ class SessionsController < ApplicationController
 
           next unless main_transcript_file
 
-          # Read and update transcript
-          transcript_content = File.read(main_transcript_file)
+          # Read and update transcript.
+          # Through the runtime's TranscriptSource, not File.read: that is where
+          # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
+          # transcript over the redacted one the poller stored. It also decompresses a
+          # Codex .zst rollout, which a raw read would have stored as binary.
+          transcript_content = TranscriptRuntime.source_for(session).read(main_transcript_file)
 
           # Parse transcript to count messages
           message_count = count_transcript_messages(transcript_content)

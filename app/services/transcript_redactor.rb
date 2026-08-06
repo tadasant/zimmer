@@ -70,6 +70,15 @@ module TranscriptRedactor
   # ClaudeAccount#oauth_config, whose shape differs per runtime.
   SENSITIVE_KEY = /token|secret|key|password|credential/i
 
+  # Depth cap for that scan. `oauth_config` is operator/CLI-supplied jsonb, and
+  # SystemStackError is not a StandardError — an unguarded recursion would
+  # escape the rescue around the build and take the poll down with it.
+  MAX_JSON_DEPTH = 32
+
+  # Guards the memoized known-credential set. A constant rather than `@mutex
+  # ||= Mutex.new`, which can hand two racing threads two different mutexes.
+  MUTEX = Mutex.new
+
   # `:whole` replaces the entire match. `:value` replaces only capture group 1,
   # leaving the surrounding framing (the variable name, the `Bearer` keyword,
   # the database host) readable.
@@ -89,6 +98,11 @@ module TranscriptRedactor
   # credential name plus quoting, short enough that the slice is free.
   PRECEDING_WINDOW = 32
 
+  # Left boundary for a prefixed-token pattern: the prefix must begin a token,
+  # not sit in the middle of one. Stricter than `\b`, which treats `-` as a
+  # boundary and so would still match the `sk-` inside `task-sk-…`.
+  TOKEN_START = /(?<![A-Za-z0-9_\-])/
+
   # Order matters: the first pattern to match a span wins, because its
   # replacement no longer looks like a credential to the patterns after it. The
   # specific labels come before the generic `ENV_SECRET` catch so a redaction is
@@ -97,18 +111,24 @@ module TranscriptRedactor
     # Anthropic OAuth access/refresh tokens. What ClaudeAccount#oauth_config and
     # ~/.claude/.credentials.json hold; an agent debugging its own auth prints
     # these. Listed before the generic Anthropic key so the label stays precise.
-    pattern("ANTHROPIC_OAUTH_TOKEN", /sk-ant-(?:oat|ort)\d{2}-[A-Za-z0-9_\-]{16,}/),
-    pattern("ANTHROPIC_API_KEY", /sk-ant-[A-Za-z0-9_\-]{20,}/),
+    pattern("ANTHROPIC_OAUTH_TOKEN", /#{TOKEN_START}sk-ant-(?:oat|ort)\d{2}-[A-Za-z0-9_\-]{16,}/o),
+    pattern("ANTHROPIC_API_KEY", /#{TOKEN_START}sk-ant-[A-Za-z0-9_\-]{20,}/o),
     # OpenAI / Codex. Runs after the Anthropic patterns, which share the `sk-`
     # prefix and have already claimed their matches.
-    pattern("OPENAI_API_KEY", /sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}/),
+    #
+    # TOKEN_START is load-bearing here, not decoration. `-` is in the value
+    # class, so without a left boundary this matches inside ordinary hyphenated
+    # prose: "ri|sk-assessment-frameworks" and "docs/ri|sk-mitigation-strategy"
+    # both redact. `\b` alone is not enough either — it would still fire on
+    # "task-sk-something-long-enough".
+    pattern("OPENAI_API_KEY", /#{TOKEN_START}sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}/o),
     # GitHub. Every session pushes branches and drives `gh`.
-    pattern("GITHUB_TOKEN", /gh[pousr]_[A-Za-z0-9]{36,}/),
-    pattern("GITHUB_TOKEN", /github_pat_[A-Za-z0-9_]{22,}/),
+    pattern("GITHUB_TOKEN", /#{TOKEN_START}gh[pousr]_[A-Za-z0-9]{36,}/o),
+    pattern("GITHUB_TOKEN", /#{TOKEN_START}github_pat_[A-Za-z0-9_]{22,}/o),
     # Slack. `SLACK_BOT_TOKEN` is a catalog `${VAR}`, and the OAuth connector
     # mints user tokens of the same shape.
-    pattern("SLACK_TOKEN", /xox[abprse]-[A-Za-z0-9\-]{10,}/),
-    pattern("SLACK_APP_TOKEN", /xapp-\d-[A-Za-z0-9\-]{10,}/),
+    pattern("SLACK_TOKEN", /#{TOKEN_START}xox[abprse]-[A-Za-z0-9\-]{10,}/o),
+    pattern("SLACK_APP_TOKEN", /#{TOKEN_START}xapp-\d-[A-Za-z0-9\-]{10,}/o),
     # Google. The Parameter Store resolver authenticates with a service account.
     pattern("GOOGLE_API_KEY", /\bAIza[0-9A-Za-z_\-]{35}\b/),
     pattern("GOOGLE_OAUTH_CLIENT_SECRET", /\bGOCSPX-[A-Za-z0-9_\-]{20,}/),
@@ -138,13 +158,28 @@ module TranscriptRedactor
     # ships `"Authorization": "Bearer ${STRAD_API_KEY}"`, and OTEL export uses a
     # bearer token.
     pattern("BEARER_TOKEN", /bearer[ \t]+([A-Za-z0-9_\-.=]{20,})/i, :value),
-    pattern("BASIC_AUTH", /basic[ \t]+([A-Za-z0-9+\/=]{16,})/i, :value),
+    # `Basic` needs the `Authorization` in front of it, unlike `Bearer`. Its
+    # value class has to include `/` and `+` to cover base64, and "basic" is an
+    # ordinary English word, so unanchored it eats a path or a slashed phrase:
+    # "basic app/models/session works" and "the basic authentication/authorization
+    # flow" both redacted before this anchor existed.
+    pattern(
+      "BASIC_AUTH",
+      /basic[ \t]+([A-Za-z0-9+\/=]{16,})/i,
+      :value,
+      preceded_by: /authorization["']?[ \t]*[:=][ \t]*["']?\z/i
+    ),
     # `X-API-Key: …` headers — how the catalog passes `${ZIMMER_PROD_API_KEY}`
     # and how Zimmer's own REST API is authenticated.
     pattern("API_KEY_HEADER", /\b(?:x-api-key|api-key|x-auth-token)["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9+\/=_\-]{16,})/i, :value),
     # Credentials embedded in a URL: an authenticated git remote
     # (https://x-access-token:…@github.com) or a database URL.
     pattern("URL_CREDENTIALS", /\bhttps?:\/\/[^:\/\s@"']+:([^@\s\/"']{8,})@/, :value),
+    # The userinfo-only form, `https://<token>@github.com/…`, which `gh` and a
+    # token-authenticated `git remote` both produce. No colon, so the rule above
+    # does not see it. The 20-character floor is what keeps an ordinary
+    # `https://user@host` URL out of it.
+    pattern("URL_CREDENTIALS", /\bhttps?:\/\/([A-Za-z0-9_\-.~+\/=]{20,})@/, :value),
     pattern(
       "DB_CONNECTION_STRING",
       /\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|amqps):\/\/[^:\s\/@"']+:([^@\s"']+)@/i,
@@ -181,9 +216,12 @@ module TranscriptRedactor
   # than this. The cap is what stops a stray `-----BEGIN PRIVATE KEY-----` in
   # prose from opening a block that eats the rest of the transcript.
   MAX_PRIVATE_KEY_BLOCK_LINES = 200
-  # Base64 armor, or a PEM header line (`Proc-Type: 4,ENCRYPTED`). Prose fails
-  # both, so a BEGIN and an END mentioned in ordinary text never pair up.
-  PRIVATE_KEY_BODY_LINE = /\A(?:[A-Za-z0-9+\/=]*|[A-Za-z][A-Za-z-]*:\s?\S.*)\z/
+  # Base64 armor, or one of the two RFC 1421 header lines an encrypted PEM
+  # carries. Only those two names, not any `Word: value` line — a general header
+  # rule would let ordinary prose bridge a BEGIN and an END that both appear in
+  # running text, which is the exact over-redaction the block walk exists to
+  # avoid.
+  PRIVATE_KEY_BODY_LINE = /\A(?:[A-Za-z0-9+\/=]*|(?:Proc-Type|DEK-Info):[ \t]?\S.*)\z/
 
   class << self
     # Redact a whole transcript (or any transcript-shaped blob).
@@ -225,19 +263,29 @@ module TranscriptRedactor
     #
     # @return [Array<Array(String, String)>]
     def known_secrets
-      mutex.synchronize do
-        if @known_secrets.nil? || @known_secrets_loaded_at.nil? ||
-            (monotonic_now - @known_secrets_loaded_at) > KNOWN_SECRETS_TTL
-          @known_secrets = build_known_secrets
-          @known_secrets_loaded_at = monotonic_now
-        end
-        @known_secrets
+      cached = cached_known_secrets
+      return cached if cached
+
+      # Built OUTSIDE the lock on purpose. The build shells out to the AIR
+      # catalog, may make Parameter Store round-trips, and reads three tables;
+      # holding the lock across it would park every poller thread calling #read
+      # behind one slow secret store. Two threads racing past an expiry both
+      # build the same set from the same sources, so the duplicated work is
+      # bounded and the result is identical either way — a far better trade than
+      # head-of-line blocking the transcript pipeline.
+      built = build_known_secrets
+
+      MUTEX.synchronize do
+        @known_secrets = built
+        @known_secrets_loaded_at = monotonic_now
       end
+
+      built
     end
 
     # Drop the cached known-credential set. Used by tests and after a rotation.
     def reset_known_secrets!
-      mutex.synchronize do
+      MUTEX.synchronize do
         @known_secrets = nil
         @known_secrets_loaded_at = nil
       end
@@ -245,10 +293,13 @@ module TranscriptRedactor
 
     private
 
-    def mutex
-      # Racing to create the mutex itself is harmless: both threads then build
-      # the same set from the same sources.
-      @mutex ||= Mutex.new
+    def cached_known_secrets
+      MUTEX.synchronize do
+        return nil if @known_secrets.nil? || @known_secrets_loaded_at.nil?
+        return nil if (monotonic_now - @known_secrets_loaded_at) > KNOWN_SECRETS_TTL
+
+        @known_secrets
+      end
     end
 
     def monotonic_now
@@ -425,18 +476,20 @@ module TranscriptRedactor
     # ClaudeAccount#oauth_config is a per-runtime jsonb blob (`credentials_json`
     # for Claude Code, `tokens`/`api_key` for Codex), so it is walked by key name
     # rather than by a fixed path that a runtime change would silently outdate.
-    def deep_sensitive_strings(node, found = [])
+    def deep_sensitive_strings(node, found = [], depth = 0)
+      return found if depth > MAX_JSON_DEPTH
+
       case node
       when Hash
         node.each do |key, value|
           if value.is_a?(String) && key.to_s.match?(SENSITIVE_KEY)
             found << value
           else
-            deep_sensitive_strings(value, found)
+            deep_sensitive_strings(value, found, depth + 1)
           end
         end
       when Array
-        node.each { |value| deep_sensitive_strings(value, found) }
+        node.each { |value| deep_sensitive_strings(value, found, depth + 1) }
       end
       found
     end

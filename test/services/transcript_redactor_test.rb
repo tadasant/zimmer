@@ -116,6 +116,21 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     refute_includes redacted, "9f8e7d6c5b4a39281706"
   end
 
+  test "redacts an Authorization Basic value but not the word basic elsewhere" do
+    redacted = TranscriptRedactor.redact(%(-H "Authorization: Basic dXNlcjpwYXNzd29yZDEyMzQ1Ng=="))
+
+    assert_includes redacted, "Basic [REDACTED:BASIC_AUTH]"
+    refute_includes redacted, "dXNlcjpwYXNzd29yZDEyMzQ1Ng"
+  end
+
+  test "redacts a token in the userinfo-only form of a git remote" do
+    token = "ghs_abcdefghijklmnopqrstuvwxyz012345"
+    redacted = TranscriptRedactor.redact("https://#{token}@github.com/tadasant/zimmer.git")
+
+    refute_includes redacted, token
+    assert_includes redacted, "@github.com/tadasant/zimmer.git"
+  end
+
   test "redacts credentials embedded in an authenticated git remote" do
     redacted = TranscriptRedactor.redact("https://x-access-token:ghs_abcdefghijklmnop@github.com/tadasant/zimmer.git")
 
@@ -189,19 +204,36 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     %(  Failures: 0, Errors: 0, Skips: 3 — finished in 41.882714s),
     %(diff --git a/app/services/open_transcript.rb b/app/services/open_transcript.rb),
     %(See https://docs.zimmer.tadasant.com/sessions/transcripts/ for the pipeline diagram.),
-    %(The password field should be validated for presence before save.)
+    %(The password field should be validated for presence before save.),
+    # Hyphenated prose containing "risk-": the `sk-` key patterns must not fire
+    # mid-token. Without a left boundary these redact to "ri[REDACTED:…]".
+    %(we discussed risk-assessment-frameworks and risk-management-and-oversight),
+    %(  modified:   docs/risk-mitigation-strategy-notes.md),
+    %(task-sk-something-else-entirely-here),
+    # "basic" is an English word and its value class must include `/` for base64,
+    # so the Basic-auth rule has to be anchored on the Authorization header.
+    %(basic app/models/session works, as does the basic authentication/authorization flow),
+    # A URL with an ordinary username and no credential must survive.
+    %(git remote add origin https://tadasant@github.com/tadasant/zimmer.git)
   ].freeze
 
   ORDINARY.each_with_index do |line, index|
     test "leaves ordinary transcript content ##{index} untouched" do
-      assert_equal line, TranscriptRedactor.redact(line)
+      # Stubbed empty so this asserts only what the shape patterns do. Otherwise
+      # the assertion silently depends on fixture credential values
+      # (claude_accounts.yml) not colliding with the sample text.
+      TranscriptRedactor.stub(:known_secrets, []) do
+        assert_equal line, TranscriptRedactor.redact(line)
+      end
     end
   end
 
   test "leaves a whole ordinary transcript byte-identical" do
     content = ORDINARY.join("\n") + "\n"
 
-    assert_equal content, TranscriptRedactor.redact(content)
+    TranscriptRedactor.stub(:known_secrets, []) do
+      assert_equal content, TranscriptRedactor.redact(content)
+    end
   end
 
   # --- Structural invariants the transcript pipeline depends on -------------
