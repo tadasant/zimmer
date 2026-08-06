@@ -67,11 +67,11 @@ class CodexTranscriptSource < TranscriptSource
     fallback_transcript(transcript_directory, session)
   end
 
-  # @see TranscriptSource#read
+  # @see TranscriptSource#read_raw
   #
   # Transparently decompresses `.zst` rollouts; `.jsonl` files are read as-is.
   # Returns a plain UTF-8 String suitable for storage and JSONL parsing.
-  def read(path)
+  def read_raw(path)
     return decompress_zst(file_system.binread(path)) if path.to_s.end_with?(".zst")
 
     file_system.read(path)

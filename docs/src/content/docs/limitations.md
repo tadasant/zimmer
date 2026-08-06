@@ -518,6 +518,33 @@ Fixed in [#42](https://github.com/tadasant/zimmer/issues/42) — the panel is be
 and [#44](https://github.com/tadasant/zimmer/issues/44), which replaced the authorization TODOs with
 the note. What is above is the perimeter model itself, which no issue is open against.
 
+### Transcript redaction is defense in depth, not a guarantee
+
+🟡 `TranscriptRedactor` runs on every transcript as it is read, before anything is stored, rendered or
+archived (see [Transcripts](/sessions/transcripts/)). It catches the credentials Zimmer itself issues by
+exact value, and credentials with a recognizable shape by pattern. Neither tier is complete, and the
+gap is worth naming precisely:
+
+- **A secret with no shape that Zimmer never issued is not caught.** A password an agent read out of
+  someone else's config file, the body of an `op read`, a session cookie captured during browser
+  automation, an API key a user pasted into a prompt. There is no pattern for "arbitrary high-entropy
+  string" here on purpose — one would shred ordinary output and destroy the debugging value that is the
+  reason transcripts exist at all.
+- **The known-value tier is only as fresh as its sources.** It rebuilds at most once a minute, and if
+  the Parameter Store is unreachable it degrades to the shape patterns and logs a warning rather than
+  failing the poll. A credential rotated seconds ago can pass through unredacted.
+- **The generic name-then-value rule over-redacts sometimes.** `api_key: your_api_key_here` in a README
+  an agent read gets scrubbed. That is the intended direction of the trade, but it does mean a redacted
+  span is not proof a real credential was there.
+
+None of this changes what a transcript is. Do not treat one as safe to expose because it has been
+through the redactor; the endpoint serving it still has no authorization check, and redaction lowers the
+blast radius of a leak rather than preventing one.
+
+Redaction is also irreversible and applies only from the moment it shipped. Transcripts captured before
+that still hold whatever the agent printed until `bin/rails open_transcripts:redact_stored` is run
+against them.
+
 ### Nothing is encrypted at rest
 
 🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. No model declares
