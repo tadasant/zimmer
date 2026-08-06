@@ -93,6 +93,53 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     assert session.logs.any? { |log| log.content.include?("Recovery job enqueued") }
   end
 
+  test "recovers running session whose job is locked by a capsule that did not survive the deploy" do
+    # The case this job is named for. The replaced container's good_job_processes row is
+    # still in the table, so the job still *looks* locked; only a liveness check sees that
+    # nobody is executing it.
+    session = create_recoverable_session(status: :running, paused_by: nil)
+    session.update!(running_job_id: SecureRandom.uuid)
+    zombie = GoodJob::Process.create!(state: { hostname: "replaced-container" })
+    zombie.update_column(:updated_at, (GoodJob::Process::EXPIRED_INTERVAL.to_i + 60).seconds.ago)
+
+    GoodJob::Job.create!(
+      queue_name: "agents",
+      job_class: "AgentSessionJob",
+      active_job_id: session.running_job_id,
+      serialized_params: { arguments: [ session.id ] }.to_json,
+      created_at: 1.minute.ago,
+      locked_by_id: zombie.id,
+      locked_at: 1.minute.ago,
+      performed_at: 1.minute.ago
+    )
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      DeploymentRecoveryJob.perform_now
+    end
+  ensure
+    zombie&.destroy
+  end
+
+  test "does not recover a running session whose job is merely queued behind a slow deploy" do
+    # A queue backlog is not a death. Recovering here would run a second agent against the
+    # same clone once the queued job is finally picked up.
+    session = create_recoverable_session(status: :running, paused_by: nil)
+    session.update!(running_job_id: SecureRandom.uuid)
+
+    GoodJob::Job.create!(
+      queue_name: "agents",
+      job_class: "AgentSessionJob",
+      active_job_id: session.running_job_id,
+      serialized_params: { arguments: [ session.id ] }.to_json,
+      created_at: 10.minutes.ago,
+      scheduled_at: 10.minutes.ago
+    )
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      DeploymentRecoveryJob.perform_now
+    end
+  end
+
   test "skips session without session_id" do
     session = create_recoverable_session(status: :needs_input, paused_by: "recovery")
     session.update!(session_id: nil)

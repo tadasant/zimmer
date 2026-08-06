@@ -479,6 +479,39 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert_includes warning_log.content, "Job was orphaned or lost"
   end
 
+  test "should detect stale lock when the lock holder's row survives but its heartbeat stopped" do
+    # A SIGKILLed worker leaves its good_job_processes row behind — nothing deletes it
+    # until some later capsule boots and runs GoodJob::Process.cleanup. Asking whether the
+    # row EXISTS therefore reported a dead worker as alive, potentially forever, and the
+    # session sat "running" with nobody executing it.
+    zombie = GoodJob::Process.create!(state: { hostname: "killed-worker" })
+    zombie.update_column(:updated_at, (GoodJob::Process::EXPIRED_INTERVAL.to_i + 60).seconds.ago)
+
+    GoodJob::Job.create!(
+      queue_name: "default",
+      job_class: "AgentSessionJob",
+      serialized_params: { job_id: @session.running_job_id, arguments: [ @session.id ] }.to_json,
+      active_job_id: @session.running_job_id,
+      created_at: 10.minutes.ago,
+      locked_by_id: zombie.id,
+      locked_at: 10.minutes.ago
+    )
+
+    assert GoodJob::Process.exists?(id: zombie.id), "the row is still there — that is the point"
+
+    CleanupOrphanedSessionsJob.perform_now
+
+    @session.reload
+    assert_equal "needs_input", @session.status
+    assert_nil @session.running_job_id
+
+    warning_log = orphan_detection_warning(@session)
+    assert_not_nil warning_log
+    assert_includes warning_log.content, "stale lock from dead process"
+  ensure
+    zombie&.destroy
+  end
+
   test "should detect stale lock from dead process after deploy" do
     # Simulate a deploy scenario: job has a lock from a process that no longer exists
     dead_process_id = SecureRandom.uuid
