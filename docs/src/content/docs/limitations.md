@@ -1271,11 +1271,27 @@ worst real burst was two — but a session that exhausts it keeps a `nil` slug, 
 only by numeric id, and `SessionTitleJob#apply_title` aborts before writing its title-generation log
 entry. Nothing retries it later.
 
-### Orphaned clones linger for up to 48 hours
+### Orphaned clones linger for up to 48 hours unless the disk is actually filling
 
-`OrphanCloneFilesystemCleanupJob` — `AGE_THRESHOLD = 48.hours`, `BATCH_LIMIT = 20`.
+`OrphanCloneFilesystemCleanupJob` on its hourly cron is patient — `AGE_THRESHOLD = 48.hours`,
+`BATCH_LIMIT = 20` — so an orphaned clone normally sits on the volume for up to two days. Disk
+pressure is the exception: `CloneDiskGuard` calls the same job's `reclaim_space` entry point before
+each clone, which lowers the age bar to `PRESSURE_AGE_THRESHOLD = 2.hours` and stops as soon as the
+volume has room. See [the second gear](/operate/background-jobs/#clone-pruning-has-a-second-urgent-gear).
 
-Tracked in [#90](https://github.com/tadasant/zimmer/issues/90).
+What that does **not** reclaim is anything with an owning session row — a tracked `clone_path` is
+never a pruning candidate, whatever the session's status and whatever the disk pressure. So a host
+whose volume is full of clones belonging to real archived-but-not-yet-reaped sessions is still a
+host that needs `StaleCloneCleanupJob` to catch up, or a human. The guard will say so, by name and
+with numbers, instead of letting the clone die partway.
+
+### Private repositories are cloned with a PAT, never an SSH key
+
+`GitCloneService` and the local execution provider authenticate to private repos by rewriting an
+HTTPS remote to `https://TOKEN@github.com/owner/repo.git` using the GitHub PAT in credentials.
+There is no SSH-key path: an `ssh://` or `git@host:` remote gets no credential at all, and a
+non-GitHub host gets none either. Tracked in
+[#90](https://github.com/tadasant/zimmer/issues/90).
 
 ### A session's scratch directory survives archive, but only for the trash window
 

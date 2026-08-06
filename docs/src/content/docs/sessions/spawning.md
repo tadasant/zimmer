@@ -86,6 +86,48 @@ If images are attached, or the prompt exceeds `LARGE_PROMPT_THRESHOLD` (100 KB),
 adapter switches to stream-json mode and feeds the payload through an `IO.pipe` written on a
 background thread. A regular file doesn't work here — the CLI reads nothing from it.
 
+## The pre-clone disk guard
+
+Every session's working directory is a git clone under `ClonesDirectory.base`, created by
+`GitCloneService` on the `waiting → running` path. `CloneDiskGuard.ensure_space!` runs immediately
+before the clone starts, and it does two things in order: it asks
+[`OrphanCloneFilesystemCleanupJob`](/operate/background-jobs/#clone-pruning-has-a-second-urgent-gear)
+to reclaim space, and — only if that is not enough — it refuses the clone with a message naming the
+volume, the shortfall, and what to do about it. The refusal is a
+`GitCloneService::InsufficientDiskSpaceError`, a `GitError` subclass that is deliberately **not**
+classified transient: retrying a full disk on a five-second backoff accomplishes nothing, so
+`AgentSessionJob` fails the session and surfaces the message rather than rescheduling.
+
+Without the guard, a clone into a full volume died partway with whatever errno git happened to
+surface, left a half-written directory behind, and — because that volume also holds every session's
+scratch directory and prompt attachments — degraded every other session on the host at the same
+time.
+
+**How much space it asks for.** A flat threshold fits this badly: a 50 MB repo and a 5 GB monorepo
+have very different needs. So the requirement is derived from the `.git` directory of the most
+recently written existing clone of the *same repository*, times `SIZE_SAFETY_FACTOR` (2 — one copy
+for the object store, one for the checked-out tree). `.git` specifically, not the whole tree: the
+tree also holds whatever the previous session installed (`node_modules`, `vendor/bundle`, build
+output), none of which the next `git clone --single-branch` will re-download, so sizing it would
+inflate the requirement by an amount that has nothing to do with the clone.
+
+That measurement is bounded on four sides, because a sizing routine that errs pessimistically
+blocks every session on the host:
+
+| Bound | Value | Why |
+| --- | --- | --- |
+| `MINIMUM_FREE_BYTES` | 2 GiB, `CLONE_MINIMUM_FREE_BYTES` | Floor. A repo never cloned before, or one that cannot be measured, still has to clear it. Overridable so a small host has a lever that is not a redeploy |
+| `MAXIMUM_REQUIRED_BYTES` | 10 GiB | Absolute ceiling. A prior clone that grew pathologically must not become a requirement no healthy disk can satisfy |
+| `MAX_VOLUME_FRACTION` | 0.25 | Relative ceiling. Without it the 2 GiB floor alone turns a 3 GiB disk that was cloning small repos perfectly well into one where nothing can launch |
+| `CLONE_SIZING_TIMEOUT_SECONDS` | 5s | The `du` runs on the launch path; exceeding the deadline falls back to the floor |
+
+The `du` is skipped entirely when free space already exceeds `MAXIMUM_REQUIRED_BYTES` — no
+requirement can ask for more than that, so a healthy host pays one `df` and nothing else.
+
+**It fails open.** If free space cannot be determined at all — `df` missing, unparsable, or timing
+out — the guard permits the clone. A broken measurement must never be the reason no session can
+start; a clone that dies on `ENOSPC` is strictly better than that.
+
 ## The spawn environment
 
 Shared scrubbing (`CliSpawnEnv`):
