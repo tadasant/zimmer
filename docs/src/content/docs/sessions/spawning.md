@@ -394,7 +394,57 @@ explicitly by the concern rather than fired by Active Record.
 
 ## Stale job supersession
 
-A monitoring job whose lock is older than `STALE_UNLOCKED_JOB_AGE` (2 minutes) is *superseded* by
-a new one. Without this, "follow-up jobs silently skip execution because they see a stale
-'running' job." A two-minute magic number is the thing standing between you and a
-dropped prompt. Tracked in [#71](https://github.com/tadasant/zimmer/issues/71).
+A session records the job driving its current turn in `running_job_id`, and the next job for that
+session has to decide what to do about it: stand down, so one turn runs at a time, or supersede it,
+because the worker that was running it is gone. Both wrong answers are silent. Respect a corpse and
+the user's follow-up prompt disappears with no error anywhere; supersede a job that was merely slow
+and two agent processes run against one clone.
+
+`JobLiveness` (`app/services/job_liveness.rb`) makes that call from evidence rather than from
+elapsed time, classifying the recorded `good_jobs` row as one of:
+
+| Status | Means | Next job |
+| --- | --- | --- |
+| `running` | Locked by a GoodJob capsule that is demonstrably alive | Stands down |
+| `queued` | Enqueued, not yet picked up — a worker will get to it | Stands down |
+| `scheduled` | Parked on a future retry backoff (e.g. the transient-clone retry) | Stands down |
+| `dead_worker` | Locked by a capsule that is gone: SIGKILL, OOM, evicted container | Supersedes |
+| `interrupted` | Started, then lost its lock — the worker died mid-`perform` | Supersedes |
+| `abandoned` | Sat queued and unclaimed past `ABANDONED_QUEUED_JOB_AGE` (30 min) | Supersedes |
+
+Liveness is asked of the database, not of the operating system. Zimmer runs the Kamal `web` and
+`worker` roles as separate containers with separate PID namespaces, and Kamal can spread roles
+across hosts, so `Process.kill(0, pid)` answers about the caller's namespace: ESRCH for a healthy
+worker elsewhere, and "alive" for whatever unrelated process recycled the PID. GoodJob already
+keeps a registry every container can read — `good_job_processes`, refreshed on a 30-second
+heartbeat and, where GoodJob's `advisory_lock_heartbeat` is enabled, pinned by a session-scoped
+Postgres advisory lock that dies with the worker's connection. `GoodJob::Process.active` is the
+union of those two signals, and that is the probe. GoodJob's default enables the lock in
+development only, so production and staging run on the heartbeat branch alone.
+
+Existence is not liveness, so `GoodJob::Process.exists?` is the wrong question: a SIGKILLed worker
+leaves its row behind until some later capsule boots and runs `GoodJob::Process.cleanup`, so asking
+whether a row is there reports a dead worker as alive — which is how a follow-up prompt gets
+dropped.
+
+`ABANDONED_QUEUED_JOB_AGE` is the one remaining clock, and it is a backstop rather than the
+mechanism: every ordinary death is caught by the two checks above, and this horizon exists so a job
+enqueued onto a queue no live capsule serves cannot wedge a session forever. It is deliberately far
+longer than any plausible queue delay, because crossing it early double-runs an agent.
+
+Three callers ask this question, and they deliberately do not all ask the same one, because they are
+not deciding the same thing:
+
+- **`AgentSessionJob`** reads the full status. It is deciding whether to run a rival agent *right
+  now*, so it stands down on anything live, including a job that has merely been queued a long time.
+- **`DeploymentRecoveryJob`** uses `JobLiveness.alive?`. It runs after a deploy has replaced the
+  container holding the lock, which is exactly the case a `locked_by_id`-is-present test misses.
+- **`CleanupOrphanedSessionsJob`** uses only `JobLiveness.lock_holder_alive?` and keeps its own
+  5-minute age gate. It is the periodic safety net whose whole purpose is to un-stick a session
+  nobody is driving; deferring to `ABANDONED_QUEUED_JOB_AGE` would make it wait half an hour to do
+  the one thing it exists for. Only the lock-holder question — where "the row exists" is a bad proxy
+  for "the worker is alive" — is shared.
+
+Two residual gaps, in opposite directions — how long a heartbeat-only deployment takes to notice a
+killed worker, and how a live worker can be mistaken for a dead one — are in
+[Known limitations](/limitations/#a-killed-worker-reads-as-alive-for-up-to-5-minutes-and-a-follow-up-sent-in-that-window-is-dropped).

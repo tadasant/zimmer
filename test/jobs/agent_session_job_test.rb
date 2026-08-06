@@ -1682,13 +1682,18 @@ class AgentSessionJobTest < ActiveJob::TestCase
   test "handle_interrupt_error pauses running session and attempts auto-continue" do
     # Set up a running session with the metadata needed for auto-continue
     @session.start!
+    job = AgentSessionJob.new(@session.id)
+
+    # running_job_id must be THIS job's id. GoodJob re-picks the same row to raise the
+    # InterruptError, and ActiveJob's job_id round-trips through serialized_params — so the
+    # interrupted instance is the recorded owner. A different id means somebody else has
+    # taken the session over, which handle_interrupt_error deliberately declines to undo.
     @session.update!(
-      running_job_id: "test-job-id",
+      running_job_id: job.job_id,
       session_id: SecureRandom.uuid,
       metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
     )
 
-    job = AgentSessionJob.new(@session.id)
     error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
     job.send(:handle_interrupt_error, error)
 
@@ -1704,12 +1709,42 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "Expected warning log about worker shutdown interruption"
   end
 
+  test "handle_interrupt_error stands down when another job has taken ownership" do
+    # An interrupted row (performed_at set, lock gone) reads as :interrupted, so a follow-up
+    # job supersedes it and writes its own id to running_job_id. GoodJob independently
+    # re-picks the interrupted row and raises InterruptError here. The payload does not
+    # re-run, but this recovery path would clear running_job_id out from under the new
+    # owner, pause the session, and enqueue a third job — two agents on one clone.
+    @session.start!
+    successor_job_id = SecureRandom.uuid
+    @session.update!(
+      running_job_id: successor_job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+
+    job = AgentSessionJob.new(@session.id)
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert_equal "running", @session.status, "the successor's turn must not be paused out from under it"
+    assert_equal successor_job_id, @session.running_job_id, "ownership must stay with the successor"
+    assert @session.logs.any? { |log| log.content.include?("superseded by job #{successor_job_id}") },
+      "expected a log recording that recovery stood down"
+    assert_not @session.logs.any? { |log| log.content.include?("interrupted by worker shutdown") },
+      "the recovery path should not have run at all"
+  end
+
   test "handle_interrupt_error falls back to needs_input when auto-continue cannot proceed" do
     # Session without session_id or working_directory — auto-continue should skip
     @session.start!
-    @session.update!(running_job_id: "test-job-id")
-
     job = AgentSessionJob.new(@session.id)
+    @session.update!(running_job_id: job.job_id)
+
     error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
     job.send(:handle_interrupt_error, error)
 
@@ -2172,35 +2207,21 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
   # Concurrent execution prevention tests
   test "should prevent concurrent job executions for same session" do
-    # Create a mock job that's "running" with a valid lock holder
-    first_job_id = "test-job-id-123"
-    @session.update!(running_job_id: first_job_id)
+    # A first turn is genuinely running: locked by a GoodJob capsule that is refreshing
+    # its heartbeat. A second job must stand down rather than start a rival agent.
+    first_job = register_running_job(
+      @session,
+      created_at: 1.minute.ago,
+      locked_by_id: live_good_job_process.id,
+      locked_at: 1.minute.ago,
+      performed_at: 1.minute.ago
+    )
 
-    # Mock GoodJob::Job to return an unfinished job with a valid lock
-    alive_lock_id = SecureRandom.uuid
-    mock_job = Object.new
-    mock_job.define_singleton_method(:finished_at) { nil }
-    mock_job.define_singleton_method(:locked_by_id) { alive_lock_id }
-    mock_job.define_singleton_method(:created_at) { 1.minute.ago }
+    perform_session_job(@session)
 
-    GoodJob::Job.stub(:find_by, ->(conditions) {
-      conditions[:active_job_id] == first_job_id ? mock_job : nil
-    }) do
-      GoodJob::Process.stub(:exists?, ->(conditions) {
-        # Lock holder is alive
-        conditions[:id] == alive_lock_id
-      }) do
-        # Try to run a second job
-        job = AgentSessionJob.new
-        job.perform(@session.id)
-
-        # Verify the second job was skipped
-        @session.reload
-        skip_log = @session.logs.find { |log| log.content.include?("Skipping job") }
-        assert_not_nil skip_log, "Should have logged that job was skipped"
-        assert_includes skip_log.content, first_job_id
-      end
-    end
+    @session.reload
+    assert_not_nil skip_log(@session), "Should have logged that job was skipped"
+    assert_includes skip_log(@session).content, first_job.active_job_id
   end
 
   test "should allow job execution when previous job is finished" do
@@ -2263,90 +2284,181 @@ class AgentSessionJobTest < ActiveJob::TestCase
     mock_job.verify
   end
 
-  test "should supersede stale job with dead lock holder" do
-    # Simulate a worker that was killed (SIGKILL), leaving a locked but orphaned job.
-    # The follow-up job should detect the stale lock and proceed instead of skipping.
-    stale_job_id = "stale-job-id-456"
-    @session.update!(running_job_id: stale_job_id)
+  # --- Superseding a dead job (issue #71) ------------------------------------
+  #
+  # These exercise the real thing rather than a mock: a genuine `good_jobs` row behind
+  # the session's running_job_id, and a genuine `good_job_processes` row standing in for
+  # the worker holding its lock. Both directions matter and both fail silently — a live
+  # job wrongly superseded double-runs an agent, and a dead job wrongly respected drops
+  # the user's follow-up prompt.
 
-    # Mock a GoodJob::Job with a stale lock (locked_by_id points to non-existent process)
-    dead_lock_id = SecureRandom.uuid
-    mock_job = Object.new
-    mock_job.define_singleton_method(:finished_at) { nil }
-    mock_job.define_singleton_method(:locked_by_id) { dead_lock_id }
-    mock_job.define_singleton_method(:created_at) { 10.minutes.ago }
+  # Register a GoodJob row as the session's running_job_id.
+  def register_running_job(session, **attrs)
+    active_job_id = SecureRandom.uuid
+    session.update!(running_job_id: active_job_id)
 
-    GoodJob::Job.stub(:find_by, ->(conditions) {
-      conditions[:active_job_id] == stale_job_id ? mock_job : nil
-    }) do
-      GoodJob::Process.stub(:exists?, ->(conditions) {
-        # The lock holder doesn't exist (worker was killed)
-        false
+    GoodJob::Job.create!({
+      queue_name: "agents",
+      job_class: "AgentSessionJob",
+      active_job_id: active_job_id,
+      serialized_params: { arguments: [ session.id ] }.to_json
+    }.merge(attrs))
+  end
+
+  # A GoodJob capsule that is alive and refreshing its heartbeat.
+  def live_good_job_process
+    GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+  end
+
+  # A capsule that was SIGKILLed: its row survives (nothing deletes it until a later
+  # capsule boots and runs GoodJob::Process.cleanup) but the heartbeat stopped.
+  def dead_good_job_process
+    process = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    process.update_column(:updated_at, (GoodJob::Process::EXPIRED_INTERVAL.to_i + 60).seconds.ago)
+    process
+  end
+
+  def supersede_log(session)
+    session.logs.find { |log| log.content.include?("Superseding job") }
+  end
+
+  def skip_log(session)
+    session.logs.find { |log| log.content.include?("Skipping job") }
+  end
+
+  # Run the job end to end with the spawn side fully mocked.
+  #
+  # Without this, a job that gets past the supersede guard falls through to a real
+  # `git clone https://github.com/test/repo.git`. On a runner without DNS egress that is
+  # not just slow — "Could not resolve host" matches GitCloneService's transient patterns,
+  # so it burns the whole CLONE_RETRY_DELAYS_SECONDS ladder in real Kernel.sleep before
+  # giving up, and nothing asserts the outcome either way.
+  def perform_session_job(session)
+    job = AgentSessionJob.new
+    mock_fs = MockFileSystemAdapter.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = mock_fs
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+    job.process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+      TranscriptPollerService.stub(:new, ->(_session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
       }) do
-        job = AgentSessionJob.new
-        job.perform(@session.id)
-
-        @session.reload
-        skip_log = @session.logs.find { |log| log.content.include?("Skipping job") }
-        assert_nil skip_log, "Should not have skipped — stale lock should be superseded"
-
-        supersede_log = @session.logs.find { |log| log.content.include?("Superseding stale job") }
-        assert_not_nil supersede_log, "Should log that stale job was superseded"
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(session.id)
+        end
       end
     end
   end
 
-  test "should supersede old unlocked job that was never picked up" do
-    # Simulate a job that was enqueued but never locked (worker crashed before pickup).
-    # The job is old enough (> 2 minutes) to be considered stale.
-    orphan_job_id = "orphan-job-id-789"
-    @session.update!(running_job_id: orphan_job_id)
+  test "supersedes a job whose lock holder is dead, however recently it was enqueued" do
+    # THE PROMPT-LOSS REGRESSION. A worker is SIGKILLed mid-run and its good_job_processes
+    # row is still sitting there, so the old check — "does a row with this id exist?" —
+    # answered "alive" and the follow-up returned without doing anything. The user's
+    # prompt was gone with no error anywhere. The job here was enqueued seconds ago, so
+    # no age threshold saves it either: only a liveness check does.
+    register_running_job(
+      @session,
+      created_at: 20.seconds.ago,
+      locked_by_id: dead_good_job_process.id,
+      locked_at: 20.seconds.ago,
+      performed_at: 20.seconds.ago
+    )
 
-    mock_job = Object.new
-    mock_job.define_singleton_method(:finished_at) { nil }
-    mock_job.define_singleton_method(:locked_by_id) { nil }
-    mock_job.define_singleton_method(:created_at) { 5.minutes.ago }
+    perform_session_job(@session)
+    @session.reload
 
-    GoodJob::Job.stub(:find_by, ->(conditions) {
-      conditions[:active_job_id] == orphan_job_id ? mock_job : nil
-    }) do
-      job = AgentSessionJob.new
-      job.perform(@session.id)
-
-      @session.reload
-      skip_log = @session.logs.find { |log| log.content.include?("Skipping job") }
-      assert_nil skip_log, "Should not have skipped — old unlocked job should be superseded"
-
-      supersede_log = @session.logs.find { |log| log.content.include?("Superseding stale job") }
-      assert_not_nil supersede_log, "Should log that stale job was superseded"
-    end
+    assert_nil skip_log(@session), "must not skip: the lock holder is gone, so the prompt would be lost"
+    assert_not_nil supersede_log(@session), "should log that the dead job was superseded"
+    assert_includes supersede_log(@session).content, "dead_worker"
   end
 
-  test "should not supersede unlocked job that was recently enqueued" do
-    # Simulate a job that was enqueued very recently (< STALE_UNLOCKED_JOB_AGE)
-    # and hasn't been locked yet. This is normal — the job just hasn't been
-    # picked up by a worker. It should NOT be superseded.
-    recent_job_id = "recent-job-id-101"
-    @session.update!(running_job_id: recent_job_id)
+  test "supersedes a job that started and then lost its lock" do
+    # The other half of the same worker death: once some later capsule runs
+    # GoodJob::Process.cleanup, the dead worker's row is deleted and its jobs are
+    # unlocked. performed_at is what says this job started — it is not merely queued.
+    register_running_job(
+      @session,
+      created_at: 30.seconds.ago,
+      performed_at: 25.seconds.ago,
+      locked_by_id: nil
+    )
 
-    mock_job = Object.new
-    mock_job.define_singleton_method(:finished_at) { nil }
-    mock_job.define_singleton_method(:locked_by_id) { nil }
-    mock_job.define_singleton_method(:created_at) { 30.seconds.ago }
+    perform_session_job(@session)
+    @session.reload
 
-    GoodJob::Job.stub(:find_by, ->(conditions) {
-      conditions[:active_job_id] == recent_job_id ? mock_job : nil
-    }) do
-      job = AgentSessionJob.new
-      job.perform(@session.id)
+    assert_nil skip_log(@session), "must not skip: the worker died mid-execution"
+    assert_not_nil supersede_log(@session)
+    assert_includes supersede_log(@session).content, "interrupted"
+  end
 
-      @session.reload
-      skip_log = @session.logs.find { |log| log.content.include?("Skipping job") }
-      assert_not_nil skip_log, "Should skip — recently enqueued unlocked job is not stale"
+  test "does not supersede a job locked by a live worker" do
+    register_running_job(
+      @session,
+      created_at: 2.hours.ago,
+      locked_by_id: live_good_job_process.id,
+      locked_at: 2.hours.ago,
+      performed_at: 2.hours.ago
+    )
 
-      supersede_log = @session.logs.find { |log| log.content.include?("Superseding stale job") }
-      assert_nil supersede_log, "Should not supersede a recently enqueued job"
-    end
+    perform_session_job(@session)
+    @session.reload
+
+    assert_not_nil skip_log(@session), "an agent turn that has been running for hours is not stale"
+    assert_nil supersede_log(@session)
+  end
+
+  test "does not supersede a queued job that has waited longer than the old two-minute threshold" do
+    # THE DOUBLE-RUN REGRESSION. A slow deploy or a busy worker means a job waits; it does
+    # not mean the job died. GoodJob will still pick this row up, so superseding it starts
+    # a second agent process against the same clone.
+    register_running_job(@session, created_at: 10.minutes.ago, scheduled_at: 10.minutes.ago)
+
+    perform_session_job(@session)
+    @session.reload
+
+    assert_not_nil skip_log(@session), "a queued job is alive no matter how long the queue is"
+    assert_nil supersede_log(@session)
+  end
+
+  test "does not supersede a job parked on a future retry backoff" do
+    # AgentSessionJob's transient-clone retry points running_job_id at a job scheduled up
+    # to 10 minutes out. Under the age heuristic that job read as stale within 2 minutes.
+    register_running_job(@session, created_at: 5.minutes.ago, scheduled_at: 10.minutes.from_now)
+
+    perform_session_job(@session)
+    @session.reload
+
+    assert_not_nil skip_log(@session)
+    assert_nil supersede_log(@session)
+  end
+
+  test "supersedes a job that sat unclaimed past the backstop horizon" do
+    # The bounded fallback, so an uncleanly-killed worker cannot wedge a session forever.
+    register_running_job(
+      @session,
+      created_at: JobLiveness::ABANDONED_QUEUED_JOB_AGE.ago - 5.minutes,
+      scheduled_at: JobLiveness::ABANDONED_QUEUED_JOB_AGE.ago - 5.minutes
+    )
+
+    perform_session_job(@session)
+    @session.reload
+
+    assert_nil skip_log(@session)
+    assert_not_nil supersede_log(@session)
+    assert_includes supersede_log(@session).content, "abandoned"
   end
 
   # Test goal handling
