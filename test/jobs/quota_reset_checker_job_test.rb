@@ -364,6 +364,41 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     assert_nil parked.metadata["auth_outage_reason"]
   end
 
+  # The 2026-07-31 incident: 11 sessions parked auth_unrecoverable against a
+  # dead identity, the pool repaired 25 minutes later, and every one of them sat
+  # dormant until its ~1h timer because this sweep only ever looked at quota
+  # parks. Restoring an account changes the set of identities the runtime can
+  # serve, which is the evidence an auth park needs.
+  test "resumes sessions parked as auth_unrecoverable once the pool gains a restored account" do
+    parked = create_parked_session(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    assert claude_accounts(:exceeded).quota_exceeded?
+
+    QuotaResetCheckerJob.perform_now
+
+    assert claude_accounts(:exceeded).reload.active?
+    assert_equal "running", parked.reload.status
+    assert_nil parked.metadata["auth_outage_reason"]
+  end
+
+  # Without that change there is no evidence, and waking would resume the
+  # session into the same rejection on every 15-minute tick.
+  test "leaves auth_unrecoverable parks asleep when the pool is unchanged" do
+    claude_account_quota_snapshots(:exceeded_snapshot)
+      .update!(reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+        utilization_5h: 1.0, utilization_7d: 1.0)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, error_message: "Connection refused")
+    )
+    parked = create_parked_session(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    QuotaResetCheckerJob.perform_now
+
+    assert ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).available.exists?,
+      "the pool must have an available account, so the decline is the fingerprint guard and not the pool guard"
+    assert claude_accounts(:exceeded).reload.quota_exceeded?, "nothing was restored, so no identity changed"
+    assert_equal "waiting", parked.reload.status
+  end
+
   test "leaves parked sessions asleep when nothing could be restored" do
     # A pool with exactly one account, still inside its window: nothing to
     # restore, so nothing to wake into.
@@ -386,9 +421,9 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     assert_equal "waiting", parked.reload.status
   end
 
-  def create_parked_session
+  def create_parked_session(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
     session = Session.create!(
-      prompt: "Parked by quota exhaustion",
+      prompt: "Parked by an auth outage",
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
@@ -397,7 +432,7 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
       session_id: SecureRandom.uuid,
       metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" }
     )
-    AuthOutageParkService.new(session).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+    AuthOutageParkService.new(session).park!(reason: reason)
     assert_equal "waiting", session.reload.status
     session
   end
