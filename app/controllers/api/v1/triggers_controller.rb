@@ -12,7 +12,7 @@ class Api::V1::TriggersController < Api::BaseController
   #
   # Query parameters:
   #   - condition_type: Filter by condition type (slack, schedule, ao_event)
-  #   - status: Filter by status (enabled, disabled)
+  #   - status: Filter by status (enabled, disabled, failed)
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
@@ -103,7 +103,9 @@ class Api::V1::TriggersController < Api::BaseController
   end
 
   # POST /api/v1/triggers/:id/toggle
-  # Toggle a trigger's enabled/disabled status.
+  # Toggle a trigger's enabled/disabled status. A trigger in the `failed` status
+  # (a fire raised and it was parked rather than destroyed) toggles back to
+  # enabled, which clears the failure state and re-arms it.
   def toggle
     @trigger.toggle!
     render json: { trigger: trigger_json(@trigger) }
@@ -167,6 +169,8 @@ class Api::V1::TriggersController < Api::BaseController
       id: trigger.id,
       name: trigger.name,
       status: trigger.status,
+      failed_at: trigger.failed_at&.iso8601,
+      last_error: trigger.last_error,
       agent_root_name: trigger.agent_root_name,
       prompt_template: trigger.prompt_template,
       goal: trigger.goal,

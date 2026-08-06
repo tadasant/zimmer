@@ -47,6 +47,8 @@ module Mcp
 
           This tool creates a one-time Zimmer wake-up trigger bound to the target session. Creating the trigger atomically transitions the session to sleeping (waiting) state, so Zimmer can reclaim resources and the trigger is guaranteed to resume the correct session at the specified time.
 
+          **If the fire itself errors** (a stale agent root, a bad MCP reference), the wake does NOT happen and the trigger is NOT deleted: it is parked in the `failed` status with the error on it, still listed at `/triggers` with a **Re-arm** button, and an alert is raised. It will not retry on its own. If this connection also has the trigger tools, a `status=failed` search finds wakes that never happened and a toggle re-arms one; otherwise the trigger page is where a human clears it.
+
           **Current server time:** #{Time.current.utc.iso8601} (UTC). Use this as your reference point when calculating wake-up times.
 
           **Timezone handling:**

@@ -28,7 +28,10 @@ module Mcp
     class ActionTrigger < Tool
       ACTIONS = %w[create update delete toggle].freeze
       TRIGGER_TYPES = %w[slack schedule github_label github_issue].freeze
-      STATUSES = %w[enabled disabled].freeze
+      # Referenced, not re-declared, so the tool cannot drift behind the model.
+      # `failed` is reachable here for symmetry, but it is Zimmer's to set:
+      # ScheduleTriggerJob parks a one-time trigger there when its fire raises.
+      STATUSES = Trigger::STATUSES
 
       tool_name "action_trigger"
 
@@ -39,7 +42,9 @@ module Mcp
         - **create**: Create a new trigger (requires name, trigger_type, agent_root_name, prompt_template)
         - **update**: Update an existing trigger (requires "id")
         - **delete**: Delete a trigger (requires "id")
-        - **toggle**: Enable/disable a trigger (requires "id")
+        - **toggle**: Enable/disable a trigger (requires "id"). A trigger in the `failed` status —
+          parked there because a one-time scheduled fire raised — toggles back to enabled, which
+          clears the failure and re-arms it (a one-time schedule then fires within a minute).
 
         **Conditions (OR semantics):** a trigger fires when ANY of its conditions matches.
         Two ways to say so:

@@ -163,6 +163,72 @@ class TriggerTest < ActiveSupport::TestCase
     assert @trigger.enabled?
   end
 
+  # === Failed status (issue #76) ===
+
+  test "failed is a valid status distinct from disabled" do
+    @trigger.status = "failed"
+    assert @trigger.valid?
+    assert @trigger.failed?
+    assert_not @trigger.enabled?
+    assert_not @trigger.disabled?
+  end
+
+  test "mark_failed! parks the trigger with the error instead of destroying it" do
+    assert @trigger.mark_failed!(StandardError.new("agent root not found"))
+
+    @trigger.reload
+    assert @trigger.failed?
+    assert_not_nil @trigger.failed_at
+    assert_equal "StandardError: agent root not found", @trigger.last_error
+  end
+
+  test "mark_failed! accepts a plain string and bounds what it stores" do
+    @trigger.mark_failed!("x" * (Trigger::MAX_LAST_ERROR_CHARS + 500))
+
+    assert_equal Trigger::MAX_LAST_ERROR_CHARS, @trigger.reload.last_error.length
+  end
+
+  test "mark_failed! persists even when the trigger would not pass validation" do
+    # A concurrent sibling-wake cleanup can cascade-delete the conditions out from
+    # under an in-memory trigger, which `validates :trigger_conditions, presence:`
+    # would then reject. Recording the failure must not be what loses to that race.
+    @trigger.trigger_conditions.destroy_all
+    @trigger.trigger_conditions.reload
+
+    assert_not @trigger.valid?, "precondition: a conditionless trigger is invalid"
+    assert @trigger.mark_failed!(StandardError.new("boom"))
+    assert_equal "failed", @trigger.reload.status
+  end
+
+  test "failed scope selects parked triggers" do
+    @trigger.mark_failed!(StandardError.new("boom"))
+
+    assert_includes Trigger.failed, @trigger
+    assert_not_includes Trigger.enabled, @trigger
+    assert_not_includes Trigger.disabled, @trigger
+  end
+
+  test "enable! re-arms a failed trigger by clearing the failure state" do
+    @trigger.mark_failed!(StandardError.new("boom"))
+    @trigger.reload
+
+    @trigger.enable!
+
+    assert @trigger.enabled?
+    assert_nil @trigger.failed_at
+    assert_nil @trigger.last_error
+  end
+
+  test "toggle! on a failed trigger re-arms it rather than disabling it" do
+    @trigger.mark_failed!(StandardError.new("boom"))
+    @trigger.reload
+
+    @trigger.toggle!
+
+    assert @trigger.enabled?, "a failed trigger toggles back into service, not into disabled"
+    assert_nil @trigger.last_error
+  end
+
   # condition_types and conditions_summary
   test "condition_types returns unique condition types" do
     types = @trigger.condition_types

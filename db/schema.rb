@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_03_180000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_06_100000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -493,7 +493,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_03_180000) do
     t.jsonb "catalog_skills", default: [], null: false
     t.datetime "created_at", null: false
     t.boolean "enqueue_messages", default: false, null: false
+    t.datetime "failed_at"
     t.text "goal"
+    t.text "last_error"
     t.bigint "last_session_id"
     t.datetime "last_triggered_at"
     t.integer "max_sessions_per_minute"

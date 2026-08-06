@@ -10,6 +10,8 @@ class TriggerDashboard < Administrate::BaseDashboard
     goal: Field::Text,
     prompt_template: Field::Text,
     last_triggered_at: Field::DateTime,
+    failed_at: Field::DateTime,
+    last_error: Field::Text,
     sessions_created_count: Field::Number,
     reuse_session: Field::Boolean,
     enqueue_messages: Field::Boolean,
@@ -35,6 +37,8 @@ class TriggerDashboard < Administrate::BaseDashboard
     goal
     prompt_template
     last_triggered_at
+    failed_at
+    last_error
     sessions_created_count
     reuse_session
     enqueue_messages
