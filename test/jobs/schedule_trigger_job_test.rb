@@ -307,7 +307,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert_equal "failed", trigger.status, "the error must still be recorded, not swallowed"
     assert_not_nil one_time_condition.reload.last_triggered_at,
       "the fire got far enough to consume the schedule"
-    assert trigger.spent_one_time_schedule?,
+    assert trigger.spent_one_shot_wake?,
       "there is nothing left to fire, so the UI must not offer a re-arm that would deliver nothing"
     assert_match(/will NOT re-fire/, captured_details)
 

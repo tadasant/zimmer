@@ -197,11 +197,10 @@ class AoEventTriggerJob < ApplicationJob
     end
   end
 
-  # A fire that raised. Left to itself this used to be one `.error` log line —
-  # no alert, no record, and a trigger still sitting there `enabled` with its
-  # condition unspent, as if it were going to try again.
+  # Records a fire that raised: it alerts, and for a one-shot wake it parks.
   #
-  # For a SESSION-SCOPED condition that "going to try again" is a promise the
+  # For a SESSION-SCOPED condition, leaving the trigger `enabled` with its
+  # condition unspent reads as "it will try again" — and that is a promise the
   # event stream cannot keep. The condition is one-shot and fires only on its
   # watched session's transitions; if that session was already making its last
   # one — which is exactly the `session_archived` / `session_failed` case agents
@@ -219,13 +218,17 @@ class AoEventTriggerJob < ApplicationJob
   # stop every future wake, which is this very bug pointed the other way. It
   # alerts and stays enabled.
   #
-  # The whole body is rescued. What it replaced was a bare `Rails.logger.error`,
-  # which could not realistically raise; parking and alerting can (Slack is a
-  # network call). There is no outer per-condition rescue around the find_each
-  # fan-out here the way there is in ScheduleTriggerJob#perform, so a raise
-  # escaping this method would abort the remaining conditions and drop OTHER
-  # triggers' wakes — turning one lost wake into several, which is precisely the
-  # failure this method exists to stop.
+  # Parking is per-TRIGGER while the failure is per-CONDITION, exactly as in
+  # ScheduleTriggerJob: a trigger carrying other conditions stops firing on those
+  # too. That bounds the blast radius to one trigger, and a session-scoped
+  # ao_event sharing a trigger with anything else is not a shape Zimmer's own
+  # wake tools create.
+  #
+  # The whole body is rescued because parking and alerting can raise — Slack is a
+  # network call — and there is no outer per-condition rescue around the
+  # find_each fan-out here the way there is in ScheduleTriggerJob#perform. A
+  # raise escaping this method would abort the remaining conditions and drop
+  # OTHER triggers' wakes, turning one lost wake into several.
   def handle_fire_failure(condition:, trigger:, scoped:, session:, event_name:, delivered:, error:)
     trigger_id = trigger.id
     trigger_name = trigger.name
@@ -237,18 +240,33 @@ class AoEventTriggerJob < ApplicationJob
       "#{session.id} #{event_name}: #{error.message}\n#{error.backtrace&.first(5)&.join("\n")}"
     )
 
+    # `delivered` and `spent` are different questions and must not be conflated.
+    # `delivered` says a session was created; `spent` says the one-shot guard
+    # actually PERSISTED. `condition.update!` sits between them and is itself a
+    # raise site, so a fire can deliver its session and still leave the guard
+    # unspent — and that combination is the dangerous one: the trigger is still
+    # armed, so a re-arm would deliver a SECOND session for a wake already paid.
+    # Reading the in-memory flag alone would advertise the opposite.
+    spent = condition_spent?(condition)
+
     retry_note =
       if parked && !delivered
-        watched_id = condition.watched_session_id
-        "This is a one-shot state-change wake. It is marked *failed* and left in place, so it no " \
-        "longer fires on its own. Re-enable it at #{trigger_url(trigger_id)} to re-arm it — but note " \
-        "it can only re-fire if session ##{watched_id} transitions again, and a session already in a " \
-        "terminal state never will. If so, the requester needs resuming by hand."
+        "This is a one-shot state-change wake, and it delivered nothing. It is marked *failed* and " \
+        "left in place, so it no longer fires on its own. Re-enable it at #{trigger_url(trigger_id)} " \
+        "to re-arm it — but note it can only re-fire if session ##{condition.watched_session_id} " \
+        "transitions again, and a session already in a terminal state never will. If so, the " \
+        "requester needs resuming by hand."
+      elsif parked && spent
+        "This is a one-shot state-change wake, and it had already delivered when the error hit — only " \
+        "the cleanup behind it failed. The trigger is marked *failed* and left in place, but " \
+        "re-arming it will NOT re-fire it. Check #{trigger_url(trigger_id)} and the sessions it " \
+        "spawned."
       elsif parked
-        "This is a one-shot state-change wake, and it had already delivered when the error hit — a " \
-        "session was created and only the cleanup behind it failed. The trigger is marked *failed* " \
-        "and left in place, but re-arming it will NOT re-fire it. Check #{trigger_url(trigger_id)} " \
-        "and the sessions it spawned."
+        "This is a one-shot state-change wake. It had already delivered when the error hit, but the " \
+        "error stopped its one-shot guard from being recorded, so the trigger is still armed. It is " \
+        "marked *failed* and left in place. Do NOT re-arm it at #{trigger_url(trigger_id)} before " \
+        "checking the sessions it spawned — re-arming would create a second session for a wake that " \
+        "already delivered one."
       elsif scoped
         "This is a one-shot state-change wake and it could NOT be marked failed, so it remains " \
         "enabled — it will re-fire only if session ##{condition.watched_session_id} transitions " \
@@ -259,10 +277,14 @@ class AoEventTriggerJob < ApplicationJob
       end
 
     if parked
+      outcome =
+        if !delivered then " and can be re-armed"
+        elsif spent then " (wake already delivered; re-arming will not re-fire it)"
+        else " (wake already delivered but its guard was not recorded; re-arming would duplicate it)"
+        end
       Rails.logger.error(
         "[AoEventTriggerJob] One-shot trigger #{trigger_id} (#{trigger_name}) marked failed after a " \
-        "failed firing — left in place so it stays visible" \
-        "#{delivered ? " (wake already delivered; re-arming will not re-fire it)" : " and can be re-armed"}"
+        "failed firing — left in place so it stays visible#{outcome}"
       )
     end
 
@@ -282,6 +304,21 @@ class AoEventTriggerJob < ApplicationJob
       "#{session&.id}: #{handler_error.class}: #{handler_error.message}. Original error: " \
       "#{error.class}: #{error.message}"
     )
+  end
+
+  # Whether the condition's one-shot guard is persisted, re-read from the row
+  # rather than trusted from memory: the in-memory attribute is set by
+  # `condition.update!` before that write is known to have committed, and it is
+  # precisely a failure of that write which makes the two disagree.
+  def condition_spent?(condition)
+    condition.reload.last_triggered_at.present?
+  rescue ActiveRecord::RecordNotFound
+    # The trigger and its conditions were destroyed by the cleanup behind a
+    # successful fire. Nothing survives to re-arm, so treat it as spent.
+    true
+  rescue => e
+    Rails.logger.warn "[AoEventTriggerJob] Could not re-read condition #{condition.id}: #{e.class}: #{e.message}"
+    condition.last_triggered_at.present?
   end
 
   def event_label(event_name, session)

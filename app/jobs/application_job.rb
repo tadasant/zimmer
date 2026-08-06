@@ -52,7 +52,7 @@ class ApplicationJob < ActiveJob::Base
   # AppUrl.base_url reads configuration, so a deployment that has it wrong would
   # raise here and lose the specific alert to whatever generic handler is above
   # it. A degraded relative link beats no alert.
-  def trigger_url(trigger_id)
+  private def trigger_url(trigger_id)
     "#{AppUrl.base_url}/triggers/#{trigger_id}"
   rescue => e
     Rails.logger.warn "[#{self.class.name}] Could not build a trigger URL: #{e.class}: #{e.message}"

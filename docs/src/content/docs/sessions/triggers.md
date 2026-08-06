@@ -295,7 +295,7 @@ advertising the failure it recovered from.
 
 One failure does not re-arm, and does not pretend to. A raise from the cleanup that *follows* a
 successful fire (sibling destruction, the auto-delete) arrives with the schedule already consumed
-and the session already created, so re-firing would duplicate it. `Trigger#spent_one_time_schedule?`
+and the session already created, so re-firing would duplicate it. `Trigger#spent_one_shot_wake?`
 is what the trigger page and the alert read to tell the two apart: in that case they say the
 schedule was consumed and ask you to check the session rather than offering a re-arm that would
 deliver nothing.
@@ -341,8 +341,16 @@ transition fires it — so it alerts, stays enabled, and fires on the next match
 Parking one would silently stop every future wake, which is the same failure this parking exists
 to remove, pointed the other way.
 
-If the raise arrives *after* the wake was delivered, the alert says the session was already
-created and that re-arming will not re-fire it — the same distinction the schedule path draws.
+A raise *after* the wake was delivered splits in two, and the alert distinguishes them, because
+"a session was created" and "the one-shot guard was recorded" are different facts and
+`condition.update!` sits between them. If the guard did persist, re-arming delivers nothing and
+the alert says so — the same distinction the schedule path draws. If the guard is what failed,
+the session exists *and* the condition is still armed, so re-arming would create a **second**
+session; the alert warns against it rather than inviting it.
+
+`Trigger#spent_one_shot_wake?` is the predicate behind both the alert and the trigger page, and it
+covers both one-shot shapes — a one-time schedule and a session-scoped `ao_event`. A predicate that
+saw only schedules would offer every parked state-change wake a "Re-arm" button with no caveat.
 
 ### `github_label`
 
