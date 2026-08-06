@@ -52,7 +52,7 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
   # only half of a fix.
   test "filters by failed status and shows why the fire failed" do
     trigger = triggers(:enabled_slack_trigger)
-    trigger.mark_failed!(StandardError.new("Agent root 'gone' not found in catalog"))
+    trigger.mark_failed(StandardError.new("Agent root 'gone' not found in catalog"))
 
     listing = @tool.call("status" => "failed")
     assert_includes listing, "### CI Failure Handler"

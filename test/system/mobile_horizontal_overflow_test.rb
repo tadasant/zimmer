@@ -167,7 +167,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
   test "a failed trigger's error does not overflow horizontally on a phone" do
     trigger = create_trigger
-    trigger.mark_failed!(UNBREAKABLE_ERROR)
+    trigger.mark_failed(UNBREAKABLE_ERROR)
 
     visit triggers_path
     assert_text "Failed"

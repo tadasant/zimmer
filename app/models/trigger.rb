@@ -6,12 +6,14 @@
 # When ANY of its conditions fire, the trigger creates or reuses a session
 # using its configured session template (agent_root, prompt, MCP servers, etc.).
 class Trigger < ApplicationRecord
-  # `failed` is set by the system, never by a user: a fire raised and the trigger
-  # was parked rather than deleted. It is a third state and not a flavour of
-  # `disabled`, because the two answer different questions — "you turned this
-  # off" versus "this tried to run and could not". Every firing path filters on
-  # `status: "enabled"`, so a failed trigger fires no more than a disabled one,
-  # which is what keeps a persistent error from becoming a retry storm.
+  # `failed` is Zimmer's to set: a fire raised and the trigger was parked rather
+  # than deleted (see ScheduleTriggerJob). The MCP create/update surface does not
+  # offer it, so an agent cannot fabricate a failure that never happened. It is a
+  # third state and not a flavour of `disabled`, because the two answer different
+  # questions — "you turned this off" versus "this tried to run and could not".
+  # Every firing path filters on `status: "enabled"`, so a failed trigger fires no
+  # more than a disabled one, which is what keeps a persistent error from becoming
+  # a retry storm.
   STATUSES = %w[enabled disabled failed].freeze
 
   # Bound on the error text kept in `last_error`. Enough for a class + message
@@ -68,6 +70,7 @@ class Trigger < ApplicationRecord
   validate :catalog_plugins_must_exist_in_catalog, if: :catalog_plugins_changed?
 
   before_save :clear_burst_state_when_limit_changes
+  before_save :clear_failure_state_when_leaving_failed
   before_validation :clear_enqueue_messages_without_reuse_session
   before_validation :clear_resuscitate_archived_without_reuse_session
   validate :validate_enqueue_messages_requires_reuse_session
@@ -111,12 +114,12 @@ class Trigger < ApplicationRecord
     status == "failed"
   end
 
-  # Enabling is also how a failed trigger is RE-ARMED, so it clears the failure
-  # state. For a one-time schedule that is the whole re-arm: the failure path
-  # deliberately leaves the condition's last_triggered_at alone, so the schedule
-  # is still due and the next tick fires it for real.
+  # Enabling is also how a failed trigger is RE-ARMED. The failure state is
+  # cleared by #clear_failure_state_when_leaving_failed, so every path that moves
+  # a trigger off `failed` — this, the edit form, the REST API, action_trigger —
+  # sheds the stale error rather than only this one.
   def enable!
-    update!(status: "enabled", failed_at: nil, last_error: nil)
+    update!(status: "enabled")
   end
 
   def disable!
@@ -134,6 +137,9 @@ class Trigger < ApplicationRecord
   end
 
   # Park this trigger with the error that stopped it, instead of destroying it.
+  # Named without a bang, and returning a boolean rather than raising, because
+  # the caller is already inside a rescue and needs a fallback rather than a
+  # second exception — see ScheduleTriggerJob.
   #
   # Uses update_columns for the same reason the other bookkeeping writes here do:
   # a failure write must not itself be blocked by validations (the trigger may
@@ -142,7 +148,7 @@ class Trigger < ApplicationRecord
   # a wake failed is strictly more important than the record being re-validated.
   #
   # @return [Boolean] whether the failure was persisted
-  def mark_failed!(error)
+  def mark_failed(error)
     now = Time.current
     update_columns(
       status: "failed",
@@ -153,9 +159,26 @@ class Trigger < ApplicationRecord
     true
   rescue => e
     Rails.logger.error(
-      "[Trigger#mark_failed!] Could not park trigger #{id} as failed: #{e.class}: #{e.message}"
+      "[Trigger#mark_failed] Could not park trigger #{id} as failed: #{e.class}: #{e.message}"
     )
     false
+  end
+
+  # True when every one-time schedule this trigger carries has already been
+  # consumed — so re-enabling it cannot deliver the wake it owed.
+  #
+  # This is the case where a fire raised AFTER the condition was advanced: the
+  # session was created and only the cleanup behind it fell over. Re-arming would
+  # deliver nothing (and acting on the promise by hand would duplicate the
+  # session), so the trigger page and the alert read this rather than offering a
+  # re-arm that cannot work. False for a trigger with no one-time schedule at
+  # all — a recurring one really does go back into service when re-enabled.
+  #
+  # Deliberately not #schedule_due?: that returns false for any trigger that
+  # isn't enabled, which is every trigger this question is asked about.
+  def spent_one_time_schedule?
+    one_time = trigger_conditions.select(&:one_time_schedule?)
+    one_time.any? && one_time.all? { |c| c.last_triggered_at.present? }
   end
 
   # Returns the condition types present on this trigger
@@ -324,6 +347,12 @@ class Trigger < ApplicationRecord
   # This implements the "triple-wake plus deadline backstop" cleanup pattern:
   # agents typically schedule needs_input + failed + archived + a deadline
   # backstop sibling group, and only one of them ever fires usefully.
+  #
+  # A sibling in the `failed` status is exempt. It is not a moot wake — it is the
+  # record of a wake that TRIED and could not, parked by ScheduleTriggerJob so the
+  # user would see it. Destroying it here would delete that evidence as a side
+  # effect of a later sibling succeeding, which is the silent loss this whole
+  # mechanism exists to prevent. Only the user clears a failed trigger.
   def destroy_sibling_wakes!
     return 0 unless one_time_reuse_trigger?
     return 0 if last_session_id.blank?
@@ -331,6 +360,7 @@ class Trigger < ApplicationRecord
     siblings = Trigger
       .where(last_session_id: last_session_id, reuse_session: true)
       .where.not(id: id)
+      .where.not(status: "failed")
       .includes(:trigger_conditions)
       .to_a
       .select(&:one_time_reuse_trigger?)
@@ -852,6 +882,20 @@ class Trigger < ApplicationRecord
     self.burst_window_count = 0
     self.burst_window_session_ids = []
     self.burst_active_until = nil
+  end
+
+  # A trigger that is no longer `failed` must not keep advertising the failure it
+  # recovered from — the API serializes both fields unconditionally, and the UI
+  # renders them. Keyed on the status transition rather than on #enable! so every
+  # route off `failed` sheds it: the toggle, the edit form, PATCH /api/v1/triggers,
+  # action_trigger's update. mark_failed writes through update_columns and so
+  # never trips this.
+  def clear_failure_state_when_leaving_failed
+    return unless will_save_change_to_status?
+    return if status == "failed"
+
+    self.failed_at = nil
+    self.last_error = nil
   end
 
   # Record a spawned session against the current window so a burst notice can

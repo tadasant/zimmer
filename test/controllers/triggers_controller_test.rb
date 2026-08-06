@@ -572,7 +572,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
   # === Failed triggers stay visible and re-armable (issue #76) ===
 
   test "index shows a failed trigger with its error rather than hiding or dropping it" do
-    @trigger.mark_failed!(StandardError.new("Agent root 'gone' not found in catalog"))
+    @trigger.mark_failed(StandardError.new("Agent root 'gone' not found in catalog"))
 
     get triggers_path
 
@@ -584,7 +584,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "show explains the failure and offers a re-arm" do
-    @trigger.mark_failed!(StandardError.new("Agent root 'gone' not found in catalog"))
+    @trigger.mark_failed(StandardError.new("Agent root 'gone' not found in catalog"))
 
     get trigger_path(@trigger)
 
@@ -595,7 +595,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "toggling a failed trigger re-arms it" do
-    @trigger.mark_failed!(StandardError.new("boom"))
+    @trigger.mark_failed(StandardError.new("boom"))
 
     post toggle_trigger_path(@trigger)
 

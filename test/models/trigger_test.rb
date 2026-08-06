@@ -173,8 +173,8 @@ class TriggerTest < ActiveSupport::TestCase
     assert_not @trigger.disabled?
   end
 
-  test "mark_failed! parks the trigger with the error instead of destroying it" do
-    assert @trigger.mark_failed!(StandardError.new("agent root not found"))
+  test "mark_failed parks the trigger with the error instead of destroying it" do
+    assert @trigger.mark_failed(StandardError.new("agent root not found"))
 
     @trigger.reload
     assert @trigger.failed?
@@ -182,13 +182,13 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal "StandardError: agent root not found", @trigger.last_error
   end
 
-  test "mark_failed! accepts a plain string and bounds what it stores" do
-    @trigger.mark_failed!("x" * (Trigger::MAX_LAST_ERROR_CHARS + 500))
+  test "mark_failed accepts a plain string and bounds what it stores" do
+    @trigger.mark_failed("x" * (Trigger::MAX_LAST_ERROR_CHARS + 500))
 
     assert_equal Trigger::MAX_LAST_ERROR_CHARS, @trigger.reload.last_error.length
   end
 
-  test "mark_failed! persists even when the trigger would not pass validation" do
+  test "mark_failed persists even when the trigger would not pass validation" do
     # A concurrent sibling-wake cleanup can cascade-delete the conditions out from
     # under an in-memory trigger, which `validates :trigger_conditions, presence:`
     # would then reject. Recording the failure must not be what loses to that race.
@@ -196,12 +196,12 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.trigger_conditions.reload
 
     assert_not @trigger.valid?, "precondition: a conditionless trigger is invalid"
-    assert @trigger.mark_failed!(StandardError.new("boom"))
+    assert @trigger.mark_failed(StandardError.new("boom"))
     assert_equal "failed", @trigger.reload.status
   end
 
   test "failed scope selects parked triggers" do
-    @trigger.mark_failed!(StandardError.new("boom"))
+    @trigger.mark_failed(StandardError.new("boom"))
 
     assert_includes Trigger.failed, @trigger
     assert_not_includes Trigger.enabled, @trigger
@@ -209,7 +209,7 @@ class TriggerTest < ActiveSupport::TestCase
   end
 
   test "enable! re-arms a failed trigger by clearing the failure state" do
-    @trigger.mark_failed!(StandardError.new("boom"))
+    @trigger.mark_failed(StandardError.new("boom"))
     @trigger.reload
 
     @trigger.enable!
@@ -220,13 +220,104 @@ class TriggerTest < ActiveSupport::TestCase
   end
 
   test "toggle! on a failed trigger re-arms it rather than disabling it" do
-    @trigger.mark_failed!(StandardError.new("boom"))
+    @trigger.mark_failed(StandardError.new("boom"))
     @trigger.reload
 
     @trigger.toggle!
 
     assert @trigger.enabled?, "a failed trigger toggles back into service, not into disabled"
     assert_nil @trigger.last_error
+  end
+
+  # The API serializes failed_at/last_error unconditionally and the UI renders
+  # them, so a trigger that recovered by ANY route — not just #enable! — must
+  # stop advertising the failure. The edit form and action_trigger's update both
+  # write status directly.
+  test "any write that moves the status off failed clears the failure fields" do
+    %w[enabled disabled].each do |recovered_status|
+      @trigger.mark_failed(StandardError.new("boom"))
+      @trigger.reload
+      assert_not_nil @trigger.last_error, "precondition for #{recovered_status}"
+
+      @trigger.update!(status: recovered_status)
+
+      assert_nil @trigger.reload.failed_at, "failed_at should be cleared on -> #{recovered_status}"
+      assert_nil @trigger.last_error, "last_error should be cleared on -> #{recovered_status}"
+    end
+  end
+
+  test "a write that does not touch the status leaves the failure fields alone" do
+    @trigger.mark_failed(StandardError.new("boom"))
+    @trigger.reload
+
+    @trigger.update!(name: "Renamed while parked")
+
+    assert @trigger.reload.failed?
+    assert_not_nil @trigger.failed_at
+    assert_equal "StandardError: boom", @trigger.last_error
+  end
+
+  test "spent_one_time_schedule? is true only once the one-time schedule is consumed" do
+    trigger = triggers(:one_time_schedule_trigger)
+    condition = trigger.trigger_conditions.first
+    condition.update!(last_triggered_at: nil)
+
+    assert_not trigger.reload.spent_one_time_schedule?, "an unconsumed schedule re-arms"
+
+    # A raise from the cleanup that follows a successful fire lands with the
+    # schedule already spent — re-arming would deliver nothing.
+    condition.update!(last_triggered_at: Time.current)
+    assert trigger.reload.spent_one_time_schedule?
+  end
+
+  test "spent_one_time_schedule? is false for a trigger with no one-time schedule" do
+    assert_not @trigger.spent_one_time_schedule?,
+      "a recurring trigger really does go back into service when re-enabled"
+  end
+
+  # A failed sibling is the record of a wake that TRIED and could not. Deleting
+  # it as a side effect of a later sibling firing successfully is the same silent
+  # loss the parking exists to prevent.
+  test "destroy_sibling_wakes! preserves a failed sibling" do
+    requester = Session.create!(
+      prompt: "Requester",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      status: :needs_input,
+      metadata: {}
+    )
+    watched = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      status: :running,
+      metadata: {}
+    )
+
+    build_wake = lambda do |name, event_name|
+      Trigger.create!(
+        name: name,
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: "go {{event}}",
+        reuse_session: true,
+        last_session_id: requester.id,
+        trigger_conditions_attributes: [
+          { condition_type: "ao_event", configuration: { "event_name" => event_name, "watched_session_id" => watched.id } }
+        ]
+      )
+    end
+
+    firing = build_wake.call("Firing wake", "session_archived")
+    healthy_sibling = build_wake.call("Healthy sibling", "session_needs_input")
+    failed_sibling = build_wake.call("Failed sibling", "session_failed")
+    failed_sibling.mark_failed(StandardError.new("agent root not found"))
+
+    assert_equal 1, firing.destroy_sibling_wakes!, "only the healthy sibling is moot"
+
+    assert_not Trigger.exists?(healthy_sibling.id)
+    assert Trigger.exists?(failed_sibling.id), "a failed sibling carries evidence and must survive"
+    assert_equal "failed", failed_sibling.reload.status
   end
 
   # condition_types and conditions_summary

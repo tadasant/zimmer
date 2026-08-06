@@ -337,6 +337,12 @@ no API equivalent.
 cap](/sessions/triggers/#burst-control); `null` — the default — means unbounded. The trigger payload
 also reports `bursting`, true while the trigger is inside a burst and spawning nothing.
 
+`status` is one of `enabled`, `disabled`, or `failed`, and all three work as `?status=` filters.
+`failed` is Zimmer's to set: a one-time scheduled fire raised and the trigger was
+[parked rather than destroyed](/sessions/triggers/#when-a-one-time-fire-fails). The payload carries
+`failed_at` and `last_error` alongside it, both `null` on a healthy trigger — any write that moves
+the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
+
 ## Notifications
 
 `GET /notifications` (`status=read|unread`) · `GET /notifications/:id` ·

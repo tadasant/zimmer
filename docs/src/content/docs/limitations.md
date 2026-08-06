@@ -1519,15 +1519,23 @@ repo, which is the only signal you get.
 
 ### A failed one-time wake does not retry itself
 
-A one-time scheduled wake whose fire raises is no longer destroyed: `ScheduleTriggerJob` parks it
-in the `failed` status with the error on the row, leaves it in the list, and alerts. What it does
-not do is try again. Parking is what stops a persistent error (an unhealable agent root, a bad MCP
+A one-time scheduled wake whose fire raises is not destroyed: `ScheduleTriggerJob` parks it in the
+`failed` status with the error on the row, leaves it in the list, and alerts. What it does not do
+is try again. Parking is what stops a persistent error (an unhealable agent root, a bad MCP
 reference) from re-firing every minute forever, and Zimmer has no way to tell that class of error
 apart from a blip worth one more attempt — so it makes none and asks you.
 
 The wake is late by however long it takes you to notice. Press **Re-arm** on the trigger (or call
 `action_trigger` with `action=toggle`) and it fires within a minute. See
 [Triggers](/sessions/triggers/#when-a-one-time-fire-fails).
+
+Two consequences worth knowing. A failure whose raise came *after* the schedule was consumed — the
+session was created and only the cleanup behind it fell over — cannot be re-armed at all; the
+trigger says so instead of offering a button that would do nothing, and you clear it by hand once
+you have checked the session it spawned. And nothing ever reaps a failed trigger: it is deliberately
+exempt from `CleanupStaleTriggersJob` and from sibling-wake cleanup, because deleting the record is
+the bug. One systemic fault — a catalog rename that strands every trigger's agent root — therefore
+parks every pending wake at once and leaves you a list to clear by hand.
 
 ### While Slack is rate-limiting you, Slack triggers fire late
 
