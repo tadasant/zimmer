@@ -164,6 +164,13 @@ class CleanupOrphanedSessionsJob < ApplicationJob
     # In GoodJob, locked_by_id indicates if a job is being processed
     # Only check this if the job was created more than 5 minutes ago
     # to avoid false positives for jobs that are being queued
+    #
+    # This keeps its own age gate rather than deferring wholesale to JobLiveness, which
+    # treats a queued job as alive until ABANDONED_QUEUED_JOB_AGE. The two want different
+    # postures: AgentSessionJob decides whether to run a rival agent right now, so it errs
+    # toward standing down, while this cron is the safety net whose entire purpose is to
+    # un-stick a session nobody is driving, and waiting half an hour to do that would blunt
+    # it. Only the lock-holder question below is shared.
     if job.created_at < 5.minutes.ago
       is_scheduled = job.scheduled_at.present? && job.scheduled_at > Time.current
       is_locked = job.locked_by_id.present?

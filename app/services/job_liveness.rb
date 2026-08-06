@@ -10,10 +10,9 @@
 # directions: skip a live-looking corpse and the user's follow-up prompt is lost; supersede
 # a job that was merely slow and two agent processes run against one clone.
 #
-# The check used to be an age heuristic — "an unlocked job older than two minutes is
-# abandoned" — which is a guess about how long a healthy queue takes to pick a job up.
-# A slow deploy, a busy worker, or a bigger repo moves that goalpost, and the answer
-# changes with it. This class replaces the guess with evidence.
+# Elapsed time cannot answer it. "This job was enqueued more than N minutes ago" is a
+# statement about queue latency, and a slow deploy, a busy worker or a bigger repo moves
+# it. The signals below are evidence about the executor itself.
 #
 # WHY NOT `Process.kill(0, pid)`
 # ------------------------------
@@ -26,29 +25,33 @@
 # `SessionRecoveryService`, `CleanupOrphanedSessionsJob` and `SessionsController` all carry
 # the same warning for the CLI process they monitor.
 #
-# So liveness is asked of the database instead, where every container can see the same
-# answer. GoodJob already maintains that registry: each capsule inserts a row in
-# `good_job_processes`, refreshes it every `GoodJob::Process::STALE_INTERVAL` (30s), and —
-# when `advisory_lock_heartbeat` is on, as it is in every Zimmer environment — holds a
-# session-scoped Postgres advisory lock on it from the Notifier's retained connection. Kill
-# the container and the connection drops, so the lock is released by Postgres itself,
-# immediately and without anyone reporting it. `GoodJob::Process.active` is the union of
-# those two signals (lock held, or heartbeat refreshed within
-# `GoodJob::Process::EXPIRED_INTERVAL`), which makes it a real liveness probe with a
-# heartbeat backstop already built in.
+# So liveness is asked of the database, where every container can see the same answer.
+# GoodJob maintains that registry: each capsule inserts a row in `good_job_processes` and
+# refreshes it every `GoodJob::Process::STALE_INTERVAL` (30s), and `GoodJob::Process.active`
+# treats a capsule as alive on either of two signals:
 #
-# NOTE the difference from `GoodJob::Process.exists?(id:)`, which several call sites used
-# to ask: that only says a *row* exists. A SIGKILLed worker leaves its row behind until some
-# later capsule boots and runs `GoodJob::Process.cleanup`, so `exists?` reports a dead worker
-# as alive — potentially forever.
+#   * it holds a session-scoped Postgres advisory lock on its row — released by Postgres
+#     itself the moment the worker's connection dies, so death needs no reporting; or
+#   * its heartbeat was refreshed within `GoodJob::Process::EXPIRED_INTERVAL` (5 minutes).
+#
+# Which signal applies depends on GoodJob's `advisory_lock_heartbeat` setting, whose default
+# enables it in **development only**. Zimmer runs that default, so in production and staging
+# the probe is the heartbeat alone and a killed worker takes up to the 5-minute expiry to
+# read as dead. `docs/limitations.md` records that window, and the consequences of it in
+# both directions.
+#
+# NOTE the difference from `GoodJob::Process.exists?(id:)`, which asks whether a *row*
+# exists. A SIGKILLed worker leaves its row behind until some later capsule boots and runs
+# `GoodJob::Process.cleanup`, so existence reports a dead worker as alive — potentially
+# forever. Existence is not liveness.
 class JobLiveness
   # The bounded fallback, and only that.
   #
   # A job that is unlocked and has never been performed is, as far as GoodJob is concerned,
   # simply queued: it is eligible for pickup and a worker will run it. Age says nothing about
-  # whether that is still true, which is why age is no longer the primary signal — every
-  # ordinary death (SIGKILL, OOM, an evicted container, a deploy) is caught by the lock-holder
-  # probe or by `performed_at` instead.
+  # whether that is still true, which is why age is not the primary signal — every ordinary
+  # death (SIGKILL, OOM, an evicted container, a deploy) is caught by the lock-holder probe or
+  # by `performed_at` instead.
   #
   # This horizon exists for the residue: a job enqueued onto a queue no live capsule serves,
   # or one whose worker died so uncleanly that neither signal ever materialised. Without it a
@@ -61,8 +64,13 @@ class JobLiveness
   # Statuses that mean "something is still going to run this job" — leave it alone.
   LIVE_STATUSES = %i[running queued scheduled].freeze
 
-  # Statuses that mean "nothing is running this job and nothing will" — safe to supersede.
-  DEAD_STATUSES = %i[dead_worker interrupted abandoned].freeze
+  # Statuses that mean "nothing is running this job" — safe for a newer job to take its place.
+  #
+  # These two sets partition everything {.status} can return, so a caller that branches on one
+  # of them handles every case. `:finished` sits here because a completed job is not something
+  # to stand down behind; branching on LIVE_STATUSES alone would let it fall through to "wait",
+  # which is how a prompt gets dropped.
+  SUPERSEDABLE_STATUSES = %i[finished dead_worker interrupted abandoned].freeze
 
   class << self
     # Classify a GoodJob row.
@@ -76,7 +84,9 @@ class JobLiveness
     #   :interrupted — started, then lost its lock; the worker died mid-perform and a later
     #                  capsule's `GoodJob::Process.cleanup` released the lock on its behalf.
     #                  GoodJob re-picks such a row and raises `GoodJob::InterruptError` before
-    #                  `perform` runs, so superseding it cannot double-run the payload.
+    #                  `perform` runs, so superseding it cannot double-run the *payload* — but
+    #                  `AgentSessionJob#handle_interrupt_error` still fires on that re-pick,
+    #                  which is why it stands down when another job has taken ownership.
     #   :queued      — enqueued, not yet picked up; a worker will get to it
     #   :abandoned   — queued past ABANDONED_QUEUED_JOB_AGE; the bounded fallback
     def status(job)
@@ -104,11 +114,6 @@ class JobLiveness
       LIVE_STATUSES.include?(status(job))
     end
 
-    # @return [Boolean] true when it is safe for a newer job to take this one's place
-    def superseded?(job)
-      DEAD_STATUSES.include?(status(job))
-    end
-
     # Is the capsule holding this lock still running — anywhere in the deployment?
     #
     # `GoodJob::Process.active` is advisory-lock-first with a heartbeat fallback; see the
@@ -117,16 +122,17 @@ class JobLiveness
     # @param process_id [String, nil] a `good_job_processes` UUID (`GoodJob::Job#locked_by_id`)
     # @return [Boolean]
     def lock_holder_alive?(process_id)
+      # Not merely an optimisation: `exists?(id: "")` against a uuid column raises.
       return false if process_id.blank?
 
       GoodJob::Process.active.exists?(id: process_id)
     end
 
     # Human-readable reason for a supersede decision, for the session log.
-    # @param status [Symbol] a value returned by {.status}
+    # @param job_status [Symbol] a value returned by {.status}
     # @return [String]
-    def explain(status)
-      case status
+    def explain(job_status)
+      case job_status
       when :dead_worker then "its worker is gone (lock holder is no longer an active GoodJob process)"
       when :interrupted then "it started and then lost its lock (worker died mid-execution)"
       when :abandoned   then "it sat queued and unclaimed for over #{ABANDONED_QUEUED_JOB_AGE.inspect}"
@@ -134,7 +140,7 @@ class JobLiveness
       when :running     then "it is locked by a live worker"
       when :queued      then "it is queued and waiting for a worker"
       when :scheduled   then "it is scheduled to run in the future"
-      else "status #{status}"
+      else "status #{job_status}"
       end
     end
   end

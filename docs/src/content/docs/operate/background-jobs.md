@@ -378,6 +378,11 @@ The worker line in the queue-backlog alert (and on `/health`) comes from
 heartbeat is newer than `HealthMonitorService::WORKER_ACTIVE_INTERVAL` — aliased to GoodJob's own
 `GoodJob::Process::EXPIRED_INTERVAL`, 5 minutes.
 
+The same registry answers a different question elsewhere: `JobLiveness` uses
+`GoodJob::Process.active` to decide whether the job driving a session is still being executed, which
+is what `CleanupOrphanedSessionsJob` above consults before treating a locked job as orphaned. See
+[Stale job supersession](/sessions/spawning/#stale-job-supersession).
+
 That has to clear the renew cadence, not match it. A capsule refreshes its row every
 `STALE_INTERVAL + jitter` — 30 to 33 seconds — and the refresh is gated on the capsule holding a
 lock and runs on the shared 2-thread executor, so it slips further under load. A threshold at or
