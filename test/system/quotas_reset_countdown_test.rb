@@ -73,8 +73,7 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
     # Matched on exact text — the account's own header badge reads "Quota
     # Exceeded", which a substring match would pick up and pass on.
     assert card.has_text?("Window reset"), "the reset 5-hour window should say so"
-    assert_not card.has_selector?("span", exact_text: "Exceeded"),
-              "a status whose window has already reset should not still be badged"
+    card.assert_no_selector("span", exact_text: "Exceeded")
 
     # The control on that rule: the weekly window is still open, so its status is
     # still a fact about the account and is still shown.
