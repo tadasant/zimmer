@@ -90,7 +90,8 @@ Three things keep that from failing a fork:
   underneath it. A **user-initiated** fork excludes nothing; it is a working session and wants the
   tree it forked.
 - **A failed fork cleans up after itself.** The partial destination is removed rather than left for
-  `OrphanCloneFilesystemCleanupJob`, which ignores anything younger than 48 hours. A retry only
+  `OrphanCloneFilesystemCleanupJob`, whose scheduled sweep ignores anything younger than 48 hours
+  (2 hours on [the disk-pressure path](/operate/background-jobs/#clone-pruning-has-a-second-urgent-gear)). A retry only
   proceeds once the destination is confirmed gone — `rm_rf` reports nothing when it removes part of a
   tree, and a copy into a destination that still exists nests or merges rather than failing. The same
   holds for a fork that fails *after* the copy succeeded: if the session record does not save, or the

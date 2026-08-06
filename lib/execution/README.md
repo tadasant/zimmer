@@ -2,6 +2,23 @@
 
 The Execution layer provides an abstraction for running AI agents (Claude Code or Codex, per `RuntimeRegistry`) against git repositories. It supports multiple execution providers with a unified interface.
 
+## ⚠️ Nothing in `app/` calls this
+
+Read this first, because it changes what every claim below is a claim *about*. The live path a
+session actually takes is `AgentSessionJob` → `GitCloneService` → `ProcessLifecycleManager`. No
+code under `app/` references `Execution::` at all. This layer is a parallel, unused implementation
+of the same idea, kept because it is the sketch the remote-sandbox provider would grow from.
+
+Two consequences worth carrying:
+
+- A gap listed here is a gap in *this* layer, not necessarily in the code that runs your sessions.
+  When both need a fix, the fix belongs in both — the pre-clone disk guard below is shared with
+  `GitCloneService` for exactly that reason.
+- `SessionExecutor` sets a finished session to `archived`, which is not what `AgentSessionJob`
+  does (a live session that finishes a turn lands in `needs_input`). Do not read this layer's
+  state handling as documentation of Zimmer's lifecycle;
+  [`sessions/lifecycle`](https://docs.zimmer.tadasant.com/sessions/lifecycle/) is that.
+
 ## Overview
 
 The execution layer implements a Strategy Pattern with pluggable providers that handle the actual execution environment setup and agent invocation. Currently supports:
@@ -209,8 +226,10 @@ Executes Claude Code locally using git clones for isolation.
 **How it works:**
 
 1. **Setup Phase:**
-   - Clones repository to `tmp/repos/{repo-name}` (bare clone)
-   - Creates git clone at `~/.zimmer/clones/session-{id}` for the specified branch
+   - Checks free space on the clones volume via `CloneDiskGuard` (see below), pruning orphaned
+     clones if it is short and failing the setup with an actionable message if pruning is not enough
+   - Creates a git clone at `{ClonesDirectory.base}/{repo-name}-{branch}-{timestamp}-{random}` for
+     the specified branch
    - Generates `.mcp.json` config file in clone
    - Returns success result with paths
 
@@ -227,21 +246,46 @@ Executes Claude Code locally using git clones for isolation.
 
 **Directory Structure:**
 ```
-~/.zimmer/       # Global location outside git working directory
+~/.zimmer/       # Global location outside git working directory, on the durable volume
 └── clones/
     └── {repo-name}-{branch}-{timestamp}-{random}/  # Isolated clone for session
         └── .mcp.json                               # MCP server configuration
-
-tmp/repos/                   # Within Rails app directory
-└── repo-name/               # Bare git repository (reused across sessions)
 ```
 
 **Configuration:**
-- Clones are stored in `~/.zimmer/clones/` (global, outside repo)
-- Bare repos are stored in `tmp/repos/` (within Rails app)
+- Clones are stored under `ClonesDirectory.base` — `~/.zimmer/clones/` by default, overridable
+  with `AGENT_CLONES_DIR`. Resolve it through `ClonesDirectory`, never by rebuilding the path:
+  the whole point of that module is that writers and the garbage collector cannot disagree about
+  where clones live.
+- There is no bare-repo cache. Each clone is a fresh `git clone --branch --single-branch` from the
+  remote.
 
 **Environment Variables:**
 - `ANTHROPIC_API_KEY`: Claude API key (required)
+- `CLONE_SIZING_TIMEOUT_SECONDS`: wall-clock cap for the disk guard's `du` (default 5)
+
+#### Disk guard (`CloneDiskGuard`)
+
+Shared with `GitCloneService`, so both writers into the clones volume answer "is there room?" the
+same way. Before a clone starts:
+
+1. Derive a requirement. The size of the most recently written existing clone of the *same*
+   repository × `SIZE_SAFETY_FACTOR` (2), clamped between `MINIMUM_FREE_BYTES` (2 GiB) and
+   `MAXIMUM_REQUIRED_BYTES` (10 GiB). No prior clone, or a `du` that times out, falls back to the
+   floor.
+2. Compare against free space from `df -Pk`. **Fails open**: a volume whose free space cannot be
+   determined permits the clone, because a broken measurement must never be the reason no session
+   can start.
+3. If short, call `OrphanCloneFilesystemCleanupJob.reclaim_space` — which prunes *only* clone
+   directories with no owning session row at all, older than 2 hours, stopping as soon as the
+   volume has room.
+4. If still short, raise `CloneDiskGuard::InsufficientDiskSpaceError` naming the volume, the
+   shortfall, and what to do. In `GitCloneService` that surfaces as
+   `GitCloneService::InsufficientDiskSpaceError` (a `GitError` subclass, deliberately not
+   classified transient); here it becomes a `Result.failure` from `setup`.
+
+See [`operate/background-jobs`](https://docs.zimmer.tadasant.com/operate/background-jobs/) for the
+pruning safety rules and why the age bar stops where it does.
 
 #### Remote Sandbox Provider
 
@@ -316,20 +360,29 @@ Configure available MCP servers in the top-level `mcp.json` (read through `AirCa
 
 ## Testing
 
-Comprehensive test coverage includes:
-
 ```ruby
 # Foundation
 test/lib/execution/context_test.rb
 test/lib/execution/result_test.rb
 
-# Support utilities
+# Support utilities — shell-safety round-trips through a real shell parser
 test/lib/execution/support/command_builder_test.rb
 
-# Integration tests would go here (not yet implemented):
-# test/lib/execution/providers/local_filesystem_test.rb
-# test/lib/execution/session_executor_test.rb
+# Providers and orchestration
+test/lib/execution/providers/base_test.rb
+test/lib/execution/providers/local_filesystem_test.rb
+test/lib/execution/session_executor_test.rb
+test/lib/execution/provider_integration_test.rb
+
+# The disk guard and the pruning it drives (both shared with the live clone path)
+test/services/clone_disk_guard_test.rb
+test/jobs/orphan_clone_filesystem_cleanup_job_test.rb
 ```
+
+`local_filesystem_test.rb` clones from a git repository created in a temp directory and stubs
+`ClonesDirectory.base` to a temp clones root, so it touches neither the network nor the real clones
+volume. Keep it that way: a test that prunes or clones against `~/.zimmer/clones` is a test that can
+delete a live session's working directory.
 
 Run tests:
 ```bash
@@ -346,9 +399,9 @@ bin/rails test test/lib/execution/
 - Implement resource quotas
 
 ### Local Filesystem Provider
-- Add disk space checks before cloning
-- Implement clone pruning for old sessions
-- Add support for private repositories with SSH keys
+- Add support for private repositories with SSH keys. Today a private repo is reached by rewriting
+  an HTTPS GitHub remote to `https://TOKEN@github.com/...` with the PAT from credentials; an
+  `ssh://` or `git@host:` remote gets no credential at all, and neither does a non-GitHub host.
 - Cache dependencies (node_modules, etc.) across clones
 
 ### General
@@ -377,13 +430,21 @@ bin/rails test test/lib/execution/
 - See the top-level `mcp.json` for required vars per server
 
 **Error: "Clone already exists"**
-- Previous cleanup may have failed
-- Manually remove: `rm -rf ~/.zimmer/clones/{clone-dir}`
-- Run cleanup: `Execution::SessionExecutor.new(session).cleanup`
+- Clone names carry a timestamp and 4 random bytes, so a collision means the *same provider
+  instance* is being set up twice; `create_clone` removes the previous directory and re-clones.
+- To release a specific session's clone: `Execution::SessionExecutor.new(session).cleanup`.
 
-**Disk Space Issues**
-- Check available space in `~/.zimmer/clones/` and `tmp/repos/`
-- Clean up old clones: `rm -rf ~/.zimmer/clones/*` (be careful in production)
+**Error: "Not enough disk space to clone into ..."**
+- This is `CloneDiskGuard` refusing *before* any bytes are written, and it has already tried
+  pruning. The message carries the volume, the free/required figures, and how much pruning
+  reclaimed.
+- Nothing here should be remedied with `rm -rf ~/.zimmer/clones/*`. That directory holds live
+  sessions' working directories — the uncommitted work of anything currently running — and there
+  is no remote to re-fetch it from. If pruning could not free the space, the volume is full of
+  clones that *belong* to sessions: archive the sessions that no longer need theirs (which routes
+  them through the trash pipeline), or grow the volume.
+- `bin/rails runner 'OrphanCloneFilesystemCleanupJob.perform_now'` forces the scheduled sweep,
+  which only ever touches directories with no owning session row.
 
 ## License
 

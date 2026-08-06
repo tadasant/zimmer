@@ -174,6 +174,16 @@ module Execution
           remove_clone
         end
 
+        # Refuse to start a clone the volume cannot hold, pruning orphaned clones
+        # first. Shares CloneDiskGuard with GitCloneService so both writers into
+        # the clones volume answer "is there room?" the same way. Raises
+        # CloneDiskGuard::InsufficientDiskSpaceError, which #setup turns into a
+        # Result.failure carrying the actionable message.
+        CloneDiskGuard.ensure_space!(
+          repository_url: context.repository_url,
+          base: clones_dir.to_s
+        )
+
         log_debug("Cloning repository from #{context.repository_url} (branch: #{context.branch})")
 
         # Use authenticated URL if GitHub PAT is available for private repos
