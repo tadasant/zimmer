@@ -218,6 +218,14 @@ class AoEventTriggerJob < ApplicationJob
   # survive a bad event and fire on the next one. Parking one would silently
   # stop every future wake, which is this very bug pointed the other way. It
   # alerts and stays enabled.
+  #
+  # The whole body is rescued. What it replaced was a bare `Rails.logger.error`,
+  # which could not realistically raise; parking and alerting can (Slack is a
+  # network call). There is no outer per-condition rescue around the find_each
+  # fan-out here the way there is in ScheduleTriggerJob#perform, so a raise
+  # escaping this method would abort the remaining conditions and drop OTHER
+  # triggers' wakes — turning one lost wake into several, which is precisely the
+  # failure this method exists to stop.
   def handle_fire_failure(condition:, trigger:, scoped:, session:, event_name:, delivered:, error:)
     trigger_id = trigger.id
     trigger_name = trigger.name
@@ -265,6 +273,14 @@ class AoEventTriggerJob < ApplicationJob
       source: "AoEventTriggerJob",
       dedup_key: "ao_event_trigger_#{trigger_id}",
       error: error
+    )
+  rescue => handler_error
+    # Last resort, and deliberately the one thing here that cannot raise: the
+    # original failure must still reach the log even if reporting it fell over.
+    Rails.logger.error(
+      "[AoEventTriggerJob] Could not report the failed fire of trigger #{trigger&.id} for session " \
+      "#{session&.id}: #{handler_error.class}: #{handler_error.message}. Original error: " \
+      "#{error.class}: #{error.message}"
     )
   end
 
