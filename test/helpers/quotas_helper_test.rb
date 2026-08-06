@@ -245,6 +245,12 @@ class QuotasHelperTest < ActionView::TestCase
     assert_nil window_status_badge("rejected", 1.hour.ago)
   end
 
+  test "window_status_badge drops a serving status whose window has already reset too" do
+    # The rule is about the window, not about the colour of the badge: "allowed"
+    # read off a window that has since cleared is no more a fact than "rejected".
+    assert_nil window_status_badge("allowed", 1.hour.ago)
+  end
+
   test "window_status_badge drops a status whose window resets exactly now" do
     freeze_time { assert_nil window_status_badge("rejected", Time.current) }
   end
@@ -261,14 +267,16 @@ class QuotasHelperTest < ActionView::TestCase
     assert_match(/text-green-500/, line)
   end
 
-  test "reset_window_line counts down to a window still open" do
-    line = reset_window_line(3.hours.from_now)
-    assert_match(/Resets in 2h/, line)
-    assert_match(/text-gray-400/, line)
+  test "reset_window_line reports the wait to a window still open" do
+    freeze_time do
+      line = reset_window_line(2.hours.from_now + 30.minutes)
+      assert_match(/Resets in 2h 30m/, line)
+      assert_match(/text-gray-400/, line)
+    end
   end
 
   test "reset_window_line carries a value in the last minute before a reset" do
-    assert_match(/Resets in &lt; 1m/, reset_window_line(30.seconds.from_now))
+    freeze_time { assert_match(/Resets in &lt; 1m/, reset_window_line(30.seconds.from_now)) }
   end
 
   # utilization_percentage_text tests

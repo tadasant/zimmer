@@ -41,6 +41,13 @@ module QuotasHelper
   # Keeping the badge would leave the card claiming "Rejected" beside the 0.0%
   # and the green "Window reset" line the same snapshot renders. Drop it and let
   # that line carry the state; a fresh probe supplies the next real status.
+  #
+  # Any status, not only a blocking one. "Allowed" read off a window that has
+  # since cleared is no more a fact about the account than "Rejected" is.
+  #
+  # This is the entry point the card uses. quota_status_badge below renders the
+  # badge itself and applies no such rule, so calling it directly from a view is
+  # how the stale badge comes back.
   def window_status_badge(status, reset_time)
     return if reset_time && reset_time <= Time.current
 
@@ -48,8 +55,12 @@ module QuotasHelper
   end
 
   # The line under a utilization bar saying where the window stands: reset
-  # already, or a countdown to when it will be. One definition, because the
-  # two branches have to agree on what "passed" means.
+  # already, or how long until it will be. One definition, because the two
+  # branches have to agree on what "passed" means.
+  #
+  # The card's only route to time_until_reset, which is why that helper's own
+  # nil and already-passed guards read as belt-and-braces here: this line has
+  # answered both before it ever calls through.
   def reset_window_line(reset_time)
     return if reset_time.nil?
 
