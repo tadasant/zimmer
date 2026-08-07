@@ -257,21 +257,21 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal "StandardError: boom", @trigger.last_error
   end
 
-  test "spent_one_time_schedule? is true only once the one-time schedule is consumed" do
+  test "spent_one_shot_wake? is true only once the one-time schedule is consumed" do
     trigger = triggers(:one_time_schedule_trigger)
     condition = trigger.trigger_conditions.first
     condition.update!(last_triggered_at: nil)
 
-    assert_not trigger.reload.spent_one_time_schedule?, "an unconsumed schedule re-arms"
+    assert_not trigger.reload.spent_one_shot_wake?, "an unconsumed schedule re-arms"
 
     # A raise from the cleanup that follows a successful fire lands with the
     # schedule already spent — re-arming would deliver nothing.
     condition.update!(last_triggered_at: Time.current)
-    assert trigger.reload.spent_one_time_schedule?
+    assert trigger.reload.spent_one_shot_wake?
   end
 
-  test "spent_one_time_schedule? is false for a trigger with no one-time schedule" do
-    assert_not @trigger.spent_one_time_schedule?,
+  test "spent_one_shot_wake? is false for a trigger with no one-time schedule" do
+    assert_not @trigger.spent_one_shot_wake?,
       "a recurring trigger really does go back into service when re-enabled"
   end
 

@@ -58,7 +58,7 @@
           <%= button_to toggle_trigger_path(@trigger), method: :post, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md #{@trigger.enabled? ? 'text-gray-700 bg-white hover:bg-gray-50' : 'text-green-700 bg-green-50 hover:bg-green-100'}" do %>
             <% if @trigger.enabled? %>
               Disable
-            <% elsif @trigger.failed? && !@trigger.spent_one_time_schedule? %>
+            <% elsif @trigger.failed? && !@trigger.spent_one_shot_wake? %>
               Re-arm
             <% else %>
               Enable
@@ -85,9 +85,9 @@
             <h3 class="text-sm font-medium text-red-800">
               This trigger failed to fire<%= " #{time_ago_in_words(@trigger.failed_at)} ago" if @trigger.failed_at %>
             </h3>
-            <% if @trigger.spent_one_time_schedule? %>
+            <% if @trigger.spent_one_shot_wake? %>
               <p class="mt-1 text-sm text-red-700">
-                The schedule had already been consumed when the error hit, so the session it was meant to create
+                The wake had already been consumed when the error hit, so the session it was meant to create
                 may well exist and only the bookkeeping after it failed. <strong>Re-arming will not re-fire it.</strong>
                 It is kept here so the error is not lost &mdash; check the sessions below, then delete this trigger
                 once you have.
@@ -98,6 +98,11 @@
                 you can see what happened. It will not retry on its own &mdash; fix the cause if there is one, then
                 press <strong>Re-arm</strong> above to put it back in service. A one-time schedule fires within a
                 minute of being re-armed.
+                <% if @trigger.trigger_conditions.any?(&:session_scoped_ao_event?) %>
+                  A state-change wake is weaker than that: it only fires when the session it watches transitions
+                  again, so if that session has already finished, re-arming delivers nothing and the session
+                  waiting on it needs resuming by hand.
+                <% end %>
               </p>
             <% end %>
             <% if @trigger.last_error.present? %>

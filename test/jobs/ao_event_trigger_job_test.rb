@@ -939,4 +939,353 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
       "a fire that delivered nothing must not spend the condition"
     assert Trigger.exists?(@trigger.id)
   end
+
+  # --- Failed fires: alert, and park only the one-shot ones ----------------
+  #
+  # A session-scoped ao_event wake is one-shot. If firing it raises and nothing
+  # records that, the wake is lost outright whenever the watched session was
+  # already making its LAST transition — there is no next transition to re-fire
+  # on. Broadcast conditions are the opposite shape: recurring by nature, they
+  # must keep firing after a bad event, so they alert but are never parked.
+
+  def scope_condition_to(session, event_name: "session_needs_input")
+    @condition.update!(configuration: {
+      "event_name" => event_name,
+      "watched_session_id" => session.id
+    })
+  end
+
+  test "a failing session-scoped wake raises an alert" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    watched_session = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+    scope_condition_to(watched_session)
+
+    boom = StandardError.new("agent root not found")
+    Trigger.any_instance.stubs(:create_session!).raises(boom)
+
+    alerts = []
+    AlertService.stubs(:raise_alert).with do |title, **kwargs|
+      alerts << { title: title, **kwargs }
+      true
+    end
+
+    AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+
+    assert_equal 1, alerts.size, "a failed state-change wake must page, not just log"
+    assert_equal "AoEventTriggerJob", alerts.first[:source]
+    assert_equal "ao_event_trigger_#{@trigger.id}", alerts.first[:dedup_key],
+      "dedup must be per-trigger, matching ScheduleTriggerJob"
+    assert_same boom, alerts.first[:error]
+    # Assert on text only the never-delivered branch produces. The watched and
+    # transitioning session are the same record here, so asserting on the id
+    # alone would pass even if the watched-session interpolation were nil.
+    assert_includes alerts.first[:details], "delivered nothing"
+    assert_includes alerts.first[:details], "Re-enable it at"
+    assert_includes alerts.first[:details], "/triggers/#{@trigger.id}"
+  end
+
+  test "a failing session-scoped wake parks the trigger as failed" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AlertService.stubs(:raise_alert)
+
+    watched_session = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+    scope_condition_to(watched_session)
+
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("agent root not found"))
+
+    AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+
+    @trigger.reload
+    assert_equal "failed", @trigger.status,
+      "a one-shot wake that could not fire must be parked, not left silently enabled"
+    assert @trigger.failed?
+    assert_not_nil @trigger.failed_at
+    assert_includes @trigger.last_error.to_s, "agent root not found"
+
+    # Parking is what closes the retry loop (every firing path filters on
+    # status: "enabled"), so the condition stays unspent and re-enabling the
+    # trigger re-arms it for real.
+    assert_nil @condition.reload.last_triggered_at
+  end
+
+  test "a parked session-scoped wake is skipped on a later transition until it is re-armed" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AlertService.stubs(:raise_alert)
+
+    watched_session = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+    scope_condition_to(watched_session)
+
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("agent root not found"))
+    AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+    assert_equal "failed", @trigger.reload.status
+
+    # A parked trigger fires no more than a disabled one.
+    Trigger.any_instance.unstub(:create_session!)
+    assert_no_difference("Session.count") do
+      AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+    end
+
+    # Re-arming sheds the failure state and lets the wake deliver.
+    @trigger.enable!
+    assert_nil @trigger.reload.failed_at
+    assert_nil @trigger.last_error
+
+    assert_difference("Session.count", 1) do
+      AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+    end
+  end
+
+  test "a failing broadcast condition alerts but is NOT parked and keeps firing" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    # @condition is broadcast (no watched_session_id) by fixture default.
+    refute @condition.session_scoped_ao_event?
+
+    session = Session.create!(
+      prompt: "Test session",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("transient blip"))
+
+    alerts = []
+    AlertService.stubs(:raise_alert).with do |title, **kwargs|
+      alerts << { title: title, **kwargs }
+      true
+    end
+
+    AoEventTriggerJob.perform_now("session_needs_input", session.id)
+
+    assert_equal 1, alerts.size, "a broadcast failure is still worth an alert"
+
+    @trigger.reload
+    assert_equal "enabled", @trigger.status,
+      "broadcast ao_event conditions are recurring — parking one silently stops every future wake"
+    assert_nil @trigger.failed_at
+    assert_nil @trigger.last_error
+
+    # And it really does fire on the next event.
+    Trigger.any_instance.unstub(:create_session!)
+    later_session = Session.create!(
+      prompt: "Later session",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+
+    assert_difference("Session.count", 1) do
+      AoEventTriggerJob.perform_now("session_needs_input", later_session.id)
+    end
+  end
+
+  test "the alert warns of duplication when the wake delivered but its guard was not recorded" do
+    # `condition.update!` is itself a raise site sitting between "a session was
+    # created" and "the one-shot guard is persisted". When it is what fails, the
+    # wake HAS delivered but the condition is still armed, so a re-arm would
+    # create a SECOND session. This is the branch that must not claim the
+    # trigger "will not re-fire".
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    watched_session = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+    scope_condition_to(watched_session)
+
+    TriggerCondition.any_instance.stubs(:update!).raises(StandardError.new("bookkeeping blew up"))
+
+    alerts = []
+    AlertService.stubs(:raise_alert).with do |title, **kwargs|
+      alerts << { title: title, **kwargs }
+      true
+    end
+
+    assert_difference("Session.count", 1) do
+      AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+    end
+
+    assert_equal 1, alerts.size
+    assert_match(/would create a second session/i, alerts.first[:details],
+      "a delivered-but-unspent wake is still armed — the alert must warn against re-arming")
+    refute_match(/will NOT re-fire/i, alerts.first[:details],
+      "the guard was never recorded, so a re-arm WOULD re-fire; saying otherwise is backwards")
+    assert_equal "failed", @trigger.reload.status
+    assert_nil @condition.reload.last_triggered_at
+  ensure
+    TriggerCondition.any_instance.unstub(:update!)
+  end
+
+  test "the alert says a re-arm will not re-fire when the guard did persist" do
+    # The other post-delivery shape: the condition WAS advanced and the raise
+    # came from the cleanup behind it. Re-arming really would deliver nothing.
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    watched_session = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+    scope_condition_to(watched_session)
+    @trigger.update!(reuse_session: true, last_session_id: watched_session.id)
+
+    Trigger.any_instance.stubs(:destroy_sibling_wakes!).raises(StandardError.new("sibling cleanup blew up"))
+
+    alerts = []
+    AlertService.stubs(:raise_alert).with do |title, **kwargs|
+      alerts << { title: title, **kwargs }
+      true
+    end
+
+    AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+
+    assert_equal 1, alerts.size
+    assert_match(/will NOT re-fire/i, alerts.first[:details])
+    assert_not_nil @condition.reload.last_triggered_at, "this branch requires a persisted guard"
+    assert_equal "failed", @trigger.reload.status
+  ensure
+    Trigger.any_instance.unstub(:destroy_sibling_wakes!)
+  end
+
+  test "a session-scoped wake that cannot be parked stays enabled and says so" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    watched_session = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+    scope_condition_to(watched_session)
+
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("agent root not found"))
+    Trigger.any_instance.stubs(:mark_failed).returns(false)
+
+    alerts = []
+    AlertService.stubs(:raise_alert).with do |title, **kwargs|
+      alerts << { title: title, **kwargs }
+      true
+    end
+
+    AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
+
+    assert_equal 1, alerts.size, "a wake that could not even be parked must still page"
+    assert_match(/could NOT be marked failed/i, alerts.first[:details])
+    assert_equal "enabled", @trigger.reload.status
+  ensure
+    Trigger.any_instance.unstub(:mark_failed)
+  end
+
+  test "a failure to REPORT a failed fire does not abort the remaining triggers" do
+    # There is no outer per-condition rescue around the fan-out, so a raise from
+    # the reporting path would drop every trigger after this one — one lost wake
+    # becoming several. Two enabled triggers, and only the first one's fire is
+    # broken, so the second must still deliver.
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    healthy = Trigger.create!(
+      name: "Healthy broadcast wake",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go {{event}}",
+      trigger_conditions_attributes: [
+        { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input" } }
+      ]
+    )
+
+    session = Session.create!(
+      prompt: "Test session",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+
+    # Break the fire for the ORIGINAL trigger only — mocha's any_instance cannot
+    # discriminate by receiver, so key on the id directly — and break reporting
+    # outright so the handler's own rescue is what has to hold.
+    broken_id = @trigger.id
+    Trigger.class_eval do
+      alias_method :create_session_without_break!, :create_session!
+      define_method(:create_session!) do |**kwargs|
+        raise StandardError, "original boom" if id == broken_id
+
+        create_session_without_break!(**kwargs)
+      end
+    end
+    AlertService.stubs(:raise_alert).raises(StandardError.new("slack is down"))
+
+    assert_difference("Session.count", 1, "the healthy trigger's wake must still fire") do
+      assert_nothing_raised do
+        AoEventTriggerJob.perform_now("session_needs_input", session.id)
+      end
+    end
+
+    assert Trigger.exists?(healthy.id)
+  ensure
+    Trigger.class_eval do
+      if method_defined?(:create_session_without_break!)
+        alias_method :create_session!, :create_session_without_break!
+        remove_method :create_session_without_break!
+      end
+    end
+  end
+
+  test "a successful fire raises no alert and leaves the trigger enabled" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    AlertService.expects(:raise_alert).never
+
+    session = Session.create!(
+      prompt: "Test session",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+
+    assert_difference("Session.count", 1) do
+      AoEventTriggerJob.perform_now("session_needs_input", session.id)
+    end
+
+    assert_equal "enabled", @trigger.reload.status
+    assert_not_nil @condition.reload.last_triggered_at
+  end
 end
