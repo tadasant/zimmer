@@ -920,6 +920,19 @@ class Session < ApplicationRecord
     when "oauth_required"
       servers = oauth_required_server_names
       servers.any? ? "OAuth authorization required: #{servers.join(', ')}" : "OAuth authorization required"
+    when "air_secret_unresolvable"
+      # AgentSessionJob persists the names AirPrepareService extracted from the
+      # `air prepare` failure. Without this branch they had no reader at all and
+      # the user saw "Air secret unresolvable" — a restatement of the failure
+      # that names neither the secret nor the fix.
+      variables = unresolved_variable_names
+      if variables.any?
+        "Missing secret(s): #{variables.join(', ')} — add them to Zimmer's mcp_secrets credentials, " \
+          "or deselect the MCP server that needs them"
+      else
+        "An MCP server requires a secret Zimmer does not carry — add it to Zimmer's mcp_secrets credentials, " \
+          "or deselect the server that needs it"
+      end
     else
       reason.humanize
     end
@@ -944,6 +957,13 @@ class Session < ApplicationRecord
   # @return [Array<String>]
   def failed_mcp_server_names
     (custom_metadata&.dig("mcp_failed_servers") || []).filter_map { |s| s["name"] }
+  end
+
+  # Names of the ${VAR} references `air prepare` could not resolve, from the
+  # failure metadata AgentSessionJob persists on an air_secret_unresolvable fail.
+  # @return [Array<String>]
+  def unresolved_variable_names
+    Array(metadata&.dig("unresolved_variables")).compact_blank
   end
 
   # Names of MCP servers awaiting OAuth authorization, from the failure metadata.

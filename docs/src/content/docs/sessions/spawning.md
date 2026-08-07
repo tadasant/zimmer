@@ -273,7 +273,7 @@ flowchart TD
     F -->|yes| FR["restart from scratch"]
     F -->|no| SD{"signal_death_exit?<br/>(SIGKILL/OOM, non-SIGTERM)"}
     SD -->|yes| SDR["handle_signal_death<br/>resume same session<br/>(MAX_SIGNAL_DEATH_RETRIES = 3)"]
-    SD -->|no| FAIL["fail! → failed"]
+    SD -->|no| FAIL["unclassified:<br/>alert #eng-alerts<br/>fail! → failed"]
     CR --> P
     AR --> P
     RT --> P
@@ -343,6 +343,21 @@ account before giving up — with no log saying rotation should have happened. T
 written up in the code. See
 [Known limitations](/limitations/#failure-classification-is-regex-against-cli-prose).
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
+
+Falling off the end of that list is now loud. When none of the questions above answer yes,
+`UnclassifiedFailureReporter` logs and raises an `#eng-alerts` alert carrying the stderr tail
+and any transcript API-error text no pattern matched, before the session fails as it always
+did. It also fires on the inverse: a classifier that says a recovery path applies while that
+path's service reports it does not. Dedup is keyed on the failure *shape* — runtime plus exit
+status, never the session — so a fleet-wide wave of one unknown mode is one page per hour, while
+a new shape pages on its own. A new failure mode that happens to share an already-seen runtime
+and exit code is suppressed for the rest of the window; the loud log is what catches that one.
+
+Two scoping notes. The alert covers the **failure** branch only: a Claude exit 0 or 1 is a normal
+completion, so an unrecognized error there still lands in `needs_input` silently. And a runtime
+whose strategy classifies nothing — Codex, until #3779 characterizes its transcript envelope —
+answers `classifies_exits? => false` and gets the loud log without the page, because for it
+"no classifier matched" is the designed-for path rather than news.
 :::
 
 ## Metadata races
