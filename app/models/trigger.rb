@@ -164,21 +164,27 @@ class Trigger < ApplicationRecord
     false
   end
 
-  # True when every one-time schedule this trigger carries has already been
+  # True when every one-shot condition this trigger carries has already been
   # consumed — so re-enabling it cannot deliver the wake it owed.
   #
   # This is the case where a fire raised AFTER the condition was advanced: the
   # session was created and only the cleanup behind it fell over. Re-arming would
   # deliver nothing (and acting on the promise by hand would duplicate the
   # session), so the trigger page and the alert read this rather than offering a
-  # re-arm that cannot work. False for a trigger with no one-time schedule at
+  # re-arm that cannot work. False for a trigger with no one-shot condition at
   # all — a recurring one really does go back into service when re-enabled.
+  #
+  # Both one-shot shapes count: a one-time schedule and a session-scoped
+  # `ao_event` wake. They are parked by different jobs (ScheduleTriggerJob and
+  # AoEventTriggerJob) but they are the same question to a reader of /triggers,
+  # and a predicate that saw only schedules would offer every parked
+  # state-change wake a re-arm button that may duplicate a session.
   #
   # Deliberately not #schedule_due?: that returns false for any trigger that
   # isn't enabled, which is every trigger this question is asked about.
-  def spent_one_time_schedule?
-    one_time = trigger_conditions.select(&:one_time_schedule?)
-    one_time.any? && one_time.all? { |c| c.last_triggered_at.present? }
+  def spent_one_shot_wake?
+    one_shot = trigger_conditions.select { |c| c.one_time_schedule? || c.session_scoped_ao_event? }
+    one_shot.any? && one_shot.all? { |c| c.last_triggered_at.present? }
   end
 
   # Returns the condition types present on this trigger

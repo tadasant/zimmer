@@ -295,7 +295,7 @@ advertising the failure it recovered from.
 
 One failure does not re-arm, and does not pretend to. A raise from the cleanup that *follows* a
 successful fire (sibling destruction, the auto-delete) arrives with the schedule already consumed
-and the session already created, so re-firing would duplicate it. `Trigger#rearm_fires_immediately?`
+and the session already created, so re-firing would duplicate it. `Trigger#spent_one_shot_wake?`
 is what the trigger page and the alert read to tell the two apart: in that case they say the
 schedule was consumed and ask you to check the session rather than offering a re-arm that would
 deliver nothing.
@@ -320,6 +320,37 @@ callbacks (deferred via `after_all_transactions_commit`, so the row is visible t
 
 With `watched_session_id` it's session-scoped and one-shot. Without it, it's a broadcast, and
 it only fires for `is_autonomous` sessions.
+
+#### When an `ao_event` fire fails
+
+The same two-shapes rule as schedules, drawn along the scoping line rather than the
+recurring/one-time line — because for `ao_event` that *is* the line.
+
+A **session-scoped** wake is one-shot, and it only ever fires on its watched session's
+transitions. If firing it raises and it is left enabled, "it will try again on the next
+transition" is a promise the event stream cannot keep: the watched session may have just made
+its last transition, which is precisely the `session_failed` / `session_archived` case agents
+schedule most. So `AoEventTriggerJob` parks it as `failed` — same status, same badge, same
+`failed_at` / `last_error` as a failed schedule — and alerts. The condition's `last_triggered_at`
+is left alone for the same reason as above: the status closes the retry loop, so re-enabling
+the trigger re-arms an unspent wake. The alert says plainly that a re-arm only helps if the
+watched session transitions again, and that a terminal one never will.
+
+A **broadcast** condition is not parked. It is recurring by nature — every autonomous session's
+transition fires it — so it alerts, stays enabled, and fires on the next matching transition.
+Parking one would silently stop every future wake, which is the same failure this parking exists
+to remove, pointed the other way.
+
+A raise *after* the wake was delivered splits in two, and the alert distinguishes them, because
+"a session was created" and "the one-shot guard was recorded" are different facts and
+`condition.update!` sits between them. If the guard did persist, re-arming delivers nothing and
+the alert says so — the same distinction the schedule path draws. If the guard is what failed,
+the session exists *and* the condition is still armed, so re-arming would create a **second**
+session; the alert warns against it rather than inviting it.
+
+`Trigger#spent_one_shot_wake?` is the predicate behind both the alert and the trigger page, and it
+covers both one-shot shapes — a one-time schedule and a session-scoped `ao_event`. A predicate that
+saw only schedules would offer every parked state-change wake a "Re-arm" button with no caveat.
 
 ### `github_label`
 
