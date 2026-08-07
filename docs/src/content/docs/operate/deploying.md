@@ -286,7 +286,7 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
-| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}` |
+| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) if GHCR throttles the pull or the push |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image outside the normal release path |
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
@@ -426,6 +426,103 @@ Setting `DOCKER_CONFIG` per worker in the runner service definitions (in the pri
 instead of once per repo. The in-repo change here stands on its own and does not
 conflict with that.
 :::
+
+### The release build retries GHCR, on the way in and on the way out
+
+`release-image.yml` talks to GHCR at both ends of one step. It builds `FROM
+ghcr.io/tadasant/zimmer-base:latest`, so buildkit **pulls** that image's layers for the length of the
+build, and it **pushes** the finished image at the end. When GitHub applies a secondary rate limit to
+the account — which it does across the whole account, not per workflow — either end starts failing.
+
+Three shapes observed so far, one cause:
+
+```
+#10 ERROR: failed to copy: httpReadSeeker: failed open: unexpected status from GET request to
+https://ghcr.io/v2/tadasant/zimmer-base/blobs/sha256:…: 403 Forbidden
+denied: permission_denied: … "You have exceeded a secondary rate limit."
+```
+
+```
+ERROR: failed to solve: failed to copy: httpReadSeeker: failed open:
+content at https://ghcr.io/v2/tadasant/zimmer-base/manifests/sha256:… not found: not found
+```
+
+```
+#19 ERROR: failed to push ghcr.io/tadasant/zimmer:sha-…: unexpected status from HEAD request to
+https://ghcr.io/v2/tadasant/zimmer/blobs/sha256:…: 403 Forbidden
+```
+
+The middle one is a lie worth recognizing: it reads as a missing manifest, but under throttling GHCR
+returns 404 for content it is simply refusing to serve — the same digest pulls fine minutes later. The
+third is the push side, and it is the reason the retry wraps the whole step rather than the pull: by
+the time it fires, the image is built and the only thing left to fail is the upload.
+
+None of the three means the images are damaged or the credentials are wrong. On 2026-08-06 the same
+throttle took out this workflow and the production deploy in a different repo inside the same two
+minutes, and `docker login` had succeeded seconds before the deploy's pull was refused.
+
+`Check for base image` is not what failed in any of them. It resolves the manifest through
+`docker buildx imagetools inspect` for real, and in the red runs it passed *correctly* — the image
+genuinely existed. What fails is the layer traffic after it, once the build is already underway.
+
+#### Three attempts, escalating backoff, and a probe that says which side broke
+
+The app build runs up to three times: `Build and push`, `Build and push (retry)` after 90 seconds,
+`Build and push (final attempt)` after a further 240 seconds. Every attempt but the last carries
+`continue-on-error`, and each is gated on *all* the attempts before it having failed. Only the last
+one can fail the job.
+
+The backoff escalates rather than repeating because the throttle is account-wide and has outlasted a
+single 90-second wait. `continue-on-error` on the earlier attempts is load-bearing twice over: it
+swallows their failure, and it keeps the job green so that the implicit `success()` on the later
+attempts' `if` lets them run at all. The two backoff steps between them carry it for the second reason
+only — a probe that exits non-zero would otherwise fail the job, and every later step, including the
+remaining attempts and the production notify, would skip on its own implicit `success()`. The retry
+chain would sit there intact and unreachable.
+
+The retry is **blind** — it does not inspect the error. That is deliberate. The same throttle has
+already worn three different HTTP shapes, and gating on an error signature would trade a rare wasted
+rebuild for a missed retry the next time GitHub picks a fourth. Instead the gap between attempts runs
+`.github/scripts/await-ghcr.sh`, which reads a manifest from each package the build touches — the base
+image it pulls `FROM` and the app repository it pushes to, since a throttle need not hit both — and
+reports the result as a workflow annotation:
+
+- **Either probe refused** — GHCR was refusing this account, and the annotation says which package.
+  The registry is the suspect.
+- **Both answered** — the build itself is the likelier suspect, so read the build log. Note this is
+  evidence, not a verdict: both probes are *reads*, so they cannot clear a write-side throttle, which
+  is the exact shape the 2026-08-06 push failure took. Check whether the build died on the pull or the
+  push before concluding.
+
+That is the line to look for on a run that exhausted its attempts, because the attempts themselves are
+unhelpful to read: a step that failed under `continue-on-error` renders with a red ✗ against a green
+job, since GitHub has no separate rendering for it.
+
+The retry is not free, and the cost is lopsided in a useful direction. Every attempt runs on the same
+buildkit instance — `builder:` names the one this job created, and it lives for the whole job — so a
+retry resumes from that builder's local cache rather than starting cold. A **push**-side failure is
+therefore cheap to retry: the image is already built, and the second attempt re-does little more than
+the export. A base-**pull** failure early in the graph is the expensive one, because there is nothing
+cached to resume from yet. (The GHA cache is no help either way on a retry: `cache-to` exports nothing
+from a failed build.)
+
+The floor is the backoff itself. A genuinely broken build — one that fails for an ordinary reason and
+will fail three times — now takes 330 seconds of waiting plus three builds to go red, and
+`concurrency: release-image` with `cancel-in-progress: false` makes the next push queue behind all of
+it. That is the trade: slower bad news, in exchange for not paging anyone over a registry hiccup.
+
+Every attempt takes its tag list from the `tags` output of `Compute version` rather than spelling it
+out three times, and `image_build_workflows_test.rb` asserts the chain stays wired: attempts in order,
+each gated on every prior one failing, identical build inputs, `continue-on-error` on all but the
+last, and a probing backoff step in every gap. Each of those, alone, is enough to produce a workflow
+that publishes nothing and reports the release green.
+
+What the retry does **not** cover is the base-image half of the same job. `Check for base image` and
+`Build & push base image` are single-shot, and they talk to the same throttled registry — so a
+throttled `imagetools inspect` fails closed into `need_base=true` and escalates a read hiccup into a
+*full base rebuild and push* against a registry that is currently refusing the account. That path
+fails the job before the app build's first attempt is ever reached. It has not bitten yet; all three
+observed failures were the app build.
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 
