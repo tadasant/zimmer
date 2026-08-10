@@ -293,6 +293,30 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal before, @label_condition.reload.github_seen_items
   end
 
+  test "an incomplete search index skips the condition quietly instead of paging" do
+    # Production 2026-08-10, condition 352: GitHub's search index timed out once, the
+    # search refused the short read (correctly — see the service test), and the refusal
+    # paged a human at 23:14 for a failure that had already healed by the next tick. The
+    # refusal stays; the page goes. Both routes to #eng-alerts must be silent: AlertService,
+    # and a plain Rails.logger.error line (which pages on its own via the Grafana rule).
+    before = @label_condition.github_seen_items
+    AlertService.expects(:raise_alert).never
+    Rails.logger.expects(:error).never
+
+    incomplete = lambda do |query, **_opts|
+      raise GithubSearchService::IncompleteResultsError,
+            "GitHub search returned incomplete results for query: #{query}"
+    end
+
+    GithubSearchService.stub(:search_issues, incomplete) do
+      assert_no_difference("Session.count") { assert_nothing_raised { GithubTriggerPollerJob.perform_now } }
+    end
+
+    # The seen-set is untouched, which is the whole point of refusing the partial read:
+    # nothing was dropped from it, so nothing re-fires when the next tick succeeds.
+    assert_equal before, @label_condition.reload.github_seen_items
+  end
+
   # ── Graceful degradation when gh is unauthenticated ───────────────────────
   #
   # An environment whose worker has no gh credential (observed on staging: every tick
@@ -811,5 +835,112 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
 
     # The poll's real work still landed.
     assert_equal [ "tadasant/zimmer#1:ready to merge" ], @label_condition.reload.github_seen_items
+  end
+end
+
+# ── Sustained incomplete searches ───────────────────────────────────────────
+#
+# A single incomplete search is a self-healing blip and is skipped in silence (above).
+# A run of them is not: the condition is not being polled at all, so its trigger is dark
+# for as long as it lasts. This is where that becomes visible again.
+#
+# Its own class for the same reason the heartbeat suite is: the streak lives in
+# Rails.cache, which is null_store in test, so these need a real store swapped in.
+class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
+  setup do
+    @label_condition = trigger_conditions(:github_label_condition)
+    GithubSearchService.stubs(:configured?).returns(true)
+
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+  end
+
+  teardown do
+    Rails.cache = @original_cache
+  end
+
+  # One tick. The label condition's search comes back incomplete (or not); the issue
+  # condition's always succeeds with nothing to report, so the poller is demonstrably
+  # alive and only the label condition's own streak is under test.
+  def poll(incomplete: true)
+    fake = lambda do |query, **_opts|
+      if incomplete && query.start_with?("is:open ")
+        raise GithubSearchService::IncompleteResultsError,
+              "GitHub search returned incomplete results for query: #{query}"
+      end
+      []
+    end
+
+    GithubSearchService.stub(:search_issues, fake) { GithubTriggerPollerJob.perform_now }
+  end
+
+  # Titles of the alerts raised while the block runs.
+  def capture_alerts
+    titles = []
+    AlertService.stubs(:raise_alert).with do |*args, **_kwargs|
+      titles << args.first
+      true
+    end
+    yield
+    titles
+  end
+
+  test "a run of incomplete searches below the threshold never pages" do
+    below = GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT - 1
+
+    titles = capture_alerts { below.times { poll } }
+
+    assert_empty titles, "#{below} consecutive index blips is still a transient, not a page"
+  end
+
+  test "an incomplete search index that will not clear pages once the streak is unbroken" do
+    threshold = GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
+
+    titles = capture_alerts { threshold.times { poll } }
+
+    assert_includes titles, "GitHub search index degraded",
+                    "a degradation lasting #{threshold} consecutive ticks must become visible"
+  end
+
+  test "a single clean poll resets the streak, so scattered blips never accumulate into a page" do
+    # The distinction that makes the threshold mean "consecutive" rather than "total":
+    # blips a week apart must not add up to an alert.
+    below = GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT - 1
+
+    titles = capture_alerts do
+      below.times { poll }
+      poll(incomplete: false)
+      below.times { poll }
+    end
+
+    assert_empty titles, "a successful poll in between must clear the run"
+  end
+
+  test "a tick in which every condition hits an incomplete index does not record the heartbeat" do
+    # The other half of the safety net, and why no extra machinery is needed for a broad
+    # GitHub search outage: when nothing polls successfully the heartbeat is never stamped,
+    # so GithubTriggerHealthCheckJob pages on the stale value at its own threshold.
+    Rails.cache.delete(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+
+    everything_incomplete = lambda do |query, **_opts|
+      raise GithubSearchService::IncompleteResultsError,
+            "GitHub search returned incomplete results for query: #{query}"
+    end
+
+    GithubSearchService.stub(:search_issues, everything_incomplete) { GithubTriggerPollerJob.perform_now }
+
+    assert_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY),
+               "a sweep in which no condition polled successfully is not liveness"
+  end
+
+  test "the streak is tracked per condition, so one bad query does not escalate another's" do
+    threshold = GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
+    threshold.times { poll }
+
+    assert_equal threshold,
+                 Rails.cache.read(GithubTriggerPollerJob.incomplete_search_streak_key(@label_condition.id))
+    assert_nil Rails.cache.read(
+      GithubTriggerPollerJob.incomplete_search_streak_key(trigger_conditions(:github_issue_condition).id)
+    ), "the condition that polled cleanly must carry no streak at all"
   end
 end
