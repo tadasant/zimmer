@@ -42,14 +42,16 @@ class GithubSearchService
   # a truncated read would corrupt the poller's seen-set, so we raise instead.
   MAX_PAGES = 10
 
-  # An `incomplete_results` page is re-fetched in place before it is given up on, because
-  # the index that timed out usually has the answer a moment later. Deliberately short and
-  # few: the poller is a `total_limit: 1` singleton on a one-minute cadence, so the whole
-  # retry budget has to fit in a couple of seconds, not half a tick.
+  # A search that came back incomplete is re-run this many times, waiting this long before
+  # each attempt, because the index that timed out usually has the answer a moment later.
+  # Deliberately short and few: the poller is a `total_limit: 1` singleton on a one-minute
+  # cadence, so a condition's whole retry budget has to fit in a couple of seconds. It is
+  # 2s of waiting per condition however many pages the search spans, since the delay is
+  # spent per search attempt rather than per page.
   #
   # Only this failure retries. A timeout or a non-zero exit has already spent
-  # REQUEST_TIMEOUT and is no likelier to succeed on an immediate repeat, so those still
-  # raise on the first attempt as before.
+  # REQUEST_TIMEOUT and is no likelier to succeed on an immediate repeat, so those raise
+  # on the first attempt.
   INCOMPLETE_RESULT_RETRY_DELAYS = [ 0.5, 1.5 ].freeze
 
   # Hard wall-clock ceiling on a single `gh` invocation. A healthy search API call
@@ -105,31 +107,61 @@ class GithubSearchService
     #
     # Raises rather than returning a partial result. The poller derives its seen-set
     # from the full result, so a short read would look like "these items lost their
-    # label" and re-fire them on the next tick. A page GitHub reports as incomplete is
-    # re-fetched a bounded number of times (see #fetch_complete_page) and, if it is still
-    # incomplete, raises IncompleteResultsError — a SearchError, so callers that do not
-    # care about the distinction are unaffected.
+    # label" and re-fire them on the next tick. A search GitHub reports as incomplete is
+    # re-run whole a bounded number of times and, if it is still incomplete, raises
+    # IncompleteResultsError — a SearchError, so callers that do not care about the
+    # distinction are unaffected.
     def search_issues(query, sort: nil, order: nil)
-      items = []
-      page = 1
+      attempt = 0
 
-      loop do
-        payload = fetch_complete_page(query, page: page, sort: sort, order: order)
+      begin
+        items = []
+        page = 1
 
-        page_items = payload["items"] || []
-        items.concat(page_items)
+        loop do
+          payload = request(query, page: page, sort: sort, order: order)
 
-        total = payload["total_count"].to_i
-        break if page_items.empty? || items.length >= total
+          # A timed-out search returns whatever it managed to index. Treating that as
+          # the complete picture would shrink the seen-set, so refuse the whole read.
+          if payload["incomplete_results"]
+            raise IncompleteResultsError, "GitHub search returned incomplete results for query: #{query}"
+          end
 
-        page += 1
-        if page > MAX_PAGES
-          raise SearchError, "GitHub search matched more than #{MAX_PAGES * PER_PAGE} items " \
-                             "(total_count=#{total}) for query: #{query}"
+          page_items = payload["items"] || []
+          items.concat(page_items)
+
+          total = payload["total_count"].to_i
+          break if page_items.empty? || items.length >= total
+
+          page += 1
+          if page > MAX_PAGES
+            raise SearchError, "GitHub search matched more than #{MAX_PAGES * PER_PAGE} items " \
+                               "(total_count=#{total}) for query: #{query}"
+          end
         end
-      end
 
-      items
+        items
+      rescue IncompleteResultsError
+        delay = INCOMPLETE_RESULT_RETRY_DELAYS[attempt]
+        raise if delay.nil?
+
+        attempt += 1
+        # .info, not .warn: an intermediate attempt that may still succeed is not a fault
+        # (per the repo's logging philosophy). The terminal case is reported by the caller.
+        Rails.logger.info "[GithubSearchService] Search index returned incomplete results on " \
+                          "page #{page}; re-running the search in #{delay}s " \
+                          "(retry #{attempt} of #{INCOMPLETE_RESULT_RETRY_DELAYS.length})"
+        sleep delay
+
+        # Restarts the whole search from page 1 with an empty `items` — deliberately not
+        # a re-fetch of the offending page alone. Every page a multi-page read accumulated
+        # before the blip came from an index that was already struggling, and stitching
+        # those onto a page served a couple of seconds later, after the index changed
+        # state, can silently drop an item whose page boundary shifted underneath the
+        # pagination. That is the same corrupt-the-seen-set failure the refusal exists to
+        # prevent, arrived at by a subtler route. Whole read or nothing, on every attempt.
+        retry
+      end
     end
 
     # ["owner/a", "owner/b"] -> (repo:owner/a OR repo:owner/b)
@@ -159,40 +191,6 @@ class GithubSearchService
     end
 
     private
-
-    # One page, complete, or nothing at all.
-    #
-    # A timed-out search returns whatever it managed to index. Treating that as the whole
-    # picture would shrink the poller's seen-set — the labelled items missing from the
-    # short read would look newly unlabelled — so a partial page is discarded, never
-    # merged into `items`, however many times we ask for it. What the retry buys is only
-    # a second chance at a COMPLETE answer: the index blip usually clears within a second,
-    # and when it does the caller gets the full result set and the tick proceeds normally.
-    def fetch_complete_page(query, page:, sort:, order:)
-      attempt = 0
-
-      begin
-        payload = request(query, page: page, sort: sort, order: order)
-
-        if payload["incomplete_results"]
-          raise IncompleteResultsError, "GitHub search returned incomplete results for query: #{query}"
-        end
-
-        payload
-      rescue IncompleteResultsError
-        delay = INCOMPLETE_RESULT_RETRY_DELAYS[attempt]
-        raise if delay.nil?
-
-        attempt += 1
-        # .info, not .warn: an intermediate attempt that may still succeed is not a fault
-        # (per the repo's logging philosophy). The terminal case is reported by the caller.
-        Rails.logger.info "[GithubSearchService] Search index returned incomplete results for " \
-                          "page #{page}; re-fetching in #{delay}s " \
-                          "(retry #{attempt} of #{INCOMPLETE_RESULT_RETRY_DELAYS.length})"
-        sleep delay
-        retry
-      end
-    end
 
     def or_group(terms)
       "(#{terms.join(' OR ')})"

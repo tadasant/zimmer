@@ -297,7 +297,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     # Production 2026-08-10, condition 352: GitHub's search index timed out once, the
     # search refused the short read (correctly — see the service test), and the refusal
     # paged a human at 23:14 for a failure that had already healed by the next tick. The
-    # refusal stays; the page goes. Both routes to #alerts must be silent: AlertService,
+    # refusal stays; the page goes. Both routes to #eng-alerts must be silent: AlertService,
     # and a plain Rails.logger.error line (which pages on its own via the Grafana rule).
     before = @label_condition.github_seen_items
     AlertService.expects(:raise_alert).never

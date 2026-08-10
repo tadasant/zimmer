@@ -390,7 +390,7 @@ wedged or downed one.
 
 That bar does double duty for the one GitHub failure that is *refused but not an incident*. A search
 GitHub reports as `incomplete_results` is never accepted as complete (it would corrupt the label
-poller's seen-set), but it is transient: `GithubSearchService` re-fetches the page twice, and if it is
+poller's seen-set), but it is transient: `GithubSearchService` re-runs the search twice, and if it is
 still short the poller skips that condition with a WARN instead of paging, because the next tick
 re-derives the whole seen-set anyway. A skipped condition does not stamp the heartbeat — so a broad
 search-index degradation that hits *every* condition still ages the heartbeat out and pages here,

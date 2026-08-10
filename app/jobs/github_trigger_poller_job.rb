@@ -121,11 +121,11 @@ class GithubTriggerPollerJob < ApplicationJob
   # How many consecutive ticks a condition may skip on an incomplete search index before
   # the skips stop being read as a transient and page.
   #
-  # GitHub's search index times out occasionally and recovers by itself — once in the 30
-  # days to 2026-08-10 on the busiest condition here, and GithubSearchService has already
-  # re-fetched the page before it gives up — so a single skip is noise, not an incident.
-  # Five in a row at a one-minute cadence is not: that is a degradation that is not
-  # clearing, and the merge gate has been dark for five minutes.
+  # GitHub's search index times out occasionally and recovers by itself — on the order of
+  # once a month on the busiest condition here, and GithubSearchService has already re-run
+  # the search before it gives up — so a single skip is noise, not an incident. Five in a
+  # row at a one-minute cadence is not: that is a degradation that is not clearing, and
+  # the condition has been dark for five minutes.
   CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT = 5
 
   # Rails cache (Redis) key holding the current run of consecutive incomplete searches,
@@ -183,6 +183,10 @@ class GithubTriggerPollerJob < ApplicationJob
       rescue GithubSearchService::IncompleteResultsError => e
         skip_incomplete_search(condition, e)
       rescue => e
+        # Clearing here too is what makes the streak's "consecutive" literal: a tick that
+        # failed some other way is not an incomplete-index tick, and it pages on its own
+        # below, so it must break the run rather than be counted into it.
+        clear_incomplete_search_streak(condition)
         Rails.logger.error "[GithubTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
         AlertService.raise_alert(
           "GitHub trigger poller error",
@@ -214,9 +218,9 @@ class GithubTriggerPollerJob < ApplicationJob
   # A search whose index timed out is refused exactly like any other short read — the
   # seen-set is never derived from a partial result, which is the whole point of the raise
   # in GithubSearchService — but on its own it is not an incident worth a human's evening.
-  # GitHub's index recovers by itself, the service has already re-fetched the page, and
-  # the next tick re-derives the entire seen-set from scratch, so a skipped tick costs
-  # nothing and self-corrects. This is the same distinction `GithubSearchService.configured?`
+  # GitHub's index recovers by itself, the service has already re-run the search, and the
+  # next tick re-derives the entire seen-set from scratch, so a skipped tick costs nothing
+  # and self-corrects. This is the same distinction `GithubSearchService.configured?`
   # draws between "not an incident, skip quietly" and "a real failure, raise and alert".
   #
   # Sustained degradation still surfaces, by two independent routes:
