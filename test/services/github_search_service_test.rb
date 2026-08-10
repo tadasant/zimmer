@@ -129,6 +129,31 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     assert_equal [ GithubSearchService::INCOMPLETE_RESULT_RETRY_DELAYS.first ], delays
   end
 
+  test "a multi-page search that blips on a later page is re-run from page 1, not stitched" do
+    # The invariant a per-page retry would quietly break. Pages 1..N-1 came from an index
+    # that was already struggling; splicing them onto a page fetched seconds later, after
+    # the index changed state, can drop an item whose page boundary shifted underneath the
+    # pagination — corrupting the seen-set by a subtler route than the short read itself.
+    # So the whole search restarts: 2 requests for the failed attempt, 2 for the retry.
+    first_page = search_payload(numbers: (1..GithubSearchService::PER_PAGE).to_a, total: 101)
+    bad_second = search_payload(numbers: [ 101 ], total: 101, incomplete: true)
+    good_second = search_payload(numbers: [ 101 ], total: 101)
+
+    BoundedSubprocess.expects(:run).times(4).returns(
+      [ first_page, "", status(true) ],   # attempt 1, page 1
+      [ bad_second, "", status(true) ],   # attempt 1, page 2 — index times out
+      [ first_page, "", status(true) ],   # attempt 2 starts over at page 1
+      [ good_second, "", status(true) ]   # attempt 2, page 2
+    )
+    GithubSearchService.stubs(:sleep)
+
+    numbers = GithubSearchService.search_issues("is:open is:pr repo:owner/a").map { |item| item["number"] }
+
+    assert_equal 101, numbers.length
+    assert_equal numbers.uniq, numbers, "restarting must not double-count the pages already read"
+    assert_equal (1..101).to_a, numbers
+  end
+
   test "search_issues raises IncompleteResultsError once the index stays incomplete" do
     # Exhausted retries: one initial attempt plus one per configured delay, then give up.
     attempts = GithubSearchService::INCOMPLETE_RESULT_RETRY_DELAYS.length + 1

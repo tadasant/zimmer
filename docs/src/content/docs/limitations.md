@@ -1749,11 +1749,11 @@ Check with `gh auth status` in the worker container; fix by providing a token to
 ### A timed-out GitHub search index skips the tick quietly, and the escalation needs Redis
 
 When GitHub's search index times out it returns `incomplete_results: true` with a partial set.
-Accepting that would corrupt the label poller's seen-set, so `GithubSearchService` re-fetches the
-page (0.5s, then 1.5s) and, if it is still short, the poller skips that condition for the tick with a
-WARN. The next tick re-derives the whole seen-set, so this self-corrects — but for that minute the
-condition is not polled and its trigger does not fire, with nothing in `#alerts` to say so. A label
-added and removed inside that window is never seen at all.
+Accepting that would corrupt the label poller's seen-set, so `GithubSearchService` re-runs the whole
+search (0.5s, then 1.5s) and, if it is still short, the poller skips that condition for the tick with
+a WARN. The next tick re-derives the whole seen-set, so this self-corrects — but for that minute the
+condition is not polled and its trigger does not fire, with nothing in `#eng-alerts` to say so. A
+label added and removed inside that window is never seen at all.
 
 The escalation for a degradation that does not clear is a per-condition consecutive-skip counter in
 Redis (`CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT`, 5 ticks). It fails **quiet**, not loud: if the

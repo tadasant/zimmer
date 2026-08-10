@@ -537,13 +537,18 @@ semantics a short read looks like "these items lost their label", which would dr
 and re-fire every one of them on the next tick. So the read is refused — the tick keeps the seen-set
 it already had, and nothing advances.
 
-What changed is only who hears about it. The index blip usually clears within a second, so
-`GithubSearchService` re-fetches the page (`INCOMPLETE_RESULT_RETRY_DELAYS`, 0.5s then 1.5s) before
-giving up, and most occurrences never surface at all. If it is still incomplete, the narrower
+Nobody is paged for it, though. The index blip usually clears within a second, so
+`GithubSearchService` re-runs the whole search (`INCOMPLETE_RESULT_RETRY_DELAYS`, 0.5s then 1.5s)
+before giving up, and most occurrences never surface at all. If it is still incomplete, the narrower
 `IncompleteResultsError` tells `GithubTriggerPollerJob` to skip that condition for the tick with a
 WARN rather than page: the next tick re-derives the entire seen-set from scratch, so a skipped tick
-is self-correcting and costs nothing. It was paging a human for exactly one occurrence in the 30
-days to 2026-08-10.
+is self-correcting and costs nothing. It happens on the order of once a month, and a page for it is
+a page for something that has already fixed itself.
+
+The retry re-runs the search from page 1 rather than re-fetching the page that came back short. For
+a multi-page read the earlier pages came from an index that was already struggling, and splicing
+them onto a page fetched seconds later — after the index changed state — can drop an item whose page
+boundary moved underneath the pagination. Whole read or nothing, on every attempt.
 
 A degradation that does *not* clear still surfaces, by two routes. One condition stuck on it —
 an expensive query the index keeps timing out on — pages once its consecutive-skip streak reaches
