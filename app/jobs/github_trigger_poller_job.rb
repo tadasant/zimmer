@@ -118,6 +118,31 @@ class GithubTriggerPollerJob < ApplicationJob
   # a healthy poller rewrites it every minute.
   HEARTBEAT_TTL = 7.days
 
+  # How many consecutive ticks a condition may skip on an incomplete search index before
+  # the skips stop being read as a transient and page.
+  #
+  # GitHub's search index times out occasionally and recovers by itself — once in the 30
+  # days to 2026-08-10 on the busiest condition here, and GithubSearchService has already
+  # re-fetched the page before it gives up — so a single skip is noise, not an incident.
+  # Five in a row at a one-minute cadence is not: that is a degradation that is not
+  # clearing, and the merge gate has been dark for five minutes.
+  CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT = 5
+
+  # Rails cache (Redis) key holding the current run of consecutive incomplete searches,
+  # keyed per condition — per condition because one condition's query being too expensive
+  # for the index must not be reset by a cheaper condition succeeding beside it. Any clean
+  # poll of that condition clears it, so a streak only survives while it is genuinely
+  # unbroken. Same shape as SystemHealthMonitorJob::STREAK_CACHE_KEY.
+  INCOMPLETE_SEARCH_STREAK_KEY_PREFIX = "github_trigger_poller:incomplete_search_streak:"
+
+  # Comfortably beyond the tick interval so a missed tick can't silently reset a streak,
+  # short enough that a count from an old degradation doesn't linger into a new one.
+  INCOMPLETE_SEARCH_STREAK_TTL = 1.hour
+
+  def self.incomplete_search_streak_key(condition_id)
+    "#{INCOMPLETE_SEARCH_STREAK_KEY_PREFIX}#{condition_id}"
+  end
+
   def perform
     conditions = TriggerCondition.github
       .joins(:trigger)
@@ -154,6 +179,9 @@ class GithubTriggerPollerJob < ApplicationJob
       conditions.find_each do |condition|
         process_condition(condition)
         any_polled = true
+        clear_incomplete_search_streak(condition)
+      rescue GithubSearchService::IncompleteResultsError => e
+        skip_incomplete_search(condition, e)
       rescue => e
         Rails.logger.error "[GithubTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
         AlertService.raise_alert(
@@ -181,6 +209,78 @@ class GithubTriggerPollerJob < ApplicationJob
     # health check tolerates a missing/stale heartbeat (it seeds and skips) far better
     # than the poll tolerates an exception here.
     Rails.logger.warn "[GithubTriggerPollerJob] Failed to record poll heartbeat: #{e.message}"
+  end
+
+  # A search whose index timed out is refused exactly like any other short read — the
+  # seen-set is never derived from a partial result, which is the whole point of the raise
+  # in GithubSearchService — but on its own it is not an incident worth a human's evening.
+  # GitHub's index recovers by itself, the service has already re-fetched the page, and
+  # the next tick re-derives the entire seen-set from scratch, so a skipped tick costs
+  # nothing and self-corrects. This is the same distinction `GithubSearchService.configured?`
+  # draws between "not an incident, skip quietly" and "a real failure, raise and alert".
+  #
+  # Sustained degradation still surfaces, by two independent routes:
+  #   - this condition alone (an expensive query the index keeps timing out on): the
+  #     consecutive-skip streak below crosses CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
+  #     and pages;
+  #   - every condition at once (GitHub search broadly degraded): nothing sets any_polled,
+  #     so the heartbeat is never stamped, and GithubTriggerHealthCheckJob pages when it
+  #     goes stale — no new machinery needed for the total case.
+  #
+  # A cache that cannot be read degrades to "always quiet" rather than "always page": the
+  # streak is the only thing that escalates, and inventing one from a failed read would
+  # page for a Redis blip on the first incomplete search — reintroducing exactly the noise
+  # this exists to remove. A dead cache is its own, separately monitored fault.
+  def skip_incomplete_search(condition, error)
+    streak = bump_incomplete_search_streak(condition)
+
+    if streak.nil? || streak < CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
+      run = streak ? "#{streak} consecutive" : "streak untracked"
+
+      # .warn, not .error: an ERROR line pages #alerts on its own (see the logging
+      # philosophy), which would leave this every bit as noisy as the alert it replaces.
+      Rails.logger.warn "[GithubTriggerPollerJob] GitHub's search index returned incomplete " \
+                        "results for condition #{condition.id} (#{run}); skipping it this " \
+                        "tick — the next tick re-derives the full seen-set"
+      return
+    end
+
+    Rails.logger.warn "[GithubTriggerPollerJob] GitHub's search index has returned incomplete " \
+                      "results for condition #{condition.id} on #{streak} consecutive ticks; " \
+                      "alerting #eng-alerts."
+    AlertService.raise_alert(
+      "GitHub search index degraded",
+      details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' " \
+               "(ID: #{condition.trigger_id}) has been skipped for #{streak} consecutive ticks " \
+               "because GitHub's search API keeps returning incomplete results. Its items are " \
+               "not being polled, so this trigger is not firing. A single occurrence is a normal " \
+               "self-healing blip; this many in a row is not. Check githubstatus.com, and whether " \
+               "the condition's query has grown expensive enough to time the index out.",
+      source: "GithubTriggerPollerJob",
+      dedup_key: "github_search_incomplete_results_#{condition.id}",
+      error: error
+    )
+  end
+
+  # The new streak length, or nil when the cache could not be reached.
+  def bump_incomplete_search_streak(condition)
+    key = self.class.incomplete_search_streak_key(condition.id)
+    streak = Rails.cache.read(key).to_i + 1
+    Rails.cache.write(key, streak, expires_in: INCOMPLETE_SEARCH_STREAK_TTL)
+    streak
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Failed to track incomplete-search streak " \
+                      "for condition #{condition.id}: #{e.message}"
+    nil
+  end
+
+  # Rescued for the same reason record_successful_poll is: a cache hiccup must never
+  # convert a poll that actually worked into a per-condition alert.
+  def clear_incomplete_search_streak(condition)
+    Rails.cache.delete(self.class.incomplete_search_streak_key(condition.id))
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Failed to clear incomplete-search streak " \
+                      "for condition #{condition.id}: #{e.message}"
   end
 
   def process_condition(condition)

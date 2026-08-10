@@ -530,6 +530,29 @@ a *configured* host (a rate-limit or network blip), which still raises and alert
 real incident rather than an unconfigured environment.
 :::
 
+:::note[A timed-out search index is refused, retried, and then skipped — not paged]
+GitHub answers `incomplete_results: true` when its search index times out and returns only what it
+managed to index in time. Zimmer never accepts that as the complete picture: under the seen-set
+semantics a short read looks like "these items lost their label", which would drop them from the set
+and re-fire every one of them on the next tick. So the read is refused — the tick keeps the seen-set
+it already had, and nothing advances.
+
+What changed is only who hears about it. The index blip usually clears within a second, so
+`GithubSearchService` re-fetches the page (`INCOMPLETE_RESULT_RETRY_DELAYS`, 0.5s then 1.5s) before
+giving up, and most occurrences never surface at all. If it is still incomplete, the narrower
+`IncompleteResultsError` tells `GithubTriggerPollerJob` to skip that condition for the tick with a
+WARN rather than page: the next tick re-derives the entire seen-set from scratch, so a skipped tick
+is self-correcting and costs nothing. It was paging a human for exactly one occurrence in the 30
+days to 2026-08-10.
+
+A degradation that does *not* clear still surfaces, by two routes. One condition stuck on it —
+an expensive query the index keeps timing out on — pages once its consecutive-skip streak reaches
+`CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT` (5 ticks ≈ 5 minutes, tracked per condition in Redis and
+cleared by any clean poll). Every condition stuck on it stamps no heartbeat at all, so
+`GithubTriggerHealthCheckJob` pages on the stale value — see
+[background jobs](/operate/background-jobs/#trigger-poll-liveness).
+:::
+
 ## Burst control
 
 A trigger can cap how many sessions it spawns per minute: **max sessions per minute**
