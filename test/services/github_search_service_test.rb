@@ -94,6 +94,86 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     assert_not GithubSearchService.configured?
   end
 
+  # ── incomplete_results: refuse the read, but don't page for it ─────────────
+  #
+  # GitHub answers `incomplete_results: true` when its search index times out and returns
+  # only what it managed to index. Accepting that as the complete picture would shrink the
+  # poller's seen-set and re-fire every item missing from the short read, so it is refused
+  # — but it is also transient, so the page is re-fetched before we give up, and what we
+  # finally raise is the narrower IncompleteResultsError the poller can treat as a skip.
+
+  # A search response as `gh api` prints it.
+  def search_payload(numbers:, total: nil, incomplete: false)
+    JSON.generate({
+      "total_count" => total || numbers.length,
+      "incomplete_results" => incomplete,
+      "items" => numbers.map { |n| { "number" => n, "repository_url" => "https://api.github.com/repos/owner/a" } }
+    })
+  end
+
+  test "search_issues re-fetches an incomplete page and returns the recovered, complete result" do
+    # The common case in production: the index blips on one request and has the answer on
+    # the next. The caller must see a normal, complete search — not an error, and not the
+    # partial page merged into the complete one (which would double-count item 1).
+    partial = search_payload(numbers: [ 1 ], total: 2, incomplete: true)
+    complete = search_payload(numbers: [ 1, 2 ], total: 2)
+
+    BoundedSubprocess.expects(:run).twice
+      .returns([ partial, "", status(true) ], [ complete, "", status(true) ])
+    delays = []
+    GithubSearchService.stubs(:sleep).with { |seconds| delays << seconds; true }
+
+    items = GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+
+    assert_equal [ 1, 2 ], items.map { |item| item["number"] }
+    assert_equal [ GithubSearchService::INCOMPLETE_RESULT_RETRY_DELAYS.first ], delays
+  end
+
+  test "search_issues raises IncompleteResultsError once the index stays incomplete" do
+    # Exhausted retries: one initial attempt plus one per configured delay, then give up.
+    attempts = GithubSearchService::INCOMPLETE_RESULT_RETRY_DELAYS.length + 1
+    BoundedSubprocess.expects(:run).times(attempts)
+      .returns([ search_payload(numbers: [ 1 ], total: 2, incomplete: true), "", status(true) ])
+    delays = []
+    GithubSearchService.stubs(:sleep).with { |seconds| delays << seconds; true }
+
+    error = assert_raises(GithubSearchService::IncompleteResultsError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+
+    # Still a SearchError, so callers that don't care about the distinction are unaffected.
+    assert_kind_of GithubSearchService::SearchError, error
+    assert_includes error.message, "incomplete results"
+    assert_equal GithubSearchService::INCOMPLETE_RESULT_RETRY_DELAYS.to_a, delays
+  end
+
+  test "an incomplete page is never returned to the caller as the complete set" do
+    # The guarantee the raise exists for, stated directly: the index says there are 2
+    # matching items and hands back 1. If that 1 were accepted, the poller would read the
+    # other as newly unlabelled, drop it from the seen-set, and re-fire it. Nothing short
+    # of a complete page may leave this method — an exception is the only other exit.
+    BoundedSubprocess.stubs(:run)
+      .returns([ search_payload(numbers: [ 1 ], total: 2, incomplete: true), "", status(true) ])
+    GithubSearchService.stubs(:sleep)
+
+    assert_raises(GithubSearchService::IncompleteResultsError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+  end
+
+  test "only the incomplete case retries — a hung request still fails on the first attempt" do
+    # A timeout has already spent REQUEST_TIMEOUT and is no likelier to succeed on an
+    # immediate repeat; retrying it would spend three timeouts inside a one-minute tick.
+    BoundedSubprocess.expects(:run).once
+      .raises(BoundedSubprocess::TimeoutError, "command timed out after 15s (process group killed)")
+    GithubSearchService.expects(:sleep).never
+
+    error = assert_raises(GithubSearchService::SearchError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+    assert_not_kind_of GithubSearchService::IncompleteResultsError, error
+  end
+
   test "repo_group ORs the repos" do
     assert_equal "(repo:owner/a OR repo:owner/b)",
                  GithubSearchService.repo_group(%w[owner/a owner/b])

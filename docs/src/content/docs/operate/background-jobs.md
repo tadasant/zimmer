@@ -388,6 +388,15 @@ per-condition `rescue` swallows errors so one bad condition can't abort the swee
 is what separates a live poller (some condition worked — a failing one pages on its own) from a
 wedged or downed one.
 
+That bar does double duty for the one GitHub failure that is *refused but not an incident*. A search
+GitHub reports as `incomplete_results` is never accepted as complete (it would corrupt the label
+poller's seen-set), but it is transient: `GithubSearchService` re-fetches the page twice, and if it is
+still short the poller skips that condition with a WARN instead of paging, because the next tick
+re-derives the whole seen-set anyway. A skipped condition does not stamp the heartbeat — so a broad
+search-index degradation that hits *every* condition still ages the heartbeat out and pages here,
+with no separate alarm needed. A single condition stuck on it pages on its own consecutive-skip
+streak (`GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT`, 5 ticks).
+
 Two placement details are load-bearing, and both are easy to get backwards:
 
 - **The health check tests the `gh` credential only when there is no heartbeat yet.**
