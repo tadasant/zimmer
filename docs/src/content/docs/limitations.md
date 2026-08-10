@@ -1746,6 +1746,22 @@ is quiet but easy to miss. Staging shipped without this credential, which is how
 
 Check with `gh auth status` in the worker container; fix by providing a token to that environment.
 
+### A timed-out GitHub search index skips the tick quietly, and the escalation needs Redis
+
+When GitHub's search index times out it returns `incomplete_results: true` with a partial set.
+Accepting that would corrupt the label poller's seen-set, so `GithubSearchService` re-runs the whole
+search (0.5s, then 1.5s) and, if it is still short, the poller skips that condition for the tick with
+a WARN. The next tick re-derives the whole seen-set, so this self-corrects — but for that minute the
+condition is not polled and its trigger does not fire, with nothing in `#eng-alerts` to say so. A
+label added and removed inside that window is never seen at all.
+
+The escalation for a degradation that does not clear is a per-condition consecutive-skip counter in
+Redis (`CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT`, 5 ticks). It fails **quiet**, not loud: if the
+cache is unreachable the streak can never be counted, so a sustained single-condition degradation
+would page only if it were broad enough to stall the poller's heartbeat too. That direction is
+deliberate — inventing a streak from a failed cache read would page for a Redis blip on the first
+index timeout, which is the noise this exists to remove.
+
 ### `BoundedSubprocess` can return a nil `Process::Status`, and only the `gh` search path guards it
 
 `BoundedSubprocess.run` returns Open3's `wait_thr.value`, which is a `Process.detach` thread whose
