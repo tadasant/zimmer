@@ -117,6 +117,36 @@ class ClaudeRetryStrategy
     false
   end
 
+  # The transcript's most recent API-error entry that no classifier recognized,
+  # for the unclassified failure alert. Delegates to ApiErrorRetryService, which
+  # owns the "is this accounted for by some classifier?" question.
+  #
+  # @return [String, nil] the unmatched error text
+  def unclassified_error_text(working_dir:)
+    return nil unless working_dir
+
+    temp_service = ApiErrorRetryService.new(
+      @session,
+      cli_adapter: @cli_adapter,
+      process_manager: @process_manager,
+      log_buffer: NullLogBuffer.new,
+      file_system: @file_system,
+      rate_limit_tracker: @rate_limit_tracker
+    )
+
+    temp_service.unclassified_api_error_text(working_dir)
+  rescue => e
+    @logger.error("Error extracting unclassified error text", error: e.message)
+    nil
+  end
+
+  # Claude's classifiers answer real questions about a real exit, so an exit that
+  # matches none of them is genuinely unknown and worth paging on. See
+  # CodexRetryStrategy#classifies_exits? for the runtime where that is not true.
+  def classifies_exits?
+    true
+  end
+
   private
 
   # Check if stderr contains a context length error.

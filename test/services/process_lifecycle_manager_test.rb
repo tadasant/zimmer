@@ -2360,6 +2360,225 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     refute_equal File.join(clone_path, "claude_stderr.log"), manager.stderr_log_path
   end
 
+  # ===========================================================================
+  # Unclassified failures announce themselves (#53)
+  # ===========================================================================
+
+  # Every branch above this one is a pattern match against the runtime's own
+  # prose. Reaching the generic failure path means none of them recognized the
+  # death — either a novel failure or, the case that has actually bitten us, a
+  # classifier that went stale when the CLI reworded something. It used to look
+  # identical to an ordinary failure.
+  test "handle_exit alerts with the stderr tail when no classifier matches the exit" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+    @mock_file_system.write(stderr_path, "Error: the CLI invented a brand new way to die\n")
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    status = MockProcessManager::MockStatus.new(2)
+    decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action, "the session must still fail exactly as before"
+    assert alert, "an unclassified exit must page"
+    assert_equal "Unclassified failure: process exit", alert[0]
+    assert_match(/exit code: 2/, alert[1][:details])
+    assert_match(/brand new way to die/, alert[1][:error],
+      "the alert must carry the output no pattern matched, via error: so AlertSnippet redacts it")
+    assert_equal "ProcessLifecycleManager#handle_exit", alert[1][:source]
+  end
+
+  # The noise constraint: an exit a classifier DOES recognize is an ordinary,
+  # expected event and must never reach the unclassified path.
+  test "handle_exit does not alert on a normal completion" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+    assert_equal :needs_input, decision.action
+  end
+
+  test "handle_exit does not alert on a classified failed-resume recovery" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+    @mock_file_system.write(stderr_path, "No conversation found with session ID: abc123\n")
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+    assert_equal :continue, decision.action
+  end
+
+  # The retry-service half: the runtime contributes the transcript prose that no
+  # classifier matched, so the alert carries the actual wording rather than just
+  # an exit code.
+  test "handle_exit carries the unmatched transcript API error into the alert" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(
+      File.join(transcript_dir, "#{@session.session_id}.jsonl"),
+      "#{api_error_json("Your account has been placed in cool-down mode", error_type: "invalid_request")}\n"
+    )
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |_title, opts|
+      alert = opts
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+    manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert alert, "an unclassified exit must page"
+    assert_match(/cool-down mode/, alert[:error])
+  end
+
+  # A classifier said a recovery path applied and the recovery service then said
+  # it did not. Both branches are commented "shouldn't happen" and both fail the
+  # session; the disagreement itself is the unknown worth announcing.
+  test "handle_exit alerts when a classifier and its recovery service disagree" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    ClaudeRetryStrategy.any_instance.stubs(:api_error_for_retry?).returns(true)
+    ApiErrorRetryService.any_instance.stubs(:attempt_retry).returns(:not_applicable)
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_equal "API server error recovery failed", decision.error_message
+    assert alert, "a classifier/service disagreement must page"
+    assert_equal "Unclassified failure: recovery contradiction", alert[0]
+    assert_match(/handle_retryable_api_error/, alert[1][:details])
+    assert_match(/not_applicable/, alert[1][:details])
+  end
+
+  # The largest noise risk in the change. CodexRetryStrategy classifies nothing
+  # but a missing rollout, so an ordinary Codex failure ALWAYS reaches the
+  # unclassified branch — that is its documented design, not news. Paging on it
+  # would be a standing hourly alert for expected behavior.
+  test "a runtime whose strategy classifies nothing logs but does not page" do
+    @session.update!(agent_runtime: "codex")
+    @mock_cli_adapter.stubs(:retry_strategy).returns(
+      CodexRetryStrategy.new(
+        cli_adapter: @mock_cli_adapter, session: @session, file_system: @mock_file_system,
+        process_manager: @mock_process_manager, rate_limit_tracker: nil, logger: Rails.logger
+      )
+    )
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action, "the session still fails — only the page is withheld"
+  end
+
+  # The summary IS the dedup key, so it must carry the runtime. Without it a
+  # routine failure on one runtime holds the key and suppresses a genuinely
+  # novel failure on another that happens to share its exit code.
+  test "the unclassified alert dedup key distinguishes runtimes sharing an exit code" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |_title, opts|
+      alert = opts
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+    manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert alert
+    assert_match(/claude_code/, alert[:details],
+      "the runtime must reach the alert, because the summary is the dedup key")
+  end
+
+  # A signal death that exhausts its resume budget IS classified — it returns
+  # before the general branch. Pinning it stops a future refactor from turning a
+  # known failure mode into a page.
+  test "an exhausted signal-death budget does not alert" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @session.update!(metadata: @session.metadata.merge(
+      "signal_death_retry_count" => ProcessLifecycleManager::MAX_SIGNAL_DEATH_RETRIES
+    ))
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/Signal death resume limit exhausted/, decision.error_message)
+  end
+
+  # The context-length arm of the same contradiction, so the branch is not
+  # covered only through the API-error handler.
+  test "a context length classifier that disagrees with its service also alerts" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    ClaudeRetryStrategy.any_instance.stubs(:context_length_error?).returns(true)
+    ContextLengthRetryService.any_instance.stubs(:attempt_recovery).returns(:not_applicable)
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_equal "Context length error recovery failed", decision.error_message
+    assert alert
+    assert_equal "Unclassified failure: recovery contradiction", alert[0]
+    assert_match(/handle_context_length_error/, alert[1][:details])
+  end
+
+  # Alerting must never be able to change how the session itself is failed.
+  test "a failing alert does not change the exit decision" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    AlertService.stubs(:raise_alert).raises(StandardError, "slack is on fire")
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(2), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/exit code: 2/, decision.error_message)
+    assert_equal :idle, manager.current_state
+  end
+
   # The quota signature ApiErrorRetryService classifies as :quota_exceeded.
   def setup_transcript_with_quota_error
     transcript_dir = calculate_test_transcript_dir

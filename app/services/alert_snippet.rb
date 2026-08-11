@@ -69,6 +69,7 @@ class AlertSnippet
     [ /\bgh[pousr]_[A-Za-z0-9]{16,}/, REDACTED ],                                   # GitHub tokens
     [ /\bgithub_pat_[A-Za-z0-9_]{20,}/, REDACTED ],                                 # GitHub fine-grained PATs
     [ /\bsk-ant-[A-Za-z0-9\-_]{16,}/, REDACTED ],                                   # Anthropic API keys
+    [ %r{\b(?:ya29|1//)[A-Za-z0-9\-_.]{16,}}, REDACTED ],                           # Google OAuth access/refresh tokens
     [ /\bAKIA[0-9A-Z]{16}\b/, REDACTED ],                                           # AWS access key IDs
     [ /\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}/, REDACTED ], # JWTs
     [ /\b(Bearer|Basic)\s+[A-Za-z0-9\-._~+\/]{12,}=*/i, '\1 ' + REDACTED ],         # Authorization headers
