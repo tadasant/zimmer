@@ -101,7 +101,30 @@ class AgentProcessLiveness
     #               than the one we spawned. Never signalled.
     #   :alive    — same namespace, present, and provably the process we spawned
     def status(session)
-      identity = session&.metadata&.dig(IDENTITY_KEY)
+      classify(recorded_identity(session))
+    end
+
+    # The recorded identity, read from the database rather than from the in-memory record.
+    #
+    # The session object on the spawn path was loaded when the job started and has since
+    # sat through a clone, an MCP config write and a boot-task run. The write this check
+    # exists to see is, by definition, made by a *different* process — so the attribute in
+    # memory is exactly the copy that cannot have it. Reading it fresh is one indexed
+    # SELECT per spawn, against a check whose whole value is not missing that write.
+    #
+    # @return [Hash, nil]
+    def recorded_identity(session)
+      return nil unless session
+
+      persisted = Session.where(id: session.id).pick(:metadata) if session.persisted?
+      (persisted || session.metadata || {})[IDENTITY_KEY]
+    rescue StandardError
+      session.metadata&.dig(IDENTITY_KEY)
+    end
+
+    # @param identity [Hash, nil] a `process_identity` blob
+    # @return [Symbol] see {.status}
+    def classify(identity)
       return :none if identity.blank?
 
       pid = identity["pid"]
@@ -118,12 +141,6 @@ class AgentProcessLiveness
       return :dead if current_ticks.blank?
 
       current_ticks.to_s == recorded_ticks.to_s ? :alive : :recycled
-    end
-
-    # The pid this session's identity refers to, or nil.
-    # @return [Integer, nil]
-    def recorded_pid(session)
-      session&.metadata&.dig(IDENTITY_KEY, "pid")
     end
 
     # Guarantee that no agent process from a previous turn is still running before the
@@ -147,10 +164,11 @@ class AgentProcessLiveness
     # @param log_buffer [LogBuffer, nil]
     # @return [Symbol] the status that was acted on, for the caller to log or assert
     def ensure_no_live_process!(session, process_manager: nil, log_buffer: nil)
-      state = status(session)
+      identity = recorded_identity(session)
+      state = classify(identity)
       return state if INERT_STATUSES.include?(state)
 
-      pid = recorded_pid(session)
+      pid = identity["pid"]
       message = "Previous turn's agent process (PID #{pid}) is still running — terminating it before " \
                 "spawning, so this session never runs two agents at once"
       add_log(log_buffer, session, message, level: "warning")
