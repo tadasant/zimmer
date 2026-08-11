@@ -89,6 +89,9 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     BoundedSubprocess.expects(:run)
       .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
       .returns([ "", "", nil ])
+    # configured? provisions GH_TOKEN first. Stubbed so this assertion stays about the
+    # preflight: an unreachable secret store would otherwise emit a WARN of its own.
+    GhTokenProvisioner.stubs(:ensure!)
     Rails.logger.expects(:warn).never
 
     assert_not GithubSearchService.configured?

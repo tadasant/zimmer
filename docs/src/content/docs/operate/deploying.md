@@ -128,8 +128,9 @@ Both roles mount the same durable named volumes, so state survives a deploy and 
 - `claude_home` → `~/.claude` — the shared credentials file the entire
   [account-rotation system](/auth/harness/) hinges on.
 - `gh_config` → `~/.config/gh` — the GitHub CLI's stored auth (from an interactive `gh auth login`).
-  On staging the durable credential is instead the `GH_TOKEN` env var, minted for the non-primary
-  `tadasant-test` account and re-injected on every deploy — see
+  On staging the durable credential is instead `GH_TOKEN`, minted for the non-primary `tadasant-test`
+  account and resolved from the Parameter Store into the process environment on every boot and poll
+  tick — so it survives a rebuild without anyone logging in again. See
   [Staging `gh` auth](/operate/provisioning/#staging-gh-auth-the-tadasant-test-account).
 - `claude_local` → `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
 - The `worker` role additionally mounts `/var/run/docker.sock`, which `DockerCleanupJob` needs.
