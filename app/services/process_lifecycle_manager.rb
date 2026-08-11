@@ -100,11 +100,17 @@ class ProcessLifecycleManager
   end
 
   attr_reader :session, :cli_adapter, :process_manager, :log_buffer, :file_system,
-              :state, :current_pid, :stderr_log_path
+              :state, :current_pid, :stderr_log_path, :owning_job_id
 
   def initialize(session:, cli_adapter: nil, process_manager: nil, log_buffer: nil, file_system: nil,
-                 rate_limit_tracker: nil)
+                 rate_limit_tracker: nil, owning_job_id: nil)
     @session = session
+    # The ActiveJob id of the job supervising this session's turn, when there is one.
+    # #handle_exit compares it against the session's running_job_id so a superseded job
+    # does not answer its process's exit by spawning a replacement. Nil means "no owner
+    # recorded" and disables that check, which is what a caller constructing a manager
+    # outside a job (and every test that does not care) gets.
+    @owning_job_id = owning_job_id
     # Select the CLI adapter from the session's runtime bundle when one isn't
     # explicitly injected (tests inject mocks). Without this, every session —
     # including Codex — would spawn the Claude CLI. claude_code/nil resolve to
@@ -163,6 +169,32 @@ class ProcessLifecycleManager
     end
 
     begin
+      # One session, one live agent process (zimmer#395).
+      #
+      # The job-level guard asks JobLiveness whether the *recorded job* is still
+      # executing, and superseding a job nothing is executing is correct. But a job and
+      # the process it spawned do not die together: a worker killed without running its
+      # `ensure` leaves its agent process alive, and `process_pid` is a single slot that
+      # the next spawn overwrites, so the handle to it is lost. So ask about the process
+      # too. AgentProcessLiveness answers only when it can prove the pid belongs to this
+      # namespace and is the same process we spawned; anything less certain is inert. It
+      # terminates rather than refusing to spawn: this call carries the user's prompt, and
+      # standing down here would trade a rare double-run for a silently dropped turn.
+      #
+      # #spawn is the right place for it, not #perform. Every NEW turn's process comes
+      # through here, and only new turns: the resume-monitoring path deliberately
+      # reconnects to the recorded process and calls #resume_monitoring instead, so a
+      # check placed earlier in the job would terminate the very process that path exists
+      # to adopt. One exception is knowingly swept up — an agent held alive across an MCP
+      # elicitation (see the keep-alive branch in the job's monitoring loop) is terminated
+      # like any other, losing the in-flight tool call. A new turn is arriving either way,
+      # and two agents is the worse outcome.
+      AgentProcessLiveness.ensure_no_live_process!(
+        session,
+        process_manager: @process_manager,
+        log_buffer: @log_buffer
+      )
+
       # Store the system prompt and model for reuse in continuations (compact, retry, etc.)
       @append_system_prompt = append_system_prompt
       @model = model
@@ -297,6 +329,26 @@ class ProcessLifecycleManager
       session.reload
       unless session.running?
         add_log("Session no longer running (status: #{session.status}), skipping exit handling", level: "info")
+        @mutex.synchronize { @state = :idle }
+        return ExitDecision.new(action: :aborted)
+      end
+
+      # Ownership. Several branches below answer an exit by spawning a replacement
+      # (SIGTERM retry, signal-death retry, compaction, API-error retry), and each is
+      # right only while this job still owns the session's turn. Once another job has
+      # taken ownership, the exit we are handling is very often one *it* caused —
+      # `AgentProcessLiveness` terminating this turn's process before spawning its own is
+      # exactly that — and respawning in answer to it puts a second agent back on the
+      # clone the guard just cleared. The monitoring loop enforces the same invariant one
+      # level up when it reloads the session; this enforces it at the point where the
+      # decision to spawn is actually made. A nil `running_job_id` means "not superseded"
+      # (a pause clears it), matching the loop's reading.
+      if owning_job_id.present? && session.running_job_id.present? && session.running_job_id != owning_job_id
+        add_log(
+          "Session ownership moved to job #{session.running_job_id} (this job is #{owning_job_id}); " \
+          "not answering this exit with a respawn",
+          level: "info"
+        )
         @mutex.synchronize { @state = :idle }
         return ExitDecision.new(action: :aborted)
       end
@@ -739,7 +791,7 @@ class ProcessLifecycleManager
 
     # Update session metadata with new process PID
     with_db_retry do
-      session.merge_metadata!("process_pid" => new_pid)
+      session.record_agent_process!(new_pid)
     end
 
     # Update our state to reflect the new process
@@ -859,7 +911,7 @@ class ProcessLifecycleManager
 
     # Update session metadata with new process PID and re-set runtime_started
     with_db_retry do
-      session.merge_metadata!("process_pid" => new_pid, "runtime_started" => true)
+      session.record_agent_process!(new_pid, "runtime_started" => true)
     end
 
     # Update our state to reflect the new process
