@@ -323,30 +323,46 @@ class RuntimeConfigPostProcessor
     values = elicitation_env
     return if values.empty?
 
-    servers.each_value do |entry|
+    written = servers.filter_map do |name, entry|
       next unless entry.is_a?(Hash)
       # stdio only — an HTTP/SSE entry (`url`, no `command`) has no child process
       # and therefore no environment to write.
       next if entry["command"].blank?
 
       env = (entry["env"] ||= {})
+      # An `env` that is not a table is a malformed entry the runtime will reject
+      # on its own terms; skip rather than making this step the thing that raises.
       next unless env.is_a?(Hash)
 
-      values.each do |name, value|
-        env[name] = value
-        drop_forwarded_env_var!(entry, name)
+      values.each do |var, value|
+        env[var] = value
+        drop_forwarded_env_var!(entry, var)
       end
+      name
     end
+
+    return if written.empty?
+
+    # Say so in the session log. The failure this fixes was silent on both ends —
+    # the server could not reach the endpoint and nothing recorded that it had not
+    # been told where the endpoint was. CliSpawnEnv logs the same for the agent
+    # process; this is the other half.
+    Rails.logger.info "[#{self.class.name}] Wrote #{ElicitationEndpoint::VARIABLES.join(' + ')} " \
+      "into the env of #{written.size} stdio MCP server(s): #{written.join(', ')}"
   end
 
   # The elicitation variables as the agent process will see them, so a server's
-  # env table and its parent agree: Zimmer's computed values, overridden by the
-  # clone's `.env` exactly as CliSpawnEnv#apply_elicitation_env overrides them.
+  # env table and its parent agree: Zimmer's computed values, with the clone's
+  # `.env` winning over them exactly as it does in CliSpawnEnv#apply_elicitation_env.
+  #
+  # The `.env` pass iterates the canonical names rather than what spawn_env
+  # returned, so an operator's value is honored even for a name Zimmer itself has
+  # nothing to say about (a session-less caller sets no session tag).
   def elicitation_env
     values = ElicitationEndpoint.spawn_env(session_id: session&.id)
     dotenv = EnvFile.load(working_directory, file_system: file_system)
 
-    values.each_key do |name|
+    ElicitationEndpoint::VARIABLES.each do |name|
       values[name] = dotenv[name] if dotenv[name].present?
     end
     values

@@ -4,10 +4,13 @@
 #
 # Two places need the same answer to "what did the operator put in this clone's
 # .env?": CliSpawnEnv, which builds the agent CLI process's environment at spawn
-# time, and RuntimeConfigPostProcessor, which writes each stdio MCP server's own
-# `env` table at prepare time. Both must agree, or a variable the operator set
-# would reach the agent and not its servers (or the reverse) — so the parser
-# lives here rather than in either caller.
+# time, and RuntimeConfigPostProcessor, which writes the elicitation variables
+# into each stdio MCP server's own `env` table at prepare time. Both must agree on
+# those, or an operator pointing a session at a different Zimmer would move the
+# agent process and not its servers — so the parser lives here rather than in
+# either caller. (Only those two names are bridged into a server's env table; the
+# rest of a `.env` reaches the agent process, and on Claude the servers that
+# inherit it.)
 #
 # Format supported (deliberately the same, minimal dialect Zimmer has always
 # parsed):
@@ -35,7 +38,9 @@ class EnvFile
     # @param logger [#warn] where oversize/parse failures are reported
     # @return [Hash{String=>String}] parsed variables; empty when absent or unreadable
     def load(working_dir, file_system:, logger: Rails.logger)
-      path = File.join(working_dir.to_s, FILENAME)
+      return {} if working_dir.blank?
+
+      path = File.join(working_dir, FILENAME)
       return {} unless file_system.exists?(path)
 
       content = file_system.read(path)

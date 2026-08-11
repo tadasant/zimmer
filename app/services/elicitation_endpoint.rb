@@ -24,6 +24,11 @@ require "net/http"
 class ElicitationEndpoint
   PATH = "/api/v1/elicitations"
 
+  # The variables an MCP server reads the endpoint from. Named here because two
+  # injection paths (the agent process's env, each stdio server's own env table)
+  # must agree on the set — including which names a clone's `.env` may override.
+  VARIABLES = %w[ELICITATION_REQUEST_URL ELICITATION_SESSION_ID].freeze
+
   # Shared (Redis) cache key holding the last probe result.
   CACHE_KEY = "elicitation_endpoint_health"
   # Comfortably longer than the 5-minute cron, so one skipped tick doesn't drop the

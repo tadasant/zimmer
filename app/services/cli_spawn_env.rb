@@ -35,9 +35,16 @@ module CliSpawnEnv
   #   env_vars = load_env_file("/path/to/project")
   #   # => { "API_KEY" => "secret123", "DEBUG" => "true" }
   def load_env_file(working_dir)
+    return {} unless @file_system.exists?(File.join(working_dir.to_s, EnvFile::FILENAME))
+
     env_vars = EnvFile.load(working_dir, file_system: @file_system, logger: @logger)
-    @logger.info "Loaded #{env_vars.size} environment variables from .env" if env_vars.any?
+    # Logged even at zero: "a .env I could not parse a line of" and "no .env at all"
+    # are different diagnoses, and only this line tells them apart.
+    @logger.info "Loaded #{env_vars.size} environment variables from .env"
     env_vars
+  rescue => e
+    @logger.warn "Failed to load .env file: #{e.message}"
+    {} # Return empty hash on error, don't fail the spawn
   end
 
   # Clear inherited environment variables that could interfere with the spawned process.
