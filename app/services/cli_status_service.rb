@@ -7,10 +7,11 @@ require "open3"
 # Checks for: gh (GitHub CLI), claude (Claude Code), codex (OpenAI Codex), fly (Fly.io CLI)
 #
 # Authentication strategies:
-# - gh: OAuth device flow (`gh auth login`) — sole source of truth for git
-#   credentials. The token is stored in /home/rails/.config/gh (volume-mounted
-#   from the host) and a credential helper baked into Dockerfile.base
-#   delegates git auth to `gh auth git-credential`. No GH_TOKEN env var.
+# - gh: either a GH_TOKEN in the environment — resolved from the ${VAR} chain by
+#   GhTokenProvisioner, which is how staging authenticates — or an OAuth device
+#   flow (`gh auth login`), whose token is stored in /home/rails/.config/gh
+#   (volume-mounted from the host). A credential helper baked into Dockerfile.base
+#   delegates git auth to `gh auth git-credential`, which honours both.
 # - fly: Uses FLY_IO_API_TOKEN environment variable (no interactive login needed)
 # - claude: Uses OAuth authentication (requires manual `claude /login` step)
 # - codex: Uses OAuth authentication (requires manual `codex login` step);
@@ -39,10 +40,12 @@ class CliStatusService
         # If missing, rebuild the Docker image
       INSTRUCTIONS
       auth_instructions: <<~INSTRUCTIONS
-        # gh authentication is the sole source of truth for GitHub git auth
-        # in production. There is no GH_TOKEN env var fallback — `gh auth login`
-        # writes a gho_* OAuth token to ~/.config/gh, which is volume-mounted
-        # from the host and shared across web + worker containers.
+        # Two ways to authenticate gh. Preferred where the ${VAR} chain is wired:
+        # put a GH_TOKEN in the Parameter Store and GhTokenProvisioner publishes
+        # it into the environment on every boot and poll tick — no login, and it
+        # survives a container rebuild. Otherwise `gh auth login` writes a gho_*
+        # OAuth token to ~/.config/gh, volume-mounted from the host and shared
+        # across web + worker containers.
         #
         # Option 1: Via Kamal (from your laptop)
         bin/kamal shell -d production

@@ -40,6 +40,31 @@ it does not hold is **Missing configuration**, and a secret the store could not
 be asked about is **Secret store unreachable**. They are different words because
 they call for different actions.
 
+## Not only MCP secrets: `GH_TOKEN`
+
+The chain exists for the `${VAR}` placeholders in MCP server configs, and that is still almost
+everything it serves. There is one exception, and it is worth knowing about because it is the
+template for any future one.
+
+**`GH_TOKEN`** — the token the `gh` CLI authenticates with — is read from this same chain by
+`GhTokenProvisioner`, which publishes it into the container's **process environment** at boot and
+again on every GitHub poll tick (clocked to at most one chain read every five minutes). It has to be an environment variable rather than a resolved
+placeholder because most of its consumers are not ours to hand an env hash to: git spawns
+`gh auth git-credential` itself, and spawned agent sessions inherit whatever the worker has.
+
+Two consequences follow from that, both deliberate:
+
+- **It is readable by a session.** Anything running on the worker can recover the value with
+  `gh auth token`. So the token is minted on a dedicated non-primary account with least-privilege
+  scopes and never `workflow` — see [Staging `gh`
+  auth](/operate/provisioning/#staging-gh-auth-the-tadasant-test-account). This is the same
+  reasoning that keeps the resolver credential *out* of a session's environment: an address is not a
+  credential, and a scoped read token is not a master key.
+- **A delete does not propagate; a rotation does.** `ENV` is both where the provisioner writes and
+  the chain's last link, so a `GH_TOKEN` removed from the store falls through to the copy already in
+  the environment until the process restarts. A new version at the same path — the actual rotation
+  path — propagates within the snapshot TTL.
+
 ## Why a separate GCP project
 
 **The fence is the GCP project, not the namespace.** `parameters.list` authorizes

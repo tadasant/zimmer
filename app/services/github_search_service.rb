@@ -89,6 +89,13 @@ class GithubSearchService
     # environment is not an incident (skip quietly), whereas a rate-limit or network
     # error on a configured host still raises out of search_issues and alerts.
     def configured?
+      # Publish GH_TOKEN from the ${VAR} chain before asking `gh` anything, so the
+      # preflight answers for the token the store holds NOW. The boot initializer has
+      # usually done this already; re-running it here is what carries a rotation into
+      # a long-lived worker (and, because sessions inherit this process's ENV, into
+      # every agent spawned after it). Idempotent, and never raises — see the class.
+      GhTokenProvisioner.ensure!
+
       _out, _err, status = BoundedSubprocess.run([ "gh", "auth", "status" ], timeout: AUTH_STATUS_TIMEOUT)
       # SubprocessStatus for the same reason as `search_issues` below: a nil status (child
       # reaped before the waiter's waitpid) means the preflight produced no result, so treat
