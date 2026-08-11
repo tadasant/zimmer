@@ -75,6 +75,18 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     entry.delete("env_http_headers") if forwarded.empty?
   end
 
+  # A name Zimmer just wrote a literal value for under `env` must not also sit in
+  # `env_vars`: Codex would then have two sources for one variable and Zimmer no
+  # say in which wins. The literal is the one Zimmer computed (and the one a
+  # clone's `.env` can override), so the forwarding rule goes.
+  def drop_forwarded_env_var!(entry, name)
+    forwarded = entry["env_vars"]
+    return unless forwarded.is_a?(Array)
+
+    forwarded.delete(name)
+    entry.delete("env_vars") if forwarded.empty?
+  end
+
   def resolve_and_rewrite!(servers)
     servers.each_value do |entry|
       next unless entry.is_a?(Hash)

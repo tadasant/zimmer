@@ -147,6 +147,112 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_equal "postgres://x", entry.dig("env", "ACME_DB_URL")
   end
 
+  # ---------------------------------------------------------------------------
+  # The elicitation address → each stdio server's own env table
+  # ---------------------------------------------------------------------------
+  # Codex applies its shell_environment_policy to MCP server spawns: a stdio
+  # server sees HOME/LANG/PATH/PWD/SHELL plus exactly what the entry's own tables
+  # name. Measured on codex-cli 0.146.0 — a stub server spawned by `codex exec`
+  # from a shell where both ELICITATION_* variables were set received neither, so
+  # every approval POST went to the @pulsemcp/mcp-elicitation client's baked-in
+  # `http://zimmer/…` default and died as `fetch failed`: a gate failing closed and
+  # silently. The generated config is the only channel Codex honors.
+
+  test "post_process! writes the elicitation address into a stdio server's env table" do
+    stub_secrets({})
+
+    write_config(
+      "acme-server" => { "command" => "npx", "args" => [ "-y", "@acme/mcp" ] },
+      "hosted" => { "url" => "https://mcp.example.com/mcp" }
+    )
+
+    build_processor.post_process!
+
+    config = read_config
+    assert_equal ElicitationEndpoint.url, config.dig("mcp_servers", "acme-server", "env", "ELICITATION_REQUEST_URL")
+    assert_equal @session.id.to_s, config.dig("mcp_servers", "acme-server", "env", "ELICITATION_SESSION_ID"),
+      "the approval request must arrive tagged with the session that raised it"
+    assert_nil config.dig("mcp_servers", "hosted", "env"),
+      "an HTTP entry has no child process, so it gets no env table"
+  end
+
+  test "post_process! merges the elicitation address into an existing env table, leaving its entries intact" do
+    stub_secrets({})
+
+    write_config(
+      "acme-server" => {
+        "command" => "npx",
+        "args" => [ "-y", "@acme/mcp" ],
+        "env" => { "ACME_API_KEY" => "sk-literal-123", "ACME_REGION" => "us-east-1" }
+      }
+    )
+
+    build_processor.post_process!
+
+    env = read_config.dig("mcp_servers", "acme-server", "env")
+    assert_equal "sk-literal-123", env["ACME_API_KEY"],
+      "the env table holds the server's credentials — injection must merge, never replace"
+    assert_equal "us-east-1", env["ACME_REGION"]
+    assert_equal ElicitationEndpoint.url, env["ELICITATION_REQUEST_URL"]
+    assert_equal @session.id.to_s, env["ELICITATION_SESSION_ID"]
+  end
+
+  test "post_process! overrides a catalog entry's own stale elicitation URL" do
+    stub_secrets({})
+
+    write_config(
+      "acme-server" => {
+        "command" => "npx",
+        "args" => [ "-y", "@acme/mcp" ],
+        # The exact shape that shadowed the injected URL for months.
+        "env" => { "ELICITATION_REQUEST_URL" => "http://zimmer/api/v1/elicitations" }
+      }
+    )
+
+    build_processor.post_process!
+
+    assert_equal ElicitationEndpoint.url,
+      read_config.dig("mcp_servers", "acme-server", "env", "ELICITATION_REQUEST_URL"),
+      "Zimmer's address for its own endpoint wins over a catalog copy that can go stale"
+  end
+
+  test "post_process! drops an env_vars forwarding rule for a name it writes literally" do
+    stub_secrets({})
+
+    write_config(
+      "acme-server" => {
+        "command" => "npx",
+        "args" => [ "-y", "@acme/mcp" ],
+        "env_vars" => [ "ELICITATION_SESSION_ID", "ACME_HOST_REGION" ]
+      }
+    )
+
+    build_processor.post_process!
+
+    entry = read_config.dig("mcp_servers", "acme-server")
+    assert_equal [ "ACME_HOST_REGION" ], entry["env_vars"],
+      "one name must not have both a literal env value and a host-env forwarding rule"
+    assert_equal @session.id.to_s, entry.dig("env", "ELICITATION_SESSION_ID")
+  end
+
+  test "post_process! prefers an elicitation URL the clone's .env sets" do
+    stub_secrets({})
+    @mock_fs.write(File.join(@working_dir, ".env"), <<~ENV)
+      # an operator pointing this session's servers at a different Zimmer
+      ELICITATION_REQUEST_URL="https://other-zimmer.example.com/api/v1/elicitations"
+    ENV
+
+    write_config("acme-server" => { "command" => "npx", "args" => [ "-y", "@acme/mcp" ] })
+
+    build_processor.post_process!
+
+    env = read_config.dig("mcp_servers", "acme-server", "env")
+    assert_equal "https://other-zimmer.example.com/api/v1/elicitations", env["ELICITATION_REQUEST_URL"],
+      "the .env escape hatch must govern the server's env table exactly as it governs the agent process"
+    assert_equal @session.id.to_s, env["ELICITATION_SESSION_ID"],
+      "a .env that names only the URL still leaves Zimmer's session tag in place"
+  end
+
   test "post_process! inlines SecretsLoader-backed env_http_headers into http_headers and retains non-secret forwarding" do
     stub_secrets("ACME_TOKEN" => "tok-acme-xyz")
 
@@ -489,8 +595,9 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   # self-session injection is deduped away — this keeps the output independent of
   # the runtime catalog and fully deterministic. It exercises every Codex-specific
   # path: retargeting a native Zimmer http entry, env_vars secret inlining (with
-  # retained host-env forwarding), env_http_headers secret inlining, and the npx
-  # --prefix /tmp rewrite.
+  # retained host-env forwarding), env_http_headers secret inlining, the npx
+  # --prefix /tmp rewrite, and the elicitation address written into the stdio
+  # entry's env table (and only that entry's).
   test "post_process! produces byte-for-byte stable .codex/config.toml (golden file)" do
     stub_secrets("ACME_API_KEY" => "sk-acme-123", "ACME_TOKEN" => "tok-acme-xyz")
 
@@ -527,6 +634,8 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       env_vars = ["ACME_HOST_REGION"]
       [mcp_servers.acme-server.env]
       ACME_API_KEY = "sk-acme-123"
+      ELICITATION_REQUEST_URL = "#{ElicitationEndpoint.url}"
+      ELICITATION_SESSION_ID = "#{@session.id}"
       [mcp_servers.zimmer]
       url = "http://localhost:3000/mcp"
       [mcp_servers.zimmer.http_headers]
