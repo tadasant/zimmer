@@ -1278,8 +1278,14 @@ holding an advisory lock on the Notifier's already-retained connection for the l
 The same probe fails in the other direction, and this one is quieter because nothing logs an error. A
 worker that is running but whose `good_job_processes` row goes stale for over 5 minutes — a wedged
 Notifier thread, a lost LISTEN connection, a pool exhausted under the tight budget in
-`config/connection_budget.rb` — is classified `dead_worker`, and its live turn is superseded. Two agent
-processes then run against one clone.
+`config/connection_budget.rb` — is classified `dead_worker`, and its live turn is superseded.
+
+What the superseded turn's *process* then does is no longer left to chance:
+[one live agent process per session](/sessions/spawning/#one-live-agent-process-per-session) terminates
+it at the point of spawn, and the superseded job's own monitoring loop ends its turn as soon as it sees
+ownership move. The misclassification still costs the interrupted turn its work in progress — that part
+is unavoidable once the decision has been made wrongly — but it no longer leaves two agents racing on
+one branch.
 
 In development, where `advisory_lock_heartbeat` is on, there is a sharper variant: `GoodJob::Process.active`
 only consults the heartbeat for rows registered *without* a lock, so a capsule that registered with one
@@ -1287,6 +1293,28 @@ and later drops it reads as dead no matter how fresh its heartbeat is, and does 
 
 Both are strictly less likely than the worker actually being dead — which is why the probe is written this
 way — but neither is impossible, and neither announces itself.
+
+### The spawn-time orphan check is inert outside the namespace that spawned the process
+
+[One live agent process per session](/sessions/spawning/#one-live-agent-process-per-session) only acts
+when it can prove the recorded pid is the process Zimmer started: same PID namespace, and the same start
+time. Three cases are classified `unknown` and pass through untouched.
+
+A pid recorded in **another PID namespace** — a worker container that has since been replaced, or a role
+running on another host — cannot be checked or signalled from here. In practice a container replacement
+takes its children with it, so the process really is gone; the residual risk is a deployment where the
+agent outlives the recording container, which Zimmer does not currently create.
+
+A host with **no `/proc`** (macOS development) can capture neither signal, so the guard never fires
+there. Development runs one worker on one machine, where the ownership backstop in the monitoring loop
+already covers the common case.
+
+An **identity recorded before this check existed** — a session that was already running when the change
+deployed — has a `process_pid` and no `process_identity`. Those sessions are unprotected until their next
+spawn records one.
+
+In all three the guard stands down rather than guessing, because guessing "alive" means signalling a
+process that may belong to something else entirely.
 
 ### State-machine side effects fail without surfacing
 

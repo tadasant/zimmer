@@ -1131,8 +1131,9 @@ class AgentSessionJob < ApplicationJob
         # it here closes the theoretical window where the OS recycles that pid for
         # this fresh process and the worker loop mistakes the new turn for the
         # interrupted one.
-        session.merge_metadata!(
-          { "process_pid" => process_pid, "runtime_started" => true },
+        session.record_agent_process!(
+          process_pid,
+          { "runtime_started" => true },
           [ "interrupt_terminate_pid" ]
         )
 
