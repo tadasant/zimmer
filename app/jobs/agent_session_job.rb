@@ -229,7 +229,8 @@ class AgentSessionJob < ApplicationJob
       cli_adapter: cli_adapter_for(session),
       process_manager: @process_manager,
       log_buffer: log_buffer,
-      file_system: @file_system
+      file_system: @file_system,
+      owning_job_id: job_id
     )
   end
 
