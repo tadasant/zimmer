@@ -463,3 +463,77 @@ not deciding the same thing:
 Two residual gaps, in opposite directions — how long a heartbeat-only deployment takes to notice a
 killed worker, and how a live worker can be mistaken for a dead one — are in
 [Known limitations](/limitations/#a-killed-worker-reads-as-alive-for-up-to-5-minutes-and-a-follow-up-sent-in-that-window-is-dropped).
+
+## One live agent process per session
+
+Superseding a job is not the same as ending the turn it was running. The agent CLI is a child of the
+worker process, and the `ensure` block that terminates it only runs if the job thread is alive to run
+it. A worker killed by SIGKILL or OOM, or a job thread killed at GoodJob's shutdown timeout, leaves
+its agent process running and unsupervised. `JobLiveness` then correctly reports the job as
+`dead_worker` or `interrupted` — nothing is executing that row — the next job supersedes it, clones
+again and spawns. Two agents now hold one session: same feature branch, same
+`$AO_SESSION_SCRATCH_DIR`, same conversation resumed from a shared prefix, each believing it is
+alone. That is what [#395](https://github.com/tadasant/zimmer/issues/395) recorded, for sixteen
+minutes.
+
+The fix is not to supersede less eagerly — that side of the decision drops prompts, and the table
+above is the best evidence available about a *job*. It is to ask a second, different question at the
+point of spawn: is the process the previous turn started still running? `ProcessLifecycleManager#spawn`
+is the single chokepoint every new turn passes through, and it calls `AgentProcessLiveness`
+(`app/services/agent_process_liveness.rb`) before launching anything.
+
+That check is a PID check, which the section above rules out — for two reasons, both about a pid
+whose provenance was never recorded. So the provenance is recorded. `Session#record_agent_process!`
+writes `process_pid` and, in the same statement so they cannot drift, a `process_identity` holding:
+
+- the kernel's **boot id** (`/proc/sys/kernel/random/boot_id`), a random UUID regenerated on every
+  boot of every machine;
+- the **PID namespace** of the process that spawned it (`/proc/self/ns/pid`); and
+- the process's **start time** (field 22 of `/proc/<pid>/stat`), which distinguishes the process we
+  started from any later process that inherits its number.
+
+The boot id is not decoration. An nsfs inode number is unique only within one running kernel:
+`pid:[4026531836]` is the *initial* namespace on every Linux host, and the numbers restart after a
+reboot — when the start-time ticks have restarted from zero too. Namespace alone would compare equal
+across two hosts running the same role, and across a reboot of one. The three together mean "this
+kernel, this boot, this namespace, this process".
+
+| Status | Means | At spawn |
+| --- | --- | --- |
+| `none` | Nothing has been recorded for this session yet | Spawns |
+| `unknown` | Recorded on another boot or in another PID namespace, or `/proc` is unavailable | Spawns, signals nothing |
+| `dead` | Same kernel and namespace, process gone — or an exited-but-unreaped zombie | Spawns |
+| `recycled` | Same kernel and namespace, number in use, but by a different process | Spawns, signals nothing |
+| `alive` | Same kernel and namespace, present, and provably the process we spawned | Terminates it, then spawns |
+
+Only `alive` acts, and it terminates rather than refusing. The call carries the user's prompt, so
+standing down here would trade a rare double-run for a silently dropped turn — the failure the whole
+supersede design exists to avoid. If the termination fails, that is logged and the spawn proceeds
+anyway.
+
+It does not page. Two things reach that branch and they are not distinguishable at that point: a
+genuinely orphaned process, and a previous turn that was a second or two from exiting on its own when
+a fast worker picked up the next one. Terminating is right in both cases — by the time this runs, the
+previous turn is over — but alerting on it would be a false alarm most of the time. The record is a
+warning in the session log and a structured log line.
+
+`#spawn` is the right place for it and `#perform` is not. Every new turn's process comes through
+`#spawn`, and only new turns do: the monitoring-resume path deliberately reconnects to the recorded
+process and calls `#resume_monitoring` instead, so a check placed earlier in the job would terminate
+the very process that path exists to adopt. One case is knowingly swept up — an agent held alive
+across an MCP elicitation, which the monitoring loop keeps running on purpose so the in-flight tool
+call stays open, is terminated like any other, and that tool call is lost. A new turn is arriving
+either way, and two agents is the worse outcome.
+
+This is the guarantee of last resort, not the first line. A job that is still running its monitoring
+loop ends its own turn when ownership moves — the loop reloads the session every iteration and
+terminates its process when `running_job_id` no longer names it — and an interrupt targets a specific
+pid through `metadata["interrupt_terminate_pid"]`. Both require the old job to still be alive. The
+spawn guard is what holds when it is not.
+
+The same ownership question is asked one level down, in `ProcessLifecycleManager#handle_exit`. Several
+of its branches answer a process exit by spawning a replacement — the SIGTERM retry, the signal-death
+retry, compaction, the API-error retry — and each is right only while this job still owns the turn.
+Once `running_job_id` names another job, the exit being handled is very often one that job *caused*
+(the spawn guard terminating this turn's process is exactly that), so a respawn would put a second
+agent back on the clone the guard just cleared. `handle_exit` stands down with `:aborted` instead.
