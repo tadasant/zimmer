@@ -70,6 +70,115 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal 12345, manager.current_pid
   end
 
+  # === One session, one live agent process (zimmer#395) ======================
+  #
+  # #spawn is the chokepoint every new turn passes through, so it is where the
+  # invariant has to hold. These drive the guard through the manager rather than
+  # through AgentProcessLiveness directly, because the wiring is the part that
+  # regressed: nothing on the spawn path asked about the previous turn's process.
+
+  # Record `pid` as this session's agent process, in a way AgentProcessLiveness will
+  # classify as `:alive` — same namespace, same start time — without needing a real
+  # process behind the number.
+  def record_live_agent_process(pid, namespace: "pid:[1]", ticks: "555")
+    @session.merge_metadata!(
+      AgentProcessLiveness::IDENTITY_KEY => {
+        "pid" => pid, "pid_namespace" => namespace, "started_at_ticks" => ticks
+      },
+      "process_pid" => pid
+    )
+    @session.reload
+  end
+
+  # Make the mock report `pid` as running until something signals it.
+  def mock_live_process(pid)
+    @mock_process_manager.set_process_state(pid, :running)
+    flip_to_dead = ->(_signal, _target) { @mock_process_manager.set_process_state(pid, :dead) }
+    @mock_process_manager.kill_hook = flip_to_dead
+    @mock_process_manager.kill_group_hook = flip_to_dead
+  end
+
+  test "spawn terminates an agent process left running by a previous turn" do
+    # THE #395 REGRESSION. A job whose worker died without running its `ensure` leaves
+    # its agent process alive; JobLiveness correctly reports the JOB as supersedable, the
+    # next turn spawns, and the two agents race on one branch and one scratch dir. Before
+    # this guard, `spawn` simply overwrote process_pid and the old process kept running.
+    orphan_pid = 424242
+    record_live_agent_process(orphan_pid)
+    mock_live_process(orphan_pid)
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
+      AgentProcessLiveness.stub(:process_start_ticks, "555") do
+        AgentProcessLiveness.stub(:zombie?, false) do
+          result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+          assert result.success?, "the new turn must still start — its prompt must not be dropped"
+          assert_not @mock_process_manager.running?(orphan_pid),
+            "the previous turn's agent process must be dead before a second one starts"
+        end
+      end
+    end
+
+    @log_buffer.flush
+    @session.reload
+    assert @session.logs.any? { |log| log.content.include?("Previous turn's agent process") }
+  end
+
+  test "spawn proceeds even when the orphaned process cannot be terminated" do
+    # The asymmetry that governs this whole guard: a double-run is rare and recoverable,
+    # a silently dropped turn is neither. If termination fails we say so and spawn anyway.
+    orphan_pid = 424243
+    record_live_agent_process(orphan_pid)
+    @mock_process_manager.set_process_state(orphan_pid, :running)
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    failed = ProcessTerminationService::TerminationResult.new(status: :error, message: "nope")
+    termination = Minitest::Mock.new
+    termination.expect(:terminate, failed)
+
+    AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
+      AgentProcessLiveness.stub(:process_start_ticks, "555") do
+        AgentProcessLiveness.stub(:zombie?, false) do
+          ProcessTerminationService.stub(:new, termination) do
+            result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+            assert result.success?
+          end
+        end
+      end
+    end
+
+    termination.verify
+    @log_buffer.flush
+    @session.reload
+    assert @session.logs.any? { |log| log.content.include?("Could not terminate orphaned agent process") }
+  end
+
+  test "spawn signals nothing when the recorded pid belongs to another PID namespace" do
+    # A pid from a container that has been replaced is not ours to signal, and the
+    # process it named died with that container. Guessing "alive" here would mean
+    # killing whatever inherited the number in this namespace.
+    record_live_agent_process(424244, namespace: "pid:[999999999]")
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
+      result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+      assert result.success?
+      assert_empty @mock_process_manager.killed_processes
+    end
+  end
+
+  test "spawn signals nothing when no agent process has been recorded" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    assert result.success?
+    assert_empty @mock_process_manager.killed_processes
+  end
+
   test "spawn fails when not in idle state" do
     @mock_cli_adapter.execute_hook = ->(opts) do
       { pid: 12345, stderr_log_path: "/tmp/stderr.log" }

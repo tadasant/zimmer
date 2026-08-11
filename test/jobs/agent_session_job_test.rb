@@ -2339,6 +2339,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     job.file_system = mock_fs
     job.cli_adapter = MockClaudeCliAdapter.new
+    yield job if block_given?
 
     mock_fs.mkdir_p("/tmp/test-clone")
     mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
@@ -2459,6 +2460,53 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_nil skip_log(@session)
     assert_not_nil supersede_log(@session)
     assert_includes supersede_log(@session).content, "abandoned"
+  end
+
+  # --- Superseding must not leave the old turn's PROCESS running (zimmer#395) ---
+  #
+  # The two tests above establish that superseding a dead job is right — nothing is
+  # executing that row, and standing down would drop the user's prompt. What was missing
+  # is the other half: the job's death says nothing about the process it spawned. A worker
+  # SIGKILLed mid-perform never runs the `ensure` that terminates its child, so the agent
+  # keeps running, unsupervised. This is that exact sequence, driven end to end.
+  test "superseding a dead job terminates the agent process it left running" do
+    orphan_pid = 515151
+    @session.merge_metadata!(
+      "process_pid" => orphan_pid,
+      AgentProcessLiveness::IDENTITY_KEY => {
+        "pid" => orphan_pid, "pid_namespace" => "pid:[1]", "started_at_ticks" => "555"
+      }
+    )
+    register_running_job(
+      @session,
+      created_at: 20.seconds.ago,
+      locked_by_id: dead_good_job_process.id,
+      locked_at: 20.seconds.ago,
+      performed_at: 20.seconds.ago
+    )
+
+    process_manager = nil
+
+    AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
+      AgentProcessLiveness.stub(:process_start_ticks, "555") do
+        AgentProcessLiveness.stub(:zombie?, false) do
+          perform_session_job(@session) do |job|
+            process_manager = job.process_manager
+            process_manager.set_process_state(orphan_pid, :running)
+            flip_to_dead = ->(_signal, _target) { process_manager.set_process_state(orphan_pid, :dead) }
+            process_manager.kill_hook = flip_to_dead
+            process_manager.kill_group_hook = flip_to_dead
+          end
+        end
+      end
+    end
+
+    @session.reload
+    assert_not_nil supersede_log(@session), "the dead job is still supersedable — that part was correct"
+    assert_not process_manager.running?(orphan_pid),
+      "the previous turn's agent process must be terminated before the new turn spawns"
+    assert @session.logs.any? { |log| log.content.include?("Previous turn's agent process") },
+      "orphaning a process is a supervisor failure and must be visible in the session log"
   end
 
   # Test goal handling

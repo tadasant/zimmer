@@ -187,7 +187,7 @@ class SigtermRetryService
 
     # Update session metadata with new process PID
     with_db_retry do
-      session.merge_metadata!("process_pid" => new_pid)
+      session.record_agent_process!(new_pid)
     end
 
     # Verify the process stays running for the threshold period

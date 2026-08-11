@@ -492,6 +492,29 @@ class Session < ApplicationRecord
     RuntimeRegistry.cli_adapter_class_for(agent_runtime).stderr_log_path(working_directory)
   end
 
+  # Record the agent process this session is now running, in one statement.
+  #
+  # `process_pid` alone is not a usable handle: a pid is only meaningful in the PID
+  # namespace it was issued in, and it can be recycled. AgentProcessLiveness captures
+  # both facts alongside it, and the spawn-time orphan guard reads that identity — so
+  # the two keys must never drift apart. Every site that records a freshly spawned agent
+  # process goes through here for that reason; writing "process_pid" on its own leaves
+  # the guard pointed at the *previous* turn's pid, which reads dead and silently
+  # disables it.
+  #
+  # @param pid [Integer] the pid just spawned, in THIS process's namespace
+  # @param extra [Hash] additional metadata keys to set in the same UPDATE
+  # @param remove [Array<String>] metadata keys to drop in the same UPDATE
+  def record_agent_process!(pid, extra = {}, remove = [])
+    merge_metadata!(
+      {
+        "process_pid" => pid,
+        AgentProcessLiveness::IDENTITY_KEY => AgentProcessLiveness.identity_for(pid)
+      }.merge(extra),
+      remove
+    )
+  end
+
   # Whether this session's heartbeat is due to beat again. Mirrors the
   # `heartbeat_due` scope so HeartbeatSweepJob can re-check a single session
   # under lock (guarding against two overlapping sweeps beating twice).

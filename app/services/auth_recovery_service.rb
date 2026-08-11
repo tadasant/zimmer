@@ -393,7 +393,7 @@ class AuthRecoveryService
     )
 
     with_db_retry do
-      session.merge_metadata!("process_pid" => new_pid)
+      session.record_agent_process!(new_pid)
     end
 
     if verify_process_running(new_pid, retry_attempt)

@@ -163,6 +163,27 @@ class ProcessLifecycleManager
     end
 
     begin
+      # One session, one live agent process (zimmer#395).
+      #
+      # This is the single chokepoint every new turn's process passes through, and the
+      # only place that can hold the invariant. The job-level guard above it asks
+      # JobLiveness whether the *recorded job* is still executing, and superseding a job
+      # nothing is executing is correct — but the process that job spawned outlives it
+      # whenever the worker died without running its `ensure` (SIGKILL, OOM, a GoodJob
+      # shutdown that killed the job thread). Nothing downstream of that noticed, because
+      # the next spawn simply overwrote `process_pid` and lost the only handle to it.
+      #
+      # So ask about the process, not the job. AgentProcessLiveness answers only when it
+      # can prove the pid belongs to this namespace and is the same process we spawned;
+      # anything less certain is inert. It terminates rather than refusing to spawn: this
+      # call carries the user's prompt, and standing down here would trade a rare
+      # double-run for a silently dropped turn.
+      AgentProcessLiveness.ensure_no_live_process!(
+        session,
+        process_manager: @process_manager,
+        log_buffer: @log_buffer
+      )
+
       # Store the system prompt and model for reuse in continuations (compact, retry, etc.)
       @append_system_prompt = append_system_prompt
       @model = model
@@ -739,7 +760,7 @@ class ProcessLifecycleManager
 
     # Update session metadata with new process PID
     with_db_retry do
-      session.merge_metadata!("process_pid" => new_pid)
+      session.record_agent_process!(new_pid)
     end
 
     # Update our state to reflect the new process
@@ -859,7 +880,7 @@ class ProcessLifecycleManager
 
     # Update session metadata with new process PID and re-set runtime_started
     with_db_retry do
-      session.merge_metadata!("process_pid" => new_pid, "runtime_started" => true)
+      session.record_agent_process!(new_pid, "runtime_started" => true)
     end
 
     # Update our state to reflect the new process
