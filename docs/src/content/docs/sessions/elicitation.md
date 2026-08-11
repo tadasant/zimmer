@@ -24,7 +24,7 @@ sequenceDiagram
     participant S as Session
     participant U as You (browser)
 
-    Note over P,M: spawn: ELICITATION_REQUEST_URL + ELICITATION_SESSION_ID<br/>injected by CliSpawnEnv (both runtimes)
+    Note over P,M: spawn: ELICITATION_REQUEST_URL + ELICITATION_SESSION_ID<br/>CliSpawnEnv (agent process) + the server's own env table<br/>in the generated MCP config (both runtimes)
     P->>M: tool call
     M->>Z: POST /api/v1/elicitations (UNAUTHENTICATED)<br/>_meta["com.pulsemcp/request-id"] + message
     Z->>S: create Elicitation (pending, expires per the configured window)
@@ -152,16 +152,34 @@ and showed `X-API-Key` in its request samples. That was wrong.
 
 ## Where the request goes, and what happens when it can't get there
 
-`CliSpawnEnv#apply_elicitation_env` puts two variables in the agent's environment, which its
-stdio MCP servers inherit:
+Two variables carry the address:
 
 | Variable | Value |
 | --- | --- |
 | `ELICITATION_REQUEST_URL` | `<AppUrl.base_url>/api/v1/elicitations` |
 | `ELICITATION_SESSION_ID` | the Zimmer session id |
 
-A value already present in the session's `.env` wins, so an operator can point a server at a
-different Zimmer.
+They are written in **two places**, because a stdio MCP server gets its environment two
+different ways:
+
+- `CliSpawnEnv#apply_elicitation_env` puts them on the agent CLI process. Claude Code hands a
+  stdio server its own environment, so that reaches the server there.
+- `RuntimeConfigPostProcessor#inject_elicitation_env!` writes them into each stdio server's own
+  `env` table in the generated MCP config (`.mcp.json` / `.codex/config.toml`), at `air prepare`
+  time. This is the only channel Codex honors: it rebuilds a server's environment from
+  `HOME`/`LANG`/`PATH`/`PWD`/`SHELL` plus whatever the entry's own `env`/`env_vars` name. Measured
+  on codex-cli 0.146.0, a stub stdio server spawned by `codex exec` from a shell where both
+  variables were set received *neither* — so before this existed, every Codex approval POST went
+  to the client's baked-in `http://zimmer/…` default and died as `fetch failed`.
+
+A value already present in the session's `.env` wins in both places, so an operator can point a
+server at a different Zimmer.
+
+**Zimmer's value beats a catalog entry's own `env`** for these two keys, and only these two. The
+address of Zimmer's own endpoint is Zimmer's to know; a copy in `mcp.json` is a duplicate that
+goes stale without anything failing loudly — which is exactly what happened, a `http://zimmer`
+left in a catalog entry shadowing the injected URL for months. Everything else in the entry's
+`env` is merged around, never replaced: that table is where a server's credentials live.
 
 Two variables are deliberately *not* set. The poll URL, because the create response carries
 `_meta["com.pulsemcp/poll-url"]`, which Rails builds from the request it just received — so the poll

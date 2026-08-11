@@ -118,6 +118,79 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   # ---------------------------------------------------------------------------
+  # The elicitation address → each stdio server's own env
+  # ---------------------------------------------------------------------------
+  # Claude Code hands a stdio MCP server the agent process's environment, so these
+  # variables already arrived via CliSpawnEnv. Writing them into the config too is
+  # what makes the two runtimes agree — and what stops a stale catalog `env` from
+  # shadowing the injected URL, which is the half of the bug that was never
+  # runtime-specific. These tests exist to prove the Claude path did not regress.
+
+  test "post_process! writes the elicitation address into a stdio server's env" do
+    write_config(
+      "test-server" => { "command" => "node", "args" => [ "server.js" ] },
+      "acme-http" => { "type" => "http", "url" => "https://acme.example.com/mcp" }
+    )
+
+    build_processor.post_process!
+
+    result = read_config
+    assert_equal ElicitationEndpoint.url, result.dig("mcpServers", "test-server", "env", "ELICITATION_REQUEST_URL")
+    assert_equal @session.id.to_s, result.dig("mcpServers", "test-server", "env", "ELICITATION_SESSION_ID")
+    assert_nil result.dig("mcpServers", "acme-http", "env"),
+      "an HTTP entry has no child process, so it gets no env"
+  end
+
+  test "post_process! merges the elicitation address into an existing env, leaving its entries intact" do
+    write_config(
+      "test-server" => {
+        "command" => "node",
+        "args" => [ "server.js" ],
+        "env" => { "API_KEY" => "sk-literal-123", "REGION" => "us-east-1" }
+      }
+    )
+
+    build_processor.post_process!
+
+    env = read_config.dig("mcpServers", "test-server", "env")
+    assert_equal "sk-literal-123", env["API_KEY"],
+      "the env table holds the server's credentials — injection must merge, never replace"
+    assert_equal "us-east-1", env["REGION"]
+    assert_equal ElicitationEndpoint.url, env["ELICITATION_REQUEST_URL"]
+  end
+
+  test "post_process! overrides a catalog entry's own stale elicitation URL" do
+    write_config(
+      "test-server" => {
+        "command" => "node",
+        "args" => [ "server.js" ],
+        "env" => { "ELICITATION_REQUEST_URL" => "http://zimmer/api/v1/elicitations" }
+      }
+    )
+
+    build_processor.post_process!
+
+    assert_equal ElicitationEndpoint.url,
+      read_config.dig("mcpServers", "test-server", "env", "ELICITATION_REQUEST_URL"),
+      "Zimmer's address for its own endpoint wins over a catalog copy that can go stale"
+  end
+
+  test "post_process! prefers an elicitation URL the clone's .env sets" do
+    @mock_fs.write(File.join(@working_dir, ".env"), <<~ENV)
+      ELICITATION_REQUEST_URL="https://other-zimmer.example.com/api/v1/elicitations"
+    ENV
+
+    write_config("test-server" => { "command" => "node", "args" => [ "server.js" ] })
+
+    build_processor.post_process!
+
+    env = read_config.dig("mcpServers", "test-server", "env")
+    assert_equal "https://other-zimmer.example.com/api/v1/elicitations", env["ELICITATION_REQUEST_URL"],
+      "the .env escape hatch must govern the server's env exactly as it governs the agent process"
+    assert_equal @session.id.to_s, env["ELICITATION_SESSION_ID"]
+  end
+
+  # ---------------------------------------------------------------------------
   # Injection: the subagent server (roots with default_subagent_roots)
   # ---------------------------------------------------------------------------
 
@@ -867,7 +940,11 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
         "some-npx-server" => {
           "command" => "npx",
           "args" => [ "-y", "--prefix", "/tmp", "some-package" ],
-          "env" => { "TOKEN" => "fallback" }
+          "env" => {
+            "TOKEN" => "fallback",
+            "ELICITATION_REQUEST_URL" => ElicitationEndpoint.url,
+            "ELICITATION_SESSION_ID" => @session.id.to_s
+          }
         }
       }
     }
