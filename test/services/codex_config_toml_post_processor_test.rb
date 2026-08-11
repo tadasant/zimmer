@@ -218,6 +218,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
 
   test "post_process! drops an env_vars forwarding rule for a name it writes literally" do
     stub_secrets({})
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
 
     write_config(
       "acme-server" => {
@@ -233,6 +234,41 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_equal [ "ACME_HOST_REGION" ], entry["env_vars"],
       "one name must not have both a literal env value and a host-env forwarding rule"
     assert_equal @session.id.to_s, entry.dig("env", "ELICITATION_SESSION_ID")
+  end
+
+  test "post_process! drops env_vars entirely when the only forwarded name is one it writes" do
+    stub_secrets({})
+    OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
+
+    write_config(
+      "acme-server" => {
+        "command" => "npx",
+        "args" => [ "-y", "@acme/mcp" ],
+        "env_vars" => [ "ELICITATION_REQUEST_URL" ]
+      }
+    )
+
+    build_processor.post_process!
+
+    entry = read_config.dig("mcp_servers", "acme-server")
+    assert_nil entry["env_vars"], "an emptied env_vars table must be removed, not left as []"
+    assert_equal ElicitationEndpoint.url, entry.dig("env", "ELICITATION_REQUEST_URL")
+  end
+
+  # The gate degrading is survivable; a session that never starts is not. Anything
+  # that can raise while computing the address (an unresolvable base URL, a .env
+  # that will not read) must leave the rest of the config intact.
+  test "post_process! still writes a usable config when the elicitation address cannot be computed" do
+    stub_secrets({})
+    ElicitationEndpoint.stubs(:spawn_env).raises(RuntimeError, "no base url")
+
+    write_config("acme-server" => { "command" => "npx", "args" => [ "-y", "@acme/mcp" ], "env" => { "ACME_API_KEY" => "sk-1" } })
+
+    build_processor.post_process!
+
+    entry = read_config.dig("mcp_servers", "acme-server")
+    assert_equal "sk-1", entry.dig("env", "ACME_API_KEY")
+    assert_nil entry.dig("env", "ELICITATION_REQUEST_URL")
   end
 
   test "post_process! prefers an elicitation URL the clone's .env sets" do

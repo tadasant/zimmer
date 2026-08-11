@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # Tests for EnvFile — the shared reader for a session clone's `.env`.
 #
@@ -58,6 +59,11 @@ class EnvFileTest < ActiveSupport::TestCase
     write_env("BIG=#{'x' * (EnvFile::MAX_BYTES + 1)}")
 
     assert_empty EnvFile.load(@working_dir, file_system: @file_system, logger: @logger)
+  end
+
+  test "returns an empty hash for a blank working directory instead of probing the filesystem root" do
+    assert_empty EnvFile.load(nil, file_system: @file_system, logger: @logger)
+    assert_empty EnvFile.load("", file_system: @file_system, logger: @logger)
   end
 
   test "returns an empty hash rather than raising when the file cannot be read" do

@@ -808,8 +808,10 @@ window has no way to find its own rollout and waits until one appears.
 
 ### The approval gate can only be verified as far as Zimmer's own doorstep
 
-`CliSpawnEnv#apply_elicitation_env` gives both runtimes `ELICITATION_REQUEST_URL` and
-`ELICITATION_SESSION_ID`, and `ElicitationEndpointHealthCheckJob` proves
+`ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` reach a stdio MCP server on both runtimes —
+`CliSpawnEnv#apply_elicitation_env` puts them on the agent process, and
+`RuntimeConfigPostProcessor#inject_elicitation_env!` writes them into the server's own `env` table in
+the generated config, which is the only channel Codex honors. `ElicitationEndpointHealthCheckJob` proves
 every 5 minutes that the endpoint answers from the host agents run on. Neither proves that a given
 MCP server *used* those variables: a server that hard-codes its own URL, or one already running from
 before the change, still posts into the void and still returns a redacted value. What is guaranteed
@@ -817,8 +819,22 @@ now is that the failure is not silent on Zimmer's side — the system prompt of 
 while the gate is down says so, so a redaction is never read as a policy decision. A session already
 running when the gate breaks reads the status from its spawn and will not learn of it.
 
-Fixed in [#55](https://github.com/tadasant/zimmer/issues/55). What survives is the edge of what Zimmer
+Fixed in [#55](https://github.com/tadasant/zimmer/issues/55) and
+[#397](https://github.com/tadasant/zimmer/issues/397). What survives is the edge of what Zimmer
 can verify from its own side, which no issue closes.
+
+### On Codex, a clone's `.env` reaches the agent but not its stdio MCP servers
+
+Codex rebuilds every MCP server's environment from `HOME`/`LANG`/`PATH`/`PWD`/`SHELL` plus what the
+config entry's own `env`/`env_vars` name, so nothing Zimmer exports to the agent process is inherited.
+Zimmer bridges exactly the names it knows a server needs: the two `ELICITATION_*` variables (written
+into each stdio entry's `env` by `RuntimeConfigPostProcessor`) and `SSH_PRIVATE_KEY_PATH` (forwarded
+via `env_vars` by the Codex post-processor). Anything else an operator puts in a clone's `.env` reaches
+the agent and, on Claude, the servers that inherit its environment — but on Codex it stops at the agent.
+
+The asymmetry is silent, which is the part worth knowing: a server that reads a variable it never
+received behaves as if the operator never set it. A catalog entry that names the variable in its own
+`env`/`env_vars` is the way through today.
 
 ### Extension env contributions are unreachable from Codex
 

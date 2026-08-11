@@ -79,6 +79,11 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # `env_vars`: Codex would then have two sources for one variable and Zimmer no
   # say in which wins. The literal is the one Zimmer computed (and the one a
   # clone's `.env` can override), so the forwarding rule goes.
+  #
+  # This runs before inline_forwarded_secrets!, so if the dropped name also
+  # happened to be a SecretsLoader secret it is no longer inlined from there. That
+  # is the same value either way: AgentSessionJob writes SecretsLoader.all into the
+  # clone's `.env`, which #elicitation_env already prefers.
   def drop_forwarded_env_var!(entry, name)
     forwarded = entry["env_vars"]
     return unless forwarded.is_a?(Array)

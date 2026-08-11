@@ -159,9 +159,12 @@ Shared scrubbing (`CliSpawnEnv`):
 - Sets `ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` — where an MCP
   server sends an [approval request](/sessions/elicitation/#where-the-request-goes-and-what-happens-when-it-cant-get-there),
   and who is asking. A value in the clone's `.env` wins. This reaches the CLI, and on
-  Claude Code the stdio MCP servers that inherit its environment; Codex servers get the
-  same two values from their own `env` table in the generated config, written by
-  `RuntimeConfigPostProcessor` (same reason as `SSH_PRIVATE_KEY_PATH` below).
+  Claude Code the stdio MCP servers that inherit its environment; on **both** runtimes the
+  stdio servers also get the two values from their own `env` table in the generated config,
+  written by `RuntimeConfigPostProcessor#inject_elicitation_env!`. That second channel exists
+  for the same reason as the `SSH_PRIVATE_KEY_PATH` forwarding below — Codex inherits neither —
+  though the mechanism differs: a literal `env` table rather than Codex's `env_vars` forwarding,
+  so it also overrides a stale copy in a catalog entry's own `env`.
 - Sets `SSH_PRIVATE_KEY_PATH` — the [operator SSH key](/operate/provisioning/#the-ssh-identity-an-agent-session-holds)
   the session authenticates with, when one is configured. The key file is written by
   `OperatorSshKeyProvisioner`; this exports its path, because an `ssh-*` MCP server looks for
