@@ -51,6 +51,10 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
     skip("requires Linux /proc") unless procfs?
   end
 
+  def ticks_for(pid)
+    AgentProcessLiveness.process_snapshot(pid)[:started_at_ticks]
+  end
+
   # === Identity capture ====================================================
 
   test "identity_for captures the pid, its namespace and its start time" do
@@ -61,6 +65,7 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
 
     assert_equal pid, identity["pid"]
     assert_equal File.readlink("/proc/self/ns/pid"), identity["pid_namespace"]
+    assert_equal File.read("/proc/sys/kernel/random/boot_id").strip, identity["boot_id"]
     assert_predicate identity["started_at_ticks"].to_s, :present?
   end
 
@@ -104,9 +109,11 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
 
   test "status is :dead for an exited-but-unreaped process, which signal 0 would call alive" do
     require_procfs
-    record(spawn_real_process)
+    pid = spawn_real_process
+    record(pid)
+    zombie = { state: AgentProcessLiveness::ZOMBIE_STATE, started_at_ticks: ticks_for(pid) }
 
-    AgentProcessLiveness.stub(:zombie?, true) do
+    AgentProcessLiveness.stub(:process_snapshot, zombie) do
       assert_equal :dead, AgentProcessLiveness.status(@session)
     end
   end
@@ -134,6 +141,20 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
     assert_equal :unknown, AgentProcessLiveness.status(@session.reload)
   end
 
+  test "status is :unknown for a pid recorded on a different boot of the kernel" do
+    # An nsfs inode is unique only within one running kernel: `pid:[4026531836]` is the
+    # initial namespace on every Linux host, and the numbers — like the start-time ticks —
+    # restart after a reboot. Without the boot id, a namespace match would mean nothing
+    # across two hosts or across a restart of one.
+    require_procfs
+    record(spawn_real_process)
+
+    identity = @session.metadata[AgentProcessLiveness::IDENTITY_KEY].merge("boot_id" => SecureRandom.uuid)
+    @session.merge_metadata!(AgentProcessLiveness::IDENTITY_KEY => identity)
+
+    assert_equal :unknown, AgentProcessLiveness.status(@session.reload)
+  end
+
   test "status is :unknown where /proc is unavailable" do
     require_procfs
     record(spawn_real_process)
@@ -143,7 +164,7 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
     end
   end
 
-  test "status is :unknown for an identity recorded before namespaces were captured" do
+  test "status is :unknown for an identity that predates provenance capture" do
     @session.merge_metadata!(AgentProcessLiveness::IDENTITY_KEY => { "pid" => 4242 })
 
     assert_equal :unknown, AgentProcessLiveness.status(@session.reload)
@@ -214,7 +235,7 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
   test "ensure_no_live_process! swallows its own failures rather than blocking a spawn" do
     # The guard sits on the spawn path. A bug in it must never be why a session fails to
     # start — that would trade a rare double-run for a common dead session.
-    AgentProcessLiveness.stub(:status, ->(_session) { raise "probe exploded" }) do
+    AgentProcessLiveness.stub(:recorded_identity, ->(_session) { raise "probe exploded" }) do
       assert_equal :error, AgentProcessLiveness.ensure_no_live_process!(@session)
     end
   end

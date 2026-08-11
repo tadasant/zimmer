@@ -80,14 +80,24 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # Record `pid` as this session's agent process, in a way AgentProcessLiveness will
   # classify as `:alive` — same namespace, same start time — without needing a real
   # process behind the number.
-  def record_live_agent_process(pid, namespace: "pid:[1]", ticks: "555")
-    @session.merge_metadata!(
+  def record_live_agent_process(pid, boot: "boot-1", namespace: "pid:[1]", ticks: "555")
+    @session.merge_metadata!({
+      "process_pid" => pid,
       AgentProcessLiveness::IDENTITY_KEY => {
-        "pid" => pid, "pid_namespace" => namespace, "started_at_ticks" => ticks
-      },
-      "process_pid" => pid
-    )
+        "pid" => pid, "boot_id" => boot, "pid_namespace" => namespace, "started_at_ticks" => ticks
+      }
+    })
     @session.reload
+  end
+
+  # Stand in for this machine, so the recorded identity classifies as :alive without a
+  # real process behind the number.
+  def stubbing_this_machine(ticks: "555", &block)
+    AgentProcessLiveness.stub(:boot_id, "boot-1") do
+      AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
+        AgentProcessLiveness.stub(:process_snapshot, { state: "S", started_at_ticks: ticks }, &block)
+      end
+    end
   end
 
   # Make the mock report `pid` as running until something signals it.
@@ -108,16 +118,12 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     mock_live_process(orphan_pid)
     @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 
-    AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
-      AgentProcessLiveness.stub(:process_start_ticks, "555") do
-        AgentProcessLiveness.stub(:zombie?, false) do
-          result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    stubbing_this_machine do
+      result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
 
-          assert result.success?, "the new turn must still start — its prompt must not be dropped"
-          assert_not @mock_process_manager.running?(orphan_pid),
-            "the previous turn's agent process must be dead before a second one starts"
-        end
-      end
+      assert result.success?, "the new turn must still start — its prompt must not be dropped"
+      assert_not @mock_process_manager.running?(orphan_pid),
+        "the previous turn's agent process must be dead before a second one starts"
     end
 
     @log_buffer.flush
@@ -137,15 +143,11 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     termination = Minitest::Mock.new
     termination.expect(:terminate, failed)
 
-    AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
-      AgentProcessLiveness.stub(:process_start_ticks, "555") do
-        AgentProcessLiveness.stub(:zombie?, false) do
-          ProcessTerminationService.stub(:new, termination) do
-            result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    stubbing_this_machine do
+      ProcessTerminationService.stub(:new, termination) do
+        result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
 
-            assert result.success?
-          end
-        end
+        assert result.success?
       end
     end
 
@@ -162,12 +164,56 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     record_live_agent_process(424244, namespace: "pid:[999999999]")
     @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 
-    AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
+    stubbing_this_machine do
       result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
 
       assert result.success?
       assert_empty @mock_process_manager.killed_processes
     end
+  end
+
+  test "handle_exit does not answer an exit with a respawn once another job owns the session" do
+    # The other half of the invariant. The guard above terminates a superseded turn's
+    # process — but if that turn's job is still looping, it sees its process exit and
+    # would otherwise route a SIGTERM/signal death straight into a retry spawn, putting a
+    # second agent back on the clone the guard just cleared.
+    @session.update!(running_job_id: "job-that-took-over")
+    manager = ProcessLifecycleManager.new(
+      session: @session,
+      cli_adapter: @mock_cli_adapter,
+      process_manager: @mock_process_manager,
+      log_buffer: @log_buffer,
+      file_system: @mock_file_system,
+      owning_job_id: "job-that-was-superseded"
+    )
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.signaled(15), working_dir: "/tmp/test-clone")
+
+    assert_equal :aborted, decision.action
+    assert_equal :idle, manager.current_state
+    @log_buffer.flush
+    assert @session.logs.reload.any? { |log| log.content.include?("Session ownership moved to job") }
+  end
+
+  test "handle_exit still handles the exit while this job owns the session" do
+    # The other direction: an owning job must keep its retry behaviour. A SIGTERM exit
+    # under our own ownership routes into the SIGTERM handler, not the ownership abort.
+    @session.update!(running_job_id: "my-job")
+    manager = ProcessLifecycleManager.new(
+      session: @session,
+      cli_adapter: @mock_cli_adapter,
+      process_manager: @mock_process_manager,
+      log_buffer: @log_buffer,
+      file_system: @mock_file_system,
+      owning_job_id: "my-job"
+    )
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 22222, stderr_log_path: "/tmp/stderr.log" } }
+
+    manager.handle_exit(MockProcessManager::MockStatus.signaled(15), working_dir: "/tmp/test-clone")
+
+    @log_buffer.flush
+    assert_not @session.logs.reload.any? { |log| log.content.include?("Session ownership moved to job") },
+      "a job that still owns the session must reach its normal exit handling"
   end
 
   test "spawn signals nothing when no agent process has been recorded" do

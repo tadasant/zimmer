@@ -1300,18 +1300,18 @@ way — but neither is impossible, and neither announces itself.
 when it can prove the recorded pid is the process Zimmer started: same PID namespace, and the same start
 time. Three cases are classified `unknown` and pass through untouched.
 
-A pid recorded in **another PID namespace** — a worker container that has since been replaced, or a role
-running on another host — cannot be checked or signalled from here. In practice a container replacement
-takes its children with it, so the process really is gone; the residual risk is a deployment where the
-agent outlives the recording container, which Zimmer does not currently create.
+A pid recorded on **another boot or in another PID namespace** — a worker container that has since been
+replaced, a role running on another host, or anything from before a reboot — cannot be checked or
+signalled from here. In practice a container replacement takes its children with it, so the process
+really is gone; the residual risk is a deployment where the agent outlives the recording container,
+which Zimmer does not currently create.
 
 A host with **no `/proc`** (macOS development) can capture neither signal, so the guard never fires
 there. Development runs one worker on one machine, where the ownership backstop in the monitoring loop
 already covers the common case.
 
-An **identity recorded before this check existed** — a session that was already running when the change
-deployed — has a `process_pid` and no `process_identity`. Those sessions are unprotected until their next
-spawn records one.
+An **identity with no provenance** — a session that was already running when the check deployed, so it
+carries a `process_pid` and no `process_identity` — is unprotected until its next spawn records one.
 
 In all three the guard stands down rather than guessing, because guessing "alive" means signalling a
 process that may belong to something else entirely.

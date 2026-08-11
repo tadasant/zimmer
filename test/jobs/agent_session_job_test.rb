@@ -2474,7 +2474,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.merge_metadata!(
       "process_pid" => orphan_pid,
       AgentProcessLiveness::IDENTITY_KEY => {
-        "pid" => orphan_pid, "pid_namespace" => "pid:[1]", "started_at_ticks" => "555"
+        "pid" => orphan_pid, "boot_id" => "boot-1", "pid_namespace" => "pid:[1]", "started_at_ticks" => "555"
       }
     )
     register_running_job(
@@ -2487,9 +2487,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     process_manager = nil
 
-    AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
-      AgentProcessLiveness.stub(:process_start_ticks, "555") do
-        AgentProcessLiveness.stub(:zombie?, false) do
+    AgentProcessLiveness.stub(:boot_id, "boot-1") do
+      AgentProcessLiveness.stub(:pid_namespace, "pid:[1]") do
+        AgentProcessLiveness.stub(:process_snapshot, { state: "S", started_at_ticks: "555" }) do
           perform_session_job(@session) do |job|
             process_manager = job.process_manager
             process_manager.set_process_state(orphan_pid, :running)

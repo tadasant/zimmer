@@ -486,18 +486,25 @@ That check is a PID check, which the section above rules out — for two reasons
 whose provenance was never recorded. So the provenance is recorded. `Session#record_agent_process!`
 writes `process_pid` and, in the same statement so they cannot drift, a `process_identity` holding:
 
-- the **PID namespace** of the process that spawned it (`/proc/self/ns/pid`, an inode id that differs
-  between two containers, and between a container and its replacement), and
+- the kernel's **boot id** (`/proc/sys/kernel/random/boot_id`), a random UUID regenerated on every
+  boot of every machine;
+- the **PID namespace** of the process that spawned it (`/proc/self/ns/pid`); and
 - the process's **start time** (field 22 of `/proc/<pid>/stat`), which distinguishes the process we
   started from any later process that inherits its number.
+
+The boot id is not decoration. An nsfs inode number is unique only within one running kernel:
+`pid:[4026531836]` is the *initial* namespace on every Linux host, and the numbers restart after a
+reboot — when the start-time ticks have restarted from zero too. Namespace alone would compare equal
+across two hosts running the same role, and across a reboot of one. The three together mean "this
+kernel, this boot, this namespace, this process".
 
 | Status | Means | At spawn |
 | --- | --- | --- |
 | `none` | Nothing has been recorded for this session yet | Spawns |
-| `unknown` | Recorded in a different PID namespace, or `/proc` is unavailable | Spawns, signals nothing |
-| `dead` | Same namespace, process gone — or an exited-but-unreaped zombie | Spawns |
-| `recycled` | Same namespace, number in use, but by a different process | Spawns, signals nothing |
-| `alive` | Same namespace, present, and provably the process we spawned | Terminates it, then spawns |
+| `unknown` | Recorded on another boot or in another PID namespace, or `/proc` is unavailable | Spawns, signals nothing |
+| `dead` | Same kernel and namespace, process gone — or an exited-but-unreaped zombie | Spawns |
+| `recycled` | Same kernel and namespace, number in use, but by a different process | Spawns, signals nothing |
+| `alive` | Same kernel and namespace, present, and provably the process we spawned | Terminates it, then spawns |
 
 Only `alive` acts, and it terminates rather than refusing. The call carries the user's prompt, so
 standing down here would trade a rare double-run for a silently dropped turn — the failure the whole
@@ -510,8 +517,23 @@ a fast worker picked up the next one. Terminating is right in both cases — by 
 previous turn is over — but alerting on it would be a false alarm most of the time. The record is a
 warning in the session log and a structured log line.
 
+`#spawn` is the right place for it and `#perform` is not. Every new turn's process comes through
+`#spawn`, and only new turns do: the monitoring-resume path deliberately reconnects to the recorded
+process and calls `#resume_monitoring` instead, so a check placed earlier in the job would terminate
+the very process that path exists to adopt. One case is knowingly swept up — an agent held alive
+across an MCP elicitation, which the monitoring loop keeps running on purpose so the in-flight tool
+call stays open, is terminated like any other, and that tool call is lost. A new turn is arriving
+either way, and two agents is the worse outcome.
+
 This is the guarantee of last resort, not the first line. A job that is still running its monitoring
 loop ends its own turn when ownership moves — the loop reloads the session every iteration and
 terminates its process when `running_job_id` no longer names it — and an interrupt targets a specific
 pid through `metadata["interrupt_terminate_pid"]`. Both require the old job to still be alive. The
 spawn guard is what holds when it is not.
+
+The same ownership question is asked one level down, in `ProcessLifecycleManager#handle_exit`. Several
+of its branches answer a process exit by spawning a replacement — the SIGTERM retry, the signal-death
+retry, compaction, the API-error retry — and each is right only while this job still owns the turn.
+Once `running_job_id` names another job, the exit being handled is very often one that job *caused*
+(the spawn guard terminating this turn's process is exactly that), so a respawn would put a second
+agent back on the clone the guard just cleared. `handle_exit` stands down with `:aborted` instead.
