@@ -629,8 +629,22 @@ after the servers have already been wired for that run.
 
 This has already caused an outage. When Claude Code's wording changed, account rotation stopped firing:
 the session fell through to the transient-rate-limit path, retried six times against an already-capped
-account, and failed, with no log line saying rotation should have happened. The failure mode is silent
-by construction.
+account, and failed, with no log line saying rotation should have happened.
+
+The matching is still prose-based — that part has not changed, and a *mis*match (prose that hits the
+wrong pattern, as in that outage) still looks like an ordinary classification. What no longer happens
+silently is a **no**-match: when a session dies and not one classifier recognized it,
+`UnclassifiedFailureReporter` logs loudly and pages `#eng-alerts` with the unmatched stderr and
+transcript text, so the next wording change surfaces as a Slack message rather than an
+archaeology session. The same reporter fires when a classifier and its recovery service disagree
+about the same exit.
+
+Two gaps remain inside that, deliberately. The reporter sits on the *failure* branch, so an
+unrecognized error on a Claude exit 0 or 1 — which `normal_completion_exit?` reads as a finished
+turn — still reaches `needs_input` without a word. And `CodexRetryStrategy` classifies nothing but
+a missing rollout, so every ordinary Codex failure is by construction an exit no classifier
+matched; it answers `classifies_exits? => false` and gets the loud log without a page, because
+paging on a runtime's designed-for path is how a channel gets ignored.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 

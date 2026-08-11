@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 require "automated_prompts"
 
 class ApiErrorRetryServiceTest < ActiveSupport::TestCase
@@ -123,6 +124,68 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
 
     service = create_service
     assert_not service.retryable_api_error_detected?("/tmp/test-clone")
+  end
+
+  # ===========================================================================
+  # Unclassified API error extraction (#53)
+  # ===========================================================================
+
+  test "unclassified_api_error_text returns the wording no classifier matched" do
+    setup_transcript_with_api_error("Your account has been placed in cool-down mode", error_type: "invalid_request")
+
+    service = create_service
+    text = service.unclassified_api_error_text("/tmp/test-clone")
+
+    assert_match(/cool-down mode/, text)
+    assert_match(/invalid_request/, text)
+  end
+
+  test "unclassified_api_error_text returns nil for an error this service already classifies" do
+    setup_transcript_with_api_error("500 Internal Server Error")
+
+    service = create_service
+    assert_nil service.unclassified_api_error_text("/tmp/test-clone")
+  end
+
+  # A compact recovery is an entirely ordinary event. Reporting it as an unknown
+  # failure mode would be exactly the false alarm this change must not create.
+  test "unclassified_api_error_text ignores context length errors owned by ContextLengthRetryService" do
+    setup_transcript_with_api_error("Prompt is too long", error_type: "invalid_request")
+
+    service = create_service
+    assert_nil service.unclassified_api_error_text("/tmp/test-clone")
+  end
+
+  test "unclassified_api_error_text ignores the auth signature owned by AuthRecoveryService" do
+    setup_transcript_with_api_error("Not logged in. Please run /login", error_type: "invalid_request")
+
+    service = create_service
+    assert_nil service.unclassified_api_error_text("/tmp/test-clone")
+  end
+
+  test "unclassified_api_error_text ignores regular assistant messages" do
+    setup_transcript_with_regular_message("Everything is fine")
+
+    service = create_service
+    assert_nil service.unclassified_api_error_text("/tmp/test-clone")
+  end
+
+  test "unclassified_api_error_text respects the api_error_last_checked_line cursor" do
+    setup_transcript_with_api_error("Your account has been placed in cool-down mode", error_type: "invalid_request")
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 10))
+
+    service = create_service
+    assert_nil service.unclassified_api_error_text("/tmp/test-clone")
+  end
+
+  # Extraction only — detection runs on every normal turn completion, so alerting
+  # from here would fire repeatedly for a transcript that merely contains an old
+  # unrecognized entry. ProcessLifecycleManager owns the emission.
+  test "unclassified_api_error_text never alerts on its own" do
+    setup_transcript_with_api_error("Your account has been placed in cool-down mode", error_type: "invalid_request")
+    AlertService.expects(:raise_alert).never
+
+    create_service.unclassified_api_error_text("/tmp/test-clone")
   end
 
   test "skips already-checked lines using api_error_last_checked_line" do

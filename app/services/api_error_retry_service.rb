@@ -269,7 +269,79 @@ class ApiErrorRetryService
     false
   end
 
+  # The most recent API-error entry in the transcript that NO classifier
+  # recognized, or nil when every API error present is accounted for.
+  #
+  # "Accounted for" means: retryable here (server error / rate limit / account
+  # quota), or owned by a sibling classifier — a context-length error
+  # (ContextLengthRetryService) or the rotation-induced "Not logged in"
+  # signature (AuthRecoveryService). Those two are excluded deliberately: they
+  # ARE classified, just not by this service, and reporting them as unknown
+  # would be a false alarm on an entirely ordinary recovery.
+  #
+  # What is left is the interesting case — the CLI recorded an API error whose
+  # wording matches nothing Zimmer knows. ProcessLifecycleManager reads this on
+  # the unclassified failure path so the alert carries the actual unmatched
+  # prose instead of just an exit code.
+  #
+  # This is extraction only: it never alerts on its own. Detection runs on every
+  # normal turn completion, so alerting from here would fire repeatedly for a
+  # session whose transcript simply contains an old unrecognized entry. The one
+  # place that knows the session is genuinely dying — and therefore the one
+  # place that alerts — is the failure path in ProcessLifecycleManager.
+  #
+  # @param working_directory [String] Working directory for locating transcript
+  # @return [String, nil] the unmatched error text
+  def unclassified_api_error_text(working_directory)
+    return nil unless working_directory
+
+    transcript_path = find_transcript_path(working_directory)
+    return nil unless transcript_path
+    return nil unless file_system.exists?(transcript_path)
+
+    content = file_system.read(transcript_path)
+    return nil if content.blank?
+
+    last_checked_line = session.metadata&.dig("api_error_last_checked_line") || 0
+    unmatched = nil
+
+    content.lines.each_with_index do |line, index|
+      next if (index + 1) <= last_checked_line
+      next if line.strip.blank?
+
+      begin
+        entry = JSON.parse(line)
+      rescue JSON::ParserError
+        next
+      end
+
+      next unless entry["isApiErrorMessage"] == true
+
+      error_type = entry["error"].to_s
+      message_text = extract_message_text(entry)
+      next if retryable_error?(error_type, message_text)
+      next if classified_elsewhere?(message_text)
+
+      unmatched = [ error_type.presence, message_text.presence ].compact.join(": ")
+    end
+
+    unmatched.presence
+  rescue => e
+    @logger.error("Error extracting unclassified API error", error: e.message)
+    nil
+  end
+
   private
+
+  # Whether this error text belongs to a classifier other than this service.
+  # Keeps the "unclassified" signal honest — an ordinary compact recovery or
+  # auth recovery must never be reported as an unknown failure mode.
+  def classified_elsewhere?(message_text)
+    return true if ContextLengthRetryService::CONTEXT_LENGTH_ERROR_PATTERNS.any? { |p| message_text.match?(p) }
+    return true if message_text.match?(AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN)
+
+    false
+  end
 
   # Spawn a new process and verify it stays running
   #

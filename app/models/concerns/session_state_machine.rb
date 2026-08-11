@@ -520,6 +520,76 @@ module SessionStateMachine
 
   private
 
+  # Report a transition side effect that failed and was swallowed.
+  #
+  # Every callback below runs inside an AASM `after` block and rescues its own
+  # errors, because a broken notification service must not be able to wedge a
+  # session mid-transition. That trade is still the right one — but it used to be
+  # paid entirely in silence: cleanup did not happen, the state advanced anyway,
+  # and the only trace was a log line nobody reads.
+  #
+  # `alert: true` marks the failures that leave persistent state inconsistent
+  # with nothing else to reconcile them; those page #eng-alerts. `alert: false`
+  # marks the ones that are cosmetic, best-effort by design, or already covered
+  # by a reconciling sweep — those stay log-only, because a second alert path to
+  # an event that already self-heals is just noise. Each call site says which it
+  # is and why.
+  #
+  # The dedup key is the operation, NOT the session: a systemic failure (a sick
+  # database, a dead Redis) hits this callback for every session in flight and
+  # must collapse into one alert per AlertService::DEDUP_WINDOW, not thousands.
+  #
+  # @param operation [Symbol] the callback that failed — pass `__method__`
+  # @param error [Exception] the swallowed error
+  # @param alert [Boolean] whether this failure also pages #eng-alerts
+  def report_swallowed_side_effect(operation, error, alert:)
+    Rails.logger.error(
+      "[SessionStateMachine] Failed to #{operation} for session #{id}: #{error.class}: #{error.message}"
+    )
+    return unless alert
+
+    # Post AFTER the transaction commits. AASM runs `after` callbacks inside the
+    # transition's own transaction, and AlertService posts to Slack synchronously
+    # (5s connect / 10s read). Alerting inline would hold a transaction open on
+    # this row for a network round trip during precisely the incident — a sick
+    # database — where that hurts most. after_all_transactions_commit runs the
+    # block immediately when no transaction is open, so nothing is deferred that
+    # doesn't need to be.
+    session_id = id
+    ActiveRecord.after_all_transactions_commit do
+      AlertService.raise_alert(
+        "Session state-machine side effect failed",
+        details: "`#{operation}` raised during a state transition and was swallowed, so the " \
+                 "transition completed with this side effect missing.\n\n" \
+                 "*Session:* #{session_id}\n\n" \
+                 "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
+        source: "SessionStateMachine##{operation}",
+        dedup_key: "session_state_machine_side_effect_#{operation}",
+        # The exception itself, not a hand-copied `e.message`: the backtrace is
+        # the high-signal part and it is sitting right here at the rescue.
+        error: error
+      )
+    rescue => alert_error
+      # Runs post-commit, outside the outer rescue's reach.
+      Rails.logger.error(
+        "[SessionStateMachine] Failed to alert on swallowed side effect #{operation}: #{alert_error.message}"
+      )
+    end
+  rescue => reporting_error
+    # Reporting must never become a new way for a transition to blow up. This
+    # runs inside an AASM `after` block, so an exception escaping here would
+    # abort the transition mid-flight — the exact wedge these rescues exist to
+    # prevent. The inner rescue covers the case where the logger itself is what
+    # is broken, which is also the most likely reason the line above raised.
+    begin
+      Rails.logger.error(
+        "[SessionStateMachine] Failed to report swallowed side effect #{operation}: #{reporting_error.message}"
+      )
+    rescue StandardError
+      nil
+    end
+  end
+
   # Reset the elapsed time counter by updating last_timeline_entry_at to current time
   # This ensures the time-since Stimulus controller shows fresh "0m" instead of
   # stale time from previous runs when transitioning to running state.
@@ -528,7 +598,9 @@ module SessionStateMachine
   def reset_elapsed_time_counter
     update_column(:last_timeline_entry_at, Time.current)
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to reset elapsed time counter: #{e.message}"
+    # Log-only: the counter is a display timestamp. A stale "12m" on a freshly
+    # started session is cosmetic and the next transition overwrites it.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Record when the session was archived. Runs as a state machine callback
@@ -536,7 +608,10 @@ module SessionStateMachine
   def set_archived_at
     update_column(:archived_at, Time.current)
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to set archived_at: #{e.message}"
+    # Alert: archived_at is what the trash UI and DeferredCloneCleanupJob both
+    # date from. A session archived with a nil archived_at is inconsistent
+    # persistent state and nothing back-fills it.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Say so when a session whose goal is about opening a pull request reaches a
@@ -569,7 +644,11 @@ module SessionStateMachine
       level: "info"
     )
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to log state change: #{e.message}"
+    # Log-only, deliberately. This fires on every transition, so it is the single
+    # noisiest callback here — and the failure it reports (losing one timeline
+    # line) changes no state. Anything systemic enough to break it also breaks
+    # the alerting callbacks below, which do page.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Check if clone directory exists
@@ -584,7 +663,10 @@ module SessionStateMachine
   def cleanup_running_job
     update_column(:running_job_id, nil) if running_job_id.present?
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to cleanup running job: #{e.message}"
+    # Alert: a needs_input/failed/archived session still carrying a running_job_id
+    # looks owned to the orphan sweep and to ownership-supersede checks, which is
+    # how a session ends up unable to be resumed.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Preserve debug information on failure
@@ -624,7 +706,11 @@ module SessionStateMachine
 
     Rails.logger.info "[SessionStateMachine] Cleared stale MCP failure metadata for session #{id}: #{keys_to_clear.join(', ')}"
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to clear MCP failure metadata: #{e.message}"
+    # Alert: this is the callback whose whole purpose is to stop the *next* run
+    # from re-failing on a stale should_fail_session flag. Swallowed, the resume
+    # succeeds and the session immediately fails again for a reason that is no
+    # longer true.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # A completed turn is the only unambiguous evidence that auth recovery worked:
@@ -642,7 +728,10 @@ module SessionStateMachine
 
     update_column(:metadata, metadata.except(*keys))
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to clear auth recovery budget: #{e.message}"
+    # Alert: the budget is only ever cleared here. Swallowed, a long-running
+    # session accumulates recovery attempts it has already earned back and is
+    # eventually parked for an outage that has long since cleared.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Execute a deferred sleep if the session was flagged for pending sleep.
@@ -656,7 +745,10 @@ module SessionStateMachine
     sleep!
     update_column(:metadata, metadata.except("pending_sleep"))
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to execute pending sleep: #{e.message}"
+    # Alert: the session asked to sleep and did not. It sits in needs_input on
+    # the user's homepage as if it wanted attention, and the pending_sleep flag
+    # survives to surprise-sleep it after some later turn.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Cancel any pending one-time wake-up conditions that were targeting this
@@ -683,10 +775,10 @@ module SessionStateMachine
       )
     end
   rescue => e
-    Rails.logger.error(
-      "[SessionStateMachine] Failed to cancel pending wake-up triggers for session #{id}: #{e.message}"
-    )
-    # Don't raise — trigger cleanup failures shouldn't block the resume
+    # Don't raise — trigger cleanup failures shouldn't block the resume. But do
+    # alert: an uncancelled one-time wake stays armed and fires later against an
+    # already-active session, injecting a wake-up prompt into live work.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Unfired trigger conditions that could still wake this session: conditions on
@@ -714,7 +806,9 @@ module SessionStateMachine
     update_column(:metadata, metadata.except("pending_sleep"))
     Rails.logger.info "[SessionStateMachine] Cleared pending_sleep on resume for session #{id}"
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to clear pending_sleep: #{e.message}"
+    # Alert: the user explicitly said "keep this active" and the stale auto-sleep
+    # intent survived. The next pause silently drops the session to waiting.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Mark that this session's needs_input state is caused by a pending MCP
@@ -725,7 +819,10 @@ module SessionStateMachine
     update_column(:metadata, (metadata || {}).merge("blocked_on_elicitation" => true))
     Rails.logger.info "[SessionStateMachine] Set blocked_on_elicitation marker for session #{id}"
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to set blocked_on_elicitation marker: #{e.message}"
+    # Alert: without the marker the session is in needs_input with no record of
+    # why, so `unblock_from_elicitation`'s guard can never fire. Resolving the
+    # elicitation leaves the agent process blocked with nothing to flip it back.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Clear the blocked_on_elicitation marker (on unblock or on a real resume).
@@ -735,7 +832,11 @@ module SessionStateMachine
     update_column(:metadata, metadata.except("blocked_on_elicitation"))
     Rails.logger.info "[SessionStateMachine] Cleared blocked_on_elicitation marker for session #{id}"
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to clear blocked_on_elicitation marker: #{e.message}"
+    # Log-only: a stranded marker is exactly what CleanupExpiredElicitationsJob
+    # reconciles via #clear_stale_elicitation_block!. Alerting here would page
+    # for a condition that already has a sweep, which is the noise this change
+    # is trying not to create.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Re-render the lost-elicitation banner slot on any open session page. The
@@ -758,7 +859,9 @@ module SessionStateMachine
 
     Rails.logger.info "[SessionStateMachine] Cleared paused_by metadata for session #{id}"
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to clear paused_by metadata: #{e.message}"
+    # Log-only: paused_by drives a UI label ("paused by you"). A stale one is
+    # wrong on screen but drives no behavior, and the next pause overwrites it.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Mark all notifications for this session as stale and broadcast badge update.
@@ -773,8 +876,10 @@ module SessionStateMachine
     # Broadcast badge update so the count decrements in real-time
     BroadcastService.new.notification_badge(Notification.pending_count)
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to mark notifications as stale: #{e.message}"
-    # Don't raise - notification failures shouldn't block state transitions
+    # Log-only: the notification queue is a derived surface with its own
+    # lifecycle — the next action on the session re-runs this, and archival
+    # destroys the rows outright. A lingering badge is not inconsistent state.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Dismiss (destroy) all notifications for this session and broadcast badge update.
@@ -787,8 +892,10 @@ module SessionStateMachine
     # Broadcast badge update so the count decrements in real-time
     BroadcastService.new.notification_badge(Notification.pending_count)
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to dismiss notifications: #{e.message}"
-    # Don't raise - notification failures shouldn't block state transitions
+    # Log-only, for the same reason as mark_notifications_stale: the rows are
+    # cascade-destroyed with the session and the badge count is recomputed on
+    # every load, so an undismissed notification self-corrects.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # When a watched session is archived, ao_event conditions scoped to it
@@ -842,11 +949,11 @@ module SessionStateMachine
       "destroyed conditions #{destroyed_condition_ids.inspect}"
     )
   rescue => e
-    Rails.logger.error(
-      "[SessionStateMachine] Failed to cleanup watched-session ao_event triggers " \
-      "for archived session #{id}: #{e.class}: #{e.message}"
-    )
-    # Don't raise - cleanup failures shouldn't block archival
+    # Don't raise - cleanup failures shouldn't block archival. Alert, though:
+    # the leftover conditions target a session that can never transition again,
+    # so they are orphans no sweep collects, and any session waiting on one
+    # sleeps until its deadline backstop instead of being woken.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Fire Zimmer event triggers when session transitions to a watchable state.
@@ -864,10 +971,19 @@ module SessionStateMachine
     session_id = id
     ActiveRecord.after_all_transactions_commit do
       AoEventTriggerJob.perform_later(event_name, session_id)
+    rescue => e
+      # The rescue belongs INSIDE the block. after_all_transactions_commit defers
+      # this body past the transition's transaction, so a method-level rescue
+      # would only ever catch a failure to *register* the callback — never the
+      # enqueue itself, which is the failure that matters and the one this
+      # callback already suffered silently once (see the NoMethodError note
+      # above). A swallowed enqueue means every watcher of this session misses
+      # the transition, with nothing to retry it.
+      report_swallowed_side_effect(__method__, e, alert: true)
     end
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to enqueue Zimmer event trigger job (#{event_name}): #{e.message}"
-    # Don't raise - trigger failures shouldn't block state transitions
+    # Don't raise - trigger failures shouldn't block state transitions.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Enqueue a push notification when the session reaches the terminal `failed`
@@ -881,8 +997,10 @@ module SessionStateMachine
   def enqueue_failure_push_notification
     SendPushNotificationJob.perform_later(id, :session_failed)
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to enqueue failure push notification job: #{e.message}"
-    # Don't raise - notification failures shouldn't block state transitions
+    # Log-only: push delivery is best-effort by construction (WebPushService
+    # no-ops without subscriptions or VAPID keys), and the failed session is
+    # already on the user's homepage queue regardless.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Debounce window for needs_input push notifications. Sessions sometimes
@@ -912,8 +1030,9 @@ module SessionStateMachine
       .set(wait: NEEDS_INPUT_DEBOUNCE)
       .perform_later(id, :needs_input, nil, marker)
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to enqueue debounced push notification job: #{e.message}"
-    # Don't raise - notification failures shouldn't block state transitions
+    # Log-only, as with the failure push: best-effort delivery, and the homepage
+    # action queue is the durable surface for a session needing input.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Increment and persist the needs_input transition counter, returning the
@@ -940,8 +1059,9 @@ module SessionStateMachine
 
     SessionTitleJob.perform_later(id)
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to enqueue title/category inference: #{e.message}"
-    # Don't raise - inference enqueue failures shouldn't block state transitions
+    # Log-only: a missing title or category is cosmetic, and the next pause or
+    # fail transition re-runs this for as long as either is still pending.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # The ONE automatic trigger for the Status panel's blurb: the session coming
@@ -979,7 +1099,11 @@ module SessionStateMachine
     update_column(:trash_after, nil)
     Rails.logger.info "[SessionStateMachine] Cleared trash expiry for session #{id}"
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to clear trash expiry: #{e.message}"
+    # Alert: this runs on the three unarchive events. A restored session that
+    # keeps its trash_after is queued for deletion again — EmptyTrashJob will
+    # re-trash the very session the user just pulled out of the trash, and its
+    # clone with it.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Set a temporary trash_after as safety net and enqueue deferred cleanup.
@@ -991,9 +1115,9 @@ module SessionStateMachine
     enqueue_deferred_cleanup
     Rails.logger.info "[SessionStateMachine] Set trash expiry and enqueued cleanup for session #{id}"
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to set trash expiry: #{e.message}"
-    # Don't raise - expiry failures shouldn't block archival
-    # StaleCloneCleanupJob will catch sessions where trash_after is nil as a safety net
+    # Log-only: StaleCloneCleanupJob catches sessions where trash_after is nil,
+    # which is the documented safety net for exactly this failure.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Enqueue the deferred cleanup job to run after the undo window.
@@ -1002,7 +1126,8 @@ module SessionStateMachine
     archived_at_iso = archived_at&.iso8601 || Time.current.iso8601
     DeferredCloneCleanupJob.set(wait: DeferredCloneCleanupJob::CLEANUP_DELAY).perform_later(id, archived_at_iso)
   rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to enqueue deferred cleanup: #{e.message}"
-    # If enqueue fails, EmptyTrashJob will handle cleanup after trash_after expires
+    # Log-only: if the enqueue fails, EmptyTrashJob handles cleanup once
+    # trash_after expires — again a documented, existing fallback.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 end

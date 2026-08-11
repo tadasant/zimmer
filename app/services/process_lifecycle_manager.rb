@@ -439,10 +439,22 @@ class ProcessLifecycleManager
         return handle_signal_death(status, working_dir)
       end
 
-      # General failure case
+      # General failure case — the unclassified branch.
+      #
+      # Every check above is a pattern match against the runtime's own prose or
+      # exit convention. Reaching here means not one of them recognized this
+      # death: it is not a normal completion, not a SIGTERM, not a signal death,
+      # and neither stderr nor the transcript carries a context-length, auth,
+      # failed-resume, or retryable-API signature. That is either a genuinely
+      # novel failure or — the case that has actually bitten us — a classifier
+      # that went stale when the CLI reworded a message.
+      #
+      # The session still fails exactly as before; the difference is that it no
+      # longer does so quietly. See UnclassifiedFailureReporter.
       error_msg = exit_status_description(status)
       add_log("Process failed with #{error_msg}", level: "error")
       surface_stderr_to_session_log
+      report_unclassified_exit(error_msg, working_dir)
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: error_msg)
     rescue => e
@@ -633,6 +645,7 @@ class ProcessLifecycleManager
       ExitDecision.new(action: :aborted)
     else
       # :not_applicable shouldn't happen since we checked retry_strategy.context_length_error? first
+      report_recovery_contradiction("handle_context_length_error", compact_result)
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: "Context length error recovery failed")
     end
@@ -938,8 +951,6 @@ class ProcessLifecycleManager
     exitstatus.present? && exitstatus > 128
   end
 
-  # Surface the tail of the process's stderr to the session log on a genuine
-  # failure so the user sees the actual error (e.g. a Codex "no rollout found"
   # The stderr log to tail after a retry service respawned the process out of
   # band. Those services hand back only a pid, so the path has to be rebuilt —
   # from the session's working directory, named by the adapter actually driving
@@ -949,19 +960,111 @@ class ProcessLifecycleManager
     @cli_adapter.class.stderr_log_path(session.working_directory)
   end
 
+  # Surface the tail of the process's stderr to the session log on a genuine
+  # failure so the user sees the actual error (e.g. a Codex "no rollout found"
   # message) instead of a blank turn. No-op when there is no stderr log or it is
   # empty. Failures here are non-fatal — they must never mask the failure itself.
   def surface_stderr_to_session_log
-    return unless @stderr_log_path
-    return unless @file_system.exists?(@stderr_log_path)
+    tail = stderr_tail
+    return if tail.blank?
 
-    content = @file_system.read(@stderr_log_path)
-    return if content.blank?
-
-    tail = content.strip.split("\n").last(STDERR_TAIL_LINES).join("\n")
     add_log("Process stderr:\n#{tail}", level: "error")
   rescue => e
     @logger.error("Failed to surface stderr to session log", error: e.message)
+  end
+
+  # The trailing STDERR_TAIL_LINES lines of the process's stderr log, or nil when
+  # there is none. Shared by the session-log surfacing above and the unclassified
+  # failure alert, which needs the same text as its "unmatched output".
+  def stderr_tail
+    return nil unless @stderr_log_path
+    return nil unless @file_system.exists?(@stderr_log_path)
+
+    content = @file_system.read(@stderr_log_path)
+    return nil if content.blank?
+
+    content.strip.split("\n").last(STDERR_TAIL_LINES).join("\n")
+  rescue => e
+    @logger.error("Failed to read stderr tail", error: e.message)
+    nil
+  end
+
+  # Announce an exit that no classifier recognized, carrying the output the
+  # patterns failed to match: the stderr tail plus, when the runtime can supply
+  # one, the most recent transcript error entry it could not classify.
+  #
+  # Failures here are non-fatal — an alert that cannot be raised must never
+  # change how the session itself is failed.
+  def report_unclassified_exit(error_msg, working_dir)
+    runtime = session&.agent_runtime.presence || "unknown runtime"
+
+    # A runtime whose strategy classifies nothing (Codex, today) reaches this
+    # branch on EVERY ordinary failure. Paging on its designed-for path would be
+    # a standing hourly alert for expected behavior, so it logs and stops.
+    unless runtime_classifies_exits?
+      @logger.warn(
+        "Unclassified process exit on a runtime with no exit classifiers — logging without alerting",
+        runtime: runtime, exit: error_msg
+      )
+      return
+    end
+
+    UnclassifiedFailureReporter.report(
+      kind: "process exit",
+      # The runtime belongs in the summary because the summary IS the dedup key.
+      # Without it a routine failure on one runtime would hold the key for an
+      # hour and suppress a genuinely novel failure on another sharing its exit
+      # code.
+      summary: "#{runtime} session process died with #{error_msg} and no recovery classifier matched",
+      source: "ProcessLifecycleManager#handle_exit",
+      session: session,
+      output: [ stderr_tail, unclassified_runtime_error_text(working_dir) ].compact.join("\n\n").presence,
+      logger: @logger
+    )
+  rescue => e
+    @logger.error("Failed to report unclassified process exit", error: e.message)
+  end
+
+  # Whether this runtime's strategy answers real questions about an exit, so that
+  # "nothing matched" is genuinely informative. Strategies predating the question
+  # are assumed to classify — the conservative answer, since it keeps alerting.
+  def runtime_classifies_exits?
+    return true unless retry_strategy.respond_to?(:classifies_exits?)
+
+    retry_strategy.classifies_exits?
+  rescue => e
+    @logger.error("Failed to ask the retry strategy whether it classifies exits", error: e.message)
+    true
+  end
+
+  # A classifier said a recovery path applied, then that path's service reported
+  # it did not — the two disagree about the same exit. Every such branch is
+  # commented "shouldn't happen" and each one fails the session, so the
+  # disagreement is exactly the kind of unknown that must announce itself rather
+  # than land as a bare "recovery failed" string in the session log.
+  def report_recovery_contradiction(handler, result)
+    UnclassifiedFailureReporter.report(
+      kind: "recovery contradiction",
+      summary: "#{handler} was selected by its classifier but the recovery service returned #{result}",
+      source: "ProcessLifecycleManager##{handler}",
+      session: session,
+      output: stderr_tail,
+      logger: @logger
+    )
+  rescue => e
+    @logger.error("Failed to report recovery contradiction", error: e.message)
+  end
+
+  # The runtime's own unmatched error prose, if its retry strategy can produce
+  # one. Strategies that cannot (Codex, whose transcript envelope parsing is not
+  # characterized yet) return nil and the alert carries stderr alone.
+  def unclassified_runtime_error_text(working_dir)
+    return nil unless retry_strategy.respond_to?(:unclassified_error_text)
+
+    retry_strategy.unclassified_error_text(working_dir: working_dir)
+  rescue => e
+    @logger.error("Failed to read unclassified runtime error text", error: e.message)
+    nil
   end
 
   # Runtime-specific exit classifier supplied by the CLI adapter.
@@ -1031,6 +1134,7 @@ class ProcessLifecycleManager
       ExitDecision.new(action: :aborted)
     when :not_applicable
       # Shouldn't happen since we checked retry_strategy.api_error_for_retry? first, but handle gracefully
+      report_recovery_contradiction("handle_retryable_api_error", retry_result)
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: "API server error recovery failed")
     end
@@ -1102,6 +1206,7 @@ class ProcessLifecycleManager
       ExitDecision.new(action: :aborted)
     when :not_applicable
       # Shouldn't happen since we checked retry_strategy.auth_recovery_needed? first, but handle gracefully
+      report_recovery_contradiction("handle_auth_recovery", result)
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: "Auth recovery failed")
     end

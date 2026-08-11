@@ -1690,7 +1690,110 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not_includes Session.blocked_on_elicitation.to_a, sessions(:waiting)
   end
 
+  # ===========================================================================
+  # Swallowed side effects announce themselves (#73)
+  # ===========================================================================
+
+  # The trade the bare rescues make is still the right one: a broken side effect
+  # must not wedge a session mid-transition. What changed is that the ones that
+  # leave inconsistent persistent state now page instead of only logging.
+  test "a swallowed side effect that leaves inconsistent state raises an alert" do
+    session = sessions(:running)
+    session.update!(status: :running, running_job_id: "job-123")
+
+    session.stubs(:update_column).raises(StandardError, "database is unhappy")
+    run_deferred_commit_callbacks_inline
+
+    alerted = []
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alerted << [ title, opts[:source], opts[:dedup_key] ]
+      true
+    end.returns(true)
+
+    session.pause!
+
+    assert_equal :needs_input, session.status.to_sym,
+      "the transition must still complete — swallowing is the whole point"
+    cleanup = alerted.find { |_title, source, _key| source == "SessionStateMachine#cleanup_running_job" }
+    assert cleanup, "expected cleanup_running_job to page, got: #{alerted.inspect}"
+    assert_equal "Session state-machine side effect failed", cleanup[0]
+    assert_equal "session_state_machine_side_effect_cleanup_running_job", cleanup[2]
+  end
+
+  # The dedup key must key on the callback, not the session: a sick database
+  # hits this for every session in flight and must collapse to one alert.
+  test "the alert dedup key is per-callback, not per-session" do
+    run_deferred_commit_callbacks_inline
+    keys = []
+    AlertService.stubs(:raise_alert).with do |_title, opts|
+      keys << opts[:dedup_key]
+      true
+    end.returns(true)
+
+    [ sessions(:running), sessions(:active_session) ].each do |session|
+      session.update!(status: :running, running_job_id: "job-#{session.id}")
+      session.stubs(:update_column).raises(StandardError, "database is unhappy")
+      session.pause!
+    end
+
+    cleanup_keys = keys.select { |k| k == "session_state_machine_side_effect_cleanup_running_job" }
+    assert_equal 2, cleanup_keys.size
+    assert_equal 1, cleanup_keys.uniq.size
+  end
+
+  # The other half of the split. Push delivery is best-effort by construction and
+  # the failed session is on the homepage queue regardless, so it stays log-only —
+  # adding a second alert path to an event that already self-heals is just noise.
+  test "a best-effort side effect failure stays log-only" do
+    session = sessions(:running)
+    session.update!(status: :running)
+
+    run_deferred_commit_callbacks_inline
+    SendPushNotificationJob.stubs(:perform_later).raises(StandardError, "queue is down")
+    AlertService.expects(:raise_alert).never
+
+    session.fail!
+
+    assert_equal :failed, session.status.to_sym
+  end
+
+  # These rescues run inside AASM `after` blocks, so an exception escaping the
+  # reporter would abort the transition mid-flight — the exact wedge the bare
+  # rescues exist to prevent.
+  test "a broken logger cannot wedge a transition through the reporter" do
+    session = sessions(:running)
+    session.update!(status: :running, running_job_id: "job-123")
+    session.stubs(:update_column).raises(StandardError, "database is unhappy")
+    Rails.logger.stubs(:error).raises(StandardError, "logger is broken")
+    AlertService.stubs(:raise_alert).returns(true)
+
+    assert_nothing_raised { session.pause! }
+    assert_equal :needs_input, session.status.to_sym
+  end
+
+  # An alert that cannot be posted must not become a second way for the
+  # transition to blow up. This covers the AlertService half; the test above
+  # covers the logger half.
+  test "a broken AlertService cannot wedge a transition" do
+    session = sessions(:running)
+    session.update!(status: :running, running_job_id: "job-123")
+    session.stubs(:update_column).raises(StandardError, "database is unhappy")
+    run_deferred_commit_callbacks_inline
+    AlertService.stubs(:raise_alert).raises(StandardError, "slack is on fire")
+
+    assert_nothing_raised { session.pause! }
+    assert_equal :needs_input, session.status.to_sym
+  end
+
   private
+
+  # The alert is posted from an after_all_transactions_commit block so the Slack
+  # round trip happens outside the transition's transaction. Transactional tests
+  # never commit, so the block would never run — this makes it run inline, which
+  # is exactly what production does when no transaction is open.
+  def run_deferred_commit_callbacks_inline
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+  end
 
   def create_blocking_elicitation(session)
     Elicitation.create!(

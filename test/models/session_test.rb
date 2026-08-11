@@ -3337,6 +3337,44 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal "OAuth authorization required: tally", session.failure_summary
   end
 
+  # #127: the variable names were already persisted by AgentSessionJob and had
+  # zero readers, so the user saw "Air secret unresolvable" and nothing else.
+  test "failure_summary names the missing secrets for air_secret_unresolvable" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
+      metadata: {
+        "failure_reason" => "air_secret_unresolvable",
+        "unresolved_variables" => [ "REFRAME_MCP_PLATFORM_API_KEY", "TALLY_TOKEN" ]
+      }
+    )
+
+    summary = session.failure_summary
+    assert_match(/REFRAME_MCP_PLATFORM_API_KEY/, summary)
+    assert_match(/TALLY_TOKEN/, summary)
+    assert_match(/mcp_secrets/, summary, "the user needs the remediation, not just the name")
+    assert_no_match(/Air secret unresolvable/, summary)
+  end
+
+  test "failure_summary falls back to a remediation hint when no variables were recorded" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
+      metadata: { "failure_reason" => "air_secret_unresolvable" }
+    )
+
+    summary = session.failure_summary
+    assert_match(/mcp_secrets/, summary)
+    assert_no_match(/Air secret unresolvable/, summary)
+  end
+
+  test "unresolved_variable_names ignores blank entries" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
+      metadata: { "failure_reason" => "air_secret_unresolvable", "unresolved_variables" => [ "A_KEY", "", nil ] }
+    )
+
+    assert_equal [ "A_KEY" ], session.unresolved_variable_names
+  end
+
   test "failure_summary humanizes other failure reasons" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
