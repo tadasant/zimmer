@@ -284,12 +284,6 @@ jobs:
           # completely healthy while the store never turns on. Unset is survivable by
           # design: the chain falls back to staging.yml.enc and nothing raises.
           STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON }}
-          # GitHub token for the `gh` CLI on the box, for the NON-PRIMARY tadasant-test
-          # account (never Tadas's personal token). Authenticates GithubTriggerPollerJob's
-          # `gh api search/issues` path AND git's `gh auth git-credential` clone helper. Unset is
-          # survivable -- the poller degrades to "skip" -- so the preflight warns, it does
-          # not exit. Mint it with least-privilege scopes; see .kamal/secrets.staging.
-          STAGING_GH_TOKEN: ${{ secrets.STAGING_GH_TOKEN }}
           # Observability. STAGING_-prefixed on purpose -- see .kamal/secrets.staging.
           # STAGING_SENTRY_DSN_BACKEND must be the DSN of a SEPARATE GlitchTip project
           # (zimmer-staging), never production's: GlitchTip's Slack alert has no
@@ -366,16 +360,6 @@ jobs:
             echo "::warning::Parameter Store is OFF: STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON is unset."
             echo "::warning::Staging boots fine and every \${VAR} resolves from staging.yml.enc as before --"
             echo "::warning::the store link is simply absent. The Connectors page names the reason."
-          fi
-          # Same shape as the checks above: unset is survivable but invisible. Without a
-          # gh credential, GithubTriggerPollerJob runs every minute but skips every tick
-          # (github_label / github_issue triggers silently never fire), and private git
-          # clones fail. Report set/unset only -- GitHub masks the value anyway.
-          if [ -n "${STAGING_GH_TOKEN:-}" ]; then
-            echo "✅ gh CLI auth ON (GH_TOKEN set from STAGING_GH_TOKEN; poller + git clones authenticate)"
-          else
-            echo "::warning::gh CLI is UNAUTHENTICATED: STAGING_GH_TOKEN is unset, so GH_TOKEN is blank."
-            echo "::warning::GithubTriggerPollerJob will skip every tick and private git clones will fail."
           fi
           echo "-------------------------------"
           kamal accessory boot all -d staging
