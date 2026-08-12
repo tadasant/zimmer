@@ -11,10 +11,17 @@ supply Postgres and Redis yourself. The containerized environment in
 app, Postgres, and Redis — in Docker, so you need nothing on your host but Docker
 itself.
 
-It exists mainly so **many sessions can run in parallel**. Each session is its own
-Compose project, in its own git clone, on its own database, on its own
-dynamically-assigned host port. That isolation is what lets a fleet of agent
-sessions build against Zimmer at once without colliding.
+It exists mainly so **many stacks can run in parallel**. Each is its own Compose
+project, in its own git clone, on its own database, on its own dynamically-assigned
+host port.
+
+:::caution[Zimmer's own agent sessions cannot use this]
+A session runs inside the Kamal worker container as uid 1000 and cannot reach the
+Docker socket, so it can start no Compose stack at all — see
+[Known limitations](/limitations/#agent-sessions-cannot-reach-the-docker-socket-so-the-containerized-dev-stack-is-dead-code).
+This page describes a workstation with Docker. A session boots the app with
+[`bin/agent-dev`](/sessions/dev-server/) instead.
+:::
 
 ## Prerequisites
 
@@ -90,12 +97,16 @@ Postgres data lives in a named volume. A plain `down` orphans it; always:
 docker compose -f .agent-containers/docker-compose.dev.yml down -v
 ```
 
-`ac.sh destroy` does this for you. Stacks are also reaped automatically:
-`DockerCleanupJob` stops any Compose project named `zimmer-dev-*` (both the manual
-`zimmer-dev-local` and per-session `zimmer-dev-<name>`) that has outlived
-`MAX_DEV_SERVER_AGE`, every 6 hours; and `DockerComposeCleanupService` tears down a
-manual `zimmer-dev-local` stack by compose-file path when its Zimmer-managed clone
-is cleaned up. See [Background jobs](/operate/background-jobs/).
+`ac.sh destroy` does this for you.
+
+Zimmer also *intends* to reap stacks automatically — `DockerCleanupJob` stops any
+Compose project named `zimmer-dev-*` that has outlived `MAX_DEV_SERVER_AGE` every 6
+hours, and `DockerComposeCleanupService` tears down a manual `zimmer-dev-local` stack
+by compose-file path when its clone is cleaned up (see
+[Background jobs](/operate/background-jobs/)). On a deployed Zimmer neither can run:
+both shell out to `docker` from the worker container, which cannot reach the socket,
+and `DockerCleanupJob` treats the resulting non-zero status as "nothing to reap".
+Clean up by hand.
 
 The full playbook — infrastructure, `ac.sh`, and browser checks — is in
 `.agent-containers/VERIFY.md`.

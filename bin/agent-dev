@@ -11,27 +11,29 @@
 #
 # This script is the boot path that works there. It:
 #
-#   1. Repairs the clone's bundle. BundleInstallJob installs gems into
+#   1. Points the app at the shared dev Postgres accessory (`zimmer-devdb`)
+#      instead of the deployment's real database, with a database name derived
+#      from the clone directory so parallel sessions never collide.
+#   2. Repairs the clone's bundle. BundleInstallJob installs gems into
 #      vendor/bundle in the background while the agent is already working, and
 #      `discard_on StandardError` means an interrupted install (a deploy, a
 #      SIGTERM) leaves the clone permanently half-installed with no retry and no
 #      error at the prompt -- every `bin/rails` invocation then dies with
 #      Bundler::GemNotFound. `bundle check || bundle install` heals that.
-#   2. Points the app at the shared dev Postgres accessory (`zimmer-devdb`)
-#      instead of the deployment's real database, with a database name derived
-#      from the clone directory so parallel sessions never collide.
 #   3. Prepares the database, builds the CSS once (no foreman, no watcher), and
 #      starts Rails on a free port.
 #
 # Usage:
-#   bin/agent-dev                 # pick a free port in 3000..3099
-#   PORT=4000 bin/agent-dev       # explicit port
-#   bin/agent-dev --skip-server   # prepare everything, don't boot
+#   bin/agent-dev                        # pick a free port in 3000..3099
+#   PORT=4000 bin/agent-dev              # explicit port
+#   bin/agent-dev --skip-server          # prepare everything, don't boot
+#   bin/agent-dev --print-database-name  # resolve the clone's database name and stop
 #
 # Overrides (all optional):
 #   ZIMMER_DEV_DB_HOST / _PORT / _USERNAME / _PASSWORD / _SSLMODE
 #                                                        where the dev Postgres is
 #   DATABASE_NAME                                        override the derived name
+#   BINDING                                              bind address (default 127.0.0.1)
 #
 set -euo pipefail
 
@@ -39,21 +41,20 @@ cd "$(cd "$(dirname "$0")/.." && pwd)"
 
 say() { printf '\n== %s ==\n' "$1"; }
 
-# ---------------------------------------------------------------------------
-# Bundler
-#
-# CliSpawnEnv deliberately strips BUNDLE_* from the agent's environment so the
-# session's Ruby does not resolve gems out of Zimmer's own bundle. That is
-# correct, and it means the clone must have its own vendor/bundle -- which is
-# exactly what BundleInstallJob builds, and exactly what a half-finished install
-# leaves broken.
-# ---------------------------------------------------------------------------
-say "Checking gems"
-if ! bundle check >/dev/null 2>&1; then
-  echo "Bundle is incomplete (an interrupted BundleInstallJob leaves it this way). Installing..."
-  bundle install --jobs 4 --retry 3
-fi
-echo "Bundle OK"
+case "${1:-}" in
+  ""|--skip-server|--print-database-name) ;;
+  *)
+    echo "usage: bin/agent-dev [--skip-server | --print-database-name]" >&2
+    exit 64
+    ;;
+esac
+
+# Loopback by default. Every session shares the worker container's network
+# namespace, so 127.0.0.1 already reaches this server from anything that needs it --
+# curl, Playwright, another process in the same container. Binding 0.0.0.0 would also
+# offer a dev app holding RAILS_MASTER_KEY and the real REDIS_URL to every other
+# container on the Kamal bridge, which nothing here needs. Override deliberately.
+BINDING="${BINDING:-127.0.0.1}"
 
 # ---------------------------------------------------------------------------
 # Database wiring
@@ -73,18 +74,74 @@ export DATABASE_USERNAME="${ZIMMER_DEV_DB_USERNAME:-zimmerdev}"
 export DATABASE_PASSWORD="${ZIMMER_DEV_DB_PASSWORD:-zimmerdev}"
 export DATABASE_SSLMODE="${ZIMMER_DEV_DB_SSLMODE:-disable}"
 
+# DATABASE_URL outranks every discrete var above: Rails merges it over the primary
+# config, so one left in the environment would send us somewhere other than the host
+# printed below. It also silently drops the test pair -- ActiveRecord's
+# `each_current_configuration` only includes the test configs when DATABASE_URL is
+# absent, so `db:prepare` would create the development databases and skip
+# `<name>_test`, quietly undoing the namespacing this script exists to do.
+unset DATABASE_URL
+
 # One set of databases per clone, so two sessions booting at once do not migrate
-# over each other. Postgres caps identifiers at 63 bytes and database.yml appends
-# up to "_test_cable" (11) to this, so cap the value at 52.
+# over each other. Postgres caps identifiers at 63 bytes and database.yml appends up
+# to "_test_cable" (11), so what we set has to fit in 52.
+#
+# Keep the TAIL, not the head. Clone directories are
+# `<repo>-<branch>-<timestamp>-<hex8>` (GitCloneService), and everything that makes
+# one clone different from another sits at the END. Truncating from the front throws
+# the timestamp and the random hex away, so two clones of the same repo and branch
+# would share a database and silently run each other's migrations -- the exact
+# failure this naming exists to prevent.
+MAX_DATABASE_NAME=52
 if [ -z "${DATABASE_NAME:-}" ]; then
-  clone_slug=$(basename "$PWD" | tr -c 'a-zA-Z0-9' '_' | tr 'A-Z' 'a-z')
-  DATABASE_NAME="zimmer_dev_${clone_slug}"
-  DATABASE_NAME=${DATABASE_NAME:0:52}
-  # A truncation can land mid-separator; a trailing underscore is legal but reads
-  # like a mistake in every psql listing.
+  # Drop basename's newline BEFORE the complement translation, or `tr` turns it into
+  # a trailing underscore on every single run.
+  clone_slug=$(basename "$PWD" | tr -d '\n' | tr -c 'a-zA-Z0-9' '_' | tr 'A-Z' 'a-z')
+  prefix="zimmer_dev_"
+  keep=$((MAX_DATABASE_NAME - ${#prefix}))
+  # Guard the cut: bash yields the EMPTY string for a negative offset longer than the
+  # value, so an unguarded `${clone_slug: -keep}` silently names every short-named
+  # clone `zimmer_dev`.
+  if [ ${#clone_slug} -gt "$keep" ]; then
+    clone_slug=${clone_slug: -keep}
+  fi
+  DATABASE_NAME="${prefix}${clone_slug}"
+  # A tail cut can land mid-separator at either end. Legal, but it reads like a
+  # mistake in every psql listing.
   while [ "${DATABASE_NAME%_}" != "$DATABASE_NAME" ]; do DATABASE_NAME="${DATABASE_NAME%_}"; done
+elif [ ${#DATABASE_NAME} -gt $MAX_DATABASE_NAME ]; then
+  # An explicit override skips the derivation, so it also skips the cap. Postgres
+  # would truncate it to 63 bytes without saying so, possibly onto another clone's
+  # name -- refuse instead.
+  echo "DATABASE_NAME is ${#DATABASE_NAME} characters; the maximum is ${MAX_DATABASE_NAME}" >&2
+  echo "(config/database.yml appends up to _test_cable, and Postgres truncates past 63.)" >&2
+  exit 1
 fi
 export DATABASE_NAME
+
+# Resolving the name is cheap and every other step is not, so this mode is usable as
+# a plain function -- which is how the test suite checks the derivation against the
+# shell that actually runs it, rather than against a Ruby restatement of it.
+if [ "${1:-}" = "--print-database-name" ]; then
+  printf '%s\n' "$DATABASE_NAME"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Bundler
+#
+# CliSpawnEnv deliberately strips BUNDLE_* from the agent's environment so the
+# session's Ruby does not resolve gems out of Zimmer's own bundle. That is
+# correct, and it means the clone must have its own vendor/bundle -- which is
+# exactly what BundleInstallJob builds, and exactly what a half-finished install
+# leaves broken.
+# ---------------------------------------------------------------------------
+say "Checking gems"
+if ! bundle check >/dev/null 2>&1; then
+  echo "Bundle is incomplete (an interrupted BundleInstallJob leaves it this way). Installing..."
+  bundle install --jobs 4 --retry 3
+fi
+echo "Bundle OK"
 
 say "Dev database"
 echo "  host     ${DATABASE_HOST}:${DATABASE_PORT}"
@@ -128,20 +185,16 @@ say "Building CSS"
 # install, and a session does not need live CSS rebuilds anyway.
 bin/rails tailwindcss:build
 
-if [ "${1:-}" = "--skip-server" ]; then
-  say "Ready (--skip-server)"
-  echo "Boot it yourself with: bin/rails server -b 0.0.0.0 -p \$PORT"
-  exit 0
-fi
-
-# Many sessions share the worker container's network namespace, so a hardcoded
-# 3000 collides with whatever another session is already running.
+# Many sessions share the worker container's network namespace, so a hardcoded 3000
+# collides with whatever another session is already running. Probe the address the
+# server will actually bind, not loopback, or a listener on a specific interface is
+# invisible here. This is a hint, not a lock -- two sessions racing still lose to
+# EADDRINUSE, loudly.
 if [ -z "${PORT:-}" ]; then
   PORT=$(ruby -rsocket -e '
     (3000..3099).each do |p|
       begin
-        s = TCPServer.new("127.0.0.1", p)
-        s.close
+        TCPServer.new(ARGV[0], p).close
         puts p
         exit 0
       rescue Errno::EADDRINUSE
@@ -150,11 +203,17 @@ if [ -z "${PORT:-}" ]; then
     end
     warn "no free port in 3000..3099"
     exit 1
-  ')
+  ' "$BINDING")
 fi
 export PORT
+
+if [ "${1:-}" = "--skip-server" ]; then
+  say "Ready (--skip-server)"
+  echo "Boot it yourself with: bin/rails server -b ${BINDING} -p ${PORT}"
+  exit 0
+fi
 
 say "Starting Rails on port ${PORT}"
 echo "  health:  curl -sf http://localhost:${PORT}/up"
 echo "  app:     http://localhost:${PORT}/"
-exec bin/rails server -b 0.0.0.0 -p "$PORT"
+exec bin/rails server -b "$BINDING" -p "$PORT"
