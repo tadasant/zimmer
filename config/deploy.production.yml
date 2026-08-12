@@ -34,19 +34,22 @@ servers:
     proxy: false
     options:
       init: true
-      # Docker socket access for agent sessions, which run in THIS role. The socket is
-      # mounted below, but a mount alone is not access: it is `srw-rw---- root:docker`
-      # and the container runs as uid/gid 1000, so without this supplementary group
-      # every `docker` call from a session -- and from DockerCleanupJob itself -- is
-      # denied. Zimmer inherited the mount and the cleanup job from its ancestor at
-      # extraction but not this line, so both were decorative until now.
+      # Docker socket access for agent sessions, which run in THIS role. The mount below
+      # is not access on its own: the socket is `srw-rw---- root:docker` and this
+      # container runs as uid/gid 1000, so without the group as a supplementary group
+      # every `docker` call -- from a session, and from DockerCleanupJob -- is denied.
+      # The two are a pair; either alone does nothing.
       #
-      # 988 is the `docker` group's GID on our droplets, verified on the host. It is
-      # NOT universal -- a self-hoster's will differ -- so it stays overridable.
+      # 988 is the `docker` group's GID on both Zimmer droplets, read off each host.
+      # It is NOT a standard -- Debian/Ubuntu allocate it from the dynamic system range
+      # -- so it stays overridable. The override is spelled out rather than using
+      # ENV.fetch's default because a CI `env:` block hands over an UNSET variable as an
+      # empty string, and a default only applies to an absent key: `ENV.fetch` would
+      # yield "" and render `--group-add ""`.
       #
-      # This grants root-equivalent control of the host to anything running in this
-      # container. See docs/operate/docker-socket-access.md before changing it.
-      group-add: "<%= ENV.fetch('DOCKER_GID', '988') %>"
+      # This grants root-equivalent control of the host to anything in this container.
+      # Read docs/operate/docker-socket-access.md before changing it.
+      group-add: "<%= ENV['DOCKER_GID'].to_s.strip.empty? ? '988' : ENV['DOCKER_GID'].to_s.strip %>"
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude

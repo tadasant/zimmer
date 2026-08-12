@@ -267,6 +267,13 @@ jobs:
       - name: Kamal deploy (staging)
         env:
           STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+          # GID of the host's `docker` group, which the worker joins so its mounted
+          # socket is usable (config/deploy.staging.yml). Named here for the same reason
+          # the Parameter Store key below is: a var missing from this env: block arrives
+          # empty and `ENV.fetch`'s default silently wins, so an override set as a repo
+          # variable would never reach Kamal. Unset is the normal case -- the default
+          # (988) is the GID on our droplets. See docs/operate/docker-socket-access.md.
+          DOCKER_GID: ${{ vars.DOCKER_GID }}
           KAMAL_REGISTRY_USERNAME: ${{ github.actor }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           STAGING_SECRET_BASE: ${{ secrets.STAGING_SECRET_BASE }}

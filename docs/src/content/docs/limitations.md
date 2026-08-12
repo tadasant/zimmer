@@ -2375,6 +2375,43 @@ gems that are plainly installed in the image.
 Nothing surfaces this at the agent's prompt; the session log line is the only trace. `bin/agent-dev`
 heals it with `bundle check || bundle install` before doing anything else, but any other Ruby command
 in the clone hits it first.
+## An agent session has root-equivalent access to its host
+
+The worker container mounts the host's Docker socket and joins the group that owns it, so
+agent sessions can drive the host's Docker daemon. Anything that can do that can start a
+container mounting `/` as root — so a session can reach every container on the box,
+including Zimmer's own web and worker, its database, and the `:ro` credential mounts that
+stop being a boundary once you can `docker exec` into the container they are mounted in.
+
+This is a deliberate trade, not an oversight: it is what makes `DockerCleanupJob`,
+`DockerComposeCleanupService` and the `.agent-containers/` Compose stack work at all. It
+also means **only trusted agent workloads belong on a Zimmer host**, and it compounds the
+two entries around it — a session already holds the clone's secret bundle, and the
+tool-group gating is already reachable from inside the tailnet.
+
+The narrower options — a whitelisting socket proxy, rootless Docker or a DinD sidecar, or
+moving sessions off the worker onto a lower-privilege execution host — are named in
+[Docker socket access](/operate/docker-socket-access/). None are wired up. Turning the
+access back off is one line, and that page says what stops working when you do.
+
+---
+
+## The Docker GID is a hardcoded default that no deploy verifies
+
+`group-add` needs the numeric GID of the host's `docker` group, and there is no way to ask
+the host for it at deploy time from inside a Kamal config. Both destinations therefore
+default to `988` — correct on Zimmer's own droplets, read off each host — with a
+`DOCKER_GID` override for anything else.
+
+Nothing checks it. A host whose `docker` group landed on a different GID (Debian and
+Ubuntu allocate from the dynamic system range, so `999` is just as likely) deploys
+cleanly, reports success, and leaves every `docker` call permission-denied — the exact
+failure the group was added to fix, and one that mostly fails silently. Verify by hand
+after a deploy onto new hardware:
+
+```bash
+docker inspect <worker-container> --format '{{.Config.User}} | {{.HostConfig.GroupAdd}}'
+```
 
 ---
 

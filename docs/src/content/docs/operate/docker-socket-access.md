@@ -25,19 +25,24 @@ Two halves, in the `worker` role of `config/deploy.production.yml` and
 ```yaml
 worker:
   options:
-    group-add: "<%= ENV.fetch('DOCKER_GID', '988') %>"
+    group-add: "<%= ENV['DOCKER_GID'].to_s.strip.empty? ? '988' : ENV['DOCKER_GID'].to_s.strip %>"
     volume:
       - /var/run/docker.sock:/var/run/docker.sock
 ```
+
+(The long-hand default is deliberate. A CI `env:` block hands over an *unset* variable as
+an empty string, and `ENV.fetch`'s default only applies to an absent key — so `ENV.fetch`
+would yield `""` and render `--group-add ""`.)
 
 The **mount** puts the socket in the container. The **group** makes it usable: the socket
 is `srw-rw---- root:docker` and Zimmer's image runs as uid/gid 1000 (`Dockerfile`:
 `USER 1000:1000`), so a container without the `docker` group as a supplementary group
 gets `permission denied while trying to connect to the Docker API` on every call.
 
-For most of Zimmer's history only the mount was present. It came across, along with
-`DockerCleanupJob`, when Zimmer was extracted from its ancestor; the `group-add` line did
-not. Both were inert until it was added.
+The two are a pair. A mount without the group grants nothing, and the group without the
+mount has nothing to grant — so an edit that drops either one disables every
+Docker-dependent feature at once, without any single thing failing loudly.
+`test/config/worker_docker_group_test.rb` asserts both halves together for that reason.
 
 ## `DOCKER_GID` is host-specific
 
@@ -52,9 +57,18 @@ getent group docker          # docker:x:988:
 stat -c '%g' /var/run/docker.sock
 ```
 
-If it differs, export `DOCKER_GID` in the deploy environment and redeploy. A wrong GID
-fails the same way as no GID at all — permission denied, with nothing pointing at the
-cause.
+If it differs, set `DOCKER_GID` in the deploy environment and redeploy. A wrong GID fails
+exactly like no GID at all — permission denied, with nothing pointing at the cause.
+
+Where "the deploy environment" is depends on how you deploy:
+
+- **Running `kamal deploy` yourself:** export it in the shell.
+- **Through this repo's staging workflow:** it is named in the `env:` block of the "Kamal
+  deploy (staging)" step, so a repository variable named `DOCKER_GID` reaches Kamal. A var
+  *missing* from that block arrives empty and `ENV.fetch`'s default silently wins — the
+  same trap the Parameter Store key carries a comment about.
+- **Production:** deployed from the private companion repo, so the override has to be
+  plumbed there. Unset, the `988` default applies.
 
 ## Verifying it took effect
 
@@ -77,25 +91,32 @@ reach Kamal.
 
 ## What it is for
 
-- **`DockerCleanupJob`** reaps Compose projects named `zimmer-dev-*` older than
-  `MAX_DEV_SERVER_AGE`, and prunes stale containers, images, volumes and build cache. It
-  shells out to `docker`, so without socket access it silently reaps nothing — it treats
-  the non-zero exit as "nothing to do".
+- **`DockerCleanupJob`** reaps Compose projects whose name starts with `zimmer-dev-`,
+  `ao-dev-` or `pulsemcp-dev-` once they outlive `MAX_DEV_SERVER_AGE`, and prunes stale
+  containers, images and volumes. (Build cache is pruned only by `emergency_cleanup`,
+  which needs disk usage past `EMERGENCY_THRESHOLD`.)
 - **`DockerComposeCleanupService`** tears down a session's Compose stack when its clone is
   cleaned up.
 - **[`.agent-containers/`](/start/containers/)** — the Compose dev stack. With socket
-  access a session can bring up a fully isolated app + Postgres + Redis, rather than
-  sharing the `devdb` accessory that [`bin/agent-dev`](/sessions/dev-server/) uses.
+  access a session can bring one up from the host it runs on, getting a fully isolated
+  app + Postgres + Redis of its own.
+
+Without socket access the failure is quieter than it should be, and unevenly so. The
+prune paths log `Rails.logger.warn "[DockerCleanupJob] ... prune failed"`, so there is
+something to find. But the discovery step — `find_stale_dev_server_projects` — does
+`return [] unless SubprocessStatus.success?(status)` and logs nothing, so a permission
+denial there is indistinguishable from "no stale stacks". That is the path that makes the
+whole job look like it ran and found nothing to do.
 
 ## Turning it off
 
 Delete the `group-add` line from the worker options and redeploy. The socket mount can
 stay — without the group it grants nothing. Expect, in exchange:
 
-- `DockerCleanupJob` and `DockerComposeCleanupService` become no-ops again. Nothing warns
-  you; containers accumulate until someone prunes by hand.
+- `DockerCleanupJob`'s stale-stack sweep silently finds nothing, and its prunes fail with
+  a warning in the log. Containers accumulate until someone prunes by hand.
+- `DockerComposeCleanupService` stops tearing down abandoned stacks.
 - `.agent-containers/` becomes a workstation-only tool.
-- `bin/agent-dev` keeps working. It needs no Docker at all — that is its point.
 
 ## Reducing the blast radius without giving it up
 
