@@ -85,6 +85,7 @@ export default defineConfig({
             { label: "Hierarchy and human messages", slug: "sessions/hierarchy-and-human-messages" },
             { label: "The Status summary", slug: "sessions/status-summary" },
             { label: "Spot and priority", slug: "sessions/spot-and-priority" },
+            { label: "Booting the app inside a session", slug: "sessions/dev-server" },
           ],
         },
         {

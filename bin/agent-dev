@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+#
+# bin/agent-dev — boot the Zimmer dev server from inside an agent session.
+#
+# `bin/dev` assumes a laptop: a Postgres on localhost, a Redis on localhost, and
+# foreman. An agent session has none of those. It runs as uid 1000 inside the
+# Kamal *worker* container, with no root, no sudo, and no access to the Docker
+# socket (it is mounted root:988 and the runtime user is not in that group), so
+# it cannot start a database for itself. Everything it needs has to already be
+# reachable on the container network.
+#
+# This script is the boot path that works there. It:
+#
+#   1. Repairs the clone's bundle. BundleInstallJob installs gems into
+#      vendor/bundle in the background while the agent is already working, and
+#      `discard_on StandardError` means an interrupted install (a deploy, a
+#      SIGTERM) leaves the clone permanently half-installed with no retry and no
+#      error at the prompt -- every `bin/rails` invocation then dies with
+#      Bundler::GemNotFound. `bundle check || bundle install` heals that.
+#   2. Points the app at the shared dev Postgres accessory (`zimmer-devdb`)
+#      instead of the deployment's real database, with a database name derived
+#      from the clone directory so parallel sessions never collide.
+#   3. Prepares the database, builds the CSS once (no foreman, no watcher), and
+#      starts Rails on a free port.
+#
+# Usage:
+#   bin/agent-dev                 # pick a free port in 3000..3099
+#   PORT=4000 bin/agent-dev       # explicit port
+#   bin/agent-dev --skip-server   # prepare everything, don't boot
+#
+# Overrides (all optional):
+#   ZIMMER_DEV_DB_HOST / _PORT / _USERNAME / _PASSWORD / _SSLMODE
+#                                                        where the dev Postgres is
+#   DATABASE_NAME                                        override the derived name
+#
+set -euo pipefail
+
+cd "$(cd "$(dirname "$0")/.." && pwd)"
+
+say() { printf '\n== %s ==\n' "$1"; }
+
+# ---------------------------------------------------------------------------
+# Bundler
+#
+# CliSpawnEnv deliberately strips BUNDLE_* from the agent's environment so the
+# session's Ruby does not resolve gems out of Zimmer's own bundle. That is
+# correct, and it means the clone must have its own vendor/bundle -- which is
+# exactly what BundleInstallJob builds, and exactly what a half-finished install
+# leaves broken.
+# ---------------------------------------------------------------------------
+say "Checking gems"
+if ! bundle check >/dev/null 2>&1; then
+  echo "Bundle is incomplete (an interrupted BundleInstallJob leaves it this way). Installing..."
+  bundle install --jobs 4 --retry 3
+fi
+echo "Bundle OK"
+
+# ---------------------------------------------------------------------------
+# Database wiring
+#
+# config/database.yml reads discrete DATABASE_* vars, not DATABASE_URL. Setting
+# DATABASE_URL alone does nothing.
+#
+# DATABASE_SSLMODE matters more than it looks: the deployment sets it to
+# "require", and the dev Postgres accessory speaks plaintext, so an inherited
+# "require" fails the connection outright. We set "disable" explicitly rather
+# than relying on the default.
+# ---------------------------------------------------------------------------
+export RAILS_ENV=development
+export DATABASE_HOST="${ZIMMER_DEV_DB_HOST:-zimmer-devdb}"
+export DATABASE_PORT="${ZIMMER_DEV_DB_PORT:-5432}"
+export DATABASE_USERNAME="${ZIMMER_DEV_DB_USERNAME:-zimmerdev}"
+export DATABASE_PASSWORD="${ZIMMER_DEV_DB_PASSWORD:-zimmerdev}"
+export DATABASE_SSLMODE="${ZIMMER_DEV_DB_SSLMODE:-disable}"
+
+# One set of databases per clone, so two sessions booting at once do not migrate
+# over each other. Postgres caps identifiers at 63 bytes and database.yml appends
+# up to "_test_cable" (11) to this, so cap the value at 52.
+if [ -z "${DATABASE_NAME:-}" ]; then
+  clone_slug=$(basename "$PWD" | tr -c 'a-zA-Z0-9' '_' | tr 'A-Z' 'a-z')
+  DATABASE_NAME="zimmer_dev_${clone_slug}"
+  DATABASE_NAME=${DATABASE_NAME:0:52}
+  # A truncation can land mid-separator; a trailing underscore is legal but reads
+  # like a mistake in every psql listing.
+  while [ "${DATABASE_NAME%_}" != "$DATABASE_NAME" ]; do DATABASE_NAME="${DATABASE_NAME%_}"; done
+fi
+export DATABASE_NAME
+
+say "Dev database"
+echo "  host     ${DATABASE_HOST}:${DATABASE_PORT}"
+echo "  database ${DATABASE_NAME} (+ ${DATABASE_NAME}_cable)"
+
+# Fail here, loudly and specifically, rather than 40 lines into a Rails
+# backtrace. "No Postgres anywhere on the network" is the single most common
+# reason this does not work, and it is not an app bug.
+if ! ruby -rsocket -e '
+  begin
+    Socket.tcp(ARGV[0], ARGV[1].to_i, connect_timeout: 5).close
+  rescue => e
+    warn "  cannot reach #{ARGV[0]}:#{ARGV[1]} -- #{e.class}: #{e.message}"
+    exit 1
+  end
+' "$DATABASE_HOST" "$DATABASE_PORT"; then
+  cat <<EOF
+
+No dev Postgres is reachable at ${DATABASE_HOST}:${DATABASE_PORT}.
+
+Inside a Zimmer agent session that means the \`devdb\` Kamal accessory is not
+running on this host. It is declared in config/deploy.<dest>.yml; boot it from
+an operator shell with:
+
+    kamal accessory boot devdb -d production
+
+You cannot start it from inside the session: the Docker socket is mounted
+root:988 and the session's user is not in that group.
+
+Point somewhere else with ZIMMER_DEV_DB_HOST / _PORT / _USERNAME / _PASSWORD.
+EOF
+  exit 1
+fi
+
+say "Preparing database"
+bin/rails db:prepare
+
+say "Building CSS"
+# One-shot, not `tailwindcss:watch`. bin/dev runs the watcher under foreman;
+# foreman is in the :development gem group, which the deployed image does not
+# install, and a session does not need live CSS rebuilds anyway.
+bin/rails tailwindcss:build
+
+if [ "${1:-}" = "--skip-server" ]; then
+  say "Ready (--skip-server)"
+  echo "Boot it yourself with: bin/rails server -b 0.0.0.0 -p \$PORT"
+  exit 0
+fi
+
+# Many sessions share the worker container's network namespace, so a hardcoded
+# 3000 collides with whatever another session is already running.
+if [ -z "${PORT:-}" ]; then
+  PORT=$(ruby -rsocket -e '
+    (3000..3099).each do |p|
+      begin
+        s = TCPServer.new("127.0.0.1", p)
+        s.close
+        puts p
+        exit 0
+      rescue Errno::EADDRINUSE
+        next
+      end
+    end
+    warn "no free port in 3000..3099"
+    exit 1
+  ')
+fi
+export PORT
+
+say "Starting Rails on port ${PORT}"
+echo "  health:  curl -sf http://localhost:${PORT}/up"
+echo "  app:     http://localhost:${PORT}/"
+exec bin/rails server -b 0.0.0.0 -p "$PORT"
