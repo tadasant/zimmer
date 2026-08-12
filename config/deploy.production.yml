@@ -34,11 +34,25 @@ servers:
     proxy: false
     options:
       init: true
+      # Docker socket access for agent sessions, which run in THIS role. The socket is
+      # mounted below, but a mount alone is not access: it is `srw-rw---- root:docker`
+      # and the container runs as uid/gid 1000, so without this supplementary group
+      # every `docker` call from a session -- and from DockerCleanupJob itself -- is
+      # denied. Zimmer inherited the mount and the cleanup job from its ancestor at
+      # extraction but not this line, so both were decorative until now.
+      #
+      # 988 is the `docker` group's GID on our droplets, verified on the host. It is
+      # NOT universal -- a self-hoster's will differ -- so it stays overridable.
+      #
+      # This grants root-equivalent control of the host to anything running in this
+      # container. See docs/operate/docker-socket-access.md before changing it.
+      group-add: "<%= ENV.fetch('DOCKER_GID', '988') %>"
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
+        # Paired with group-add above; neither is useful without the other.
         - /var/run/docker.sock:/var/run/docker.sock
         # Same catalog + credentials as web, so agent sessions (which run in the
         # worker) resolve the real production roots/MCP servers and their mcp_secrets.
