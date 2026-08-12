@@ -99,7 +99,8 @@ reach Kamal.
   cleaned up.
 - **[`.agent-containers/`](/start/containers/)** — the Compose dev stack. With socket
   access a session can bring one up from the host it runs on, getting a fully isolated
-  app + Postgres + Redis of its own.
+  app + Postgres + Redis of its own, rather than sharing the `devdb` accessory that
+  [`bin/agent-dev`](/sessions/dev-server/) uses.
 
 Without socket access the failure is quieter than it should be, and unevenly so. The
 prune paths log `Rails.logger.warn "[DockerCleanupJob] ... prune failed"`, so there is
@@ -117,6 +118,8 @@ stay — without the group it grants nothing. Expect, in exchange:
   a warning in the log. Containers accumulate until someone prunes by hand.
 - `DockerComposeCleanupService` stops tearing down abandoned stacks.
 - `.agent-containers/` becomes a workstation-only tool.
+- [`bin/agent-dev`](/sessions/dev-server/) keeps working. It needs no Docker at all — it
+  boots against the `devdb` accessory, which is the point of it.
 
 ## Reducing the blast radius without giving it up
 
