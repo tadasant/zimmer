@@ -86,6 +86,17 @@ class SessionStatusSummaryGenerator
     result = @fork_service.call(**fork_args)
 
     unless result.success?
+      # The same benign outcome as the archived-check below, reached from the
+      # losing side of the same race: the session went to the trash while its
+      # clone was being copied, and the cleanup deleted the tree out from under
+      # the copy. There is no fork to abandon and no failure worth recording —
+      # nobody reads a summary of a session in the trash — so the claim goes back
+      # exactly as it was found and this is a skip, not a failure.
+      if result.source_clone_discarded
+        release_claim(summary)
+        return Result.new(outcome: :skipped, message: "Session is in the trash.")
+      end
+
       record_failure(result.error)
       return Result.new(outcome: :failed, message: result.error)
     end

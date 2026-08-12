@@ -301,6 +301,38 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_nil record.requested_at
   end
 
+  # The other side of the same race, and the one that paged in production on
+  # 2026-08-12. The archived-check above can only run on a copy that SUCCEEDED;
+  # when DeferredCloneCleanupJob reaches the tree first, the copy dies on an
+  # unlinked path and the generation ended as :failed with a paging `.error`
+  # behind it — about a summary nobody was ever going to read.
+  test "a source clone the trash deletes during the copy is skipped, not failed" do
+    session = @session
+    clone = @clone_path
+    @fs.define_singleton_method(:cp_r) do |_src, _dest, exclude: []|
+      session.update_column(:status, Session.statuses[:archived])
+      rm_rf(clone)
+      raise Errno::ENOENT.new(File.join(clone, ".git/objects/e8"))
+    end
+
+    result = nil
+    entries = capture_log_entries { result = generate }
+
+    assert_equal :skipped, result.outcome
+    assert_empty entries.select { |severity, message|
+      severity == "ERROR" && (message.include?("service=ForkSessionService") || message.include?("service=SessionStatusSummaryGenerator"))
+    }, "a generation the trash made moot must not page"
+
+    assert_equal 0, Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).count,
+      "the copy never finished, so there is no fork to abandon"
+
+    record = @session.reload.status_summary
+    assert_equal "idle", record.state, "the claim is released rather than left pending"
+    assert_nil record.error, "a moot generation records no failure against the panel"
+    assert_nil record.requested_at
+    assert_nil record.fork_session_id
+  end
+
   # A fork that is made and then never dispatched is invisible to every operator
   # list and its clone is skipped by OrphanCloneFilesystemCleanupJob (a session
   # row still claims it), so it would hold a full copy of a repository forever.
