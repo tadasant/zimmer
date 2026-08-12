@@ -82,7 +82,8 @@ Three things keep that from failing a fork:
   backoff, clearing the half-written destination between them. Intermediate attempts log at `info`;
   only an exhausted budget logs `error` — which is what alerts. A copy that fails for a reason that
   will not fix itself (`EACCES`, `ENOSPC`, or an `ENOENT` because the *source* clone is gone) fails on
-  the first hit instead of spending the budget.
+  the first hit instead of spending the budget. Retrying is for a tree being written to; it can do
+  nothing for a tree being deleted, because the file never comes back.
 - **A summary fork does not copy installed dependencies.** The summarizer reads the conversation and
   is told not to run tools; it never builds or boots anything. `ForkSessionService::DEPENDENCY_DIRECTORIES`
   (`vendor/bundle`, `**/node_modules`) is excluded from its copy, which is most of the bytes and most
@@ -105,6 +106,25 @@ before it. The copy takes real time, and a session that archived during it would
 of a clone `DeferredCloneCleanupJob` is about to delete. Such a fork is archived immediately, the
 claim below is released so the record does not sit in `pending` behind a fork that will never answer,
 and nothing is recorded against the summary.
+
+### The trash can win that race, and that is not an error
+
+The re-check above only runs on a copy that *finished*. When the cleanup reaches the tree first, the
+copy dies partway through on a path that was there when the directory was enumerated and gone when it
+was stat'd — the same benign condition, arriving as an `ENOENT` instead of as an archived session.
+That used to page: `ForkSessionService` logged `error`, the generator recorded a failure, and a human
+was woken about a summary nobody was going to read.
+
+`ForkSessionService` classifies it instead. An `ENOENT` whose source clone is no longer on disk
+**and** whose session (re-read from the database, because the archive lands during the copy) is
+archived is reported as `Result#source_clone_discarded`: logged at `info`, not `error`. The generator
+reads that flag, releases its claim, and returns `skipped` — the same outcome the post-copy re-check
+produces, with no failure recorded against the panel. The same answer covers the case where the
+cleanup finished *before* the fork started and the clone is already gone at validation.
+
+The distinction is the point, and it is deliberately narrow. A clone that is missing while its
+session is **live** is a genuine fault — a stray delete, a volume gone, a cleanup that ran against
+the wrong path — and it still logs `error` and still pages.
 
 ### The fork's title has to fit the cap the source title already fills
 
