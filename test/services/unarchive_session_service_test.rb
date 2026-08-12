@@ -3,6 +3,8 @@
 require "test_helper"
 require "minitest/mock"
 require "mocha/minitest"
+require "open3"
+require "tmpdir"
 
 class UnarchiveSessionServiceTest < ActiveSupport::TestCase
   setup do
@@ -842,6 +844,68 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_equal false, result.clone_restored
   end
 
+  # Regression for issue #411: an interrupted `rm -rf` on a live clone was
+  # preserved as a working tree patch of nothing but deletions, and unarchive
+  # replayed it onto the pristine clone it had just created — deleting the agent
+  # root's subdirectory, so `air prepare` died with ENOENT and the session
+  # failed before its agent ever ran. Real git, real filesystem, end to end: the
+  # clone that comes out of unarchive must still be a clone.
+  test "unarchive keeps the pristine clone when preserved artifacts would gut it" do
+    with_real_clone_sandbox do |bare_path, subdirectory|
+      # Artifacts whose patch deletes the agent root's whole subdirectory. It is
+      # deliberately small (below MASS_DELETION_MIN_FILES), so only the
+      # post-apply validation can catch it.
+      write_preserved_patch(deleting: [ "AGENTS.md", "CLAUDE.md" ].map { |f| File.join(subdirectory, f) })
+
+      new_clone_path = clone_from(bare_path)
+      result = unarchive_with_real_clone(new_clone_path)
+
+      assert result.success?, result.error
+      assert File.directory?(File.join(new_clone_path, subdirectory)),
+        "the agent root's subdirectory must survive the restore — air prepare writes into it"
+      assert File.exist?(File.join(new_clone_path, subdirectory, "AGENTS.md"))
+      assert_equal "initial\n", File.read(File.join(new_clone_path, "README.md"))
+      assert File.directory?(@artifact_service.artifacts_path_for(@session.id)),
+        "artifacts that were not applied must stay on disk for manual recovery"
+    end
+  end
+
+  # The archive-side guard only stops NEW corruption; patches captured before it
+  # existed are already on disk. Unarchive must refuse those too, and must not
+  # delete them on its way past.
+  test "unarchive refuses a pre-existing mass-deletion patch and leaves the clone intact" do
+    with_real_clone_sandbox(tracked_files: 60) do |bare_path, subdirectory|
+      write_preserved_patch(deleting: 60.times.map { |i| format("tracked_%02d.rb", i) })
+
+      new_clone_path = clone_from(bare_path)
+      result = unarchive_with_real_clone(new_clone_path)
+
+      assert result.success?, result.error
+      assert File.exist?(File.join(new_clone_path, "tracked_00.rb")), "tracked files must not be deleted"
+      assert File.directory?(File.join(new_clone_path, subdirectory))
+      assert File.exist?(File.join(@artifact_service.artifacts_path_for(@session.id), "working_tree.patch")),
+        "the refused patch stays on disk for manual salvage"
+    end
+  end
+
+  # A patch that carries real work still restores, so the guards above cannot be
+  # mistaken for "unarchive stopped restoring anything".
+  test "unarchive still restores an ordinary working tree patch" do
+    with_real_clone_sandbox do |bare_path, _subdirectory|
+      File.write(File.join(@source_repo, "agent_work.rb"), "# real work\n")
+      run_git(@source_repo, "add", "-A")
+      write_patch_artifacts(git_output(@source_repo, "diff", "--binary", "--cached", "HEAD"))
+
+      new_clone_path = clone_from(bare_path)
+      result = unarchive_with_real_clone(new_clone_path)
+
+      assert result.success?, result.error
+      assert File.exist?(File.join(new_clone_path, "agent_work.rb")), "real uncommitted work must still restore"
+      assert_not File.directory?(@artifact_service.artifacts_path_for(@session.id)),
+        "applied artifacts are cleaned up as before"
+    end
+  end
+
   test "regeneration restores the auto-injected subagent Zimmer server for a subagent-roots-only root" do
     # Regression for the production wedge (sessions 9726/9890): a root whose only
     # subagent-spawning capability is the auto-injected Zimmer server
@@ -892,5 +956,107 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       "custom_metadata.injected_mcp_servers must record the restored subagent Zimmer server"
   ensure
     ENV.delete("ZIMMER_LOCAL_API_KEY")
+  end
+
+  private
+
+  # The #411 regressions need real git — a patch that deletes tracked files only
+  # damages a real working tree — so they run against real repositories under a
+  # private $HOME. The sandbox owns that isolation: artifacts
+  # (~/.zimmer/artifacts/<id>) and the transcript file (~/.claude/projects/...)
+  # both land inside it, so parallel workers never share a path and nothing is
+  # written to the runner's real home.
+  #
+  # Yields [bare_repo_path, subdirectory]. The session is repointed at the bare
+  # repo with a clone_path that does not exist, so unarchive takes the slow path
+  # (recreate the clone, then restore artifacts into it).
+  def with_real_clone_sandbox(tracked_files: 0)
+    original_home = ENV["HOME"]
+    @sandbox_home = Dir.mktmpdir("unarchive-home")
+    ENV["HOME"] = @sandbox_home
+
+    @bare_repo = Dir.mktmpdir("unarchive-bare")
+    @source_repo = File.join(Dir.mktmpdir("unarchive-source"), "repo")
+    subdirectory = "artifacts/agent-roots/general-agent"
+
+    run_cmd("git", "init", "--bare", @bare_repo)
+    File.write(File.join(@bare_repo, "HEAD"), "ref: refs/heads/main\n")
+    run_cmd("git", "clone", @bare_repo, @source_repo)
+    run_git(@source_repo, "config", "user.email", "test@example.com")
+    run_git(@source_repo, "config", "user.name", "Test User")
+    run_git(@source_repo, "checkout", "-b", "main")
+
+    File.write(File.join(@source_repo, "README.md"), "initial\n")
+    FileUtils.mkdir_p(File.join(@source_repo, subdirectory))
+    File.write(File.join(@source_repo, subdirectory, "AGENTS.md"), "# root\n")
+    File.write(File.join(@source_repo, subdirectory, "CLAUDE.md"), "# root\n")
+    tracked_files.times { |i| File.write(File.join(@source_repo, format("tracked_%02d.rb", i)), "# tracked #{i}\n") }
+    run_git(@source_repo, "add", "-A")
+    run_git(@source_repo, "commit", "-m", "initial commit")
+    run_git(@source_repo, "push", "-u", "origin", "main")
+
+    @session.update!(
+      git_root: @bare_repo,
+      subdirectory: subdirectory,
+      metadata: {
+        "clone_path" => File.join(@sandbox_home, "gone", "clone"),
+        "working_directory" => File.join(@sandbox_home, "gone", "clone", subdirectory)
+      }
+    )
+    @artifact_service = CloneArtifactService.new
+
+    yield @bare_repo, subdirectory
+  ensure
+    original_home.nil? ? ENV.delete("HOME") : ENV["HOME"] = original_home
+    [ @sandbox_home, @bare_repo, @source_repo, @recreated_clone ].compact.each { |dir| FileUtils.rm_rf(dir) }
+  end
+
+  # A fresh clone standing in for the one GitCloneService makes on the slow path.
+  def clone_from(bare_path)
+    @recreated_clone = File.join(Dir.mktmpdir("unarchive-clone"), "repo")
+    run_cmd("git", "clone", bare_path, @recreated_clone)
+    @recreated_clone
+  end
+
+  def unarchive_with_real_clone(clone_path)
+    working_directory = File.join(clone_path, @session.subdirectory)
+    stub_clone = lambda do |_git_root, **_kwargs|
+      { clone_path: clone_path, working_directory: working_directory }
+    end
+
+    GitCloneService.stub :create_clone, stub_clone do
+      UnarchiveSessionService.call(session: @session, file_system: RealFileSystemAdapter.new)
+    end
+  end
+
+  # Preserved artifacts whose working tree patch deletes the given tracked
+  # files — the signature an interrupted `rm -rf` leaves behind.
+  def write_preserved_patch(deleting:)
+    deleting.each { |path| FileUtils.rm_f(File.join(@source_repo, path)) }
+    run_git(@source_repo, "add", "-A")
+    write_patch_artifacts(git_output(@source_repo, "diff", "--binary", "--cached", "HEAD"))
+  end
+
+  def write_patch_artifacts(patch)
+    artifacts_dir = @artifact_service.artifacts_path_for(@session.id)
+    FileUtils.mkdir_p(artifacts_dir)
+    File.binwrite(File.join(artifacts_dir, "working_tree.patch"), patch)
+    File.write(File.join(artifacts_dir, "metadata.json"),
+      JSON.generate("has_bundle" => false, "has_working_tree_patch" => true))
+    artifacts_dir
+  end
+
+  def run_git(repo, *args)
+    run_cmd("git", "-C", repo, *args)
+  end
+
+  def git_output(repo, *args)
+    stdout, status = Open3.capture2("git", "-C", repo, *args, binmode: true)
+    raise "git #{args.join(" ")} failed" unless status.success?
+    stdout
+  end
+
+  def run_cmd(*args)
+    system(*args, out: File::NULL, err: File::NULL, exception: true)
   end
 end

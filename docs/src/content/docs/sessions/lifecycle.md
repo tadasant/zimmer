@@ -185,6 +185,19 @@ The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a sho
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
 `TRASH_RETENTION_PERIOD`, which is `4.days`. `EmptyTrashJob` deletes them once that expires.
 
+Preservation does not take the working tree entirely on faith. A tree that is 50 or more deleted
+tracked files and almost nothing else is not uncommitted work — it is a clone that an interrupted
+recursive delete mangled — so `CloneArtifactService` drops those deletions from `working_tree.patch`
+(keeping the additions and modifications), logs at `.error`, and records `dropped_deletions` in the
+artifact metadata. Unarchive applies the same test before it replays a patch, because patches
+captured before the guard existed are still on disk. And after restoring artifacts,
+`UnarchiveSessionService` checks the clone it produced: if the agent root's `subdirectory` is gone,
+or the tree is now overwhelmingly deletions, it reverts the clone to the pristine checkout and
+leaves the artifacts on disk. A clone missing its root subdirectory fails `air prepare` with
+`ENOENT` and takes the session down with it, so a pristine clone is the better of the two losses.
+See [issue #411](https://github.com/tadasant/zimmer/issues/411) and
+[the limitation this does not close](/limitations/#an-interrupted-clone-delete-still-mangles-a-live-working-tree).
+
 The session's [scratch directory](/sessions/spawning/) and prompt attachments are on the trash
 schedule too, not the undo-window one: nothing can rebuild them from a remote the way a clone is
 rebuilt, so they are kept for the whole time archive is undoable and reaped by `EmptyTrashJob`.

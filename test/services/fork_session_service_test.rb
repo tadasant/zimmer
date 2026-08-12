@@ -94,6 +94,52 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       "broadcast_message_count must equal truncated transcript length to prevent message replay"
   end
 
+  # A clone directory is "<repo>-<branch>-<timestamp>-<random>" and <repo> can
+  # contain dashes, so deriving the fork's name from the first dash segment
+  # forked tadasant-internal-main-… into tadasant-main-…: a directory that
+  # claims a repository the fork does not hold.
+  test "fork clone directory keeps a repository name that contains dashes" do
+    source_clone = "/home/test/.zimmer/clones/tadasant-internal-main-1786519477-ad273769"
+    @mock_fs.mkdir_p(source_clone)
+    @source_session.update!(metadata: @source_session.metadata.merge(
+      "clone_path" => source_clone, "working_directory" => source_clone
+    ))
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?, result.error
+    forked_dir = File.basename(result.forked_session.metadata["clone_path"])
+    assert forked_dir.start_with?("tadasant-internal-main-"),
+      "expected the fork to name the repository it actually holds, got #{forked_dir}"
+  end
+
+  # And the branch is sanitized the way GitCloneService sanitizes it, so a
+  # slash-bearing branch cannot nest the fork below the clones base — where the
+  # orphan sweeps, which scan the base's direct children, would never see it.
+  test "fork clone directory sanitizes a branch containing a slash" do
+    source_clone = "/home/test/.zimmer/clones/repo-claude-fix-x-1786519477-ad273769"
+    @mock_fs.mkdir_p(source_clone)
+    @source_session.update!(branch: "claude/fix-x", metadata: @source_session.metadata.merge(
+      "clone_path" => source_clone, "working_directory" => source_clone
+    ))
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?, result.error
+    forked_clone = result.forked_session.metadata["clone_path"]
+    assert_equal ClonesDirectory.base, File.dirname(forked_clone),
+      "the fork must sit directly under the clones base, not nested under a branch directory"
+    assert File.basename(forked_clone).start_with?("repo-claude-fix-x-"), File.basename(forked_clone)
+  end
+
   test "forks at first message (index 0)" do
     result = ForkSessionService.call(
       source_session: @source_session,

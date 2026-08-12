@@ -1156,6 +1156,25 @@ a generation already in flight is never duplicated, the copy leaves out installe
 on harvest so the clone copy is reclaimed on the normal trash path, and rendering the panel or reading
 the session over MCP/REST never generates.
 
+### An interrupted clone delete still mangles a live working tree
+
+Clone deletion — the archive/trash path, `GitCloneService`'s orphan pruner, the sweeps in
+`StaleCloneCleanupJob` and `OrphanCloneFilesystemCleanupJob` — is a plain recursive `rm -rf` on the
+clone in place. If it starts on a tree that is still live and is interrupted partway (a deploy, a
+SIGTERM, a session that turns out not to be dead), it leaves an arbitrary surviving subset of the
+tree behind: files gone in readdir order, no marker, nothing that detects it. The session whose clone
+that is keeps running against a tree with holes in it.
+
+[Issue #411](https://github.com/tadasant/zimmer/issues/411) closed the two ways that spread — archive
+no longer preserves the deletions as uncommitted work, and unarchive no longer replays a patch that
+guts the fresh clone (see [the archive path](/sessions/lifecycle/)) — but the origin is untouched.
+Making deletion atomic (rename the clone out of the way, then delete the renamed copy, so an
+interrupt leaves either the whole tree or nothing) is tracked separately in
+[#412](https://github.com/tadasant/zimmer/issues/412). Same family as
+[#406](https://github.com/tadasant/zimmer/issues/406), the fork-side delete-race, and
+[#410](https://github.com/tadasant/zimmer/issues/410), where an interrupted `BundleInstallJob` leaves
+a clone permanently unusable.
+
 ### A fork of a live clone is retried, so a fork that cannot be made now fails three times slower
 
 `ForkSessionService` copies a clone that other processes are still writing to, and a file that
