@@ -34,6 +34,16 @@ class FileSystemAdapter
     raise NotImplementedError, "#{self.class}#write must be implemented"
   end
 
+  # Iterate a file's lines as raw bytes without holding the whole file in
+  # memory. Use this instead of read/binread for files with no useful size
+  # bound (a --binary git patch inlines every binary blob it touches).
+  # @param path [String] The file path to read
+  # @return [Enumerator, void] An Enumerator when no block is given
+  # @raise [Errno::ENOENT] If the file does not exist
+  def each_line(path, &block)
+    raise NotImplementedError, "#{self.class}#each_line must be implemented"
+  end
+
   # Check if a file or directory exists
   # @param path [String] The path to check
   # @return [Boolean] True if the path exists

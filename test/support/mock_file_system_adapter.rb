@@ -158,6 +158,12 @@ class MockFileSystemAdapter < FileSystemAdapter
     read(path)
   end
 
+  # Iterate a file's lines (the mock holds contents in memory, so there is
+  # nothing to stream — the interface is what matters)
+  def each_line(path, &block)
+    read(path).each_line(&block)
+  end
+
   private
 
   # The real adapter prunes at descent, so an excluded directory takes its whole
