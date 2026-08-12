@@ -1,35 +1,56 @@
 import { Controller } from "@hotwired/stimulus"
+import { Turbo, cable } from "@hotwired/turbo-rails"
 
 // Connects to data-controller="stream-visibility-recovery"
 //
-// When a mobile PWA is backgrounded or the device sleeps, the OS suspends the
-// page and the underlying ActionCable WebSocket dies silently. When the user
-// reopens the app, Turbo Stream subscriptions are stale and live updates no
-// longer arrive. This controller detects the page becoming visible again and
-// forces a Turbo.visit reload, which re-renders the page and re-establishes
-// fresh <turbo-cable-stream-source> subscriptions via their connectedCallback.
+// Recovers a page that was hidden long enough for its ActionCable socket to die
+// — the backgrounded standalone PWA, the locked phone, the bfcache restore.
+//
+// Two things break in that moment and need different answers:
+//
+//   1. The socket is dead, so no future update arrives. Reopening the consumer
+//      fixes it: ActionCable re-subscribes every subscription on the connection,
+//      for the cost of a handshake and no rendering at all.
+//   2. Whatever was broadcast while the page was away is gone. Broadcasts are
+//      fire-and-forget with no replay, so re-subscribing cannot recover them.
+//      Only re-rendering from the server can.
+//
+// (2) is what the reload is for, and it is reached only for a socket that
+// reports itself closed. An open socket carried its subscriptions through the
+// hide and queued its messages, so it has missed nothing and the page is left
+// untouched — no navigation, no lost scroll position, no collapsed panels. That
+// matters because `pageshow` fires with `persisted` on every bfcache restore,
+// which on iOS is every single reopen of an installed PWA.
+//
+// The limit of that check is `readyState`: a socket the browser never reports as
+// closed reads as open even when the server is gone, and this controller leaves
+// it alone. ActionCable's own monitor and `cable-reconnect` still heal the
+// subscription, so updates resume — but content broadcast during the gap is not
+// backfilled. See docs limitations.
+//
+// A morphing refresh was tried for the reload case and rejected: idiomorph
+// removes attributes the server does not render, and controllers here keep state
+// in exactly those (log-level-filter writes its own `level-value`), so a morph
+// reverts that state and the controller then acts on it.
 //
 // Triggers:
-//   - visibilitychange -> 'visible' after the page was hidden long enough that
-//     the WebSocket is likely dead, OR any cable stream source is missing the
-//     `connected` attribute (which turbo-rails sets/removes on subscription
-//     connect/disconnect events).
-//   - pageshow with event.persisted === true (bfcache restore — the previous
-//     page state is frozen and the cable consumer is definitely dead).
+//   - visibilitychange -> 'visible', after the page was hidden at least
+//     `staleAfter`. Shorter hides do not kill the socket.
+//   - pageshow with event.persisted === true (bfcache restore).
 export default class extends Controller {
   static values = {
-    // Minimum hidden duration (ms) before we consider the WebSocket potentially
-    // stale and trigger a refresh. Brief tab switches shouldn't cause reloads.
+    // Minimum hidden duration (ms) before the socket is worth checking at all.
     staleAfter: { type: Number, default: 5000 },
-    // Grace period (ms) after becoming visible before we check for missing
-    // `connected` attributes — lets ActionCable's monitor attempt reconnect on
-    // its own before we force a full refresh.
+    // How long (ms) to let the reopened socket land before replacing the page.
+    // The re-render happens either way — a closed socket missed content, and
+    // re-subscribing cannot replay it — but reopening first means a visit that
+    // is slow or never arrives still leaves a page with live updates behind it.
     reconnectGrace: { type: Number, default: 1500 }
   }
 
   connect() {
     this.hiddenAt = null
-    this.isRefreshing = false
+    this.isRecovering = false
 
     this.boundVisibilityChange = this.handleVisibilityChange.bind(this)
     this.boundPageShow = this.handlePageShow.bind(this)
@@ -41,6 +62,8 @@ export default class extends Controller {
   disconnect() {
     document.removeEventListener("visibilitychange", this.boundVisibilityChange)
     window.removeEventListener("pageshow", this.boundPageShow)
+    clearTimeout(this.recoveryTimer)
+    clearTimeout(this.releaseTimer)
   }
 
   handleVisibilityChange() {
@@ -57,46 +80,68 @@ export default class extends Controller {
     // Brief tab switches don't kill the WebSocket — let it ride.
     if (hiddenDuration < this.staleAfterValue) return
 
-    // Give ActionCable's connection monitor a chance to reconnect on its own.
-    // If after the grace period any stream source is still disconnected, force
-    // a full refresh.
-    setTimeout(() => this.refreshIfStreamsDisconnected(), this.reconnectGraceValue)
+    this.recover()
   }
 
   handlePageShow(event) {
-    // bfcache restore: the page was frozen, the cable consumer is dead.
-    if (event.persisted) {
-      this.forceRefresh()
+    if (event.persisted) this.recover()
+  }
+
+  // Restore live updates, and re-render only if something was missed.
+  async recover() {
+    if (this.isRecovering) return
+
+    // A page with no stream sources has no live updates to lose.
+    if (this.streamSources.length === 0) return
+
+    this.isRecovering = true
+
+    // A consumer that cannot be read says nothing about the socket, so fall
+    // through to the re-render. Leaving a possibly-frozen page alone is the one
+    // outcome worse than a reload.
+    let connection = null
+    try {
+      connection = (await cable.getConsumer())?.connection
+    } catch (_e) {
+      connection = null
+    }
+
+    if (connection?.isOpen()) {
+      this.isRecovering = false
+      return
+    }
+
+    try {
+      // A socket still completing its handshake is already on its way back;
+      // reopening would tear that down and start the delay over.
+      if (!connection?.isActive()) connection?.reopen()
+
+      await this.settle(this.reconnectGraceValue)
+
+      this.reload()
+    } finally {
+      // Hold the guard past the visit rather than releasing it here. A reopen
+      // can deliver pageshow and visibilitychange back to back, and each would
+      // otherwise stack another navigation onto the one already in flight.
+      this.releaseTimer = setTimeout(() => {
+        this.isRecovering = false
+      }, 2000)
     }
   }
 
-  refreshIfStreamsDisconnected() {
-    if (this.isRefreshing) return
-
-    const sources = document.querySelectorAll("turbo-cable-stream-source")
-    if (sources.length === 0) return
-
-    const anyDisconnected = Array.from(sources).some(
-      (source) => !source.hasAttribute("connected")
-    )
-
-    if (anyDisconnected) this.forceRefresh()
+  get streamSources() {
+    return Array.from(document.querySelectorAll("turbo-cable-stream-source"))
   }
 
-  forceRefresh() {
-    if (this.isRefreshing) return
-    this.isRefreshing = true
+  settle(delay) {
+    return new Promise((resolve) => {
+      this.recoveryTimer = setTimeout(resolve, delay)
+    })
+  }
 
-    if (typeof Turbo !== "undefined") {
-      Turbo.visit(window.location.href, { action: "replace" })
-    } else {
-      window.location.reload()
-    }
-
-    // Reset the flag after a short delay so subsequent visibility changes can
-    // trigger another refresh if needed.
-    setTimeout(() => {
-      this.isRefreshing = false
-    }, 2000)
+  // Re-render from the server to pick up what was broadcast while the page was
+  // away. Reached only for a socket that reported itself closed.
+  reload() {
+    Turbo.visit(window.location.href, { action: "replace" })
   }
 }

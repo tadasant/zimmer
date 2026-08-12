@@ -19,20 +19,20 @@
     element, so a drawer copy and the dashboard root cannot contend over the
     same subscription.
 
-    cable-reconnect and stream-visibility-recovery both key on the `connected`
-    attribute, but they answer different failures and do not overlap:
+    The two answer different failures and do not overlap:
 
     - The page was hidden (backgrounded PWA, bfcache restore) and came back with
       a dead socket. Everything broadcast while it was away is gone — a
       subscription alone would not bring it back — so stream-visibility-recovery
-      reloads. It fires first by design; its 1.5s grace is shorter than
-      cable-reconnect's 3s.
+      reopens the consumer and then reloads.
     - The socket died while the page stayed visible. No content was missed, so
-      cable-reconnect re-subscribes in place and nothing the user typed is lost.
+      cable-reconnect re-subscribes that source in place.
 
-    A reload is therefore still reachable on this page. What is gone is the
-    unconditional one: the meta refresh below fired on elapsed time whether or
-    not the cable had actually dropped. %>
+    What changed is that the first path now *checks* whether the socket is dead
+    (`connection.isOpen()`) instead of inferring it from the `pageshow` event.
+    iOS fires that event on every PWA reopen, so inferring meant reloading every
+    time the user opened the app. A socket that survived the hide missed nothing
+    and is now left alone entirely. %>
 <% detail_controllers = "session-scroll auto-scroll log-level-filter page-header-offset cable-reconnect" %>
 <% detail_controllers += " pull-to-refresh stream-visibility-recovery" unless in_drawer %>
 <div class="<%= in_drawer ? "min-h-full pb-32" : "min-h-screen" %> bg-gray-50" data-controller="<%= detail_controllers %>"
