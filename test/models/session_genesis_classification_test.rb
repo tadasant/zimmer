@@ -75,13 +75,22 @@ class SessionGenesisClassificationTest < ActiveSupport::TestCase
   # --- derived class ----------------------------------------------------------
 
   test "priority_class derives live, so promoting a genesis moves existing sessions" do
-    session = build_session(genesis: SessionGenesis::GITHUB_ISSUE)
+    # `api` rather than `github_issue`: the trigger-backed kinds take their class
+    # from the Trigger row now, so a per-kind override for one is ignored on read.
+    session = build_session(genesis: SessionGenesis::API)
     assert session.spot?
 
     # The promotion is a policy change, not a backfill: the row is untouched.
-    overrides = { SessionGenesis::GITHUB_ISSUE => SessionGenesis::PRIORITY }
+    overrides = { SessionGenesis::API => SessionGenesis::PRIORITY }
     assert session.priority?(overrides)
-    assert_equal SessionGenesis::GITHUB_ISSUE, session.reload.genesis
+    assert_equal SessionGenesis::API, session.reload.genesis
+  end
+
+  test "a per-kind override for a trigger-backed genesis does not move its sessions" do
+    session = build_session(genesis: SessionGenesis::GITHUB_ISSUE)
+
+    assert session.spot?(SessionGenesis::GITHUB_ISSUE => SessionGenesis::PRIORITY),
+      "that lever moved to the trigger; a leftover key here must not reclassify the whole kind"
   end
 
   test "genesis_key reads a NULL genesis as unknown" do
