@@ -1175,6 +1175,12 @@ interrupt leaves either the whole tree or nothing) is tracked separately in
 [#410](https://github.com/tadasant/zimmer/issues/410), where an interrupted `BundleInstallJob` leaves
 a clone permanently unusable.
 
+It is not rare. On 2026-08-12, the day the guard shipped, it defused nine clones across nine
+sessions in one afternoon, and a read-only scan of the production clones directory that evening
+found 20 of 87 clones carrying a mass-deletion tree — both figures recorded in
+[#415](https://github.com/tadasant/zimmer/issues/415). `MangledCloneReportJob` is what keeps that
+number visible day to day.
+
 ### A session that deletes 50+ tracked files and nothing else loses those deletions on archive
 
 The guard above separates corruption from work by shape: 50 or more deleted tracked files, and
@@ -1185,9 +1191,18 @@ unarchive. The tolerance is narrow: a patch of 60 deletions needs 4 or more non-
 stay out of the net, and one or two edits alongside the deletions are not enough.
 
 What is lost is bounded — every dropped file still exists at `HEAD`, so `git rm` reproduces the work
-in seconds — and it is not silent: the drop is logged at `.error` (which pages) and counted in the
-artifact metadata as `dropped_deletions`. Committing the deletions before the session is archived
-avoids it entirely, since commits travel in the bundle rather than the patch.
+in seconds — and it is not silent: the drop is logged at `.warn`, counted in the artifact metadata as
+`dropped_deletions`, and stamped on the session as `mangled_clone_dropped_deletions`. Committing the
+deletions before the session is archived avoids it entirely, since commits travel in the bundle
+rather than the patch.
+
+It is a `.warn` and not an `.error` because the archive-side refusal is self-healing, and paging for
+each one buried the signal it was meant to carry: nine pages in one afternoon, for nine sessions that
+all archived fine. The frequency is reported once a day in aggregate by `MangledCloneReportJob`
+instead — see [Counting mangled clones](/operate/background-jobs/#counting-mangled-clones-without-paging-for-each-one).
+The trade is deliberate: a session that legitimately deletes 50+ tracked files loses those deletions
+with a warning rather than an alert, so nobody is told about *that* particular loss at the moment it
+happens.
 
 ### A fork of a live clone is retried, so a fork that cannot be made now fails three times slower
 
