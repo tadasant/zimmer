@@ -19,15 +19,17 @@ container and spawns the agent CLI as a child process there, in a clone under
 | | |
 | --- | --- |
 | User | uid 1000 (`rails`), no root, no sudo |
-| Docker | `/usr/bin/docker` exists; `/var/run/docker.sock` is mounted `root:988` and the runtime user is **not** in that group |
+| Docker | `/usr/bin/docker` exists, and `/var/run/docker.sock` is mounted — but usable only if the host grants the worker the socket's group |
 | Postgres client | none — no `psql`, no `pg_isready`, no server binaries. Only `libpq` and the `pg` gem |
 | Network | the Kamal Docker bridge. Sibling accessories resolve by name (`zimmer-redis`, `zimmer-devdb`) |
 
 Two consequences follow, and they are the whole story:
 
-1. **A session cannot start a database for itself.** Not with Docker (no socket access),
-   not with a package manager (no root), not from the image (no Postgres binaries). The
-   database has to already be running and reachable.
+1. **A session cannot reliably start a database for itself.** Not with a package manager
+   (no root), not from the image (no Postgres binaries), and not with Docker on a host
+   that has not granted the worker the socket's group. The database has to already be
+   running and reachable. A shared accessory is also simply the better answer than one
+   Postgres per clone.
 2. **`bin/dev` cannot work there.** It assumes Postgres on `localhost`, Redis on
    `localhost`, and `foreman` — which is in the `:development` gem group the deployed
    image does not install.

@@ -6,8 +6,8 @@ require "yaml"
 
 # The `devdb` accessory is the whole reason an agent session can boot the app at all.
 # A session runs as uid 1000 inside the worker container with no root, no sudo, and no
-# access to the Docker socket (mounted root:988, and the runtime user is not in that
-# group), so it cannot start a Postgres for itself. If this accessory is not declared,
+# Postgres binaries in the image, so it cannot start a Postgres for itself -- and one
+# shared server beats one per clone regardless. If this accessory is not declared,
 # there is no database anywhere on the container network a session can reach and
 # `bin/agent-dev` fails its preflight -- which is exactly the state that produced
 # "there is no Postgres, Docker or root in this clone, so I could not boot the app".
