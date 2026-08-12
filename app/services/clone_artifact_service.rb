@@ -40,8 +40,8 @@ class CloneArtifactService
   #     or more non-deletion entries to stay out of the net, so a *pure* delete
   #     of 50+ tracked files and nothing else is treated as corruption. That
   #     costs the session its deletions — the files come back from HEAD, which
-  #     git can always reproduce — and it is logged at .error rather than
-  #     silently. See the limitation in docs/.
+  #     git can always reproduce — and it is never silent: the drop is logged
+  #     and counted on the session. See the limitation in docs/.
   MASS_DELETION_MIN_FILES = 50
   MASS_DELETION_RATIO = 0.95
 
@@ -65,7 +65,11 @@ class CloneArtifactService
   end
 
   DirtyCheckResult = Struct.new(:dirty?, :has_uncommitted?, :has_unpushed_commits?, :details, keyword_init: true)
-  CreateResult = Struct.new(:success?, :artifacts_path, :error, keyword_init: true)
+  # `dropped_deletions` is how many tracked-file deletions the archive-side
+  # mass-deletion guard threw away, or nil when the guard did not fire. The
+  # caller records it on the session so the rate of mangled clones stays
+  # countable now that a single refusal no longer pages — see #415.
+  CreateResult = Struct.new(:success?, :artifacts_path, :dropped_deletions, :error, keyword_init: true)
   ApplyResult = Struct.new(:success?, :applied_bundle?, :applied_working_tree?, :refused_working_tree?, :error,
     keyword_init: true)
 
@@ -190,7 +194,20 @@ class CloneArtifactService
         # whatever real work is in the patch (additions and modifications) and
         # throw the deletions away, so unarchive restores a working clone
         # instead of replaying the corruption onto a pristine one.
-        @logger.error(
+        #
+        # .warn, not .error: this path is self-healing. The corruption is
+        # dropped, the session's real work still travels in the bundle and the
+        # filtered patch, and the deleted files come back from HEAD — so a
+        # refusal here is a landmine successfully defused, not an incident.
+        # Routing it through StructuredLogger#error paged GlitchTip and tripped
+        # the "Zimmer backend logging errors" Grafana rule once per defused
+        # clone (#415). The unarchive-side refusals stay at .error, because
+        # those are the paths that can still leave a session broken. The
+        # frequency — which is the live signal for #412, the non-atomic clone
+        # delete that mangles these trees — stays countable via
+        # `mangled_clone_dropped_deletions` on the session (see
+        # DeferredCloneCleanupJob and MangledCloneReportJob).
+        @logger.warn(
           "Refusing to preserve mass deletions from a mangled clone",
           session_id: session_id,
           clone_path: clone_path,
@@ -221,7 +238,8 @@ class CloneArtifactService
     metadata_path = File.join(artifacts_dir, "metadata.json")
     file_system.write(metadata_path, JSON.pretty_generate(metadata))
 
-    CreateResult.new(success?: true, artifacts_path: artifacts_dir)
+    CreateResult.new(success?: true, artifacts_path: artifacts_dir,
+      dropped_deletions: metadata["dropped_deletions"])
   rescue => e
     @logger.error("Failed to create artifacts", error: e.message, session_id: session_id)
     file_system.rm_rf(artifacts_dir) if file_system.directory?(artifacts_dir)

@@ -43,6 +43,7 @@ From `config.good_job.cron`:
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, and sweep the scratch/attachment directories of sessions whose row is gone |
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
+| daily :08 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |
 | — | `ZombieReaperJob`, `DeferredCloneCleanupJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
 
 :::note[Sub-minute cron works]
@@ -138,6 +139,34 @@ session's working directory is a far worse outcome than the disk pressure it was
 | Only the deployment that owns the volume | A clones base inside the durable volume is reaped only in production and staging. This is the fence `StaleCloneCleanupJob` already applies to its per-session sweep, and it exists because orphan-hood is a set difference against the **connected** database: `bin/rails test` (`zimmer_test`) and `bin/dev` (`zimmer_development`) both resolve the clones base to `~/.zimmer/clones`, so on a machine that also hosts a real Zimmer, either would compute every live clone as an orphan. A relocated base (`AGENT_CLONES_DIR` pointed clear of the volume) is reapable anywhere |
 
 A removal that raises is logged and skipped; the run continues with the next candidate.
+
+## Counting mangled clones without paging for each one
+
+An interrupted `rm -rf` on a live clone leaves a working tree that is nothing but deletions of
+tracked files. `CloneArtifactService` refuses to preserve such a tree on archive — see
+[the archive path](/sessions/lifecycle/) — and that refusal is fully self-healing: the corruption is
+dropped, the session's real work still travels in the bundle and the filtered patch, and the deleted
+files come back from `HEAD`.
+
+It used to log at `.error`, which meant `StructuredLogger` reported it to GlitchTip and tripped the
+"backend logging errors" alert rule for every clone the guard *successfully* handled. Nine pages in
+one afternoon, for nine sessions that all archived fine. It logs at `.warn` now, so the
+per-occurrence line still reaches VictoriaLogs and nobody is woken up for it.
+
+The rate still matters — it is the live signal for
+[#412](https://github.com/tadasant/zimmer/issues/412), the non-atomic clone delete that mangles the
+trees in the first place — so the count is kept in two durable places rather than in the alert:
+
+- `DeferredCloneCleanupJob` stamps `mangled_clone_dropped_deletions` and `mangled_clone_defused_at`
+  on the session, which makes the history countable in SQL long after the log line has aged out.
+- `MangledCloneReportJob` runs daily at 08:00 UTC and emits **one** `.warn` line summarizing the
+  previous 24 hours: how many clones were defused, how many tracked-file deletions were dropped, and
+  which sessions. `REPORT_WINDOW` matches the cron interval, so consecutive runs tile the timeline
+  instead of double-counting. A day with nothing to report writes only an `INFO` line, which is
+  below the [export threshold](/operate/observability/) and therefore silence in VictoriaLogs.
+
+The unarchive-side refusals stay at `.error`. Those are the paths that can still leave a session
+broken, and they should page.
 
 ## The zombie reaper only takes what nobody is waiting for
 

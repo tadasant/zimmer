@@ -95,7 +95,9 @@ class DeferredCloneCleanupJob < ApplicationJob
 
         # Set trash_after and store artifacts path in a single DB update to avoid race conditions
         with_db_retry do
-          new_metadata = (session.reload.metadata || {}).merge("artifacts_path" => create_result.artifacts_path)
+          new_metadata = (session.reload.metadata || {})
+            .merge("artifacts_path" => create_result.artifacts_path)
+            .merge(mangled_clone_metadata(create_result))
           session.update_columns(
             trash_after: trash_deadline_for(session),
             metadata: new_metadata
@@ -144,6 +146,25 @@ class DeferredCloneCleanupJob < ApplicationJob
   end
 
   private
+
+  # Durable record that this session's clone was mangled and the archive-side
+  # guard defused it. The refusal itself only logs at .warn now (#415) — this is
+  # what keeps the *rate* countable, in SQL, after the log line has aged out:
+  # MangledCloneReportJob aggregates these daily, and it is the standing evidence
+  # for #412, the non-atomic clone delete that mangles the trees in the first
+  # place. Nothing is written when the guard did not fire, so the marker's
+  # presence is itself the signal.
+  def mangled_clone_metadata(create_result)
+    dropped = create_result.dropped_deletions.to_i
+    return {} unless dropped.positive?
+
+    {
+      "mangled_clone_dropped_deletions" => dropped,
+      # .utc, so the stamp is comparable in SQL regardless of what
+      # config.time_zone is set to when it is written.
+      "mangled_clone_defused_at" => Time.current.utc.iso8601
+    }
+  end
 
   # Decide whether this session still needs a trash deadline once the clone is
   # gone. trash_after is what makes EmptyTrashJob find the session later and

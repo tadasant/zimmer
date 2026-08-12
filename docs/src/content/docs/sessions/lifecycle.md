@@ -188,8 +188,15 @@ window and then either deletes the clone (if it's clean) or preserves unpushed a
 Preservation does not take the working tree entirely on faith. A tree that is 50 or more deleted
 tracked files and almost nothing else is not uncommitted work — it is a clone that an interrupted
 recursive delete mangled — so `CloneArtifactService` drops those deletions from `working_tree.patch`
-(keeping the additions and modifications), logs at `.error`, and records `dropped_deletions` in the
+(keeping the additions and modifications), logs at `.warn`, and records `dropped_deletions` in the
 artifact metadata.
+
+`.warn` rather than `.error` because this refusal is self-healing — the corruption is dropped, the
+real work still travels in the bundle and the filtered patch, and the deleted files come back from
+`HEAD` — and routing it through `StructuredLogger#error` paged on every clone the guard successfully
+defused. `DeferredCloneCleanupJob` stamps the drop on the session as
+`mangled_clone_dropped_deletions`, and `MangledCloneReportJob` sums a day of them into one line, so
+the frequency stays [countable without paging](/operate/background-jobs/).
 
 Unarchive applies the same test before it replays a patch, because patches captured before the guard
 existed are still on disk. There it refuses the patch **whole** rather than filtering it: git can

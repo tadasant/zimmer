@@ -261,6 +261,11 @@ Rails.application.configure do
       cron: "* * * * *", # Every minute
       class: "EgressHealthCheckJob",
       description: "Probe the primary DNS resolver's public egress; drive the network-degraded banner"
+    },
+    mangled_clone_report: {
+      cron: "0 8 * * *", # Daily at 08:00 UTC (offset from cert_expiry_monitor at 07:00)
+      class: "MangledCloneReportJob",
+      description: "Report how many mangled clones the archive-side mass-deletion guard defused in the last day"
     }
   }
 
