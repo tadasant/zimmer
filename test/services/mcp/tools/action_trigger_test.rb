@@ -11,6 +11,62 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     Mcp::Tools::ActionTrigger.new(context: Mcp::Context.new(tool_groups: "triggers", allowed_agent_roots: roots))
   end
 
+  test "a created trigger carries no class by default, and says which it derives" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Derived Class Trigger",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{link}}",
+      "configuration" => { "channel_id" => "C777", "channel_name" => "derived" }
+    )
+
+    trigger = Trigger.find_by!(name: "Derived Class Trigger")
+    assert_nil trigger.scheduling_class
+    assert_includes output, "- **Scheduling Class:** priority (default for its conditions)"
+  end
+
+  test "create accepts a scheduling_class" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Spot Slack Trigger",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{link}}",
+      "scheduling_class" => "spot",
+      "configuration" => { "channel_id" => "C888", "channel_name" => "noisy" }
+    )
+
+    assert_equal SessionGenesis::SPOT, Trigger.find_by!(name: "Spot Slack Trigger").scheduling_class
+  end
+
+  test "update sets and clears the scheduling_class" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    output = @tool.call("action" => "update", "id" => trigger.id, "scheduling_class" => "priority")
+    assert_equal SessionGenesis::PRIORITY, trigger.reload.scheduling_class
+    assert_includes output, "- **Scheduling Class:** priority (set on this trigger)"
+
+    @tool.call("action" => "update", "id" => trigger.id, "scheduling_class" => nil)
+    assert_nil trigger.reload.scheduling_class, "an explicit null returns it to derived"
+  end
+
+  test "an omitted scheduling_class leaves an existing choice alone" do
+    trigger = triggers(:enabled_schedule_trigger)
+    trigger.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    @tool.call("action" => "update", "id" => trigger.id, "name" => "Renamed But Still Priority")
+
+    assert_equal SessionGenesis::PRIORITY, trigger.reload.scheduling_class
+  end
+
+  test "an unknown scheduling_class is rejected" do
+    trigger = triggers(:enabled_schedule_trigger)
+    assert_raises(ActiveRecord::RecordInvalid) do
+      @tool.call("action" => "update", "id" => trigger.id, "scheduling_class" => "whenever")
+    end
+  end
+
   test "creates a slack trigger" do
     output = @tool.call(
       "action" => "create",

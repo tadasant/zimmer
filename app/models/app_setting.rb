@@ -144,6 +144,11 @@ class AppSetting < ApplicationRecord
   # state alone — the same merge-not-replace discipline #set_extension_enabled
   # uses, so promoting one genesis can never clobber another.
   #
+  # Only the kinds nothing triggers can be set here. The trigger-backed kinds
+  # take their class from the Trigger row, and writing one of them into this
+  # column would be a setting that silently does nothing — SessionGenesis
+  # ignores it on read.
+  #
   # Storing a value equal to the shipped default removes the key instead. That
   # keeps the column a record of deliberate divergence, so a later change to a
   # default is not silently pinned by a no-op override written months earlier.
@@ -151,6 +156,7 @@ class AppSetting < ApplicationRecord
     key = genesis_key.to_s
     klass = klass.to_s
     raise ArgumentError, "unknown genesis #{key}" unless SessionGenesis.valid?(key)
+    raise ArgumentError, "#{key} takes its class from its trigger" unless SessionGenesis.settable?(key)
     raise ArgumentError, "unknown class #{klass}" unless SessionGenesis::CLASSES.include?(klass)
 
     stored = (genesis_class_overrides || {}).except(key)

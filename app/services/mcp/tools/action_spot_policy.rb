@@ -27,15 +27,21 @@ module Mcp
           their ceiling. With it off, spot sessions start like any other.
         - **promote_genesis**: Make a genesis kind `priority` (requires `genesis`). This is the one-click
           promotion: it reclassifies every session from that genesis, including ones that already exist,
-          because a session's class is derived from its genesis rather than stored on the row.
+          because a session's class is derived from its genesis unless something named one for it.
         - **demote_genesis**: Make a genesis kind `spot` (requires `genesis`).
         - **reset_genesis_classes**: Drop every override and return all genesis kinds to their defaults.
 
-        Genesis keys: `web_ui`, `slack`, `github_issue`, `github_label`, `schedule`, `ao_event`, `api`,
-        `unknown`.
+        Settable genesis keys: `web_ui`, `api`, `unknown` — the origins nothing triggers.
+
+        **The other five kinds are not settable here.** `slack`, `github_issue`, `github_label`,
+        `schedule` and `ao_event` restate trigger condition types, and their class lives on the trigger
+        that fires them: set `scheduling_class` with `action_trigger` so one trigger moves without
+        dragging every other session of the same kind with it. To change a single session rather than a
+        whole feed, pass `scheduling_class` to `start_session` when spawning it, or set it afterwards
+        with `action_session`.
 
         **Use cases:**
-        - Promote `github_issue` to priority for a day when the issue backlog matters more than quota
+        - Demote `web_ui` to spot while you are letting a long unattended batch run
         - Turn gating on before a long unattended run, off when you want everything to go now
         - Raise or lower the thresholds
       DESC
@@ -50,8 +56,9 @@ module Mcp
           },
           genesis: {
             type: "string",
-            enum: SessionGenesis::KEYS,
-            description: "Genesis kind. Required for promote_genesis and demote_genesis."
+            enum: SessionGenesis::SETTABLE_KEYS,
+            description: "Genesis kind. Required for promote_genesis and demote_genesis. Only the kinds " \
+                         "no trigger produces can be set here; use action_trigger for the rest."
           },
           enabled: {
             type: "boolean",
@@ -114,7 +121,12 @@ module Mcp
 
       def set_genesis_class(args, klass)
         genesis = require_arg(args, :genesis)
-        raise ToolError, "Unknown genesis: #{genesis}. Valid: #{SessionGenesis::KEYS.join(', ')}" unless SessionGenesis.valid?(genesis)
+        raise ToolError, "Unknown genesis: #{genesis}. Valid: #{SessionGenesis::SETTABLE_KEYS.join(', ')}" unless SessionGenesis.valid?(genesis)
+        unless SessionGenesis.settable?(genesis)
+          raise ToolError, "`#{genesis}` takes its class from the trigger that fires it, not from this policy. " \
+                           "Set `scheduling_class` on the trigger with `action_trigger` (search_triggers lists them), " \
+                           "or on one session with `start_session`/`action_session`."
+        end
 
         setting = AppSetting.editable
         setting.set_genesis_class(genesis, klass)

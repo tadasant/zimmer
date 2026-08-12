@@ -169,9 +169,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # `sm` the rows render as stacked cards with the button on screen.
   test "spot gate genesis controls are reachable on a phone" do
     visit settings_path
-    assert_text "Genesis classes"
+    assert_text "Sessions no trigger started"
 
-    kind = SessionGenesis::KINDS.first
+    kind = SessionGenesis::SETTABLE_KINDS.first
     assert_selector "#genesis-card-#{kind.key}", visible: true
     assert_selector "#genesis-row-#{kind.key}", visible: :hidden
 

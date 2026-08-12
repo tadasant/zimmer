@@ -23,9 +23,23 @@
 # forecast headroom in the Claude Code quota windows (see SpotGateService); when
 # there is not, it is deferred and started later.
 #
-# The defaults below are policy, not physics: every one of them can be flipped
-# per-kind from /settings or over MCP, which is what "change a genesis to
-# priority" means. Overrides live in AppSetting#genesis_class_overrides.
+# The defaults below are policy, not physics — but where you change them depends
+# on the kind, and the split is deliberate:
+#
+#   - Five of the eight kinds (`slack`, `github_issue`, `github_label`,
+#     `schedule`, `ao_event`) are restatements of trigger condition types. Their
+#     selector lives on the Trigger row (Trigger#scheduling_class), so one noisy
+#     `slack` trigger can be spot without demoting the eleven others that carry a
+#     human waiting for an answer. `#trigger_backed?` marks them.
+#
+#   - The other three (`web_ui`, `api`, `unknown`) have no trigger behind them,
+#     so they keep a per-kind setting in AppSetting#genesis_class_overrides.
+#     SETTABLE_KEYS is that list, and it is the only thing /settings and
+#     `action_spot_policy` will write.
+#
+# The defaults here still decide every case nobody has spoken about — a trigger
+# with no selector, a session with no explicit class — so they remain the
+# taxonomy's answer, not a fallback nobody reaches.
 module SessionGenesis
   SPOT = "spot"
   PRIORITY = "priority"
@@ -124,9 +138,28 @@ module SessionGenesis
   # to spot on the strength of a condition that did not fire.
   CONDITION_TYPE_PRECEDENCE = %w[slack github_label github_issue ao_event schedule].freeze
 
+  # The kinds a trigger can produce. Their class is chosen per trigger, so there
+  # is no per-kind setting for them.
+  TRIGGER_BACKED_KEYS = CONDITION_TYPE_KINDS.values.uniq.freeze
+
+  # The kinds nothing triggers — the only ones /settings and `action_spot_policy`
+  # can still move as a whole.
+  SETTABLE_KEYS = (KEYS - TRIGGER_BACKED_KEYS).freeze
+  SETTABLE_KINDS = KINDS.select { |k| SETTABLE_KEYS.include?(k.key) }.freeze
+
   class << self
     def kind(key)
       BY_KEY[key.to_s]
+    end
+
+    # Whether this kind comes from a trigger, and so takes its class from the
+    # Trigger row rather than from a per-kind setting.
+    def trigger_backed?(key)
+      TRIGGER_BACKED_KEYS.include?(key.to_s)
+    end
+
+    def settable?(key)
+      SETTABLE_KEYS.include?(key.to_s)
     end
 
     def valid?(key)
@@ -152,12 +185,16 @@ module SessionGenesis
     # The effective class of every kind, defaults merged with the persisted
     # per-kind overrides. One hash, read once, so a list view classifies N rows
     # without N lookups.
+    #
+    # A stored override for a trigger-backed kind is ignored rather than honored:
+    # those kinds take their selector from the Trigger row, and a stray key here
+    # must not quietly reclassify every trigger of that kind at once.
     def effective_classes(overrides = nil)
       overrides = AppSetting.current.genesis_class_overrides if overrides.nil?
       overrides = {} unless overrides.is_a?(Hash)
 
       KINDS.each_with_object({}) do |k, acc|
-        override = overrides[k.key]
+        override = settable?(k.key) ? overrides[k.key] : nil
         acc[k.key] = CLASSES.include?(override) ? override : k.default_class
       end
     end

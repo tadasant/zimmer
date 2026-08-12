@@ -76,6 +76,14 @@
                   Resuscitates archived
                 </span>
               <% end %>
+              <%# Only shown when the operator chose one. Every trigger has an
+                  effective class, but badging all of them would say nothing about
+                  most of them. %>
+              <% if trigger.scheduling_class.present? %>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= scheduling_class_badge_css(trigger.scheduling_class) %>">
+                  <%= trigger.scheduling_class.capitalize %>
+                </span>
+              <% end %>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500">
               <span class="flex items-center">

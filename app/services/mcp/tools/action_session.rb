@@ -16,7 +16,9 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+
+      SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while both Claude Code quota windows are forecast to stay under their ceilings). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
       MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session (replaces the existing set — this is not a merge).'
@@ -54,6 +56,7 @@ module Mcp
         change_plugins
         change_goal
         change_auto_compact_window
+        change_scheduling_class
         change_category
         set_blocked
         toggle_push_notifications
@@ -108,6 +111,7 @@ module Mcp
         - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected.
         - **change_goal**: Update the goal for a session (requires "goal" parameter; empty string clears it)
         - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
+        - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived)
         - **change_category**: Assign the session's organizational category (requires "category_id"; null moves it to Uncategorized)
         - **set_blocked**: Set or clear the session's blocked-by relationship (requires "blocked_by_session_id"; null clears it)
         - **toggle_push_notifications**: Toggle push notifications on a session
@@ -150,6 +154,11 @@ module Mcp
           plugins: { type: "array", items: { type: "string" }, description: PLUGINS_DESC },
           goal: { type: "string", description: GOAL_DESC },
           auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC },
+          scheduling_class: {
+            type: [ "string", "null" ],
+            enum: SessionGenesis::CLASSES + [ nil ],
+            description: SCHEDULING_CLASS_DESC
+          },
           category_id: { type: [ "number", "null" ], description: CATEGORY_ID_DESC },
           blocked_by_session_id: { type: [ "number", "null" ], description: BLOCKED_BY_SESSION_ID_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
@@ -200,6 +209,7 @@ module Mcp
         when "change_skills", "change_hooks", "change_plugins" then change_catalog_list(find_session(args["session_id"]), action, args)
         when "change_goal" then change_goal(find_session(args["session_id"]), args)
         when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
+        when "change_scheduling_class" then change_scheduling_class(find_session(args["session_id"]), args)
         when "change_category" then change_category(find_session(args["session_id"]), args)
         when "set_blocked" then set_blocked(find_session(args["session_id"]), args)
         when "toggle_push_notifications" then toggle_push_notifications(find_session(args["session_id"]))
@@ -595,6 +605,38 @@ module Mcp
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
           "- **Goal:** #{session.goal.presence || '(none)'}"
+        ].join("\n")
+      end
+
+      # One session, not a whole genesis. The genesis-wide lever exists for the
+      # origins nothing triggers; a trigger's feed moves on the trigger. This is
+      # the third case — this session, now — and it is what releases a held spot
+      # session without moving anything else.
+      def change_scheduling_class(session, args)
+        unless args.key?("scheduling_class")
+          raise ToolError, "The \"scheduling_class\" parameter is required for the \"change_scheduling_class\" action. " \
+                           "Valid: #{SessionGenesis::CLASSES.join(', ')}, or null to derive it."
+        end
+
+        raw = args["scheduling_class"]
+        klass = raw.nil? ? nil : raw.to_s
+        if klass.present? && !SessionGenesis::CLASSES.include?(klass)
+          raise ToolError, "Unknown scheduling_class: #{klass}. Valid: #{SessionGenesis::CLASSES.join(', ')}, or null to derive it."
+        end
+
+        previous = session.priority_class
+        session.update!(scheduling_class: klass.presence)
+        if previous != session.priority_class
+          session.logs.create!(content: "Scheduling class set via MCP to #{session.priority_class} (was #{previous})", level: "info")
+        end
+
+        [
+          "## Scheduling Class Updated",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Scheduling class:** #{session.priority_class} (was #{previous})",
+          "- **Source:** #{session.scheduling_class_source}"
         ].join("\n")
       end
 

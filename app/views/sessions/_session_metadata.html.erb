@@ -595,6 +595,40 @@
       </div>
     </div>
   <% end %>
+  <%
+    # Scheduling class. Detail page only (`available_models` is the same signal
+    # the model and context-window sections gate on) — a card has no room for it,
+    # and the class is already on the card as a pill.
+    #
+    # The control is here rather than only on the hold banner so the UI can do
+    # everything MCP's change_scheduling_class can: demote as well as promote, and
+    # clear back to derived. The banner button is the same route, reachable in the
+    # one moment it matters most.
+  %>
+  <% if available_models %>
+    <div class="flex flex-wrap items-center gap-1" id="session-scheduling-class">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v4a1 1 0 00.293.707l2 2a1 1 0 001.414-1.414L11 10.586V7z" clip-rule="evenodd" />
+      </svg>
+      <strong class="text-gray-700">Scheduling class:</strong>
+      <%= form_with url: update_scheduling_class_session_path(agent_session), method: :patch,
+            data: { turbo: false }, class: "flex flex-wrap items-center gap-1" do %>
+        <%= select_tag :scheduling_class,
+              options_for_select(
+                [
+                  [ "Derive it (#{SessionGenesis.effective_class(agent_session.genesis_key)})", "" ],
+                  [ "Priority", SessionGenesis::PRIORITY ],
+                  [ "Spot", SessionGenesis::SPOT ]
+                ],
+                agent_session.scheduling_class.to_s
+              ),
+              class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md py-1 px-2" %>
+        <%= submit_tag "Set",
+              class: "inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 cursor-pointer" %>
+      <% end %>
+      <span class="text-gray-400">now <%= agent_session.priority_class %>, <%= agent_session.scheduling_class_source %></span>
+    </div>
+  <% end %>
   <%# Goal: always show on detail page (where goals_for_select is available), or on other pages only if set %>
   <% show_goal_section = goals_for_select || agent_session.goal.present? %>
   <% if show_goal_section %>

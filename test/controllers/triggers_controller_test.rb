@@ -961,4 +961,28 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     # Schedule trigger uses {{date}} and {{time}} which are auto-populated
     assert_select "label", text: "{{link}}", count: 0
   end
+
+  test "the form's scheduling class is permitted, and blank means derive" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    patch trigger_path(trigger), params: { trigger: { name: trigger.name, scheduling_class: "priority" } }
+    assert_equal SessionGenesis::PRIORITY, trigger.reload.scheduling_class
+
+    patch trigger_path(trigger), params: { trigger: { name: trigger.name, scheduling_class: "" } }
+    assert_nil trigger.reload.scheduling_class, "the \"Default\" option submits blank, not a class named empty"
+  end
+
+  test "the trigger page shows the effective class and where it came from" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    get trigger_path(trigger)
+    assert_response :success
+    assert_select "#trigger-scheduling-class", text: /spot/
+    assert_match(/default for its conditions/, response.body)
+
+    trigger.update!(scheduling_class: SessionGenesis::PRIORITY)
+    get trigger_path(trigger)
+    assert_select "#trigger-scheduling-class", text: /priority/
+    assert_match(/set on this trigger/, response.body)
+  end
 end

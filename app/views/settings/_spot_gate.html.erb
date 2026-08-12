@@ -1,13 +1,15 @@
 <%# The spot gate: the policy, the live forecast it acts on, and one button per
-    genesis kind to move it between spot and priority. %>
+    non-trigger genesis kind to move it between spot and priority. The kinds a
+    trigger produces are not here — their selector lives on the trigger itself. %>
 <div class="bg-white shadow-sm rounded-lg border border-gray-200" id="spot-gate">
   <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
     <h2 class="text-lg font-medium text-gray-900">Spot vs priority</h2>
     <p class="mt-1 text-sm text-gray-500">
-      Every session is classified by its <strong>genesis</strong> — where the work came from. Priority
-      sessions always start. Spot sessions start only while both Claude Code quota windows are forecast
-      to stay under the ceilings below; when they are not, a spot session waits and starts later.
-      It is never cancelled.
+      Every session runs as <strong>priority</strong> or <strong>spot</strong>. Priority sessions always
+      start. Spot sessions start only while both Claude Code quota windows are forecast to stay under
+      the ceilings below; when they are not, a spot session waits and starts later. It is never
+      cancelled. A session's class is the one chosen for it, or the one its trigger carries, or
+      failing both the default for its <strong>genesis</strong> — where the work came from.
     </p>
   </div>
 
@@ -132,17 +134,20 @@
       <% end %>
     </div>
 
-    <%# ---- One click per genesis ---- %>
+    <%# ---- One click per non-trigger genesis ---- %>
     <div>
       <div class="flex items-center justify-between">
-        <h3 class="text-sm font-medium text-gray-900">Genesis classes</h3>
+        <h3 class="text-sm font-medium text-gray-900">Sessions no trigger started</h3>
         <%= button_to "Reset to defaults", reset_genesis_classes_path, method: :delete,
               form: { data: { turbo: false } },
               class: "text-xs text-gray-500 hover:text-gray-800 underline" %>
       </div>
       <p class="mt-1 text-sm text-gray-500">
-        Changing a genesis reclassifies every session from that genesis at once, including ones
-        that already exist.
+        Changing one of these reclassifies every session from that genesis at once, including ones
+        that already exist — except any that were given a class of their own, which keep it.
+        Sessions a <%= link_to "trigger", triggers_path, class: "text-indigo-600 hover:text-indigo-500" %>
+        starts are not here: each trigger carries its own scheduling class, so one noisy Slack trigger
+        can be spot without demoting the rest.
       </p>
 
       <%# A four-column table does not fit a phone, and its Action cell holds the only
@@ -151,7 +156,7 @@
           `genesis_kind_state` so they cannot disagree. `data-genesis-class` lives on
           the table alone, so a selector for it matches exactly once. %>
       <div class="mt-3 divide-y divide-gray-100 border border-gray-200 rounded-md sm:hidden">
-        <% SessionGenesis::KINDS.each do |kind| %>
+        <% SessionGenesis::SETTABLE_KINDS.each do |kind| %>
           <% current, target, overridden, badge = genesis_kind_state(kind, @genesis_classes) %>
           <div class="p-4" id="genesis-card-<%= kind.key %>">
             <div class="flex items-start justify-between gap-3">
@@ -192,7 +197,7 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-100 bg-white">
-            <% SessionGenesis::KINDS.each do |kind| %>
+            <% SessionGenesis::SETTABLE_KINDS.each do |kind| %>
               <% current, target, overridden, badge = genesis_kind_state(kind, @genesis_classes) %>
               <tr id="genesis-row-<%= kind.key %>">
                 <td class="px-4 py-3 align-top">

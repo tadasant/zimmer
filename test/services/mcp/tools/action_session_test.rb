@@ -11,6 +11,44 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     @tool = Mcp::Tools::ActionSession.new(context: Mcp::Context.new(tool_groups: "sessions"))
   end
 
+  test "change_scheduling_class moves one session without touching its genesis" do
+    session = sessions(:needs_input)
+    session.update!(genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: nil)
+    assert session.spot?
+
+    output = @tool.call("action" => "change_scheduling_class", "session_id" => session.id, "scheduling_class" => "priority")
+
+    assert_equal SessionGenesis::PRIORITY, session.reload.scheduling_class
+    assert session.priority?
+    assert_equal SessionGenesis::GITHUB_ISSUE, session.genesis
+    assert_includes output, "## Scheduling Class Updated"
+    assert_includes output, "- **Scheduling class:** priority (was spot)"
+  end
+
+  test "change_scheduling_class with null returns the session to derived" do
+    session = sessions(:needs_input)
+    session.update!(genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: SessionGenesis::PRIORITY)
+
+    @tool.call("action" => "change_scheduling_class", "session_id" => session.id, "scheduling_class" => nil)
+
+    assert_nil session.reload.scheduling_class
+    assert session.spot?, "back to what github_issue derives"
+  end
+
+  test "change_scheduling_class requires the parameter" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_scheduling_class", "session_id" => sessions(:needs_input).id)
+    end
+    assert_match(/"scheduling_class" parameter is required/, error.message)
+  end
+
+  test "change_scheduling_class rejects an unknown class" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_scheduling_class", "session_id" => sessions(:needs_input).id, "scheduling_class" => "whenever")
+    end
+    assert_match(/Unknown scheduling_class/, error.message)
+  end
+
   test "rejects an unknown action" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "self_destruct", "session_id" => sessions(:needs_input).id) }
     assert_match(/Unknown action/, error.message)

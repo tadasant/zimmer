@@ -292,6 +292,7 @@ class TriggersController < ApplicationController
       :enqueue_messages,
       :resuscitate_archived,
       :max_sessions_per_minute,
+      :scheduling_class,
       mcp_servers: [],
       catalog_skills: [],
       catalog_hooks: [],
