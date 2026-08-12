@@ -558,6 +558,25 @@ cleared by any clean poll). Every condition stuck on it stamps no heartbeat at a
 [background jobs](/operate/background-jobs/#trigger-poll-liveness).
 :::
 
+## Scheduling class
+
+A trigger can say whether its sessions are **spot** or **priority**
+(`Trigger#scheduling_class`, on the triggers form, the REST API, and the `action_trigger` MCP tool).
+Leave it unset — the default — and the class comes from the trigger's condition type: `slack` is
+priority, because a human is waiting on the answer; `github_issue`, `github_label`, `schedule` and
+`ao_event` are spot.
+
+The selector is on the **trigger**, not on the condition, because a trigger carries several
+conditions with OR semantics and one shared session template — a mixed trigger already collapses to
+one genesis via a precedence order, so a per-condition class would have to collapse the same way.
+
+It is read once, when the trigger fires, and stamped on the session it creates. **Changing it does
+not move sessions the trigger already spawned** — including ones still `waiting` behind the quota
+gate. To move one of those, move that session: the button on its hold banner, the selector on its
+detail page, or `action_session`'s `change_scheduling_class`.
+
+Full detail in [Spot and priority](/sessions/spot-and-priority/).
+
 ## Burst control
 
 A trigger can cap how many sessions it spawns per minute: **max sessions per minute**

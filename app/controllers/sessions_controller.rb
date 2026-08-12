@@ -2568,10 +2568,12 @@ class SessionsController < ApplicationController
 
     previous = @session.priority_class
     if with_db_retry { @session.update(scheduling_class: klass.presence) }
-      @session.logs.create!(
-        content: "Scheduling class set to #{@session.priority_class} (was #{previous})",
-        level: "info"
-      )
+      if previous != @session.priority_class
+        @session.logs.create!(
+          content: "Scheduling class set to #{@session.priority_class} (was #{previous})",
+          level: "info"
+        )
+      end
       redirect_back fallback_location: session_path(@session),
         notice: "This session is now #{@session.priority_class}."
     else

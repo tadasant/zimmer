@@ -115,7 +115,8 @@ The flip side, stated plainly: **changing a trigger's class does not move sessio
 spawned.** The trigger's selector is read once, when it fires, and stamped on the session. Sessions
 already created — including ones still `waiting` behind the gate — keep the class they started with.
 To move one of those, move that session: the **Make this session priority** button on its hold banner,
-`action_session` with `change_scheduling_class`, or `PATCH /api/v1/sessions/:id`.
+the **Scheduling class** selector on its detail page, `action_session` with
+`change_scheduling_class`, or `PATCH /api/v1/sessions/:id`.
 
 ## The usage rate
 
@@ -210,7 +211,7 @@ time, and how to start it now.
 | Set a trigger's class | Trigger edit form | `action_trigger` (`scheduling_class`) |
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
-| Change one session's class | **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
+| Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 
 Both MCP tools are in the **`health`** group, not `sessions`: they are about the deployment's quota
 posture rather than about one session, and a `self_session` connection has no business rewriting the

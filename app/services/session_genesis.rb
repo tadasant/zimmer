@@ -170,14 +170,6 @@ module SessionGenesis
       kind(key)&.label || key.to_s.presence || "Unknown"
     end
 
-    # A scheduling class as it should be stored: one of CLASSES, or nil for
-    # "nothing chosen — derive it". Blank and unknown values both collapse to nil
-    # so a form's empty option and a bad API value take the same path.
-    def normalize_class(value)
-      value = value.to_s.strip
-      CLASSES.include?(value) ? value : nil
-    end
-
     def default_class(key)
       kind(key)&.default_class || PRIORITY
     end
@@ -195,9 +187,8 @@ module SessionGenesis
     # without N lookups.
     #
     # A stored override for a trigger-backed kind is ignored rather than honored:
-    # those kinds moved their selector to the Trigger row, and a leftover key
-    # (written before the move, or by hand) must not quietly reclassify every
-    # trigger of that kind again.
+    # those kinds take their selector from the Trigger row, and a stray key here
+    # must not quietly reclassify every trigger of that kind at once.
     def effective_classes(overrides = nil)
       overrides = AppSetting.current.genesis_class_overrides if overrides.nil?
       overrides = {} unless overrides.is_a?(Hash)

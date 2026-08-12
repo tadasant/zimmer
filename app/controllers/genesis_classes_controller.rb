@@ -11,9 +11,9 @@
 #
 # The five trigger-backed kinds are rejected here rather than offered. Their
 # selector lives on the Trigger, so that one Slack trigger can be spot without
-# moving every other session that shares the genesis — the case this route used
-# to force. SessionGenesis ignores an override for them on read, so accepting one
-# would be a click that appears to work and changes nothing.
+# moving every other session that shares the genesis. SessionGenesis ignores an
+# override for them on read, so accepting one here would be a click that appears
+# to work and changes nothing.
 #
 # Kept separate from AppSettingsController because this is a one-button action
 # with its own route, not a form of many fields — and because a promotion should

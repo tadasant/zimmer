@@ -173,7 +173,7 @@
           <%= f.label :scheduling_class, "Scheduling class", class: "block text-sm font-medium text-gray-700 mb-2" %>
           <%= f.select :scheduling_class,
               [
-                [ "Default for the web app (priority)", "" ],
+                [ "Default for the web app (#{SessionGenesis.effective_class(SessionGenesis::WEB_UI)})", "" ],
                 [ "Priority — starts whenever it is ready", SessionGenesis::PRIORITY ],
                 [ "Spot — waits for quota headroom", SessionGenesis::SPOT ]
               ],

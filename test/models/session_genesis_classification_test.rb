@@ -176,6 +176,18 @@ class SessionGenesisClassificationTest < ActiveSupport::TestCase
     assert leaf.spot?
   end
 
+  test "a declared genesis does not inherit the parent's class" do
+    # The chat-bubble case. It carries a parent so the conversation threads, but a
+    # human typed the message and it declares web_ui — so inheriting spot from
+    # whatever session was on screen would classify that human's message spot.
+    parent = build_session(genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: SessionGenesis::SPOT)
+    child = build_session(parent_session_id: parent.id, genesis: SessionGenesis::WEB_UI)
+
+    assert_equal SessionGenesis::WEB_UI, child.genesis
+    assert_nil child.scheduling_class, "the class rides on the genesis, and the genesis was declared"
+    assert child.priority?
+  end
+
   test "a child can override an inherited class" do
     root = build_session(genesis: SessionGenesis::SLACK, scheduling_class: SessionGenesis::SPOT)
     child = build_session(parent_session_id: root.id, scheduling_class: SessionGenesis::PRIORITY)
@@ -214,6 +226,19 @@ class SessionGenesisClassificationTest < ActiveSupport::TestCase
     assert_includes spot_ids, spot_by_genesis.id
     refute_includes spot_ids, priority_by_choice.id
     assert_includes priority_ids, priority_by_choice.id
+  end
+
+  test "the scopes compose when chained onto another relation" do
+    # The dashboard filter, GET /api/v1/sessions and quick_search_sessions all
+    # chain this scope. `.or` raises on structurally incompatible relations, and
+    # that would only ever surface at request time.
+    chosen = build_session(genesis: SessionGenesis::WEB_UI, scheduling_class: SessionGenesis::SPOT)
+    derived = build_session(genesis: SessionGenesis::GITHUB_ISSUE)
+
+    ids = Session.includes(:category).where.not(status: :archived).order(created_at: :desc).spot.pluck(:id)
+
+    assert_includes ids, chosen.id
+    assert_includes ids, derived.id
   end
 
   test "scheduling_class_source names where the class came from" do

@@ -49,6 +49,15 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     assert_match(/scheduling class/i, response.body)
   end
 
+  test "update rejects an unknown class" do
+    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", genesis: SessionGenesis::WEB_UI)
+
+    patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "whenever" }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_nil session.reload.scheduling_class
+  end
+
   test "update moves one session, and null returns it to derived" do
     session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", genesis: SessionGenesis::GITHUB_ISSUE)
     assert session.spot?

@@ -30,8 +30,9 @@
 #      explicit choice and nothing overrides it. Three things write it: a caller
 #      naming one at creation (MCP start_session, POST /api/v1/sessions), a
 #      trigger that carries a selector of its own, and inheritance from a parent
-#      that had one. The column is NULL on every session where nobody has
-#      spoken, which is most of them.
+#      that had one — inheritance riding on the genesis, so a creator that
+#      declares its genesis takes the class that goes with it. The column is NULL
+#      on every session where nobody has spoken, which is most of them.
 #
 #   2. Otherwise derive it from the genesis, live, through SessionGenesis — the
 #      original contract. A `web_ui`/`api`/`unknown` session still reclassifies
@@ -148,10 +149,9 @@ module SessionGenesisClassification
 
   private
 
-  # An unknown or blank value is not a validation failure at every call site —
-  # a form's "derive it" option submits "". Only a value that names a real class
-  # is stored; anything else that is blank becomes NULL, and a non-blank unknown
-  # is left alone so the inclusion validation can reject it.
+  # A form's "derive it" option submits "", which means NULL, not a class named
+  # empty string. A non-blank unknown is left alone so the inclusion validation
+  # rejects it rather than the value being silently swallowed.
   def normalize_scheduling_class
     self.scheduling_class = nil if scheduling_class.blank?
   end
@@ -159,15 +159,26 @@ module SessionGenesisClassification
   def assign_genesis
     return if genesis.present?
 
-    self.genesis = inherited_genesis || SessionGenesis::DEFAULT_KEY
+    inherited = inherited_genesis
+    @genesis_was_inherited = inherited.present?
+    self.genesis = inherited || SessionGenesis::DEFAULT_KEY
   end
 
   # An explicit class travels down a lineage the same way genesis does: a router
   # told to run a batch as spot spawns children that are also spot, without every
   # spawn call having to repeat it. Nothing is inherited when the parent never
   # named one — the child derives from the genesis it inherited instead.
+  #
+  # It rides on the genesis, and only on the genesis. A creator that DECLARED
+  # where the work came from has overruled the lineage, and the class has to
+  # follow: the chat bubble carries a parent so the conversation threads, but a
+  # human typed the message, so it declares `web_ui` — and inheriting the class
+  # anyway would classify that human's message spot whenever they opened the
+  # bubble from a spot session's page. Trigger#session_scheduling_class refuses
+  # the same case from the other side, for the Invoke button.
   def assign_scheduling_class
     return if scheduling_class.present?
+    return unless @genesis_was_inherited
 
     self.scheduling_class = genesis_parent_record&.scheduling_class.presence
   end
