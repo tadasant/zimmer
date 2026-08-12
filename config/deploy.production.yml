@@ -39,6 +39,10 @@ servers:
         - claude_home:/home/rails/.claude
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
+        # Mounted for DockerCleanupJob, which cannot actually use it: the socket is
+        # root:988 and this container runs as uid 1000, so every `docker` call from it
+        # is denied and the job silently reaps nothing. Kept because removing the mount
+        # is the wrong half of that decision -- see docs/limitations.md.
         - /var/run/docker.sock:/var/run/docker.sock
         # Same catalog + credentials as web, so agent sessions (which run in the
         # worker) resolve the real production roots/MCP servers and their mcp_secrets.

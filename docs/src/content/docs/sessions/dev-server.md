@@ -101,8 +101,10 @@ caps what it sets at 52.
 session resolves its own configuration instead of Zimmer's. `DATABASE_SSLMODE` was missing
 from that list. Production sets it to `require`; every local Postgres ships with
 `ssl = off`; libpq's answer to that pairing is a refused connection that reads like a
-broken database rather than a leaked variable. It is cleared now — and a clone that sets
-it in its own `.env` still wins, which is how `bin/agent-dev` exports `disable`.
+broken database rather than a leaked variable. It is cleared now, which is what leaves
+`bin/agent-dev` free to export `disable` in its own shell. (Separately, a clone that sets
+any of these in its own `.env` still wins over the clearing — that is by design, and not
+the mechanism the script relies on.)
 
 ## What it does not give you
 
@@ -112,8 +114,23 @@ it in its own `.env` still wins, which is how `bin/agent-dev` exports `disable`.
   `zimmer-redis`; development's cache store appends `/1` while the deployment uses `/0`,
   so they land in different logical databases.
 - **A booted dev app holds real credentials.** `RAILS_MASTER_KEY` and the session's
-  environment are present. The database is empty and separate, so there is nothing for a
-  job to act on — but it is not a sandbox.
+  environment are present. It is not a sandbox. It binds `127.0.0.1` by default for that
+  reason; `BINDING=0.0.0.0` would offer it to every other container on the Kamal bridge.
+
+:::caution[A dev boot runs the whole cron schedule]
+`config/environments/development.rb` sets `config.good_job.enable_cron = true`, and
+GoodJob runs `:async` in-process — so booting the app on a live host starts Zimmer's
+entire cron schedule against a database that is *empty*, on a filesystem that is not.
+
+"Empty database, nothing to act on" is the wrong intuition for the set-difference
+sweeps: `OrphanCloneFilesystemCleanupJob` and `StaleCloneCleanupJob` define an orphan as
+a directory under `~/.zimmer/clones` with no owning `Session` row, so an empty database
+makes *every live clone* look orphaned. They are safe here only because of a specific
+fence — `SWEEPS_DEFAULT_DURABLE_ROOT = %w[production staging]` and
+`inside_default_durable_root?` make them refuse to sweep the default root when
+`Rails.env` is development. That fence, not the empty database, is what protects other
+sessions' clones. A new cron job that sweeps the filesystem needs its own.
+:::
 
 ## Taking screenshots
 

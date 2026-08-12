@@ -3,6 +3,9 @@
 require "test_helper"
 require "erb"
 require "yaml"
+require "open3"
+require "tmpdir"
+require "fileutils"
 
 # Agent sessions all share ONE Postgres -- the `devdb` Kamal accessory -- because a
 # session cannot start a database for itself (no root, no sudo, no Docker socket).
@@ -80,10 +83,52 @@ class DatabaseNameOverrideTest < ActiveSupport::TestCase
 
   # The cap itself, read out of the script rather than restated here, so raising one
   # without the other fails instead of silently truncating clone databases.
-  test "bin/agent-dev caps the derived name at the width these assertions assume" do
+  test "bin/agent-dev's cap matches the width these assertions assume" do
     script = Rails.root.join("bin/agent-dev").read
+    declared = script[/^MAX_DATABASE_NAME=(\d+)/, 1]
 
-    assert_match(/DATABASE_NAME=\$\{DATABASE_NAME:0:52\}/, script,
-      "bin/agent-dev no longer caps the derived database name at 52 bytes")
+    assert declared, "bin/agent-dev no longer declares MAX_DATABASE_NAME"
+    assert_equal 52, declared.to_i,
+      "bin/agent-dev caps derived database names at #{declared}, but these assertions assume 52"
+  end
+
+  # The cap is worth nothing if the truncation drops the part that makes one clone
+  # different from another. Clone directories are `<repo>-<branch>-<timestamp>-<hex8>`
+  # (GitCloneService), so the distinguishing bytes are at the END: two clones of one
+  # repo and branch differ only in their tail. A head-truncating cap would hand them
+  # the same database and let them run each other's migrations in silence.
+  test "the derived name keeps the tail of the clone directory, where clones differ" do
+    a = derived_name_for("zimmer-fix-agent-session-dev-boot-1786516772-f72d11bd")
+    b = derived_name_for("zimmer-fix-agent-session-dev-boot-1786599999-aaaa1111")
+
+    assert_equal 52, a.bytesize, "the sample should be long enough to exercise truncation"
+    refute_equal a, b, "two clones of the same repo and branch derived the same database name"
+    assert a.end_with?("f72d11bd"), "the clone's unique suffix was truncated away: #{a}"
+    assert b.end_with?("aaaa1111"), "the clone's unique suffix was truncated away: #{b}"
+  end
+
+  private
+
+  # Run the script's own derivation against a directory name, rather than a Ruby
+  # restatement of it that could drift from the shell.
+  #
+  # The script resolves its repo root from its own path, so the copy has to live at
+  # <basename>/bin/agent-dev for `basename "$PWD"` to see the name under test.
+  def derived_name_for(basename)
+    dir = Dir.mktmpdir
+    root = File.join(dir, basename)
+    FileUtils.mkdir_p(File.join(root, "bin"))
+    FileUtils.cp(Rails.root.join("bin/agent-dev"), File.join(root, "bin/agent-dev"))
+
+    # Clear DATABASE_NAME for the child or it takes the override branch and reports
+    # back whatever the test runner happens to be connected to, never deriving anything.
+    out, status = Open3.capture2e(
+      { "DATABASE_NAME" => nil },
+      File.join(root, "bin/agent-dev"), "--print-database-name"
+    )
+    assert_predicate status, :success?, "bin/agent-dev --print-database-name failed: #{out}"
+    out.strip
+  ensure
+    FileUtils.remove_entry(dir) if dir && File.exist?(dir)
   end
 end

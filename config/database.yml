@@ -52,7 +52,8 @@ local_default: &local_default
 # and CI -- these are exactly the old literals.
 #
 # Postgres caps identifiers at 63 bytes and the longest suffix built here is
-# `_test_cable` (11), so bin/agent-dev keeps the value it sets under 52.
+# `_test_cable` (11), so bin/agent-dev caps the value it sets at 52 -- which lands
+# exactly on the limit, not under it.
 development:
   primary:
     <<: *local_default

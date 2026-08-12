@@ -25,15 +25,24 @@ class DevdbAccessoryTest < ActiveSupport::TestCase
   EXPECTED_USER = "zimmerdev"
   EXPECTED_PASSWORD = "zimmerdev"
 
+  # The deploy files read their host and managed-database addresses from ENV at deploy
+  # time. Render with real-looking values rather than leaving them empty: an unset
+  # `<%= ENV[...] %>` renders to nothing and parses as nil, which turns an assertion
+  # about a value into an assertion about nil and passes no matter what the file says.
+  RENDER_ENV = {
+    "PRODUCTION_HOST" => "198.51.100.10",
+    "STAGING_HOST" => "198.51.100.11",
+    "PRODUCTION_DB_HOST" => "managed-db.example.internal"
+  }.freeze
+
   def deploy_config(destination)
     path = Rails.root.join(DESTINATIONS.fetch(destination)[:deploy])
-    host_env = DESTINATIONS.fetch(destination)[:host_env]
 
-    previous = ENV[host_env]
-    ENV[host_env] = "198.51.100.10"
+    previous = ENV.to_h.slice(*RENDER_ENV.keys)
+    ENV.update(RENDER_ENV)
     YAML.safe_load(ERB.new(path.read).result, aliases: true)
   ensure
-    previous.nil? ? ENV.delete(host_env) : ENV[host_env] = previous
+    RENDER_ENV.each_key { |key| previous.key?(key) ? ENV[key] = previous[key] : ENV.delete(key) }
   end
 
   DESTINATIONS.each_key do |destination|
@@ -62,6 +71,18 @@ class DevdbAccessoryTest < ActiveSupport::TestCase
         "devdb is scratch space for agent sessions; a durable volume makes it accumulate " \
         "one pair of databases per clone forever"
     end
+
+    # "Only reachable on the private Docker bridge" is the entire reason this accessory
+    # may carry a guessable password in the clear. A `port:` key would publish a
+    # superuser Postgres onto the droplet -- and Docker writes its own iptables rules,
+    # so the host firewall would not save it.
+    test "#{destination}'s devdb publishes no port to the host" do
+      devdb = deploy_config(destination).dig("accessories", "devdb")
+
+      assert_nil devdb["port"],
+        "devdb's credentials are in the clear because nothing outside the Docker bridge " \
+        "can reach it; publishing a port breaks that bargain"
+    end
   end
 
   # Staging runs a SECOND Postgres accessory (`db`) that holds staging's own data on a
@@ -81,6 +102,8 @@ class DevdbAccessoryTest < ActiveSupport::TestCase
   test "production's app still points at the managed database, not at devdb" do
     env_clear = deploy_config("production").dig("env", "clear")
 
+    assert_equal RENDER_ENV.fetch("PRODUCTION_DB_HOST"), env_clear["DATABASE_HOST"],
+      "production's DATABASE_HOST no longer comes from PRODUCTION_DB_HOST (the managed cluster)"
     refute_equal "zimmer-devdb", env_clear["DATABASE_HOST"],
       "the production app is pointed at the throwaway dev accessory"
   end

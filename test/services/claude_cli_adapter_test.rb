@@ -1586,7 +1586,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   end
 
   # ...but a clone that deliberately sets it in its own .env still wins, like every
-  # other var here. bin/agent-dev relies on being able to export "disable".
+  # other var here.
   test "clear_inherited_env_vars lets a clone's own DATABASE_SSLMODE survive" do
     result = @adapter.send(:clear_inherited_env_vars, { "DATABASE_SSLMODE" => "disable" })
 
