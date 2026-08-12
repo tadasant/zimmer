@@ -1175,9 +1175,11 @@ interrupt leaves either the whole tree or nothing) is tracked separately in
 [#410](https://github.com/tadasant/zimmer/issues/410), where an interrupted `BundleInstallJob` leaves
 a clone permanently unusable.
 
-It is not rare. On the day the guard shipped it defused nine clones across nine sessions in one
-afternoon, and a scan of the production clones directory found 20 of 87 clones carrying a
-mass-deletion tree. `MangledCloneReportJob` is what keeps that number visible day to day.
+It is not rare. On 2026-08-12, the day the guard shipped, it defused nine clones across nine
+sessions in one afternoon, and a read-only scan of the production clones directory that evening
+found 20 of 87 clones carrying a mass-deletion tree — both figures recorded in
+[#415](https://github.com/tadasant/zimmer/issues/415). `MangledCloneReportJob` is what keeps that
+number visible day to day.
 
 ### A session that deletes 50+ tracked files and nothing else loses those deletions on archive
 
@@ -1196,8 +1198,8 @@ rather than the patch.
 
 It is a `.warn` and not an `.error` because the archive-side refusal is self-healing, and paging for
 each one buried the signal it was meant to carry: nine pages in one afternoon, for nine sessions that
-all archived fine. The frequency is now reported once a day in aggregate by `MangledCloneReportJob`
-— see [Counting mangled clones](/operate/background-jobs/#counting-mangled-clones-without-paging-for-each-one).
+all archived fine. The frequency is reported once a day in aggregate by `MangledCloneReportJob`
+instead — see [Counting mangled clones](/operate/background-jobs/#counting-mangled-clones-without-paging-for-each-one).
 The trade is deliberate: a session that legitimately deletes 50+ tracked files loses those deletions
 with a warning rather than an alert, so nobody is told about *that* particular loss at the moment it
 happens.

@@ -52,8 +52,8 @@ class MangledCloneReportJobTest < ActiveJob::TestCase
   def mark_defused(session, dropped:, at: Time.current)
     session.update_columns(
       metadata: (session.metadata || {}).merge(
-        "mangled_clone_dropped_deletions" => dropped,
-        "mangled_clone_defused_at" => at.utc.iso8601
+        MangledCloneReportJob::DROPPED_DELETIONS_KEY => dropped,
+        MangledCloneReportJob::DEFUSED_AT_KEY => at.utc.iso8601
       )
     )
   end
@@ -76,7 +76,7 @@ class MangledCloneReportJobTest < ActiveJob::TestCase
 
     warnings = lines_at(lines, Logger::WARN)
     assert_equal 1, warnings.size, "one aggregate line per run, not one per clone"
-    assert_includes warnings.first, "defused 2 mangled clone(s)"
+    assert_includes warnings.first, "for 2 session(s)"
     assert_includes warnings.first, "dropping 1149 tracked-file deletion(s)"
     assert_includes warnings.first, @session.id.to_s
     assert_includes warnings.first, @other.id.to_s
@@ -103,6 +103,25 @@ class MangledCloneReportJobTest < ActiveJob::TestCase
     assert_includes lines_at(lines, Logger::INFO).join("\n"), "No mangled clones defused"
   end
 
+  # metadata is a free-form column with a dozen writers. Comparing the stamp as a
+  # string rather than casting it to timestamptz is what keeps one stray value
+  # from raising PG::InvalidDatetimeFormat and taking the whole report down.
+  test "a malformed marker cannot take the report down" do
+    @session.update_columns(
+      metadata: (@session.metadata || {}).merge(
+        MangledCloneReportJob::DEFUSED_AT_KEY => "not a timestamp",
+        MangledCloneReportJob::DROPPED_DELETIONS_KEY => "not a number"
+      )
+    )
+    mark_defused(@other, dropped: 60)
+
+    lines = nil
+    assert_nothing_raised { lines = capture_logs { MangledCloneReportJob.perform_now } }
+
+    assert_includes lines_at(lines, Logger::WARN).first, "dropping 60 tracked-file deletion(s)",
+      "a junk count reads as zero rather than corrupting the total"
+  end
+
   test "truncates the session list but still reports the true total" do
     mark_defused(@session, dropped: 100)
     mark_defused(@other, dropped: 100)
@@ -113,7 +132,7 @@ class MangledCloneReportJobTest < ActiveJob::TestCase
     end
 
     warning = lines_at(lines, Logger::WARN).first
-    assert_includes warning, "defused 3 mangled clone(s)"
+    assert_includes warning, "for 3 session(s)"
     assert_includes warning, "(+2 more)",
       "a bad day can mangle dozens of clones; the line stays readable and still states the total"
   end

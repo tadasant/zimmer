@@ -43,7 +43,7 @@ From `config.good_job.cron`:
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, and sweep the scratch/attachment directories of sessions whose row is gone |
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
-| daily :08 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |
+| daily 08:00 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |
 | — | `ZombieReaperJob`, `DeferredCloneCleanupJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
 
 :::note[Sub-minute cron works]
@@ -159,11 +159,15 @@ trees in the first place — so the count is kept in two durable places rather t
 
 - `DeferredCloneCleanupJob` stamps `mangled_clone_dropped_deletions` and `mangled_clone_defused_at`
   on the session, which makes the history countable in SQL long after the log line has aged out.
-- `MangledCloneReportJob` runs daily at 08:00 UTC and emits **one** `.warn` line summarizing the
-  previous 24 hours: how many clones were defused, how many tracked-file deletions were dropped, and
-  which sessions. `REPORT_WINDOW` matches the cron interval, so consecutive runs tile the timeline
-  instead of double-counting. A day with nothing to report writes only an `INFO` line, which is
-  below the [export threshold](/operate/observability/) and therefore silence in VictoriaLogs.
+- `MangledCloneReportJob` runs daily at 08:00 UTC and emits **one** `.warn` line for the window: how
+  many sessions had a clone defused, how many tracked-file deletions were dropped, and which
+  sessions. `REPORT_WINDOW` is 25 hours — an hour wider than the cron interval on purpose. The
+  window is measured from when the run *starts*, not from when cron fired, so a run that starts late
+  (a deploy, a busy scheduler, a retry) would otherwise drop everything in the gap. The overlap
+  trades that for the opposite error: a defusal inside it can appear in two consecutive reports. A
+  double-count is visible in the lines themselves; a gap is invisible. A day with nothing to report
+  writes only an `INFO` line, which is below the [export threshold](/operate/observability/) and
+  therefore silence in VictoriaLogs.
 
 The unarchive-side refusals stay at `.error`. Those are the paths that can still leave a session
 broken, and they should page.
@@ -305,8 +309,12 @@ Most jobs run on `default`. Two are deliberately isolated:
 
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
-- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`.
-  Both make slow external calls once per condition, and a slow tick must not stack against itself.
+- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`, and
+  since then the rest of the periodic work that must not queue behind session jobs:
+  `GithubCommentPollerJob`, `GitHubPullRequestPollerJob`, `GitHubMergeConflictPollerJob`,
+  `CatalogRefreshJob`, `CliStatusRefreshJob`, `WarmSkillsCacheJob`, `EgressHealthCheckJob`,
+  `ElicitationEndpointHealthCheckJob`, `SystemHealthMonitorJob` and `MangledCloneReportJob`.
+  The trigger pollers make slow external calls once per condition, and a slow tick must not stack against itself.
   Their polling is idempotent — state only advances for items that produced a session — so a skipped
   tick is simply picked up by the next run.
 

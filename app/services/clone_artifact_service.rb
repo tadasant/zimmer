@@ -67,8 +67,8 @@ class CloneArtifactService
   DirtyCheckResult = Struct.new(:dirty?, :has_uncommitted?, :has_unpushed_commits?, :details, keyword_init: true)
   # `dropped_deletions` is how many tracked-file deletions the archive-side
   # mass-deletion guard threw away, or nil when the guard did not fire. The
-  # caller records it on the session so the rate of mangled clones stays
-  # countable now that a single refusal no longer pages — see #415.
+  # caller records it on the session, which is what keeps the rate of mangled
+  # clones countable without a page per refusal — see #415.
   CreateResult = Struct.new(:success?, :artifacts_path, :dropped_deletions, :error, keyword_init: true)
   ApplyResult = Struct.new(:success?, :applied_bundle?, :applied_working_tree?, :refused_working_tree?, :error,
     keyword_init: true)
@@ -199,14 +199,13 @@ class CloneArtifactService
         # dropped, the session's real work still travels in the bundle and the
         # filtered patch, and the deleted files come back from HEAD — so a
         # refusal here is a landmine successfully defused, not an incident.
-        # Routing it through StructuredLogger#error paged GlitchTip and tripped
-        # the "Zimmer backend logging errors" Grafana rule once per defused
-        # clone (#415). The unarchive-side refusals stay at .error, because
-        # those are the paths that can still leave a session broken. The
-        # frequency — which is the live signal for #412, the non-atomic clone
-        # delete that mangles these trees — stays countable via
-        # `mangled_clone_dropped_deletions` on the session (see
-        # DeferredCloneCleanupJob and MangledCloneReportJob).
+        # StructuredLogger#error reports to GlitchTip and trips the "Zimmer
+        # backend logging errors" Grafana rule, which at .error meant a page per
+        # defused clone (#415). The unarchive-side refusals do stay at .error:
+        # those are the paths that can leave a session broken. The frequency —
+        # the live signal for #412, the non-atomic clone delete that mangles
+        # these trees — stays countable through the marker
+        # DeferredCloneCleanupJob writes and MangledCloneReportJob aggregates.
         @logger.warn(
           "Refusing to preserve mass deletions from a mangled clone",
           session_id: session_id,

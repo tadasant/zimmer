@@ -147,22 +147,27 @@ class DeferredCloneCleanupJob < ApplicationJob
 
   private
 
-  # Durable record that this session's clone was mangled and the archive-side
-  # guard defused it. The refusal itself only logs at .warn now (#415) — this is
+  # Durable record that this session's clone was mangled and that the
+  # archive-side guard defused it. The refusal is a `.warn` (#415), so this is
   # what keeps the *rate* countable, in SQL, after the log line has aged out:
-  # MangledCloneReportJob aggregates these daily, and it is the standing evidence
-  # for #412, the non-atomic clone delete that mangles the trees in the first
-  # place. Nothing is written when the guard did not fire, so the marker's
-  # presence is itself the signal.
+  # MangledCloneReportJob aggregates these daily, and they are the standing
+  # evidence for #412, the non-atomic clone delete that mangles the trees. An
+  # archive the guard never touched writes nothing, so the marker's presence is
+  # itself the signal.
+  #
+  # Only the success path records, so a `create_artifacts` that raises *after*
+  # the guard fired emits the `.warn` but is not counted. That undercount is
+  # bounded by how often artifact creation fails at all, and that failure is
+  # itself logged at `.error` — it is loud on its own terms.
   def mangled_clone_metadata(create_result)
     dropped = create_result.dropped_deletions.to_i
     return {} unless dropped.positive?
 
     {
-      "mangled_clone_dropped_deletions" => dropped,
-      # .utc, so the stamp is comparable in SQL regardless of what
-      # config.time_zone is set to when it is written.
-      "mangled_clone_defused_at" => Time.current.utc.iso8601
+      MangledCloneReportJob::DROPPED_DELETIONS_KEY => dropped,
+      # .utc, so the stamp sorts against the reporter's window regardless of
+      # what config.time_zone is set to.
+      MangledCloneReportJob::DEFUSED_AT_KEY => Time.current.utc.iso8601
     }
   end
 
