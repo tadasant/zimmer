@@ -82,9 +82,15 @@ def build_selenium_options
   end
 
   # CI-specific configuration
-  if ENV["CI"]
-    options.binary = "/usr/bin/chromium-browser"
-    # Disable sandbox in CI where we run as root in containers
+  options.binary = "/usr/bin/chromium-browser" if ENV["CI"]
+
+  # Chrome's setuid sandbox cannot start in a container that does not grant it
+  # the namespaces it wants; Chrome aborts on launch and Selenium reports only
+  # "Chrome instance exited". CI has always needed this. An agent dev container
+  # needs it for the same reason and has no CI variable set, so it opts in
+  # explicitly rather than by pretending to be CI — which would also point the
+  # binary at a chromium-browser path that only exists in the CI image.
+  if ENV["CI"] || ENV["CHROME_NO_SANDBOX"] == "true"
     options.add_argument("--no-sandbox")
   end
 
