@@ -43,13 +43,24 @@ local_default: &local_default
   <<: *default
   sslmode: <%= ENV.fetch("DATABASE_SSLMODE", "prefer") %>
 
+# DATABASE_NAME is the one env override development and test take that the
+# deployed environments do not. Agent sessions all share a single dev Postgres
+# accessory (bin/agent-dev), so each clone needs its own database names or two
+# sessions booting at once migrate over each other -- and `db:prepare` in
+# development creates the TEST databases too, so namespacing only the
+# development pair would still collide on `zimmer_test`. Unset -- every laptop,
+# and CI -- these are exactly the old literals.
+#
+# Postgres caps identifiers at 63 bytes and the longest suffix built here is
+# `_test_cable` (11), so bin/agent-dev caps the value it sets at 52 -- which lands
+# exactly on the limit, not under it.
 development:
   primary:
     <<: *local_default
-    database: zimmer_development
+    database: <%= ENV["DATABASE_NAME"].to_s.empty? ? "zimmer_development" : ENV["DATABASE_NAME"] %>
   cable:
     <<: *local_default
-    database: zimmer_development_cable
+    database: <%= ENV["DATABASE_NAME"].to_s.empty? ? "zimmer_development_cable" : "#{ENV["DATABASE_NAME"]}_cable" %>
     # Deliberately not the primary pool's size: solid_cable takes no advisory lock, so a
     # cable connection is leased per INSERT rather than held for a job. See ConnectionBudget.
     pool: <%= ConnectionBudget.cable_pool %>
@@ -61,10 +72,10 @@ development:
 test:
   primary:
     <<: *local_default
-    database: zimmer_test
+    database: <%= ENV["DATABASE_NAME"].to_s.empty? ? "zimmer_test" : "#{ENV["DATABASE_NAME"]}_test" %>
   cable:
     <<: *local_default
-    database: zimmer_test_cable
+    database: <%= ENV["DATABASE_NAME"].to_s.empty? ? "zimmer_test_cable" : "#{ENV["DATABASE_NAME"]}_test_cable" %>
     # Deliberately not the primary pool's size: solid_cable takes no advisory lock, so a
     # cable connection is leased per INSERT rather than held for a job. See ConnectionBudget.
     pool: <%= ConnectionBudget.cable_pool %>

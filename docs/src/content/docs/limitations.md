@@ -2351,6 +2351,30 @@ on *every* reopen and the controller would reload every time, which is the bug i
 fix ([#389](https://github.com/tadasant/zimmer/pull/389) is the earlier attempt in that area).
 Distinguishing "stale because we were asleep" from "stale because the socket is dead" needs a
 liveness probe after the page wakes, not a reading taken at the moment it wakes.
+## The production `devdb` accessory needs a manual boot
+
+`kamal deploy` does not boot accessories. Staging's workflow runs `kamal accessory boot all -d
+staging`, so staging picks up `devdb` on its next deploy. Production is deployed from the private
+companion repo and there is no production deploy workflow in this repository, so nothing here can
+boot it: someone has to run `kamal accessory boot devdb -d production` once, from the companion repo.
+
+Until then `bin/agent-dev` on production fails its preflight with the exact command to run. See
+[Booting the app inside a session](/sessions/dev-server/).
+
+---
+
+## An interrupted `BundleInstallJob` leaves a clone permanently broken
+
+`BundleInstallJob` installs a clone's gems into `vendor/bundle` in the background while the agent is
+already working, and it is declared `discard_on StandardError` — deliberately, so a failed install
+does not retry forever. The cost is that an install interrupted partway (a deploy, a SIGTERM) never
+resumes and never retries. The clone is left with a `.bundle/config` pointing at a half-populated
+`vendor/bundle`, and every `bin/rails` invocation afterwards dies with `Bundler::GemNotFound` listing
+gems that are plainly installed in the image.
+
+Nothing surfaces this at the agent's prompt; the session log line is the only trace. `bin/agent-dev`
+heals it with `bundle check || bundle install` before doing anything else, but any other Ruby command
+in the clone hits it first.
 
 ---
 

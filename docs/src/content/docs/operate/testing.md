@@ -225,9 +225,11 @@ picture of the wrong page is usually the whole diagnosis.
 
 The upload runs on success too, and that is deliberate. A test may deliberately
 `page.save_screenshot` a UI it has just driven — `test/system/dashboard_turbo_actions_test.rb` writes
-`proof-*.png` this way — so a PR can show the change working. Zimmer's own agent sessions have no
-local Postgres to run the app against, which makes CI's Chrome the only place a screenshot for a PR
-can come from.
+`proof-*.png` this way — so a PR can show the change working.
+
+CI's Chrome is no longer the only place a screenshot can come from. An agent session can boot the app
+itself with [`bin/agent-dev`](/sessions/dev-server/) and drive it with the Playwright browsers already
+in the image — provided the `devdb` accessory is running on that host.
 
 ## The catalog coupling — read this before you debug
 
