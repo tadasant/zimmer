@@ -27,10 +27,13 @@ module ApiSessionSerialization
       title: session.title,
       status: session.status,
       agent_runtime: session.agent_runtime,
-      # Where this session's line of work came from, and the scheduling class
-      # that genesis resolves to. Derived on read, so a genesis promoted in
-      # Settings changes this for existing sessions too.
+      # Where this session's line of work came from, and the scheduling class it
+      # runs under. `scheduling_class` is the explicit choice made for this one
+      # session and is null on most of them; `priority_class` is the answer that
+      # counts — that choice when there is one, otherwise derived from the genesis
+      # on read, so moving a genesis in Settings changes existing sessions too.
       genesis: session.genesis_key,
+      scheduling_class: session.scheduling_class,
       priority_class: session.priority_class(genesis_class_overrides),
       prompt: session.prompt,
       git_root: session.git_root,

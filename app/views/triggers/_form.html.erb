@@ -290,6 +290,26 @@
       </div>
     </div>
 
+    <!-- Scheduling class -->
+    <div class="mb-4">
+      <%= f.label :scheduling_class, class: "block text-sm font-medium text-gray-700" do %>
+        Scheduling class
+      <% end %>
+      <%= f.select :scheduling_class,
+          trigger_scheduling_class_options(trigger),
+          {},
+          class: "mt-1 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:w-96 sm:text-sm border-gray-300 rounded-md" %>
+      <p class="mt-1 text-sm text-gray-500">
+        Whether sessions this trigger spawns start straight away, or wait for headroom in the
+        Claude Code quota windows. Priority always starts; spot waits when the forecast is over the
+        limits set on the <%= link_to "Settings page", settings_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>,
+        and starts on its own later — it is never cancelled. Leave this on the default and the class
+        follows the trigger's condition type: Slack triggers are priority, because someone is waiting
+        on the answer; GitHub, scheduled and session-state triggers are spot. Changing this applies to
+        sessions the trigger spawns from now on; ones it already spawned keep the class they started with.
+      </p>
+    </div>
+
     <!-- Burst control -->
     <div class="mb-4">
       <%= f.label :max_sessions_per_minute, class: "block text-sm font-medium text-gray-700" do %>

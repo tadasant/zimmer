@@ -2550,6 +2550,38 @@ class SessionsController < ApplicationController
     end
   end
 
+  # PATCH /sessions/:id/update_scheduling_class
+  #
+  # Move ONE session between spot and priority. This is the lever for a session
+  # held behind the quota gate: promoting it starts it on the next re-check
+  # without touching the trigger that spawned it, or the policy every other
+  # session of its genesis shares. A blank value clears the choice and returns
+  # the session to whatever its origin derives.
+  def update_scheduling_class
+    @session = find_session
+
+    klass = params[:scheduling_class].to_s.strip
+    if klass.present? && !SessionGenesis::CLASSES.include?(klass)
+      return redirect_back fallback_location: session_path(@session),
+        alert: "Unknown scheduling class: #{klass}"
+    end
+
+    previous = @session.priority_class
+    if with_db_retry { @session.update(scheduling_class: klass.presence) }
+      if previous != @session.priority_class
+        @session.logs.create!(
+          content: "Scheduling class set to #{@session.priority_class} (was #{previous})",
+          level: "info"
+        )
+      end
+      redirect_back fallback_location: session_path(@session),
+        notice: "This session is now #{@session.priority_class}."
+    else
+      redirect_back fallback_location: session_path(@session),
+        alert: "Could not update: #{@session.errors.full_messages.join(', ')}"
+    end
+  end
+
   # PATCH /sessions/:id/update_goal
   # Update the goal for a session via the web UI.
   def update_goal
@@ -2972,7 +3004,7 @@ class SessionsController < ApplicationController
   end
 
   def session_params
-    params.require(:session).permit(:prompt, :git_root, :subdirectory, :branch, :goal, :auto_compact_window, mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: []).tap do |permitted|
+    params.require(:session).permit(:prompt, :git_root, :subdirectory, :branch, :goal, :auto_compact_window, :scheduling_class, mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: []).tap do |permitted|
       # Drop a blank auto_compact_window so the column default (1M) applies.
       # Codex (and any non-Claude runtime) disables the field, so it submits
       # empty; an empty string would otherwise fail the numericality validation.

@@ -1,6 +1,6 @@
 ---
 title: Spot and priority sessions
-description: Every session carries a genesis — where its line of work came from. Genesis decides whether the session always starts, or waits for Claude Code quota headroom first.
+description: Every session is spot or priority — whether it always starts, or waits for Claude Code quota headroom first. The class is chosen per session, per trigger, or derived from where the work came from.
 sidebar:
   order: 9
 ---
@@ -17,28 +17,55 @@ Zimmer's answer is to classify sessions by where they came from, and to let the 
 
 A held spot session is **deferred, never cancelled**. Nothing is lost.
 
+## Where the class comes from
+
+Three things can decide a session's class. The first one that speaks wins:
+
+| Order | Source | Set it | Scope |
+| --- | --- | --- | --- |
+| 1 | **The session itself** — `sessions.scheduling_class` | `scheduling_class` on `start_session` / `POST /api/v1/sessions`; afterwards `action_session` (`change_scheduling_class`), `PATCH /api/v1/sessions/:id`, or the button on the hold banner | That one session, and anything it spawns |
+| 2 | **The trigger that fired it** — `triggers.scheduling_class` | The trigger's edit form, or `action_trigger` | Every session that trigger spawns from now on |
+| 3 | **Its genesis** — the default for where the work came from | `/settings` (only for the origins no trigger produces) | Every deriving session of that genesis, past and future |
+
+Most sessions never touch 1 or 2: both columns are NULL, and the class is derived. That is what keeps
+the defaults live rather than frozen into history.
+
+```mermaid
+graph TD
+  A["Session needs a class"] --> B{"scheduling_class<br/>on the session?"}
+  B -- yes --> C["Use it"]
+  B -- no --> D{"Was it spawned by a<br/>trigger with one?"}
+  D -- yes --> E["Stamped on the session<br/>when the trigger fired"]
+  D -- no --> F["Derive from genesis,<br/>on every read"]
+```
+
 ## Genesis
 
 A session's **genesis** is where its line of work ultimately came from — not who physically inserted
 the row. It is a column on `sessions`, assigned once at creation.
 
-| Genesis | Means | Default class |
-| --- | --- | --- |
-| `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority |
-| `slack` | A Slack trigger fired on a DM or a channel message. | priority |
-| `github_issue` | A `github_issue` trigger fired — the feed the issue-work gate reads. | spot |
-| `github_label` | A `github_label` trigger fired — the `ready to merge` feed the PR merge gate reads. | spot |
-| `schedule` | A cron-scheduled trigger fired. | spot |
-| `ao_event` | A session-state trigger fired because another session changed state. | spot |
-| `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**. | spot |
-| `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority |
+| Genesis | Means | Default class | Class set on |
+| --- | --- | --- | --- |
+| `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority | `/settings` |
+| `slack` | A Slack trigger fired on a DM or a channel message. | priority | the trigger |
+| `github_issue` | A `github_issue` trigger fired — the feed the issue-work gate reads. | spot | the trigger |
+| `github_label` | A `github_label` trigger fired — the `ready to merge` feed the PR merge gate reads. | spot | the trigger |
+| `schedule` | A cron-scheduled trigger fired. | spot | the trigger |
+| `ao_event` | A session-state trigger fired because another session changed state. | spot | the trigger |
+| `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**. | spot | `/settings` |
+| `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority | `/settings` |
 
-Two of these are policy calls worth stating plainly:
+Five of the eight kinds restate a trigger condition type, so their class lives on the **trigger**, not
+in a global per-kind setting: one noisy Slack trigger can be spot without demoting the eleven other
+Slack triggers that have a human waiting on the answer. The three that no trigger produces keep a
+per-kind setting on `/settings`.
+
+Two of the defaults are policy calls worth stating plainly:
 
 - **`unknown` is priority on purpose.** A session Zimmer cannot explain is never one it throttles.
   The failure mode of the classifier is "runs anyway", not "silently held".
 - **`schedule` and `ao_event` are spot** because recurring automation runs again by definition, so a
-  deferred run costs little. Promote them if that is wrong for your deployment.
+  deferred run costs little. Set the trigger to priority if that is wrong for a particular one.
 
 ### Genesis is inherited
 
@@ -63,21 +90,33 @@ rather than inheriting spot from whatever session was on screen.
 
 Forks inherit through `metadata["forked_from_session_id"]`, the only lineage edge a fork has.
 
+An explicit `scheduling_class` is inherited the same way. A router told to run one long batch as spot
+spawns children that are also spot, without every spawn call having to repeat it — and without moving
+any other session that shares the genesis.
+
 ### Where you see it
 
 Genesis appears on every node of the **Session hierarchy** panel, as a `genesis · class` pill beside
 the agent-root pill — so "this whole branch is spot" is readable at a glance, and an outlier stands
 out. It is also on every dashboard card, in `get_session`, and in `quick_search_sessions`.
 
-## The class is derived, not stored
+## Stored only when someone chose it
 
-`Session#priority_class` resolves from the stored genesis on every read, through the per-genesis
-override map in `AppSetting#genesis_class_overrides`.
+`sessions.scheduling_class` is NULL on most sessions. When it is, `Session#priority_class` resolves
+from the stored genesis on every read, through the per-genesis override map in
+`AppSetting#genesis_class_overrides`.
 
-This is deliberate. Promoting `github_issue` to priority reclassifies **every session of that
-genesis, including ones that already exist** — which is what "change a genesis to priority" has to
-mean. A class denormalized onto the row at creation would only ever apply to sessions created after
-the click.
+That sparseness is the design. Promoting `web_ui` to spot reclassifies **every deriving session of
+that genesis, including ones that already exist** — which is what changing a default has to mean. A
+class denormalized onto every row at creation would only ever apply to sessions created after the
+click, and would freeze today's defaults into all of history.
+
+The flip side, stated plainly: **changing a trigger's class does not move sessions it already
+spawned.** The trigger's selector is read once, when it fires, and stamped on the session. Sessions
+already created — including ones still `waiting` behind the gate — keep the class they started with.
+To move one of those, move that session: the **Make this session priority** button on its hold banner,
+the **Scheduling class** selector on its detail page, `action_session` with
+`change_scheduling_class`, or `PATCH /api/v1/sessions/:id`.
 
 ## The usage rate
 
@@ -167,8 +206,12 @@ time, and how to start it now.
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
 | Read the usage rate and forecast | `/settings` spot gate card | `get_spot_policy` |
 | Toggle gating, set thresholds | `/settings` | `action_spot_policy` (`set_gating`) |
-| One-click promote a genesis | `/settings` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
+| One-click promote a genesis (non-trigger kinds only) | `/settings` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
 | Reset all genesis classes | `/settings` | `action_spot_policy` (`reset_genesis_classes`) |
+| Set a trigger's class | Trigger edit form | `action_trigger` (`scheduling_class`) |
+| Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
+| Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
+| Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 
 Both MCP tools are in the **`health`** group, not `sessions`: they are about the deployment's quota
 posture rather than about one session, and a `self_session` connection has no business rewriting the

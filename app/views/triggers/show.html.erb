@@ -277,6 +277,18 @@
               <% end %>
             </dd>
           </div>
+          <div>
+            <dt class="text-sm font-medium text-gray-500">Scheduling Class</dt>
+            <dd class="mt-1 flex flex-wrap items-center gap-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold <%= scheduling_class_badge_css(@trigger.effective_scheduling_class) %>"
+                    id="trigger-scheduling-class">
+                <%= @trigger.effective_scheduling_class %>
+              </span>
+              <span class="text-xs text-gray-500">
+                <%= @trigger.scheduling_class.present? ? "set on this trigger" : "default for its conditions" %>
+              </span>
+            </dd>
+          </div>
           <% if @trigger.mcp_servers.present? %>
             <div class="sm:col-span-2">
               <dt class="text-sm font-medium text-gray-500">MCP Servers</dt>

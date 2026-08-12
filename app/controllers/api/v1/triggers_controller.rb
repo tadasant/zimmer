@@ -153,7 +153,7 @@ class Api::V1::TriggersController < Api::BaseController
     permitted = params.permit(
       :name, :status, :agent_root_name, :goal,
       :prompt_template, :reuse_session, :enqueue_messages, :resuscitate_archived,
-      :last_session_id, :max_sessions_per_minute,
+      :last_session_id, :max_sessions_per_minute, :scheduling_class,
       mcp_servers: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
@@ -179,6 +179,11 @@ class Api::V1::TriggersController < Api::BaseController
       resuscitate_archived: trigger.resuscitate_archived,
       max_sessions_per_minute: trigger.max_sessions_per_minute,
       bursting: trigger.bursting?,
+      # The chosen class (null when none was chosen) and the one its sessions
+      # actually get, which falls back to the default for the genesis its
+      # conditions derive.
+      scheduling_class: trigger.scheduling_class,
+      effective_scheduling_class: trigger.effective_scheduling_class,
       mcp_servers: trigger.mcp_servers,
       conditions: trigger.trigger_conditions.map { |c| condition_json(c) },
       last_session_id: trigger.last_session_id,

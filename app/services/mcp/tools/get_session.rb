@@ -283,7 +283,7 @@ module Mcp
         # well as on every hierarchy node, because the single most common question
         # is about THIS session and reading it off a tree of one is awkward.
         lines << "- **Genesis:** #{session.genesis_key} (#{session.genesis_label})"
-        lines << "- **Scheduling class:** #{session.priority_class}"
+        lines << "- **Scheduling class:** #{session.priority_class} (#{session.scheduling_class_source})"
         lines.concat(spot_hold_lines(session))
 
         lines << ""

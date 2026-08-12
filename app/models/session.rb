@@ -1074,10 +1074,12 @@ class Session < ApplicationRecord
   # @param catalog_plugins [Array<String>, nil] override catalog plugins (uses agent root defaults if nil)
   # @param goal [String, nil] optional goal
   # @param parent_session_id [Integer, nil] ID of the parent session (used by the dependency graph and forking)
+  # @param scheduling_class [String, nil] "spot"/"priority" for this session; nil
+  #   derives it from the genesis
   # @param metadata [Hash] additional metadata to store on the session
   # @param custom_metadata [Hash] additional custom metadata
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil)
     agent_root = AgentRootsConfig.find!(agent_root_name)
 
     # An explicit override wins over the root's declared runtime; either way the
@@ -1134,6 +1136,9 @@ class Session < ApplicationRecord
       # nil leaves the decision to SessionGenesisClassification#assign_genesis,
       # which inherits from `parent_session_id` when one was passed.
       genesis: genesis,
+      # nil means nobody chose a spot/priority class for this session, so it
+      # derives from the genesis above — see SessionGenesisClassification.
+      scheduling_class: scheduling_class,
       metadata: metadata.merge("agent_root_key" => agent_root_name),
       custom_metadata: custom_metadata,
       config: { "model" => resolved_model }

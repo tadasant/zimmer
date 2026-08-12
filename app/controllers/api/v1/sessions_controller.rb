@@ -35,8 +35,9 @@ class Api::V1::SessionsController < Api::BaseController
     # Filter by agent_runtime
     scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
 
-    # Filter by scheduling class / genesis. Resolved live through SessionGenesis,
-    # so a genesis promoted in Settings moves its sessions here immediately.
+    # Filter by scheduling class / genesis. A session that carries no class of its
+    # own is classified through SessionGenesis on read, so moving a genesis in
+    # Settings moves those sessions here immediately.
     scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
     scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
 
@@ -84,6 +85,8 @@ class Api::V1::SessionsController < Api::BaseController
   #   - catalog_plugins: Array of plugin IDs (same omitted-vs-[] rule as mcp_servers)
   #   - config: Additional configuration (JSON)
   #   - custom_metadata: Custom user metadata (JSON)
+  #   - scheduling_class: "spot" or "priority" for this session, overriding the class its
+  #     genesis would give it. Omit to derive (inheriting a parent's explicit class if it has one).
   def create
     @session = Session.new(session_params.except(:agent_root))
     # Machine-created. When the caller passed a parent_session_id this is an agent
@@ -1007,8 +1010,9 @@ class Api::V1::SessionsController < Api::BaseController
     # Filter by agent_runtime
     scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
 
-    # Filter by scheduling class / genesis. Resolved live through SessionGenesis,
-    # so a genesis promoted in Settings moves its sessions here immediately.
+    # Filter by scheduling class / genesis. A session that carries no class of its
+    # own is classified through SessionGenesis on read, so moving a genesis in
+    # Settings moves those sessions here immediately.
     scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
     scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
 
@@ -1087,7 +1091,7 @@ class Api::V1::SessionsController < Api::BaseController
     params.permit(
       :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
       :title, :slug, :goal, :execution_provider, :is_autonomous,
-      :parent_session_id, :auto_compact_window,
+      :parent_session_id, :auto_compact_window, :scheduling_class,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
     )
   end
@@ -1159,8 +1163,12 @@ class Api::V1::SessionsController < Api::BaseController
     @session.config = (@session.config || {}).merge("model" => model)
   end
 
+  # `scheduling_class` is updatable after creation on purpose: a spot session
+  # held behind the quota gate is still `waiting`, and this is how it gets moved
+  # to priority and started without touching the trigger that spawned it or the
+  # policy every other session shares. Send null to drop back to derived.
   def session_update_params
-    params.permit(:title, :slug, :goal, :is_autonomous, custom_metadata: {})
+    params.permit(:title, :slug, :goal, :is_autonomous, :scheduling_class, custom_metadata: {})
   end
 
   def regenerate_mcp_config_file(session)

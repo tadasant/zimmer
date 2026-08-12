@@ -1,12 +1,19 @@
 # frozen_string_literal: true
 
-# One-click promotion (and demotion) of a whole genesis kind.
+# One-click promotion (and demotion) of a whole genesis kind — for the kinds
+# nothing triggers.
 #
-# The unit here is the GENESIS, not the session. Clicking "Make priority" on
-# `github_issue` reclassifies every session that came from a GitHub issue trigger
-# — past, present and future — because Session#priority_class derives from the
-# stored genesis on every read rather than being denormalized at creation. That
-# is the point: the operator's lever is the policy, not a backlog of rows.
+# The unit here is the GENESIS, not the session. Clicking "Make spot" on `web_ui`
+# reclassifies every session a human started in the web app — past, present and
+# future — because Session#priority_class derives from the stored genesis on
+# every read whenever the session names no class of its own. That is the point:
+# the operator's lever is the policy, not a backlog of rows.
+#
+# The five trigger-backed kinds are rejected here rather than offered. Their
+# selector lives on the Trigger, so that one Slack trigger can be spot without
+# moving every other session that shares the genesis. SessionGenesis ignores an
+# override for them on read, so accepting one here would be a click that appears
+# to work and changes nothing.
 #
 # Kept separate from AppSettingsController because this is a one-button action
 # with its own route, not a form of many fields — and because a promotion should
@@ -19,6 +26,11 @@ class GenesisClassesController < ApplicationController
 
     unless SessionGenesis.valid?(genesis)
       return redirect_to settings_path(anchor: "spot-gate"), alert: "Unknown genesis: #{genesis}"
+    end
+    unless SessionGenesis.settable?(genesis)
+      return redirect_to settings_path(anchor: "spot-gate"),
+        alert: "#{SessionGenesis.label(genesis)} takes its class from the trigger that fires it. " \
+               "Set it on the trigger instead."
     end
     unless SessionGenesis::CLASSES.include?(klass)
       return redirect_to settings_path(anchor: "spot-gate"), alert: "Unknown class: #{klass}"

@@ -130,14 +130,25 @@ class SpotGateServiceTest < ActiveSupport::TestCase
 
   test "promoting a genesis lets its sessions start immediately" do
     seed_history(current_5h: 0.99, current_7d: 0.99)
-    spot = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s", genesis: SessionGenesis::GITHUB_ISSUE)
+    spot = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s", genesis: SessionGenesis::API)
     refute SpotGateService.allow_start?(spot)
 
-    @setting.set_genesis_class(SessionGenesis::GITHUB_ISSUE, SessionGenesis::PRIORITY)
+    @setting.set_genesis_class(SessionGenesis::API, SessionGenesis::PRIORITY)
     @setting.save!
 
     assert SpotGateService.allow_start?(spot.reload),
       "the one-click promotion has to take effect for sessions that already exist"
+  end
+
+  test "a session that named its own class starts on that, not on its genesis" do
+    seed_history(current_5h: 0.99, current_7d: 0.99)
+    held = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s", genesis: SessionGenesis::GITHUB_ISSUE)
+    refute SpotGateService.allow_start?(held)
+
+    held.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    assert SpotGateService.allow_start?(held.reload),
+      "this is the lever for one held session — no trigger and no policy is touched"
   end
 
   # Regression: ActiveRecord::ConnectionNotEstablished descends from AdapterError,

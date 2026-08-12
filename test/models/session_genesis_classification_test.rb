@@ -75,13 +75,22 @@ class SessionGenesisClassificationTest < ActiveSupport::TestCase
   # --- derived class ----------------------------------------------------------
 
   test "priority_class derives live, so promoting a genesis moves existing sessions" do
-    session = build_session(genesis: SessionGenesis::GITHUB_ISSUE)
+    # `api` rather than `github_issue`: the trigger-backed kinds take their class
+    # from the Trigger row now, so a per-kind override for one is ignored on read.
+    session = build_session(genesis: SessionGenesis::API)
     assert session.spot?
 
     # The promotion is a policy change, not a backfill: the row is untouched.
-    overrides = { SessionGenesis::GITHUB_ISSUE => SessionGenesis::PRIORITY }
+    overrides = { SessionGenesis::API => SessionGenesis::PRIORITY }
     assert session.priority?(overrides)
-    assert_equal SessionGenesis::GITHUB_ISSUE, session.reload.genesis
+    assert_equal SessionGenesis::API, session.reload.genesis
+  end
+
+  test "a per-kind override for a trigger-backed genesis does not move its sessions" do
+    session = build_session(genesis: SessionGenesis::GITHUB_ISSUE)
+
+    assert session.spot?(SessionGenesis::GITHUB_ISSUE => SessionGenesis::PRIORITY),
+      "that lever moved to the trigger; a leftover key here must not reclassify the whole kind"
   end
 
   test "genesis_key reads a NULL genesis as unknown" do
@@ -126,5 +135,117 @@ class SessionGenesisClassificationTest < ActiveSupport::TestCase
     archived.update_columns(status: Session.statuses[:archived])
 
     assert_equal 1, Session.genesis_counts[SessionGenesis::AO_EVENT]
+  end
+
+  test "genesis_counts excludes sessions that named their own class" do
+    build_session(genesis: SessionGenesis::AO_EVENT)
+    build_session(genesis: SessionGenesis::AO_EVENT, scheduling_class: SessionGenesis::PRIORITY)
+
+    assert_equal 1, Session.genesis_counts[SessionGenesis::AO_EVENT],
+      "moving the genesis would not move the session that chose a class, so it must not be counted"
+  end
+
+  # --- explicit per-session class ---------------------------------------------
+
+  test "an explicit scheduling_class beats the genesis default" do
+    # The motivating case: a router working under a `slack` parent spawns one long
+    # batch as spot. Today it would come out priority, like everything else slack.
+    parent = build_session(genesis: SessionGenesis::SLACK)
+    child = build_session(parent_session_id: parent.id, scheduling_class: SessionGenesis::SPOT)
+
+    assert_equal SessionGenesis::SLACK, child.genesis, "genesis still describes where the work came from"
+    assert child.spot?
+    assert_equal SessionGenesis::SPOT, child.priority_class
+    assert parent.priority?, "and the parent — and every other slack session — is untouched"
+  end
+
+  test "an explicit class survives a promotion of its genesis" do
+    session = build_session(genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: SessionGenesis::PRIORITY)
+
+    overrides = { SessionGenesis::GITHUB_ISSUE => SessionGenesis::SPOT }
+    assert session.priority?(overrides), "the row said priority outright; policy does not overrule it"
+  end
+
+  test "an explicit class is inherited by spawned sessions" do
+    root = build_session(genesis: SessionGenesis::SLACK, scheduling_class: SessionGenesis::SPOT)
+    mid = build_session(parent_session_id: root.id)
+    leaf = build_session(parent_session_id: mid.id)
+
+    assert_equal SessionGenesis::SPOT, leaf.scheduling_class,
+      "a batch told to run as spot spawns children that are also spot"
+    assert leaf.spot?
+  end
+
+  test "a declared genesis does not inherit the parent's class" do
+    # The chat-bubble case. It carries a parent so the conversation threads, but a
+    # human typed the message and it declares web_ui — so inheriting spot from
+    # whatever session was on screen would classify that human's message spot.
+    parent = build_session(genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: SessionGenesis::SPOT)
+    child = build_session(parent_session_id: parent.id, genesis: SessionGenesis::WEB_UI)
+
+    assert_equal SessionGenesis::WEB_UI, child.genesis
+    assert_nil child.scheduling_class, "the class rides on the genesis, and the genesis was declared"
+    assert child.priority?
+  end
+
+  test "a child can override an inherited class" do
+    root = build_session(genesis: SessionGenesis::SLACK, scheduling_class: SessionGenesis::SPOT)
+    child = build_session(parent_session_id: root.id, scheduling_class: SessionGenesis::PRIORITY)
+
+    assert child.priority?
+  end
+
+  test "no explicit class anywhere in the lineage leaves the column NULL" do
+    parent = build_session(genesis: SessionGenesis::SLACK)
+    child = build_session(parent_session_id: parent.id)
+
+    assert_nil child.scheduling_class, "sparse by design — nothing is stamped when nobody chose"
+    assert child.priority?
+  end
+
+  test "a blank scheduling_class is stored as NULL" do
+    session = build_session(genesis: SessionGenesis::WEB_UI, scheduling_class: "")
+    assert_nil session.reload.scheduling_class
+  end
+
+  test "an unknown scheduling_class is rejected" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "T", scheduling_class: "whenever")
+    refute session.valid?
+    assert session.errors[:scheduling_class].any?
+  end
+
+  test "the scopes read the explicit class ahead of the genesis" do
+    spot_by_choice = build_session(genesis: SessionGenesis::WEB_UI, scheduling_class: SessionGenesis::SPOT)
+    priority_by_choice = build_session(genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: SessionGenesis::PRIORITY)
+    spot_by_genesis = build_session(genesis: SessionGenesis::GITHUB_ISSUE)
+
+    spot_ids = Session.spot.pluck(:id)
+    priority_ids = Session.priority.pluck(:id)
+
+    assert_includes spot_ids, spot_by_choice.id
+    assert_includes spot_ids, spot_by_genesis.id
+    refute_includes spot_ids, priority_by_choice.id
+    assert_includes priority_ids, priority_by_choice.id
+  end
+
+  test "the scopes compose when chained onto another relation" do
+    # The dashboard filter, GET /api/v1/sessions and quick_search_sessions all
+    # chain this scope. `.or` raises on structurally incompatible relations, and
+    # that would only ever surface at request time.
+    chosen = build_session(genesis: SessionGenesis::WEB_UI, scheduling_class: SessionGenesis::SPOT)
+    derived = build_session(genesis: SessionGenesis::GITHUB_ISSUE)
+
+    ids = Session.includes(:category).where.not(status: :archived).order(created_at: :desc).spot.pluck(:id)
+
+    assert_includes ids, chosen.id
+    assert_includes ids, derived.id
+  end
+
+  test "scheduling_class_source names where the class came from" do
+    chosen = build_session(genesis: SessionGenesis::SLACK, scheduling_class: SessionGenesis::SPOT)
+    derived = build_session(genesis: SessionGenesis::SLACK)
+
+    assert_equal "set on this session", chosen.scheduling_class_source
+    assert_includes derived.scheduling_class_source, "priority"
   end
 end

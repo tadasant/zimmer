@@ -43,11 +43,30 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     SessionGenesis::KEYS.each { |key| assert_match(/`#{key}`/, output) }
   end
 
-  test "get_spot_policy reflects a promotion" do
-    action(action: "promote_genesis", genesis: SessionGenesis::GITHUB_ISSUE)
+  test "get_spot_policy reflects a demotion" do
+    action(action: "demote_genesis", genesis: SessionGenesis::WEB_UI)
     output = get_policy
 
-    assert_match(/`github_issue` \| GitHub issue trigger \| \*\*priority\*\* \(changed from spot\)/, output)
+    assert_match(/`web_ui` \| Zimmer web app \| \*\*spot\*\* \(changed from priority\)/, output)
+  end
+
+  test "get_spot_policy says where each kind's class is set" do
+    output = get_policy
+
+    assert_match(/`web_ui`.*`action_spot_policy`/, output)
+    assert_match(/`slack`.*the trigger/, output)
+  end
+
+  test "get_spot_policy lists the triggers that carry a class of their own" do
+    assert_match(/None — every trigger derives its class/, get_policy)
+
+    trigger = triggers(:enabled_schedule_trigger)
+    trigger.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    output = get_policy
+    assert_match(/Triggers with their own class/, output)
+    assert_match(/#{Regexp.escape(trigger.name)}/, output)
+    assert_match(/\*\*priority\*\*/, output)
   end
 
   # --- write ------------------------------------------------------------------
@@ -76,13 +95,31 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   end
 
   test "promote_genesis reclassifies existing sessions" do
-    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", genesis: SessionGenesis::GITHUB_ISSUE)
+    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", genesis: SessionGenesis::API)
     assert session.spot?
 
-    output = action(action: "promote_genesis", genesis: SessionGenesis::GITHUB_ISSUE)
+    output = action(action: "promote_genesis", genesis: SessionGenesis::API)
 
     assert_match(/is now \*\*priority\*\*/, output)
     assert session.reload.priority?, "the promotion must apply to sessions that already exist"
+  end
+
+  test "a trigger-backed genesis is refused, and says where to set it instead" do
+    error = assert_raises(Mcp::ToolError) do
+      action(action: "demote_genesis", genesis: SessionGenesis::SLACK)
+    end
+
+    assert_match(/takes its class from the trigger/, error.message)
+    assert_match(/action_trigger/, error.message)
+    assert_equal({}, AppSetting.current.genesis_class_overrides)
+  end
+
+  test "every trigger-backed kind is refused" do
+    SessionGenesis::TRIGGER_BACKED_KEYS.each do |key|
+      assert_raises(Mcp::ToolError, "#{key} should not be settable here") do
+        action(action: "promote_genesis", genesis: key)
+      end
+    end
   end
 
   test "demote_genesis moves a kind to spot" do
@@ -91,13 +128,18 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   end
 
   test "reset_genesis_classes drops every override" do
-    action(action: "promote_genesis", genesis: SessionGenesis::GITHUB_ISSUE)
+    action(action: "promote_genesis", genesis: SessionGenesis::API)
     action(action: "demote_genesis", genesis: SessionGenesis::WEB_UI)
     action(action: "reset_genesis_classes")
 
     assert_equal({}, AppSetting.current.genesis_class_overrides)
-    assert_equal SessionGenesis::SPOT, SessionGenesis.effective_class(SessionGenesis::GITHUB_ISSUE)
+    assert_equal SessionGenesis::SPOT, SessionGenesis.effective_class(SessionGenesis::API)
     assert_equal SessionGenesis::PRIORITY, SessionGenesis.effective_class(SessionGenesis::WEB_UI)
+  end
+
+  test "the tool only advertises the settable kinds" do
+    enum = Mcp::Tools::ActionSpotPolicy.input_schema.to_h.dig(:properties, :genesis, :enum)
+    assert_equal SessionGenesis::SETTABLE_KEYS, enum
   end
 
   test "an unknown action is rejected" do

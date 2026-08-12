@@ -456,4 +456,26 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     @trigger.reload
     assert_equal target.id, @trigger.last_session_id
   end
+  test "scheduling_class round-trips, and the payload reports both values" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    get api_v1_trigger_path(trigger), headers: @headers
+    json = JSON.parse(response.body)["trigger"]
+    assert_nil json["scheduling_class"]
+    assert_equal "spot", json["effective_scheduling_class"], "a schedule trigger derives spot"
+
+    patch api_v1_trigger_path(trigger), params: { scheduling_class: "priority" }, headers: @headers
+    assert_response :success
+    assert_equal SessionGenesis::PRIORITY, trigger.reload.scheduling_class
+    assert_equal "priority", JSON.parse(response.body)["trigger"]["effective_scheduling_class"]
+  end
+
+  test "an unknown scheduling_class is rejected" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    patch api_v1_trigger_path(trigger), params: { scheduling_class: "whenever" }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_nil trigger.reload.scheduling_class
+  end
 end
