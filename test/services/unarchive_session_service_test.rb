@@ -970,13 +970,23 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
   # Yields [bare_repo_path, subdirectory]. The session is repointed at the bare
   # repo with a clone_path that does not exist, so unarchive takes the slow path
   # (recreate the clone, then restore artifacts into it).
+  #
+  # Weigh this before widening what runs inside the sandbox: a constant that
+  # bakes Dir.home at class-load time would freeze a tmpdir path for the rest of
+  # the worker process if it were first autoloaded here. The one on this path,
+  # AirPrepareService::AIR_INSTALL_DIR, is already loaded under the real $HOME by
+  # `setup`'s AirPrepareService.any_instance.stubs — keep that stub ahead of
+  # this, and note CI eager-loads the whole graph at boot anyway.
   def with_real_clone_sandbox(tracked_files: 0)
     original_home = ENV["HOME"]
     @sandbox_home = Dir.mktmpdir("unarchive-home")
     ENV["HOME"] = @sandbox_home
 
     @bare_repo = Dir.mktmpdir("unarchive-bare")
-    @source_repo = File.join(Dir.mktmpdir("unarchive-source"), "repo")
+    # Each repo lives one level inside its own tmpdir (git wants to create the
+    # directory itself), and the tmpdir roots are what teardown removes.
+    @tmp_roots = [ @sandbox_home, @bare_repo ]
+    @source_repo = File.join(new_tmp_root("unarchive-source"), "repo")
     subdirectory = "artifacts/agent-roots/general-agent"
 
     run_cmd("git", "init", "--bare", @bare_repo)
@@ -1008,14 +1018,18 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     yield @bare_repo, subdirectory
   ensure
     original_home.nil? ? ENV.delete("HOME") : ENV["HOME"] = original_home
-    [ @sandbox_home, @bare_repo, @source_repo, @recreated_clone ].compact.each { |dir| FileUtils.rm_rf(dir) }
+    Array(@tmp_roots).each { |dir| FileUtils.rm_rf(dir) }
+  end
+
+  def new_tmp_root(prefix)
+    Dir.mktmpdir(prefix).tap { |dir| (@tmp_roots ||= []) << dir }
   end
 
   # A fresh clone standing in for the one GitCloneService makes on the slow path.
   def clone_from(bare_path)
-    @recreated_clone = File.join(Dir.mktmpdir("unarchive-clone"), "repo")
-    run_cmd("git", "clone", bare_path, @recreated_clone)
-    @recreated_clone
+    clone_path = File.join(new_tmp_root("unarchive-clone"), "repo")
+    run_cmd("git", "clone", bare_path, clone_path)
+    clone_path
   end
 
   def unarchive_with_real_clone(clone_path)

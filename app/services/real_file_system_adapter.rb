@@ -64,6 +64,10 @@ class RealFileSystemAdapter < FileSystemAdapter
     File.binread(path)
   end
 
+  def each_line(path, &block)
+    File.foreach(path, mode: "rb", &block)
+  end
+
   private
 
   # FileUtils offers no filter hook, so a pruned copy walks the tree itself.

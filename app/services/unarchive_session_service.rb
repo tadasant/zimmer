@@ -215,6 +215,10 @@ class UnarchiveSessionService
     return unless artifact_service.artifacts_exist?(session.id)
 
     @logger.info("Found preserved artifacts, applying to fresh clone")
+    # The commit the fresh clone is checked out at, captured before anything is
+    # applied: it is what "pristine" means for this clone, and a bundle can move
+    # HEAD off it.
+    pristine_ref = artifact_service.head_sha(clone_path) || "HEAD"
     apply_result = artifact_service.apply_artifacts(session_id: session.id, clone_path: clone_path)
 
     if apply_result.success?
@@ -236,13 +240,33 @@ class UnarchiveSessionService
           clone_path: clone_path,
           reason: damage
         )
-        artifact_service.restore_pristine_working_tree(clone_path)
+        reverted = artifact_service.restore_working_tree_to(clone_path, pristine_ref)
+        remaining_damage = restore_damage(clone_path, artifact_service)
+
+        if !reverted || remaining_damage
+          # The revert is the whole guard. If it did not take, the session is
+          # about to start against a clone that is still gutted, which is the
+          # failure this exists to prevent — say so at .error rather than
+          # letting the reassuring line above stand as the last word.
+          @logger.error("Could not revert the clone to its pristine checkout",
+            session_id: session.id,
+            clone_path: clone_path,
+            git_succeeded: reverted,
+            remaining_damage: remaining_damage
+          )
+        end
+
+        note_retained_artifacts(damage, artifact_service.artifacts_path_for(session.id))
         return
       end
 
       # A refused patch is corruption we declined to replay, not work we
       # applied. Keep it on disk rather than deleting the only copy.
-      return if apply_result.refused_working_tree?
+      if apply_result.refused_working_tree?
+        note_retained_artifacts("the preserved patch is a mass deletion of tracked files",
+          artifact_service.artifacts_path_for(session.id))
+        return
+      end
 
       # Clean up artifacts now that they've been successfully applied.
       # Without this, artifacts would be orphaned on disk since unarchive
@@ -263,6 +287,21 @@ class UnarchiveSessionService
   rescue => e
     @logger.warn("Error applying preserved artifacts", error: e.message)
     # Don't fail unarchive
+  end
+
+  # Artifacts we declined to restore outlive every reaper: unarchive clears
+  # trash_after, so EmptyTrashJob never revisits this session, and
+  # StaleCloneCleanupJob only sweeps artifacts for sessions that are archived or
+  # long-failed. Name the path in the session log, which is the one surface a
+  # human actually sees, so the directory is findable rather than merely leaked.
+  def note_retained_artifacts(reason, artifacts_path)
+    session.logs.create!(
+      level: "warning",
+      content: "Preserved artifacts were not restored (#{reason}). The clone is the pristine checkout from " \
+               "git; the artifacts are kept at #{artifacts_path} for manual recovery and nothing will reap them."
+    )
+  rescue => e
+    @logger.warn("Failed to record retained artifacts in the session log", error: e.message)
   end
 
   # Did restoring the artifacts damage the clone rather than restore it?

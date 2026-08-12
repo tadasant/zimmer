@@ -230,32 +230,21 @@ class ForkSessionService
     nil
   end
 
-  # Recover the repository name from a clone directory named by
-  # GitCloneService#generate_clone_path: "<repo>-<branch>-<timestamp>-<random>".
-  # Both <repo> and <branch> can contain dashes ("tadasant-internal"; a branch
-  # "claude/fix-x" sanitized to "claude-fix-x"), so taking the first dash
-  # segment forks tadasant-internal-main-… into tadasant-main-…, a directory
-  # that claims the wrong repo. Peel the two known suffixes off the end instead,
-  # and fall back to the whole basename when the name doesn't follow the
-  # convention (a caller-supplied clone_path, say).
-  def source_repo_name(source_clone_path, branch)
-    basename = File.basename(source_clone_path.to_s)
-    trimmed = basename.sub(/-\d{9,}-\h{8}\z/, "")
-    trimmed = trimmed.delete_suffix("-#{branch.tr("/", "-")}") if branch.present?
-    trimmed.presence || basename
-  end
-
   def create_forked_clone
     source_clone_path = source_session.metadata["clone_path"]
 
-    # Generate new clone path with similar naming convention
+    # Generate new clone path the way GitCloneService#generate_clone_path does:
+    # "<repo>-<branch>-<timestamp>-<random>", with the repository name taken
+    # from the git root and the branch's slashes flattened. Deriving either from
+    # the source clone's directory name instead cannot be done unambiguously —
+    # both halves can contain dashes ("tadasant-internal", a branch
+    # "claude/fix-x") — and an unsanitized branch would nest the fork one level
+    # below the clones base, where the orphan sweeps, which scan the base's
+    # direct children, would never see it.
     timestamp = Time.now.to_i
     random = SecureRandom.hex(4)
     branch = source_session.branch || "main"
-    repo_name = source_repo_name(source_clone_path, branch)
-    # Same sanitization GitCloneService applies: a branch like "claude/fix-x"
-    # would otherwise nest the fork one level below the clones base, where the
-    # orphan sweeps (which scan the base's direct children) cannot see it.
+    repo_name = File.basename(source_session.git_root.to_s, ".git")
     safe_branch = branch.tr("/", "-")
 
     base_path = ClonesDirectory.base

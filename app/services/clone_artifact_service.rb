@@ -34,14 +34,22 @@ class CloneArtifactService
   #     the post-apply validation in UnarchiveSessionService is the backstop for
   #     a smaller mangling that still removes something load-bearing.
   #   MASS_DELETION_RATIO — every observed corrupt patch is 100% deletions and
-  #     0 additions. A real mass delete almost always ships with the edits that
-  #     go with it (imports, config, tests), so requiring deletions to be ~all
-  #     of the patch keeps ordinary refactors out of the net. When a pure
-  #     50+-file delete does trip it, only the deletions are dropped: every one
-  #     of those files still exists at HEAD, so nothing git cannot reproduce is
-  #     lost, and the drop is logged at .error.
+  #     0 additions, while a mass delete a session actually performed usually
+  #     ships with the edits that go with it (imports, config, tests). The
+  #     tolerance is narrow, though: at 0.95, a patch of 60 deletions needs 4
+  #     or more non-deletion entries to stay out of the net, so a *pure* delete
+  #     of 50+ tracked files and nothing else is treated as corruption. That
+  #     costs the session its deletions — the files come back from HEAD, which
+  #     git can always reproduce — and it is logged at .error rather than
+  #     silently. See the limitation in docs/.
   MASS_DELETION_MIN_FILES = 50
   MASS_DELETION_RATIO = 0.95
+
+  # `git status --porcelain` XY codes for an unmerged path. A conflicted file
+  # is a change, but it is not a deletion — `git apply --3way` leaves these
+  # behind when it cannot merge a legitimate patch, and reading DU/UD/DD as
+  # deletions would let a failed 3-way look like a gutted tree.
+  UNMERGED_STATUS_CODES = %w[DD AU UD UA DU AA UU].freeze
 
   class ArtifactError < StandardError; end
 
@@ -174,7 +182,7 @@ class CloneArtifactService
     # the file's contents would be silently lost on restore.
     diff_stdout, _, diff_status = run_git("diff", "--binary", "--cached", "HEAD", cwd: clone_path, binmode: true)
     if SubprocessStatus.success?(diff_status) && !diff_stdout.strip.empty?
-      counts = patch_entry_counts(diff_stdout)
+      counts = count_patch_entries(diff_stdout.each_line)
 
       if self.class.mass_deletion?(deleted: counts[:deleted], changed: counts[:changed])
         # This clone's tree was gutted by something that is not the session —
@@ -245,9 +253,10 @@ class CloneArtifactService
       # Patches written before the archive-side guard existed can still be mass
       # deletions of tracked files. Applying one guts the fresh clone — up to
       # and including the agent root's subdirectory, which fails `air prepare`
-      # and the session with it. Refuse it here too, and leave the artifacts on
-      # disk so a human can salvage anything real out of them.
-      counts = patch_entry_counts(file_system.binread(patch_path))
+      # and the session with it. Refuse the patch whole (unlike the archive
+      # path, there is no cheap way to keep its additions), and leave the
+      # artifacts on disk so a human can salvage anything real out of them.
+      counts = count_patch_entries(file_system.each_line(patch_path))
       if self.class.mass_deletion?(deleted: counts[:deleted], changed: counts[:changed])
         @logger.error(
           "Refusing to apply a mass-deletion working tree patch to a fresh clone",
@@ -278,15 +287,27 @@ class CloneArtifactService
     return { deleted: 0, changed: 0 } unless SubprocessStatus.success?(status)
 
     lines = stdout.lines.reject { |line| line.strip.empty? }
-    deleted = lines.count { |line| line[0, 2].to_s.include?("D") }
+    deleted = lines.count do |line|
+      code = line[0, 2].to_s
+      code.include?("D") && !UNMERGED_STATUS_CODES.include?(code)
+    end
     { deleted: deleted, changed: lines.size }
   end
 
-  # Throw away every working tree change and untracked file, leaving the clone
-  # exactly as HEAD describes it. Commits are untouched, so a bundle that was
-  # already fast-forwarded in survives.
-  def restore_pristine_working_tree(clone_path)
-    _, _, reset_status = run_git("reset", "--hard", "HEAD", cwd: clone_path)
+  # The commit a clone is checked out at, or nil if it cannot be read.
+  def head_sha(clone_path)
+    stdout, _, status = run_git("rev-parse", "HEAD", cwd: clone_path)
+    SubprocessStatus.success?(status) ? stdout.strip.presence : nil
+  end
+
+  # Undo everything a restore did: move back to `ref` and delete the files the
+  # restore added. Passing the commit the clone was checked out at before the
+  # restore unwinds a fast-forwarded bundle too — without that, a bundle whose
+  # commits are themselves the damage would survive a reset to HEAD. Ignored
+  # files (vendor/bundle, node_modules) are left alone: `clean -fd` is not
+  # `-fdx`, and they are not part of what a restore writes.
+  def restore_working_tree_to(clone_path, ref)
+    _, _, reset_status = run_git("reset", "--hard", ref, cwd: clone_path)
     _, _, clean_status = run_git("clean", "-fd", cwd: clone_path)
     SubprocessStatus.success?(reset_status) && SubprocessStatus.success?(clean_status)
   end
@@ -343,19 +364,24 @@ class CloneArtifactService
   #
   # One `diff --git` line starts each entry, and a "deleted file mode" line
   # follows for a removal (an addition gets "new file mode" and a rename gets
-  # neither — a rename is not a deletion either way).
+  # neither — a rename is not a deletion either way). Neither prefix can appear
+  # inside patch content: diff body lines are prefixed with "+", "-" or a
+  # space, and a --binary payload is base85, whose lines cannot contain a space.
   #
-  # The patch is raw bytes (ASCII-8BIT), so both patterns are ASCII-only:
-  # matching a pattern with non-ASCII characters against binary hunk data would
-  # raise Encoding::CompatibilityError.
-  def patch_entry_counts(patch)
-    return { deleted: 0, changed: 0 } if patch.nil? || patch.empty?
+  # Takes an enumerator of raw byte lines rather than the whole patch, because a
+  # --binary patch inlines every binary blob it touches and has no useful size
+  # bound. The prefixes are ASCII-only so they compare safely against ASCII-8BIT
+  # lines.
+  def count_patch_entries(lines)
+    deleted = 0
+    changed = 0
 
-    # Both callers hand over ASCII-8BIT already; only re-tag (a full copy of a
-    # patch that can be tens of MB) when something else does not.
-    bytes = patch.encoding == Encoding::BINARY ? patch : patch.b
+    lines.each do |line|
+      changed += 1 if line.start_with?("diff --git ")
+      deleted += 1 if line.start_with?("deleted file mode ")
+    end
 
-    { deleted: bytes.scan(/^deleted file mode /).size, changed: bytes.scan(/^diff --git /).size }
+    { deleted: deleted, changed: changed }
   end
 
   def read_metadata(artifacts_dir)

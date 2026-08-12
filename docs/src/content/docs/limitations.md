@@ -1158,12 +1158,12 @@ the session over MCP/REST never generates.
 
 ### An interrupted clone delete still mangles a live working tree
 
-Clone deletion — the archive/trash path, `GitCloneService`'s orphan pruner, the sweeps in
-`StaleCloneCleanupJob` and `OrphanCloneFilesystemCleanupJob` — is a plain recursive `rm -rf` on the
-clone in place. If it starts on a tree that is still live and is interrupted partway (a deploy, a
-SIGTERM, a session that turns out not to be dead), it leaves an arbitrary surviving subset of the
-tree behind: files gone in readdir order, no marker, nothing that detects it. The session whose clone
-that is keeps running against a tree with holes in it.
+Clone deletion — the archive/trash path, the pruning `CloneDiskGuard` triggers before a clone, and
+the sweeps in `StaleCloneCleanupJob` and `OrphanCloneFilesystemCleanupJob` — is a plain recursive
+`rm -rf` on the clone in place. If it starts on a tree that is still live and is interrupted partway
+(a deploy, a SIGTERM, a session that turns out not to be dead), it leaves an arbitrary surviving
+subset of the tree behind: files gone in readdir order, no marker, nothing that detects it. The
+session whose clone that is keeps running against a tree with holes in it.
 
 [Issue #411](https://github.com/tadasant/zimmer/issues/411) closed the two ways that spread — archive
 no longer preserves the deletions as uncommitted work, and unarchive no longer replays a patch that
@@ -1174,6 +1174,20 @@ interrupt leaves either the whole tree or nothing) is tracked separately in
 [#406](https://github.com/tadasant/zimmer/issues/406), the fork-side delete-race, and
 [#410](https://github.com/tadasant/zimmer/issues/410), where an interrupted `BundleInstallJob` leaves
 a clone permanently unusable.
+
+### A session that deletes 50+ tracked files and nothing else loses those deletions on archive
+
+The guard above separates corruption from work by shape: 50 or more deleted tracked files, and
+deletions making up 95% or more of the patch. A session whose only uncommitted change is the deletion
+of 50+ tracked files — "drop the vendored directory", "delete the obsolete fixtures" — has exactly
+that shape, so archive drops those deletions from `working_tree.patch` and the files come back on
+unarchive. The tolerance is narrow: a patch of 60 deletions needs 4 or more non-deletion entries to
+stay out of the net, and one or two edits alongside the deletions are not enough.
+
+What is lost is bounded — every dropped file still exists at `HEAD`, so `git rm` reproduces the work
+in seconds — and it is not silent: the drop is logged at `.error` (which pages) and counted in the
+artifact metadata as `dropped_deletions`. Committing the deletions before the session is archived
+avoids it entirely, since commits travel in the bundle rather than the patch.
 
 ### A fork of a live clone is retried, so a fork that cannot be made now fails three times slower
 
