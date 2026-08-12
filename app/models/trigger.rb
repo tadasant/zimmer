@@ -62,12 +62,19 @@ class Trigger < ApplicationRecord
   validates :max_sessions_per_minute,
     numericality: { only_integer: true, greater_than: 0 },
     allow_nil: true
+  validates :scheduling_class,
+    inclusion: { in: -> { SessionGenesis::CLASSES }, message: "%{value} is not a known scheduling class" },
+    allow_nil: true
   validate :catalog_skills_must_be_array
   validate :catalog_skills_must_exist_in_catalog, if: :catalog_skills_changed?
   validate :catalog_hooks_must_be_array
   validate :catalog_hooks_must_exist_in_catalog, if: :catalog_hooks_changed?
   validate :catalog_plugins_must_be_array
   validate :catalog_plugins_must_exist_in_catalog, if: :catalog_plugins_changed?
+
+  # A form's "Use the default" option submits "", which means "derive it", not a
+  # class named empty string.
+  before_validation :normalize_scheduling_class
 
   before_save :clear_burst_state_when_limit_changes
   before_save :clear_failure_state_when_leaving_failed
@@ -256,6 +263,31 @@ class Trigger < ApplicationRecord
     @genesis_override.presence || SessionGenesis.from_condition_types(condition_types)
   end
 
+  # The class this trigger's sessions would carry if it named none — the shipped
+  # default for the genesis it derives. What the form shows next to "Use the
+  # default", so the operator can see what they are choosing away from.
+  def default_scheduling_class
+    SessionGenesis.effective_class(SessionGenesis.from_condition_types(condition_types))
+  end
+
+  # The class this trigger's sessions actually get.
+  def effective_scheduling_class
+    scheduling_class.presence || default_scheduling_class
+  end
+
+  # The class stamped on sessions this trigger spawns — nil when the operator has
+  # chosen nothing, so the session derives from its genesis like any other and a
+  # later change to the shipped default still reaches it.
+  #
+  # A genesis override means a human pressed Invoke and is waiting on the answer.
+  # That is a different origin from the one this trigger's selector describes, so
+  # the selector does not apply: the session takes `web_ui`'s class instead.
+  def session_scheduling_class
+    return nil if @genesis_override.present?
+
+    scheduling_class.presence
+  end
+
   # @param genesis [String, nil] override the derived genesis for this fire only.
   def create_session!(prompt:, genesis: nil)
     @last_fire_burst_suppressed = false
@@ -379,6 +411,10 @@ class Trigger < ApplicationRecord
   end
 
   private
+
+  def normalize_scheduling_class
+    self.scheduling_class = nil if scheduling_class.blank?
+  end
 
   # "ClassName: message", bounded. Accepts an exception or a plain string so
   # callers don't have to care which they have.
@@ -929,6 +965,7 @@ class Trigger < ApplicationRecord
       catalog_hooks: catalog_hooks,
       catalog_plugins: catalog_plugins,
       genesis: session_genesis,
+      scheduling_class: session_scheduling_class,
       metadata: { trigger_id: id, trigger_name: name, burst_notice: true }
     )
 
@@ -990,6 +1027,7 @@ class Trigger < ApplicationRecord
       catalog_plugins: catalog_plugins,
       goal: goal,
       genesis: session_genesis,
+      scheduling_class: session_scheduling_class,
       metadata: { trigger_id: id, trigger_name: name }
     )
 

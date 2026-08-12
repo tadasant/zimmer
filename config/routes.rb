@@ -314,6 +314,7 @@ Rails.application.routes.draw do
       patch :update_catalog_plugins
       patch :update_model
       patch :update_auto_compact_window
+      patch :update_scheduling_class
       patch :update_goal
       patch :toggle_favorite
       patch :toggle_push_notifications

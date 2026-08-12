@@ -165,7 +165,8 @@ module Mcp
             lines << "### #{trigger.name} (ID: #{trigger.id})"
             lines << "- **Conditions:** #{condition_types_summary(trigger)} | **Status:** #{trigger.status} | " \
                      "**Sessions:** #{trigger.sessions_created_count} | " \
-                     "**Max Sessions/Minute:** #{burst_limit_summary(trigger)}"
+                     "**Max Sessions/Minute:** #{burst_limit_summary(trigger)} | " \
+                     "**Scheduling Class:** #{scheduling_class_summary(trigger)}"
             trigger.trigger_conditions.each { |condition| lines << "  - #{condition.description}" }
             lines << ""
           end
@@ -198,6 +199,15 @@ module Mcp
       def condition_types_summary(trigger)
         types = trigger.trigger_conditions.map(&:condition_type).uniq
         types.any? ? types.join(", ") : "(none)"
+      end
+
+      # "spot" / "priority", and whether that came from the trigger or from the
+      # class its condition type derives — the same two facts the trigger page
+      # shows, so an agent reading this and a human reading the web UI see the
+      # same thing.
+      def scheduling_class_summary(trigger)
+        source = trigger.scheduling_class.present? ? "set on this trigger" : "default for its conditions"
+        "#{trigger.effective_scheduling_class} (#{source})"
       end
 
       # The burst cap, plus a loud marker when the trigger is currently inside a

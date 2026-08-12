@@ -100,7 +100,10 @@
         <span class="font-medium">priority</span> sessions always start;
         <span class="font-medium">spot</span> sessions wait for quota headroom when the gate is on.
         A spawned session inherits its parent's genesis, which is why a branch usually shares one.
-        Classes are changed per genesis in <%= link_to "Settings", settings_path(anchor: "spot-gate"), class: "underline hover:text-gray-600" %>.
+        The class is whichever spoke first: one chosen for the session itself, the one its trigger
+        carries, or the default for its genesis — set per trigger on the
+        <%= link_to "trigger", triggers_path, class: "underline hover:text-gray-600" %>, and for
+        everything else in <%= link_to "Settings", settings_path(anchor: "spot-gate"), class: "underline hover:text-gray-600" %>.
       </p>
 
       <% if hierarchy.uncle_edges? %>
