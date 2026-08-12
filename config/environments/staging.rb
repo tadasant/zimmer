@@ -257,6 +257,11 @@ Rails.application.configure do
       cron: "*/2 * * * *", # Every 2 minutes
       class: "SystemHealthMonitorJob",
       description: "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
+    },
+    mangled_clone_report: {
+      cron: "0 8 * * *", # Daily at 08:00 UTC (offset from cert_expiry_monitor at 07:00)
+      class: "MangledCloneReportJob",
+      description: "Report how many mangled clones the archive-side mass-deletion guard defused in the last day"
     }
   }
 

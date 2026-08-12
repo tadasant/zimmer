@@ -271,6 +271,38 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_not_nil @session.trash_after, "trash_after should remain set for retry"
   end
 
+  # === Mangled-clone accounting (issue #415) ===
+  #
+  # The archive-side mass-deletion guard logs at .warn, so it does not page per
+  # defused clone. The rate is the live signal for #412, so every defusal has to
+  # leave a durable, SQL-countable mark on the session — under exactly the keys
+  # MangledCloneReportJob queries, which is why the constants come from there.
+
+  test "records the mass-deletion guard's drop count on the session" do
+    stub_artifact_preservation(dropped_deletions: 854)
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    @session.reload
+    assert_equal 854, @session.metadata[MangledCloneReportJob::DROPPED_DELETIONS_KEY]
+    stamp = @session.metadata[MangledCloneReportJob::DEFUSED_AT_KEY]
+    assert_match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/, stamp,
+      "the reporter compares this as a string, so it must be fixed-width ISO8601 UTC")
+    assert_equal "/tmp/artifacts", @session.metadata["artifacts_path"],
+      "the marker must not displace the artifacts path written in the same update"
+  end
+
+  test "leaves no mangled-clone marker when the guard did not fire" do
+    stub_artifact_preservation(dropped_deletions: nil)
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    @session.reload
+    assert_not @session.metadata.key?(MangledCloneReportJob::DROPPED_DELETIONS_KEY),
+      "an ordinary archive must not be counted as a mangled clone"
+    assert_not @session.metadata.key?(MangledCloneReportJob::DEFUSED_AT_KEY)
+  end
+
   # === Docker Compose cleanup tests ===
 
   test "calls DockerComposeCleanupService and still removes clone directory" do
@@ -306,5 +338,30 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
     assert_not File.directory?(@clone_path), "Clone should be deleted even if Docker cleanup raises"
+  end
+
+  private
+
+  # Drive the job down its "clone is dirty, artifacts preserved" branch with a
+  # canned CreateResult, so a test can vary only what the mass-deletion guard
+  # reported.
+  def stub_artifact_preservation(dropped_deletions:)
+    dirty_result = CloneArtifactService::DirtyCheckResult.new(
+      dirty?: true,
+      has_uncommitted?: true,
+      has_unpushed_commits?: false,
+      details: "uncommitted changes"
+    )
+    create_result = CloneArtifactService::CreateResult.new(
+      success?: true,
+      artifacts_path: "/tmp/artifacts",
+      dropped_deletions: dropped_deletions
+    )
+
+    artifact_service = mock("artifact_service")
+    artifact_service.expects(:check_dirty_state).with(@clone_path).returns(dirty_result)
+    artifact_service.expects(:create_artifacts)
+      .with(session_id: @session.id, clone_path: @clone_path).returns(create_result)
+    CloneArtifactService.expects(:new).returns(artifact_service)
   end
 end
