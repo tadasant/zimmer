@@ -331,8 +331,10 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
       "a tree of nothing but deletions is corruption, not work"
     assert_not File.exist?(File.join(result.artifacts_path, "working_tree.patch"))
     assert_equal 60, metadata["dropped_deletions"]
-    assert_equal :error, logger.level_for("Refusing to preserve mass deletions"),
-      "dropping a patch is a real problem and must stay alert-worthy"
+    assert_equal 60, result.dropped_deletions,
+      "the caller needs the count to record it on the session (#415)"
+    assert_equal :warn, logger.level_for("Refusing to preserve mass deletions"),
+      "this path is self-healing, so it must not page per defused clone (#415)"
   end
 
   # The additions and modifications in a mangled tree are still the session's
@@ -384,6 +386,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     metadata = read_artifact_metadata(result.artifacts_path)
     assert metadata["has_working_tree_patch"], "an ordinary refactor must still be preserved"
     assert_nil metadata["dropped_deletions"]
+    assert_nil result.dropped_deletions, "a clone the guard never touched must not be counted as mangled"
     assert_includes File.binread(File.join(result.artifacts_path, "working_tree.patch")), "deleted file mode"
   end
 
@@ -403,7 +406,8 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     assert result.success?, result.error
     assert_not result.applied_working_tree?
     assert result.refused_working_tree?
-    assert_equal :error, logger.level_for("Refusing to apply a mass-deletion working tree patch")
+    assert_equal :error, logger.level_for("Refusing to apply a mass-deletion working tree patch"),
+      "unlike the archive side, a refused patch here can leave a session broken — it must stay pageable"
     assert File.exist?(File.join(fresh_clone, "tracked_00.rb")), "the fresh clone must be left intact"
     assert File.exist?(File.join(artifacts_dir, "working_tree.patch")),
       "the refused patch stays on disk for manual salvage"
