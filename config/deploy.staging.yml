@@ -136,3 +136,18 @@ accessories:
     host: <%= ENV["STAGING_HOST"] %>
     volumes:
       - zimmer_redisdata:/data
+  # The scratch Postgres agent sessions boot `bin/agent-dev` against -- the same
+  # accessory production ships, with the same clear credentials, so the boot
+  # procedure is identical in both environments. Deliberately NOT the `db`
+  # accessory above: that one holds staging's own data and lives on a durable
+  # volume, and a session running migrations from a feature branch has no business
+  # in it. This one is volume-less and disposable. Full rationale in
+  # config/deploy.production.yml.
+  devdb:
+    image: postgres:16
+    host: <%= ENV["STAGING_HOST"] %>
+    env:
+      clear:
+        POSTGRES_USER: zimmerdev
+        POSTGRES_PASSWORD: zimmerdev
+        POSTGRES_DB: postgres

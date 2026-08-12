@@ -98,9 +98,10 @@ env:
     - OTEL_LOGS_EXPORTER_ENDPOINT
     - OTEL_LOGS_EXPORTER_BEARER_TOKEN
 
-# Production runs ONLY a Redis accessory on the droplet. Postgres is the off-droplet
-# Managed cluster (a Terraform data source, never managed here), so there is no db
-# accessory -- the database survives the droplet being rebuilt.
+# Production runs Redis and a scratch dev Postgres on the droplet. The database
+# that holds real data is the off-droplet Managed cluster (a Terraform data source,
+# never managed here), so there is no `db` accessory -- it survives the droplet
+# being rebuilt.
 accessories:
   redis:
     image: redis:7
@@ -108,3 +109,28 @@ accessories:
     cmd: redis-server --appendonly yes
     volumes:
       - zimmer_redisdata:/data
+  # The Postgres agent sessions boot `bin/agent-dev` against. It exists because a
+  # session cannot make itself one: it runs as uid 1000 inside the worker
+  # container with no root, no sudo, and no access to the Docker socket (mounted
+  # root:988, and the runtime user is not in that group). Without this accessory
+  # there is no Postgres anywhere a session can reach, and "boot the app to check
+  # the change" is impossible -- which is exactly the state that produced
+  # "there is no Postgres, Docker or root in this clone".
+  #
+  # It holds nothing durable and nothing real. Every database in it is a scratch
+  # `zimmer_dev_<clone>` that bin/agent-dev creates from schema.rb, and it is
+  # deliberately volume-less so a restart wipes it rather than growing without
+  # bound as clones come and go. Never point the app's real DATABASE_HOST here.
+  #
+  # The credentials are in the clear on purpose: this listens only on the private
+  # Docker bridge, holds no data worth protecting, and every agent session needs
+  # them. A secret would have to be handed to those sessions anyway, and pretending
+  # otherwise would just make a broken boot harder to diagnose.
+  devdb:
+    image: postgres:16
+    host: <%= ENV["PRODUCTION_HOST"] %>
+    env:
+      clear:
+        POSTGRES_USER: zimmerdev
+        POSTGRES_PASSWORD: zimmerdev
+        POSTGRES_DB: postgres
