@@ -343,13 +343,30 @@ five-second timing window whether or not the cable had actually dropped — and,
 top-level navigation, dismissed the session drawer along with the user's place in it.
 `Session#recently_recovered?` now only decides whether to *show* the recovery banner.
 
-It does not replace `stream-visibility-recovery`, which still reloads the page — the two answer
-different failures. A page that was hidden (backgrounded PWA, bfcache restore) and came back with
-a dead socket has *missed content*, and re-subscribing would not bring it back, so that one
-reloads and fires first (1.5s grace against cable-reconnect's 3s). A socket that dies while the
-page stays visible has missed nothing, so cable-reconnect re-subscribes in place. What the meta
-refresh contributed and nothing replaced was the *unconditional* reload, on elapsed time, whether
-or not the cable had dropped at all.
+It does not replace `stream-visibility-recovery` — the two answer different failures. A socket
+that dies while the page stays visible has missed nothing, so cable-reconnect re-subscribes that
+source in place. A page that was hidden (backgrounded PWA, bfcache restore) and came back with a
+dead socket has also *missed content*, and re-subscribing would not bring it back, so
+`stream-visibility-recovery` handles that case in two steps: reopen the ActionCable consumer,
+which re-subscribes every subscription on the connection and restores live updates without
+rendering anything, then reconcile the gap with a page refresh.
+
+The check that gates all of it is whether the socket is *actually* dead
+(`consumer.connection.isOpen()`). A socket that outlived the hide missed nothing, so the
+recovery is skipped outright and reopening the app costs nothing at all. Skipping that check is
+what made this controller reload on every reopen: iOS fires `pageshow` with `persisted` each
+time a standalone PWA is reopened, and the handler used to treat that alone as proof of a dead
+cable. What the meta refresh contributed and nothing replaced was the *unconditional* reload, on
+elapsed time, whether or not the cable had dropped at all.
+
+A morphing refresh was tried for the dead-socket case, to make even that reload invisible, and
+rejected. Morphing reconciles the live DOM against the server's HTML, and Stimulus controllers
+here keep state in value attributes the server does not render —
+`log_level_filter_controller` writes its own `level-value` in `connect()`. Idiomorph removes any
+attribute missing from the server's markup, so that state reverts to its default and the
+controller then acts on it: in testing, a morph reverted the log filter to `minimal` and hid
+every item in the timeline. The hazard is generic to the app rather than specific to one
+controller, so the reconcile stays a replacing visit until those controllers are morph-safe.
 
 What a refresh *does* depends on the session's state:
 
