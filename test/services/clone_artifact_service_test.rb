@@ -308,6 +308,146 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     FileUtils.rm_rf(fresh_clone) if fresh_clone && File.directory?(fresh_clone)
   end
 
+  # === mass-deletion guard tests (issue #411) ===
+  #
+  # An interrupted `rm -rf` on a live clone leaves a tree that is nothing but
+  # deletions of tracked files. Preserving that as "uncommitted work" makes a
+  # transient filesystem accident permanent: unarchive replays it onto a
+  # pristine clone, deletes the agent root's subdirectory, and `air prepare`
+  # fails the session with ENOENT.
+
+  test "create_artifacts does not preserve a working tree that is only deletions of tracked files" do
+    create_test_repo(tracked_files: 60)
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    delete_tracked_files(@repo_path, 60)
+
+    result = service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+
+    assert result.success?, result.error
+    metadata = read_artifact_metadata(result.artifacts_path)
+    assert_not metadata["has_working_tree_patch"],
+      "a tree of nothing but deletions is corruption, not work"
+    assert_not File.exist?(File.join(result.artifacts_path, "working_tree.patch"))
+    assert_equal 60, metadata["dropped_deletions"]
+    assert_equal :error, logger.level_for("Refusing to preserve mass deletions"),
+      "dropping a patch is a real problem and must stay alert-worthy"
+  end
+
+  # The additions and modifications in a mangled tree are still the session's
+  # work, so they are preserved; only the deletions are dropped.
+  test "create_artifacts preserves additions and modifications from a mass-deletion tree" do
+    create_test_repo(tracked_files: 60)
+    delete_tracked_files(@repo_path, 60)
+    Dir.chdir(@repo_path) do
+      File.write("agent_work.rb", "# real work\n")
+      File.write("README.md", "edited by the agent\n")
+    end
+
+    result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+
+    assert result.success?, result.error
+    metadata = read_artifact_metadata(result.artifacts_path)
+    assert metadata["has_working_tree_patch"]
+    patch = File.binread(File.join(result.artifacts_path, "working_tree.patch"))
+    assert_includes patch, "agent_work.rb"
+    assert_includes patch, "edited by the agent"
+    assert_not_includes patch, "deleted file mode",
+      "the deletions must not survive into the preserved patch"
+
+    # And it restores as work: the deleted files come back from HEAD, the
+    # agent's additions and edits come back from the patch.
+    fresh_clone = create_fresh_clone
+    apply_result = @service.apply_artifacts(session_id: @session_id, clone_path: fresh_clone)
+
+    assert apply_result.applied_working_tree?, apply_result.error
+    assert File.exist?(File.join(fresh_clone, "tracked_00.rb")), "tracked files must survive the restore"
+    assert File.exist?(File.join(fresh_clone, "agent_work.rb"))
+    assert_equal "edited by the agent\n", File.read(File.join(fresh_clone, "README.md"))
+  ensure
+    FileUtils.rm_rf(fresh_clone) if fresh_clone && File.directory?(fresh_clone)
+  end
+
+  # The threshold is deliberately conservative: a refactor that deletes files
+  # alongside real edits is ordinary work and must round-trip untouched.
+  test "create_artifacts preserves a legitimate refactor that deletes files alongside edits" do
+    create_test_repo(tracked_files: 60)
+    Dir.chdir(@repo_path) do
+      10.times { |i| FileUtils.rm_f(format("tracked_%02d.rb", i)) }
+      10.times { |i| File.write(format("renamed_%02d.rb", i), "# moved\n") }
+    end
+
+    result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+
+    assert result.success?, result.error
+    metadata = read_artifact_metadata(result.artifacts_path)
+    assert metadata["has_working_tree_patch"], "an ordinary refactor must still be preserved"
+    assert_nil metadata["dropped_deletions"]
+    assert_includes File.binread(File.join(result.artifacts_path, "working_tree.patch")), "deleted file mode"
+  end
+
+  # Patches captured before the archive-side guard existed are already on disk
+  # (110 of them in production when #411 was filed). The apply path has to
+  # refuse them too, or every unarchive of an affected session keeps failing.
+  test "apply_artifacts refuses a pre-existing mass-deletion patch instead of gutting the fresh clone" do
+    create_test_repo(tracked_files: 60)
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    artifacts_dir = write_legacy_mass_deletion_artifacts(deleted_count: 60)
+
+    fresh_clone = create_fresh_clone
+    result = service.apply_artifacts(session_id: @session_id, clone_path: fresh_clone)
+
+    assert result.success?, result.error
+    assert_not result.applied_working_tree?
+    assert result.refused_working_tree?
+    assert_equal :error, logger.level_for("Refusing to apply a mass-deletion working tree patch")
+    assert File.exist?(File.join(fresh_clone, "tracked_00.rb")), "the fresh clone must be left intact"
+    assert File.exist?(File.join(artifacts_dir, "working_tree.patch")),
+      "the refused patch stays on disk for manual salvage"
+  ensure
+    FileUtils.rm_rf(fresh_clone) if fresh_clone && File.directory?(fresh_clone)
+  end
+
+  test "restore_pristine_working_tree returns the clone to exactly what HEAD describes" do
+    create_test_repo(tracked_files: 5)
+    Dir.chdir(@repo_path) do
+      FileUtils.rm_f("tracked_00.rb")
+      File.write("README.md", "clobbered\n")
+      File.write("untracked.rb", "# left over\n")
+    end
+
+    assert @service.restore_pristine_working_tree(@repo_path)
+
+    assert File.exist?(File.join(@repo_path, "tracked_00.rb"))
+    assert_equal "initial content\n", File.read(File.join(@repo_path, "README.md"))
+    assert_not File.exist?(File.join(@repo_path, "untracked.rb"))
+    assert_equal({ deleted: 0, changed: 0 }, @service.working_tree_change_counts(@repo_path))
+  end
+
+  test "working_tree_change_counts counts deletions of tracked files" do
+    create_test_repo(tracked_files: 5)
+    delete_tracked_files(@repo_path, 3)
+    Dir.chdir(@repo_path) { File.write("brand_new.rb", "# new\n") }
+
+    counts = @service.working_tree_change_counts(@repo_path)
+
+    assert_equal 3, counts[:deleted]
+    assert_equal 4, counts[:changed]
+  end
+
+  test "mass_deletion? needs both a floor of deleted files and deletions dominating the patch" do
+    assert CloneArtifactService.mass_deletion?(deleted: 551, changed: 551)
+    assert CloneArtifactService.mass_deletion?(deleted: 50, changed: 50)
+    assert_not CloneArtifactService.mass_deletion?(deleted: 49, changed: 49),
+      "below the floor, too few files to call it corruption"
+    assert_not CloneArtifactService.mass_deletion?(deleted: 60, changed: 100),
+      "deletions mixed with substantial other work is a refactor"
+    assert_not CloneArtifactService.mass_deletion?(deleted: 0, changed: 0)
+  end
+
   test "create_artifacts for clean repo produces no bundle or patch" do
     create_test_repo
 
@@ -436,7 +576,31 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
 
   private
 
-  def create_test_repo(dirty: false, unpushed_commits: false)
+  # Delete tracked files the way an interrupted `rm -rf` does: straight off the
+  # filesystem, leaving git to notice them missing.
+  def delete_tracked_files(repo_path, count)
+    Dir.chdir(repo_path) do
+      count.times { |i| FileUtils.rm_f(format("tracked_%02d.rb", i)) }
+    end
+  end
+
+  # Write the artifacts a pre-guard archive would have left on disk: a patch
+  # that is nothing but deletions of tracked files, plus the metadata that makes
+  # apply_artifacts pick it up.
+  def write_legacy_mass_deletion_artifacts(deleted_count:)
+    delete_tracked_files(@repo_path, deleted_count)
+    run_cmd("git", "-C", @repo_path, "add", "-A")
+    patch, _ = Open3.capture2("git", "diff", "--binary", "--cached", "HEAD", chdir: @repo_path)
+
+    artifacts_dir = @service.artifacts_path_for(@session_id)
+    FileUtils.mkdir_p(artifacts_dir)
+    File.binwrite(File.join(artifacts_dir, "working_tree.patch"), patch)
+    File.write(File.join(artifacts_dir, "metadata.json"),
+      JSON.generate("has_bundle" => false, "has_working_tree_patch" => true))
+    artifacts_dir
+  end
+
+  def create_test_repo(dirty: false, unpushed_commits: false, tracked_files: 0)
     @bare_path = "/tmp/test-artifact-bare-#{SecureRandom.hex(4)}"
     @repo_path = "/tmp/test-artifact-repo-#{SecureRandom.hex(4)}"
 
@@ -453,6 +617,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
       run_cmd("git", "config", "user.name", "Test User")
       run_cmd("git", "checkout", "-b", "main")
       File.write("README.md", "initial content\n")
+      tracked_files.times { |i| File.write(format("tracked_%02d.rb", i), "# tracked #{i}\n") }
       run_cmd("git", "add", ".")
       run_cmd("git", "commit", "-m", "initial commit")
       run_cmd("git", "push", "-u", "origin", "main")
