@@ -2299,6 +2299,28 @@ but the historical counts on the Settings page are not a reliable census of what
 
 ---
 
+## A zombie WebSocket is not detected on PWA reopen
+
+`stream_visibility_recovery_controller.js` decides whether a reopened page missed anything by
+asking `consumer.connection.isOpen()`, which reads `webSocket.readyState`. A socket the browser
+never reports as closed — the server went away, or the OS suspended the connection without
+tearing it down — still reads as open, so the controller leaves the page alone and does not
+re-render it.
+
+The page does not freeze: ActionCable's own connection monitor treats the connection as stale
+after ~6s without a ping and reopens it, and `cable-reconnect` re-subscribes any stream source
+that stays dark, so live updates resume on their own. What is lost is the backfill — anything
+broadcast while the page was away is not recovered until the next reload or navigation.
+
+The obvious tightening, adding `connection.monitor.connectionIsStale()` to the check, does not
+work: a frozen page receives no pings while it is backgrounded, so the connection reads as stale
+on *every* reopen and the controller would reload every time, which is the bug it was written to
+fix ([#389](https://github.com/tadasant/zimmer/pull/389) is the earlier attempt in that area).
+Distinguishing "stale because we were asleep" from "stale because the socket is dead" needs a
+liveness probe after the page wakes, not a reading taken at the moment it wakes.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

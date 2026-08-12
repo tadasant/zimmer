@@ -57,13 +57,33 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
     JS
   end
 
+  # Shadowing `visibilityState` is deleted again afterwards, restoring the
+  # prototype getter — left in place it would pin the document to "visible" for
+  # the rest of the page's life and quietly break any later cycle.
   def hide_then_show
     page.execute_script(<<~JS)
       Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true })
       document.dispatchEvent(new Event("visibilitychange"))
       Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true })
       document.dispatchEvent(new Event("visibilitychange"))
+      delete document.visibilityState
     JS
+  end
+
+  # Count calls to the consumer's own reopen(), which is what actually restores
+  # live updates. Without this the reopen step is untested: a Turbo visit rebuilds
+  # the stream sources anyway, so the page would come back live either way.
+  def spy_on_reopen
+    page.execute_script(<<~JS)
+      const connection = document.querySelector("turbo-cable-stream-source").subscription.consumer.connection
+      window.__reopenCalls = 0
+      const original = connection.reopen.bind(connection)
+      connection.reopen = function () { window.__reopenCalls += 1; return original() }
+    JS
+  end
+
+  def reopen_calls
+    page.evaluate_script("window.__reopenCalls || 0")
   end
 
   # Close the WebSocket out from under ActionCable the way a suspended OS does,
@@ -121,14 +141,18 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
     visit session_path(session)
     wait_for_turbo_streams_connected
 
-    # The real 5s window: a quick app switch must not even reach the socket check.
+    # The real 5s window. Kill the socket first so this pins the duration gate
+    # specifically: with a live socket the later isOpen() check would keep the
+    # page still anyway, and the test would pass with the gate deleted.
     tune_recovery(stale_after: 5000)
     instrument_page
+    kill_cable_socket
 
     hide_then_show
     sleep 1.5
 
-    assert_empty recorded_events, "a momentary hide reloaded the page"
+    assert_empty recorded_events,
+      "a hide shorter than staleAfter reloaded the page"
   end
 
   test "returning visible with a live socket does not navigate either" do
@@ -153,12 +177,18 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
 
     tune_recovery(stale_after: 0)
     instrument_page
+    spy_on_reopen
 
     kill_cable_socket
     reopen_from_bfcache
 
     assert wait_for_event("turbo:visit"),
       "a reopen with a dead cable left the page stale instead of re-rendering it"
+
+    # `pageshow` alone does not trip ActionCable's own visibility monitor, so
+    # this call can only have come from the controller.
+    assert_equal 1, reopen_calls,
+      "the controller did not reopen the consumer, so live updates depended entirely on the re-render"
 
     # And the point of all of it: updates broadcast from the server land in the
     # DOM again afterwards.
