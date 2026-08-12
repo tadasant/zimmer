@@ -215,13 +215,58 @@ class UnarchiveSessionService
     return unless artifact_service.artifacts_exist?(session.id)
 
     @logger.info("Found preserved artifacts, applying to fresh clone")
+    # The commit the fresh clone is checked out at, captured before anything is
+    # applied: it is what "pristine" means for this clone, and a bundle can move
+    # HEAD off it.
+    pristine_ref = artifact_service.head_sha(clone_path) || "HEAD"
     apply_result = artifact_service.apply_artifacts(session_id: session.id, clone_path: clone_path)
 
     if apply_result.success?
       @logger.info("Applied artifacts",
         bundle: apply_result.applied_bundle?,
-        working_tree: apply_result.applied_working_tree?
+        working_tree: apply_result.applied_working_tree?,
+        refused_working_tree: apply_result.refused_working_tree?
       )
+
+      damage = restore_damage(clone_path, artifact_service)
+      if damage
+        # What we just restored is not the session's work, it is the wreckage of
+        # an interrupted delete that the archive path captured (issue #411).
+        # Handing it to `air prepare` fails the session outright, so put the
+        # clone back the way git cloned it. A pristine clone loses uncommitted
+        # work; a gutted one loses the session.
+        @logger.error("Preserved artifacts gutted the fresh clone, reverting to the pristine checkout",
+          session_id: session.id,
+          clone_path: clone_path,
+          reason: damage
+        )
+        reverted = artifact_service.restore_working_tree_to(clone_path, pristine_ref)
+        remaining_damage = restore_damage(clone_path, artifact_service)
+
+        if !reverted || remaining_damage
+          # The revert is the whole guard. If it did not take, the session is
+          # about to start against a clone that is still gutted, which is the
+          # failure this exists to prevent — say so at .error rather than
+          # letting the reassuring line above stand as the last word.
+          @logger.error("Could not revert the clone to its pristine checkout",
+            session_id: session.id,
+            clone_path: clone_path,
+            git_succeeded: reverted,
+            remaining_damage: remaining_damage
+          )
+        end
+
+        note_retained_artifacts(damage, artifact_service.artifacts_path_for(session.id))
+        return
+      end
+
+      # A refused patch is corruption we declined to replay, not work we
+      # applied. Keep it on disk rather than deleting the only copy.
+      if apply_result.refused_working_tree?
+        note_retained_artifacts("the preserved patch is a mass deletion of tracked files",
+          artifact_service.artifacts_path_for(session.id))
+        return
+      end
 
       # Clean up artifacts now that they've been successfully applied.
       # Without this, artifacts would be orphaned on disk since unarchive
@@ -242,6 +287,46 @@ class UnarchiveSessionService
   rescue => e
     @logger.warn("Error applying preserved artifacts", error: e.message)
     # Don't fail unarchive
+  end
+
+  # Artifacts we declined to restore outlive every reaper: unarchive clears
+  # trash_after, so EmptyTrashJob never revisits this session, and
+  # StaleCloneCleanupJob only sweeps artifacts for sessions that are archived or
+  # long-failed. Name the path in the session log, which is the one surface a
+  # human actually sees, so the directory is findable rather than merely leaked.
+  def note_retained_artifacts(reason, artifacts_path)
+    session.logs.create!(
+      level: "warning",
+      content: "Preserved artifacts were not restored (#{reason}). The clone is the pristine checkout from " \
+               "git; the artifacts are kept at #{artifacts_path} for manual recovery and nothing will reap them."
+    )
+  rescue => e
+    @logger.warn("Failed to record retained artifacts in the session log", error: e.message)
+  end
+
+  # Did restoring the artifacts damage the clone rather than restore it?
+  # Returns a human-readable reason, or nil when the tree is fine.
+  #
+  # Two signals, because they catch different sizes of the same accident:
+  # the agent root's subdirectory disappearing is fatal on its own regardless
+  # of how few files it took with it (`air prepare` writes
+  # <clone>/<subdirectory>/.mcp.json and dies with ENOENT), while a tree that
+  # is now almost entirely deletions of tracked files is the mass-deletion
+  # signature whatever it happened to hit.
+  def restore_damage(clone_path, artifact_service)
+    if session.subdirectory.present?
+      subdirectory_path = File.join(clone_path, session.subdirectory)
+      unless file_system.directory?(subdirectory_path)
+        return "subdirectory '#{session.subdirectory}' no longer exists in the clone"
+      end
+    end
+
+    counts = artifact_service.working_tree_change_counts(clone_path)
+    if CloneArtifactService.mass_deletion?(deleted: counts[:deleted], changed: counts[:changed])
+      return "#{counts[:deleted]} of #{counts[:changed]} changed files are deletions of tracked files"
+    end
+
+    nil
   end
 
   def create_clone

@@ -233,16 +233,24 @@ class ForkSessionService
   def create_forked_clone
     source_clone_path = source_session.metadata["clone_path"]
 
-    # Generate new clone path with similar naming convention
+    # Generate new clone path the way GitCloneService#generate_clone_path does:
+    # "<repo>-<branch>-<timestamp>-<random>", with the repository name taken
+    # from the git root and the branch's slashes flattened. Deriving either from
+    # the source clone's directory name instead cannot be done unambiguously —
+    # both halves can contain dashes ("tadasant-internal", a branch
+    # "claude/fix-x") — and an unsanitized branch would nest the fork one level
+    # below the clones base, where the orphan sweeps, which scan the base's
+    # direct children, would never see it.
     timestamp = Time.now.to_i
     random = SecureRandom.hex(4)
-    repo_name = File.basename(source_clone_path).split("-").first
     branch = source_session.branch || "main"
+    repo_name = File.basename(source_session.git_root.to_s, ".git")
+    safe_branch = branch.tr("/", "-")
 
     base_path = ClonesDirectory.base
     file_system.mkdir_p(base_path)
 
-    new_clone_path = File.join(base_path, "#{repo_name}-#{branch}-#{timestamp}-#{random}")
+    new_clone_path = File.join(base_path, "#{repo_name}-#{safe_branch}-#{timestamp}-#{random}")
 
     copy_clone_directory(source_clone_path, new_clone_path)
 

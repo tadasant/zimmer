@@ -20,11 +20,54 @@ require "open3"
 class CloneArtifactService
   ARTIFACTS_BASE_DIR = ".zimmer/artifacts"
 
+  # A working tree that is almost entirely deletions of tracked files is not
+  # uncommitted work — it is a clone whose tree was mangled by an interrupted
+  # recursive delete, and preserving it turns a transient filesystem accident
+  # into a permanent, replayable one (see issue #411).
+  #
+  # The two thresholds are deliberately conservative, because a legitimate
+  # refactor really can delete a lot of files and we would rather preserve a
+  # doubtful patch than drop a real one:
+  #
+  #   MASS_DELETION_MIN_FILES — the observed corruption removes 50-1041 tracked
+  #     files at a time. Below 50 the signal is not strong enough to act on, and
+  #     the post-apply validation in UnarchiveSessionService is the backstop for
+  #     a smaller mangling that still removes something load-bearing.
+  #   MASS_DELETION_RATIO — every observed corrupt patch is 100% deletions and
+  #     0 additions, while a mass delete a session actually performed usually
+  #     ships with the edits that go with it (imports, config, tests). The
+  #     tolerance is narrow, though: at 0.95, a patch of 60 deletions needs 4
+  #     or more non-deletion entries to stay out of the net, so a *pure* delete
+  #     of 50+ tracked files and nothing else is treated as corruption. That
+  #     costs the session its deletions — the files come back from HEAD, which
+  #     git can always reproduce — and it is logged at .error rather than
+  #     silently. See the limitation in docs/.
+  MASS_DELETION_MIN_FILES = 50
+  MASS_DELETION_RATIO = 0.95
+
+  # `git status --porcelain` XY codes for an unmerged path. A conflicted file
+  # is a change, but it is not a deletion — `git apply --3way` leaves these
+  # behind when it cannot merge a legitimate patch, and reading DU/UD/DD as
+  # deletions would let a failed 3-way look like a gutted tree.
+  UNMERGED_STATUS_CODES = %w[DD AU UD UA DU AA UU].freeze
+
   class ArtifactError < StandardError; end
+
+  # Does a set of changed-file counts have the shape of an interrupted `rm -rf`
+  # rather than of human (or agent) work? Shared by the archive path, which
+  # refuses to preserve such a patch, and the unarchive path, which refuses to
+  # apply one and validates the tree it produced.
+  def self.mass_deletion?(deleted:, changed:)
+    return false if deleted < MASS_DELETION_MIN_FILES
+    return false unless changed.positive?
+
+    deleted >= changed * MASS_DELETION_RATIO
+  end
 
   DirtyCheckResult = Struct.new(:dirty?, :has_uncommitted?, :has_unpushed_commits?, :details, keyword_init: true)
   CreateResult = Struct.new(:success?, :artifacts_path, :error, keyword_init: true)
-  ApplyResult = Struct.new(:success?, :applied_bundle?, :applied_working_tree?, :error, keyword_init: true)
+  ApplyResult = Struct.new(:success?, :applied_bundle?, :applied_working_tree?, :refused_working_tree?, :error,
+    keyword_init: true)
 
   attr_reader :file_system, :logger
 
@@ -139,10 +182,37 @@ class CloneArtifactService
     # the file's contents would be silently lost on restore.
     diff_stdout, _, diff_status = run_git("diff", "--binary", "--cached", "HEAD", cwd: clone_path, binmode: true)
     if SubprocessStatus.success?(diff_status) && !diff_stdout.strip.empty?
-      patch_path = File.join(artifacts_dir, "working_tree.patch")
-      file_system.binwrite(patch_path, diff_stdout)
-      metadata["has_working_tree_patch"] = true
-      @logger.info("Saved working tree patch", path: patch_path, size: diff_stdout.bytesize)
+      counts = count_patch_entries(diff_stdout.each_line)
+
+      if self.class.mass_deletion?(deleted: counts[:deleted], changed: counts[:changed])
+        # This clone's tree was gutted by something that is not the session —
+        # an interrupted recursive delete leaves exactly this signature. Keep
+        # whatever real work is in the patch (additions and modifications) and
+        # throw the deletions away, so unarchive restores a working clone
+        # instead of replaying the corruption onto a pristine one.
+        @logger.error(
+          "Refusing to preserve mass deletions from a mangled clone",
+          session_id: session_id,
+          clone_path: clone_path,
+          deleted_files: counts[:deleted],
+          changed_files: counts[:changed]
+        )
+        metadata["dropped_deletions"] = counts[:deleted]
+
+        filtered_stdout, _, filtered_status = run_git(
+          "diff", "--binary", "--cached", "--diff-filter=d", "HEAD", cwd: clone_path, binmode: true
+        )
+        diff_stdout = SubprocessStatus.success?(filtered_status) ? filtered_stdout : "".b
+      end
+
+      if diff_stdout.strip.empty?
+        metadata["has_working_tree_patch"] = false
+      else
+        patch_path = File.join(artifacts_dir, "working_tree.patch")
+        file_system.binwrite(patch_path, diff_stdout)
+        metadata["has_working_tree_patch"] = true
+        @logger.info("Saved working tree patch", path: patch_path, size: diff_stdout.bytesize)
+      end
     else
       metadata["has_working_tree_patch"] = false
     end
@@ -169,6 +239,7 @@ class CloneArtifactService
     metadata = read_metadata(artifacts_dir)
     applied_bundle = false
     applied_working_tree = false
+    refused_working_tree = false
 
     # Apply git bundle (unpushed commits)
     bundle_path = File.join(artifacts_dir, "bundle.pack")
@@ -179,13 +250,66 @@ class CloneArtifactService
     # Apply working tree patch (uncommitted changes)
     patch_path = File.join(artifacts_dir, "working_tree.patch")
     if metadata["has_working_tree_patch"] && file_system.exists?(patch_path)
-      applied_working_tree = apply_patch(patch_path, clone_path)
+      # Patches written before the archive-side guard existed can still be mass
+      # deletions of tracked files. Applying one guts the fresh clone — up to
+      # and including the agent root's subdirectory, which fails `air prepare`
+      # and the session with it. Refuse the patch whole (unlike the archive
+      # path, there is no cheap way to keep its additions), and leave the
+      # artifacts on disk so a human can salvage anything real out of them.
+      counts = count_patch_entries(file_system.each_line(patch_path))
+      if self.class.mass_deletion?(deleted: counts[:deleted], changed: counts[:changed])
+        @logger.error(
+          "Refusing to apply a mass-deletion working tree patch to a fresh clone",
+          session_id: session_id,
+          clone_path: clone_path,
+          patch_path: patch_path,
+          deleted_files: counts[:deleted],
+          changed_files: counts[:changed]
+        )
+        refused_working_tree = true
+      else
+        applied_working_tree = apply_patch(patch_path, clone_path)
+      end
     end
 
-    ApplyResult.new(success?: true, applied_bundle?: applied_bundle, applied_working_tree?: applied_working_tree)
+    ApplyResult.new(success?: true, applied_bundle?: applied_bundle, applied_working_tree?: applied_working_tree,
+      refused_working_tree?: refused_working_tree)
   rescue => e
     @logger.error("Failed to apply artifacts", error: e.message, session_id: session_id)
     ApplyResult.new(success?: false, error: e.message)
+  end
+
+  # How much of a clone's tracked tree the working tree currently deletes,
+  # relative to how much it changes at all. The unarchive path uses this to
+  # decide whether what it just restored is work or wreckage.
+  def working_tree_change_counts(clone_path)
+    stdout, _, status = run_git("status", "--porcelain", cwd: clone_path)
+    return { deleted: 0, changed: 0 } unless SubprocessStatus.success?(status)
+
+    lines = stdout.lines.reject { |line| line.strip.empty? }
+    deleted = lines.count do |line|
+      code = line[0, 2].to_s
+      code.include?("D") && !UNMERGED_STATUS_CODES.include?(code)
+    end
+    { deleted: deleted, changed: lines.size }
+  end
+
+  # The commit a clone is checked out at, or nil if it cannot be read.
+  def head_sha(clone_path)
+    stdout, _, status = run_git("rev-parse", "HEAD", cwd: clone_path)
+    SubprocessStatus.success?(status) ? stdout.strip.presence : nil
+  end
+
+  # Undo everything a restore did: move back to `ref` and delete the files the
+  # restore added. Passing the commit the clone was checked out at before the
+  # restore unwinds a fast-forwarded bundle too — without that, a bundle whose
+  # commits are themselves the damage would survive a reset to HEAD. Ignored
+  # files (vendor/bundle, node_modules) are left alone: `clean -fd` is not
+  # `-fdx`, and they are not part of what a restore writes.
+  def restore_working_tree_to(clone_path, ref)
+    _, _, reset_status = run_git("reset", "--hard", ref, cwd: clone_path)
+    _, _, clean_status = run_git("clean", "-fd", cwd: clone_path)
+    SubprocessStatus.success?(reset_status) && SubprocessStatus.success?(clean_status)
   end
 
   # Check if artifacts exist for a given session.
@@ -233,6 +357,31 @@ class CloneArtifactService
     return "origin/master" if SubprocessStatus.success?(status)
 
     nil
+  end
+
+  # Count the file entries in a `git diff` patch: how many files it touches at
+  # all, and how many of those it deletes.
+  #
+  # One `diff --git` line starts each entry, and a "deleted file mode" line
+  # follows for a removal (an addition gets "new file mode" and a rename gets
+  # neither — a rename is not a deletion either way). Neither prefix can appear
+  # inside patch content: diff body lines are prefixed with "+", "-" or a
+  # space, and a --binary payload is base85, whose lines cannot contain a space.
+  #
+  # Takes an enumerator of raw byte lines rather than the whole patch, because a
+  # --binary patch inlines every binary blob it touches and has no useful size
+  # bound. The prefixes are ASCII-only so they compare safely against ASCII-8BIT
+  # lines.
+  def count_patch_entries(lines)
+    deleted = 0
+    changed = 0
+
+    lines.each do |line|
+      changed += 1 if line.start_with?("diff --git ")
+      deleted += 1 if line.start_with?("deleted file mode ")
+    end
+
+    { deleted: deleted, changed: changed }
   end
 
   def read_metadata(artifacts_dir)
