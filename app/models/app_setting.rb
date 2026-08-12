@@ -77,7 +77,6 @@ class AppSetting < ApplicationRecord
   validate :only_one_row, on: :create
   validates :spot_gate_five_hour_threshold_pct, :spot_gate_weekly_threshold_pct,
     numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
-  before_validation :prune_trigger_backed_class_overrides
   validate :genesis_class_overrides_well_formed
 
   class << self
@@ -171,17 +170,6 @@ class AppSetting < ApplicationRecord
   end
 
   private
-
-  # A key for a trigger-backed kind is dead weight: SessionGenesis ignores it on
-  # read, so it can only mislead whoever opens the column next. Pruned rather
-  # than rejected — a row written before the selector moved to Trigger must still
-  # be saveable, and this converges it on the next write.
-  def prune_trigger_backed_class_overrides
-    return unless genesis_class_overrides.is_a?(Hash)
-
-    pruned = genesis_class_overrides.select { |key, _| SessionGenesis.settable?(key) }
-    self.genesis_class_overrides = pruned if pruned.size != genesis_class_overrides.size
-  end
 
   def genesis_class_overrides_well_formed
     overrides = genesis_class_overrides

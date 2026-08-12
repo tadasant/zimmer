@@ -104,6 +104,17 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     assert session.priority?
   end
 
+  test "a burst-notice session carries the trigger's class" do
+    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY, max_sessions_per_minute: 1)
+    stub_agent_root_for(@schedule)
+
+    @schedule.create_session!(prompt: "First")
+    notice = @schedule.create_session!(prompt: "Second — tips the cap")
+
+    assert notice.metadata["burst_notice"], "the second fire should have produced the burst notice"
+    assert_equal SessionGenesis::PRIORITY, notice.scheduling_class
+  end
+
   test "changing the selector does not move sessions the trigger already spawned" do
     @schedule.update!(scheduling_class: SessionGenesis::SPOT)
     stub_agent_root_for(@schedule)

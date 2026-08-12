@@ -79,7 +79,7 @@ class SpotSessionHold
 
       message = "Spot session held for quota headroom: #{decision.detail} " \
                 "Re-checking at #{retry_at.iso8601} (hold ##{count}). " \
-                "It is spot because #{session.scheduling_class_source}. " \
+                "Its class was #{session.scheduling_class_source}. " \
                 "Make this one session priority to start it now."
       log_buffer&.add(message, level: "warning")
       Rails.logger.info("[SpotSessionHold] Session #{session.id} held: #{decision.reason}")

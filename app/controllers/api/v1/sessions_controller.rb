@@ -35,8 +35,9 @@ class Api::V1::SessionsController < Api::BaseController
     # Filter by agent_runtime
     scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
 
-    # Filter by scheduling class / genesis. Resolved live through SessionGenesis,
-    # so a genesis promoted in Settings moves its sessions here immediately.
+    # Filter by scheduling class / genesis. A session that carries no class of its
+    # own is classified through SessionGenesis on read, so moving a genesis in
+    # Settings moves those sessions here immediately.
     scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
     scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
 
@@ -1009,8 +1010,9 @@ class Api::V1::SessionsController < Api::BaseController
     # Filter by agent_runtime
     scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
 
-    # Filter by scheduling class / genesis. Resolved live through SessionGenesis,
-    # so a genesis promoted in Settings moves its sessions here immediately.
+    # Filter by scheduling class / genesis. A session that carries no class of its
+    # own is classified through SessionGenesis on read, so moving a genesis in
+    # Settings moves those sessions here immediately.
     scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
     scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
 

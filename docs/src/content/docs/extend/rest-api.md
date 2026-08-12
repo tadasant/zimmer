@@ -171,9 +171,11 @@ Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`,
 default to false wherever they appear.
 
 `priority_class` accepts `spot` or `priority`; `genesis` accepts one of `web_ui`, `slack`,
-`github_issue`, `github_label`, `schedule`, `ao_event`, `api`, `unknown`. Both are resolved live, so a
-genesis promoted in Settings moves its sessions between the two `priority_class` values immediately.
-An unrecognised value for either is ignored rather than erroring.
+`github_issue`, `github_label`, `schedule`, `ao_event`, `api`, `unknown`. A session that carries no
+`scheduling_class` of its own is classified from its genesis on read, so moving a genesis in Settings
+moves those sessions between the two `priority_class` values immediately — and the five trigger-backed
+kinds are not movable that way at all (their class is set per trigger). An unrecognised value for
+either filter is ignored rather than erroring.
 
 `genesis` is not a permitted param on create and is never caller-supplied. A create that passes
 `parent_session_id` inherits that parent's genesis; one that does not is recorded as `api`, which
@@ -347,6 +349,12 @@ no API equivalent.
 `max_sessions_per_minute` (integer, nullable) sets the trigger's [burst
 cap](/sessions/triggers/#burst-control); `null` — the default — means unbounded. The trigger payload
 also reports `bursting`, true while the trigger is inside a burst and spawning nothing.
+
+`scheduling_class` (`spot` / `priority` / `null`) sets the [spot or
+priority](/sessions/spot-and-priority/) class of the sessions this trigger spawns; `null` — the
+default — derives it from the trigger's condition type. The payload reports both `scheduling_class`
+(what was chosen, usually `null`) and `effective_scheduling_class` (what its sessions actually get).
+Changing it applies to sessions the trigger spawns from then on.
 
 `status` is one of `enabled`, `disabled`, or `failed`, and all three work as `?status=` filters.
 `failed` is Zimmer's to set: a one-shot fire raised and the trigger was

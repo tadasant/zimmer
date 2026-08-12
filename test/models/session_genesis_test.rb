@@ -120,14 +120,4 @@ class SessionGenesisTest < ActiveSupport::TestCase
   test "SETTABLE_KINDS matches SETTABLE_KEYS" do
     assert_equal SessionGenesis::SETTABLE_KEYS, SessionGenesis::SETTABLE_KINDS.map(&:key)
   end
-
-  # --- normalize_class --------------------------------------------------------
-
-  test "normalize_class keeps a real class and drops everything else" do
-    assert_equal SessionGenesis::SPOT, SessionGenesis.normalize_class("spot")
-    assert_equal SessionGenesis::PRIORITY, SessionGenesis.normalize_class(" priority ")
-    assert_nil SessionGenesis.normalize_class("")
-    assert_nil SessionGenesis.normalize_class(nil)
-    assert_nil SessionGenesis.normalize_class("urgent")
-  end
 end

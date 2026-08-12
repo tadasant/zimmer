@@ -266,8 +266,13 @@ class Trigger < ApplicationRecord
   # The class this trigger's sessions would carry if it named none — the shipped
   # default for the genesis it derives. What the form shows next to "Use the
   # default", so the operator can see what they are choosing away from.
+  #
+  # `default_class`, not `effective_class`: every genesis a trigger can derive is
+  # trigger-backed, and SessionGenesis ignores a per-kind override for those — so
+  # the two agree, and this one does not read AppSetting once per trigger in a
+  # listing of a hundred.
   def default_scheduling_class
-    SessionGenesis.effective_class(SessionGenesis.from_condition_types(condition_types))
+    SessionGenesis.default_class(SessionGenesis.from_condition_types(condition_types))
   end
 
   # The class this trigger's sessions actually get.

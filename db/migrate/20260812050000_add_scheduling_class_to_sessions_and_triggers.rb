@@ -42,19 +42,40 @@ class AddSchedulingClassToSessionsAndTriggers < ActiveRecord::Migration[8.0]
   # The kind a trigger's sessions derive, when it carries several condition types.
   PRECEDENCE = %w[slack github_label github_issue ao_event schedule].freeze
 
+  CLASSES = %w[spot priority].freeze
+
+  # Session.statuses[:waiting] — spelled out rather than read from the model, so
+  # this migration keeps meaning the same thing if the enum is ever reordered.
+  WAITING_STATUS = 1
+
   def migrate_trigger_backed_overrides!
     setting = select_one("SELECT id, genesis_class_overrides FROM app_settings ORDER BY id LIMIT 1")
     return if setting.nil?
 
     overrides = parse_overrides(setting["genesis_class_overrides"])
-    moved = overrides.slice(*TRIGGER_BACKED.keys)
+    # Only values that name a real class move. A hand-edited column could hold
+    # anything, and anything else would either abort the deploy on a type error
+    # or land a value the new inclusion validation makes unsaveable forever.
+    moved = overrides.slice(*TRIGGER_BACKED.keys).select { |_k, v| CLASSES.include?(v) }
     return if moved.empty?
 
-    each_trigger_kind do |trigger_id, kind|
-      klass = moved[kind]
-      next if klass.blank?
+    by_kind = Hash.new { |h, k| h[k] = [] }
+    each_trigger_kind { |trigger_id, kind| by_kind[kind] << trigger_id if moved.key?(kind) }
 
-      execute("UPDATE triggers SET scheduling_class = #{quote(klass)} WHERE id = #{trigger_id.to_i}")
+    by_kind.each do |kind, trigger_ids|
+      ids = trigger_ids.map(&:to_i).join(", ")
+      execute("UPDATE triggers SET scheduling_class = #{quote(moved.fetch(kind))} WHERE id IN (#{ids})")
+
+      # The triggers keep the operator's intent for future fires, but sessions
+      # already spawned derive their class from the genesis — and that override
+      # is about to be deleted, so without this they would all snap back to the
+      # shipped default the moment this commits. Only sessions that have not
+      # started yet can actually change behaviour (the gate reads the class once,
+      # at first start), so those are the ones pinned.
+      execute(
+        "UPDATE sessions SET scheduling_class = #{quote(moved.fetch(kind))} " \
+        "WHERE genesis = #{quote(kind)} AND scheduling_class IS NULL AND status = #{WAITING_STATUS}"
+      )
     end
 
     remaining = overrides.except(*TRIGGER_BACKED.keys)
@@ -71,9 +92,13 @@ class AddSchedulingClassToSessionsAndTriggers < ActiveRecord::Migration[8.0]
     setting = select_one("SELECT id, genesis_class_overrides FROM app_settings ORDER BY id LIMIT 1")
     return if setting.nil?
 
+    chosen = select_all("SELECT id, scheduling_class FROM triggers WHERE scheduling_class IS NOT NULL")
+      .to_a.to_h { |r| [ r["id"], r["scheduling_class"] ] }
+    return if chosen.empty?
+
     by_kind = Hash.new { |h, k| h[k] = [] }
     each_trigger_kind do |trigger_id, kind|
-      klass = select_value("SELECT scheduling_class FROM triggers WHERE id = #{trigger_id.to_i}")
+      klass = chosen[trigger_id]
       by_kind[kind] << klass if klass.present?
     end
     return if by_kind.empty?
@@ -89,9 +114,7 @@ class AddSchedulingClassToSessionsAndTriggers < ActiveRecord::Migration[8.0]
   # Yields [trigger_id, genesis_kind] for every trigger that has at least one
   # condition mapping to a trigger-backed kind.
   def each_trigger_kind
-    rows = select_all(
-      "SELECT trigger_id, condition_type FROM trigger_conditions WHERE trigger_id IS NOT NULL"
-    ).to_a
+    rows = select_all("SELECT trigger_id, condition_type FROM trigger_conditions").to_a
     rows.group_by { |r| r["trigger_id"] }.each do |trigger_id, conditions|
       types = conditions.map { |c| c["condition_type"].to_s }
       winner = PRECEDENCE.find { |t| types.include?(t) }

@@ -626,7 +626,9 @@ module Mcp
 
         previous = session.priority_class
         session.update!(scheduling_class: klass.presence)
-        session.logs.create!(content: "Scheduling class set via MCP to #{session.priority_class} (was #{previous})", level: "info")
+        if previous != session.priority_class
+          session.logs.create!(content: "Scheduling class set via MCP to #{session.priority_class} (was #{previous})", level: "info")
+        end
 
         [
           "## Scheduling Class Updated",

@@ -49,14 +49,12 @@ class GenesisClassesControllerTest < ActionDispatch::IntegrationTest
     assert_equal SessionGenesis::PRIORITY, SessionGenesis.effective_class(SessionGenesis::WEB_UI)
   end
 
-  test "a stale override for a trigger-backed kind is pruned on the next write" do
-    # Written before the selector moved to Trigger. It is already inert on read;
-    # this makes sure it does not linger in the column to mislead the next reader.
-    setting = AppSetting.editable
-    setting.update_column(:genesis_class_overrides, { SessionGenesis::SLACK => SessionGenesis::SPOT })
+  test "a stale override for a trigger-backed kind is inert" do
+    # Nothing writes one any more, but a hand-edited row could still hold one.
+    # It must not reclassify that kind's sessions, which is the blast radius the
+    # move to the Trigger row exists to remove.
+    AppSetting.editable.update_column(:genesis_class_overrides, { SessionGenesis::SLACK => SessionGenesis::SPOT })
 
-    patch genesis_class_path(genesis: SessionGenesis::WEB_UI, priority_class: SessionGenesis::SPOT)
-
-    assert_equal({ SessionGenesis::WEB_UI => SessionGenesis::SPOT }, AppSetting.current.genesis_class_overrides)
+    assert_equal SessionGenesis::PRIORITY, SessionGenesis.effective_class(SessionGenesis::SLACK)
   end
 end
