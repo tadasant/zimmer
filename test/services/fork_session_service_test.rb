@@ -95,15 +95,19 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
   end
 
   # A clone directory is "<repo>-<branch>-<timestamp>-<random>" and <repo> can
-  # contain dashes, so deriving the fork's name from the first dash segment
-  # forked tadasant-internal-main-… into tadasant-main-…: a directory that
-  # claims a repository the fork does not hold.
-  test "fork clone directory keeps a repository name that contains dashes" do
+  # itself contain dashes, so a fork name derived from the source directory's
+  # first dash segment turned tadasant-internal-main-… into tadasant-main-…: a
+  # directory claiming a repository the fork does not hold. The name comes from
+  # the git root now, exactly as GitCloneService derives it.
+  test "fork clone directory names the repository the fork actually holds" do
     source_clone = "/home/test/.zimmer/clones/tadasant-internal-main-1786519477-ad273769"
     @mock_fs.mkdir_p(source_clone)
-    @source_session.update!(metadata: @source_session.metadata.merge(
-      "clone_path" => source_clone, "working_directory" => source_clone
-    ))
+    @source_session.update!(
+      git_root: "https://github.com/tadasant/tadasant-internal.git",
+      metadata: @source_session.metadata.merge(
+        "clone_path" => source_clone, "working_directory" => source_clone
+      )
+    )
 
     result = ForkSessionService.call(
       source_session: @source_session,

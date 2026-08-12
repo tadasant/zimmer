@@ -189,13 +189,22 @@ Preservation does not take the working tree entirely on faith. A tree that is 50
 tracked files and almost nothing else is not uncommitted work — it is a clone that an interrupted
 recursive delete mangled — so `CloneArtifactService` drops those deletions from `working_tree.patch`
 (keeping the additions and modifications), logs at `.error`, and records `dropped_deletions` in the
-artifact metadata. Unarchive applies the same test before it replays a patch, because patches
-captured before the guard existed are still on disk. And after restoring artifacts,
+artifact metadata.
+
+Unarchive applies the same test before it replays a patch, because patches captured before the guard
+existed are still on disk. There it refuses the patch **whole** rather than filtering it: git can
+re-take a filtered diff from a live clone, but nothing can cheaply split a patch file, so a legacy
+patch's additions are declined along with its deletions. And after restoring artifacts,
 `UnarchiveSessionService` checks the clone it produced: if the agent root's `subdirectory` is gone,
-or the tree is now overwhelmingly deletions, it reverts the clone to the pristine checkout and
-leaves the artifacts on disk. A clone missing its root subdirectory fails `air prepare` with
-`ENOENT` and takes the session down with it, so a pristine clone is the better of the two losses.
-See [issue #411](https://github.com/tadasant/zimmer/issues/411) and
+or the tree is now overwhelmingly deletions, it puts the clone back to the commit it was checked out
+at before the restore (which unwinds a fast-forwarded bundle too, so damage carried by *commits* is
+reverted rather than reset onto) and deletes what the restore added. A clone missing its root
+subdirectory fails `air prepare` with `ENOENT` and takes the session down with it, so a pristine
+clone is the better of the two losses.
+
+In both cases the artifacts stay on disk and the session log records where — unarchive clears
+`trash_after`, so nothing else will ever reap them, and the path is the only way back to whatever
+real work the patch held. See [issue #411](https://github.com/tadasant/zimmer/issues/411) and
 [the limitation this does not close](/limitations/#an-interrupted-clone-delete-still-mangles-a-live-working-tree).
 
 The session's [scratch directory](/sessions/spawning/) and prompt attachments are on the trash

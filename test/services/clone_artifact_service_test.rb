@@ -411,20 +411,58 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     FileUtils.rm_rf(fresh_clone) if fresh_clone && File.directory?(fresh_clone)
   end
 
-  test "restore_pristine_working_tree returns the clone to exactly what HEAD describes" do
+  test "restore_working_tree_to returns the clone to exactly what the given ref describes" do
     create_test_repo(tracked_files: 5)
+    pristine = @service.head_sha(@repo_path)
+    assert pristine.present?
+
     Dir.chdir(@repo_path) do
       FileUtils.rm_f("tracked_00.rb")
       File.write("README.md", "clobbered\n")
       File.write("untracked.rb", "# left over\n")
     end
 
-    assert @service.restore_pristine_working_tree(@repo_path)
+    assert @service.restore_working_tree_to(@repo_path, pristine)
 
     assert File.exist?(File.join(@repo_path, "tracked_00.rb"))
     assert_equal "initial content\n", File.read(File.join(@repo_path, "README.md"))
     assert_not File.exist?(File.join(@repo_path, "untracked.rb"))
     assert_equal({ deleted: 0, changed: 0 }, @service.working_tree_change_counts(@repo_path))
+  end
+
+  # The ref matters: a restore can move HEAD (an applied bundle fast-forwards
+  # it), so reverting to "HEAD" would keep whatever damage those commits did.
+  # Reverting to the commit the clone was checked out at before the restore
+  # unwinds them.
+  test "restore_working_tree_to unwinds commits the restore added" do
+    create_test_repo(tracked_files: 5)
+    pristine = @service.head_sha(@repo_path)
+    Dir.chdir(@repo_path) do
+      FileUtils.rm_f("tracked_00.rb")
+      run_cmd("git", "add", "-A")
+      run_cmd("git", "commit", "-m", "commit the wreckage")
+    end
+    assert_not File.exist?(File.join(@repo_path, "tracked_00.rb"))
+
+    assert @service.restore_working_tree_to(@repo_path, pristine)
+
+    assert File.exist?(File.join(@repo_path, "tracked_00.rb"))
+    assert_equal pristine, @service.head_sha(@repo_path)
+  end
+
+  # `git apply --3way` leaves unmerged entries behind when a legitimate patch
+  # conflicts. Those are changes, not deletions — counting DU/UD/DD as deletions
+  # would let a failed 3-way look like a gutted tree and get reset away.
+  test "working_tree_change_counts does not count unmerged entries as deletions" do
+    create_test_repo(tracked_files: 5)
+    status_lines = "DU tracked_00.rb\nUD tracked_01.rb\nUU tracked_02.rb\n D tracked_03.rb\n"
+    _, _, ok_status = Open3.capture3("true")
+    counts = @service.stub(:run_git, ->(*) { [ status_lines, "", ok_status ] }) do
+      @service.working_tree_change_counts(@repo_path)
+    end
+
+    assert_equal 1, counts[:deleted], "only the plain ' D' row is a deletion"
+    assert_equal 4, counts[:changed]
   end
 
   test "working_tree_change_counts counts deletions of tracked files" do
