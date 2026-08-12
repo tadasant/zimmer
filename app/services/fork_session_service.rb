@@ -29,8 +29,14 @@ require "path_sanitizer"
 class ForkSessionService
   include DatabaseRetry
 
-  # Result object returned by the service
-  Result = Struct.new(:success?, :forked_session, :error, keyword_init: true)
+  # Result object returned by the service.
+  #
+  # `source_clone_discarded` marks the one failure here that is not a fault: the
+  # source session reached the trash and `DeferredCloneCleanupJob` deleted the
+  # clone this fork was copying. Callers that fork on a session's behalf rather
+  # than at a user's request (SessionStatusSummaryGenerator) read it to skip
+  # quietly, instead of recording a failure about work that is moot.
+  Result = Struct.new(:success?, :forked_session, :error, :source_clone_discarded, keyword_init: true)
 
   # Waits between clone-copy attempts. Their count is the retry budget: three
   # attempts, ~2.5s of backoff in the worst case.
@@ -84,6 +90,9 @@ class ForkSessionService
     @file_system = file_system || RealFileSystemAdapter.new
     @extra_metadata = extra_metadata || {}
     @copy_exclusions = copy_exclusions || []
+    # Set by the two paths that can end on a missing source clone — see
+    # #archived_source_clone? — and carried out on the Result.
+    @source_clone_discarded = false
     @logger = StructuredLogger.new({ session_id: source_session.id, service: "ForkSessionService" })
   end
 
@@ -113,7 +122,9 @@ class ForkSessionService
   def call
     # Validate inputs
     validation_error = validate_inputs
-    return Result.new(success?: false, error: validation_error) if validation_error
+    if validation_error
+      return Result.new(success?: false, error: validation_error, source_clone_discarded: @source_clone_discarded)
+    end
 
     # Parse and truncate transcript
     truncated_transcript = truncate_transcript
@@ -121,7 +132,13 @@ class ForkSessionService
 
     # Create new clone directory
     new_clone_path = create_forked_clone
-    return Result.new(success?: false, error: "Failed to create forked clone directory") unless new_clone_path
+    unless new_clone_path
+      return Result.new(
+        success?: false,
+        error: "Failed to create forked clone directory",
+        source_clone_discarded: @source_clone_discarded
+      )
+    end
 
     # Generate new session_id for Claude CLI
     new_session_id = SecureRandom.uuid
@@ -180,8 +197,13 @@ class ForkSessionService
     source_clone_path = source_session.metadata&.dig("clone_path")
     return "Source session has no clone path" if source_clone_path.blank?
 
-    # Clone must exist
-    return "Source clone directory does not exist" unless file_system.directory?(source_clone_path)
+    # Clone must exist. It can already be gone for the benign reason below, when
+    # the cleanup of an archived session's clone finishes before the fork starts
+    # rather than during its copy.
+    unless file_system.directory?(source_clone_path)
+      @source_clone_discarded = archived_source_clone?
+      return "Source clone directory does not exist"
+    end
 
     # Parse transcript and validate message_index
     parsed = parse_transcript
@@ -238,7 +260,18 @@ class ForkSessionService
 
     new_clone_path
   rescue => e
-    @logger.error("Failed to create forked clone", error: e.message)
+    @source_clone_discarded = e.is_a?(Errno::ENOENT) && archived_source_clone?
+
+    if @source_clone_discarded
+      # The archive pipeline won a race it is entitled to win: the tree being
+      # copied was unlinked under the copy because the session it belongs to went
+      # to the trash. Nothing is broken, nothing can be done, and the fork was
+      # moot the moment the session was archived — so this must not page. An
+      # ENOENT on a clone that should still be there still does, one line down.
+      @logger.info("Abandoned a fork whose source clone the trash deleted", error: e.message)
+    else
+      @logger.error("Failed to create forked clone", error: e.message)
+    end
     # Whatever got written before the failure belongs to nobody:
     # OrphanCloneFilesystemCleanupJob's scheduled sweep ignores anything younger
     # than its 48h threshold, so a partial clone left here sits on disk for two
@@ -309,6 +342,28 @@ class ForkSessionService
   # directory that went away under us, will not come back.
   def retryable_copy_target?(source_clone_path, new_clone_path)
     file_system.directory?(source_clone_path) && file_system.directory?(File.dirname(new_clone_path))
+  end
+
+  # Whether a source clone that is not there is missing because the session was
+  # archived: DeferredCloneCleanupJob deletes an archived session's clone, and a
+  # copy walking that tree dies on a path it enumerated moments before it was
+  # unlinked.
+  #
+  # Both halves are load-bearing. A clone that is still there is the other,
+  # retryable case — a live tree being written to. A clone that is gone while the
+  # session is live is a genuine fault and has to stay loud. `reload` because the
+  # archive lands DURING the copy, which is the whole race: the status this
+  # service was handed says nothing about it.
+  #
+  # An answer we cannot get is the loud one. Nothing in here may raise: it runs
+  # inside a rescue whose remaining job is to dispose of the partial clone.
+  def archived_source_clone?
+    source_clone_path = source_session.metadata&.dig("clone_path")
+    return false if source_clone_path.present? && file_system.directory?(source_clone_path)
+
+    source_session.reload.archived?
+  rescue StandardError
+    false
   end
 
   # rm_rf on a path that was never created is a no-op, so this needs no guard
