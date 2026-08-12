@@ -30,12 +30,19 @@ servers:
     proxy: false
     options:
       init: true
+      # Docker socket access for agent sessions, which run in THIS role. The mount
+      # below is not access on its own -- the socket is `srw-rw---- root:docker` and
+      # this container runs as uid/gid 1000, so without the supplementary group every
+      # `docker` call is denied. Same value and rationale as production; see
+      # config/deploy.production.yml and docs/operate/docker-socket-access.md.
+      group-add: "<%= ENV.fetch('DOCKER_GID', '988') %>"
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
-        # DockerCleanupJob prunes stale agent containers; it needs the host socket.
+        # Lets DockerCleanupJob prune stale agent containers, and lets a session bring
+        # up the .agent-containers/ Compose stack. Useless without group-add above.
         - /var/run/docker.sock:/var/run/docker.sock
 
 ssh:
