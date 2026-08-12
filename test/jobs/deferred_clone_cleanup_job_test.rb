@@ -273,9 +273,10 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
 
   # === Mangled-clone accounting (issue #415) ===
   #
-  # The archive-side mass-deletion guard logs at .warn now, so it no longer pages
-  # per defused clone. The rate is still the live signal for #412, so every
-  # defusal has to leave a durable, SQL-countable mark on the session.
+  # The archive-side mass-deletion guard logs at .warn, so it does not page per
+  # defused clone. The rate is the live signal for #412, so every defusal has to
+  # leave a durable, SQL-countable mark on the session — under exactly the keys
+  # MangledCloneReportJob queries, which is why the constants come from there.
 
   test "records the mass-deletion guard's drop count on the session" do
     stub_artifact_preservation(dropped_deletions: 854)
@@ -283,8 +284,10 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
     @session.reload
-    assert_equal 854, @session.metadata["mangled_clone_dropped_deletions"]
-    assert_not_nil Time.parse(@session.metadata["mangled_clone_defused_at"])
+    assert_equal 854, @session.metadata[MangledCloneReportJob::DROPPED_DELETIONS_KEY]
+    stamp = @session.metadata[MangledCloneReportJob::DEFUSED_AT_KEY]
+    assert_match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/, stamp,
+      "the reporter compares this as a string, so it must be fixed-width ISO8601 UTC")
     assert_equal "/tmp/artifacts", @session.metadata["artifacts_path"],
       "the marker must not displace the artifacts path written in the same update"
   end
@@ -295,9 +298,9 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
     @session.reload
-    assert_not @session.metadata.key?("mangled_clone_dropped_deletions"),
+    assert_not @session.metadata.key?(MangledCloneReportJob::DROPPED_DELETIONS_KEY),
       "an ordinary archive must not be counted as a mangled clone"
-    assert_not @session.metadata.key?("mangled_clone_defused_at")
+    assert_not @session.metadata.key?(MangledCloneReportJob::DEFUSED_AT_KEY)
   end
 
   # === Docker Compose cleanup tests ===
