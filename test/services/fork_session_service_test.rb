@@ -878,20 +878,6 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     entries.select { |severity, message| severity == "ERROR" && message.include?("service=ForkSessionService") }
   end
 
-  test "an ENOENT raised because the source clone itself is gone is not retried" do
-    ForkSessionService.any_instance.stubs(:sleep)
-    fs = clone_deleting_copy_adapter(@mock_fs, @clone_path)
-
-    result = ForkSessionService.call(
-      source_session: @source_session,
-      message_index: 1,
-      file_system: fs
-    )
-
-    assert_not result.success?
-    assert_equal 1, fs.copy_attempts.size, "retrying a copy of a clone that no longer exists cannot succeed"
-  end
-
   # --- The archive pipeline deleting the clone mid-copy ----------------------
   #
   # Regression for the production page of 2026-08-12: a status-summary fork of
@@ -923,7 +909,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
   # The guard against over-quieting. A clone that vanishes while the session is
   # live is a genuine fault — a stray rm, a volume gone, a cleanup that ran
   # against the wrong path — and it has to keep paging.
-  test "a source clone that vanishes while the session is live still pages" do
+  test "a source clone that vanishes while the session is live is not retried and still pages" do
     ForkSessionService.any_instance.stubs(:sleep)
     fs = clone_deleting_copy_adapter(@mock_fs, @clone_path)
 
@@ -934,9 +920,44 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
 
     assert_not result.success?
     assert_not result.source_clone_discarded, "only the trash deleting a clone is benign"
+    assert_equal 1, fs.copy_attempts.size, "retrying a copy of a clone that no longer exists cannot succeed"
     errors = fork_service_errors(entries)
     assert_equal 1, errors.size, "an ENOENT on a clone that should still be there is still an error"
     assert_includes errors.first.last, "Failed to create forked clone"
+  end
+
+  # The window the production failure actually happened in. `rm_rf` unlinks
+  # children bottom-up and removes the root LAST, so for the whole of a large
+  # clone's deletion the root is still a directory while the copy is already
+  # failing on paths inside it. A classification that asked whether the clone root
+  # was gone would answer "still there", call this a genuine fault, and page —
+  # which is why it asks the session's status instead.
+  test "a clone still mid-deletion, root and all, is classified by the session rather than the tree" do
+    ForkSessionService.any_instance.stubs(:sleep)
+    @source_session.update_column(:status, Session.statuses[:archived])
+
+    source = @clone_path
+    fs = @mock_fs
+    attempts = []
+    fs.define_singleton_method(:copy_attempts) { attempts }
+    fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      attempts << dest
+      # The cleanup is partway through: a child is gone, the root is not.
+      raise Errno::ENOENT.new(File.join(src, ".git/objects/e8"))
+    end
+
+    result = nil
+    entries = capture_log_entries do
+      result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: fs)
+    end
+
+    assert_not result.success?
+    assert fs.directory?(@clone_path), "the premise: the clone root outlives the children being unlinked"
+    assert result.source_clone_discarded
+    assert_empty fork_service_errors(entries),
+      "the root still being there does not make an archived session's disappearing clone a fault"
+    assert_equal ForkSessionService::COPY_RETRY_DELAYS.length + 1, fs.copy_attempts.size,
+      "a root that is still there still looks retryable, so the budget is spent — it just must not page"
   end
 
   # The same race, lost before the copy even started: the cleanup finished first,
