@@ -112,6 +112,11 @@ module CliSpawnEnv
   # - DATABASE_HOST, DATABASE_PORT, DATABASE_NAME: Connection parameters
   # - DATABASE_USERNAME, DATABASE_PASSWORD: Credentials
   # - DATABASE_ADAPTER: Database type (postgresql)
+  # - DATABASE_SSLMODE: TLS policy. The deployment sets "require" (mandatory for
+  #   DigitalOcean Managed Postgres). Left inherited, it silently follows the
+  #   agent into a clone and makes every local Postgres -- which ships with
+  #   `ssl = off` -- refuse to connect, with an error that reads like a broken
+  #   database rather than a leaked variable.
   # - RAILS_ENV: Force child to determine its own environment
   #
   # Secret material cleared:
@@ -195,6 +200,7 @@ module CliSpawnEnv
       DATABASE_USERNAME
       DATABASE_PASSWORD
       DATABASE_ADAPTER
+      DATABASE_SSLMODE
       RAILS_ENV
       BUNDLE_PATH
       BUNDLE_GEMFILE

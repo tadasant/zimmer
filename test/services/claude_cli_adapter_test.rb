@@ -1566,10 +1566,31 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_nil result["DATABASE_USERNAME"]
     assert_nil result["DATABASE_PASSWORD"]
     assert_nil result["DATABASE_ADAPTER"]
+    assert_nil result["DATABASE_SSLMODE"]
     assert_nil result["RAILS_ENV"]
 
     # Non-inherited vars should be preserved
     assert_equal "secret", result["API_KEY"]
+  end
+
+  # DATABASE_SSLMODE is the one that got missed for a long time, and it fails in a
+  # way that reads like a broken database rather than a leaked variable: production
+  # sets "require" (mandatory for Managed Postgres), every local/dev Postgres ships
+  # with `ssl = off`, and libpq's answer to that combination is a refused connection.
+  # An agent session that inherited it could not connect to a dev database at all.
+  test "clear_inherited_env_vars unsets DATABASE_SSLMODE so a clone can reach a plaintext dev Postgres" do
+    result = @adapter.send(:clear_inherited_env_vars, {})
+
+    assert result.key?("DATABASE_SSLMODE"), "DATABASE_SSLMODE was not in the cleared set"
+    assert_nil result["DATABASE_SSLMODE"]
+  end
+
+  # ...but a clone that deliberately sets it in its own .env still wins, like every
+  # other var here.
+  test "clear_inherited_env_vars lets a clone's own DATABASE_SSLMODE survive" do
+    result = @adapter.send(:clear_inherited_env_vars, { "DATABASE_SSLMODE" => "disable" })
+
+    assert_equal "disable", result["DATABASE_SSLMODE"]
   end
 
   test "clear_inherited_env_vars sets bundler env vars to nil when not in .env" do
