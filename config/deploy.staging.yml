@@ -35,7 +35,7 @@ servers:
       # this container runs as uid/gid 1000, so without the supplementary group every
       # `docker` call is denied. Same value and rationale as production; see
       # config/deploy.production.yml and docs/operate/docker-socket-access.md.
-      group-add: "<%= ENV.fetch('DOCKER_GID', '988') %>"
+      group-add: "<%= ENV['DOCKER_GID'].to_s.strip.empty? ? '988' : ENV['DOCKER_GID'].to_s.strip %>"
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
