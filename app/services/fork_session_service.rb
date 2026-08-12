@@ -122,23 +122,15 @@ class ForkSessionService
   def call
     # Validate inputs
     validation_error = validate_inputs
-    if validation_error
-      return Result.new(success?: false, error: validation_error, source_clone_discarded: @source_clone_discarded)
-    end
+    return failure(validation_error) if validation_error
 
     # Parse and truncate transcript
     truncated_transcript = truncate_transcript
-    return Result.new(success?: false, error: "Failed to truncate transcript") unless truncated_transcript
+    return failure("Failed to truncate transcript") unless truncated_transcript
 
     # Create new clone directory
     new_clone_path = create_forked_clone
-    unless new_clone_path
-      return Result.new(
-        success?: false,
-        error: "Failed to create forked clone directory",
-        source_clone_discarded: @source_clone_discarded
-      )
-    end
+    return failure("Failed to create forked clone directory") unless new_clone_path
 
     # Generate new session_id for Claude CLI
     new_session_id = SecureRandom.uuid
@@ -158,7 +150,7 @@ class ForkSessionService
       # written to claim it — so nothing but OrphanCloneFilesystemCleanupJob's
       # 48h sweep would ever collect it.
       discard_partial_clone(new_clone_path)
-      return Result.new(success?: false, error: "Failed to create forked session record")
+      return failure("Failed to create forked session record")
     end
 
     # Write truncated transcript to the new location
@@ -170,7 +162,7 @@ class ForkSessionService
     unless write_transcript_success
       # Cleanup on failure
       cleanup_on_failure(forked_session, new_clone_path)
-      return Result.new(success?: false, error: "Failed to write transcript file")
+      return failure("Failed to write transcript file")
     end
 
     # Log success
@@ -184,10 +176,16 @@ class ForkSessionService
     Result.new(success?: true, forked_session: forked_session)
   rescue => e
     @logger.error("Failed to fork session", error: e.message, backtrace: e.backtrace&.first(5))
-    Result.new(success?: false, error: "Failed to fork session: #{e.message}")
+    failure("Failed to fork session: #{e.message}")
   end
 
   private
+
+  # Every unsuccessful exit, so the classification below rides out on all of them
+  # rather than on the two that happen to set it.
+  def failure(error)
+    Result.new(success?: false, error: error, source_clone_discarded: @source_clone_discarded)
+  end
 
   def validate_inputs
     # Source session must exist and have a transcript
@@ -201,7 +199,7 @@ class ForkSessionService
     # the cleanup of an archived session's clone finishes before the fork starts
     # rather than during its copy.
     unless file_system.directory?(source_clone_path)
-      @source_clone_discarded = archived_source_clone?
+      @source_clone_discarded = archived_source_session?
       return "Source clone directory does not exist"
     end
 
@@ -260,7 +258,7 @@ class ForkSessionService
 
     new_clone_path
   rescue => e
-    @source_clone_discarded = e.is_a?(Errno::ENOENT) && archived_source_clone?
+    @source_clone_discarded = source_clone_enoent?(e) && archived_source_session?
 
     if @source_clone_discarded
       # The archive pipeline won a race it is entitled to win: the tree being
@@ -344,25 +342,36 @@ class ForkSessionService
     file_system.directory?(source_clone_path) && file_system.directory?(File.dirname(new_clone_path))
   end
 
-  # Whether a source clone that is not there is missing because the session was
-  # archived: DeferredCloneCleanupJob deletes an archived session's clone, and a
-  # copy walking that tree dies on a path it enumerated moments before it was
-  # unlinked.
-  #
-  # Both halves are load-bearing. A clone that is still there is the other,
-  # retryable case — a live tree being written to. A clone that is gone while the
-  # session is live is a genuine fault and has to stay loud. `reload` because the
-  # archive lands DURING the copy, which is the whole race: the status this
-  # service was handed says nothing about it.
-  #
-  # An answer we cannot get is the loud one. Nothing in here may raise: it runs
-  # inside a rescue whose remaining job is to dispose of the partial clone.
-  def archived_source_clone?
-    source_clone_path = source_session.metadata&.dig("clone_path")
-    return false if source_clone_path.present? && file_system.directory?(source_clone_path)
+  # An ENOENT naming a path inside the source clone — the shape a tree being
+  # deleted under the copy produces. An ENOENT from anywhere else in the fork
+  # (the clones volume, the destination) is a different fault, and must not be
+  # written off because the source session happens to be archived.
+  def source_clone_enoent?(error)
+    return false unless error.is_a?(Errno::ENOENT)
 
+    source_clone_path = source_session.metadata&.dig("clone_path")
+    source_clone_path.present? && error.message.include?(source_clone_path)
+  end
+
+  # Whether the session whose clone this is has reached the trash, which is the
+  # one benign reason that clone can go missing under a copy:
+  # DeferredCloneCleanupJob deletes an archived session's clone.
+  #
+  # The SESSION's status is the ground truth here, deliberately, rather than
+  # whether the clone root is still on disk. rm_rf unlinks children bottom-up and
+  # removes the root last, so for the whole of a large clone's deletion the root
+  # is still there while the copy is already failing on paths inside it — the
+  # exact window this races. A live session is never this case: its clone going
+  # missing is a genuine fault and stays loud.
+  #
+  # `reload` because the archive lands DURING the copy, which is the whole race:
+  # the status this service was handed says nothing about it. Nothing here may
+  # raise — it runs inside a rescue whose remaining job is to dispose of the
+  # partial clone — and an answer we cannot get is the loud one.
+  def archived_source_session?
     source_session.reload.archived?
-  rescue StandardError
+  rescue StandardError => e
+    @logger.warn("Could not tell whether a failed fork's source session is archived", error: e.message)
     false
   end
 

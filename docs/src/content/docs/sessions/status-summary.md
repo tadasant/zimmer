@@ -115,12 +115,19 @@ was stat'd — the same benign condition, arriving as an `ENOENT` instead of as 
 That used to page: `ForkSessionService` logged `error`, the generator recorded a failure, and a human
 was woken about a summary nobody was going to read.
 
-`ForkSessionService` classifies it instead. An `ENOENT` whose source clone is no longer on disk
-**and** whose session (re-read from the database, because the archive lands during the copy) is
-archived is reported as `Result#source_clone_discarded`: logged at `info`, not `error`. The generator
-reads that flag, releases its claim, and returns `skipped` — the same outcome the post-copy re-check
-produces, with no failure recorded against the panel. The same answer covers the case where the
-cleanup finished *before* the fork started and the clone is already gone at validation.
+`ForkSessionService` classifies it instead. An `ENOENT` naming a path **inside the source clone**,
+raised while forking a session that — re-read from the database, because the archive lands during the
+copy — is **archived**, is reported as `Result#source_clone_discarded`: logged at `info`, not `error`.
+The generator reads that flag, releases its claim, and returns `skipped` — the same outcome the
+post-copy re-check produces, with no failure recorded against the panel. The same answer covers the
+case where the cleanup finished *before* the fork started and the clone is already gone at validation.
+
+The question it asks is about the **session**, not about the clone, and that is deliberate. `rm_rf`
+unlinks children bottom-up and removes the directory root last, so for the whole of a large clone's
+deletion the root is still there while the copy is already failing on paths inside it — a check for
+"is the clone root gone" would answer "still there" for exactly the window this races, and page. It
+also means a copy in that window still looks retryable and still spends its retry budget before
+failing; it costs a background job ~2.5 seconds, and it no longer wakes anyone.
 
 The distinction is the point, and it is deliberately narrow. A clone that is missing while its
 session is **live** is a genuine fault — a stray delete, a volume gone, a cleanup that ran against
