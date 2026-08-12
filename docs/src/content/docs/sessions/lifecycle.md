@@ -351,13 +351,17 @@ dead socket has also *missed content*, and re-subscribing would not bring it bac
 which re-subscribes every subscription on the connection and restores live updates without
 rendering anything, then reconcile the gap with a page refresh.
 
-The check that gates all of it is whether the socket is *actually* dead
-(`consumer.connection.isOpen()`). A socket that outlived the hide missed nothing, so the
-recovery is skipped outright and reopening the app costs nothing at all. Skipping that check is
-what made this controller reload on every reopen: iOS fires `pageshow` with `persisted` each
-time a standalone PWA is reopened, and the handler used to treat that alone as proof of a dead
-cable. What the meta refresh contributed and nothing replaced was the *unconditional* reload, on
-elapsed time, whether or not the cable had dropped at all.
+The check that gates all of it is `consumer.connection.isOpen()`. A socket that reports itself
+open carried its subscriptions through the hide and queued its messages, so it missed nothing:
+the recovery is skipped outright and reopening the app costs nothing at all. Without that check
+the controller reloaded on every reopen, because iOS fires `pageshow` with `persisted` each time
+a standalone PWA is restored from bfcache — which is every time the user opens it. Two other
+exits are worth knowing about: a socket still mid-handshake is left to finish rather than torn
+down and restarted, and a consumer that cannot be read at all falls through to the reload, since
+leaving a possibly-frozen page alone is worse than re-rendering it.
+
+`isOpen()` is a `readyState` read, which is its limit — see
+[Limitations](/limitations/#a-zombie-websocket-is-not-detected-on-pwa-reopen).
 
 A morphing refresh was tried for the dead-socket case, to make even that reload invisible, and
 rejected. Morphing reconciles the live DOM against the server's HTML, and Stimulus controllers
