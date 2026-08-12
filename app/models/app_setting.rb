@@ -77,6 +77,7 @@ class AppSetting < ApplicationRecord
   validate :only_one_row, on: :create
   validates :spot_gate_five_hour_threshold_pct, :spot_gate_weekly_threshold_pct,
     numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
+  before_validation :prune_trigger_backed_class_overrides
   validate :genesis_class_overrides_well_formed
 
   class << self
@@ -144,6 +145,11 @@ class AppSetting < ApplicationRecord
   # state alone — the same merge-not-replace discipline #set_extension_enabled
   # uses, so promoting one genesis can never clobber another.
   #
+  # Only the kinds nothing triggers can be set here. The trigger-backed kinds
+  # take their class from the Trigger row, and writing one of them into this
+  # column would be a setting that silently does nothing — SessionGenesis
+  # ignores it on read.
+  #
   # Storing a value equal to the shipped default removes the key instead. That
   # keeps the column a record of deliberate divergence, so a later change to a
   # default is not silently pinned by a no-op override written months earlier.
@@ -151,6 +157,7 @@ class AppSetting < ApplicationRecord
     key = genesis_key.to_s
     klass = klass.to_s
     raise ArgumentError, "unknown genesis #{key}" unless SessionGenesis.valid?(key)
+    raise ArgumentError, "#{key} takes its class from its trigger" unless SessionGenesis.settable?(key)
     raise ArgumentError, "unknown class #{klass}" unless SessionGenesis::CLASSES.include?(klass)
 
     stored = (genesis_class_overrides || {}).except(key)
@@ -164,6 +171,17 @@ class AppSetting < ApplicationRecord
   end
 
   private
+
+  # A key for a trigger-backed kind is dead weight: SessionGenesis ignores it on
+  # read, so it can only mislead whoever opens the column next. Pruned rather
+  # than rejected — a row written before the selector moved to Trigger must still
+  # be saveable, and this converges it on the next write.
+  def prune_trigger_backed_class_overrides
+    return unless genesis_class_overrides.is_a?(Hash)
+
+    pruned = genesis_class_overrides.select { |key, _| SessionGenesis.settable?(key) }
+    self.genesis_class_overrides = pruned if pruned.size != genesis_class_overrides.size
+  end
 
   def genesis_class_overrides_well_formed
     overrides = genesis_class_overrides

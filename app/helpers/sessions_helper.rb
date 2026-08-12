@@ -1,9 +1,10 @@
 module SessionsHelper
   # The per-genesis class overrides, read once per render.
   #
-  # Every session card asks "am I spot or priority", and the answer is derived
-  # rather than stored so that promoting a genesis reclassifies existing sessions.
-  # Derived means a lookup, and a page of 50 cards would otherwise make 50
+  # Every session card asks "am I spot or priority", and unless a class was named
+  # for that session the answer is derived rather than stored, so that promoting a
+  # genesis reclassifies existing sessions. Derived means a lookup, and a page of
+  # 50 cards would otherwise make 50
   # identical AppSetting reads. Memoized on the view instance, which lives exactly
   # one request — long enough to save the queries, short enough that a promotion
   # made in another tab is reflected on the next page load.

@@ -47,6 +47,10 @@ module Mcp
         ID of the session spawning this one. Records the spawn edge that the dependency graph uses and that the session hierarchy is built from: the new session sees the human messages recorded anywhere in its hierarchy, each marked with the session it was authored in, so a human's original intent reaches the session doing the work. Set this whenever you start a session on behalf of work you were asked to do — a router composing a spawn prompt is a machine author, so without the edge the new session has no record of the human who set the work in motion.
       TEXT
 
+      SCHEDULING_CLASS_DESC = <<~TEXT.strip
+        Spot/priority class for THIS session, overriding whatever its origin would give it. `priority` starts whenever it is ready; `spot` starts only while both Claude Code quota windows are forecast to stay under their ceilings, and otherwise waits and starts later (it is deferred, never cancelled). Omit this and the session inherits its parent's explicit class if there is one, and otherwise derives from its genesis — which for a spawn under a `slack` parent means priority. Pass "spot" when you are spawning long, unattended, low-urgency work (a big batch, a sweep, a backfill) that nobody is waiting on, so it does not compete with work a human is watching. Read the current policy with `get_spot_policy`.
+      TEXT
+
       AUTO_COMPACT_WINDOW_DESC = <<~TEXT.strip
         Optional per-session auto-compact (context) window override, in tokens. **You should generally rely on the default of 200,000** — omit this parameter and the API default applies. Only override in the rare situation where the spawned session is suffering from compaction thrashing because it doesn't have enough space to work — in that case, retry with `1000000` (1 million tokens). Compaction thrashing is currently the only known reason to set this preemptively.
       TEXT
@@ -71,6 +75,8 @@ module Mcp
         - **Hooks:** Start with `default_hooks`. Drop one when it fires on work this session won't do (a CI-reminder hook on a docs-only task, say) by passing the narrowed list, or `[]` to select none. Selecting no hooks is not the same as running with none: a plugin bundles hooks of its own, and those are added on top of the list you pass, so dropping a hook a selected plugin bundles means narrowing `plugins` as well.
 
         **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku`/`fable` for claude_code, `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` for codex). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
+
+        **Scheduling class:** Pass `scheduling_class: "spot"` for long, unattended work nobody is waiting on, so it yields to work a human is watching when the Claude Code quota gets tight. Omit it and the session takes its parent's explicit class, or its genesis's default.
 
         **Use cases:**
         - Start a new agent task on a repository
@@ -100,6 +106,11 @@ module Mcp
           config: { type: "object", description: CONFIG_DESC },
           custom_metadata: { type: "object", description: CUSTOM_METADATA_DESC },
           parent_session_id: { type: "integer", description: PARENT_SESSION_ID_DESC },
+          scheduling_class: {
+            type: "string",
+            enum: SessionGenesis::CLASSES,
+            description: SCHEDULING_CLASS_DESC
+          },
           auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC }
         },
         required: []
@@ -189,7 +200,21 @@ module Mcp
         attrs[:config] = args["config"] if args["config"].is_a?(Hash)
         attrs[:custom_metadata] = args["custom_metadata"] if args["custom_metadata"].is_a?(Hash)
         attrs[:parent_session_id] = args["parent_session_id"] unless args["parent_session_id"].nil?
+        attrs[:scheduling_class] = scheduling_class(args) if args["scheduling_class"].present?
         attrs
+      end
+
+      # An explicit class beats the genesis-derived default and beats a parent's,
+      # which is the whole point of the argument: a router working under a `slack`
+      # parent can still spawn one long batch as spot without demoting every other
+      # session that shares that genesis.
+      def scheduling_class(args)
+        value = args["scheduling_class"].to_s
+        unless SessionGenesis::CLASSES.include?(value)
+          raise ToolError, "Unknown scheduling_class: #{value}. Valid: #{SessionGenesis::CLASSES.join(', ')}"
+        end
+
+        value
       end
 
       # Goals are passed to the agent as prose, so a goal ID is swapped for its

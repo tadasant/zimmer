@@ -34,6 +34,49 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_includes result, "The agent job has been queued"
   end
 
+  test "an explicit spot class outranks the genesis a parent would give the spawn" do
+    # The motivating case (session 3783): a router whose own genesis is `slack`
+    # spawns a long, low-urgency batch. Without this argument the child comes out
+    # priority, and the only lever was demoting every slack session at once.
+    parent = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", genesis: SessionGenesis::SLACK)
+
+    @tool.call(
+      "agent_root" => "zimmer",
+      "prompt" => "Run the batch",
+      "title" => "Batch",
+      "parent_session_id" => parent.id,
+      "scheduling_class" => SessionGenesis::SPOT
+    )
+
+    session = Session.order(:id).last
+    assert_equal SessionGenesis::SLACK, session.genesis, "the line of work is still the parent's"
+    assert_equal SessionGenesis::SPOT, session.scheduling_class
+    assert session.spot?
+    assert parent.reload.priority?, "and no other slack session moved"
+  end
+
+  test "omitting scheduling_class leaves the session deriving from its genesis" do
+    parent = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", genesis: SessionGenesis::SLACK)
+
+    @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go", "parent_session_id" => parent.id)
+
+    session = Session.order(:id).last
+    assert_nil session.scheduling_class
+    assert session.priority?
+  end
+
+  test "an unknown scheduling_class is a tool error, not a silent default" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go", "scheduling_class" => "whenever")
+    end
+    assert_match(/Unknown scheduling_class/, error.message)
+  end
+
+  test "scheduling_class is advertised with both classes" do
+    enum = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :scheduling_class, :enum)
+    assert_equal SessionGenesis::CLASSES, enum
+  end
+
   test "creates a clone-only session when no prompt is given" do
     result = @tool.call("agent_root" => "zimmer", "title" => "Clone only")
 

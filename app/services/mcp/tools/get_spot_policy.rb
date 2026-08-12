@@ -16,25 +16,32 @@ module Mcp
         Read Zimmer's spot/priority scheduling policy, the live Claude Code usage rate, and the current
         forecast the spot gate is acting on.
 
-        Every session carries a **genesis** — where its line of work came from — and each genesis resolves
-        to a class: `priority` (always starts) or `spot` (starts only while both Claude Code quota windows
-        are forecast to stay under their configured ceilings). A held spot session is deferred, never
-        cancelled: it stays `waiting` and starts on its own when headroom returns.
+        Every session runs as `priority` (always starts) or `spot` (starts only while both Claude Code
+        quota windows are forecast to stay under their configured ceilings). A held spot session is
+        deferred, never cancelled: it stays `waiting` and starts on its own when headroom returns.
+
+        A session's class is whichever of these speaks first: a class named for that session at spawn,
+        the `scheduling_class` on the trigger that fired it, or the default for its **genesis** — where
+        its line of work came from.
 
         Returns:
         - the gate setting (on/off and both threshold percentages)
         - the current decision, with the reason spot sessions are running or held
         - the usage rate: fraction of a quota window consumed per active session per hour
         - the 5-hour and weekly forecasts, with current and projected utilization
-        - every genesis kind, its current class, whether that differs from the default, and how many
-          live sessions carry it
+        - every genesis kind, its current class, and how many live sessions derive from it
+        - every trigger that carries a class of its own
 
         **Use cases:**
         - Find out why a spot session has not started
         - Check for headroom before spawning a batch of automated sessions
         - Read the usage rate per active session
-        - See which genesis kinds are currently classified spot
+        - See which origins are currently classified spot
       DESC
+
+      # Enough to see the shape of the policy without turning a read into a trigger
+      # dump; `search_triggers` is the tool for the full list.
+      TRIGGER_LIST_LIMIT = 25
 
       input_schema({
         type: "object",
@@ -67,6 +74,7 @@ module Mcp
         lines.concat(forecast_lines("5-hour", decision.forecast_5h))
         lines.concat(forecast_lines("Weekly", decision.forecast_7d))
         lines.concat(genesis_lines(classes, counts))
+        lines.concat(trigger_lines)
 
         lines.join("\n")
       end
@@ -107,19 +115,47 @@ module Mcp
         rows = SessionGenesis::KINDS.map do |kind|
           current = classes[kind.key]
           changed = current != kind.default_class ? " (changed from #{kind.default_class})" : ""
-          "| `#{kind.key}` | #{kind.label} | **#{current}**#{changed} | #{counts[kind.key].to_i} |"
+          where = SessionGenesis.settable?(kind.key) ? "`action_spot_policy`" : "the trigger"
+          "| `#{kind.key}` | #{kind.label} | **#{current}**#{changed} | #{counts[kind.key].to_i} | #{where} |"
         end
 
         [
           "",
           "### Genesis kinds",
           "",
-          "| Key | Label | Class | Live sessions |",
-          "| --- | --- | --- | --- |",
+          "The class each kind falls back to. `Live sessions` counts only the sessions that actually " \
+          "derive it — a session given a class of its own is not moved by changing its kind.",
+          "",
+          "| Key | Label | Default class | Live sessions | Set it via |",
+          "| --- | --- | --- | --- | --- |",
           *rows,
           "",
-          "Change a class with `action_spot_policy` (action `promote_genesis` / `demote_genesis`). " \
-          "Doing so reclassifies every session of that genesis, including existing ones."
+          "Change a settable kind with `action_spot_policy` (action `promote_genesis` / `demote_genesis`); " \
+          "that reclassifies every deriving session of that genesis, including existing ones. The " \
+          "trigger-backed kinds are set per trigger with `action_trigger`."
+        ]
+      end
+
+      # Only the triggers that carry a class of their own. Every trigger has an
+      # effective class, but listing all of them would bury the handful an
+      # operator actually chose — and those are the ones that explain why two
+      # sessions of the same genesis are scheduled differently.
+      def trigger_lines
+        chosen = Trigger.where.not(scheduling_class: nil).order(:name).limit(TRIGGER_LIST_LIMIT).to_a
+        total = Trigger.where.not(scheduling_class: nil).count
+        return [ "", "### Triggers with their own class", "", "None — every trigger derives its class from its condition type." ] if total.zero?
+
+        rows = chosen.map { |t| "| #{t.id} | #{t.name} | **#{t.scheduling_class}** | #{t.status} |" }
+        more = total > chosen.size ? [ "", "…and #{total - chosen.size} more. Use `search_triggers` for the full list." ] : []
+
+        [
+          "",
+          "### Triggers with their own class",
+          "",
+          "| ID | Name | Class | Status |",
+          "| --- | --- | --- | --- |",
+          *rows,
+          *more
         ]
       end
 

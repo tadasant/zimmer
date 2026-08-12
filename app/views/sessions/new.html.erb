@@ -165,6 +165,28 @@
           </p>
         </div>
 
+        <%# The web app's sessions are `web_ui` genesis and therefore priority: a
+            human typed this and is waiting. Spot is here for the case that breaks
+            it — a long unattended batch the person starting it is NOT waiting on
+            — so it can yield to work someone is watching when quota gets tight. %>
+        <div>
+          <%= f.label :scheduling_class, "Scheduling class", class: "block text-sm font-medium text-gray-700 mb-2" %>
+          <%= f.select :scheduling_class,
+              [
+                [ "Default for the web app (priority)", "" ],
+                [ "Priority — starts whenever it is ready", SessionGenesis::PRIORITY ],
+                [ "Spot — waits for quota headroom", SessionGenesis::SPOT ]
+              ],
+              {},
+              class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2" %>
+          <p class="mt-1 text-xs text-gray-500">
+            Spot sessions start only while both Claude Code quota windows are forecast to stay under the
+            limits set in <%= link_to "Settings", settings_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>;
+            otherwise they wait and start later, never cancelled. Anything this session spawns inherits
+            the choice.
+          </p>
+        </div>
+
         <!-- Prompt Field -->
         <div data-controller="character-counter" data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>">
           <%= f.label :prompt, "Initial Prompt", class: "block text-sm font-medium text-gray-700 mb-2" %>

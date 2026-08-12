@@ -89,6 +89,14 @@ module Mcp
           burst-notice session linking the sessions it already spawned, then stops spawning
           until the burst subsides. Events that arrive during the burst are dropped.
 
+        **Scheduling class:**
+        - **scheduling_class**: `priority` (sessions start whenever they are ready) or `spot` (they
+          start only while both Claude Code quota windows are forecast to stay under their ceilings,
+          and otherwise wait and start later — deferred, never cancelled). Omit (or send null) to take
+          the default for the trigger's condition type: slack is priority, and github_issue,
+          github_label, schedule and ao_event are spot. Setting it applies to sessions the trigger
+          spawns from now on; ones it already spawned keep the class they started with.
+
         **Schedule configuration:**
         - **Recurring**: `{"interval": 2, "unit": "hours", "timezone": "UTC"}` — fires every N units
         - **One-time**: `{"scheduled_at": "2026-04-15T14:30:00", "timezone": "America/New_York"}` — fires once at the specified datetime (ISO 8601), then auto-disables
@@ -140,6 +148,12 @@ module Mcp
             minimum: 1,
             description: "Cap on sessions this trigger may spawn per minute. Null (default) means no limit. " \
                          "Exceeding it spawns one burst-notice session and suppresses further spawns for the burst."
+          },
+          scheduling_class: {
+            type: [ "string", "null" ],
+            enum: SessionGenesis::CLASSES + [ nil ],
+            description: "Spot/priority class for sessions this trigger spawns. Null (default) derives it " \
+                         "from the trigger's condition type."
           },
           mcp_servers: {
             type: "array",
@@ -222,6 +236,7 @@ module Mcp
           goal: args["goal"],
           reuse_session: args.fetch("reuse_session", false),
           max_sessions_per_minute: args["max_sessions_per_minute"].presence,
+          scheduling_class: args["scheduling_class"].presence,
           mcp_servers: args["mcp_servers"] || [],
           trigger_conditions_attributes: created_condition_attributes(args)
         )
@@ -236,6 +251,7 @@ module Mcp
           - **Status:** #{trigger.status}
           - **Agent Root:** #{trigger.agent_root_name}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
+          - **Scheduling Class:** #{scheduling_class_summary(trigger)}
 
           #{condition_detail(trigger)}
         TEXT
@@ -258,6 +274,9 @@ module Mcp
         attributes[:reuse_session] = args["reuse_session"] if args.key?("reuse_session")
         # An explicit null clears the cap (back to unbounded); an omitted key means "no opinion".
         attributes[:max_sessions_per_minute] = args["max_sessions_per_minute"].presence if args.key?("max_sessions_per_minute")
+        # Same omitted-vs-null rule: an explicit null returns the trigger to the
+        # class its conditions derive, an omitted key leaves the choice alone.
+        attributes[:scheduling_class] = args["scheduling_class"].presence if args.key?("scheduling_class")
         # Only assign artifact lists the caller actually sent: an omitted key means
         # "no opinion", never "clear the trigger's servers".
         attributes[:mcp_servers] = args["mcp_servers"] if args["mcp_servers"].is_a?(Array)
@@ -280,6 +299,7 @@ module Mcp
           - **Name:** #{trigger.name}
           - **Status:** #{trigger.status}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
+          - **Scheduling Class:** #{scheduling_class_summary(trigger)}
 
           #{condition_detail(trigger)}
         TEXT
@@ -547,6 +567,15 @@ module Mcp
         trigger = Trigger.includes(:trigger_conditions).find_by(id: id.to_i)
         raise ToolError, "Trigger not found: #{id}" unless trigger
         trigger
+      end
+
+      # "spot" / "priority", and whether that came from the trigger or from the
+      # class its condition type derives — the same two facts the trigger page
+      # shows, so an agent reading this and a human reading the web UI see the
+      # same thing.
+      def scheduling_class_summary(trigger)
+        source = trigger.scheduling_class.present? ? "set on this trigger" : "default for its conditions"
+        "#{trigger.effective_scheduling_class} (#{source})"
       end
 
       def condition_types_summary(trigger)

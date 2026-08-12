@@ -63,11 +63,20 @@ class SessionGenesisTest < ActiveSupport::TestCase
     assert_equal SessionGenesis::PRIORITY, classes[SessionGenesis::WEB_UI]
   end
 
-  test "an override moves a kind" do
-    classes = SessionGenesis.effective_classes({ SessionGenesis::GITHUB_ISSUE => SessionGenesis::PRIORITY })
-    assert_equal SessionGenesis::PRIORITY, classes[SessionGenesis::GITHUB_ISSUE]
+  test "an override moves a settable kind" do
+    classes = SessionGenesis.effective_classes({ SessionGenesis::WEB_UI => SessionGenesis::SPOT })
+    assert_equal SessionGenesis::SPOT, classes[SessionGenesis::WEB_UI]
     # Untouched kinds keep their defaults.
     assert_equal SessionGenesis::SPOT, classes[SessionGenesis::SCHEDULE]
+    assert_equal SessionGenesis::PRIORITY, classes[SessionGenesis::UNKNOWN]
+  end
+
+  test "an override for a trigger-backed kind is ignored" do
+    # The selector for these lives on the Trigger. A leftover key here — written
+    # before the move, or by hand — must not quietly reclassify every trigger of
+    # that kind again, which is the blast radius the move exists to remove.
+    classes = SessionGenesis.effective_classes({ SessionGenesis::SLACK => SessionGenesis::SPOT })
+    assert_equal SessionGenesis::PRIORITY, classes[SessionGenesis::SLACK]
   end
 
   test "a garbage override value is ignored rather than trusted" do
@@ -85,8 +94,40 @@ class SessionGenesisTest < ActiveSupport::TestCase
   end
 
   test "overridden? reports divergence from the shipped default" do
-    refute SessionGenesis.overridden?(SessionGenesis::GITHUB_ISSUE, {})
-    assert SessionGenesis.overridden?(SessionGenesis::GITHUB_ISSUE,
-      { SessionGenesis::GITHUB_ISSUE => SessionGenesis::PRIORITY })
+    refute SessionGenesis.overridden?(SessionGenesis::WEB_UI, {})
+    assert SessionGenesis.overridden?(SessionGenesis::WEB_UI,
+      { SessionGenesis::WEB_UI => SessionGenesis::SPOT })
+  end
+
+  # --- which kinds a setting can still move -----------------------------------
+
+  test "the trigger-backed kinds are exactly the ones a condition type produces" do
+    assert_equal SessionGenesis::CONDITION_TYPE_KINDS.values.uniq.sort,
+      SessionGenesis::TRIGGER_BACKED_KEYS.sort
+  end
+
+  test "settable kinds are the origins no trigger produces" do
+    assert_equal %w[api unknown web_ui], SessionGenesis::SETTABLE_KEYS.sort
+    SessionGenesis::SETTABLE_KEYS.each { |key| refute SessionGenesis.trigger_backed?(key) }
+    SessionGenesis::TRIGGER_BACKED_KEYS.each { |key| refute SessionGenesis.settable?(key) }
+  end
+
+  test "settable and trigger-backed together cover the taxonomy" do
+    assert_equal SessionGenesis::KEYS.sort,
+      (SessionGenesis::SETTABLE_KEYS + SessionGenesis::TRIGGER_BACKED_KEYS).sort
+  end
+
+  test "SETTABLE_KINDS matches SETTABLE_KEYS" do
+    assert_equal SessionGenesis::SETTABLE_KEYS, SessionGenesis::SETTABLE_KINDS.map(&:key)
+  end
+
+  # --- normalize_class --------------------------------------------------------
+
+  test "normalize_class keeps a real class and drops everything else" do
+    assert_equal SessionGenesis::SPOT, SessionGenesis.normalize_class("spot")
+    assert_equal SessionGenesis::PRIORITY, SessionGenesis.normalize_class(" priority ")
+    assert_nil SessionGenesis.normalize_class("")
+    assert_nil SessionGenesis.normalize_class(nil)
+    assert_nil SessionGenesis.normalize_class("urgent")
   end
 end

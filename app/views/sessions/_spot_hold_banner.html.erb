@@ -17,11 +17,18 @@
         <p class="mt-1 text-sm text-amber-800"><%= hold_detail %></p>
         <p class="mt-2 text-xs text-amber-700">
           This is a <span class="font-medium">spot</span> session
-          (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>). It has not been cancelled —
+          (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>,
+          <%= agent_session.scheduling_class_source %>). It has not been cancelled —
           it will start on its own when headroom returns<%= ", next check #{retry_at}" if retry_at.present? %>.
-          To start it now, promote its genesis in
-          <%= link_to "Settings", settings_path(anchor: "spot-gate"), class: "underline hover:text-amber-900" %>.
         </p>
+        <%# Moves this session alone. The genesis-wide lever on /settings would
+            move every other session that shares its origin, which is exactly the
+            blast radius that made it the wrong tool for one held session. %>
+        <%= button_to "Make this session priority",
+              update_scheduling_class_session_path(agent_session, scheduling_class: SessionGenesis::PRIORITY),
+              method: :patch,
+              form: { data: { turbo: false }, class: "mt-2" },
+              class: "inline-flex items-center rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-medium text-amber-900 shadow-sm hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-1" %>
       </div>
     </div>
   </div>

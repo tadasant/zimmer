@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_06_100000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_12_050000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -412,6 +412,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_06_100000) do
     t.boolean "push_notifications_enabled", default: false, null: false
     t.string "repository_name"
     t.string "running_job_id"
+    t.string "scheduling_class"
     t.string "session_id"
     t.text "session_notes"
     t.datetime "session_notes_updated_at"
@@ -438,6 +439,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_06_100000) do
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"
     t.index ["job_id"], name: "index_sessions_on_job_id"
     t.index ["parent_session_id"], name: "index_sessions_on_parent_session_id"
+    t.index ["scheduling_class"], name: "index_sessions_on_scheduling_class", where: "(scheduling_class IS NOT NULL)"
     t.index ["session_id"], name: "index_sessions_on_session_id", unique: true
     t.index ["slug"], name: "index_sessions_on_slug", unique: true
     t.index ["sort_order"], name: "index_sessions_on_sort_order"
@@ -504,6 +506,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_06_100000) do
     t.text "prompt_template", null: false
     t.boolean "resuscitate_archived", default: false, null: false
     t.boolean "reuse_session", default: false, null: false
+    t.string "scheduling_class"
     t.integer "sessions_created_count", default: 0
     t.string "status", default: "enabled", null: false
     t.datetime "updated_at", null: false
