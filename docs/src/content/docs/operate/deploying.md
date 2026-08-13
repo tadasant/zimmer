@@ -441,7 +441,11 @@ deploys the app onto it. `deploy-staging.yml`:
    anything, and a re-run updates in place rather than recreating.
 3. Joins the tailnet, resolves `zimmer-staging`'s peer IP from `tailscale status --json`, and loads
    the Kamal deploy key.
-4. `kamal deploy -d staging --version=<tag> --skip-push`. kamal-proxy boots the new container
+4. `kamal accessory boot all -d staging`, then `kamal deploy -d staging --version=<tag>
+   --skip-push`. The boot line is unconditional, because `kamal deploy` on its own does not boot
+   accessories and a newly declared one would otherwise never appear; it costs nothing to repeat,
+   since `accessory boot` skips a host that already has the container (production's pipeline, in the
+   companion repo, runs the same line before its own deploy). kamal-proxy boots the new container
    alongside the old one, health-checks it on `/up`, and only then flips traffic. A container that
    never goes healthy leaves the old one serving.
 5. Re-verifies `/up` over the tailnet and asserts the **worker** container is running too — the
