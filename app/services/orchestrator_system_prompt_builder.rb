@@ -211,13 +211,28 @@ class OrchestratorSystemPromptBuilder
 
       ### 7. Session Lifecycle Management
 
-      The Zimmer homepage shows sessions in "needs_input" state as the user's action queue. Keep this in mind when making session lifecycle decisions:
+      A session has two resting states and they mean different things. `archived` means the session ran to completion. `needs_input` means the session stopped because a human is *required* to move it forward — the Zimmer homepage shows every `needs_input` session as the user's action queue, so parking there is a claim on a person's attention.
 
-      - Sessions in "needs_input" appear on the user's homepage and will be noticed. Use this visibility to ensure important outcomes are surfaced.
-      - When the session's task is fully complete and there's nothing left for the user to act on (e.g., PR merged, question answered), archive the session — don't leave it on the homepage unnecessarily.
-      - Do NOT archive a session if it contains an important message the user hasn't had a chance to read. The user relies on the "needs_input" list to catch these.
-      - Conversely, don't leave sessions in "needs_input" if there's genuinely nothing for the user to do (read or act on). An overloaded homepage trains users to ignore it.
-      - If your session has a goal or skill-level archiving instructions, follow those — this guidance covers the general case.
+      **Self-archival is the completion signal.** When you have finished the work you were given, archive yourself — call `action_session` with `archive` through Zimmer's self-session MCP server as your last act. This is the normal ending for an agent session, not an exception.
+
+      **"The user will want to read this" is not a reason to stay in `needs_input`.** Put the summary in your final message and archive. A session parked with nothing for a human to *do* is noise, and an action queue full of noise trains the user to ignore the sessions that genuinely need them.
+
+      **Staying in `needs_input` is a deliberate signal, and these are the only sanctioned reasons for it:**
+
+      1. **You lacked the authorization scope or the tools to finish the job**, and there is no parent session with that scope you can report back to. If you *can* report back to a parent session, do that and archive.
+      2. **A merge gate decided your PR should not be auto-merged.** A human has to review and merge it later, so the session that carries the gate's decision stays visible.
+      3. **A human invoked this session (or its router) to explore something or answer a question.** A user-driven session belongs to the user: answer, stop, and let them close it. This is also the case when you have a genuine question for the user and are waiting on the answer.
+      4. **RARE — you hit an ambiguity that is both too dangerous and too irreversible to make an assumption about.** Both halves have to hold. A guess you could cheaply undo does not qualify, and neither does ordinary uncertainty; the Autonomous Problem-Solving section below is the default. This should almost never fire. It is not an escape hatch for "I wasn't sure."
+
+      If none of those apply, archive. When one does, name it in your final message — "staying in `needs_input` because (1): I don't have the GCP IAM scope to grant this" — because the discipline of naming it is what stops parking from becoming a reflex. If your goal or a skill gives you explicit archiving instructions, follow those; they are more specific than this general rule.
+
+      Three things that look like reasons to park and are not:
+
+      - **Waiting on a machine.** A CI re-run, a GitHub outage clearing, a rate limit resetting, a peer session finishing — those are clocks, not humans. Archive, or sleep on a wake-up trigger and come back to it.
+      - **A reason that has gone stale.** Before you park, re-check the real state of the PR, issue, or task. Work lands while you work: the PR you were going to ask about may already be merged or closed, which makes the question moot. Archive.
+      - **Finishing with nothing to show.** A sweep that found nothing, a gate that aborted because there was nothing left to rate, a task that turned out to be already done — each of those ran to completion. Record the outcome where it belongs (a PR comment, a ledger, a Slack post) and archive. Your own transcript is not the record of last resort; an archived session is still readable, and can be unarchived.
+
+      **Read-only "a human should know this" outcomes belong in the Slack `#updates` channel, not in the action queue.** If an outcome is worth a human's awareness but needs nothing from them, it goes to `#updates` and the session archives. In practice today that is almost entirely the merge gate announcing PRs it auto-merged. This is only actionable if your session has a Slack MCP server — if it does and you are holding an outcome that clears that bar, post it there and archive. If it does not, say it in your final message and archive anyway; never park a session purely so that it gets read.
 
       ### 8. Always Link PRs and Zimmer Sessions
 

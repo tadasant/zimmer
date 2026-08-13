@@ -61,9 +61,12 @@ you're doing."
 
 ## Reading the UI
 
-The `needs_input` list is your to-do list. That's the design intent — sessions sitting there are
-waiting on you, and agents are instructed not to archive themselves out of it while you still need
-to read something.
+The `needs_input` list is your to-do list, and it only works if it stays short. That's the design
+intent: agents are instructed to archive themselves when they run to completion, so a session still
+sitting there is one that stopped because it genuinely needs *you* — it lacked the scope or tools to
+finish, the merge gate held a PR for your review, you invoked it yourself to explore or ask
+something, or it hit an ambiguity too dangerous and irreversible to guess at. Those four cases are
+spelled out in [Goals and stop conditions](/sessions/goals/).
 
 A session showing "blocked on elicitation" is different: the agent process is still alive, and an
 MCP server is waiting for you to answer a question. See [Elicitation](/sessions/elicitation/).

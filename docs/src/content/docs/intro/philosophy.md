@@ -229,9 +229,9 @@ knows how to render one.
 So the agent's job ends at "open a PR and prove it's green." The human's job starts there.
 
 The same instinct shows up in the session list: a session sitting in `needs_input` is on
-your homepage, and it stays there until you deal with it. `needs_input` is a to-do list, and
-agents are told not to archive themselves out of it when a human still needs to read
-something.
+your homepage, and it stays there until you deal with it. `needs_input` is a to-do list, which
+only works if it stays short — so agents are told to archive themselves when they run to
+completion, and to stay put only when a human is genuinely required to move the work forward.
 
 ## 10. Be honest about what's broken
 
