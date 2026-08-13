@@ -2408,6 +2408,27 @@ in the clone hits it first.
 
 ---
 
+## Nested Docker depends on a global, invisible Docker flag
+
+The worker's nested-Docker mode (`ZIMMER_NESTED_DOCKER=1`) cannot start a single container
+without `features.time-namespaces: false` in the host's `/etc/docker/daemon.json`. Docker puts
+a `time` namespace in every OCI spec it creates and sysbox rejects it, so without the flag even
+`docker run --runtime=sysbox-runc alpine echo hi` fails.
+
+The flag is a workaround for [nestybox/sysbox#1011](https://github.com/nestybox/sysbox/issues/1011),
+not configuration, and it is worse than a local hack in three ways: it is **global** (every
+container on the host loses its own time namespace, not just sysbox ones), it is **invisible**
+(not surfaced in `docker info` — only reading `daemon.json` reveals it), and it is
+**load-bearing** (remove it and every sysbox container stops starting).
+
+It is inert for Zimmer, which wants no per-container clocks, and it has run without incident.
+The risk is a future Docker release changing or dropping the flag, which would present as
+"the worker will not start" with nothing pointing at the cause. Tracked for removal once
+upstream lands in [#421](https://github.com/tadasant/zimmer/issues/421) — see
+[Nested Docker for agent sessions](/operate/nested-docker/).
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

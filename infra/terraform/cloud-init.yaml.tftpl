@@ -127,6 +127,40 @@ runcmd:
   - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
   - apt-get update -y
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  # --- Sysbox: the runtime that lets the worker run its own Docker ---------------
+  #
+  # Agent sessions run inside the worker container and want `docker compose` for a
+  # per-session dev stack. The obvious route -- mount the host's Docker socket and
+  # join its group -- is root-equivalent on the host, so this box installs sysbox
+  # instead: it gives a container its own user namespace, mapping container root to
+  # an unprivileged host uid, and a nested daemon inside it cannot reach the host.
+  #
+  # Installed here but NOT armed here. The worker only runs under it when a deploy
+  # sets ZIMMER_NESTED_DOCKER=1 (config/deploy.*.yml), so a box can carry the runtime
+  # while every role still runs under runc.
+  #
+  # Three things about this install, each of which will waste an afternoon otherwise:
+  #
+  # 1. fuse3 is a hard dependency the package does NOT pull in. Without fusermount3
+  #    on PATH, sysbox-fs fails container pre-registration with an error that names
+  #    neither fuse nor the missing binary.
+  # 2. The .deb's postinst REFUSES to run while any container exists, and tells you
+  #    to `docker rm $(docker ps -a -q) -f`. That is fine here -- cloud-init runs
+  #    before any container exists -- but it is why an EXISTING droplet cannot simply
+  #    apt-install it. See docs/operate/nested-docker.md for the by-hand route.
+  # 3. features.time-namespaces=false is a WORKAROUND, not configuration. Docker puts
+  #    a time namespace in every container's OCI spec and sysbox rejects it
+  #    (nestybox/sysbox#1011), so no sysbox container starts without this. It is
+  #    global -- every container on the host loses its own time namespace -- and it
+  #    is not surfaced in `docker info`. Removing it is tracked in tadasant/zimmer#421.
+  - apt-get install -y jq fuse3 rsync
+  - curl -fsSL -o /tmp/sysbox.deb https://downloads.nestybox.com/sysbox/releases/v0.7.0/sysbox-ce_0.7.0-0.linux_amd64.deb
+  - apt-get install -y /tmp/sysbox.deb || true
+  - rm -f /tmp/sysbox.deb
+  - jq --indent 4 '.runtimes |= (. // {}) + {"sysbox-runc": {"path": "/usr/bin/sysbox-runc"}} | .features |= (. // {}) + {"time-namespaces": false}' /etc/docker/daemon.json > /tmp/dj.json 2>/dev/null || echo '{"runtimes":{"sysbox-runc":{"path":"/usr/bin/sysbox-runc"}},"features":{"time-namespaces":false}}' > /tmp/dj.json
+  - install -m 0644 /tmp/dj.json /etc/docker/daemon.json && rm -f /tmp/dj.json
+  - systemctl enable --now sysbox-mgr sysbox-fs || true
+  - systemctl restart docker
   # --- Authorize the Kamal deploy key + the admin keys ---------------------------
   - install -d -m 0700 /root/.ssh
   - touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
