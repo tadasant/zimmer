@@ -1,5 +1,57 @@
 #!/bin/bash -e
 
+# ---------------------------------------------------------------------------
+# Nested Docker (sysbox), and the privilege drop that goes with it
+#
+# The image normally runs as uid 1000. `dockerd` will not: it needs root inside
+# the container. Under the sysbox runtime that is cheap and safe -- the container
+# has its own user namespace, so its root maps to an unprivileged host uid (0 ->
+# 100000) and cannot touch the host. Under runc it would be real host root, which
+# is why the whole block is opt-in and refuses to run without sysbox underneath.
+#
+# So the worker starts as root, brings up its own daemon, and then drops back to
+# 1000 for everything else. The app must NOT keep running as root: the clones
+# volume is shared with `web`, which runs as 1000, and root-owned files written
+# here would be unwritable there.
+#
+# Nothing changes for anyone else. A container started as 1000 -- `web`, dev,
+# test, CI -- skips this entirely and the entrypoint behaves exactly as before.
+# ---------------------------------------------------------------------------
+if [ "$(id -u)" = "0" ]; then
+  if [ "${ZIMMER_NESTED_DOCKER:-0}" = "1" ]; then
+    # A user namespace is the thing that makes running as root here defensible, and
+    # it is exactly what is missing under plain runc. Refuse rather than silently
+    # handing an agent session real host root.
+    if [ "$(sed -n '1s/^ *0 *\([0-9]*\).*/\1/p' /proc/self/uid_map)" = "0" ]; then
+      echo "ZIMMER_NESTED_DOCKER=1 but this container is not user-namespaced." >&2
+      echo "Its root IS host root, so starting dockerd here would hand every agent" >&2
+      echo "session root on the host. Run this role under runtime: sysbox-runc, or" >&2
+      echo "unset ZIMMER_NESTED_DOCKER. See docs/operate/nested-docker.md." >&2
+      exit 1
+    fi
+
+    # --group 1000 hands the socket to the group the app runs as; without it the
+    # socket is root-only and every `docker` call after the privilege drop fails.
+    dockerd --group 1000 >/tmp/dockerd.log 2>&1 &
+
+    # Wait, but never forever: a session that finds no daemon gets a clear error
+    # from `docker` itself, which beats the container never becoming healthy.
+    for _ in $(seq 1 30); do
+      [ -S /var/run/docker.sock ] && break
+      sleep 1
+    done
+    if [ ! -S /var/run/docker.sock ]; then
+      echo "Warning: nested dockerd did not come up in 30s; see /tmp/dockerd.log" >&2
+      tail -5 /tmp/dockerd.log >&2 2>/dev/null || true
+    fi
+  fi
+
+  # Re-exec this same script as the app user. --init-groups picks up the
+  # supplementary groups; without it the process keeps only gid 1000 and loses
+  # whatever else the rails user belongs to.
+  exec setpriv --reuid=1000 --regid=1000 --init-groups "$0" "$@"
+fi
+
 # Enable jemalloc for reduced memory usage and latency.
 if [ -z "${LD_PRELOAD+x}" ]; then
     LD_PRELOAD=$(find /usr/lib -name libjemalloc.so.2 -print -quit)
