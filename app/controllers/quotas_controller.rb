@@ -22,6 +22,8 @@ class QuotasController < ApplicationController
     # offers the rake-bootstrap path). Codex credentials are managed entirely
     # through the DB pool, so the banner is suppressed on that tab.
     @filesystem_email = current_runtime == ClaudeAuthProvider::RUNTIME ? ClaudeAccount.filesystem_oauth_email : nil
+
+    load_spot_gate if current_runtime == ClaudeAuthProvider::RUNTIME
   end
 
   # POST: Refresh all accounts sequentially, streaming each card update.
@@ -295,6 +297,23 @@ class QuotasController < ApplicationController
   end
 
   private
+
+  # The spot gate card: the policy, the forecast it acts on, and the per-genesis
+  # classes. It reads the same Claude Code quota windows the rest of this page
+  # reports, which is why it renders here and only on the Claude tab.
+  #
+  # `@spot_decision` is the forecast for the fleet AS IT STANDS — it does not add
+  # the session a start decision would be about, so with an idle fleet it reads
+  # flat. `@spot_start_decision` is what a spot session starting right now would
+  # actually get; the card shows both so the difference is visible rather than a
+  # surprise.
+  def load_spot_gate
+    @app_setting = AppSetting.current
+    @spot_decision = SpotGateService.evaluate
+    @spot_start_decision = SpotGateService.evaluate(candidate_sessions: 1)
+    @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
+    @genesis_counts = Session.genesis_counts
+  end
 
   # Answer a poll for an attempt row that no longer exists. We can't name the
   # account (that link died with the row), so target the login-attempt element the

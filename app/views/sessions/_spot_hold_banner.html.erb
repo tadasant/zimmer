@@ -21,7 +21,7 @@
           <%= agent_session.scheduling_class_source %>). It has not been cancelled —
           it will start on its own when headroom returns<%= ", next check #{retry_at}" if retry_at.present? %>.
         </p>
-        <%# Moves this session alone. The genesis-wide lever on /settings would
+        <%# Moves this session alone. The genesis-wide lever on /quotas would
             move every other session that shares its origin, which is exactly the
             blast radius that made it the wrong tool for one held session. %>
         <%= button_to "Make this session priority",

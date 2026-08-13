@@ -54,6 +54,13 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type=submit][value=?]", "Save experimental settings"
   end
 
+  # The spot gate moved to /quotas, where the windows it forecasts are reported.
+  test "should not render the spot gate" do
+    get settings_url
+    assert_select "#spot-gate", count: 0
+    assert_select "h2", text: "Spot vs priority", count: 0
+  end
+
   # Catalog Pins Section
   test "should have catalog pins section with an editable form" do
     skip "Requires a remote (github://) catalog; Zimmer default catalog is local-only."
