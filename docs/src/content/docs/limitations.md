@@ -1222,6 +1222,26 @@ the dependency trees that make the copy slow in the first place.
 The retry rides out a tree being *written to*, not a tree being *rebuilt*: a copy racing a
 `bundle install` that runs for half a minute can exhaust all three attempts and still fail.
 
+### A failed artifact preservation holds a whole clone for four days
+
+When `CloneArtifactService#create_artifacts` fails, `DeferredCloneCleanupJob` cannot delete the clone
+— it is the only remaining copy of that session's unpushed work — so it holds it for
+`TRASH_RETENTION_PERIOD` and lets `EmptyTrashJob` reap it at the deadline. The alternative, deleting
+the work because the copy of it failed, is worse. What the hold costs, for as long as it lasts:
+
+- The clone's `.env` sits on disk for four days rather than the hour `StaleCloneCleanupJob` would
+  have taken, and [that file carries the real Slack bot token](#every-agent-session-clone-carries-the-slack-bot-token-and-the-alert-channel-id).
+- So does the whole tree, `node_modules` and `vendor/bundle` included, with nothing capping how many
+  such clones accumulate.
+- The session's Docker Compose resources stay up until the deadline, because teardown happens on the
+  delete path this branch returns before. (`EmptyTrashJob` does tear them down; the one-hour stale
+  sweep never did, so the hold trades a longer leak for one that actually ends.)
+
+Unarchiving inside the window takes `UnarchiveSessionService`'s quick path, which adopts the clone
+as it stands — it applies none of the mass-deletion validation the artifact path applies, so a clone
+that is itself mangled is restored mangled. Preservation failing at all is loud: it logs at `.error`
+and writes a `warning` to the session's own log.
+
 ### A status-summary fork's clone is missing its installed dependencies, and does not know it
 
 Summary forks exclude `vendor/bundle` and `**/node_modules` from the copy, because the summarizer

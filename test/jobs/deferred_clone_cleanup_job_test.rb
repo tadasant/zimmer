@@ -243,6 +243,9 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
 
   test "keeps clone intact when dirty state detected but artifact creation fails" do
     assert File.directory?(@clone_path), "Clone should exist before cleanup"
+    # A deadline nothing else would produce, so the assertion below can only pass
+    # if this branch wrote its own rather than inheriting archive's.
+    @session.update_column(:trash_after, 1.hour.from_now)
 
     stub_failed_artifact_preservation
 
@@ -255,6 +258,9 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     @session.reload
     assert_in_delta (@archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD).to_f, @session.trash_after.to_f, 1,
       "the kept clone belongs to EmptyTrashJob for the full retention window"
+    hold_log = @session.logs.find_by("content LIKE ?", "%Could not preserve unpushed artifacts%")
+    assert_not_nil hold_log, "the user's only surface is the session log, so the hold has to appear there"
+    assert_equal "warning", hold_log.level
   end
 
   # Regression for #425: the failure branch used to just return, leaving
@@ -280,7 +286,7 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     @session.reload
     assert_in_delta (archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD).to_f, @session.trash_after.to_f, 1,
       "a failed preservation must hold the clone for the reversible window, not leave it undeadlined"
-    assert_not_includes stale_scope.reload.pluck(:id), @session.id,
+    assert_not_includes stale_scope.pluck(:id), @session.id,
       "the stale sweep must no longer reap this clone unpreserved an hour after archive"
   end
 

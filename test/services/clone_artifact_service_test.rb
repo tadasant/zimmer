@@ -423,7 +423,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
 
     metadata = read_artifact_metadata(result.artifacts_path)
     assert_equal 60, metadata["dropped_deletions"]
-    assert result.dropped_deletions, "the defusal must still be countable on the session (#415)"
+    assert_equal 60, result.dropped_deletions, "the defusal must still be countable on the session (#415)"
     assert metadata["has_working_tree_patch"], "the session's real work must survive the race"
     patch = File.binread(File.join(result.artifacts_path, "working_tree.patch"))
     assert_includes patch, "agent_work.rb"

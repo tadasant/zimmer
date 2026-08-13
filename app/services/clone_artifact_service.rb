@@ -423,6 +423,13 @@ class CloneArtifactService
   # recursive delete is gutting the clone (#412), so a second chdir into that
   # directory raced the delete and raised Errno::ENOENT, failing the whole
   # preservation (#425). No second git invocation, no race.
+  #
+  # Byte-identical to what --diff-filter=d produced for every shape a diff of a
+  # staged tree can take — text and binary deletions, symlink deletions, renames,
+  # mode changes, and content that merely looks like a header. The one input it
+  # would treat differently is a bare `* Unmerged path <p>` line, which it folds
+  # into the entry above it; the `add -A` on the way in resolves unmerged entries,
+  # so the diff this filters cannot contain one.
   def reject_deletion_entries(diff)
     kept = "".b
     entry = "".b
