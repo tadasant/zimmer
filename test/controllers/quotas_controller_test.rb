@@ -294,6 +294,27 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_includes response.content_type, "text/vnd.turbo-stream.html"
   end
 
+  # The forecast on the spot gate is computed from the very snapshots a refresh
+  # replaces, so a refresh that left it alone would show a stale reading beside
+  # fresh utilization bars.
+  test "refresh_all re-renders the spot gate alongside the aggregate stats" do
+    post refresh_all_quotas_url, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_match(/target="aggregate_stats"/, response.body)
+    assert_match(/target="spot-gate"/, response.body)
+    assert_match(/Spot vs priority/, response.body)
+  end
+
+  test "refresh_account re-renders the spot gate for a Claude account" do
+    account = claude_accounts(:primary)
+
+    post refresh_account_quotas_url(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_match(/target="spot-gate"/, response.body)
+  end
+
   test "refresh_all auto-heals quota_exceeded account with low utilization" do
     exceeded = claude_accounts(:exceeded)
     assert exceeded.quota_exceeded?

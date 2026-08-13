@@ -2,10 +2,10 @@
 
 require "test_helper"
 
-# The per-genesis buttons on /quotas, now limited to the origins no trigger
-# produces. The trigger-backed kinds are refused here rather than silently
-# accepted — SessionGenesis ignores an override for them on read, so accepting
-# one would be a click that appears to work and changes nothing.
+# The per-genesis buttons on /quotas, limited to the origins no trigger produces.
+# The trigger-backed kinds are refused here rather than silently accepted —
+# SessionGenesis ignores an override for them on read, so accepting one would be
+# a click that appears to work and changes nothing.
 class GenesisClassesControllerTest < ActionDispatch::IntegrationTest
   setup do
     AppSetting.editable.update!(genesis_class_overrides: {})
