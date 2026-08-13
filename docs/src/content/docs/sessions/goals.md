@@ -14,7 +14,7 @@ From `config/goals.json`:
 
 | ID | What it demands |
 | --- | --- |
-| `codebase-question` | Research and answer inline. Do not create files, PRs, or branches. Stop in `needs_input`. |
+| `codebase-question` | Research and answer inline. Do not create files, PRs, or branches. Stop in `needs_input` if a human asked; report back to the parent and archive if a session did. |
 | `open-reviewed-green-pr` | Open the PR through the `open-pr` skill, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof, then apply the `ready to merge` label. Then archive. The default for most roots. |
 | `open-reviewed-green-pr-with-version-bump` | Same, plus a mandatory version bump when server source changed. |
 | `e2e-verified-green-pr` | Same, plus: state the critical path up front, spin up a real dev server, drive it with browser automation, record video and screenshots, embed them in the PR. |
@@ -22,7 +22,7 @@ From `config/goals.json`:
 All three PR goals name the `open-pr` skill as the canonical way to commit, push, open, and
 finalize the PR — agents are told not to hand-roll their own commit/push/PR sequence when that
 skill is available. The skill's terminal act is applying the `ready to merge` label, and the
-goal text now makes that label part of "done."
+goal text makes that label part of "done."
 
 The label is deliberately disambiguated in the goal text, because its name collides with the
 "do not merge your own PR" instruction. Applying `ready to merge` does **not** merge the
@@ -30,20 +30,22 @@ PR and does **not** claim a human has reviewed it — it is the agent's own clai
 fresh-eyes review, and green CI are complete. It is fully compatible with leaving the PR
 unmerged; "do not merge" is not a reason to skip the label.
 
-The three PR goals then end by telling the agent to **archive itself**. The label is the handoff:
-a green, reviewed, labeled PR is a session that ran to completion, and the merge gate takes it
-from there — it decides whether to auto-merge, announces the merges it makes in Slack `#updates`,
-and parks *its own* session in `needs_input` when it holds a PR for you. This is the general rule
-stated in the injected system prompt's *Session Lifecycle Management* section: self-archival is
-the completion signal, and `needs_input` is reserved for the four cases where a human is genuinely
-required.
+The three PR goals then end by telling the agent to **archive itself**. The label is the handoff.
+A green, reviewed, labeled PR is a session that ran to completion, and a merge gate takes it from
+there: it decides whether to auto-merge, announces the merges it makes in the deployment's Slack
+updates channel, and parks *its own* session in `needs_input` when it holds a PR for you. This is
+the general rule from the injected system prompt's *Session Lifecycle Management* section applied
+to a PR — self-archival is the completion signal, and `needs_input` is reserved for the four cases
+where a human is genuinely required.
 
-That is a reversal. These goals used to end with "stop and wait in `needs_input`, and do not
-archive yourself — an open session with an unreviewed PR is the user's to-do list." The to-do-list
-rationale predates the merge-by-default gate, and it strands sessions: the gate merges the PR and
-announces it, and the producing session sits in the action queue forever with nothing for anyone
-to do. `codebase-question` still says do not self-archive, because a human-asked question *is* one
-of the four sanctioned cases.
+An unmerged PR is not one of those cases. GitHub already tracks open PRs, and a session parked
+next to one adds nothing a human can act on. It costs something real, though: an archived session
+drops out of the GitHub pollers' scope, so comments on that PR stop reaching it. See
+[Limitations](/limitations/).
+
+`codebase-question` is the one goal that still says do not self-archive, and only when a human
+invoked the session directly. A research session a parent spawned reports its answer back to the
+parent and archives.
 
 ## How a goal is applied
 
@@ -160,7 +162,7 @@ exactly four sanctioned reasons to send it:
 Anything else — including "the user will want to read this" — goes in the final message, or in
 Slack `#updates` if it is a read-only FYI and the session has a Slack server, and the session
 archives. The prompt also names three things that *look* like reasons to park and are not: waiting
-on a machine (CI, an outage, a rate limit, a peer session — clocks, not humans), a reason that went
+on a machine (CI, an outage, a rate limit, a peer session: none of those is a human), a reason that went
 stale while the agent worked (the PR merged; the question is moot), and finishing with nothing to
 show (a sweep that found nothing and a gate that aborted both ran to completion).
 

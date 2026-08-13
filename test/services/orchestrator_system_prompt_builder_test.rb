@@ -216,7 +216,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
 
     assert_includes prompt, "You lacked the authorization scope or the tools to finish the job"
     assert_includes prompt, "A merge gate decided your PR should not be auto-merged"
-    assert_includes prompt, "A human invoked this session (or its router) to explore something or answer a question"
+    assert_includes prompt, "A human invoked this session — or the router above it — specifically to explore something or answer a question"
     assert_includes prompt, "RARE — you hit an ambiguity that is both too dangerous and too irreversible"
     assert_includes prompt, "It is not an escape hatch for \"I wasn't sure.\""
   end
@@ -225,7 +225,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     assert_includes prompt, "Three things that look like reasons to park and are not:"
-    assert_includes prompt, "those are clocks, not humans"
+    assert_includes prompt, "None of those is a human. Sleep on a wake-up trigger and come back to it"
     assert_includes prompt, "re-check the real state of the PR, issue, or task"
     assert_includes prompt, "Your own transcript is not the record of last resort"
   end
@@ -233,9 +233,9 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "session lifecycle principle scopes the Slack #updates rule to sessions with a Slack server" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "belong in the Slack `#updates` channel, not in the action queue"
-    assert_includes prompt, "only actionable if your session has a Slack MCP server"
-    assert_includes prompt, "never park a session purely so that it gets read"
+    assert_includes prompt, "belong in a Slack channel, not in the action queue"
+    assert_includes prompt, "only actionable if your session has a Slack MCP server and the deployment has a channel for it"
+    assert_includes prompt, "Never park a session purely so that it gets read."
   end
 
   test "includes always-link-PRs-and-sessions principle" do
