@@ -35,19 +35,6 @@ class AppSettingsController < ApplicationController
       end
     end
 
-    # The spot gate. Same "only touch what was submitted" discipline: the gate
-    # form posts all three of these together, and a submit from any other form on
-    # the page must leave the policy alone.
-    if app_params.key?(:spot_gating_enabled)
-      setting.spot_gating_enabled = ActiveModel::Type::Boolean.new.cast(app_params[:spot_gating_enabled])
-    end
-    if app_params.key?(:spot_gate_five_hour_threshold_pct)
-      setting.spot_gate_five_hour_threshold_pct = app_params[:spot_gate_five_hour_threshold_pct]
-    end
-    if app_params.key?(:spot_gate_weekly_threshold_pct)
-      setting.spot_gate_weekly_threshold_pct = app_params[:spot_gate_weekly_threshold_pct]
-    end
-
     if setting.save
       redirect_to settings_path, notice: "Settings updated."
     else

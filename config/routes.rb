@@ -217,9 +217,6 @@ Rails.application.routes.draw do
   get "settings", to: "settings#show", as: :settings
   patch "settings/catalog_pins", to: "catalog_pins#update", as: :catalog_pins
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
-  # One click per genesis kind — the promote/demote buttons on the spot gate card.
-  patch "settings/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
-  delete "settings/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 
   # Quotas page (per-runtime via ?runtime=claude_code|codex)
   get "quotas", to: "quotas#show", as: :quotas
@@ -234,6 +231,11 @@ Rails.application.routes.draw do
   get "quotas/login/:attempt_id", to: "quotas#login_status", as: :login_status_quotas
   post "quotas/login/:attempt_id/code", to: "quotas#submit_login_code", as: :submit_login_code_quotas
   post "quotas/login/:attempt_id/cancel", to: "quotas#cancel_login", as: :cancel_login_quotas
+  # The spot gate card, which lives on this page because it forecasts the quota
+  # windows this page reports: the policy form, then one click per genesis kind.
+  patch "quotas/spot_policy", to: "spot_policies#update", as: :spot_policy
+  patch "quotas/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
+  delete "quotas/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the

@@ -25,7 +25,7 @@ Three things can decide a session's class. The first one that speaks wins:
 | --- | --- | --- | --- |
 | 1 | **The session itself** — `sessions.scheduling_class` | `scheduling_class` on `start_session` / `POST /api/v1/sessions`; afterwards `action_session` (`change_scheduling_class`), `PATCH /api/v1/sessions/:id`, or the button on the hold banner | That one session, and anything it spawns |
 | 2 | **The trigger that fired it** — `triggers.scheduling_class` | The trigger's edit form, or `action_trigger` | Every session that trigger spawns from now on |
-| 3 | **Its genesis** — the default for where the work came from | `/settings` (only for the origins no trigger produces) | Every deriving session of that genesis, past and future |
+| 3 | **Its genesis** — the default for where the work came from | `/quotas` (only for the origins no trigger produces) | Every deriving session of that genesis, past and future |
 
 Most sessions never touch 1 or 2: both columns are NULL, and the class is derived. That is what keeps
 the defaults live rather than frozen into history.
@@ -46,19 +46,19 @@ the row. It is a column on `sessions`, assigned once at creation.
 
 | Genesis | Means | Default class | Class set on |
 | --- | --- | --- | --- |
-| `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority | `/settings` |
+| `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority | `/quotas` |
 | `slack` | A Slack trigger fired on a DM or a channel message. | priority | the trigger |
 | `github_issue` | A `github_issue` trigger fired — the feed the issue-work gate reads. | spot | the trigger |
 | `github_label` | A `github_label` trigger fired — the `ready to merge` feed the PR merge gate reads. | spot | the trigger |
 | `schedule` | A cron-scheduled trigger fired. | spot | the trigger |
 | `ao_event` | A session-state trigger fired because another session changed state. | spot | the trigger |
-| `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**. | spot | `/settings` |
-| `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority | `/settings` |
+| `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**. | spot | `/quotas` |
+| `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority | `/quotas` |
 
 Five of the eight kinds restate a trigger condition type, so their class lives on the **trigger**, not
 in a global per-kind setting: one noisy Slack trigger can be spot without demoting the eleven other
 Slack triggers that have a human waiting on the answer. The three that no trigger produces keep a
-per-kind setting on `/settings`.
+per-kind setting on `/quotas`.
 
 Two of the defaults are policy calls worth stating plainly:
 
@@ -158,13 +158,14 @@ forecast = utilization now + (rate × sessions × hours left in window)
 
 `sessions` is the running fleet **plus the session being decided about**. A gate answers "if I start
 this, where does the window land", and the fleet does not include it yet — with an idle fleet, a
-forecast built on the running count alone is flat and could never breach. The reading on `/settings`
+forecast built on the running count alone is flat and could never breach. The reading on `/quotas`
 deliberately uses the fleet as it stands (and says so), and shows the start decision beside it.
 
 `hours left` is the time to that window's own reset, capped at 24 hours — a weekly window can have six
 days left, and multiplying a per-hour rate out that far produces a number with no predictive content.
 
-Thresholds are set on `/settings` (5-hour and weekly, both default 80%).
+Thresholds are set on the Claude Code tab of `/quotas` (5-hour and weekly, both default 80%), on the
+same page as the windows they are forecast against.
 
 ### Fail-open
 
@@ -204,10 +205,10 @@ time, and how to start it now.
 | --- | --- | --- |
 | Read a session's genesis and class | Hierarchy panel, dashboard card | `get_session` |
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
-| Read the usage rate and forecast | `/settings` spot gate card | `get_spot_policy` |
-| Toggle gating, set thresholds | `/settings` | `action_spot_policy` (`set_gating`) |
-| One-click promote a genesis (non-trigger kinds only) | `/settings` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
-| Reset all genesis classes | `/settings` | `action_spot_policy` (`reset_genesis_classes`) |
+| Read the usage rate and forecast | Spot gate card on the Claude Code tab of `/quotas` | `get_spot_policy` |
+| Toggle gating, set thresholds | `/quotas` | `action_spot_policy` (`set_gating`) |
+| One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
+| Reset all genesis classes | `/quotas` | `action_spot_policy` (`reset_genesis_classes`) |
 | Set a trigger's class | Trigger edit form | `action_trigger` (`scheduling_class`) |
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |

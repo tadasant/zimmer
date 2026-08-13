@@ -1,7 +1,10 @@
 <%# The spot gate: the policy, the live forecast it acts on, and one button per
     non-trigger genesis kind to move it between spot and priority. The kinds a
-    trigger produces are not here — their selector lives on the trigger itself. %>
-<div class="bg-white shadow-sm rounded-lg border border-gray-200" id="spot-gate">
+    trigger produces are not here — their selector lives on the trigger itself.
+
+    It lives on this page because the thing it acts on is here: the Claude Code
+    quota windows the rest of the page reports. %>
+<div class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" id="spot-gate">
   <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
     <h2 class="text-lg font-medium text-gray-900">Spot vs priority</h2>
     <p class="mt-1 text-sm text-gray-500">
@@ -15,7 +18,7 @@
 
   <div class="px-4 py-5 sm:px-6 space-y-6">
     <%# ---- The policy form ---- %>
-    <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
+    <%= form_with url: spot_policy_path, method: :patch, data: { turbo: false } do %>
       <div class="flex items-start justify-between gap-4">
         <div>
           <div class="text-sm font-medium text-gray-900">Hold spot sessions when forecast exceeds the limits</div>

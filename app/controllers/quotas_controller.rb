@@ -22,6 +22,8 @@ class QuotasController < ApplicationController
     # offers the rake-bootstrap path). Codex credentials are managed entirely
     # through the DB pool, so the banner is suppressed on that tab.
     @filesystem_email = current_runtime == ClaudeAuthProvider::RUNTIME ? ClaudeAccount.filesystem_oauth_email : nil
+
+    load_spot_gate if current_runtime == ClaudeAuthProvider::RUNTIME
   end
 
   # POST: Refresh all accounts sequentially, streaming each card update.
@@ -50,6 +52,7 @@ class QuotasController < ApplicationController
         accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account
       })
       yielder << turbo_stream.replace("aggregate_stats", html: aggregate_html)
+      spot_gate_stream(yielder)
     end
   end
 
@@ -68,7 +71,7 @@ class QuotasController < ApplicationController
 
     respond_to do |format|
       format.turbo_stream do
-        render turbo_stream: [
+        streams = [
           turbo_stream.replace("account_card_#{account.id}",
             html: render_account_card(account.reload, snapshot, error)),
           turbo_stream.replace("aggregate_stats",
@@ -76,6 +79,8 @@ class QuotasController < ApplicationController
               accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account
             }))
         ]
+        spot_gate_stream(streams, runtime: account.runtime)
+        render turbo_stream: streams
       end
     end
   end
@@ -295,6 +300,36 @@ class QuotasController < ApplicationController
   end
 
   private
+
+  # The spot gate card: the policy, the forecast it acts on, and the per-genesis
+  # classes. It reads the same Claude Code quota windows the rest of this page
+  # reports, which is why it renders here and only on the Claude tab.
+  #
+  # `@spot_decision` is the forecast for the fleet AS IT STANDS — it does not add
+  # the session a start decision would be about, so with an idle fleet it reads
+  # flat. `@spot_start_decision` is what a spot session starting right now would
+  # actually get; the card shows both so the difference is visible rather than a
+  # surprise.
+  def load_spot_gate
+    @app_setting = AppSetting.current
+    @spot_decision = SpotGateService.evaluate
+    @spot_start_decision = SpotGateService.evaluate(candidate_sessions: 1)
+    @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
+    @genesis_counts = Session.genesis_counts
+  end
+
+  # Append a re-rendered spot gate to a refresh response. The card's forecast is
+  # computed from the very snapshots a refresh has just replaced, so without this
+  # a refreshed page would show new utilization bars beside a reading taken before
+  # them. Takes whatever collects the streams — the enumerator's yielder for the
+  # streaming refresh, an array for the single-account one.
+  def spot_gate_stream(sink, runtime: current_runtime)
+    return unless runtime == ClaudeAuthProvider::RUNTIME
+
+    load_spot_gate
+    sink << turbo_stream.replace("spot-gate",
+      html: render_to_string(partial: "quotas/spot_gate", formats: [ :html ]))
+  end
 
   # Answer a poll for an attempt row that no longer exists. We can't name the
   # account (that link died with the row), so target the login-attempt element the
