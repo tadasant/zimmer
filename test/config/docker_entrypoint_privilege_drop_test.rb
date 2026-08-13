@@ -5,23 +5,19 @@ require "tmpdir"
 
 # The privilege drop `bin/docker-entrypoint` performs when the container starts as root.
 #
-# This exists because of the 2026-08-13 production freeze. Nested Docker runs the worker
-# with `user: "0:0"`, and Docker derives HOME from `--user`, so HOME was `/root`. `setpriv`
-# changes credentials and NOT the environment, so the app then ran as uid 1000 with
-# HOME=/root -- a directory that is mode 0700 and owned by root.
+# Nested Docker runs the worker as `user: "0:0"`, Docker derives HOME from `--user`, and
+# `setpriv` changes credentials without touching the environment -- so the app can end up
+# running as uid 1000 with HOME=/root, a directory it cannot read. That fails every libpq
+# TLS connection with EACCES, which means a worker that boots, logs, and claims no jobs
+# while looking entirely healthy. docs/operate/nested-docker.md has the full account.
 #
-# libpq probes `$HOME/.postgresql/postgresql.crt` on every TLS connection and tolerates
-# only ENOENT/ENOTDIR; EACCES is fatal. So the worker opened no database connection at all
-# for ten hours: it booted, it logged, it claimed nothing, and every container-shaped check
-# stayed green because the container really was up.
+# Assertions that read the entrypoint as text cannot catch that, so these RUN it, with
+# `id`, `getent` and `setpriv` stubbed on PATH, and assert the environment and credentials
+# it actually hands over. Nothing here needs root.
 #
-# The old test suite could not have caught that: it read the entrypoint as text. These
-# tests RUN it, with `id`, `getent` and `setpriv` stubbed on PATH, and assert the
-# environment it actually hands to the app. Nothing here needs root.
-#
-# What these tests deliberately do not cover is the real thing -- a worker under
-# `sysbox-runc` draining a real job -- because CI has no sysbox runtime and no user
-# namespace. That is verified on staging; see docs/operate/nested-docker.md.
+# What they deliberately do not cover is the real thing -- a worker under `sysbox-runc`
+# draining a real job -- because CI has neither the runtime nor a user namespace. That is
+# verified on staging.
 class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
   ENTRYPOINT = Rails.root.join("bin/docker-entrypoint").to_s
 
@@ -47,14 +43,20 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
 
       write_stub stubs, "setpriv", <<~SH
         #!/bin/bash
-        while [[ "$1" == --* ]]; do shift; done
+        flags=""
+        while [[ "$1" == --* ]]; do flags="$flags $1"; shift; done
         if [ "$1" = "test" ]; then shift; test "$@"; exit $?; fi
-        echo "DROPPED HOME=$HOME USER=$USER LOGNAME=$LOGNAME"
+        echo "DROPPED flags=$flags HOME=$HOME USER=$USER LOGNAME=$LOGNAME"
       SH
 
+      # ZIMMER_NESTED_DOCKER is pinned OFF rather than merely left unset. It is in
+      # `env: clear:` for the whole app, so every process in the deployed worker sees
+      # it -- including an agent session running this suite, where inheriting a `1`
+      # would send these cases into the dockerd branch and test something else.
+      #
       # `-e` explicitly: the shebang carries it, and `bash <script>` does not honour a
       # shebang, so without it this would exercise a shell the container never runs.
-      full_env = { "PATH" => "#{stubs}:#{ENV['PATH']}" }.merge(env)
+      full_env = { "PATH" => "#{stubs}:#{ENV['PATH']}", "ZIMMER_NESTED_DOCKER" => "0" }.merge(env)
       output = IO.popen(full_env, [ "bash", "-e", ENTRYPOINT, "true" ], err: %i[child out], &:read)
       [ output, $?.exitstatus ]
     end
@@ -66,17 +68,30 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
     File.chmod(0o755, path)
   end
 
-  # The regression itself. Against the entrypoint as it shipped on 2026-08-13 this asserts
-  # HOME=/root and fails.
+  # The regression itself: an entrypoint that hands the environment over untouched
+  # asserts HOME=/root here and fails.
   test "the privilege drop rewrites a root HOME to the app user's" do
     Dir.mktmpdir do |app_home|
       output, status = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
 
       assert_equal 0, status, output
-      assert_match(/DROPPED HOME=#{Regexp.escape(app_home)}\b/, output,
+      assert_match(/HOME=#{Regexp.escape(app_home)}\b/, output,
         "the app would run as uid 1000 with HOME=/root, which it cannot read -- libpq " \
         "fails every TLS connection with EACCES and the worker claims no jobs")
       refute_match(%r{HOME=/root}, output)
+    end
+  end
+
+  # The drop itself, not just the environment it carries. Without this the stub would
+  # accept `--reuid=0` and the file would still be green.
+  test "the handover drops to uid 1000 and initialises its groups" do
+    Dir.mktmpdir do |app_home|
+      output, = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
+
+      assert_match(/flags=.*--reuid=1000\b/, output)
+      assert_match(/flags=.*--regid=1000\b/, output)
+      assert_match(/flags=.*--init-groups\b/, output,
+        "without it the process keeps only gid 1000 and loses its supplementary groups")
     end
   end
 
@@ -94,7 +109,7 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
   # A HOME the app cannot write is precisely the ten-hour outage, so the entrypoint must
   # fail loudly rather than hand over. A container that refuses to start is a failed
   # deploy; one that starts and quietly claims nothing is not.
-  test "the entrypoint refuses to drop into a HOME the app user cannot write" do
+  test "the entrypoint refuses to drop into a HOME that does not exist" do
     output, status = run_entrypoint(
       app_home: "/nonexistent-#{SecureRandom.hex(6)}",
       env: { "HOME" => "/root" }
@@ -105,13 +120,32 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
     refute_match(/DROPPED/, output, "it handed over anyway")
   end
 
+  # The shape that actually caused the outage: the directory is there, and the user it
+  # is handing over to cannot get into it. That is EACCES, not ENOENT, and the two
+  # reach the probe by different routes.
+  test "the entrypoint refuses to drop into a HOME the app user cannot enter" do
+    skip "root can read and write any directory, so the probe cannot fail here" if Process.uid.zero?
+
+    Dir.mktmpdir do |app_home|
+      File.chmod(0o000, app_home)
+
+      output, status = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
+
+      assert_equal 1, status, "expected the entrypoint to refuse, got:\n#{output}"
+      assert_match(/not readable, writable and traversable/, output)
+      refute_match(/DROPPED/, output, "it handed over anyway")
+    ensure
+      File.chmod(0o700, app_home)
+    end
+  end
+
   # The app user's own environment is already correct; the drop must not disturb it.
   test "a container already started with the app user's HOME is unaffected" do
     Dir.mktmpdir do |app_home|
       output, status = run_entrypoint(app_home: app_home, env: { "HOME" => app_home })
 
       assert_equal 0, status, output
-      assert_match(/DROPPED HOME=#{Regexp.escape(app_home)}\b/, output)
+      assert_match(/DROPPED .*HOME=#{Regexp.escape(app_home)}\b/, output)
     end
   end
 
@@ -119,8 +153,13 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
   # CI is not user-namespaced, which is what makes this runnable here rather than only
   # readable -- but say so out loud rather than passing vacuously if that ever changes.
   test "the entrypoint refuses nested Docker without a user namespace" do
+    skip "no /proc/self/uid_map; the guard reads it and cannot be exercised here" unless File.exist?("/proc/self/uid_map")
+
     userns_base = File.read("/proc/self/uid_map")[/\A\s*0\s+(\d+)/, 1]
-    skip "this container is user-namespaced (base #{userns_base}); the guard cannot fire here" unless userns_base == "0"
+    unless userns_base == "0"
+      skip "the guard only fires without a user namespace; uid_map base here is " \
+           "#{userns_base || 'unreadable'}"
+    end
 
     Dir.mktmpdir do |app_home|
       output, status = run_entrypoint(

@@ -18,6 +18,59 @@
 # test, CI -- skips this entirely and the entrypoint behaves exactly as before.
 # ---------------------------------------------------------------------------
 if [ "$(id -u)" = "0" ]; then
+  # setpriv changes credentials and NOT the environment. Docker derives HOME from
+  # the container's `--user`, so under `user: "0:0"` it is /root -- mode 0700, owned
+  # by root -- and it survives the drop unless something rewrites it, leaving the app
+  # running as uid 1000 with a HOME it cannot even traverse.
+  #
+  # That is fatal rather than untidy. libpq probes $HOME/.postgresql/postgresql.crt
+  # on every TLS connection and tolerates only ENOENT/ENOTDIR, so EACCES there fails
+  # every database connection the process makes -- it boots, it logs, and it claims
+  # no jobs. ~/.zimmer, ~/.claude, ~/.config/gh and ~/.local are Kamal volumes under
+  # /home/rails, so a stale HOME also puts every agent session's clone outside the
+  # durable volume. docs/operate/nested-docker.md carries the incident behind this.
+  #
+  # This runs before the dockerd block below because it is cheap and unconditional: a
+  # container that cannot hand over should say so in a second, rather than after a 30s
+  # daemon wait and with an orphaned dockerd behind it.
+  #
+  # Read from /etc/passwd rather than hardcoded, so it cannot drift from the uid the
+  # exec below drops to. `|| true` because `-e` would otherwise abort the container
+  # with no message at all if the lookup fails; the `:-` defaults and the probe below
+  # handle that case loudly instead.
+  app_passwd="$(getent passwd 1000 2>/dev/null || true)"
+  app_home="$(printf '%s' "$app_passwd" | cut -d: -f6)"
+  app_name="$(printf '%s' "$app_passwd" | cut -d: -f1)"
+  export HOME="${app_home:-/home/rails}"
+  export USER="${app_name:-rails}"
+  export LOGNAME="$USER"
+
+  # Then prove it, as the user that is about to have to live with it: readable,
+  # writable AND traversable, because the failure this guards against was a traversal
+  # and `-w` alone would pass a mode-0200 home that breaks everything below. A
+  # container that refuses to start is a failed deploy; one that starts and quietly
+  # claims nothing is ten hours of silence.
+  probe=0
+  setpriv --reuid=1000 --regid=1000 --init-groups \
+    test -r "$HOME" -a -w "$HOME" -a -x "$HOME" || probe=$?
+
+  # 127 is setpriv failing to run the probe at all, not the probe answering no. The
+  # two have different causes and different fixes, and a confident wrong diagnosis on
+  # a failed deploy is the thing this block exists to stop.
+  if [ "$probe" -eq 127 ]; then
+    echo "Refusing to start: could not run the privilege-drop probe. Either uid 1000" >&2
+    echo "has no /etc/passwd entry or \`test\` is missing from the image, so this" >&2
+    echo "container cannot become the app user at all." >&2
+    exit 1
+  elif [ "$probe" -ne 0 ]; then
+    echo "Refusing to start: HOME=$HOME is not readable, writable and traversable by" >&2
+    echo "uid 1000, which this entrypoint is about to become. Everything the app" >&2
+    echo "derives from HOME -- libpq's TLS client certs, ~/.zimmer/clones, ~/.claude," >&2
+    echo "~/.config/gh, ~/.local -- would fail, and the worker would run without ever" >&2
+    echo "claiming a job." >&2
+    exit 1
+  fi
+
   if [ "${ZIMMER_NESTED_DOCKER:-0}" = "1" ]; then
     # A user namespace is the thing that makes running as root here defensible, and
     # it is exactly what is missing under plain runc. Refuse rather than silently
@@ -44,44 +97,6 @@ if [ "$(id -u)" = "0" ]; then
       echo "Warning: nested dockerd did not come up in 30s; see /tmp/dockerd.log" >&2
       tail -5 /tmp/dockerd.log >&2 2>/dev/null || true
     fi
-  fi
-
-  # setpriv changes credentials. It does NOT touch the environment -- and Docker
-  # derived HOME from the container's `--user`, so under `user: "0:0"` HOME is
-  # /root and would survive the drop. The app would then run as uid 1000 with a
-  # HOME that is mode 0700 and owned by root, which uid 1000 cannot even traverse.
-  #
-  # That is not cosmetic. libpq probes $HOME/.postgresql/postgresql.crt on every
-  # TLS connection and tolerates only ENOENT/ENOTDIR; EACCES is fatal. So with
-  # HOME=/root the worker opens no database connection at all -- it boots, logs,
-  # and never claims a job. That is exactly how 2026-08-13's ten-hour production
-  # freeze presented: `could not open certificate file
-  # "/root/.postgresql/postgresql.crt": Permission denied`, 44,302 times, while
-  # every container-shaped health check stayed green.
-  #
-  # ~/.claude, ~/.config/gh and ~/.local are Kamal volumes mounted under
-  # /home/rails too, so a stale HOME strands the agent sessions as well.
-  #
-  # Read from /etc/passwd rather than hardcoded, so this cannot drift from the uid
-  # the exec below drops to.
-  app_passwd="$(getent passwd 1000 2>/dev/null || awk -F: '$3 == 1000 { print; exit }' /etc/passwd)"
-  app_home="$(printf '%s' "$app_passwd" | cut -d: -f6)"
-  app_name="$(printf '%s' "$app_passwd" | cut -d: -f1)"
-  export HOME="${app_home:-/home/rails}"
-  export USER="${app_name:-rails}"
-  export LOGNAME="$USER"
-
-  # Then prove it, as the user that is about to have to live with it. A HOME the
-  # app cannot write is the failure this block exists to prevent, and the whole
-  # lesson of that outage is that it must be loud: a container that refuses to
-  # start is a failed deploy, while one that starts and quietly claims nothing is
-  # ten hours of silence.
-  if ! setpriv --reuid=1000 --regid=1000 --init-groups test -w "$HOME"; then
-    echo "Refusing to start: HOME=$HOME is not writable by uid 1000, which this" >&2
-    echo "entrypoint is about to become. Everything the app derives from HOME --" >&2
-    echo "libpq's TLS client certs, ~/.claude, ~/.config/gh, ~/.local -- would" >&2
-    echo "fail, and the worker would run without ever claiming a job." >&2
-    exit 1
   fi
 
   # Re-exec this same script as the app user. --init-groups picks up the

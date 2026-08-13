@@ -98,8 +98,13 @@ the user it is about to become.
 This is not tidiness. libpq probes `$HOME/.postgresql/postgresql.crt` on every TLS
 connection and tolerates only `ENOENT`/`ENOTDIR`; `EACCES` is fatal. With `HOME=/root` the
 worker therefore opens **no database connection at all** — it boots, it logs, and it claims
-no jobs. `~/.claude`, `~/.config/gh` and `~/.local` are Kamal volumes under `/home/rails`
-too, so a stale `HOME` strands agent sessions as well.
+no jobs.
+
+The volumes go with it. `~/.zimmer`, `~/.claude`, `~/.config/gh` and `~/.local` are all
+Kamal named volumes mounted under `/home/rails`, and `ClonesDirectory.base` resolves
+`~/.zimmer/clones` through `File.expand_path("~")` — so a stale `HOME` does not merely
+make an agent session's clone unreachable, it writes it to `/root/.zimmer/clones`, outside
+the `zimmer_data` volume and therefore not durable across a deploy.
 
 That is exactly how the 2026-08-13 production freeze presented: ten hours of
 `could not open certificate file "/root/.postgresql/postgresql.crt": Permission denied`
@@ -112,6 +117,13 @@ silence.
 `getent` and `setpriv` stubbed and asserts the environment it hands over. What it cannot
 cover is a worker actually draining a job under sysbox, because CI has neither the runtime
 nor a user namespace; that is verified on staging.
+
+One path still escapes this, because it never runs the entrypoint: `kamal app exec
+--reuse` is a bare `docker exec` into the running container, so it inherits the container's
+configured environment and lands as uid 0 with `HOME=/root`. Anything it runs that opens a
+database connection fails the same way. Plain `kamal app exec` (without `--reuse`) starts a
+new container through the entrypoint and is fine. See
+[limitations](/limitations/#kamal-app-exec---reuse-bypasses-the-nested-docker-privilege-drop).
 
 ## The workaround this depends on
 
