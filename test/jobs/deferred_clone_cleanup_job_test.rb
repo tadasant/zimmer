@@ -244,31 +244,44 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   test "keeps clone intact when dirty state detected but artifact creation fails" do
     assert File.directory?(@clone_path), "Clone should exist before cleanup"
 
-    # Stub dirty state detection to report dirty
-    dirty_result = CloneArtifactService::DirtyCheckResult.new(
-      dirty?: true,
-      has_uncommitted?: true,
-      has_unpushed_commits?: false,
-      details: "uncommitted changes"
-    )
-    create_result = CloneArtifactService::CreateResult.new(
-      success?: false,
-      error: "Disk full"
-    )
-
-    artifact_service = mock("artifact_service")
-    artifact_service.expects(:check_dirty_state).with(@clone_path).returns(dirty_result)
-    artifact_service.expects(:create_artifacts).with(session_id: @session.id, clone_path: @clone_path).returns(create_result)
-    CloneArtifactService.expects(:new).returns(artifact_service)
+    stub_failed_artifact_preservation
 
     DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
-    # Clone should NOT be deleted because artifact creation failed
+    # Clone should NOT be deleted because artifact creation failed — it is now the
+    # only copy of the session's unpushed work, and unarchive restores it directly.
     assert File.directory?(@clone_path), "Clone should be preserved when artifact creation fails"
 
-    # trash_after should remain set (safety net for EmptyTrashJob)
     @session.reload
-    assert_not_nil @session.trash_after, "trash_after should remain set for retry"
+    assert_in_delta (@archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD).to_f, @session.trash_after.to_f, 1,
+      "the kept clone belongs to EmptyTrashJob for the full retention window"
+  end
+
+  # Regression for #425: the failure branch used to just return, leaving
+  # trash_after at whatever `archive` had managed to set. `set_trash_expiry` is
+  # best-effort (its rescue is log-only), so a session can reach here with it
+  # nil — and an archived session with no trash deadline is exactly what
+  # StaleCloneCleanupJob reaps, unpreserved, an hour later, while this job's log
+  # claimed the clone was being kept. The deadline is now written here.
+  test "sets a trash deadline when artifact creation fails and archive never set one" do
+    # A queue backed up past the stale threshold, on a session whose archive-time
+    # trash_after never landed: the exact row StaleCloneCleanupJob claims.
+    archived_at = 2.hours.ago
+    @session.update_columns(archived_at: archived_at, trash_after: nil)
+    stale_scope = StaleCloneCleanupJob.new.send(:archived_sessions_with_stale_clones)
+    assert_includes stale_scope.pluck(:id), @session.id,
+      "setup check: without a trash deadline this clone is the stale sweep's to reap"
+
+    stub_failed_artifact_preservation
+
+    DeferredCloneCleanupJob.perform_now(@session.id, archived_at.iso8601)
+
+    assert File.directory?(@clone_path), "the clone is the only surviving copy of the work"
+    @session.reload
+    assert_in_delta (archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD).to_f, @session.trash_after.to_f, 1,
+      "a failed preservation must hold the clone for the reversible window, not leave it undeadlined"
+    assert_not_includes stale_scope.reload.pluck(:id), @session.id,
+      "the stale sweep must no longer reap this clone unpreserved an hour after archive"
   end
 
   # === Mangled-clone accounting (issue #415) ===
@@ -341,6 +354,23 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   end
 
   private
+
+  # Drive the job down its "clone is dirty, artifact creation failed" branch.
+  def stub_failed_artifact_preservation
+    dirty_result = CloneArtifactService::DirtyCheckResult.new(
+      dirty?: true,
+      has_uncommitted?: true,
+      has_unpushed_commits?: false,
+      details: "uncommitted changes"
+    )
+    create_result = CloneArtifactService::CreateResult.new(success?: false, error: "Disk full")
+
+    artifact_service = mock("artifact_service")
+    artifact_service.expects(:check_dirty_state).with(@clone_path).returns(dirty_result)
+    artifact_service.expects(:create_artifacts)
+      .with(session_id: @session.id, clone_path: @clone_path).returns(create_result)
+    CloneArtifactService.expects(:new).returns(artifact_service)
+  end
 
   # Drive the job down its "clone is dirty, artifacts preserved" branch with a
   # canned CreateResult, so a test can vary only what the mass-deletion guard

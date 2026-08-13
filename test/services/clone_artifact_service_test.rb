@@ -34,6 +34,33 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # A service whose clone is destroyed out from under it the moment the first
+  # `git diff` returns — the #412 recursive delete landing in the middle of
+  # create_artifacts. Records every git command attempted after that point, so a
+  # test can assert the service never chdirs into the doomed directory again.
+  class VanishingCloneService < CloneArtifactService
+    attr_reader :git_commands_after_vanish
+
+    def initialize(clone_path:, **kwargs)
+      super(**kwargs)
+      @clone_path = clone_path
+      @vanished = false
+      @git_commands_after_vanish = []
+    end
+
+    private
+
+    def run_git(*args, **kwargs)
+      @git_commands_after_vanish << args.join(" ") if @vanished
+      result = super
+      if !@vanished && args.first.to_s == "diff"
+        FileUtils.rm_rf(@clone_path)
+        @vanished = true
+      end
+      result
+    end
+  end
+
   # The sandbox owns the isolation, so the id carries none of it and is fixed:
   # nothing in this file depends on chance.
   SESSION_ID = 900_001
@@ -367,6 +394,66 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     assert File.exist?(File.join(fresh_clone, "tracked_00.rb")), "tracked files must survive the restore"
     assert File.exist?(File.join(fresh_clone, "agent_work.rb"))
     assert_equal "edited by the agent\n", File.read(File.join(fresh_clone, "README.md"))
+  ensure
+    FileUtils.rm_rf(fresh_clone) if fresh_clone && File.directory?(fresh_clone)
+  end
+
+  # Regression for #425: the guard fires precisely when a concurrent recursive
+  # delete is gutting the clone, and it used to re-run `git diff` in that same
+  # directory to strip the deletions. When the delete won the race the second
+  # chdir raised Errno::ENOENT and took the whole preservation down with it —
+  # 11 ms after the guard's warning, in production. The deletions are now
+  # filtered out of the diff already in memory, so nothing re-enters the clone.
+  test "create_artifacts preserves work when the clone is deleted right after the diff" do
+    create_test_repo(tracked_files: 60)
+    delete_tracked_files(@repo_path, 60)
+    Dir.chdir(@repo_path) do
+      File.write("agent_work.rb", "# real work\n")
+    end
+    logger = RecordingLogger.new
+    service = VanishingCloneService.new(clone_path: @repo_path, logger: logger)
+
+    result = service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+
+    assert result.success?, "a clone vanishing mid-flight must not fail preservation: #{result.error}"
+    assert_nil logger.level_for("Failed to create artifacts")
+    assert_equal :warn, logger.level_for("Refusing to preserve mass deletions")
+    assert_empty service.git_commands_after_vanish,
+      "nothing may chdir back into a clone the guard just proved is being deleted"
+
+    metadata = read_artifact_metadata(result.artifacts_path)
+    assert_equal 60, metadata["dropped_deletions"]
+    assert result.dropped_deletions, "the defusal must still be countable on the session (#415)"
+    assert metadata["has_working_tree_patch"], "the session's real work must survive the race"
+    patch = File.binread(File.join(result.artifacts_path, "working_tree.patch"))
+    assert_includes patch, "agent_work.rb"
+    assert_not_includes patch, "deleted file mode"
+  end
+
+  # The in-memory filter re-emits the entries it keeps byte-for-byte, so a
+  # --binary payload belonging to a kept file survives the guard and still
+  # applies to a fresh clone. (Filtering a --binary patch is why this could not
+  # be a naive line-wise grep.)
+  test "create_artifacts keeps binary content intact when filtering a mass-deletion tree" do
+    create_test_repo(tracked_files: 60)
+    delete_tracked_files(@repo_path, 60)
+    binary_blob = "PNG\x00\x01\x02\xFF\xFE\x89header\x00\x00trailer".b
+    Dir.chdir(@repo_path) do
+      File.binwrite("image.bin", binary_blob)
+    end
+
+    result = @service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+
+    assert result.success?, result.error
+    assert_equal 60, result.dropped_deletions
+    assert read_artifact_metadata(result.artifacts_path)["has_working_tree_patch"]
+
+    fresh_clone = create_fresh_clone
+    apply_result = @service.apply_artifacts(session_id: @session_id, clone_path: fresh_clone)
+
+    assert apply_result.applied_working_tree?, apply_result.error
+    assert_equal binary_blob, File.binread(File.join(fresh_clone, "image.bin"))
+    assert File.exist?(File.join(fresh_clone, "tracked_00.rb")), "the dropped deletions must not replay"
   ensure
     FileUtils.rm_rf(fresh_clone) if fresh_clone && File.directory?(fresh_clone)
   end
