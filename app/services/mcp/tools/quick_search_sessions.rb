@@ -24,14 +24,14 @@ module Mcp
         - Find a specific session by ID (set id parameter)
         - Search sessions by title keyword (set query parameter)
         - List all sessions with optional status filter
-        - Monitor sessions that have completed or need attention (status: "needs_input")
+        - Monitor sessions that need human attention (status: "needs_input")
 
         **Returns:** A list of matching sessions with their status, configuration, and metadata.
 
         **Session statuses:**
         - waiting: Session created, waiting to start
         - running: Agent is actively executing
-        - needs_input: Agent has completed its current work and is idle. May indicate the task is done (most common) or that the agent needs additional input to continue. Check the session transcript to determine which case applies.
+        - needs_input: The agent's turn ended and the session is idle. Agents are instructed to archive themselves when they run to completion, so a session resting here is meant to be one that needs a human — it lacked the scope or tools to finish, a merge gate held its PR, a human invoked it to explore or ask something, or it hit a dangerous irreversible ambiguity. Check the session transcript, since a session can also land here having simply stopped.
         - failed: Session encountered an error
         - archived: Session completed and archived
       DESC

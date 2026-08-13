@@ -134,4 +134,53 @@ class GoalsConfigTest < ActiveSupport::TestCase
     assert_kind_of Class, GoalsConfig::GoalNotFoundError
     assert GoalsConfig::GoalNotFoundError < StandardError
   end
+
+  # The goal text is what actually steers a session's lifecycle -- it is far more
+  # proximate than the general principle in OrchestratorSystemPromptBuilder, so a
+  # goal that says "do not archive yourself" wins over a prompt that says the
+  # opposite. These pin the resolution: PR goals end in self-archival, and
+  # codebase-question is the single goal allowed to say otherwise.
+  PR_GOAL_IDS = %w[
+    open-reviewed-green-pr
+    open-reviewed-green-pr-with-version-bump
+    e2e-verified-green-pr
+  ].freeze
+
+  test "PR goals instruct the session to archive itself" do
+    PR_GOAL_IDS.each do |id|
+      description = GoalsConfig.find(id).description
+
+      assert_includes description, "archive yourself",
+        "Goal '#{id}' must tell the session to self-archive once the PR is green, reviewed and labeled"
+      assert_includes description, "Do NOT park this session as a stand-in todo item for an unreviewed PR",
+        "Goal '#{id}' must reject the stale 'an open PR is the user's todo list' rationale"
+    end
+  end
+
+  test "no goal reinstates the todo-list parking rationale" do
+    GoalsConfig.all.each do |goal|
+      refute_match(/todo-list/i, goal.description,
+        "Goal '#{goal.id}' revives the 'open PRs are a visible todo-list' rationale")
+      refute_includes goal.description, "STOP and wait in needs_input state",
+        "Goal '#{goal.id}' parks unconditionally instead of archiving on completion"
+    end
+  end
+
+  test "codebase-question is the only goal that tells a session not to archive" do
+    keeping_the_session_open = GoalsConfig.all.select do |goal|
+      goal.description.include?("do NOT archive yourself") ||
+        goal.description.include?("Do NOT archive yourself")
+    end
+
+    assert_equal [ "codebase-question" ], keeping_the_session_open.map(&:id),
+      "Only a human-asked question is a sanctioned reason to stay in needs_input by default"
+  end
+
+  test "codebase-question tells a router-spawned session to report back and archive" do
+    description = GoalsConfig.find("codebase-question").description
+
+    assert_includes description, "If a human invoked this session directly"
+    assert_includes description, "report your answer back to that parent and archive yourself",
+      "A research session spawned by a parent has no human waiting on it, so it must not park"
+  end
 end

@@ -29,9 +29,10 @@ module Mcp
         - Archive the session when work is complete
 
         **Archive guidelines:**
-        - Only self-archive when explicitly instructed to (e.g., a goal says "archive yourself")
-        - Subagents that report results back to a parent agent via a tool call may self-archive, since no human needs to read the session output directly
-        - Do NOT self-archive if a human user needs to read your output. Sessions in `needs_input` appear on the user's homepage — archiving removes them before the user can see your work. If your work product is a message the user should read, let the session stay in `needs_input`
+        - Self-archival is how a session signals it ran to completion, so archiving is the normal ending — not something that needs a specific instruction to permit it
+        - Sessions in `needs_input` appear on the user's homepage as their action queue, so staying there is a claim on a person's attention. Make it only for one of the four sanctioned reasons in the Session Lifecycle Management section of your system prompt: you lacked the scope or tools to finish and have no parent to report back to; a merge gate held your PR for a human; a human invoked this session to explore something or answer a question; or, rarely, you hit an ambiguity too dangerous and too irreversible to guess at
+        - "The user should read this" is not one of them. Put it in your final message, or in a Slack channel if the outcome is a read-only FYI and you have a Slack server, and archive — an archived session's transcript stays readable
+        - Note one consequence before you archive a session that opened a PR: Zimmer's GitHub pollers skip archived sessions, so PR comments and merge notifications for that PR will not reach this session afterwards
       DESC
 
       input_schema({
