@@ -289,6 +289,30 @@ class QuotasHelperTest < ActionView::TestCase
     assert_equal "N/A", utilization_percentage_text(nil)
   end
 
+  # genesis_kind_state tests — the spot gate renders each kind twice (a card below
+  # `sm`, a table row above it), and both readings come from here so they cannot
+  # disagree about the class a kind carries or the class a click would move it to.
+
+  test "genesis_kind_state offers spot as the target for a priority kind" do
+    kind = SessionGenesis.kind(SessionGenesis::WEB_UI)
+    current, target, overridden, badge = genesis_kind_state(kind, { kind.key => SessionGenesis::PRIORITY })
+
+    assert_equal SessionGenesis::PRIORITY, current
+    assert_equal SessionGenesis::SPOT, target
+    assert_not overridden, "a kind sitting on its default is not overridden"
+    assert_equal "bg-indigo-100 text-indigo-800", badge
+  end
+
+  test "genesis_kind_state flags a kind moved off its default and offers the way back" do
+    kind = SessionGenesis.kind(SessionGenesis::WEB_UI)
+    current, target, overridden, badge = genesis_kind_state(kind, { kind.key => SessionGenesis::SPOT })
+
+    assert_equal SessionGenesis::SPOT, current
+    assert_equal SessionGenesis::PRIORITY, target
+    assert overridden
+    assert_equal "bg-gray-100 text-gray-700", badge
+  end
+
   private
 
   def snapshot(**attributes)

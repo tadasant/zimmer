@@ -164,30 +164,6 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("settings")
   end
 
-  # The spot gate's genesis rows are the screen this suite exists for: the table's
-  # Action column is the only control there, and it does not fit a phone, so below
-  # `sm` the rows render as stacked cards with the button on screen.
-  test "spot gate genesis controls are reachable on a phone" do
-    visit settings_path
-    assert_text "Sessions no trigger started"
-
-    kind = SessionGenesis::SETTABLE_KINDS.first
-    assert_selector "#genesis-card-#{kind.key}", visible: true
-    assert_selector "#genesis-row-#{kind.key}", visible: :hidden
-
-    within "#genesis-card-#{kind.key}" do
-      button = find("input[type=submit], button", match: :first)
-      # The layout viewport is narrower than the window once a scrollbar is taken
-      # out, so measure against clientWidth rather than the resize_to width.
-      right_edge = page.evaluate_script(
-        "arguments[0].getBoundingClientRect().right", button.native
-      )
-      viewport = page.evaluate_script("document.documentElement.clientWidth")
-      assert right_edge <= viewport,
-        "genesis action button ends at #{right_edge}px, past the #{viewport}px viewport"
-    end
-  end
-
   test "triggers index and detail do not overflow horizontally on a phone" do
     trigger = create_trigger
 
@@ -239,6 +215,31 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_selector "h1"
 
     assert_no_horizontal_overflow("quotas")
+  end
+
+  # The spot gate's genesis rows are the screen this suite exists for: the table's
+  # Action column is the only control there, and it does not fit a phone, so below
+  # `sm` the rows render as stacked cards with the button on screen. The card sits
+  # on Quotas, beside the windows it forecasts.
+  test "spot gate genesis controls are reachable on a phone" do
+    visit quotas_path
+    assert_text "Sessions no trigger started"
+
+    kind = SessionGenesis::SETTABLE_KINDS.first
+    assert_selector "#genesis-card-#{kind.key}", visible: true
+    assert_selector "#genesis-row-#{kind.key}", visible: :hidden
+
+    within "#genesis-card-#{kind.key}" do
+      button = find("input[type=submit], button", match: :first)
+      # The layout viewport is narrower than the window once a scrollbar is taken
+      # out, so measure against clientWidth rather than the resize_to width.
+      right_edge = page.evaluate_script(
+        "arguments[0].getBoundingClientRect().right", button.native
+      )
+      viewport = page.evaluate_script("document.documentElement.clientWidth")
+      assert right_edge <= viewport,
+        "genesis action button ends at #{right_edge}px, past the #{viewport}px viewport"
+    end
   end
 
   test "health dashboard does not overflow horizontally on a phone" do

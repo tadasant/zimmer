@@ -1,0 +1,101 @@
+# frozen_string_literal: true
+
+require "test_helper"
+
+# The spot gate policy form, which posts from the card on /quotas.
+class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
+  setup { AppSetting.delete_all }
+
+  test "persists the gate toggle and both thresholds" do
+    patch spot_policy_path, params: { app_setting: {
+      spot_gating_enabled: "1",
+      spot_gate_five_hour_threshold_pct: "65",
+      spot_gate_weekly_threshold_pct: "70"
+    } }
+
+    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_match(/Spot policy updated/, flash[:notice])
+    setting = AppSetting.current
+    assert setting.spot_gating_enabled
+    assert_equal 65, setting.spot_gate_five_hour_threshold_pct
+    assert_equal 70, setting.spot_gate_weekly_threshold_pct
+  end
+
+  test "the unchecked toggle arrives as the hidden 0 and turns gating off" do
+    AppSetting.editable.update!(spot_gating_enabled: true)
+
+    patch spot_policy_path, params: { app_setting: {
+      spot_gating_enabled: "0",
+      spot_gate_five_hour_threshold_pct: "80",
+      spot_gate_weekly_threshold_pct: "80"
+    } }
+
+    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_not AppSetting.current.spot_gating_enabled
+  end
+
+  test "an out-of-range threshold is refused without persisting it" do
+    AppSetting.editable.update!(spot_gate_five_hour_threshold_pct: 80)
+
+    patch spot_policy_path, params: { app_setting: {
+      spot_gating_enabled: "1",
+      spot_gate_five_hour_threshold_pct: "140",
+      spot_gate_weekly_threshold_pct: "80"
+    } }
+
+    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_match(/not saved/, flash[:alert])
+    assert_equal 80, AppSetting.current.spot_gate_five_hour_threshold_pct
+  end
+
+  # A submit that carries only some of the three leaves the rest as they were,
+  # rather than assigning nil to a NOT NULL column and 500ing. The card's form
+  # always posts all three, so this is about a request built by hand.
+  test "a submit missing the toggle leaves gating as it was" do
+    AppSetting.editable.update!(spot_gating_enabled: true, spot_gate_weekly_threshold_pct: 80)
+
+    patch spot_policy_path, params: { app_setting: { spot_gate_weekly_threshold_pct: "55" } }
+
+    assert_redirected_to quotas_path(anchor: "spot-gate")
+    setting = AppSetting.current
+    assert setting.spot_gating_enabled, "an omitted toggle must not turn gating off"
+    assert_equal 55, setting.spot_gate_weekly_threshold_pct
+  end
+
+  test "a scalar app_setting param is refused rather than raising" do
+    patch spot_policy_path, params: { app_setting: "nonsense" }
+
+    assert_redirected_to quotas_path(anchor: "spot-gate")
+  end
+
+  # The session-defaults form on /settings posts to its own endpoint. Neither
+  # form carries the other's fields, so a submit from either leaves the other's
+  # settings alone — in both directions.
+  test "saving session defaults leaves the spot policy alone" do
+    AppSetting.editable.update!(
+      spot_gating_enabled: true, spot_gate_five_hour_threshold_pct: 65
+    )
+
+    patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "gpt-5.5" } }
+
+    setting = AppSetting.current
+    assert setting.spot_gating_enabled
+    assert_equal 65, setting.spot_gate_five_hour_threshold_pct
+  end
+
+  test "saving the spot policy leaves the session defaults and extensions alone" do
+    AppSetting.editable.update!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.editable.tap { |s| s.set_extension_enabled("mcp_tool_search", true) }.save!
+
+    patch spot_policy_path, params: { app_setting: {
+      spot_gating_enabled: "1",
+      spot_gate_five_hour_threshold_pct: "70",
+      spot_gate_weekly_threshold_pct: "70"
+    } }
+
+    setting = AppSetting.current
+    assert_equal "codex", setting.default_runtime
+    assert_equal "gpt-5.5", setting.default_model
+    assert AppSetting.extension_enabled?("mcp_tool_search")
+  end
+end

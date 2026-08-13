@@ -181,7 +181,7 @@
               class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2" %>
           <p class="mt-1 text-xs text-gray-500">
             Spot sessions start only while both Claude Code quota windows are forecast to stay under the
-            limits set in <%= link_to "Settings", settings_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>;
+            limits set in <%= link_to "Quotas", quotas_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>;
             otherwise they wait and start later, never cancelled. Anything this session spawns inherits
             the choice.
           </p>

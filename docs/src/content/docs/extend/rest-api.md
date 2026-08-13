@@ -172,7 +172,7 @@ default to false wherever they appear.
 
 `priority_class` accepts `spot` or `priority`; `genesis` accepts one of `web_ui`, `slack`,
 `github_issue`, `github_label`, `schedule`, `ao_event`, `api`, `unknown`. A session that carries no
-`scheduling_class` of its own is classified from its genesis on read, so moving a genesis in Settings
+`scheduling_class` of its own is classified from its genesis on read, so moving a genesis on Quotas
 moves those sessions between the two `priority_class` values immediately — and the five trigger-backed
 kinds are not movable that way at all (their class is set per trigger). An unrecognised value for
 either filter is ignored rather than erroring.

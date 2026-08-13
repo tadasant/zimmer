@@ -3,7 +3,7 @@
 module Mcp
   module Tools
     # The write half of the spot/priority surface — everything the spot gate card
-    # on /settings can do, reachable by an agent.
+    # on /quotas can do, reachable by an agent.
     #
     # Follows ActionSession's dispatch shape: one `action` argument validated
     # against a constant, one private method per action.
