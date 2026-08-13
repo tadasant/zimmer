@@ -2369,21 +2369,27 @@ liveness probe after the page wakes, not a reading taken at the moment it wakes.
 
 ---
 
-## Nothing revives a dead `devdb` accessory between deploys
+## Nothing revives a `devdb` accessory that stops
 
-The `devdb` accessory that [`bin/agent-dev`](/sessions/dev-server/) needs is booted by the deploy
-pipeline on **both** destinations: `deploy-staging.yml` runs `kamal accessory boot all -d staging`
-and the companion repo's `zimmer-deploy-prod.yml` runs `kamal accessory boot all -d production`,
-each immediately before its deploy, unconditionally. No manual setup command is owed on either
-destination — and the recurring belief that one is owed on production, on the grounds that bare
-`kamal deploy` does not boot accessories, is wrong for the simple reason that neither pipeline calls
-bare `kamal deploy`.
+([#419](https://github.com/tadasant/zimmer/issues/419))
 
-What is missing is anything that notices a `devdb` that stops between deploys. The accessory is
-volume-less and unmonitored: nothing health-checks it, nothing restarts it, and a session that hits
-the `bin/agent-dev` preflight cannot boot it itself (no Docker socket, no root). The recovery is
-another deploy, or an operator shell on the host — so the gap can last as long as the interval
-between deploys, and the only signal is a session reporting that it could not boot the app.
+First, the thing that is **not** a limitation, because it keeps being written down as one: no manual
+`kamal accessory boot devdb -d production` is owed. Bare `kamal deploy` does not boot accessories,
+which is a true Kamal fact, but neither destination deploys with bare `kamal deploy`.
+`deploy-staging.yml` runs `kamal accessory boot all -d staging` and the companion repo's
+`zimmer-deploy-prod.yml` runs `kamal accessory boot all -d production`, each immediately before its
+deploy, unconditionally. An accessory the destination declares gets created by the deploy.
+
+The real gap is what happens after that. `kamal accessory boot` is idempotent by *existence*, not by
+health: it runs `docker ps -a` per host and skips any host where a container is already there, and a
+**stopped** container is still there. Docker's own `--restart unless-stopped`, which is what Kamal
+boots accessories with, covers a crash or a daemon restart. A container that is stopped and stays
+stopped is covered by nothing — no health check, and every later deploy skips right over it.
+
+A session cannot repair that itself: the Docker socket is mounted into the worker but the worker is
+not in its group ([#409](https://github.com/tadasant/zimmer/issues/409)), and there is no root. So
+the only signal is a session reporting that `bin/agent-dev` found no Postgres, and the only recovery
+is an operator running `kamal accessory reboot devdb -d <dest>`.
 
 ---
 

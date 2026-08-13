@@ -78,20 +78,22 @@ It is deliberately **not** staging's `db` accessory. That one holds staging's ow
 a durable volume, and a session running a feature branch's migrations has no business in
 it.
 
-:::note[Both destinations boot the accessory on every deploy — no manual step is owed]
-Bare `kamal deploy` does not boot accessories, which is a real Kamal fact and the
-source of a recurring wrong conclusion about this deployment: **neither destination
-deploys with bare `kamal deploy`.** Staging's `deploy-staging.yml` runs
+:::note[The deploy boots it on both destinations — no manual step is owed]
+Bare `kamal deploy` does not boot accessories. That is a true Kamal fact, and it is
+where a recurring wrong conclusion about this deployment comes from, because **neither
+destination deploys with bare `kamal deploy`.** Staging's `deploy-staging.yml` runs
 `kamal accessory boot all -d staging` immediately before its deploy; production is
 deployed from the private companion repo, whose `zimmer-deploy-prod.yml` runs
 `kamal accessory boot all -d production` immediately before its deploy, unconditionally.
-`accessory boot` is idempotent, so both pick up `devdb` on the next deploy after it was
-declared, and every deploy after that.
+So the first deploy after a destination declares `devdb` creates it, and nobody is owed a
+setup command.
 
-A `bin/agent-dev` preflight failure on production therefore does **not** mean a setup
-command was skipped. It means the accessory is not running right now — it died, or the
-deploy's boot step no-opped — which is a thing to investigate on the host, not a routine
-command to re-run.
+Later deploys skip it: `accessory boot` looks for an existing container (`docker ps -a`)
+and leaves the host alone if one is there. That is what makes running it every time free,
+and it is also why a `devdb` that stops is not revived by deploying again
+([#419](https://github.com/tadasant/zimmer/issues/419)). A preflight failure means the
+accessory is not running right now, so the next step is `kamal accessory details devdb -d
+<dest>` from an operator shell, not a setup command.
 :::
 
 ### Every clone shares one database server
