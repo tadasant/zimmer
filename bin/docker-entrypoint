@@ -18,6 +18,64 @@
 # test, CI -- skips this entirely and the entrypoint behaves exactly as before.
 # ---------------------------------------------------------------------------
 if [ "$(id -u)" = "0" ]; then
+  # setpriv changes credentials. It does NOT touch the environment -- and Docker
+  # derived HOME from the container's `--user`, so under `user: "0:0"` HOME is
+  # /root and would survive the drop. The app would then run as uid 1000 with a
+  # HOME that is mode 0700 and owned by root, which uid 1000 cannot even traverse.
+  #
+  # That is not cosmetic. libpq probes $HOME/.postgresql/postgresql.crt on every
+  # TLS connection and tolerates only ENOENT/ENOTDIR; EACCES is fatal. So with
+  # HOME=/root the worker opens no database connection at all -- it boots, logs,
+  # and never claims a job. That is exactly how 2026-08-13's ten-hour production
+  # freeze presented: `could not open certificate file
+  # "/root/.postgresql/postgresql.crt": Permission denied`, 44,302 times, while
+  # every container-shaped health check stayed green.
+  #
+  # ~/.claude, ~/.config/gh and ~/.local are Kamal volumes mounted under
+  # /home/rails too, so a stale HOME strands the agent sessions as well.
+  #
+  # This runs before the dockerd block below because it is cheap and unconditional:
+  # a container that cannot hand over should say so in a second, rather than after
+  # a 30s daemon wait it will then abandon.
+  #
+  # Read from /etc/passwd rather than hardcoded, so this cannot drift from the uid
+  # the exec below drops to. `head -1` because Dockerfile.base's useradd allows
+  # --non-unique, and two entries would splice a newline into HOME.
+  app_passwd="$(getent passwd 1000 2>/dev/null || awk -F: '$3 == 1000 { print; exit }' /etc/passwd)"
+  app_passwd="$(printf '%s\n' "$app_passwd" | head -1)"
+
+  # No plausible default here. `setpriv --init-groups` cannot resolve uid 1000
+  # either, so a guessed HOME could only ever substitute a confident-looking wrong
+  # diagnosis for the real one.
+  if [ -z "$app_passwd" ]; then
+    echo "Refusing to start: no uid 1000 in /etc/passwd, so there is no app user to" >&2
+    echo "drop to. The image is supposed to create one (Dockerfile.base: useradd" >&2
+    echo "rails --uid 1000). Running on as root would write root-owned files into" >&2
+    echo "the volumes 'web' shares at uid 1000." >&2
+    exit 1
+  fi
+
+  export HOME="$(printf '%s' "$app_passwd" | cut -d: -f6)"
+  export USER="$(printf '%s' "$app_passwd" | cut -d: -f1)"
+  export LOGNAME="$USER"
+
+  # Then prove it, as the user that is about to have to live with it: -x to
+  # traverse (libpq's failure was an open through an untraversable directory) and
+  # -w to write. The whole lesson of that outage is that this must be loud -- a
+  # container that refuses to start is a failed deploy, while one that starts and
+  # quietly claims nothing is ten hours of silence.
+  #
+  # Any nonzero status refuses, not just an unwritable HOME: setpriv also fails
+  # here if it cannot assume the uid at all, and that is equally disqualifying.
+  # Its own error goes to stderr immediately above this message.
+  if ! setpriv --reuid=1000 --regid=1000 --init-groups test -x "$HOME" -a -w "$HOME"; then
+    echo "Refusing to start: uid 1000 cannot use HOME=$HOME (see any setpriv error" >&2
+    echo "above). Everything the app derives from HOME -- libpq's TLS client certs," >&2
+    echo "~/.claude, ~/.config/gh, ~/.local -- would fail, and the worker would run" >&2
+    echo "without ever claiming a job." >&2
+    exit 1
+  fi
+
   if [ "${ZIMMER_NESTED_DOCKER:-0}" = "1" ]; then
     # A user namespace is the thing that makes running as root here defensible, and
     # it is exactly what is missing under plain runc. Refuse rather than silently
