@@ -104,9 +104,10 @@ hours on 2026-08-13:
   Pointed at `/root` they are simply not there, so agent sessions lose their CLI auth and
   their persisted Claude install.
 
-So `bin/docker-entrypoint` reads the app user's `HOME`, `USER` and `LOGNAME` out of
-`/etc/passwd` and exports them before it hands over, and then **proves the result as the
-user that will have to live with it**:
+So `bin/docker-entrypoint` reads the app user's home directory and name out of
+`/etc/passwd` — exporting them as `HOME` and `USER`, with `LOGNAME` following `USER` — and
+then **proves the result as the user that will have to live with it**, refusing outright if
+uid 1000 cannot traverse and write that directory:
 
 ```
 Refusing to start: HOME=/home/rails is not writable by uid 1000, which this
@@ -190,14 +191,19 @@ frozen for ten hours. Before trusting a nested-Docker deploy, watch a job go all
 through:
 
 ```bash
-# in the worker container
+# from the worker container -- run it there specifically, because the point is to ask the
+# question from the process whose database access is in doubt
 bin/rails runner 'GoodJob::Job.where("created_at > ?", 5.minutes.ago).where.not(finished_at: nil).count'
 ```
 
-Zero finished jobs against a non-empty queue means the worker is up and not working. So
-does an empty `good_job_processes` table: a worker that cannot reach the database cannot
-register itself, which is why "no tracked processes" and "everything looks healthy" showed
-up together during that outage.
+Read both outcomes as failures. **Zero** finished jobs against a non-empty queue means the
+worker is up and not working. And the command **raising** — `ActiveRecord::ConnectionNotEstablished`
+is what it did during this outage — is not a broken check, it *is* the symptom: the worker
+container cannot reach the database, so nothing it hosts can either.
+
+The same reading applies to an empty `good_job_processes` table. A worker that cannot reach
+the database cannot register itself, which is why "no tracked processes" and "everything
+looks healthy" showed up together for ten hours.
 
 ## Kernel requirements
 

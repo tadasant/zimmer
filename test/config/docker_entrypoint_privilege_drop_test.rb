@@ -30,20 +30,28 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
   #   id       -- claim to be uid 0, which is what puts us on the branch at all
   #   getent   -- answer the passwd lookup with a home we control, so the assertion does
   #               not depend on whether /home/rails exists on the CI runner
-  #   setpriv  -- stand in for both calls the entrypoint makes: the `test -w` probe (run
-  #               for real, since that IS the assertion under test) and the final re-exec,
-  #               which prints the environment instead of running the app
-  def run_entrypoint(app_home:, env: {}, app_name: "rails")
+  #   setpriv  -- stand in for both calls the entrypoint makes: the probe, whose `test`
+  #               it runs (as this process's own uid, via bash's builtin -- so these
+  #               tests cover the entrypoint's logic, NOT setpriv's ability to assume
+  #               uid 1000), and the final re-exec, which reports the environment
+  #               instead of running the app
+  #
+  # Pass `passwd: nil` to make the lookup find no uid 1000 at all.
+  def run_entrypoint(app_home:, env: {}, app_name: "rails", passwd: :present)
     Dir.mktmpdir do |stubs|
       write_stub stubs, "id", <<~SH
         #!/bin/bash
         if [ "$1" = "-u" ]; then echo 0; else exit 0; fi
       SH
 
-      write_stub stubs, "getent", <<~SH
+      write_stub stubs, "getent", passwd.nil? ? "#!/bin/bash\nexit 2\n" : <<~SH
         #!/bin/bash
         echo "#{app_name}:x:1000:1000::#{app_home}:/bin/bash"
       SH
+
+      # The entrypoint falls back to awk over the real /etc/passwd, which on a CI
+      # runner does have a uid 1000. Stub it out too, or "no app user" is untestable.
+      write_stub stubs, "awk", "#!/bin/bash\nexit 0\n" if passwd.nil?
 
       write_stub stubs, "setpriv", <<~SH
         #!/bin/bash
@@ -105,14 +113,49 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
     refute_match(/DROPPED/, output, "it handed over anyway")
   end
 
-  # The app user's own environment is already correct; the drop must not disturb it.
-  test "a container already started with the app user's HOME is unaffected" do
+  # Still the root branch -- `run_entrypoint` always stubs `id -u` to 0 -- but with an
+  # environment that is already right. Normalizing must be a no-op, not a disturbance.
+  test "a root container whose HOME is already the app user's is left alone" do
     Dir.mktmpdir do |app_home|
       output, status = run_entrypoint(app_home: app_home, env: { "HOME" => app_home })
 
       assert_equal 0, status, output
       assert_match(/DROPPED HOME=#{Regexp.escape(app_home)}\b/, output)
     end
+  end
+
+  # The other side of that `id -u` check, and the one most deploys actually take: `web`,
+  # dev, test and CI all start as uid 1000 already. There is nothing to drop, and this
+  # block must not touch their environment or shell out to setpriv at all.
+  test "a container started as the app user skips the privilege drop entirely" do
+    Dir.mktmpdir do |stubs|
+      write_stub stubs, "id", "#!/bin/bash\nif [ \"$1\" = \"-u\" ]; then echo 1000; else exit 0; fi\n"
+      write_stub stubs, "setpriv", "#!/bin/bash\necho DROPPED\n"
+
+      # This is the one test that runs past the drop into the rest of the script, so it
+      # gets a PATH with no `claude`/`gh` and a cwd with no ./bin/ensure-playwright-browsers.
+      # Otherwise the entrypoint's background update block really would install Chromium,
+      # and IO.popen would sit on the open pipe until it finished.
+      env = { "PATH" => "#{stubs}:/usr/bin:/bin", "HOME" => Dir.tmpdir }
+      output = Dir.mktmpdir do |cwd|
+        IO.popen(env, [ "bash", "-e", ENTRYPOINT, "echo", "ran" ], chdir: cwd, err: %i[child out], &:read)
+      end
+
+      assert_equal 0, $?.exitstatus, output
+      refute_match(/DROPPED/, output, "it tried to drop privileges it does not have")
+      assert_match(/ran/, output)
+    end
+  end
+
+  # An image with no uid 1000 cannot be dropped into at all -- `setpriv --init-groups`
+  # would fail on it too -- so guessing /home/rails would only trade the real diagnosis
+  # for a confident-looking wrong one.
+  test "it refuses when there is no uid 1000 to drop to" do
+    output, status = run_entrypoint(app_home: "/unused", env: { "HOME" => "/root" }, passwd: nil)
+
+    assert_equal 1, status, output
+    assert_match(/no uid 1000 in \/etc\/passwd/, output)
+    refute_match(/DROPPED/, output)
   end
 
   # The guard that keeps `ZIMMER_NESTED_DOCKER=1` from starting dockerd as REAL host root.
