@@ -73,6 +73,12 @@
       <%= render partial: "quotas/aggregate_stats", locals: { accounts: @accounts, snapshots: @snapshots, current_account: @current_account } %>
     <% end %>
 
+    <!-- Spot vs priority (Claude-only, for the same reason as the stats above: the
+         gate forecasts the Claude Code quota windows and has no Codex equivalent). -->
+    <% if current_runtime == ClaudeAuthProvider::RUNTIME %>
+      <%= render "quotas/spot_gate" %>
+    <% end %>
+
     <!-- Account Cards -->
     <% if @accounts.any? %>
       <div class="space-y-4">

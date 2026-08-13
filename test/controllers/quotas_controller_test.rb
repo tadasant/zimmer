@@ -204,6 +204,35 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The spot gate card lives here, beside the windows it forecasts: the policy
+  # form, the live reading, and one button per settable genesis kind.
+  test "show renders the spot gate with its policy form and genesis controls" do
+    get quotas_url
+
+    assert_response :success
+    assert_select "#spot-gate"
+    assert_select "h2", "Spot vs priority"
+    assert_select "form[action=?]", spot_policy_path
+    assert_select "input[name='app_setting[spot_gate_five_hour_threshold_pct]']"
+    assert_select "input[name='app_setting[spot_gate_weekly_threshold_pct]']"
+    assert_select "#spot-gate-status"
+    assert_select "form[action=?]", reset_genesis_classes_path
+
+    kind = SessionGenesis::SETTABLE_KINDS.first
+    assert_select "#genesis-row-#{kind.key}"
+    assert_select "form[action=?]",
+      genesis_class_path(genesis: kind.key, priority_class: SessionGenesis::SPOT)
+  end
+
+  # The gate forecasts the Claude Code quota windows, so it has nothing to say on
+  # the Codex tab — the same reason the aggregate stats are Claude-only.
+  test "show omits the spot gate on the Codex tab" do
+    get quotas_url(runtime: CodexAuthProvider::RUNTIME)
+
+    assert_response :success
+    assert_select "#spot-gate", count: 0
+  end
+
   test "show does not make API calls" do
     QuotaCheckService.expects(:check_with_token).never
 

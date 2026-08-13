@@ -40,7 +40,7 @@ class SpotSessionHold
       # The one seam. SpotGateService.allow_start? reads the same method, so the
       # readable predicate and the production path cannot drift apart — and
       # start_decision counts the candidate session, which the argument-free
-      # `evaluate` (the informational reading for /settings) does not.
+      # `evaluate` (the informational reading for /quotas) does not.
       decision = SpotGateService.start_decision(session)
       if decision.allowed?
         clear(session)

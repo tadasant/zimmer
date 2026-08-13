@@ -118,7 +118,7 @@ class SpotGateService
       evaluate(candidate_sessions: 1)
     end
 
-    # `candidate_sessions` is 0 for the informational read on /settings and over
+    # `candidate_sessions` is 0 for the informational read on /quotas and over
     # MCP — that describes the fleet as it stands, which is what an operator
     # looking at a dashboard means by "the forecast".
     def evaluate(now: Time.current, candidate_sessions: 0)

@@ -3,7 +3,7 @@
 module Mcp
   module Tools
     # The read half of the spot/priority surface: everything the spot gate card on
-    # /settings shows, in one call.
+    # /quotas shows, in one call.
     #
     # An agent session that finds itself held needs to be able to answer "why, and
     # for how long" without a human reading the web UI to it — and an agent about
