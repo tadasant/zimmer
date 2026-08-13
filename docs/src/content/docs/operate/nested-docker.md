@@ -86,6 +86,33 @@ Its root IS host root, so starting dockerd here would hand every agent
 session root on the host.
 ```
 
+### The environment has to be dropped too, not just the credentials
+
+`setpriv` changes credentials and **not the environment**. Docker derives `HOME` from the
+container's `--user`, so under `user: "0:0"` it is `/root` — and left alone it survives the
+drop, leaving the app running as uid 1000 with a `HOME` that is mode `0700` and owned by
+root. So the entrypoint rewrites `HOME`, `USER` and `LOGNAME` from uid 1000's `/etc/passwd`
+entry before it hands over, and then **refuses to start** if that home is not writable by
+the user it is about to become.
+
+This is not tidiness. libpq probes `$HOME/.postgresql/postgresql.crt` on every TLS
+connection and tolerates only `ENOENT`/`ENOTDIR`; `EACCES` is fatal. With `HOME=/root` the
+worker therefore opens **no database connection at all** — it boots, it logs, and it claims
+no jobs. `~/.claude`, `~/.config/gh` and `~/.local` are Kamal volumes under `/home/rails`
+too, so a stale `HOME` strands agent sessions as well.
+
+That is exactly how the 2026-08-13 production freeze presented: ten hours of
+`could not open certificate file "/root/.postgresql/postgresql.crt": Permission denied`
+while every container-shaped health check stayed green, because the container really was
+up. The refusal is deliberately loud for the same reason — a container that will not start
+is a failed deploy, while one that starts and quietly claims nothing is ten hours of
+silence.
+
+`test/config/docker_entrypoint_privilege_drop_test.rb` runs the entrypoint with `id`,
+`getent` and `setpriv` stubbed and asserts the environment it hands over. What it cannot
+cover is a worker actually draining a job under sysbox, because CI has neither the runtime
+nor a user namespace; that is verified on staging.
+
 ## The workaround this depends on
 
 `/etc/docker/daemon.json` carries:
