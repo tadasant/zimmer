@@ -205,10 +205,37 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     assert_includes prompt, "### 7. Session Lifecycle Management"
-    assert_includes prompt, "Zimmer homepage shows sessions in \"needs_input\" state as the user's action queue"
-    assert_includes prompt, "Do NOT archive a session if it contains an important message"
-    assert_includes prompt, "don't leave sessions in \"needs_input\" if there's genuinely nothing for the user to do"
-    assert_includes prompt, "goal or skill-level archiving instructions, follow those"
+    assert_includes prompt, "**Self-archival is the completion signal.**"
+    assert_includes prompt, "\"The user will want to read this\" is not a reason to stay in `needs_input`"
+    assert_includes prompt, "these are the only sanctioned reasons for it:"
+    assert_includes prompt, "goal or a skill gives you explicit archiving instructions, follow those"
+  end
+
+  test "session lifecycle principle enumerates the four sanctioned needs_input reasons" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "You lacked the authorization scope or the tools to finish the job"
+    assert_includes prompt, "A merge gate decided your PR should not be auto-merged"
+    assert_includes prompt, "A human invoked this session (or its router) to explore something or answer a question"
+    assert_includes prompt, "RARE — you hit an ambiguity that is both too dangerous and too irreversible"
+    assert_includes prompt, "It is not an escape hatch for \"I wasn't sure.\""
+  end
+
+  test "session lifecycle principle rejects the three non-reasons for parking" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "Three things that look like reasons to park and are not:"
+    assert_includes prompt, "those are clocks, not humans"
+    assert_includes prompt, "re-check the real state of the PR, issue, or task"
+    assert_includes prompt, "Your own transcript is not the record of last resort"
+  end
+
+  test "session lifecycle principle scopes the Slack #updates rule to sessions with a Slack server" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "belong in the Slack `#updates` channel, not in the action queue"
+    assert_includes prompt, "only actionable if your session has a Slack MCP server"
+    assert_includes prompt, "never park a session purely so that it gets read"
   end
 
   test "includes always-link-PRs-and-sessions principle" do

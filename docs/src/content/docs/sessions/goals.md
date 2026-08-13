@@ -15,7 +15,7 @@ From `config/goals.json`:
 | ID | What it demands |
 | --- | --- |
 | `codebase-question` | Research and answer inline. Do not create files, PRs, or branches. Stop in `needs_input`. |
-| `open-reviewed-green-pr` | Open the PR through the `open-pr` skill, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof, then apply the `ready to merge` label. Then stop. The default for most roots. |
+| `open-reviewed-green-pr` | Open the PR through the `open-pr` skill, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof, then apply the `ready to merge` label. Then archive. The default for most roots. |
 | `open-reviewed-green-pr-with-version-bump` | Same, plus a mandatory version bump when server source changed. |
 | `e2e-verified-green-pr` | Same, plus: state the critical path up front, spin up a real dev server, drive it with browser automation, record video and screenshots, embed them in the PR. |
 
@@ -25,14 +25,25 @@ skill is available. The skill's terminal act is applying the `ready to merge` la
 goal text now makes that label part of "done."
 
 The label is deliberately disambiguated in the goal text, because its name collides with the
-"leave it unmerged for the human" instruction. Applying `ready to merge` does **not** merge the
+"do not merge your own PR" instruction. Applying `ready to merge` does **not** merge the
 PR and does **not** claim a human has reviewed it — it is the agent's own claim that self-review,
-fresh-eyes review, and green CI are complete. It is fully compatible with leaving the PR unmerged
-in `needs_input`; "do not merge" is not a reason to skip the label.
+fresh-eyes review, and green CI are complete. It is fully compatible with leaving the PR
+unmerged; "do not merge" is not a reason to skip the label.
 
-Every one of them ends with the same two instructions: stop and wait in `needs_input`, and
-do not archive yourself — because an open session with an unreviewed PR is the user's to-do
-list.
+The three PR goals then end by telling the agent to **archive itself**. The label is the handoff:
+a green, reviewed, labeled PR is a session that ran to completion, and the merge gate takes it
+from there — it decides whether to auto-merge, announces the merges it makes in Slack `#updates`,
+and parks *its own* session in `needs_input` when it holds a PR for you. This is the general rule
+stated in the injected system prompt's *Session Lifecycle Management* section: self-archival is
+the completion signal, and `needs_input` is reserved for the four cases where a human is genuinely
+required.
+
+That is a reversal. These goals used to end with "stop and wait in `needs_input`, and do not
+archive yourself — an open session with an unreviewed PR is the user's to-do list." The to-do-list
+rationale predates the merge-by-default gate, and it strands sessions: the gate merges the PR and
+announces it, and the producing session sits in the action queue forever with nothing for anyone
+to do. `codebase-question` still says do not self-archive, because a human-asked question *is* one
+of the four sanctioned cases.
 
 ## How a goal is applied
 
@@ -126,13 +137,31 @@ same log line. Tracked in [#105](https://github.com/tadasant/zimmer/issues/105).
 
 ## `needs_input` vs `archived`
 
-This trips people up. A session reaching `needs_input` is *normal* — it means the agent finished
-a turn. A session reaching `archived` means someone (or something) explicitly archived it:
+This trips people up. Mechanically, a session reaching `needs_input` just means the agent
+finished a turn, and a session reaching `archived` means someone (or something) explicitly
+archived it:
 
 - You archived it in the UI.
 - The agent called `action_session` with `archive` through Zimmer's self-session MCP server.
 - A health monitor archived it.
 
-Agents are told, in the goal text *and* in `OrchestratorSystemPromptBuilder`, not to self-archive
-when a human still needs to read their output. Whether they comply is, again, a matter of the
-model obeying English.
+*Intentionally*, they mean more than that. `archived` is what a completed session looks like:
+the agent is told, in `OrchestratorSystemPromptBuilder` and in the goal text, to archive itself
+as its last act. `needs_input` is a deliberate signal that a human is required, and there are
+exactly four sanctioned reasons to send it:
+
+1. The agent lacked the authorization scope or tools to finish, with no parent session to report
+   back to.
+2. The merge gate declined to auto-merge a PR, so a human has to review and merge it.
+3. A human invoked the session to explore something or answer a question — it is the user's to
+   close.
+4. Rare: an ambiguity both too dangerous and too irreversible to guess at.
+
+Anything else — including "the user will want to read this" — goes in the final message, or in
+Slack `#updates` if it is a read-only FYI and the session has a Slack server, and the session
+archives. The prompt also names three things that *look* like reasons to park and are not: waiting
+on a machine (CI, an outage, a rate limit, a peer session — clocks, not humans), a reason that went
+stale while the agent worked (the PR merged; the question is moot), and finishing with nothing to
+show (a sweep that found nothing and a gate that aborted both ran to completion).
+
+Whether agents comply is, again, a matter of the model obeying English.
