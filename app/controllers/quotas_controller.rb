@@ -52,6 +52,7 @@ class QuotasController < ApplicationController
         accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account
       })
       yielder << turbo_stream.replace("aggregate_stats", html: aggregate_html)
+      spot_gate_stream(yielder)
     end
   end
 
@@ -70,7 +71,7 @@ class QuotasController < ApplicationController
 
     respond_to do |format|
       format.turbo_stream do
-        render turbo_stream: [
+        streams = [
           turbo_stream.replace("account_card_#{account.id}",
             html: render_account_card(account.reload, snapshot, error)),
           turbo_stream.replace("aggregate_stats",
@@ -78,6 +79,8 @@ class QuotasController < ApplicationController
               accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account
             }))
         ]
+        spot_gate_stream(streams, runtime: account.runtime)
+        render turbo_stream: streams
       end
     end
   end
@@ -313,6 +316,19 @@ class QuotasController < ApplicationController
     @spot_start_decision = SpotGateService.evaluate(candidate_sessions: 1)
     @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
     @genesis_counts = Session.genesis_counts
+  end
+
+  # Append a re-rendered spot gate to a refresh response. The card's forecast is
+  # computed from the very snapshots a refresh has just replaced, so without this
+  # a refreshed page would show new utilization bars beside a reading taken before
+  # them. Takes whatever collects the streams — the enumerator's yielder for the
+  # streaming refresh, an array for the single-account one.
+  def spot_gate_stream(sink, runtime: current_runtime)
+    return unless runtime == ClaudeAuthProvider::RUNTIME
+
+    load_spot_gate
+    sink << turbo_stream.replace("spot-gate",
+      html: render_to_string(partial: "quotas/spot_gate", formats: [ :html ]))
   end
 
   # Answer a poll for an attempt row that no longer exists. We can't name the

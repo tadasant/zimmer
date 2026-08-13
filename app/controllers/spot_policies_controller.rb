@@ -4,17 +4,27 @@
 # forecast ceilings it holds them against. The card lives on /quotas because the
 # windows it forecasts are the ones that page reports.
 #
-# Kept out of AppSettingsController — which persists the settings page's own
-# forms — so the policy travels with the page that renders it and a submit from
-# either page can never reach into the other's fields.
+# Separate from AppSettingsController, which persists the settings page's own
+# forms, so each page's forms write only their own fields.
 class SpotPoliciesController < ApplicationController
   def update
     setting = AppSetting.editable
-    spot_params = params[:app_setting] || {}
+    spot_params = params[:app_setting]
+    spot_params = ActionController::Parameters.new unless spot_params.is_a?(ActionController::Parameters)
 
-    setting.spot_gating_enabled = ActiveModel::Type::Boolean.new.cast(spot_params[:spot_gating_enabled])
-    setting.spot_gate_five_hour_threshold_pct = spot_params[:spot_gate_five_hour_threshold_pct]
-    setting.spot_gate_weekly_threshold_pct = spot_params[:spot_gate_weekly_threshold_pct]
+    # Only the keys the request actually carries. The card's form posts all three
+    # together (the toggle behind a hidden `0`), so this costs the form nothing —
+    # but a hand-built PATCH that omits the toggle would otherwise assign nil to a
+    # NOT NULL column and 500 instead of leaving the gate as it was.
+    if spot_params.key?(:spot_gating_enabled)
+      setting.spot_gating_enabled = ActiveModel::Type::Boolean.new.cast(spot_params[:spot_gating_enabled])
+    end
+    if spot_params.key?(:spot_gate_five_hour_threshold_pct)
+      setting.spot_gate_five_hour_threshold_pct = spot_params[:spot_gate_five_hour_threshold_pct]
+    end
+    if spot_params.key?(:spot_gate_weekly_threshold_pct)
+      setting.spot_gate_weekly_threshold_pct = spot_params[:spot_gate_weekly_threshold_pct]
+    end
 
     if setting.save
       redirect_to quotas_path(anchor: "spot-gate"), notice: "Spot policy updated."

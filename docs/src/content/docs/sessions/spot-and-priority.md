@@ -164,7 +164,8 @@ deliberately uses the fleet as it stands (and says so), and shows the start deci
 `hours left` is the time to that window's own reset, capped at 24 hours — a weekly window can have six
 days left, and multiplying a per-hour rate out that far produces a number with no predictive content.
 
-Thresholds are set on `/quotas` (5-hour and weekly, both default 80%).
+Thresholds are set on the Claude Code tab of `/quotas` (5-hour and weekly, both default 80%), on the
+same page as the windows they are forecast against.
 
 ### Fail-open
 
@@ -204,7 +205,7 @@ time, and how to start it now.
 | --- | --- | --- |
 | Read a session's genesis and class | Hierarchy panel, dashboard card | `get_session` |
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
-| Read the usage rate and forecast | `/quotas` spot gate card | `get_spot_policy` |
+| Read the usage rate and forecast | Spot gate card on the Claude Code tab of `/quotas` | `get_spot_policy` |
 | Toggle gating, set thresholds | `/quotas` | `action_spot_policy` (`set_gating`) |
 | One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
 | Reset all genesis classes | `/quotas` | `action_spot_policy` (`reset_genesis_classes`) |
