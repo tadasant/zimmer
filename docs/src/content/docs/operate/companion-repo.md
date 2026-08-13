@@ -291,6 +291,11 @@ jobs:
         # from the SAME checkout, so check out the public app repo and drop this service's
         # destination file into it as config/deploy.production.yml before deploying. The env
         # names below are exactly the ones .kamal/secrets.production passes through to Kamal.
+        #
+        # `accessory boot all` runs unconditionally before the deploy, because `kamal deploy`
+        # on its own does NOT boot accessories -- a destination that gains one (Zimmer's
+        # `devdb`, say) would otherwise never get it without a manual command. It is
+        # idempotent, so running it every time costs nothing and owes nobody a setup step.
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           SECRET_KEY_BASE: ${{ secrets.PROD_SECRET_KEY_BASE }}
@@ -300,6 +305,7 @@ jobs:
           cp ../<service>/deploy.production.yml   config/deploy.production.yml
           cp ../<service>/.kamal/secrets.production .kamal/secrets.production
           gem install kamal
+          kamal accessory boot all -d production
           kamal deploy -d production
 ```
 

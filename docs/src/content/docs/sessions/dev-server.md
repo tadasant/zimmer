@@ -78,12 +78,20 @@ It is deliberately **not** staging's `db` accessory. That one holds staging's ow
 a durable volume, and a session running a feature branch's migrations has no business in
 it.
 
-:::caution[The accessory is not booted by `kamal deploy`]
-`kamal deploy` does not boot accessories. Staging's workflow runs
-`kamal accessory boot all -d staging`, so staging picks it up on the next deploy.
-Production is deployed from the private companion repo, so **someone has to run
-`kamal accessory boot devdb -d production` there once.** Until that happens,
-`bin/agent-dev` on production fails its preflight and says so.
+:::note[Both destinations boot the accessory on every deploy — no manual step is owed]
+Bare `kamal deploy` does not boot accessories, which is a real Kamal fact and the
+source of a recurring wrong conclusion about this deployment: **neither destination
+deploys with bare `kamal deploy`.** Staging's `deploy-staging.yml` runs
+`kamal accessory boot all -d staging` immediately before its deploy; production is
+deployed from the private companion repo, whose `zimmer-deploy-prod.yml` runs
+`kamal accessory boot all -d production` immediately before its deploy, unconditionally.
+`accessory boot` is idempotent, so both pick up `devdb` on the next deploy after it was
+declared, and every deploy after that.
+
+A `bin/agent-dev` preflight failure on production therefore does **not** mean a setup
+command was skipped. It means the accessory is not running right now — it died, or the
+deploy's boot step no-opped — which is a thing to investigate on the host, not a routine
+command to re-run.
 :::
 
 ### Every clone shares one database server

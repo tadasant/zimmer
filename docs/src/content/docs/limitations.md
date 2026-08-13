@@ -2366,15 +2366,24 @@ on *every* reopen and the controller would reload every time, which is the bug i
 fix ([#389](https://github.com/tadasant/zimmer/pull/389) is the earlier attempt in that area).
 Distinguishing "stale because we were asleep" from "stale because the socket is dead" needs a
 liveness probe after the page wakes, not a reading taken at the moment it wakes.
-## The production `devdb` accessory needs a manual boot
 
-`kamal deploy` does not boot accessories. Staging's workflow runs `kamal accessory boot all -d
-staging`, so staging picks up `devdb` on its next deploy. Production is deployed from the private
-companion repo and there is no production deploy workflow in this repository, so nothing here can
-boot it: someone has to run `kamal accessory boot devdb -d production` once, from the companion repo.
+---
 
-Until then `bin/agent-dev` on production fails its preflight with the exact command to run. See
-[Booting the app inside a session](/sessions/dev-server/).
+## Nothing revives a dead `devdb` accessory between deploys
+
+The `devdb` accessory that [`bin/agent-dev`](/sessions/dev-server/) needs is booted by the deploy
+pipeline on **both** destinations: `deploy-staging.yml` runs `kamal accessory boot all -d staging`
+and the companion repo's `zimmer-deploy-prod.yml` runs `kamal accessory boot all -d production`,
+each immediately before its deploy, unconditionally. No manual setup command is owed on either
+destination — and the recurring belief that one is owed on production, on the grounds that bare
+`kamal deploy` does not boot accessories, is wrong for the simple reason that neither pipeline calls
+bare `kamal deploy`.
+
+What is missing is anything that notices a `devdb` that stops between deploys. The accessory is
+volume-less and unmonitored: nothing health-checks it, nothing restarts it, and a session that hits
+the `bin/agent-dev` preflight cannot boot it itself (no Docker socket, no root). The recovery is
+another deploy, or an operator shell on the host — so the gap can last as long as the interval
+between deploys, and the only signal is a session reporting that it could not boot the app.
 
 ---
 
