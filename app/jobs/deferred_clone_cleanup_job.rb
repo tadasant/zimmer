@@ -105,8 +105,22 @@ class DeferredCloneCleanupJob < ApplicationJob
         end
       else
         Rails.logger.error "[DeferredCloneCleanupJob] Failed to preserve artifacts for session #{session_id}: #{create_result.error}"
-        # Keep clone intact so EmptyTrashJob can retry after trash_after expires
-        Rails.logger.info "[DeferredCloneCleanupJob] Keeping clone for session #{session_id} — artifact creation failed, EmptyTrashJob will handle cleanup"
+        # Artifact extraction failed, so the clone itself is now the only copy of
+        # this session's unpushed work — keep it for the whole reversible window.
+        # An unarchive inside that window finds the clone still on disk and takes
+        # UnarchiveSessionService's quick path, which restores the real working
+        # tree rather than a patch of it: better than the artifacts we failed to
+        # write. EmptyTrashJob reaps clone and artifacts together at the deadline
+        # (it deletes; it does not retry preservation).
+        #
+        # The deadline is written explicitly rather than left to the one `archive`
+        # set as a safety net, because that assignment is best-effort — a
+        # `set_trash_expiry` that raised is logged and swallowed. Landing here with
+        # trash_after still nil is what would hand the clone to
+        # StaleCloneCleanupJob, whose archived-and-untrashed scope reaps it
+        # unpreserved an hour later, and to the orphan sweep, whose in-trash guard
+        # is the same non-nil check.
+        keep_clone_for_full_retention(session)
         return
       end
     else
@@ -169,6 +183,17 @@ class DeferredCloneCleanupJob < ApplicationJob
       # what config.time_zone is set to.
       MangledCloneReportJob::DEFUSED_AT_KEY => Time.current.utc.iso8601
     }
+  end
+
+  # Hold the clone for the rest of the reversible window after a failed
+  # preservation: set the same deadline the success path sets, so the session is
+  # EmptyTrashJob's to reap and nothing shorter-fused can take it.
+  def keep_clone_for_full_retention(session)
+    with_db_retry do
+      session.update_column(:trash_after, trash_deadline_for(session))
+    end
+    Rails.logger.info "[DeferredCloneCleanupJob] Keeping clone for session #{session.id} — artifact creation " \
+      "failed, so the clone is held until #{session.trash_after&.iso8601} for unarchive to restore directly"
   end
 
   # Decide whether this session still needs a trash deadline once the clone is

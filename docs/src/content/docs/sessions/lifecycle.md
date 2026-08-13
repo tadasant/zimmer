@@ -185,11 +185,26 @@ The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a sho
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
 `TRASH_RETENTION_PERIOD`, which is `4.days`. `EmptyTrashJob` deletes them once that expires.
 
+If artifact extraction fails outright, the clone is kept — it is then the only copy of that
+session's unpushed work — and the job writes the same `4.days` deadline on the session, so
+unarchive inside that window finds the clone on disk and restores the real working tree rather than
+a patch of it, and `EmptyTrashJob` reaps it at the deadline. The deadline is written there
+explicitly rather than inherited from the one `archive` sets, because that assignment is
+best-effort: an archived session that reaches this path with no `trash_after` is exactly what
+`StaleCloneCleanupJob` reaps — unpreserved — an hour after archive.
+
 Preservation does not take the working tree entirely on faith. A tree that is 50 or more deleted
 tracked files and almost nothing else is not uncommitted work — it is a clone that an interrupted
 recursive delete mangled — so `CloneArtifactService` drops those deletions from `working_tree.patch`
 (keeping the additions and modifications), logs at `.warn`, and records `dropped_deletions` in the
 artifact metadata.
+
+The deletions are filtered out of the diff already in memory, not by re-running `git` with
+`--diff-filter=d`. The guard fires precisely when a concurrent recursive delete is gutting that
+clone, so a second `chdir` into it raced the delete: the directory was gone 11 ms after the warning
+and the whole preservation died on `ENOENT`
+([#425](https://github.com/tadasant/zimmer/issues/425)). Nothing re-enters a clone the guard has
+just proven is being deleted.
 
 `.warn` rather than `.error` because this refusal is self-healing — the corruption is dropped, the
 real work still travels in the bundle and the filtered patch, and the deleted files come back from
