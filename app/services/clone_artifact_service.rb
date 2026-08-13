@@ -215,10 +215,7 @@ class CloneArtifactService
         )
         metadata["dropped_deletions"] = counts[:deleted]
 
-        filtered_stdout, _, filtered_status = run_git(
-          "diff", "--binary", "--cached", "--diff-filter=d", "HEAD", cwd: clone_path, binmode: true
-        )
-        diff_stdout = SubprocessStatus.success?(filtered_status) ? filtered_stdout : "".b
+        diff_stdout = reject_deletion_entries(diff_stdout)
       end
 
       if diff_stdout.strip.empty?
@@ -394,11 +391,62 @@ class CloneArtifactService
     changed = 0
 
     lines.each do |line|
-      changed += 1 if line.start_with?("diff --git ")
-      deleted += 1 if line.start_with?("deleted file mode ")
+      changed += 1 if patch_entry_start?(line)
+      deleted += 1 if patch_deletion_marker?(line)
     end
 
     { deleted: deleted, changed: changed }
+  end
+
+  # The line that opens a file entry in a `git diff` patch, and the header line
+  # that marks that entry as a whole-file removal. See count_patch_entries for
+  # why neither prefix can appear inside patch content.
+  def patch_entry_start?(line)
+    line.start_with?("diff --git ")
+  end
+
+  def patch_deletion_marker?(line)
+    line.start_with?("deleted file mode ")
+  end
+
+  # Drop every whole-file-deletion entry from a patch, keeping the additions and
+  # modifications byte-for-byte.
+  #
+  # Splits on the same markers count_patch_entries counts and re-emits the
+  # surviving entries unchanged, so a --binary payload of a file that is *kept*
+  # round-trips intact. Works on ASCII-8BIT bytes throughout (each_line splits
+  # on "\n" without validating encoding), because the diff this filters is raw
+  # git output.
+  #
+  # This filters the diff already in memory rather than re-running git with
+  # --diff-filter=d. The mass-deletion guard fires precisely when a concurrent
+  # recursive delete is gutting the clone (#412), so a second chdir into that
+  # directory raced the delete and raised Errno::ENOENT, failing the whole
+  # preservation (#425). No second git invocation, no race.
+  #
+  # Byte-identical to what --diff-filter=d produced for every shape a diff of a
+  # staged tree can take — text and binary deletions, symlink deletions, renames,
+  # mode changes, and content that merely looks like a header. The one input it
+  # would treat differently is a bare `* Unmerged path <p>` line, which it folds
+  # into the entry above it; the `add -A` on the way in resolves unmerged entries,
+  # so the diff this filters cannot contain one.
+  def reject_deletion_entries(diff)
+    kept = "".b
+    entry = "".b
+    deletion = false
+
+    diff.each_line do |line|
+      if patch_entry_start?(line)
+        kept << entry unless deletion
+        entry = "".b
+        deletion = false
+      end
+      deletion ||= patch_deletion_marker?(line)
+      entry << line
+    end
+    kept << entry unless deletion
+
+    kept
   end
 
   def read_metadata(artifacts_dir)
