@@ -86,6 +86,41 @@ Its root IS host root, so starting dockerd here would hand every agent
 session root on the host.
 ```
 
+### The environment has to be dropped too, not just the credentials
+
+`setpriv` changes credentials and nothing else. Docker derives `HOME` from the container's
+`--user`, so under `user: "0:0"` it is `/root` — and it survives the drop untouched. The
+app would then run as uid 1000 with a `HOME` that is mode `0700` and owned by root, which
+uid 1000 cannot even traverse.
+
+That is not cosmetic, and it is not a tidiness problem. It took production down for ten
+hours on 2026-08-13:
+
+- **libpq** probes `$HOME/.postgresql/postgresql.crt` on every TLS connection and tolerates
+  only `ENOENT`/`ENOTDIR`. `EACCES` is fatal. With `HOME=/root` the worker opened **no
+  database connection at all** — no `LISTEN`, no poll, no claim, and no failure recorded
+  anywhere, because recording one needs the database too.
+- `~/.claude`, `~/.config/gh` and `~/.local` are Kamal volumes mounted under `/home/rails`.
+  Pointed at `/root` they are simply not there, so agent sessions lose their CLI auth and
+  their persisted Claude install.
+
+So `bin/docker-entrypoint` reads the app user's home directory and name out of
+`/etc/passwd` — exporting them as `HOME` and `USER`, with `LOGNAME` following `USER` — and
+then **proves the result as the user that will have to live with it**, refusing outright if
+uid 1000 cannot traverse and write that directory:
+
+```
+Refusing to start: HOME=/home/rails is not writable by uid 1000, which this
+entrypoint is about to become.
+```
+
+A container that refuses to start is a failed deploy. One that starts and quietly claims
+nothing is ten hours of silence — which is exactly what happened, because every check that
+existed asked whether the container was *shaped* right, not whether the worker was
+*working*. `test/config/docker_entrypoint_privilege_drop_test.rb` runs the real script with
+`id`, `getent` and `setpriv` stubbed and asserts on the environment it hands over; it fails
+against the entrypoint as it shipped that morning.
+
 ## The workaround this depends on
 
 `/etc/docker/daemon.json` carries:
@@ -146,6 +181,29 @@ docker run --rm --runtime=sysbox-runc alpine echo ok                # expect: ok
 ```
 
 If that last command fails with the `time` namespace error, the flag did not land.
+
+### Then check the worker *works*, not that it exists
+
+Those checks say the host can start a sysbox container. They say nothing about whether the
+worker inside one is doing its job, and that distinction is the whole lesson of 2026-08-13:
+the deploy went green on four assertions about the container's shape while the queue sat
+frozen for ten hours. Before trusting a nested-Docker deploy, watch a job go all the way
+through:
+
+```bash
+# from the worker container -- run it there specifically, because the point is to ask the
+# question from the process whose database access is in doubt
+bin/rails runner 'GoodJob::Job.where("created_at > ?", 5.minutes.ago).where.not(finished_at: nil).count'
+```
+
+Read both outcomes as failures. **Zero** finished jobs against a non-empty queue means the
+worker is up and not working. And the command **raising** — `ActiveRecord::ConnectionNotEstablished`
+is what it did during this outage — is not a broken check, it *is* the symptom: the worker
+container cannot reach the database, so nothing it hosts can either.
+
+The same reading applies to an empty `good_job_processes` table. A worker that cannot reach
+the database cannot register itself, which is why "no tracked processes" and "everything
+looks healthy" showed up together for ten hours.
 
 ## Kernel requirements
 

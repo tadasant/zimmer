@@ -2472,6 +2472,24 @@ would have to change with it.
 
 ---
 
+## CI cannot test the nested-Docker path, only the shape of it
+
+CI has no sysbox runtime and no user namespace, so nothing in the suite can start the
+worker the way production starts it under `ZIMMER_NESTED_DOCKER=1`. What the suite covers
+is the config resolution (`test/config/nested_docker_switch_test.rb`) and the entrypoint's
+privilege drop, executed against stubbed `id`/`getent`/`setpriv`
+(`test/config/docker_entrypoint_privilege_drop_test.rb`). Both are real assertions, and the
+second one fails against the entrypoint that took production down on 2026-08-13 — but
+neither is the integrated thing.
+
+This is the gap that let that outage ship: every automated check asserted the worker
+container was *shaped* correctly (right runtime, right uid map, inner daemon answering) and
+none asserted it was *working*. Turning nested Docker on therefore still owes a staging run
+that boots a real worker under `--runtime=sysbox-runc --user 0:0` and watches it claim and
+finish a job — see [Nested Docker for agent sessions](/operate/nested-docker/).
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
