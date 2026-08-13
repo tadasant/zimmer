@@ -56,7 +56,7 @@ module Mcp
 
         **Use cases:**
         - View detailed session information
-        - Check session status and progress (use transcript to determine if a "needs_input" session has completed its task or needs follow-up)
+        - Check session status and progress (use transcript to determine which of the sanctioned reasons put a "needs_input" session there, or whether it merely stopped)
         - Retrieve session transcript for review
         - Review logs for debugging
         - Inspect subagent transcripts

@@ -50,8 +50,8 @@ It wires the context deliberately. Which skills, which MCP servers, and which re
 guidance the agent gets is resolved from a versioned catalog per session. See [AIR](/air/overview/).
 
 It closes the loop. The default goal spells out what "done" requires: open a PR, wait for
-CI, confirm CI is green, run a review, address the review, and only then come back to the
-human. See [goals](/sessions/goals/).
+CI, confirm CI is green, run a review, address the review, label it, and archive. What comes
+back to you is the PR, not a session waiting in your queue. See [goals](/sessions/goals/).
 
 ## What it is not
 
