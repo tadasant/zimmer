@@ -162,10 +162,14 @@ if ! ruby -rsocket -e '
 No dev Postgres is reachable at ${DATABASE_HOST}:${DATABASE_PORT}.
 
 Inside a Zimmer agent session that means the \`devdb\` Kamal accessory is not
-running on this host. It is declared in config/deploy.<dest>.yml; boot it from
-an operator shell with:
+running on this host. It is declared in config/deploy.<dest>.yml, and every
+deploy boots it: staging's workflow and the companion repo's production workflow
+both run \`kamal accessory boot all\` immediately before deploying. So this is not
+a setup step someone forgot -- the accessory died, or the deploy's boot step
+no-opped. Check its actual state from an operator shell:
 
-    kamal accessory boot devdb -d production
+    kamal accessory details devdb -d <dest>
+    kamal accessory logs devdb -d <dest>
 
 A session cannot start one itself: no root, no sudo, and no Postgres binaries in
 the image.
