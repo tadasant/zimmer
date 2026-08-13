@@ -124,6 +124,7 @@ export default defineConfig({
             { label: "Provisioning and secrets", slug: "operate/provisioning" },
             { label: "Secrets in the Parameter Store", slug: "operate/secrets-parameter-store" },
             { label: "SSH and tailnet access", slug: "operate/ssh-access" },
+            { label: "Nested Docker for sessions", slug: "operate/nested-docker" },
             { label: "The private companion repo", slug: "operate/companion-repo" },
             { label: "Background jobs", slug: "operate/background-jobs" },
             { label: "Observability", slug: "operate/observability" },

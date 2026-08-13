@@ -30,13 +30,25 @@ servers:
     proxy: false
     options:
       init: true
+      # Nested Docker, off by default. ZIMMER_NESTED_DOCKER=1 at deploy time runs this
+      # role under sysbox, which gives the container its own user namespace, and starts
+      # it as (namespaced) root so the entrypoint can bring up an inner dockerd before
+      # dropping back to uid 1000. Unset, both values are exactly what Docker would do
+      # anyway, so a host without sysbox installed deploys unchanged.
+      #
+      # The switch is deliberately one variable rather than three: a host with the
+      # runtime but not the user, or the user but not the env, fails in ways that look
+      # like an app bug. See docs/operate/nested-docker.md.
+      runtime: <%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "sysbox-runc" : "runc" %>
+      # Quoted: YAML reads a bare 0:0 as a sexagesimal integer and hands Kamal `0`,
+      # which is uid 0 with the image's default gid -- close enough to look right and
+      # wrong in a way nothing would report.
+      user: "<%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "0:0" : "1000:1000" %>"
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
-        # DockerCleanupJob prunes stale agent containers; it needs the host socket.
-        - /var/run/docker.sock:/var/run/docker.sock
 
 ssh:
   user: root
@@ -52,6 +64,10 @@ env:
     # credentials. Every staging session then died in SecretsInterpolator before the
     # agent ever started.
     RAILS_ENV: staging
+    # Armed only when the worker is running under sysbox (see the role's options
+    # above). The entrypoint reads it to decide whether to start an inner dockerd,
+    # and refuses if the container turns out not to be user-namespaced.
+    ZIMMER_NESTED_DOCKER: "<%= ENV.fetch("ZIMMER_NESTED_DOCKER", "0") %>"
     # Canonical external host: the custom domain (Caddy terminates TLS on :443 in
     # front of kamal-proxy). Without this, McpOauthService falls back to
     # localhost:3000 and every OAuth callback breaks.

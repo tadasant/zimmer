@@ -62,13 +62,31 @@ RUN apt-get update -qq && \
     # Install Node.js 22 LTS from NodeSource
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install --no-install-recommends -y nodejs && \
-    # Install Docker CLI (not the daemon - we use host's Docker via socket mount)
+    # Install Docker: the CLI, the compose plugin, AND the daemon.
+    #
+    # The daemon is here so an agent session can run its OWN Docker inside the worker
+    # container, rather than reaching the host's daemon through a socket mount. The
+    # socket route needs the container to join the host's `docker` group, which is
+    # root-equivalent on the host: anything that can talk to that daemon can start a
+    # container mounting `/` as root. A nested daemon under the sysbox runtime is
+    # confined by a user namespace instead -- container root maps to an unprivileged
+    # host uid -- so even a `--privileged` inner container cannot reach the host.
+    # See docs/operate/nested-docker.md.
+    #
+    # It costs about 340MB, and it lands on the single image Kamal ships to BOTH
+    # roles, so `web` carries the daemon it never starts. Splitting the image to avoid
+    # that would cost a second build, a second push and a second cache for one
+    # directory of binaries; not worth it until the image budget says otherwise.
+    #
+    # iptables and uidmap are dockerd's dependencies, not ours: dockerd programs NAT
+    # rules for its bridge network, and uidmap provides the newuidmap/newgidmap
+    # helpers the nested daemon needs to map subordinate ids.
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
     chmod a+r /etc/apt/keyrings/docker.asc && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list && \
     apt-get update -qq && \
-    apt-get install --no-install-recommends -y docker-ce-cli docker-compose-plugin && \
+    apt-get install --no-install-recommends -y docker-ce-cli docker-compose-plugin docker-ce containerd.io iptables uidmap && \
     # Install GitHub CLI
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
     chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
