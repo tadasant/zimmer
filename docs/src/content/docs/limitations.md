@@ -2429,6 +2429,28 @@ upstream lands in [#421](https://github.com/tadasant/zimmer/issues/421) — see
 
 ---
 
+## `kamal app exec --reuse` bypasses the nested-Docker privilege drop
+
+Under `ZIMMER_NESTED_DOCKER=1` the worker container is configured as `user: "0:0"`, and
+`bin/docker-entrypoint` is what turns that into uid 1000 with a usable `HOME`. `kamal app
+exec --reuse` does not go through it: Kamal's `execute_in_existing_container` is a bare
+`docker exec`, which inherits the container's configured user and environment. So the
+command lands as uid 0 with `HOME=/root`, and anything it does that opens a database
+connection fails with libpq's `could not open certificate file
+"/root/.postgresql/postgresql.crt": Permission denied`.
+
+Plain `kamal app exec` (no `--reuse`) starts a new container through the entrypoint and is
+unaffected, so it is the one to reach for on a nested-Docker worker. The failure is at
+least immediate and legible at an operator's terminal rather than silent — unlike the same
+error inside the worker process, which is the outage the privilege drop now prevents.
+
+Fixing it properly means baking `ENV HOME=/home/rails` into the image so the value does not
+depend on `--user` at all. That is deliberately not done here: it would give a genuinely
+root-run container a `HOME` inside the volumes `web` shares at uid 1000, which is the
+root-owned-files problem the privilege drop exists to avoid.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
