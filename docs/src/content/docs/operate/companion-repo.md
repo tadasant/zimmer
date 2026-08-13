@@ -294,8 +294,9 @@ jobs:
         #
         # `accessory boot all` runs unconditionally before the deploy, because `kamal deploy`
         # on its own does NOT boot accessories -- a destination that gains one (Zimmer's
-        # `devdb`, say) would otherwise never get it without a manual command. It is
-        # idempotent, so running it every time costs nothing and owes nobody a setup step.
+        # `devdb`, say) would otherwise never get it without a manual command. Repeating it
+        # is free: boot skips a host that already has the container, and creates it where
+        # there is none.
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           SECRET_KEY_BASE: ${{ secrets.PROD_SECRET_KEY_BASE }}
