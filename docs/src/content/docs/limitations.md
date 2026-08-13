@@ -2366,15 +2366,30 @@ on *every* reopen and the controller would reload every time, which is the bug i
 fix ([#389](https://github.com/tadasant/zimmer/pull/389) is the earlier attempt in that area).
 Distinguishing "stale because we were asleep" from "stale because the socket is dead" needs a
 liveness probe after the page wakes, not a reading taken at the moment it wakes.
-## The production `devdb` accessory needs a manual boot
 
-`kamal deploy` does not boot accessories. Staging's workflow runs `kamal accessory boot all -d
-staging`, so staging picks up `devdb` on its next deploy. Production is deployed from the private
-companion repo and there is no production deploy workflow in this repository, so nothing here can
-boot it: someone has to run `kamal accessory boot devdb -d production` once, from the companion repo.
+---
 
-Until then `bin/agent-dev` on production fails its preflight with the exact command to run. See
-[Booting the app inside a session](/sessions/dev-server/).
+## Nothing revives a `devdb` accessory that stops
+
+([#419](https://github.com/tadasant/zimmer/issues/419))
+
+First, the thing that is **not** a limitation, because it keeps being written down as one: no manual
+`kamal accessory boot devdb -d production` is owed. Bare `kamal deploy` does not boot accessories,
+which is a true Kamal fact, but neither destination deploys with bare `kamal deploy`.
+`deploy-staging.yml` runs `kamal accessory boot all -d staging` and the companion repo's
+`zimmer-deploy-prod.yml` runs `kamal accessory boot all -d production`, each immediately before its
+deploy, unconditionally. An accessory the destination declares gets created by the deploy.
+
+The real gap is what happens after that. `kamal accessory boot` is idempotent by *existence*, not by
+health: it runs `docker ps -a` per host and skips any host where a container is already there, and a
+**stopped** container is still there. Docker's own `--restart unless-stopped`, which is what Kamal
+boots accessories with, covers a crash or a daemon restart. A container that is stopped and stays
+stopped is covered by nothing — no health check, and every later deploy skips right over it.
+
+A session cannot repair that itself: the Docker socket is mounted into the worker but the worker is
+not in its group ([#409](https://github.com/tadasant/zimmer/issues/409)), and there is no root. So
+the only signal is a session reporting that `bin/agent-dev` found no Postgres, and the only recovery
+is an operator running `kamal accessory reboot devdb -d <dest>`.
 
 ---
 
