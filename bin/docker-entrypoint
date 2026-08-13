@@ -46,6 +46,44 @@ if [ "$(id -u)" = "0" ]; then
     fi
   fi
 
+  # setpriv changes credentials. It does NOT touch the environment -- and Docker
+  # derived HOME from the container's `--user`, so under `user: "0:0"` HOME is
+  # /root and would survive the drop. The app would then run as uid 1000 with a
+  # HOME that is mode 0700 and owned by root, which uid 1000 cannot even traverse.
+  #
+  # That is not cosmetic. libpq probes $HOME/.postgresql/postgresql.crt on every
+  # TLS connection and tolerates only ENOENT/ENOTDIR; EACCES is fatal. So with
+  # HOME=/root the worker opens no database connection at all -- it boots, logs,
+  # and never claims a job. That is exactly how 2026-08-13's ten-hour production
+  # freeze presented: `could not open certificate file
+  # "/root/.postgresql/postgresql.crt": Permission denied`, 44,302 times, while
+  # every container-shaped health check stayed green.
+  #
+  # ~/.claude, ~/.config/gh and ~/.local are Kamal volumes mounted under
+  # /home/rails too, so a stale HOME strands the agent sessions as well.
+  #
+  # Read from /etc/passwd rather than hardcoded, so this cannot drift from the uid
+  # the exec below drops to.
+  app_passwd="$(getent passwd 1000 2>/dev/null || awk -F: '$3 == 1000 { print; exit }' /etc/passwd)"
+  app_home="$(printf '%s' "$app_passwd" | cut -d: -f6)"
+  app_name="$(printf '%s' "$app_passwd" | cut -d: -f1)"
+  export HOME="${app_home:-/home/rails}"
+  export USER="${app_name:-rails}"
+  export LOGNAME="$USER"
+
+  # Then prove it, as the user that is about to have to live with it. A HOME the
+  # app cannot write is the failure this block exists to prevent, and the whole
+  # lesson of that outage is that it must be loud: a container that refuses to
+  # start is a failed deploy, while one that starts and quietly claims nothing is
+  # ten hours of silence.
+  if ! setpriv --reuid=1000 --regid=1000 --init-groups test -w "$HOME"; then
+    echo "Refusing to start: HOME=$HOME is not writable by uid 1000, which this" >&2
+    echo "entrypoint is about to become. Everything the app derives from HOME --" >&2
+    echo "libpq's TLS client certs, ~/.claude, ~/.config/gh, ~/.local -- would" >&2
+    echo "fail, and the worker would run without ever claiming a job." >&2
+    exit 1
+  fi
+
   # Re-exec this same script as the app user. --init-groups picks up the
   # supplementary groups; without it the process keeps only gid 1000 and loses
   # whatever else the rails user belongs to.
