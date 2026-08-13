@@ -107,20 +107,23 @@ class DeferredCloneCleanupJob < ApplicationJob
         Rails.logger.error "[DeferredCloneCleanupJob] Failed to preserve artifacts for session #{session_id}: #{create_result.error}"
         # Artifact extraction failed, so the clone itself is now the only copy of
         # this session's unpushed work — keep it for the whole reversible window.
-        # An unarchive inside that window finds the clone still on disk and takes
-        # UnarchiveSessionService's quick path, which restores the real working
-        # tree rather than a patch of it: better than the artifacts we failed to
-        # write. EmptyTrashJob reaps clone and artifacts together at the deadline
-        # (it deletes; it does not retry preservation).
+        # An unarchive inside that window finds the clone on disk and takes
+        # UnarchiveSessionService's quick path, restoring the clone as it stands.
+        # That path does no mass-deletion validation, so a clone that is itself
+        # mangled is adopted as-is; it is still the better of the two losses,
+        # because the alternative here is deleting the only copy. EmptyTrashJob
+        # reaps clone, Docker resources and artifacts together at the deadline —
+        # it deletes, it does not retry preservation.
         #
-        # The deadline is written explicitly rather than left to the one `archive`
-        # set as a safety net, because that assignment is best-effort — a
-        # `set_trash_expiry` that raised is logged and swallowed. Landing here with
-        # trash_after still nil is what would hand the clone to
-        # StaleCloneCleanupJob, whose archived-and-untrashed scope reaps it
-        # unpreserved an hour later, and to the orphan sweep, whose in-trash guard
-        # is the same non-nil check.
-        keep_clone_for_full_retention(session)
+        # The deadline is anchored to archived_at here rather than inherited from
+        # whatever an earlier writer left on the row. A retry is what makes that
+        # matter: a first run that took the clean branch cleared trash_after in
+        # finalize_trash_expiry and then raised on the way out (the rescue at the
+        # bottom re-raises for the job retry), so the retry can reach this branch
+        # with trash_after nil and a clone still on disk. Nil is what hands the
+        # clone to StaleCloneCleanupJob, whose archived-and-untrashed scope reaps
+        # it in an hour with no preservation attempt and no Docker teardown.
+        keep_clone_for_full_retention(session, create_result.error)
         return
       end
     else
@@ -187,13 +190,35 @@ class DeferredCloneCleanupJob < ApplicationJob
 
   # Hold the clone for the rest of the reversible window after a failed
   # preservation: set the same deadline the success path sets, so the session is
-  # EmptyTrashJob's to reap and nothing shorter-fused can take it.
-  def keep_clone_for_full_retention(session)
+  # EmptyTrashJob's to reap and nothing shorter-fused can take it. The hold is
+  # not free — a whole clone, its .env and its Compose resources stay up for the
+  # window rather than an hour (see docs/limitations) — and it is the price of
+  # not deleting the only copy of the session's work.
+  def keep_clone_for_full_retention(session, error)
     with_db_retry do
       session.update_column(:trash_after, trash_deadline_for(session))
     end
+    held_until = session.trash_after&.iso8601
     Rails.logger.info "[DeferredCloneCleanupJob] Keeping clone for session #{session.id} — artifact creation " \
-      "failed, so the clone is held until #{session.trash_after&.iso8601} for unarchive to restore directly"
+      "failed, so the clone is held until #{held_until} for unarchive to restore directly"
+
+    # Durable and user-visible: a session log is the only surface a person
+    # reading Zimmer sees. Every other terminal outcome in this pipeline writes
+    # one, and this is the branch where a later restore behaves differently from
+    # the norm. Failing to write it must not raise past the hold above — the job
+    # would retry and re-enter this branch — so it is swallowed on its own.
+    begin
+      with_db_retry do
+        session.logs.create!(
+          level: "warning",
+          content: "Could not preserve unpushed artifacts (#{error}). The clone is kept on disk until " \
+            "#{held_until} instead, so unarchiving before then restores it directly."
+        )
+      end
+    rescue => e
+      Rails.logger.error "[DeferredCloneCleanupJob] Failed to record the artifact-failure hold for session " \
+        "#{session.id}: #{e.class} - #{e.message}"
+    end
   end
 
   # Decide whether this session still needs a trash deadline once the clone is

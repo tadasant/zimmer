@@ -186,12 +186,14 @@ window and then either deletes the clone (if it's clean) or preserves unpushed a
 `TRASH_RETENTION_PERIOD`, which is `4.days`. `EmptyTrashJob` deletes them once that expires.
 
 If artifact extraction fails outright, the clone is kept — it is then the only copy of that
-session's unpushed work — and the job writes the same `4.days` deadline on the session, so
-unarchive inside that window finds the clone on disk and restores the real working tree rather than
-a patch of it, and `EmptyTrashJob` reaps it at the deadline. The deadline is written there
-explicitly rather than inherited from the one `archive` sets, because that assignment is
-best-effort: an archived session that reaches this path with no `trash_after` is exactly what
-`StaleCloneCleanupJob` reaps — unpreserved — an hour after archive.
+session's unpushed work — and the job writes the same `4.days` deadline on the session and a
+`warning` log the session's owner can see. Unarchive inside that window finds the clone on disk and
+restores it as it stands; `EmptyTrashJob` reaps it, its Docker resources and its artifacts at the
+deadline. The deadline is anchored to `archived_at` here rather than inherited from whatever is
+already on the row: a retry that reaches this branch after an earlier run cleared `trash_after`
+would otherwise leave the clone to `StaleCloneCleanupJob`, which reaps it — unpreserved, and without
+tearing Docker down — an hour after archive. The cost of the hold is
+[a limitation](/limitations/#a-failed-artifact-preservation-holds-a-whole-clone-for-four-days).
 
 Preservation does not take the working tree entirely on faith. A tree that is 50 or more deleted
 tracked files and almost nothing else is not uncommitted work — it is a clone that an interrupted
