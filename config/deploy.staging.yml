@@ -14,11 +14,16 @@ servers:
       # claude) are reaped instead of piling up as zombies.
       init: true
       # Durable named volumes shared by web + worker so both see the same clones,
-      # Claude credentials, and gh auth. They survive Kamal container swaps (the
+      # runtime credentials, and gh auth. They survive Kamal container swaps (the
       # whole point of a persistent host) -- state is no longer lost on every deploy.
+      # Both runtime homes are here: ~/.claude for Claude Code, CODEX_HOME
+      # (~/.codex) for Codex rollouts, auth.json, and the thread store. A runtime
+      # home left on the container layer is destroyed by each deploy, and the next
+      # `resume` then fails with "no rollout found" and restarts from zero.
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
+        - codex_home:/home/rails/.codex
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
   worker:
@@ -47,6 +52,7 @@ servers:
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
+        - codex_home:/home/rails/.codex
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
 
