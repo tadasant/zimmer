@@ -37,6 +37,13 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     }.merge(overrides))
   end
 
+  # The agent root a hierarchy node is identified by. Stamped after create because
+  # it lives in metadata the model owns rather than in an attribute.
+  def with_agent_root(session, key)
+    session.update!(metadata: (session.metadata || {}).merge("agent_root_key" => key))
+    session
+  end
+
   def create_trigger
     trigger = Trigger.new(
       name: "nightly-catalog-resolve-and-cache-warm",
@@ -148,6 +155,125 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_text "Approval request lost"
 
     assert_no_horizontal_overflow("session detail with a lost-elicitation banner")
+  end
+
+  # The session hierarchy panel is the one place on this page where the two
+  # assertions above are not enough. Each node is an agent-root badge, a title,
+  # an `#id · status`, a genesis pill and sometimes an uncle pill on a single
+  # line, indented a further 20px per level of nesting — and when that ran past
+  # the right edge the document reported no sideways scroll at all, so the tail
+  # of a node was not merely off screen but unreachable (issue #390).
+  #
+  # `getBoundingClientRect` measures where an element actually is, whatever an
+  # ancestor does with the overflow, which is why this compares against the
+  # viewport directly rather than reusing `overflow_report`.
+  #
+  # Returns the offending elements described the way the mobile QA pass's Probe 2
+  # describes them.
+  def elements_past_right_edge(selector)
+    page.evaluate_script(<<~JS)
+      (function () {
+        const limit = document.documentElement.clientWidth;
+        const root = document.querySelector(#{selector.to_json});
+        if (!root) return ["no element matched " + #{selector.to_json}];
+        return Array.from(root.querySelectorAll("*"))
+          .filter((el) => el.getBoundingClientRect().right > limit + 1)
+          .slice(0, 20)
+          .map((el) => el.tagName.toLowerCase() + "." + el.classList.value +
+                       " @ " + Math.round(el.getBoundingClientRect().right) + "px");
+      })()
+    JS
+  end
+
+  # The computed `padding-left` of the node marked as the current session — the
+  # depth indent, which is 8px per level below `sm:` and 20px per level above it.
+  def current_node_indent(list_selector)
+    page.evaluate_script(
+      "getComputedStyle(document.querySelector(#{"#{list_selector} > li[data-current]".to_json})).paddingLeft"
+    )
+  end
+
+  # A title is legible only if it is not visually cut off, which a `truncate` would
+  # be while still passing every measurement above. On a flex item — which every
+  # node's title is — scrollWidth and clientWidth are real numbers, so their
+  # difference is the part of the title the reader cannot see.
+  def assert_title_not_clipped(element, label)
+    clipped = page.evaluate_script(
+      "arguments[0].scrollWidth - arguments[0].clientWidth", element.native
+    )
+    assert clipped <= 1, "#{label} is clipped by #{clipped}px instead of wrapping"
+  end
+
+  test "session hierarchy nodes stay within the viewport on a phone, unchanged at desktop width" do
+    origin = with_agent_root(
+      create_session(title: "Gate and claim the mobile overflow bug", status: :needs_input),
+      "zimmer-router"
+    )
+    router = with_agent_root(
+      create_session(
+        title: "Implement zimmer#390 (session hierarchy nodes overflow at 375px)",
+        status: :needs_input, parent_session_id: origin.id
+      ),
+      "zimmer-router"
+    )
+    # Keeps LONG_TOKEN_TITLE, so the link path renders an unbreakable title.
+    worker = with_agent_root(create_session(status: :needs_input, parent_session_id: router.id), "zimmer")
+    helper = with_agent_root(
+      create_session(title: "Check the Safari case too", status: :needs_input, parent_session_id: worker.id),
+      "zimmer"
+    )
+    # Depth 4 of MAX_DEPTH 8, so the indent is well past the point where a phone
+    # row would have run out — and it keeps LONG_TOKEN_TITLE, so the current-node
+    # path renders an unbreakable title too.
+    current = with_agent_root(create_session(status: :running, parent_session_id: helper.id), "zimmer")
+    # The uncle is a sibling rather than an ancestor. An uncle edge is walked
+    # downward like a spawn edge, so an uncle nearer the root would re-seat the
+    # current session at a shallower depth and quietly change the indent this
+    # test is measuring.
+    sibling = with_agent_root(
+      create_session(title: "Re-route the stalled worker", status: :needs_input, parent_session_id: helper.id),
+      "zimmer-router"
+    )
+    SessionUncleLink.create!(session: current, uncle_session: sibling, source: "test")
+
+    list = "#session_#{current.id}_hierarchy"
+
+    visit session_path(current)
+    assert_text "Session hierarchy"
+    within(list) { assert_text "also senior" }
+    # The deepest node is the current one, and it carries every pill the panel can
+    # render — so this is the widest row in the widest tree the fixture builds.
+    assert_selector "#{list} > li[data-current][data-depth='4']"
+    # Captured before the assertions so a failing run uploads the broken layout too.
+    # Scrolled into view first: a screenshot is of the viewport, and the panel sits
+    # below the fold on a phone.
+    scroll_into_center(find(list))
+    page.save_screenshot("tmp/screenshots/proof-session-hierarchy-375.png")
+
+    # Deliberately first: the document not scrolling sideways is exactly what made
+    # this bug invisible to the page-level check, so run that check and then the
+    # per-element one it cannot see.
+    assert_no_horizontal_overflow("session detail with a hierarchy")
+
+    past_edge = elements_past_right_edge(list)
+    assert_empty past_edge,
+      "hierarchy nodes end past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
+
+    assert_equal "32px", current_node_indent(list), "the depth indent should be 8px per level on a phone"
+
+    # Both title paths, each holding the unbreakable token that would otherwise set
+    # its own container's width: a link on another node, a span on the current one.
+    assert_title_not_clipped(find("#{list} a", text: LONG_TOKEN_TITLE, match: :first), "a linked node title")
+    assert_title_not_clipped(find("#{list} span.font-semibold", text: LONG_TOKEN_TITLE), "the current node title")
+
+    # And the laptop is unchanged: full 20px-per-level indent, nothing past the edge.
+    page.driver.browser.manage.window.resize_to(1400, 900)
+    visit session_path(current)
+    assert_text "Session hierarchy"
+
+    assert_empty elements_past_right_edge(list), "hierarchy nodes end past the 1400px viewport"
+    assert_equal "80px", current_node_indent(list),
+      "the depth indent should be the unchanged 20px per level at desktop width"
   end
 
   test "new session form does not overflow horizontally on a phone" do
