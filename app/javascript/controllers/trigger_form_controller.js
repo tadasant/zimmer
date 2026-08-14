@@ -411,7 +411,7 @@ export default class extends Controller {
               <p class="mt-1 text-xs text-gray-500">Enter the channel ID directly. Find it in the channel's details in Slack, or in the channel URL.</p>
             </div>
             <button type="button" data-action="click->trigger-form#toggleChannelManual" class="mt-1 text-xs text-indigo-600 hover:text-indigo-500">Enter channel ID manually</button>
-            <p class="mt-1 text-xs text-gray-500">For "Bot mention" and the passive-listening types, leave the channel blank to monitor all channels the bot is in (plus DMs, for "Bot mention").</p>
+            <p class="mt-1 text-xs text-gray-500">For "Bot mention" and the passive-listening types, leave the channel blank to monitor all channels the bot is in (plus DMs, for "Bot mention"). "Direct message" ignores the channel entirely — it watches DMs only.</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Event Type</label>
@@ -419,6 +419,7 @@ export default class extends Controller {
                     class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
               <option value="new_message">New message - All messages in channel</option>
               <option value="bot_mention">Bot mention - @mentions and DMs from allowed users</option>
+              <option value="dm_message">Direct message - Any DM to Zimmer from an allowed user</option>
               <option value="passive_listen_thread">Passive listen: threads - Replies in threads Zimmer has joined, no @mention needed</option>
               <option value="passive_listen_channel">Passive listen: channels - Messages in channels Zimmer posted in recently</option>
             </select>
