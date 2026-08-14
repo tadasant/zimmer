@@ -8,6 +8,17 @@ a symlink to this file.)
 Zimmer is a Rails 8 app (Ruby 3.4.6) that orchestrates AI coding agents. Key
 stack: PostgreSQL, Redis, GoodJob, Hotwire (Turbo + Stimulus), Tailwind.
 
+## Production invariants
+
+Before starting work, check the desired invariants for the Tadasant production
+deployment. The `check-invariants-before-starting-work` skill loads them; the
+canonical source is `artifacts/references/PRODUCTION_INVARIANTS.md` (reference id
+`production-invariants`) in `tadasant/tadasant-internal`.
+
+They are *desired* invariants, and not all of them are true today. Work in this
+repo should move toward them. If a change moves away from one, say so rather than
+landing it quietly.
+
 ## Working here
 
 - Always run Rails/bundler commands from the repo root (this is the app root).
