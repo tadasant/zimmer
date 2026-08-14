@@ -15,7 +15,7 @@ are as important as the state change itself.
 | --- | --- | --- |
 | `waiting` | 1 | Queued, or dormant awaiting a scheduled wake-up. The initial state. |
 | `running` | 0 | An agent process is alive and a monitoring job owns it. |
-| `needs_input` | 2 | The agent's turn ended, or it's blocked on an elicitation. This is your to-do list: agents archive themselves on completion, so what rests here is meant to need you. See [goals](/sessions/goals/). |
+| `needs_input` | 2 | The agent's turn ended, or it's blocked on an elicitation. This is your to-do list: agents archive themselves on completion, and a session waiting on its own PR archives when that PR merges, so what stays here is meant to need you. See [goals](/sessions/goals/). |
 | `failed` | 4 | Terminal error. Resumable. |
 | `archived` | 3 | In the trash. Restorable until the clone is reaped. |
 
