@@ -137,43 +137,53 @@ class GoalsConfigTest < ActiveSupport::TestCase
 
   # The goal text is what actually steers a session's lifecycle -- it is far more
   # proximate than the general principle in OrchestratorSystemPromptBuilder, so a
-  # goal that says "do not archive yourself" wins over a prompt that says the
-  # opposite. These pin the resolution: PR goals end in self-archival, and
-  # codebase-question is the single goal allowed to say otherwise.
+  # goal that contradicts the prompt wins. These pin the resolution: a PR session
+  # stays in needs_input while its PR's disposition is unsettled, and the merge
+  # message -- not a human -- is what tells it to archive.
   PR_GOAL_IDS = %w[
     open-reviewed-green-pr
     open-reviewed-green-pr-with-version-bump
     e2e-verified-green-pr
   ].freeze
 
-  test "PR goals instruct the session to archive itself" do
+  test "PR goals hold the session until the PR merges, then archive on the merge message" do
     PR_GOAL_IDS.each do |id|
       description = GoalsConfig.find(id).description
 
-      assert_includes description, "archive yourself",
-        "Goal '#{id}' must tell the session to self-archive once the PR is green, reviewed and labeled"
-      assert_includes description, "Do NOT park this session as a stand-in todo item for an unreviewed PR",
-        "Goal '#{id}' must reject the stale 'an open PR is the user's todo list' rationale"
+      assert_includes description, "stop in needs_input",
+        "Goal '#{id}' must hold the session while the PR's merge disposition is unsettled"
+      assert_includes description, "THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE",
+        "Goal '#{id}' must name the merge notification as the archive trigger"
+      assert_includes description, "archive yourself immediately rather than waiting to be told twice",
+        "Goal '#{id}' must not leave the session waiting for a human after its PR merged"
+      assert_includes description, "a merge gate holds the PR for human review",
+        "Goal '#{id}' must say that a held PR is the sanctioned reason to stay put"
     end
   end
 
-  test "no goal reinstates the todo-list parking rationale" do
+  # The failure mode this replaced was not the stop -- it was the rider on it, which
+  # told sessions that only a human could archive them. That is what made them ignore
+  # the merge message and sit in needs_input for weeks after their PR landed.
+  test "no goal makes archiving conditional on the user's say-so" do
     GoalsConfig.all.each do |goal|
       refute_match(/todo-list/i, goal.description,
         "Goal '#{goal.id}' revives the 'open PRs are a visible todo-list' rationale")
+      refute_includes goal.description, "Only the user (or an explicit follow-up message) should trigger archiving",
+        "Goal '#{goal.id}' makes a human the only archive trigger, which strands the session after its PR merges"
       refute_includes goal.description, "STOP and wait in needs_input state",
-        "Goal '#{goal.id}' parks unconditionally instead of archiving on completion"
+        "Goal '#{goal.id}' parks unconditionally, with no stated condition for archiving"
     end
   end
 
-  test "codebase-question is the only goal that tells a session not to archive" do
-    keeping_the_session_open = GoalsConfig.all.select do |goal|
-      goal.description.include?("do NOT archive yourself") ||
-        goal.description.include?("Do NOT archive yourself")
+  test "codebase-question is the only goal that parks without naming an exit" do
+    parking_for_a_human = GoalsConfig.all.reject do |goal|
+      goal.description.include?("THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE")
+    end.select do |goal|
+      goal.description.match?(/do NOT archive yourself/i)
     end
 
-    assert_equal [ "codebase-question" ], keeping_the_session_open.map(&:id),
-      "Only a human-asked question is a sanctioned reason to stay in needs_input by default"
+    assert_equal [ "codebase-question" ], parking_for_a_human.map(&:id),
+      "Only a human-asked question parks with no machine signal to release it"
   end
 
   test "codebase-question tells a router-spawned session to report back and archive" do
