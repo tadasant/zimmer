@@ -2465,6 +2465,44 @@ finish a job — see [Nested Docker for agent sessions](/operate/nested-docker/)
 
 ---
 
+## A PR session waits for a merge message that three cases can prevent
+
+The PR goals hold a session in `needs_input` until its PR merges, and
+`GitHubPullRequestPollerJob` releases it by delivering `AutomatedPrompts.pr_merged_message`.
+That is the whole exit condition, and it has three ways to not fire.
+
+**The PR URL was never recorded.** The poller iterates `Session.with_github_prs`, which needs
+`custom_metadata["github_pull_request_urls"]` populated, and that is filled by
+`TranscriptHooks::GithubPrUrlHook` — a deliberately tight heuristic over the transcript. A PR
+opened through a GitHub MCP tool, `gh api`, a wrapper script, a subagent whose tool calls do not
+reach the main transcript, or against a different repository than the session's own (the
+`same_repo?` gate) records nothing. `warn_if_pr_goal_captured_no_url` notices and writes a
+session-timeline warning, but nothing the agent reads. The prompt and the goal text both tell the
+agent to check `get_session` and archive if no URL was recorded, which is an instruction, not a
+guarantee.
+
+**The poller never saw the PR open.** The announcement fires only on an observed open → merged
+transition (`status == "merged" && current_statuses[pr_url] == "open"`). `PollBackoff` stretches
+the per-session interval to 5 minutes, 30 minutes, and eventually 24 hours based on time since the
+last *human* activity — which for a router-spawned session counts from `created_at`. A merge gate
+that merges inside that window can land the PR before the poller ever recorded it as open, and the
+session waits forever. Documented from the poller's side in
+[background jobs](/operate/background-jobs/).
+
+**The delivery threw.** A failed `deliver_follow_up!` is swallowed while the status write advances
+past the transition, so the message is never retried.
+
+Before the session archived on labeling, each of these left a stale session. Now each leaves a
+permanent one. The recovery in every case is the same: the human archives it, or sends it a
+follow-up.
+
+There is a fourth, milder consequence on the other side of the merge. Archiving drops a session out
+of `with_github_prs`, so comments left on the PR *after* it merges reach nobody. That is intended —
+the work is done — but it means a post-merge question on the PR needs the session unarchived to be
+answered.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

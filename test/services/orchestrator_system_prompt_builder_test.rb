@@ -215,7 +215,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     assert_includes prompt, "You lacked the authorization scope or the tools to finish the job"
-    assert_includes prompt, "You opened a PR and its merge disposition is not settled yet"
+    assert_includes prompt, "You opened a PR and its merge disposition is unsettled"
     assert_includes prompt, "A human invoked this session — or the router above it — specifically to explore something or answer a question"
     assert_includes prompt, "RARE — you hit an ambiguity that is both too dangerous and too irreversible"
     assert_includes prompt, "It is not an escape hatch for \"I wasn't sure.\""
@@ -232,10 +232,20 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "a PR session is told the merge message is its archive signal" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "when the PR merges, Zimmer tells you, and *that message is your signal to archive*"
-    assert_includes prompt, "If a merge gate holds the PR instead, no such message ever comes"
-    # The unmerged PR has to be carved out of "waiting on a machine", or the two rules collide.
-    assert_includes prompt, "The one exception is reason 2 above: an unmerged PR parks you"
+    assert_includes prompt, "tells you when the PR merges, and *that message is your signal to archive*"
+    assert_includes prompt, "A merge gate that holds the PR means no message arrives until a human merges it"
+    # The PR has to be carved out of "waiting on a machine", or the two rules collide.
+    assert_includes prompt, "The one exception is reason 2 above: an open PR parks you"
+    # Reason 2 has to outrank the one-session rule, or a router with several PR children
+    # gets contradictory instructions.
+    assert_includes prompt, "Reason 2 outranks this rule"
+
+    # A PR the transcript hook never captured can never produce a merge message, so the
+    # session would wait forever. It needs a stated way out.
+    assert_includes prompt, "**Zimmer never recorded a PR URL for this session**"
+    assert_includes prompt, "put the PR URL in your final message and archive rather than waiting forever"
+    assert_includes prompt, "the PR was closed without merging (the work is over)"
+    assert_includes prompt, "find your PR already merged, archive then"
   end
 
   test "includes the file-a-GitHub-issue principle" do

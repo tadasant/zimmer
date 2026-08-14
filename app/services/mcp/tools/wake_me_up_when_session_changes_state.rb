@@ -23,7 +23,7 @@ module Mcp
         This is the **state-based analog of `wake_me_up_later`**. Use `wake_me_up_later` when you know *when* to wake up (a clock time). Use this tool when you know *what event* to wake up on but not when it will happen — e.g., a subagent session you spawned will eventually finish (self-archive), pause for input, or crash, and you want to be the first to handle it without polling.
 
         **Triple-wake pattern (typical use).** When you spawn a downstream session and want to wake up on whatever outcome it produces, you'll TYPICALLY want to schedule THREE state-change triggers — one for each terminal/idle event — so you wake on whichever happens first:
-        - `session_archived` — the watched session self-archived on success (common for closed-loop tasks like "open a PR and self-archive when CI is green"). A downstream session that self-archives goes `running` → `archived` directly, skipping `needs_input`, so a trigger on `session_needs_input` alone would NEVER fire for these tasks.
+        - `session_archived` — the watched session self-archived on success (common for closed-loop tasks that finish without needing anyone). A downstream session that self-archives goes `running` → `archived` directly, skipping `needs_input`, so a trigger on `session_needs_input` alone would NEVER fire for these tasks.
         - `session_needs_input` — the watched session paused for user input or finished a turn awaiting follow-up.
         - `session_failed` — the watched session crashed.
 

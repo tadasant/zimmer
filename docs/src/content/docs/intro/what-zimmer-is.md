@@ -51,7 +51,7 @@ guidance the agent gets is resolved from a versioned catalog per session. See [A
 
 It closes the loop. The default goal spells out what "done" requires: open a PR, wait for
 CI, confirm CI is green, run a review, address the review, and label it. The session then waits
-on the PR, and archives itself when it merges — so what stays in your queue is the PRs that were
+on the PR, and archives itself when it merges — so what stays in your queue are the PRs that were
 *not* merged for you. See [goals](/sessions/goals/).
 
 ## What it is not

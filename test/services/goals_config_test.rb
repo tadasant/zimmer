@@ -150,8 +150,10 @@ class GoalsConfigTest < ActiveSupport::TestCase
     PR_GOAL_IDS.each do |id|
       description = GoalsConfig.find(id).description
 
-      assert_includes description, "stop in needs_input",
+      assert_includes description, "and stop in needs_input. Do NOT archive yourself yet",
         "Goal '#{id}' must hold the session while the PR's merge disposition is unsettled"
+      assert_includes description, "Zimmer never recorded a PR URL for this session",
+        "Goal '#{id}' must give the session an exit when no merge message can ever reach it"
       assert_includes description, "THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE",
         "Goal '#{id}' must name the merge notification as the archive trigger"
       assert_includes description, "archive yourself immediately rather than waiting to be told twice",
@@ -161,9 +163,9 @@ class GoalsConfigTest < ActiveSupport::TestCase
     end
   end
 
-  # The failure mode this replaced was not the stop -- it was the rider on it, which
-  # told sessions that only a human could archive them. That is what made them ignore
-  # the merge message and sit in needs_input for weeks after their PR landed.
+  # The stop is conditional, and the condition has to be the merge message rather than
+  # a person's attention. A goal making a human the only thing able to release a session
+  # is what leaves sessions in needs_input for weeks after their PR has landed.
   test "no goal makes archiving conditional on the user's say-so" do
     GoalsConfig.all.each do |goal|
       refute_match(/todo-list/i, goal.description,
