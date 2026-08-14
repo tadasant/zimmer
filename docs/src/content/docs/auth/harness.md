@@ -528,16 +528,17 @@ message bus's job. Tracked in [#111](https://github.com/tadasant/zimmer/issues/1
 
 ### The screen-scrape is only as stable as the CLI's output
 
-Both login CLIs self-update on the worker (`ClaudeCodeUpdateJob`), so their output can change with
-no Zimmer deploy — and when it does, the flow breaks in production while every driver test stays
-green, because those tests assert against a *captured* buffer. That is not hypothetical: Claude Code
-`2.1.232` began rendering its authorization link as an
+The Claude CLI self-updates on the worker — `ClaudeCodeUpdateJob` runs `claude update` daily — so
+its output can change with no Zimmer deploy, and when it does, the flow breaks in production while
+every driver test stays green, because those tests assert against a *captured* buffer. (Codex is
+pinned in the image and moves only on a deploy, which makes the same drift visible in a diff.) That
+is not hypothetical: Claude Code `2.1.232` began rendering its authorization link as an
 [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda), which prints
 the URL twice — once as the escape sequence's target, once as the visible label — and the old
 `\S+` tail ran straight through the `BEL` terminator into the second copy. The panel showed a
 907-character link no browser could open, so the login could not be completed at all.
 
-Two properties keep `RuntimeLoginDriver#strip_ansi` and the URL patterns honest against that class
+Three properties keep `RuntimeLoginDriver#strip_ansi` and the URL patterns honest against that class
 of drift:
 
 - **OSC 8 hyperlinks are unwrapped to their target, not deleted.** Terminals conventionally shorten
@@ -545,6 +546,12 @@ of drift:
   that label still being the full URL.
 - **A URL match ends at the first control character** (`URL_CHAR`, not `\S`). Whatever decoration a
   future CLI wraps the link in, the match cannot swallow it.
+- **A half-arrived escape sequence at the end of the buffer is discarded.** The job re-parses a
+  growing buffer every tick and surfaces the first URL it sees exactly once, so a chunk read that
+  cuts a hyperlink in half would otherwise pin the panel to a truncated link for the whole attempt.
+
+This is the concrete shape of the screen-scraping hazard recorded in
+[Limitations](/limitations/#the-login-flow-screen-scrapes-a-tui).
 
 When output does drift again, capture it from the CLI on the worker — spawn it under a PTY into a
 throwaway `CLAUDE_CONFIG_DIR`, exactly as the job does — and build the fixture from those bytes. A

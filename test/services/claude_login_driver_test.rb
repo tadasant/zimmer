@@ -70,9 +70,11 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
     assert_match @driver.paste_prompt, @driver.strip_ansi(CAPTURED_LOGIN_OUTPUT)
   end
 
-  test "parse_verification stops at a control character even when an escape survives stripping" do
-    # Defence in depth: whatever future decoration a CLI wraps the link in, the
-    # match must end at the first control byte rather than swallow the rest.
+  test "parse_verification stops at a BEL when an unrecognized escape survives stripping" do
+    # Defence in depth, independent of what strip_ansi knows how to remove: an
+    # APC sequence is deliberately not stripped, so this exercises URL_CHAR alone
+    # — whatever decoration a future CLI wraps the link in, the match must end at
+    # the first control byte rather than swallow the rest.
     raw = "visit: \x1b_unknown-sequence;https://claude.com/cai/oauth/authorize?state=abc\x07trailing"
     assert_equal "https://claude.com/cai/oauth/authorize?state=abc",
       @driver.parse_verification(@driver.strip_ansi(raw))[:url]
