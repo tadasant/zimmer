@@ -75,11 +75,20 @@ differs between staging and production — and all three settings read the resol
 so they cannot drift apart:
 
 ```erb
-<% nested_docker = ENV.fetch("ZIMMER_NESTED_DOCKER", "1") == "1" %>   <%# staging; production defaults to "0" %>
+<%# top of the file; production's default is "0" %>
+<% nested_docker = ENV.fetch("ZIMMER_NESTED_DOCKER", "1") == "1" %>
+
+<%# under servers.worker.options %>
 runtime: <%= nested_docker ? "sysbox-runc" : "runc" %>
 user: "<%= nested_docker ? "0:0" : "1000:1000" %>"
+
+<%# further down, under env.clear -- destination-wide, so it reaches web too %>
 ZIMMER_NESTED_DOCKER: "<%= nested_docker ? "1" : "0" %>"
 ```
+
+The three are not adjacent in the file; they are grouped here because they are one
+decision. `web` receives the env var (`env.clear` is destination-wide) and ignores it —
+the entrypoint's dockerd block sits inside its `id -u = 0` branch, and `web` runs as 1000.
 
 `test/config/nested_docker_switch_test.rb` renders both destinations at all three switch
 states (unset, `0`, `1`) and asserts the three settings are armed together or not at all —
