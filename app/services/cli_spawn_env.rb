@@ -20,20 +20,11 @@ module CliSpawnEnv
 
   # Load environment variables from a .env file if present in working_dir.
   #
-  # Parses .env files in standard KEY=VALUE format:
-  # - Supports comments (lines starting with #)
-  # - Supports quoted values: KEY="value" or KEY='value'
-  # - Supports empty values: KEY=
-  # - Skips invalid lines gracefully
-  #
-  # Variable naming constraints:
-  # - Must start with letter or underscore
-  # - Can contain letters, numbers, and underscores (ASCII only)
-  #
-  # Limitations:
-  # - Does not support multi-line values
-  # - Does not expand variable references (e.g., $HOME)
-  # - Does not support escape sequences in quoted strings
+  # The parsing itself lives in EnvFile, because RuntimeConfigPostProcessor reads
+  # the same file when it writes each stdio MCP server's `env` table — a variable
+  # the operator set must reach the agent and its servers alike, which only holds
+  # if both read it the same way. See EnvFile for the supported dialect and its
+  # limits.
   #
   # @param working_dir [String] Directory to search for .env file
   # @return [Hash] Environment variables to pass to Process.spawn
@@ -44,47 +35,11 @@ module CliSpawnEnv
   #   env_vars = load_env_file("/path/to/project")
   #   # => { "API_KEY" => "secret123", "DEBUG" => "true" }
   def load_env_file(working_dir)
-    env_path = File.join(working_dir, ".env")
+    return {} unless @file_system.exists?(File.join(working_dir.to_s, EnvFile::FILENAME))
 
-    # Return empty hash if .env doesn't exist
-    return {} unless @file_system.exists?(env_path)
-
-    # Check file size to prevent memory exhaustion from malicious/huge .env files
-    max_size = 1.megabyte
-    content = @file_system.read(env_path)
-    if content.bytesize > max_size
-      @logger.warn "Skipping .env file: exceeds maximum size of #{max_size} bytes (actual: #{content.bytesize} bytes)"
-      return {}
-    end
-
-    @logger.info "Loading environment variables from .env file"
-
-    env_vars = {}
-
-    # Parse .env file line by line
-    content.each_line do |line|
-      # Skip empty lines and comments
-      line = line.strip
-      next if line.empty? || line.start_with?("#")
-
-      # Parse KEY=VALUE format
-      # Matches: VALID_VAR_NAME=value
-      # Rejects: 123INVALID, -INVALID, INVALID-NAME
-      if line =~ /\A([A-Za-z_][A-Za-z0-9_]*)=(.*)\z/
-        key = Regexp.last_match(1)
-        value = Regexp.last_match(2)
-
-        # Remove surrounding quotes if present (matching quotes only)
-        value = value.strip
-        if (value.start_with?('"') && value.end_with?('"') && value.length >= 2) ||
-           (value.start_with?("'") && value.end_with?("'") && value.length >= 2)
-          value = value[1..-2]
-        end
-
-        env_vars[key] = value
-      end
-    end
-
+    env_vars = EnvFile.load(working_dir, file_system: @file_system, logger: @logger)
+    # Logged even at zero: "a .env I could not parse a line of" and "no .env at all"
+    # are different diagnoses, and only this line tells them apart.
     @logger.info "Loaded #{env_vars.size} environment variables from .env"
     env_vars
   rescue => e
@@ -286,6 +241,13 @@ module CliSpawnEnv
   #
   # An explicit value from the session's .env wins — an operator pointing a server
   # at a different Zimmer must not be overridden.
+  #
+  # This reaches the CLI itself and, on Claude Code, the stdio MCP servers that
+  # inherit its environment. It does NOT reach a Codex server: Codex rebuilds each
+  # server's environment from a fixed whitelist plus the config entry's own tables.
+  # RuntimeConfigPostProcessor#inject_elicitation_env! writes the same two values
+  # (with the same .env precedence) into those tables, which is what makes the gate
+  # work on both runtimes.
   #
   # @param env_vars [Hash] Environment variables to pass to the child process
   # @return [Hash] env_vars with the ELICITATION_* variables set

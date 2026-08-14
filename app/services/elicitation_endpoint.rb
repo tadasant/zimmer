@@ -24,6 +24,11 @@ require "net/http"
 class ElicitationEndpoint
   PATH = "/api/v1/elicitations"
 
+  # The variables an MCP server reads the endpoint from. Named here because two
+  # injection paths (the agent process's env, each stdio server's own env table)
+  # must agree on the set — including which names a clone's `.env` may override.
+  VARIABLES = %w[ELICITATION_REQUEST_URL ELICITATION_SESSION_ID].freeze
+
   # Shared (Redis) cache key holding the last probe result.
   CACHE_KEY = "elicitation_endpoint_health"
   # Comfortably longer than the 5-minute cron, so one skipped tick doesn't drop the
@@ -44,9 +49,17 @@ class ElicitationEndpoint
       "#{AppUrl.base_url.to_s.chomp('/')}#{PATH}"
     end
 
-    # Environment for a spawned agent process, inherited by the stdio MCP servers
-    # it starts. Session-less callers get the URL but no session tag; the API logs
-    # a warning when a request arrives without one.
+    # The two variables an MCP server needs to reach the approval endpoint.
+    # Session-less callers get the URL but no session tag; the API logs a warning
+    # when a request arrives without one.
+    #
+    # Two callers, because there are two ways a server gets an environment:
+    # CliSpawnEnv puts these on the agent CLI process (which Claude Code's stdio
+    # servers inherit, and which the CLI itself reads), and
+    # RuntimeConfigPostProcessor writes them into each stdio server's own `env`
+    # table in the generated MCP config (which is the only route Codex honors — it
+    # rebuilds a server's environment from HOME/LANG/PATH/PWD/SHELL plus the
+    # entry's own tables, so nothing on the CLI process reaches it).
     #
     # Two variables it deliberately does NOT set:
     #

@@ -13,13 +13,15 @@
 #      already covers the self_session tool group.
 #   3. Retarget Zimmer MCP server entries at the current Zimmer instance so a
 #      local-dev or staging session orchestrates itself, not production.
-#   4. Resolve ${VAR} interpolations from SecretsLoader and rewrite npx commands.
+#   4. Write the elicitation address (ELICITATION_REQUEST_URL / _SESSION_ID) into
+#      every stdio server's own `env` table.
+#   5. Resolve ${VAR} interpolations from SecretsLoader and rewrite npx commands.
 #
 # The injected servers are streamable-HTTP entries pointing at this instance's
 # native /mcp endpoint (see McpController) — Zimmer speaks MCP itself, so nothing
 # is spawned via npx to reach it.
 #
-# Steps 1-3 operate purely on the normalized server hash (`command`/`args`/`env`
+# Steps 1-4 operate purely on the normalized server hash (`command`/`args`/`env`
 # for stdio, `url`/header-table for http) that both formats share, so they live
 # here as concrete shared logic. Steps tied to the file format and serialization
 # (read/parse, server-table extraction, per-entry secret/npx resolution, write)
@@ -64,6 +66,7 @@ class RuntimeConfigPostProcessor
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
     retarget_zimmer_servers_to_current_env!(servers)
+    inject_elicitation_env!(servers)
     resolve_and_rewrite!(servers)
 
     persist_config!(config)
@@ -98,6 +101,11 @@ class RuntimeConfigPostProcessor
     return if injected_mcp_servers.empty?
 
     retarget_zimmer_servers_to_current_env!(servers)
+    # A no-op today — everything reachable on this path is an auto-injected HTTP
+    # Zimmer entry, and only stdio servers have an environment. It runs anyway so
+    # the two paths stay identical: a stdio server that ever reaches here must not
+    # be the one server on the instance that silently loses its approval address.
+    inject_elicitation_env!(servers)
     resolve_and_rewrite!(servers)
 
     persist_config!(config)
@@ -155,6 +163,14 @@ class RuntimeConfigPostProcessor
   # written by retargeting survives the rest of the pipeline. Only Codex has such
   # a table; Claude resolves header refs in place, so this is a no-op there.
   def drop_forwarded_credential_header!(_entry, _header)
+    nil
+  end
+
+  # Remove any host-env forwarding rule for the given env var, for the same
+  # reason as the header version above: a forwarding rule and a literal `env`
+  # entry for one name is an ambiguity, and the literal one is the value Zimmer
+  # means. Only Codex has such a table (`env_vars`); no-op for Claude.
+  def drop_forwarded_env_var!(_entry, _name)
     nil
   end
 
@@ -274,6 +290,87 @@ class RuntimeConfigPostProcessor
       Rails.logger.warn "[#{self.class.name}] Retargeted Zimmer MCP servers in #{Rails.env} env with blank API key — " \
         "MCP calls will fail to authenticate. Set #{env_var} in your .env or credentials."
     end
+  end
+
+  # Write the approval endpoint's address into every stdio server's own `env`
+  # table: ELICITATION_REQUEST_URL (where an approval request goes) and
+  # ELICITATION_SESSION_ID (who is asking).
+  #
+  # Why here and not only in the spawn env: CliSpawnEnv sets both on the agent CLI
+  # process, and Claude Code hands a stdio MCP server its own environment, so that
+  # was enough there. Codex is not: it builds each server's environment from a
+  # fixed whitelist (HOME, LANG, PATH, PWD, SHELL) plus exactly what the entry's
+  # own `env`/`env_vars` name. Measured on codex-cli 0.146.0 — a stub stdio server
+  # spawned by `codex exec` from a shell with both variables set received neither.
+  # So on Codex every approval POST went to the client's baked-in default
+  # (`http://zimmer/…`, which does not resolve in the agent container) and died as
+  # `fetch failed`: a gate that fails closed and silently, indistinguishable from a
+  # human denial. Writing the values into the config the runtime itself hands the
+  # server is the one form of "reaching the server" both runtimes honor.
+  #
+  # Precedence: Zimmer's value wins over a catalog entry's `env` for these two keys
+  # specifically. The address of Zimmer's own endpoint is Zimmer's to know, and a
+  # catalog copy is a duplicate that can go stale without anything failing loudly —
+  # which is exactly what happened: a `http://zimmer` left in a catalog entry
+  # shadowed the injected URL for months. An operator who genuinely wants a
+  # different endpoint still has the clone's `.env`, which wins here as it does for
+  # the agent process (see #elicitation_env).
+  #
+  # Everything else in the entry is left alone: the values are MERGED into the
+  # existing `env` table, never replacing it, because that table is where a
+  # server's credentials live.
+  def inject_elicitation_env!(servers)
+    values = elicitation_env
+    return if values.empty?
+
+    written = servers.filter_map do |name, entry|
+      next unless entry.is_a?(Hash)
+      # stdio only — an HTTP/SSE entry (`url`, no `command`) has no child process
+      # and therefore no environment to write.
+      next if entry["command"].blank?
+
+      env = (entry["env"] ||= {})
+      # An `env` that is not a table is a malformed entry the runtime will reject
+      # on its own terms; skip rather than making this step the thing that raises.
+      next unless env.is_a?(Hash)
+
+      values.each do |var, value|
+        env[var] = value
+        drop_forwarded_env_var!(entry, var)
+      end
+      name
+    end
+
+    return if written.empty?
+
+    # Say so in the session log. The failure this fixes was silent on both ends —
+    # the server could not reach the endpoint and nothing recorded that it had not
+    # been told where the endpoint was. CliSpawnEnv logs the same for the agent
+    # process; this is the other half.
+    Rails.logger.info "[#{self.class.name}] Wrote #{ElicitationEndpoint::VARIABLES.join(' + ')} " \
+      "into the env of #{written.size} stdio MCP server(s): #{written.join(', ')}"
+  end
+
+  # The elicitation variables as the agent process will see them, so a server's
+  # env table and its parent agree: Zimmer's computed values, with the clone's
+  # `.env` winning over them exactly as it does in CliSpawnEnv#apply_elicitation_env.
+  #
+  # The `.env` pass iterates the canonical names rather than what spawn_env
+  # returned, so an operator's value is honored even for a name Zimmer itself has
+  # nothing to say about (a session-less caller sets no session tag).
+  def elicitation_env
+    values = ElicitationEndpoint.spawn_env(session_id: session&.id)
+    dotenv = EnvFile.load(working_directory, file_system: file_system)
+
+    ElicitationEndpoint::VARIABLES.each do |name|
+      values[name] = dotenv[name] if dotenv[name].present?
+    end
+    values
+  rescue StandardError => e
+    # A broken .env or an unresolvable base URL must not fail session prep; losing
+    # the address is a degraded gate, losing the session is a dead session.
+    Rails.logger.warn "[#{self.class.name}] Skipping elicitation env injection: #{e.class}: #{e.message}"
+    {}
   end
 
   # Swap a URL's origin for the current instance's, keeping path and query.
