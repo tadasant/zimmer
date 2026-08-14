@@ -4,6 +4,8 @@ class ClaudeAccountQuotaSnapshotDashboard < Administrate::BaseDashboard
   ATTRIBUTE_TYPES = {
     id: Field::Number,
     claude_account: Field::BelongsTo,
+    account_email: Field::String,
+    account_runtime: Field::String,
     subscription_type: Field::String,
     rate_limit_tier: Field::String,
     utilization_5h: Field::Number.with_options(decimals: 4),
@@ -21,6 +23,7 @@ class ClaudeAccountQuotaSnapshotDashboard < Administrate::BaseDashboard
   COLLECTION_ATTRIBUTES = %i[
     id
     claude_account
+    account_email
     utilization_5h
     utilization_7d
     trigger
@@ -30,6 +33,8 @@ class ClaudeAccountQuotaSnapshotDashboard < Administrate::BaseDashboard
   SHOW_PAGE_ATTRIBUTES = %i[
     id
     claude_account
+    account_email
+    account_runtime
     subscription_type
     rate_limit_tier
     utilization_5h

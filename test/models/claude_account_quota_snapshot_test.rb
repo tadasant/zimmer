@@ -8,10 +8,34 @@ class ClaudeAccountQuotaSnapshotTest < ActiveSupport::TestCase
     assert_equal claude_accounts(:primary), snapshot.claude_account
   end
 
-  test "validates claude_account presence" do
+  test "validates claude_account presence on create" do
     snapshot = ClaudeAccountQuotaSnapshot.new(claude_account: nil)
     assert_not snapshot.valid?
-    assert_includes snapshot.errors[:claude_account], "must exist"
+    assert_includes snapshot.errors[:claude_account], "can't be blank"
+  end
+
+  test "an existing snapshot stays valid once its account is deleted" do
+    # Nullifying the owner on delete is how history survives — it must not leave
+    # a row that can never be saved again.
+    snapshot = claude_account_quota_snapshots(:primary_recent)
+    snapshot.claude_account = nil
+    assert snapshot.valid?
+  end
+
+  test "captures the account identity at write time" do
+    account = claude_accounts(:secondary)
+    snapshot = account.quota_snapshots.create!(trigger: "page_view")
+
+    assert_equal account.email, snapshot.account_email
+    assert_equal account.runtime, snapshot.account_runtime
+  end
+
+  test "attached excludes snapshots whose account was deleted" do
+    snapshot = claude_accounts(:secondary).quota_snapshots.create!(trigger: "page_view")
+    snapshot.update_column(:claude_account_id, nil)
+
+    assert_not_includes ClaudeAccountQuotaSnapshot.attached, snapshot
+    assert_includes ClaudeAccountQuotaSnapshot.attached, claude_account_quota_snapshots(:primary_recent)
   end
 
   test "to_display_hash returns expected keys" do

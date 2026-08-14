@@ -44,7 +44,14 @@ class RuntimeLoginAttemptTest < ActiveSupport::TestCase
   test "belongs to a claude_account" do
     attempt = RuntimeLoginAttempt.new(runtime: "codex")
     assert_not attempt.valid?
-    assert_includes attempt.errors[:claude_account], "must exist"
+    assert_includes attempt.errors[:claude_account], "can't be blank"
+  end
+
+  test "an existing attempt stays valid once its account is deleted" do
+    attempt = @account.runtime_login_attempts.create!(runtime: "claude_code")
+    attempt.claude_account = nil
+
+    assert attempt.valid?, "nullifying the owner on delete must not strand an unsaveable row"
   end
 
   test "active scope excludes terminal statuses" do
@@ -79,15 +86,19 @@ class RuntimeLoginAttemptTest < ActiveSupport::TestCase
     assert past.expired_window?
   end
 
-  test "deleting the account destroys its login attempts" do
+  test "deleting the account detaches its login attempts without destroying them" do
     account = ClaudeAccount.create!(
-      email: "login-attempt-destroy@example.com", runtime: "claude_code",
+      email: "login-attempt-detach@example.com", runtime: "claude_code",
       status: :active, is_current: false, priority: 99
     )
-    account.runtime_login_attempts.create!(runtime: "claude_code")
-    assert_difference "RuntimeLoginAttempt.count", -1 do
+    attempt = account.runtime_login_attempts.create!(runtime: "claude_code")
+
+    assert_no_difference "RuntimeLoginAttempt.count" do
       account.destroy
     end
+
+    assert_nil attempt.reload.claude_account_id
+    assert_equal "login-attempt-detach@example.com", attempt.account_email
   end
 
   # ── heartbeat / orphan detection ──

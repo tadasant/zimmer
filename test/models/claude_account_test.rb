@@ -120,13 +120,21 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert_not_nil secondary.last_rotated_to_at
   end
 
-  test "destroying account destroys snapshots" do
+  test "destroying account detaches its snapshots without destroying them" do
     account = claude_accounts(:primary)
-    snapshot_count = account.quota_snapshots.count
-    assert snapshot_count > 0
+    email = account.email
+    snapshots = account.quota_snapshots.to_a
+    assert snapshots.any?
 
-    account.destroy
+    assert_no_difference "ClaudeAccountQuotaSnapshot.count" do
+      account.destroy
+    end
+
     assert_equal 0, ClaudeAccountQuotaSnapshot.where(claude_account_id: account.id).count
+    snapshots.each do |snapshot|
+      assert_nil snapshot.reload.claude_account_id
+      assert_equal email, snapshot.account_email
+    end
   end
 
   # Token management tests
@@ -662,7 +670,7 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     end
   end
 
-  test "destroy deletes rotation events where account is rotated_to" do
+  test "destroy nullifies rotation events where account is rotated_to" do
     primary = claude_accounts(:primary)
     secondary = claude_accounts(:secondary)
 
@@ -674,9 +682,14 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     )
 
     secondary.update!(is_current: false)
-    assert_difference "AccountRotationEvent.count", -1 do
+    assert_no_difference "AccountRotationEvent.count" do
       secondary.destroy!
     end
+
+    event.reload
+    assert_nil event.rotated_to_id
+    assert_equal secondary.email, event.rotated_to_email
+    assert_equal primary.id, event.rotated_from_id
   end
 
   test "destroy nullifies rotation events where account is rotated_from" do
