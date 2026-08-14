@@ -9,7 +9,9 @@
 # ~/.codex/auth.json; on success we read the scratch auth.json and store it.
 class CodexLoginDriver < RuntimeLoginDriver
   # The verification URL the CLI prints (ChatGPT device-authorization page).
-  URL_REGEX = %r{https://(?:auth\.openai\.com|chatgpt\.com)/\S*device\S*}
+  # Built from URL_CHAR rather than `\S` so a hyperlinked link can't run past its
+  # escape terminator — see RuntimeLoginDriver::URL_CHAR.
+  URL_REGEX = %r{https://(?:auth\.openai\.com|chatgpt\.com)/#{URL_CHAR}*device#{URL_CHAR}*}
   # The one-time pairing code. The CLI renders it as a hyphenated upper-alnum
   # pair whose halves are not a fixed length (observed live: "Z0PC-EQL0R", a
   # 4-5 split), so the trailing half allows 4–8 chars. The leading half is

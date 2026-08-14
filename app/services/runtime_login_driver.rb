@@ -16,6 +16,26 @@ class RuntimeLoginDriver
   # Strips ANSI escape sequences (cursor moves, colors, screen clears) the login
   # CLIs emit so verification URLs/codes can be matched against clean text.
   ANSI_ESCAPE = /\e\[[0-9;?]*[A-Za-z]/
+  # An OSC (Operating System Command) sequence ends at BEL or at ST (ESC \).
+  OSC_TERMINATOR = /(?:\a|\e\\)/
+  # OSC 8 hyperlink: `ESC ] 8 ; params ; URI <term> visible text ESC ] 8 ; ; <term>`.
+  # Capture group 1 is the link target — empty for the closing sequence, which
+  # therefore drops out entirely rather than leaving a stray line break behind.
+  OSC_HYPERLINK = /\e\]8;[^;\a\e]*;([^\a\e]*)#{OSC_TERMINATOR}/
+  # Any other OSC sequence (window title, clipboard, …) carries nothing we want.
+  OSC_ESCAPE = /\e\][^\a\e]*#{OSC_TERMINATOR}/
+  # An OSC sequence at the very end of the buffer whose terminator has not
+  # arrived yet. The job re-parses a growing buffer every tick, so a chunk read
+  # routinely cuts one in half — and a half-read hyperlink target is a half URL
+  # that would otherwise be surfaced once and never revisited.
+  UNTERMINATED_OSC = /\e\][^\a\e]*\z/
+  # One character that may appear inside a URL in CLI output: anything that is
+  # neither whitespace nor an ASCII control character. The control-character
+  # exclusion is what keeps a greedy match from running through an escape-sequence
+  # terminator (BEL, ESC) and on into whatever decoration the terminal renderer
+  # wrapped around the link — the failure mode a plain `\S` has. Subclasses build
+  # their URL patterns from it.
+  URL_CHAR = /[^\s\x00-\x1f\x7f]/
 
   class << self
     def for(runtime)
@@ -27,9 +47,34 @@ class RuntimeLoginDriver
     end
   end
 
-  # Removes ANSI control sequences and carriage returns from a raw CLI buffer.
+  # Turns a raw PTY buffer into the plain text a human would read on screen.
+  #
+  # Normalizing the encoding comes first, so everything downstream matches text
+  # rather than raw bytes: PTY reads arrive binary and a chunk read can cut a
+  # multibyte character in half, and this is the boundary where those bytes
+  # become text that gets matched and written to the DB. The dup is what keeps a
+  # caller's string safe from force_encoding, which mutates in place.
+  #
+  # OSC 8 hyperlinks are then unwrapped to their target rather than dropped. A
+  # login CLI that renders its authorization link as a hyperlink emits the URL
+  # twice — once as the escape sequence's target, once as the visible label —
+  # and a stripper that deleted the whole sequence would depend on that label
+  # still being the full URL. Terminals conventionally shorten hyperlink labels,
+  # so keeping the target is what survives that drift; the duplicate the unwrap
+  # leaves behind is harmless, since every consumer matches the first hit. The
+  # target and the label are separated by a space rather than a newline, because
+  # the failure-line patterns downstream are line-oriented (`[^\n]*`) and a break
+  # injected mid-line would truncate what they report.
   def strip_ansi(text)
-    text.to_s.gsub(ANSI_ESCAPE, "").tr("\r", "\n")
+    text.to_s
+      .dup
+      .force_encoding(Encoding::UTF_8)
+      .scrub("")
+      .gsub(OSC_HYPERLINK) { $1.empty? ? "" : "#{$1} " }
+      .gsub(OSC_ESCAPE, "")
+      .sub(UNTERMINATED_OSC, "")
+      .gsub(ANSI_ESCAPE, "")
+      .tr("\r", "\n")
   end
 
   # The argv (excluding the resolved executable) for the login command.
