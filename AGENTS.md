@@ -16,8 +16,8 @@ canonical source is `artifacts/references/PRODUCTION_INVARIANTS.md` (reference i
 `production-invariants`) in `tadasant/tadasant-internal`.
 
 They are *desired* invariants, and not all of them are true today. Work in this
-repo should move toward them. If a change moves away from one, say so explicitly
-rather than silently.
+repo should move toward them. If a change moves away from one, say so rather than
+landing it quietly.
 
 ## Working here
 
