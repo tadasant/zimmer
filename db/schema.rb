@@ -10,19 +10,23 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_12_050000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_14_110000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
   create_table "account_rotation_events", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "reason"
+    t.string "rotated_from_email"
     t.bigint "rotated_from_id"
-    t.bigint "rotated_to_id", null: false
+    t.string "rotated_to_email"
+    t.bigint "rotated_to_id"
+    t.string "runtime"
     t.string "source", null: false
     t.string "triggered_by"
     t.datetime "updated_at", null: false
     t.index ["created_at"], name: "index_account_rotation_events_on_created_at", order: :desc
+    t.index ["runtime", "created_at"], name: "index_account_rotation_events_on_runtime_and_created_at"
     t.index ["source"], name: "index_account_rotation_events_on_source"
   end
 
@@ -79,8 +83,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_12_050000) do
   end
 
   create_table "claude_account_quota_snapshots", force: :cascade do |t|
+    t.string "account_email"
+    t.string "account_runtime"
     t.integer "active_session_count"
-    t.bigint "claude_account_id", null: false
+    t.bigint "claude_account_id"
     t.datetime "created_at", null: false
     t.string "overage_disabled_reason"
     t.string "overage_status"
@@ -335,7 +341,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_12_050000) do
   end
 
   create_table "runtime_login_attempts", force: :cascade do |t|
-    t.bigint "claude_account_id", null: false
+    t.string "account_email"
+    t.bigint "claude_account_id"
     t.datetime "created_at", null: false
     t.text "error_message"
     t.datetime "expires_at", null: false
@@ -544,17 +551,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_12_050000) do
     t.index ["account_key"], name: "index_x_oauth_credentials_on_account_key", unique: true
   end
 
-  add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id"
-  add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id"
+  add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id", on_delete: :nullify
+  add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id", on_delete: :nullify
   add_foreign_key "agent_posted_github_comments", "sessions", on_delete: :nullify
-  add_foreign_key "claude_account_quota_snapshots", "claude_accounts"
+  add_foreign_key "claude_account_quota_snapshots", "claude_accounts", on_delete: :nullify
   add_foreign_key "elicitations", "sessions", on_delete: :cascade
   add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade
-  add_foreign_key "runtime_login_attempts", "claude_accounts"
+  add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
   add_foreign_key "session_uncle_links", "sessions", column: "uncle_session_id", on_delete: :cascade

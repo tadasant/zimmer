@@ -16,8 +16,14 @@
 #   failed        -> CLI errored or token capture failed (see error_message)
 #   canceled      -> user canceled, or a newer attempt superseded this one
 #   expired       -> verification window elapsed before completion
+#
+# An attempt outlives the account it was made against: deleting a ClaudeAccount
+# nullifies `claude_account_id` rather than destroying the attempt, so "did this
+# credential ever log in successfully?" stays answerable after the account is
+# gone. `account_email` is captured at write time so the orphan still names who
+# it was for.
 class RuntimeLoginAttempt < ApplicationRecord
-  belongs_to :claude_account
+  belongs_to :claude_account, optional: true
 
   STATUSES = %w[
     starting awaiting_user awaiting_code completing
@@ -39,9 +45,20 @@ class RuntimeLoginAttempt < ApplicationRecord
   validates :runtime, presence: true, inclusion: { in: ClaudeAccount::RUNTIMES }
   validates :status, presence: true, inclusion: { in: STATUSES }
 
+  # Required to create, allowed to become nil later — an attempt with no account
+  # is only ever the residue of a deleted one.
+  validates :claude_account, presence: true, on: :create
+
   before_validation :set_defaults, on: :create
 
   scope :active, -> { where.not(status: TERMINAL_STATUSES) }
+
+  # The account this attempt belonged to has since been deleted, leaving the row
+  # behind as history. Distinct from #orphaned? below, which is about an attempt
+  # nothing will advance — a different kind of abandonment.
+  def detached?
+    claude_account_id.nil?
+  end
 
   def terminal?
     TERMINAL_STATUSES.include?(status)
@@ -124,5 +141,6 @@ class RuntimeLoginAttempt < ApplicationRecord
   def set_defaults
     self.status ||= "starting"
     self.expires_at ||= Time.current + DEFAULT_TTL
+    self.account_email ||= claude_account&.email
   end
 end

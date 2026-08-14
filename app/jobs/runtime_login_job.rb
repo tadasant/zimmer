@@ -47,6 +47,12 @@ class RuntimeLoginJob < ApplicationJob
     return if attempt.terminal?
 
     account = attempt.claude_account
+    # The account was deleted while this login was queued or in flight. The
+    # attempt row survives that delete (it is the account's history), but there
+    # is nothing left to capture credentials into — resolve it terminally rather
+    # than driving a CLI whose output has nowhere to go.
+    return account_deleted!(attempt) if attempt.detached?
+
     driver = RuntimeLoginDriver.for(attempt.runtime)
     config_dir = Dir.mktmpdir("runtime-login-#{attempt.runtime}-")
 
@@ -56,6 +62,17 @@ class RuntimeLoginJob < ApplicationJob
   end
 
   private
+
+  # Terminal state for an attempt whose account is gone. Also drops the pasted
+  # authorization code, which is credential-adjacent and single-use — and the
+  # detached row outlives the account precisely so it can be read later.
+  def account_deleted!(attempt)
+    attempt.update!(
+      status: "failed",
+      error_message: "The account this login was for was deleted before the login completed.",
+      pasted_code: nil
+    )
+  end
 
   def run(attempt, account, driver, config_dir)
     reader, writer, pid = PTY.spawn(driver.env(config_dir), *driver.resolved_command)
@@ -73,8 +90,8 @@ class RuntimeLoginJob < ApplicationJob
 
       # Stop the moment the row is gone or already terminal — not just on
       # "canceled". Something else (the user cancelling, the reaper deciding this
-      # attempt was orphaned, an account deletion cascading the row away) has
-      # already decided the outcome. Carrying on would let a late capture
+      # attempt was orphaned, the row being pruned) has already decided the
+      # outcome. Carrying on would let a late capture
       # resurrect a terminal row to "succeeded", overwriting the outcome the user
       # was shown with a contradictory one.
       break finish_settled(attempt, pid, state&.first) if state.nil? || RuntimeLoginAttempt::TERMINAL_STATUSES.include?(state[0])

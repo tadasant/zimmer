@@ -43,9 +43,10 @@ accounts = [
   }
 ]
 
-# Clear existing data (order matters: rotation events reference accounts)
+# Clear existing data (order matters: every one of these references accounts)
 AccountRotationEvent.delete_all
 ClaudeAccountQuotaSnapshot.delete_all
+RuntimeLoginAttempt.delete_all
 ClaudeAccount.delete_all
 
 accounts.each_with_index do |acct, idx|

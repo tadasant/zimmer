@@ -56,31 +56,48 @@ namespace :claude_accounts do
     puts "Removed account #{email}"
   end
 
-  desc "Remove ALL Claude accounts and rotation events. Usage: bin/rails claude_accounts:clear_all"
+  desc "Remove ALL Claude accounts and their history. Usage: bin/rails claude_accounts:clear_all"
   task clear_all: :environment do
     # Scoped to Claude Code so it never touches Codex accounts in the shared pool.
-    claude_ids = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).pluck(:id)
+    runtime = ClaudeAuthProvider::RUNTIME
+    claude_ids = ClaudeAccount.for_runtime(runtime).pluck(:id)
     account_count = claude_ids.size
 
-    if account_count == 0
-      puts "No Claude accounts to remove."
-      next
-    end
-
+    # Each scope covers two populations: rows still attached to an account, and
+    # rows an earlier single-account delete detached, which carry no foreign key
+    # and are found by the runtime denormalized onto them. This task is the only
+    # path that removes the second kind — /quotas deliberately preserves it and
+    # nothing prunes quota snapshots — so a "start over" that left it behind would
+    # not be a start over.
     event_scope = AccountRotationEvent
       .where(rotated_from_id: claude_ids)
       .or(AccountRotationEvent.where(rotated_to_id: claude_ids))
+      .or(AccountRotationEvent.where(rotated_from_id: nil, rotated_to_id: nil, runtime: runtime))
+    snapshot_scope = ClaudeAccountQuotaSnapshot
+      .where(claude_account_id: claude_ids)
+      .or(ClaudeAccountQuotaSnapshot.where(claude_account_id: nil, account_runtime: runtime))
+    attempt_scope = RuntimeLoginAttempt
+      .where(claude_account_id: claude_ids)
+      .or(RuntimeLoginAttempt.where(claude_account_id: nil, runtime: runtime))
     event_count = event_scope.count
 
-    # Wrap in transaction so partial deletes don't leave orphaned data.
-    # Delete dependent records first to avoid FK constraint violations.
-    ActiveRecord::Base.transaction do
-      event_scope.delete_all
-      ClaudeAccountQuotaSnapshot.where(claude_account_id: claude_ids).delete_all
-      ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).delete_all
+    if account_count == 0 && event_count == 0 && snapshot_scope.count == 0 && attempt_scope.count == 0
+      puts "No Claude accounts or history to remove."
+      next
     end
 
-    puts "Removed #{account_count} account(s) and #{event_count} rotation event(s)."
+    # Wrap in transaction so partial deletes don't leave orphaned data.
+    # Delete dependent records first to avoid FK constraint violations. This task
+    # is the deliberate "wipe it and start over" affordance, so it destroys the
+    # history a single-account delete preserves.
+    ActiveRecord::Base.transaction do
+      event_scope.delete_all
+      snapshot_scope.delete_all
+      attempt_scope.delete_all
+      ClaudeAccount.for_runtime(runtime).delete_all
+    end
+
+    puts "Removed #{account_count} account(s) and #{event_count} rotation event(s), plus their snapshots and login attempts."
     puts "Run `bin/rails 'claude_accounts:add[email]'` to set up accounts from scratch."
   end
 

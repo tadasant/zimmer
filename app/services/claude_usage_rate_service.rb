@@ -166,8 +166,12 @@ class ClaudeUsageRateService
 
   private
 
+  # Only readings still attached to an account. Snapshots orphaned by a deleted
+  # account all share a nil key, so including them would splice readings from
+  # different accounts into one series and invent consumption between them.
   def snapshots_by_account(window_start)
     ClaudeAccountQuotaSnapshot
+      .attached
       .where(created_at: window_start..@now)
       .order(:claude_account_id, :created_at)
       .to_a
