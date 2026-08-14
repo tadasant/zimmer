@@ -91,4 +91,132 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
       end
     end
   end
+
+  RELEASE_WORKFLOW = "release-image.yml"
+  # The app image build, and only it: the base-image build in the same job is gated on
+  # `need_base` and tags something else, so key on the shared tag list instead.
+  APP_TAGS = "${{ steps.version.outputs.tags }}"
+
+  def self.release_build_attempts
+    steps = YAML.load_file(WORKFLOW_DIR.join(RELEASE_WORKFLOW), aliases: true)
+      .dig("jobs", "build-and-push", "steps")
+    [ steps, steps.select { |s| s.dig("with", "tags") == APP_TAGS } ]
+  end
+
+  # The release build talks to GHCR at both ends — it pulls the zimmer-base layers on
+  # the way in and pushes the finished image on the way out — and an account-wide
+  # secondary rate limit has broken both. Retrying turns that into a slower green run
+  # instead of a page, but only while the chain stays wired correctly: every way it can
+  # come unwired ends in a workflow that publishes nothing and reports the release green.
+  test "the release image build retries a registry hiccup and only the last attempt can fail the job" do
+    steps, attempts = self.class.release_build_attempts
+
+    assert_operator attempts.length, :>=, 2,
+      "#{RELEASE_WORKFLOW}: the app image build must have at least one retry, or an account-wide " \
+      "GHCR throttle fails the release outright"
+    assert_operator attempts.length, :<=, 4,
+      "#{RELEASE_WORKFLOW}: more attempts than this is not more resilience — the backoffs are " \
+      "serialised inside one job that the next push queues behind"
+    assert_equal attempts, attempts.sort_by { |s| steps.index(s) },
+      "#{RELEASE_WORKFLOW}: attempts must appear in order — one placed above the step whose " \
+      "`outcome` it reads sees an empty string there and skips forever"
+
+    attempts.each_with_index do |attempt, i|
+      last = i == attempts.length - 1
+      where = "#{RELEASE_WORKFLOW}: attempt #{i + 1} ('#{attempt['name']}')"
+
+      # Retrying a build that was never going to publish is the failure this whole
+      # chain is supposed to prevent, and identical-`with` alone does not catch it:
+      # `push: false` on every attempt keeps them consistent with each other.
+      assert_equal true, attempt.dig("with", "push"),
+        "#{where} must push — three builds that publish nothing still report green"
+
+      if last
+        assert_not attempt["continue-on-error"],
+          "#{where} is the final attempt and must be allowed to fail the job — if every attempt " \
+          "swallows its own failure, a release that published nothing still reports green"
+      else
+        assert_equal true, attempt["continue-on-error"],
+          "#{where} must not fail the job by itself, or the attempts after it never run"
+        assert attempt["id"].present?,
+          "#{where} needs an `id` so the attempts after it can gate on its outcome"
+      end
+
+      # Attempt N runs only if every attempt before it failed. Anything looser (gating
+      # on `success`, or on only the most recent failure) either never fires or fires
+      # when it should not. The first attempt has nothing to wait on, so it carries no
+      # `if` at all.
+      expected_if = attempts.first(i).map { |prior| "steps.#{prior['id']}.outcome == 'failure'" }.join(" && ")
+      if expected_if.empty?
+        assert_nil attempt["if"], "#{where} is the first attempt and must run unconditionally"
+      else
+        assert_equal expected_if, attempt["if"],
+          "#{where} must be gated on every prior attempt having failed"
+      end
+
+      assert_equal attempts.first["with"], attempt["with"],
+        "#{where} must build and tag exactly what the first attempt did"
+    end
+  end
+
+  # Every attempt reads its tags from one output so the attempts cannot drift apart —
+  # which also means nothing in the chain would notice that output quietly losing a
+  # tag. Production's auto-upgrade keys on the version tag, so dropping it publishes a
+  # green release that nothing rolls out to.
+  test "the release version step emits all three image tags the attempts share" do
+    steps, = self.class.release_build_attempts
+    compute = steps.find { |s| s["id"] == "version" }
+    assert compute, "#{RELEASE_WORKFLOW}: expected the version step to carry `id: version`"
+
+    run = compute["run"].to_s
+    assert_match(/tags<<\w+/, run,
+      "#{RELEASE_WORKFLOW}: the attempts read `tags` from this step, which must emit it as a " \
+      "heredoc — a single-line output cannot carry three tags")
+    [ "${VERSION}", "latest", "sha-${GITHUB_SHA}" ].each do |tag|
+      assert_includes run, "ghcr.io/tadasant/zimmer:#{tag}",
+        "#{RELEASE_WORKFLOW}: the `tags` output must still publish the :#{tag} tag"
+    end
+  end
+
+  # The retry is blind by design, so the backoff steps carry the diagnosis: they probe
+  # GHCR and report whether the registry was answering, which is what tells a human
+  # reading an exhausted run whether to suspect the registry or the build.
+  test "every gap between release build attempts probes GHCR and backs off" do
+    steps, attempts = self.class.release_build_attempts
+    script = Rails.root.join(".github/scripts/await-ghcr.sh")
+
+    assert script.exist?, "#{RELEASE_WORKFLOW} references #{script.basename}, which does not exist"
+    assert script.executable?,
+      "#{script.basename} must be executable — the workflow invokes it as a bare `run:` command, " \
+      "which fails with 'Permission denied' otherwise"
+
+    attempts.each_cons(2).with_index do |(before, after), i|
+      gap = steps[(steps.index(before) + 1)...steps.index(after)]
+      waiter = gap.find { |s| s["run"].to_s.include?(script.basename.to_s) }
+
+      assert waiter,
+        "#{RELEASE_WORKFLOW}: no #{script.basename} step between attempt #{i + 1} and #{i + 2} — " \
+        "retrying a rate limit with no backoff just spends the next attempt on the same throttle"
+      assert_equal after["if"], waiter["if"],
+        "#{RELEASE_WORKFLOW}: the backoff before attempt #{i + 2} must run under exactly the " \
+        "condition that attempt does, or the two disagree about when a retry is happening"
+
+      # A backoff step that exits non-zero fails the job, and every later step — the
+      # remaining attempts and the prod notify — then skips on its implicit success().
+      # The probe reports; it must not be able to decide.
+      assert_equal true, waiter["continue-on-error"],
+        "#{RELEASE_WORKFLOW}: the backoff before attempt #{i + 2} must not be able to fail the " \
+        "job, or a broken probe takes the whole retry chain down with it"
+
+      assert waiter.dig("env", "ATTEMPT").present?,
+        "#{RELEASE_WORKFLOW}: #{script.basename} requires ATTEMPT and exits non-zero without it"
+      backoff = waiter.dig("env", "BACKOFF_SECONDS").to_s
+      assert_match(/\A\d+\z/, backoff,
+        "#{RELEASE_WORKFLOW}: BACKOFF_SECONDS is passed straight to `sleep`, so a non-numeric " \
+        "value fails the step at runtime rather than at review time")
+      assert_operator backoff.to_i, :>=, 30,
+        "#{RELEASE_WORKFLOW}: a backoff this short does not outlast a GHCR secondary rate limit, " \
+        "so the retry it guards just spends itself on the same throttle"
+    end
+  end
 end

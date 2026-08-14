@@ -58,6 +58,34 @@ posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Sla
 watch. Staging alerts are only distinguishable from production's by the posting bot (*Zimmer
 (Staging)*), so point staging at a different channel if that noise is unwelcome.
 
+### The release build's retry masks a flake, and only on the app-image half
+
+`release-image.yml` builds the app image up to three times before giving up, because an account-wide
+GHCR secondary rate limit intermittently breaks both the `zimmer-base` pull on the way in and the
+`zimmer` push on the way out (see
+[Deploying](/operate/deploying/#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out)).
+That is the right trade for a registry hiccup, but it is still a **blind** retry: it does not read the
+error, so it cannot tell a throttled push from a genuinely rejected one, and it buys its quiet by
+making real breakage slower to surface — 330 seconds of backoff plus three builds before it goes red,
+with `concurrency: release-image` queueing the next push behind all of it. (The builds themselves are
+not as expensive as that sounds: every attempt runs on the same long-lived buildkit instance, so a
+retry resumes from its local cache. A push-side retry re-does little more than the export; only an
+early pull-side failure costs close to a full rebuild.)
+
+Blindness is the deliberate half of that trade — the same throttle has already appeared as a 403 on a
+base blob, a 404 on a base manifest, and a 403 on a push HEAD, so matching error strings would miss
+the fourth shape. What it costs is precision: a build broken for an ordinary reason still burns the
+full retry budget before going red. `.github/scripts/await-ghcr.sh` softens that by reading a manifest
+from both the base and app packages between attempts and annotating which was refused — but the
+annotation only *reports*, nothing acts on it, and because both probes are reads they cannot clear a
+write-side throttle even when both come back green.
+
+It also covers only the app build. `Check for base image` and `Build & push base image` hit the same
+rate limit with no retry at all, and they fail *worse*: a throttled `imagetools inspect` fails closed
+into `need_base=true`, which escalates a read hiccup into a full base rebuild and push against the
+registry that is already refusing the account, and fails the job before the app build's first attempt
+is reached. That path has not been observed failing; all three real incidents were the app build.
+
 ### Telemetry is a hard no-op when misconfigured, and says nothing
 
 `config/initializers/otel_logs_exporter.rb` needs **both** `OTEL_LOGS_EXPORTER_ENDPOINT` and

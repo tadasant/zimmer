@@ -58,7 +58,16 @@ jobs:
           OFFSET=$(git rev-list --count "${VERSION_SHA}..HEAD")
           PATCH=$((BASE_PATCH + OFFSET))
           VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          # The tag list is emitted here rather than inline in the build step so
+          # the first attempt and the retry below cannot drift apart.
+          {
+            echo "version=${VERSION}"
+            echo "tags<<TAGS_EOF"
+            echo "ghcr.io/tadasant/zimmer:${VERSION}"
+            echo "ghcr.io/tadasant/zimmer:latest"
+            echo "ghcr.io/tadasant/zimmer:sha-${GITHUB_SHA}"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
           echo "Resolved image version: ${VERSION} (floor ${BASE}, +${OFFSET} commits)"
 
       - name: Log in to GHCR
@@ -122,7 +131,35 @@ jobs:
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
 
+      # This step talks to GHCR at both ends, and a secondary rate limit against the
+      # account breaks either one. Buildkit PULLS the zimmer-base layers on the way in
+      # — seen as a 403 on a blob, and (same throttling, different mask) as a 404 on a
+      # base manifest buildkit resolved seconds earlier. It PUSHES the finished image
+      # on the way out — seen as a 403 on a HEAD to a zimmer blob. None of the three
+      # means anything is wrong with the images or the credentials, and all three fail
+      # the release outright, so a registry hiccup pages a human over a build that
+      # would pass on the next try.
+      #
+      # So: up to three attempts, backing off 90s then 240s, and only the last one is
+      # allowed to fail the job. Escalating rather than fixed because the throttle is
+      # account-wide and has outlasted a single 90s wait — on 2026-08-06 it took out
+      # this workflow and the prod deploy in a different repo inside the same two
+      # minutes. The `continue-on-error` on the earlier attempts is load-bearing twice
+      # over: it swallows their failure, and it keeps the job green so the implicit
+      # success() on the later attempts' `if` lets them run at all.
+      #
+      # The retry is deliberately blind — it does not read the error, because the same
+      # throttle has already worn three different HTTP shapes and coupling the release
+      # to registry error strings trades a rare wasted rebuild for a missed one. What
+      # the wait steps do instead is PROBE GHCR and say, in an annotation, whether the
+      # registry was answering: a probe that fails points at the registry, a probe that
+      # succeeds points at the build itself. That is the signal to read on a run that
+      # exhausted its attempts, since an exercised retry renders the earlier attempts
+      # with a red ✗ against a green job (GitHub has no separate rendering for a step
+      # that failed under continue-on-error).
       - name: Build and push
+        id: build
+        continue-on-error: true
         uses: docker/build-push-action@v6
         with:
           builder: ${{ steps.buildx.outputs.name }}
@@ -132,10 +169,55 @@ jobs:
           # the bootstrap step above. The Dockerfile defaults BASE_IMAGE to
           # ghcr.io/tadasant/zimmer-base:latest.
           push: true
-          tags: |
-            ghcr.io/tadasant/zimmer:${{ steps.version.outputs.version }}
-            ghcr.io/tadasant/zimmer:latest
-            ghcr.io/tadasant/zimmer:sha-${{ github.sha }}
+          tags: ${{ steps.version.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # `continue-on-error` for the same reason the attempts carry it, and it matters
+      # more here: a backoff step that exits non-zero — a dropped env key, an exec bit
+      # lost in checkout — would flip the job to failed, and the implicit success() on
+      # every later `if` would then skip the remaining attempts AND the prod notify.
+      # The whole retry chain would sit there intact and unreachable. A probe that
+      # cannot run should cost the backoff, not the release.
+      - name: Wait out the registry throttle
+        continue-on-error: true
+        if: steps.build.outcome == 'failure'
+        env:
+          BACKOFF_SECONDS: "90"
+          ATTEMPT: "1"
+        run: .github/scripts/await-ghcr.sh
+
+      - name: Build and push (retry)
+        id: retry
+        continue-on-error: true
+        if: steps.build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          pull: true
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Wait out the registry throttle (second backoff)
+        continue-on-error: true
+        if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
+        env:
+          BACKOFF_SECONDS: "240"
+          ATTEMPT: "2"
+        run: .github/scripts/await-ghcr.sh
+
+      - name: Build and push (final attempt)
+        if: steps.build.outcome == 'failure' && steps.retry.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          pull: true
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
