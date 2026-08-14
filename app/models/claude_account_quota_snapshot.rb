@@ -74,9 +74,7 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # decide the account is not back yet. They must agree, or an account flips
   # between exceeded and active on every sweep.
   def seven_day_window_spent?
-    blocked = status_7d.present? && SERVING_QUOTA_STATUSES.exclude?(status_7d)
-    return false if blocked && reset_7d && reset_7d <= Time.current
-    return true if blocked
+    return true if window_refused?(status_7d, reset_7d)
 
     eff_7d = self.class.effective_utilization(utilization_7d, reset_7d)
     !eff_7d.nil? && eff_7d >= 1.0
@@ -90,10 +88,13 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # falls before the reset timestamp arrives — reading only the reset time left
   # accounts exceeded long after their usage had drained away.
   #
-  # Except on the weekly window, where the status Anthropic reported outranks the
-  # counter (#seven_day_window_spent?). An account the API is rejecting for the
-  # week cannot serve a request no matter what its utilization reads, and calling
-  # it clear puts it straight back in front of rotation (#248).
+  # Except that a status Anthropic is still refusing on outranks the counter, on
+  # either window. An account the API is turning away cannot serve a request no
+  # matter what its utilization reads, and calling it clear puts it straight back
+  # in front of rotation (#248). The 5-hour window used to be counter-only, on the
+  # grounds that it slides and clears within the hour — but a card cannot render
+  # "Rejected" against that window and "Active" for the account in the same
+  # breath, which is the contradiction this predicate now decides.
   #
   # The counterpart to #seven_day_window_spent?, and it lives here for the same
   # reason: QuotaResetCheckerJob restores an account on this, QuotasController
@@ -101,6 +102,7 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # They must agree, or the page and the pool describe different accounts.
   def windows_clear?
     return false if seven_day_window_spent?
+    return false if window_refused?(status_5h, reset_5h)
 
     window_dimension_clear?(reset_5h, utilization_5h) &&
       window_dimension_clear?(reset_7d, utilization_7d)
@@ -129,6 +131,16 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   def capture_account_identity
     self.account_email ||= claude_account&.email
     self.account_runtime ||= claude_account&.runtime
+  end
+
+  # True when the status Anthropic reported for a window is a refusal that has
+  # not yet expired. A status, like a counter, describes the window that was open
+  # when the reading was taken — once that window's reset passes the sliding
+  # window has cleared and the refusal says nothing about the account today.
+  def window_refused?(status, reset_time)
+    return false if status.blank? || SERVING_QUOTA_STATUSES.include?(status)
+
+    reset_time.nil? || reset_time > Time.current
   end
 
   def window_dimension_clear?(reset_time, utilization)

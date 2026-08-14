@@ -83,7 +83,57 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
     capture("quotas-reset-countdown", card)
   end
 
+  test "an account whose windows have cleared does not keep presenting as quota exceeded" do
+    # The shape it was reported in: the account still carries the sticky
+    # quota_exceeded column, and its own latest reading says both windows are
+    # Allowed with room to spare. Rendered in a real browser at a phone width,
+    # because a card whose badge contradicts the two bars beneath it is a bug you
+    # see rather than one you assert.
+    account = claude_accounts(:exceeded)
+    account.quota_snapshots.create!(
+      subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 0.35, status_5h: "allowed", reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, status_7d: "allowed", reset_7d: 6.days.from_now,
+      trigger: "scheduled"
+    )
+    at_phone_width do
+      visit quotas_url
+
+      card = find("#account_card_#{account.id}")
+
+      assert card.has_selector?("span", exact_text: "Active"),
+             "the badge should follow the reading beside it, got: #{card.text.inspect}"
+      card.assert_no_selector("span", exact_text: "Quota Exceeded")
+      assert card.has_text?("35.0%"), "the 5-hour reading the badge is derived from"
+      assert card.has_text?("12.0%"), "the 7-day reading the badge is derived from"
+
+      # And the pool caught up with the page, rather than the page merely papering
+      # over a column rotation is still refusing to serve from.
+      assert account.reload.active?
+
+      # The card is the widest thing on this page; if it fits a phone, the page does.
+      overflow = page.evaluate_script(
+        "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+      )
+      assert_equal 0, overflow, "the page should not scroll horizontally at 375px"
+
+      capture("quotas-cleared-account-badge", card)
+    end
+  end
+
   private
+
+  # Render at a phone viewport and put the window back however the block exits.
+  # Workers reuse one browser across tests, so a width left behind here is a
+  # width the next test in this worker inherits.
+  def at_phone_width
+    window = page.driver.browser.manage.window
+    original = window.size
+    window.resize_to(375, 900)
+    yield
+  ensure
+    window.resize_to(original.width, original.height) if original
+  end
 
   def capture(name, element)
     FileUtils.mkdir_p(SCREENSHOT_DIR)

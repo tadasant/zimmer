@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 class QuotasController < ApplicationController
-  # Page load — renders immediately with cached snapshots from DB.
-  # No API calls are made here.
+  # Page load — renders immediately with cached snapshots from DB. No API calls
+  # are made here; the one write it does make is #auto_heal_accounts converging a
+  # status column against the reading already on file.
   #
   # The runtime sub-tab (Claude Code / Codex) is selected via ?runtime=. Each
   # runtime keeps its own account pool, current account, and rotation history.
@@ -472,11 +473,28 @@ class QuotasController < ApplicationController
     result
   end
 
+  # Converge the status column of every account whose latest reading says its
+  # windows have cleared. Same predicate QuotaResetCheckerJob restores on, logged
+  # the same way: a status flipping without a line saying which reading did it is
+  # not something anyone can reconstruct afterwards, and this path now runs on a
+  # page view rather than only on an explicit refresh.
+  #
+  # A healing failure must never take the page with it. /quotas is where a human
+  # goes to fix an auth problem, and a row that fails validation for some reason
+  # of its own is not a reason to deny them the page.
   def auto_heal_accounts
     ClaudeAccount.quota_exceeded.for_runtime(current_runtime).each do |account|
       snapshot = @snapshots[account.id]
       next unless snapshot
-      account.update!(status: :active) if snapshot.windows_clear?
+      next unless snapshot.windows_clear?
+
+      account.update!(status: :active)
+      Rails.logger.info "[QuotasController] Restored #{account.email} to active: both windows are clear " \
+        "(5h #{snapshot.utilization_5h.inspect}/#{snapshot.status_5h.inspect}, " \
+        "7d #{snapshot.utilization_7d.inspect}/#{snapshot.status_7d.inspect}, " \
+        "reading taken #{snapshot.created_at&.iso8601})"
+    rescue ActiveRecord::RecordInvalid => e
+      Rails.logger.warn "[QuotasController] Could not restore #{account.email} to active: #{e.message}"
     end
   end
 
