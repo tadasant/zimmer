@@ -13,10 +13,16 @@ This page describes what Zimmer does instead: the worker runs its **own** Docker
 inside its own user namespace, under the [sysbox](https://github.com/nestybox/sysbox)
 runtime.
 
-:::caution[It is off by default]
-Nothing here is active unless a deploy sets `ZIMMER_NESTED_DOCKER=1`. Unset, the worker
-runs under `runc` as uid 1000 exactly as before, and the host's Docker socket is not
-mounted into it at all.
+:::caution[On in staging, off in production]
+**Staging deploys with this armed by default** — `config/deploy.staging.yml` resolves
+`ZIMMER_NESTED_DOCKER` to `1` unless the deploy environment says otherwise, and the
+`Deploy staging` workflow exposes a `nested_docker` checkbox (default on) to turn it off.
+
+**Production still defaults to off**: unset, the worker runs under `runc` as uid 1000
+exactly as before. Production is where agent sessions actually run, so it gets the switch
+only once staging has carried it — see [Extending it to production](#extending-it-to-production).
+
+In neither case is the host's Docker socket mounted into the worker.
 :::
 
 ## Why a nested daemon confines and a socket mount does not
@@ -64,12 +70,20 @@ Three pieces that only work together, which is why one variable arms all of them
 the single image Kamal ships to *both* roles — `web` carries a daemon it never starts.
 
 **The role** (`config/deploy.*.yml`) runs the worker under the runtime and starts it as
-container-root:
+container-root. The switch is resolved once per destination — that is the only thing that
+differs between staging and production — and all three settings read the resolved value,
+so they cannot drift apart:
 
-```yaml
-runtime: <%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "sysbox-runc" : "runc" %>
-user: "<%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "0:0" : "1000:1000" %>"
+```erb
+<% nested_docker = ENV.fetch("ZIMMER_NESTED_DOCKER", "1") == "1" %>   <%# staging; production defaults to "0" %>
+runtime: <%= nested_docker ? "sysbox-runc" : "runc" %>
+user: "<%= nested_docker ? "0:0" : "1000:1000" %>"
+ZIMMER_NESTED_DOCKER: "<%= nested_docker ? "1" : "0" %>"
 ```
+
+`test/config/nested_docker_switch_test.rb` renders both destinations at all three switch
+states (unset, `0`, `1`) and asserts the three settings are armed together or not at all —
+the interesting failure being a config that arms two of them.
 
 `dockerd` needs root *inside* the container, and the image normally runs as uid 1000. So
 `bin/docker-entrypoint` starts as container-root, brings up `dockerd --group 1000` (the
@@ -148,8 +162,49 @@ and removing it is tracked in
 
 ## Turning it on
 
-For a **new** droplet, cloud-init does the host half. Then deploy with
-`ZIMMER_NESTED_DOCKER=1` set in the deploy environment.
+For a **new** droplet, cloud-init does the host half. Staging then deploys armed with no
+further action; production needs `ZIMMER_NESTED_DOCKER=1` in the deploy environment.
+
+### What the staging deploy checks for you
+
+`Deploy staging` refuses to deploy onto a droplet that cannot carry it, rather than letting
+it present as an app bug. **Before** the cutover it starts a throwaway sysbox container and
+reads its `uid_map` — one command that settles all three host requirements at once, since a
+non-identity map (`0 100000 65536`) can only happen if the runtime resolved, the
+`time-namespaces` flag is in place, and the user namespace is real:
+
+```bash
+docker run --rm --runtime=sysbox-runc alpine head -1 /proc/self/uid_map
+```
+
+**After** the cutover it asserts the properties an agent session actually depends on: the
+container's runtime is `sysbox-runc`, its `uid_map` is non-identity, the host socket is
+**not** among its mounts, the inner daemon answers `docker version` **as uid 1000** (not
+merely as root — uid 1000 is what a session runs as after the privilege drop), and PID 1
+kept `HOME=/home/rails` through that drop.
+
+That last one is not padding. `HOME=/root` surviving the drop is precisely how the
+2026-08-13 freeze presented, and every container-shaped check stayed green throughout it.
+
+### Extending it to production
+
+The mechanism is identical and already written — production's config resolves the same
+switch, and its role, image and entrypoint are the same ones staging uses. What production
+needs is the two things staging has:
+
+1. **The host half.** `infra/terraform/cloud-init.yaml.tftpl` covers a *new* droplet. A
+   live production droplet predates it, so sysbox has to be applied out of band by the
+   by-hand route below — and `ignore_changes = [user_data]` means editing the template will
+   not touch a running box.
+2. **The switch.** `ZIMMER_NESTED_DOCKER=1` in production's deploy environment, plus the
+   preflight and post-deploy assertions that `Deploy staging` carries, ported to
+   production's deploy workflow.
+
+Do it as its own change, after staging has run on it. The blast radius is not comparable:
+production is where agent sessions actually execute, and the failure mode of arming the
+runtime without a working user namespace is that every session gets root on the host.
+
+### Installing sysbox on an existing droplet
 
 For an **existing** droplet, cloud-init will not help: `main.tf` sets
 `ignore_changes = [user_data]`, so the template renders once at first boot and editing it
