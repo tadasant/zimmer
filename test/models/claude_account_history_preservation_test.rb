@@ -25,9 +25,8 @@ class ClaudeAccountHistoryPreservationTest < ActiveSupport::TestCase
     snapshot.reload
     assert_nil snapshot.claude_account_id, "the snapshot should outlive the account, detached"
     assert snapshot.detached?
-    assert_equal @email, snapshot.account_email, "an orphan attributable to nobody preserves nothing"
+    assert_equal @email, snapshot.account_email, "a reading attributable to nobody preserves nothing"
     assert_equal "claude_code", snapshot.account_runtime
-    assert_equal @email, snapshot.account_label
   end
 
   test "deleting an account preserves its login attempts" do
@@ -41,7 +40,6 @@ class ClaudeAccountHistoryPreservationTest < ActiveSupport::TestCase
     assert_nil attempt.claude_account_id
     assert attempt.detached?
     assert_equal @email, attempt.account_email
-    assert_equal @email, attempt.account_label
     assert_equal "failed", attempt.status, "the outcome is the whole point of keeping the row"
   end
 

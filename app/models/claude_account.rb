@@ -50,12 +50,13 @@ class ClaudeAccount < ApplicationRecord
 
   # Every association here is :nullify, and deliberately so. An account's quota
   # snapshots, login attempts, and rotation events are the only record of whether
-  # it was ever healthy, and the operator gesture that most needs that record —
-  # "delete it and re-authenticate", two adjacent buttons on every /quotas card —
-  # is precisely the one that used to destroy it. Deleting an account must remain
-  # possible (:restrict_with_error would turn the Delete button into a dead
-  # control for any account old enough to matter), so the history outlives the
-  # row instead of blocking its removal.
+  # it was ever healthy, and the operator gesture that most needs that record is
+  # the one that removes the account — "delete it and re-authenticate", two
+  # adjacent buttons on every /quotas card. Deleting an account must stay possible
+  # (:restrict_with_error would turn Delete into a dead control for any account
+  # old enough to matter), so the history outlives the row rather than blocking
+  # its removal. The database agrees: each of these foreign keys is ON DELETE SET
+  # NULL, so a writer that skips these callbacks gets the same outcome.
   #
   # The orphans stay interpretable because each child row denormalizes the
   # account's identity (email, and the runtime that scopes it) at write time.

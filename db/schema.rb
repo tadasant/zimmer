@@ -551,17 +551,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_14_110000) do
     t.index ["account_key"], name: "index_x_oauth_credentials_on_account_key", unique: true
   end
 
-  add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id"
-  add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id"
+  add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id", on_delete: :nullify
+  add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id", on_delete: :nullify
   add_foreign_key "agent_posted_github_comments", "sessions", on_delete: :nullify
-  add_foreign_key "claude_account_quota_snapshots", "claude_accounts"
+  add_foreign_key "claude_account_quota_snapshots", "claude_accounts", on_delete: :nullify
   add_foreign_key "elicitations", "sessions", on_delete: :cascade
   add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade
-  add_foreign_key "runtime_login_attempts", "claude_accounts"
+  add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
   add_foreign_key "session_uncle_links", "sessions", column: "uncle_session_id", on_delete: :cascade

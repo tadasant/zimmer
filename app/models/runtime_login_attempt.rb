@@ -53,11 +53,6 @@ class RuntimeLoginAttempt < ApplicationRecord
 
   scope :active, -> { where.not(status: TERMINAL_STATUSES) }
 
-  # Who this attempt was made for, whether or not that account still exists.
-  def account_label
-    claude_account&.email || account_email
-  end
-
   # The account this attempt belonged to has since been deleted, leaving the row
   # behind as history. Distinct from #orphaned? below, which is about an attempt
   # nothing will advance — a different kind of abandonment.
