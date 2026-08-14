@@ -7,10 +7,12 @@
 # Condition types:
 # - "slack": Fires when a new message is posted in a Slack channel. `event_type`
 #     picks the flavour: "new_message" (everything in one channel), "bot_mention"
-#     (@mentions + DMs), "passive_listen_thread" (replies in threads Zimmer has
-#     participated in), or "passive_listen_channel" (top-level messages in channels
-#     Zimmer posted in recently). The last two are separate conditions on purpose:
-#     a Trigger ORs its conditions, so carrying both is how you get "either".
+#     (@mentions + DMs), "dm_message" (DMs only — the DM half of bot_mention,
+#     without the channel half), "passive_listen_thread" (replies in threads Zimmer
+#     has participated in), or "passive_listen_channel" (top-level messages in
+#     channels Zimmer posted in recently). The passive pair are separate conditions
+#     on purpose: a Trigger ORs its conditions, so carrying both is how you get
+#     "either".
 # - "schedule": Fires on a time-based schedule (recurring or one-time)
 #     Recurring: { "unit" => "hours", "interval" => 2, "timezone" => "UTC" }
 #     One-time:  { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "America/New_York" }

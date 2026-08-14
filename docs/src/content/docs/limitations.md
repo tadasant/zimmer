@@ -579,11 +579,16 @@ next item (untrusted Slack text reaching the prompt). Set the allowlist
 (`SLACK_BOT_MENTION_ALLOWED_USER_IDS`, comma-separated user IDs, in `mcp_secrets` or ENV) on any
 workspace bigger than your circle of trust; a per-condition `allowed_user_ids` overrides it.
 
-The same allowlist governs the passive-listening types, where the open default is a **wider** grant.
-Under `bot_mention` the practical bound is "somebody had to type `<@bot>`". Under
+The same allowlist governs `dm_message` and the passive-listening types, where the open default is a
+**wider** grant. Under `bot_mention` the practical bound is "somebody had to type `<@bot>`". Under
 `passive_listen_thread` it is only "Zimmer has spoken in this thread", and under
-`passive_listen_channel` only "Zimmer posted in this channel in the last 6 hours". Set the allowlist
-before enabling an all-channel passive condition on a workspace wider than your circle of trust.
+`passive_listen_channel` only "Zimmer posted in this channel in the last 6 hours". Under
+`dm_message` it is only "somebody opened a DM with the bot" — and on the DM path the allowlist is
+enforced by *enumeration* (Zimmer polls only the allowed users' conversations) with no second check
+behind it, so an unset allowlist means every workspace member's DM spawns a session. Nothing in the
+Triggers form renders `allowed_user_ids`, so a condition created there always falls through to the
+env var. Set the allowlist before enabling an all-channel passive condition, or a `dm_message` one,
+on a workspace wider than your circle of trust.
 
 ### Triggers make the agent a trusted courier for untrusted input
 

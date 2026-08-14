@@ -1130,17 +1130,33 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal "2000.000000", condition.reload.dm_timestamps["U222"]
   end
 
-  test "a dm_message condition ignores a DM from a user outside its allow-list" do
+  # Enumeration is the ONLY gate on the DM path: there is no user_allowed? check
+  # behind it. So this pins the enforcement where it actually lives -- a condition
+  # asks for exactly its allowed users' conversations -- rather than asserting a
+  # filter that does not exist. Hand it an unlisted user's DM anyway and it WOULD
+  # fire, which is why an unset allow-list means "everyone" (see limitations.md).
+  test "a dm_message condition asks Slack only for its allowed users' DMs" do
     condition = stub_dm_message_condition(allowed_user_ids: %w[U999])
-    condition.update!(configuration: condition.configuration.merge("dm_timestamps" => { "U222" => "1000.000000" }))
 
-    # The allow-list is enforced by ENUMERATION -- list_dm_channels is asked only
-    # for the allowed users' conversations, so an outsider's DM is never fetched.
     SlackService.expects(:list_dm_channels).with(user_ids: %w[U999]).returns([])
 
     assert_no_difference("Session.count") do
       SlackTriggerPollerJob.new.send(:process_condition, condition)
     end
+  end
+
+  test "the DM conversation list is fetched once per poll, not once per condition" do
+    first = stub_dm_message_condition
+    second = stub_dm_message_condition
+
+    # bot_mention and dm_message both reach process_dm_messages, and list_dm_channels
+    # paginates every IM the bot has. Two conditions sharing an allow-list must not
+    # walk those pages twice on a singleton poller.
+    SlackService.expects(:list_dm_channels).with(user_ids: nil).once.returns([])
+
+    job = SlackTriggerPollerJob.new
+    job.send(:process_condition, first)
+    job.send(:process_condition, second)
   end
 
   test "a dm_message condition never fires on the bot's own message in a DM" do
@@ -1155,6 +1171,9 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_no_difference("Session.count") do
       SlackTriggerPollerJob.new.send(:process_condition, condition)
     end
+    # The cursor still advances past the bot's own message -- it is seen, just not
+    # acted on -- so the next poll does not re-read it.
+    assert_equal "2000.000000", condition.reload.dm_timestamps["U222"]
   end
 
   private
