@@ -317,6 +317,55 @@ the sweep is the thing that has stopped. Only the account — the sessions parke
 the sweep's `wake_parked_sessions!` or their own timer, because resuming sessions is not something a
 page render should do.
 
+### A dead account tells you so
+
+`needs_reauth` is the one account failure Zimmer cannot recover from. The refresh token is
+permanently invalid, the pool quietly stops drawing on the account, and everything keeps working —
+with a smaller pool. Nothing surfaces it: the failure is logged at `.warn` precisely so it does *not*
+page `#eng-alerts` (a channel alert for a condition only a human can clear is noise), and
+`recover_needs_reauth` re-probes it forever without ever succeeding. The account just sits dead on
+`/quotas` until somebody happens to open the page.
+
+So Zimmer DMs you. When a `ClaudeAccount` crosses **into** `needs_reauth`, an
+`after_update_commit` callback enqueues `AccountReauthAlertJob`, which calls
+`AccountReauthNotifier` → `AlertService.dm_operator`. The DM names the account and the runtime and
+links to `/quotas`. It goes to `OPERATOR_SLACK_USER_ID`; unset, the DM is logged and dropped and
+nothing else changes.
+
+A model callback rather than instrumentation at the sites that condemn an account, so no path can
+forget to alert — including the Administrate admin form, which no service-level hook would see. Two
+writes deliberately do *not* alert, and both fall out of that placement:
+
+- **Creation.** `after_update_commit` does not fire on insert, so the credential-less account
+  `/quotas` seeds directly into `needs_reauth` stays silent. The human is on the page adding it.
+- **Recovery restores.** `recover_needs_reauth` flips an already-dead account to `active` so
+  `refresh_token!` is not status-blocked, then writes `needs_reauth` back with `update_columns` when
+  the probe fails. `update_columns` skips callbacks, so that no-op round trip is silent — and the
+  probe itself cannot condemn the account either, since `recovery_probe: true` returns before the
+  permanent-failure branch. Without both, every recovery sweep would look like a fresh failure.
+
+On top of that, `AlertService` suppresses a repeat DM about the same account for
+`OPERATOR_DM_DEDUP_WINDOW` (12 hours) — much longer than the hourly window the channel feed uses,
+because a DM is a nag at one person about something that stays broken until they act. The
+suppression is dropped the moment the account leaves `needs_reauth`, so an account that is fixed and
+dies again still reaches you immediately.
+
+A failed DM can never take down the auth path: `dm_operator` swallows its own errors and returns
+`false`, the job does no work worth retrying, and the callback rescues anything the enqueue itself
+raises.
+
+```mermaid
+flowchart LR
+    R[refresh_token! hits a<br/>permanent failure] -->|update!| S[status = needs_reauth]
+    S --> C[after_update_commit]
+    C --> J[AccountReauthAlertJob]
+    J --> N[AccountReauthNotifier]
+    N --> D{suppressed<br/>&lt;12h?}
+    D -->|yes| X[drop]
+    D -->|no| DM[Slack DM → OPERATOR_SLACK_USER_ID]
+    RC[recover_needs_reauth<br/>restore] -.->|update_columns:<br/>skips callbacks| S
+```
+
 ### An account can be capped without ever having been current
 
 `mark_quota_exceeded!` used to fire only on the account that was current when a session hit a wall.
