@@ -34,6 +34,11 @@ Run `.agent-containers/ac.sh` with no arguments for the full list. Sessions clon
 into `~/.zimmer-dev-sessions/<name>` by default (override with
 `AC_WORKSPACE_DIR`).
 
+If `clone` fails to bring the stack up, it removes the clone directory it created
+(and any half-built stack) before exiting, so the same name is immediately free to
+retry. A stack that boots but fails its `/up` health check is **not** swept — that
+one is left running on purpose, for `ac.sh logs <name>`.
+
 ## Manual setup (no `ac.sh`)
 
 If you just want one stack against your current checkout. Note this is a **single
