@@ -62,7 +62,9 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
   test "restores when reset times are nil (treated as cleared)" do
     account = claude_accounts(:exceeded)
     snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
-    snapshot.update!(reset_5h: nil, reset_7d: nil)
+    # A serving 5-hour status alongside: an unexpired refusal outranks the
+    # counter on either window, and this test is about the nil reset times.
+    snapshot.update!(reset_5h: nil, reset_7d: nil, status_5h: "allowed")
 
     QuotaResetCheckerJob.perform_now
 
@@ -77,7 +79,8 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
       reset_5h: 3.hours.from_now,
       reset_7d: 5.days.from_now,
       utilization_5h: 0.0,
-      utilization_7d: 0.72
+      utilization_7d: 0.72,
+      status_5h: "allowed"
     )
 
     QuotaResetCheckerJob.perform_now
@@ -92,7 +95,8 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
       reset_5h: 3.hours.from_now,
       reset_7d: 5.days.from_now,
       utilization_5h: 0.0,
-      utilization_7d: 0.95
+      utilization_7d: 0.95,
+      status_5h: "allowed"
     )
 
     QuotaResetCheckerJob.perform_now

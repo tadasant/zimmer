@@ -125,6 +125,24 @@ class ClaudeAccountQuotaSnapshotTest < ActiveSupport::TestCase
       reset_7d: 1.minute.ago, utilization_7d: 1.0, status_7d: "rejected").windows_clear?
   end
 
+  test "windows_clear? is false while the API is still rejecting on the 5-hour window" do
+    # The counter can read as headroom the account cannot spend. Calling this
+    # clear would render "Rejected" against the 5-hour window and "Active" for the
+    # account on the same card.
+    assert_not snapshot(reset_5h: 40.minutes.from_now, utilization_5h: 0.9, status_5h: "rejected",
+      reset_7d: 5.days.from_now, utilization_7d: 0.2, status_7d: "allowed").windows_clear?
+  end
+
+  test "windows_clear? is true once the rejecting 5-hour window has reset" do
+    assert snapshot(reset_5h: 1.minute.ago, utilization_5h: 1.0, status_5h: "rejected",
+      reset_7d: 5.days.from_now, utilization_7d: 0.2, status_7d: "allowed").windows_clear?
+  end
+
+  test "windows_clear? treats an approaching-cap 5-hour warning as still serving" do
+    assert snapshot(reset_5h: 40.minutes.from_now, utilization_5h: 0.9, status_5h: "allowed_warning",
+      reset_7d: 5.days.from_now, utilization_7d: 0.2, status_7d: "allowed").windows_clear?
+  end
+
   test "windows_clear? is false when only the 5-hour window is spent" do
     assert_not snapshot(reset_5h: 30.minutes.from_now, utilization_5h: 1.0,
       reset_7d: 5.days.from_now, utilization_7d: 0.2, status_7d: "allowed").windows_clear?

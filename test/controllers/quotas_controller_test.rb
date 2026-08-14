@@ -125,6 +125,23 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert account.reload.quota_exceeded?, "an account that cannot serve must stay out of the pool"
   end
 
+  test "show never softens needs_reauth, which only a human clears" do
+    account = claude_accounts(:exceeded)
+    account.update!(status: :needs_reauth)
+    ClaudeAccountQuotaSnapshot.delete_all
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: account, trigger: "scheduled",
+      utilization_5h: 0.35, status_5h: "allowed", reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, status_7d: "allowed", reset_7d: 6.days.from_now
+    )
+
+    get quotas_url
+
+    assert_response :success
+    assert_equal "Needs Reauth", account_badge_text(account)
+    assert account.reload.needs_reauth?
+  end
+
   test "show counts a cleared account as active in the pool totals" do
     exceeded_account_with_cleared_windows
 

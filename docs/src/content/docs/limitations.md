@@ -806,6 +806,13 @@ you are the one looking at the page, since loading it heals. Making the pool its
 mean joining every availability check to the latest snapshot per account and acting on a reading
 that may be minutes old, which is the wrong trade for the path that hands an identity to a session.
 
+Two edges of the same asymmetry are worth knowing. A page load restores the **account** but does not
+resume the sessions parked on it — only `QuotaResetCheckerJob` calls
+`AuthOutageParkService.wake_parked_sessions!`, so those sessions wait for the sweep or their own
+timer. And the derivation needs a reading to work from, which **Codex accounts never have**: nothing
+snapshots quota for that runtime and the sweep is Claude-only, so a Codex account marked
+`quota_exceeded` on rotation keeps the label and stays out of its pool until something else moves it.
+
 ### The quotas page can hold row-lock transactions across a token endpoint call
 
 🟡 `ClaudeAccount#refresh_token!` serializes on the account row and keeps that lock for the whole
