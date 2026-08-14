@@ -178,7 +178,26 @@ module QuotasHelper
       class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium #{colors}")
   end
 
-  def account_status_badge(status)
+  # The status badge for an account on its card.
+  #
+  # Derives the status from the reading on the card beside it rather than
+  # rendering the `status` column raw — see ClaudeAccount#effective_status for
+  # why the column drifts. Keeping the raw column here is how a card ends up
+  # claiming "Quota Exceeded" next to two windows it reports as Allowed and
+  # well under the cap.
+  #
+  # This is the entry point the card uses. account_status_badge_tag below renders
+  # the badge itself and applies no such rule, so calling it directly from a view
+  # is how the stale badge comes back.
+  #
+  # @param snapshot [ClaudeAccountQuotaSnapshot, nil] the account's latest
+  #   reading, already loaded by the page. Passed explicitly rather than looked
+  #   up so rendering a pool of cards is not a query per card.
+  def account_status_badge(account, snapshot)
+    account_status_badge_tag(account.effective_status(snapshot))
+  end
+
+  def account_status_badge_tag(status)
     case status.to_s
     when "active"
       tag.span("Active",

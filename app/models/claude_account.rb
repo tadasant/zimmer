@@ -340,6 +340,41 @@ class ClaudeAccount < ApplicationRecord
     quota_snapshots.order(created_at: :desc).first
   end
 
+  # The status this account should PRESENT, derived from its own latest quota
+  # reading rather than taken on faith from the `status` column.
+  #
+  # `status` is sticky: something marks an account `quota_exceeded` and only
+  # QuotaResetCheckerJob's 15-minute sweep ever clears it again. That makes the
+  # column a claim about the past — true when it was written, and true
+  # afterwards only for as long as the sweep keeps running and keeps agreeing.
+  # It does not always: rotation stamps the outgoing account on its way past
+  # (AccountRotationService#rotate_under_lock) whatever the reason it rotated
+  # for, so an account rotated through on `auth_recovery` wears the label with no
+  # quota evidence behind it at all; and a deployment whose queues stop draining
+  # (#426 froze every one of them for ten hours) leaves every label frozen with
+  # them. Both produce the same symptom — a card reading "Quota Exceeded" beside
+  # two windows it says are Allowed at 35% and 12%.
+  #
+  # So the label reads the evidence directly. Same rule the healer restores on,
+  # so the badge and the sweep cannot disagree; when they do differ it is only
+  # ever because the sweep has not run yet, and the page tells the truth first.
+  #
+  # Deliberately display-only. `status` stays load-bearing for
+  # `ClaudeAccount.available` and AccountRotationService, which must keep acting
+  # on the durable column rather than on a reading that may be minutes stale —
+  # QuotasController converges the column separately (#auto_heal_accounts).
+  #
+  # @param snapshot [ClaudeAccountQuotaSnapshot, nil] the reading to judge by;
+  #   pass the one already loaded for the page to avoid a query per account.
+  #   With no snapshot there is no evidence, so the column stands.
+  # @return [String] an enum status name
+  def effective_status(snapshot = latest_snapshot)
+    return status unless quota_exceeded?
+    return status if snapshot.nil?
+
+    snapshot.windows_clear? ? "active" : status
+  end
+
   def mark_quota_exceeded!
     update!(
       status: :quota_exceeded,

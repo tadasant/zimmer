@@ -3,14 +3,18 @@
     <%
       all_utilizations_5h = []
       all_utilizations_7d = []
-      active_count = accounts.active.count
-      exceeded_count = accounts.quota_exceeded.count
-      reauth_count = accounts.needs_reauth.count
+      # Counted from the same derived status the cards below render, so the
+      # tallies and the badges cannot disagree about the same account — see
+      # ClaudeAccount#effective_status.
+      status_counts = Hash.new(0)
 
       weekly_spent_count = 0
 
       accounts.each do |account|
-        if (snap = snapshots[account.id])
+        snap = snapshots[account.id]
+        status_counts[account.effective_status(snap)] += 1
+
+        if snap
           # The 5-hour figure counts weekly-blocked accounts as fully utilized:
           # their 5-hour headroom cannot be served. The 7-day figure needs no
           # such correction — a spent weekly window already reads as 100% there.
@@ -21,6 +25,10 @@
           weekly_spent_count += 1 if seven_day_window_spent?(snap)
         end
       end
+
+      active_count = status_counts["active"]
+      exceeded_count = status_counts["quota_exceeded"]
+      reauth_count = status_counts["needs_reauth"]
 
       avg_5h = all_utilizations_5h.any? ? all_utilizations_5h.sum / all_utilizations_5h.size : nil
       avg_7d = all_utilizations_7d.any? ? all_utilizations_7d.sum / all_utilizations_7d.size : nil
