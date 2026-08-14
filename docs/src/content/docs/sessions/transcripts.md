@@ -70,12 +70,18 @@ pastes a `curl -H "Authorization: Bearer …"` into its own reasoning puts that 
 transcript — and the transcript is stored, rendered, and downloadable through the
 transcript-archive API.
 
-`TranscriptRedactor` runs at `TranscriptSource#read`, the one door transcript bytes come through.
-That is deliberately **on write, not on read**: Zimmer stores the whole raw transcript string in
-`sessions.transcript`, so redacting at the read boundary is what keeps a credential out of the
-database rather than only out of the rendered page. Every downstream consumer — the stored row,
-the broadcast timeline, subagent transcripts, the archive API, the title and summary jobs — reads
-what that method returns, so a new consumer cannot forget to redact.
+`TranscriptRedactor` runs inside `TranscriptSource#read`, where transcript bytes are pulled off
+disk. That is deliberately **on write, not on read**: Zimmer stores the whole raw transcript string
+in `sessions.transcript`, so redacting at the read boundary is what keeps a credential out of the
+database rather than only out of the rendered page.
+
+Reading through that method is a requirement on callers, not a property of the code — Zimmer has
+three *other* places that re-read a transcript and persist it (the manual refresh in
+`SessionsController`, `Api::V1::SessionsController` and `Mcp::Tools::ActionSession`, each in a
+single and a bulk form). They resolve their reader through `TranscriptRuntime.source_for(session).read`
+for exactly this reason; a bare `File.read` at any of them writes an unredacted transcript over the
+redacted one the poller stored. `test/contracts/transcript_redaction_contract_test.rb` pins that
+structurally, so a new refresh path cannot quietly reintroduce the bypass.
 
 It works in two tiers:
 
