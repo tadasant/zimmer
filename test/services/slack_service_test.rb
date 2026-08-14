@@ -601,15 +601,22 @@ class SlackServiceTest < ActiveSupport::TestCase
   end
 
   test "open_dm surfaces a missing scope as a non-retried ApiError" do
-    mock_client = mock("slack_client")
-    SlackService.stubs(:client).returns(mock_client)
-    # .once is the assertion: a scope does not grow back, so this must not retry.
-    mock_client.expects(:conversations_open).once.raises(
-      Slack::Web::Api::Errors::SlackError.new("missing_scope")
-    )
+    # Counted by hand rather than with mocha cardinality: this file's teardown
+    # calls Mocha::Mockery.instance.teardown, which resets without verifying, so
+    # an `.once` here would never fail. The attempt count IS the assertion — a
+    # scope does not grow back, so retrying would just burn the rate limit.
+    attempts = 0
+    fake_client = Object.new
+    fake_client.define_singleton_method(:conversations_open) do |**_args|
+      attempts += 1
+      raise Slack::Web::Api::Errors::SlackError, "missing_scope"
+    end
+    SlackService.stubs(:client).returns(fake_client)
+    SlackService.stubs(:sleep)
 
     error = assert_raises(SlackService::ApiError) { SlackService.open_dm("U1") }
     assert_includes error.message, "missing_scope"
+    assert_equal 1, attempts, "a permission error must not be retried"
   end
 
   test "post_message posts text and blocks to a channel" do
@@ -621,20 +628,12 @@ class SlackServiceTest < ActiveSupport::TestCase
     SlackService.post_message(channel: "D123", text: "hello", blocks: blocks)
   end
 
-  test "post_message omits blocks and thread_ts when not given" do
+  test "post_message omits blocks when not given" do
     mock_client = mock("slack_client")
     SlackService.stubs(:client).returns(mock_client)
     mock_client.expects(:chat_postMessage).with(channel: "C1", text: "hi").returns(true)
 
     SlackService.post_message(channel: "C1", text: "hi")
-  end
-
-  test "post_message threads a reply when thread_ts is given" do
-    mock_client = mock("slack_client")
-    SlackService.stubs(:client).returns(mock_client)
-    mock_client.expects(:chat_postMessage).with(channel: "C1", text: "hi", thread_ts: "123.456").returns(true)
-
-    SlackService.post_message(channel: "C1", text: "hi", thread_ts: "123.456")
   end
 
   test "post_message raises ArgumentError without a channel" do

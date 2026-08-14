@@ -13,10 +13,6 @@ class ClaudeAccountNeedsReauthTest < ActiveSupport::TestCase
     @account = claude_accounts(:primary)
   end
 
-  teardown do
-    Mocha::Mockery.instance.teardown
-  end
-
   test "crossing into needs_reauth enqueues the operator DM" do
     assert_enqueued_with(job: AccountReauthAlertJob, args: [ @account.id ]) do
       @account.update!(status: :needs_reauth)
@@ -42,13 +38,43 @@ class ClaudeAccountNeedsReauthTest < ActiveSupport::TestCase
   # with update_columns when the probe fails. That restore is a no-op round trip
   # on an account that was already dead — if it alerted, every recovery sweep
   # would look like a fresh failure and re-nag on the dedup window's clock.
-  test "the recovery path's update_columns restore does not re-alert" do
+  #
+  # Driven through the real provider rather than by hand-rolling the two writes,
+  # so that switching it to `update!` some day fails HERE rather than silently
+  # turning the recovery sweep into a DM source.
+  test "a failed recovery sweep does not re-alert" do
     @account.update_columns(status: ClaudeAccount.statuses[:needs_reauth])
+    ClaudeAccount.any_instance.stubs(:can_refresh_token?).returns(true)
+    ClaudeAccount.any_instance.stubs(:refresh_token!).returns(false)
 
     assert_no_enqueued_jobs(only: AccountReauthAlertJob) do
-      @account.update_columns(status: ClaudeAccount.statuses[:active])
-      @account.update_columns(status: ClaudeAccount.statuses[:needs_reauth])
+      assert_not ClaudeAuthProvider.new.recover_needs_reauth(@account)
     end
+    assert_predicate @account.reload, :needs_reauth?
+  end
+
+  test "the codex recovery sweep does not re-alert either" do
+    codex = ClaudeAccount.create!(email: "codex-recover@example.com", runtime: "codex")
+    codex.update_columns(status: ClaudeAccount.statuses[:needs_reauth])
+    ClaudeAccount.any_instance.stubs(:can_refresh_token?).returns(true)
+    ClaudeAccount.any_instance.stubs(:refresh_token!).returns(false)
+
+    assert_no_enqueued_jobs(only: AccountReauthAlertJob) do
+      assert_not CodexAuthProvider.new.recover_needs_reauth(codex)
+    end
+  end
+
+  # The suppression is NOT cleared by the status callback. sync_from_filesystem!
+  # resurrects the on-disk owner to `active` with a plain update!, and
+  # ensure_active_account! runs it before every session spawn — so clearing there
+  # would drop the backstop moments before usable_candidate? re-condemns the same
+  # account, which is one DM per spawn attempt on a drained pool.
+  test "leaving needs_reauth does not clear the suppression on its own" do
+    @account.update!(status: :needs_reauth)
+
+    AccountReauthNotifier.expects(:clear).never
+
+    @account.update!(status: :active)
   end
 
   # QuotasController seeds a credential-less new account straight into
@@ -58,14 +84,6 @@ class ClaudeAccountNeedsReauthTest < ActiveSupport::TestCase
     assert_no_enqueued_jobs(only: AccountReauthAlertJob) do
       ClaudeAccount.create!(email: "fresh@example.com", status: :needs_reauth)
     end
-  end
-
-  test "leaving needs_reauth clears the suppression so a later failure still alerts" do
-    @account.update!(status: :needs_reauth)
-
-    AccountReauthNotifier.expects(:clear).with { |acct| acct.id == @account.id }
-
-    @account.update!(status: :active)
   end
 
   test "an alert dispatch failure never breaks the status write" do

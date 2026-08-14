@@ -38,6 +38,12 @@ class AccountReauthNotifier
       # is working again is worse than no DM.
       return false unless account.needs_reauth?
 
+      # Ask the gate before composing anything. dm_operator checks it again — it
+      # has to, it is the choke point — but details_for resolves AppUrl.base_url,
+      # which walks the secret-provider chain. On an instance that will never send
+      # (development, and every agent clone) that is work spent to be discarded.
+      return false unless AlertService.enabled?
+
       AlertService.dm_operator(
         "#{runtime_label(account)} account needs re-authentication",
         details: details_for(account),

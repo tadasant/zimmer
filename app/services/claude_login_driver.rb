@@ -84,6 +84,13 @@ class ClaudeLoginDriver < RuntimeLoginDriver
       oauth_config: { "claude_json" => claude_json, "credentials_json" => credentials_json },
       status: :active
     )
+
+    # A human just re-authenticated this account, which is the only signal that
+    # actually retires the needs_reauth nag. Drop the DM suppression here rather
+    # than from ClaudeAccount's status callback: plenty of machinery writes
+    # `active` without a human involved (sync_from_filesystem!, the auto-heal
+    # sweep), and clearing on those turns a drained pool into a DM per attempt.
+    AccountReauthNotifier.clear(account)
   end
 
   # The Claude CLI keeps its interactive TUI open after a successful code paste

@@ -843,21 +843,20 @@ class ClaudeAccount < ApplicationRecord
   #   Without both of those, every recovery sweep would look like a fresh
   #   transition and re-nag on the dedup window's clock.
   #
-  # AlertService suppresses repeats per account for OPERATOR_DM_DEDUP_WINDOW on
-  # top of this, so even a genuine flap cannot become a stream of DMs.
+  # Note what this does NOT do: clear the suppression when an account leaves
+  # needs_reauth. That was the first shape of this callback and it was wrong.
+  # `sync_from_filesystem!` resurrects the on-disk owner to `active` with a plain
+  # `update!` — including a needs_reauth row whose dead-but-complete tokens are
+  # still in the credentials file — and `ensure_active_account!` runs it before
+  # every session spawn. Clearing there would drop the suppression moments before
+  # `usable_candidate?` re-condemns the same account, turning a drained pool into
+  # one DM per spawn attempt: exactly the flood the window exists to prevent.
+  # Clearing is therefore the job of the human re-auth path alone, where it means
+  # what it says — see ClaudeLoginDriver#capture!.
   def notify_status_transition
-    return unless saved_change_to_status?
+    return unless saved_change_to_status? && needs_reauth?
 
-    if needs_reauth?
-      AccountReauthAlertJob.perform_later(id)
-    else
-      # Any status other than needs_reauth means a pending nag about this account
-      # is stale, so drop the suppression. Phrased on the CURRENT status rather
-      # than on "did it just leave needs_reauth" so it stays a no-op cache delete
-      # for the statuses that never had a suppression to begin with, instead of
-      # depending on how the enum casts its previous value.
-      AccountReauthNotifier.clear(self)
-    end
+    AccountReauthAlertJob.perform_later(id)
   rescue => e
     # Never let alerting break the auth path. This runs after commit, so the
     # status change is already durable; losing the notification is survivable,
