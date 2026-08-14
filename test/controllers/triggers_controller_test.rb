@@ -39,6 +39,15 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "new form offers the DM event type" do
+    get new_trigger_path
+    assert_response :success
+
+    assert_select "select[name=?]", "trigger[trigger_conditions_attributes][0][configuration][event_type]" do
+      assert_select "option[value=dm_message]", 1
+    end
+  end
+
   test "the edit form keeps the deprecated event type selectable for a condition that has it" do
     trigger = triggers(:passive_listen_all_channels_trigger)
     get edit_trigger_path(trigger)
@@ -270,6 +279,36 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     condition = trigger.trigger_conditions.first
     assert_equal "slack", condition.condition_type
     assert_equal "bot_mention", condition.event_type
+  end
+
+  test "should create slack trigger with the dm_message event type and no channel" do
+    assert_difference("Trigger.count") do
+      post triggers_path, params: {
+        trigger: {
+          name: "DM Listener",
+          status: "enabled",
+          agent_root_name: "zimmer",
+          prompt_template: "Someone DM'd you: {{text}}",
+          mcp_servers: [],
+          trigger_conditions_attributes: [
+            {
+              condition_type: "slack",
+              configuration: {
+                channel_id: "",
+                channel_name: "",
+                event_type: "dm_message"
+              }
+            }
+          ]
+        }
+      }
+    end
+
+    trigger = Trigger.last
+    assert_redirected_to trigger_path(trigger)
+    condition = trigger.trigger_conditions.first
+    assert_equal "dm_message", condition.event_type
+    assert_nil condition.channel_id.presence
   end
 
   test "should create slack trigger with a passive-listening event type and no channel" do
