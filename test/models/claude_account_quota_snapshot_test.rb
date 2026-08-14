@@ -83,6 +83,53 @@ class ClaudeAccountQuotaSnapshotTest < ActiveSupport::TestCase
     assert_nil ClaudeAccountQuotaSnapshot.effective_utilization(nil, 1.hour.ago)
   end
 
+  # windows_clear? — the counterpart definition: what QuotaResetCheckerJob
+  # restores on, what QuotasController heals on, and what the account-level
+  # status badge presents.
+
+  test "windows_clear? is true when both counters are below the cap" do
+    assert snapshot(reset_5h: 3.hours.from_now, utilization_5h: 0.3,
+      reset_7d: 5.days.from_now, utilization_7d: 0.5, status_7d: "allowed").windows_clear?
+  end
+
+  test "windows_clear? is true when utilization is high but below 100%" do
+    assert snapshot(reset_5h: 3.hours.from_now, utilization_5h: 0.95,
+      reset_7d: 5.days.from_now, utilization_7d: 0.90, status_7d: "allowed").windows_clear?
+  end
+
+  test "windows_clear? is false when a counter has reached the cap" do
+    assert_not snapshot(reset_5h: 3.hours.from_now, utilization_5h: 1.0,
+      reset_7d: 5.days.from_now, utilization_7d: 1.0, status_7d: "allowed").windows_clear?
+  end
+
+  test "windows_clear? is true once a window's reset time has passed" do
+    assert snapshot(reset_5h: 1.minute.ago, utilization_5h: 1.0,
+      reset_7d: 1.minute.ago, utilization_7d: 1.0, status_7d: "allowed").windows_clear?
+  end
+
+  test "windows_clear? is true when the reset times are unknown" do
+    assert snapshot(reset_5h: nil, utilization_5h: nil, reset_7d: nil, utilization_7d: nil).windows_clear?
+  end
+
+  test "windows_clear? is false while the API is still rejecting for the week" do
+    # The healer, the marker and the badge must read the same evidence. Calling
+    # this clear puts the account straight back in front of rotation, which hands
+    # it to the next session (#248) — and the marker would exceed it again on the
+    # next reading, flipping the account on every sweep.
+    assert_not snapshot(reset_5h: 1.hour.ago, utilization_5h: 0.1,
+      reset_7d: 2.days.from_now, utilization_7d: 0.9, status_7d: "rejected").windows_clear?
+  end
+
+  test "windows_clear? is true once the rejecting weekly window has reset" do
+    assert snapshot(reset_5h: 1.hour.ago, utilization_5h: 1.0,
+      reset_7d: 1.minute.ago, utilization_7d: 1.0, status_7d: "rejected").windows_clear?
+  end
+
+  test "windows_clear? is false when only the 5-hour window is spent" do
+    assert_not snapshot(reset_5h: 30.minutes.from_now, utilization_5h: 1.0,
+      reset_7d: 5.days.from_now, utilization_7d: 0.2, status_7d: "allowed").windows_clear?
+  end
+
   private
 
   def snapshot(**attributes)

@@ -790,6 +790,22 @@ Login attempts are the opposite shape and worth not confusing with this: `Cleanu
 hard-deletes every terminal attempt after a day, detached or not, so that history outlives its
 account by at most 24 hours.
 
+### An account whose label has drifted is back on the page before it is back in the pool
+
+🟡 `/quotas` derives the badge it shows for an account from that account's own latest reading
+(`ClaudeAccount#effective_status`, see
+[The status column is sticky](/auth/harness/#the-status-column-is-sticky-the-badge-on-quotas-is-not)),
+so a cleared account stops presenting as "Quota Exceeded" the moment a reading says so. The
+`status` column it is derived *around* is what `ClaudeAccount.available` and `AccountRotationService`
+read, and that still only changes when something writes to it: `QuotaResetCheckerJob`'s 15-minute
+sweep, or `QuotasController#auto_heal_accounts` on a page load or refresh.
+
+So there is a window where the page tells the truth and the pool has not caught up — an account
+displayed as Active that rotation would still skip. It closes on the next sweep, or immediately if
+you are the one looking at the page, since loading it heals. Making the pool itself derived would
+mean joining every availability check to the latest snapshot per account and acting on a reading
+that may be minutes old, which is the wrong trade for the path that hands an identity to a session.
+
 ### The quotas page can hold row-lock transactions across a token endpoint call
 
 🟡 `ClaudeAccount#refresh_token!` serializes on the account row and keeps that lock for the whole

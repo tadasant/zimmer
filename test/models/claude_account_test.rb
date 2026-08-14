@@ -111,6 +111,51 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert_equal original_count + 1, account.quota_hit_count
   end
 
+  # effective_status — the status an account PRESENTS, derived from its latest
+  # reading rather than from the sticky column.
+
+  test "effective_status reports active for an exceeded account whose windows have cleared" do
+    # The production shape: rotation stamped the account on its way past, its
+    # windows have since cleared, and QuotaResetCheckerJob has not swept since.
+    account = claude_accounts(:exceeded)
+    snapshot = quota_snapshot_for(account, utilization_5h: 0.35, reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, reset_7d: 6.days.from_now)
+
+    assert account.quota_exceeded?, "the column still says exceeded"
+    assert_equal "active", account.effective_status(snapshot)
+  end
+
+  test "effective_status keeps the label for an account the API is still rejecting" do
+    account = claude_accounts(:exceeded)
+    snapshot = quota_snapshot_for(account, utilization_5h: 0.0, reset_5h: 2.hours.from_now,
+      utilization_7d: 1.0, status_7d: "rejected", reset_7d: 3.days.from_now)
+
+    assert_equal "quota_exceeded", account.effective_status(snapshot)
+  end
+
+  test "effective_status keeps the label when there is no reading to judge by" do
+    account = claude_accounts(:exceeded)
+
+    assert_equal "quota_exceeded", account.effective_status(nil)
+  end
+
+  test "effective_status reads the account's own latest snapshot when none is passed" do
+    account = claude_accounts(:exceeded)
+    quota_snapshot_for(account, utilization_5h: 0.35, reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, reset_7d: 6.days.from_now)
+
+    assert_equal "active", account.effective_status
+  end
+
+  test "effective_status never softens needs_reauth, which only a human clears" do
+    account = claude_accounts(:exceeded)
+    account.update!(status: :needs_reauth)
+    snapshot = quota_snapshot_for(account, utilization_5h: 0.1, reset_5h: 1.hour.from_now,
+      utilization_7d: 0.1, reset_7d: 5.days.from_now)
+
+    assert_equal "needs_reauth", account.effective_status(snapshot)
+  end
+
   test "mark_current! sets is_current and clears others" do
     secondary = claude_accounts(:secondary)
     secondary.mark_current!
@@ -1830,6 +1875,14 @@ class ClaudeAccountTest < ActiveSupport::TestCase
   ensure
     klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
     klass.const_set(:CLAUDE_CREDENTIALS_PATH, original)
+  end
+
+  # The account's newest reading, for the effective_status tests. Defaults
+  # describe a healthy window so each test only states what it is about.
+  def quota_snapshot_for(account, **attributes)
+    account.quota_snapshots.create!(
+      { trigger: "scheduled", status_5h: "allowed", status_7d: "allowed" }.merge(attributes)
+    )
   end
 
   def resolved_mcp_credential

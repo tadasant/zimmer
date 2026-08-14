@@ -44,6 +44,12 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # read as blocking, so an unknown status errs toward reporting exhaustion.
   SERVING_QUOTA_STATUSES = %w[allowed allowed_warning].freeze
 
+  # A window counts as clear once its counter is back under the cap. The
+  # previous 80% threshold was too conservative — it kept an account exceeded at
+  # 90% weekly utilization even with the 5-hour window fully reset, which left
+  # the whole pool stuck.
+  CLEAR_UTILIZATION_THRESHOLD = 1.0
+
   # The utilization a window actually carries right now. Once a window's reset
   # time has passed the sliding window has cleared, so the recorded number says
   # nothing about what the account can serve today.
@@ -76,6 +82,30 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
     !eff_7d.nil? && eff_7d >= 1.0
   end
 
+  # True when this reading says the account can serve again: both windows are
+  # clear, so nothing about it justifies a quota_exceeded label.
+  #
+  # A window is clear when its reset time has passed or is unknown, OR when its
+  # counter has dropped below the cap. Claude's windows slide, so utilization
+  # falls before the reset timestamp arrives — reading only the reset time left
+  # accounts exceeded long after their usage had drained away.
+  #
+  # Except on the weekly window, where the status Anthropic reported outranks the
+  # counter (#seven_day_window_spent?). An account the API is rejecting for the
+  # week cannot serve a request no matter what its utilization reads, and calling
+  # it clear puts it straight back in front of rotation (#248).
+  #
+  # The counterpart to #seven_day_window_spent?, and it lives here for the same
+  # reason: QuotaResetCheckerJob restores an account on this, QuotasController
+  # heals one on it, and /quotas decides what status badge to render from it.
+  # They must agree, or the page and the pool describe different accounts.
+  def windows_clear?
+    return false if seven_day_window_spent?
+
+    window_dimension_clear?(reset_5h, utilization_5h) &&
+      window_dimension_clear?(reset_7d, utilization_7d)
+  end
+
   # Returns a hash suitable for display, mirroring QuotaCheckService::Result fields
   def to_display_hash
     {
@@ -99,5 +129,12 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   def capture_account_identity
     self.account_email ||= claude_account&.email
     self.account_runtime ||= claude_account&.runtime
+  end
+
+  def window_dimension_clear?(reset_time, utilization)
+    return true if reset_time.nil? || reset_time <= Time.current
+    return true if utilization.present? && utilization < CLEAR_UTILIZATION_THRESHOLD
+
+    false
   end
 end
