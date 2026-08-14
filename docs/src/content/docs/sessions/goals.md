@@ -44,17 +44,22 @@ flowchart TD
     B --> C{"Merge gate"}
     C -->|auto-merges| D["Poller delivers<br/>pr_merged_message"]
     D --> E["Session archives"]
-    C -->|holds for review| F["No message ever comes"]
+    C -->|holds for review| F["No message until<br/>a human merges it"]
     F --> G["Session stays in needs_input<br/>— sanctioned case 2"]
 ```
 
 Both outcomes are correct by construction, and neither needs a human to tidy up. A held PR keeps
-its session in the queue, which is the point. A merged PR drains its own session out.
+its session in the queue, which is the point — and when that human merges it, the same signal
+releases the session. A merged PR drains its own session out. A PR closed without merging ends the
+work, and the session archives on that too.
 
-The failure this replaced was not the stop — it was the old rider on it, *"Only the user (or an
-explicit follow-up message) should trigger archiving after they have reviewed the PR."* That told
-sessions to ignore the merge message and wait for a person, which is how sessions accumulated in
-`needs_input` for weeks after their PR had landed.
+The stop is conditional, and the condition is the merge message rather than a person's attention.
+A goal that makes a human the only thing able to release a session is what leaves sessions in
+`needs_input` for weeks after their PR has landed.
+
+Three cases stop the message arriving at all — an unrecorded PR URL, a merge the poller never saw
+open, and a swallowed delivery — and a session that hits one waits forever. The goal text tells the
+agent to check `get_session` for a recorded URL before settling in. See [Limitations](/limitations/).
 
 `codebase-question` stops for a different reason, and only when a human invoked the session
 directly. A research session a parent spawned reports its answer back to the parent and archives.

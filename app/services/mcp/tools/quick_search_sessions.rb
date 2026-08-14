@@ -31,7 +31,7 @@ module Mcp
         **Session statuses:**
         - waiting: Session created, waiting to start
         - running: Agent is actively executing
-        - needs_input: The agent's turn ended and the session is idle. Agents are instructed to archive themselves when they run to completion, so a session resting here is meant to be one that needs a human — it lacked the scope or tools to finish, a merge gate held its PR, a human invoked it to explore or ask something, or it hit a dangerous irreversible ambiguity. Check the session transcript, since a session can also land here having simply stopped.
+        - needs_input: The agent's turn ended and the session is idle. Agents are instructed to archive themselves when they run to completion, so a session resting here is meant to be one that needs a human — it lacked the scope or tools to finish, it is holding a PR whose merge disposition is unsettled, a human invoked it to explore or ask something, or it hit a dangerous irreversible ambiguity. Check the session transcript, since a session can also land here having simply stopped.
         - failed: Session encountered an error
         - archived: Session completed and archived
       DESC
