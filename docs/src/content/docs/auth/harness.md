@@ -346,9 +346,17 @@ writes deliberately do *not* alert, and both fall out of that placement:
 
 On top of that, `AlertService` suppresses a repeat DM about the same account for
 `OPERATOR_DM_DEDUP_WINDOW` (12 hours) — much longer than the hourly window the channel feed uses,
-because a DM is a nag at one person about something that stays broken until they act. The
-suppression is dropped the moment the account leaves `needs_reauth`, so an account that is fixed and
-dies again still reaches you immediately.
+because a DM is a nag at one person about something that stays broken until they act.
+
+**Only a human re-authenticating drops that suppression**, from `ClaudeLoginDriver#capture!` and its
+Codex twin — not from the status callback. That looks like the more obvious place and is a trap:
+`sync_from_filesystem!` resurrects the on-disk credential owner to `active` with a plain `update!`,
+including a `needs_reauth` row whose dead-but-complete tokens are still sitting in the credentials
+file, and `ensure_active_account!` runs that before every session spawn. Clearing there would drop
+the backstop moments before `usable_candidate?` re-condemns the same account — one DM per spawn
+attempt on a drained pool, which is the exact flood the window exists to prevent. The cost of the
+narrower rule is that an account the recovery sweep fixes automatically, which then dies again
+inside 12 hours, waits out the window before it can DM again.
 
 A failed DM can never take down the auth path: `dm_operator` swallows its own errors and returns
 `false`, the job does no work worth retrying, and the callback rescues anything the enqueue itself
@@ -364,6 +372,7 @@ flowchart LR
     D -->|yes| X[drop]
     D -->|no| DM[Slack DM → OPERATOR_SLACK_USER_ID]
     RC[recover_needs_reauth<br/>restore] -.->|update_columns:<br/>skips callbacks| S
+    H[human re-auths<br/>LoginDriver#capture!] -->|clear_dm_suppression| D
 ```
 
 ### An account can be capped without ever having been current

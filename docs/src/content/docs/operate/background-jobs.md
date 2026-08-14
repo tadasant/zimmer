@@ -664,9 +664,12 @@ Two consequences of being a nag:
 
 - **A much longer window.** `OPERATOR_DM_DEDUP_WINDOW` is 12 hours against `DEDUP_WINDOW`'s 1, and
   the dedup key is caller-owned and required rather than derived from title + source — so two dead
-  accounts are two DMs, not one collapsed one. The caller is also expected to call
-  `clear_dm_suppression` when the condition resolves, so a problem that recurs after a fix is not
-  swallowed by the suppression its first occurrence wrote.
+  accounts are two DMs, not one collapsed one. The caller may call `clear_dm_suppression` when the
+  condition resolves so a recurrence is not swallowed by the suppression its first occurrence wrote
+  — but it should clear on the *narrowest* signal that the problem is actually fixed, not on any
+  signal that it currently looks fixed. See
+  [the needs_reauth case](/auth/harness/#a-dead-account-tells-you-so) for why clearing too eagerly
+  turns the throttle into a flood.
 - **No `AlertBatcher`.** The batcher collapses same-thread bursts of the same alert, which is a
   channel concern. A DM is already throttled per subject.
 

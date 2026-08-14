@@ -202,7 +202,11 @@ class AlertService
       # status-transition paths whose job is to keep the account pool running. A
       # Slack outage, a missing scope or an unreachable cache must degrade to a
       # logged false, never to a raise that strands an account mid-recovery.
-      logger.error("Failed to send operator DM", title: title, source: source, error: e.message)
+      #
+      # .warn, not .error: StructuredLogger#error reports to Sentry, and a Slack
+      # outage raising an error event would page about the paging path — for the
+      # one alert shape this file argues should not page.
+      logger.warn("Failed to send operator DM", title: title, source: source, error: e.message)
       false
     end
 

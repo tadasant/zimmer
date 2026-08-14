@@ -8,10 +8,9 @@ class AccountReauthNotifierTest < ActiveSupport::TestCase
     @account = claude_accounts(:primary)
     @account.update_columns(status: ClaudeAccount.statuses[:needs_reauth])
     @account.reload
-  end
-
-  teardown do
-    Mocha::Mockery.instance.teardown
+    # `notify` asks the gate before composing, and `test` is not an alerting
+    # environment. These cases are about what the DM says, not about the gate.
+    AlertService.stubs(:enabled?).returns(true)
   end
 
   test "dedup_key is per account, so two dead accounts produce two DMs" do
@@ -53,6 +52,17 @@ class AccountReauthNotifierTest < ActiveSupport::TestCase
     @account.update_columns(status: ClaudeAccount.statuses[:active])
     @account.reload
 
+    AlertService.expects(:dm_operator).never
+
+    assert_not AccountReauthNotifier.notify(@account)
+  end
+
+  test "notify composes nothing on an instance that may not page" do
+    AlertService.stubs(:enabled?).returns(false)
+    # details_for walks the secret-provider chain to build the /quotas link.
+    # A gated instance -- development, and every agent clone -- must not pay for
+    # a DM it will immediately drop.
+    AppUrl.expects(:base_url).never
     AlertService.expects(:dm_operator).never
 
     assert_not AccountReauthNotifier.notify(@account)

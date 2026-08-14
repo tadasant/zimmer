@@ -4,10 +4,6 @@ require "test_helper"
 require "mocha/minitest"
 
 class AccountReauthAlertJobTest < ActiveSupport::TestCase
-  teardown do
-    Mocha::Mockery.instance.teardown
-  end
-
   test "notifies for the account it was enqueued with" do
     account = claude_accounts(:primary)
     account.update_columns(status: ClaudeAccount.statuses[:needs_reauth])
