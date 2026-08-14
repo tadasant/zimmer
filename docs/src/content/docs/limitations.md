@@ -806,6 +806,20 @@ Reattachment also depends on `CodexTranscriptSource#fallback_transcript` matchin
 recorded `cwd` against the session's `working_directory`. A session whose clone moves in the same
 window has no way to find its own rollout and waits until one appears.
 
+### A fresh start after a lost rollout is silent, and the agent has no history
+
+`CODEX_HOME` is a durable volume, so a deploy does not destroy in-flight Codex conversations. A
+rollout can still go missing — a recreated volume, a disk sweep, Codex's own retention — and when
+it does, `ProcessLifecycleManager#handle_failed_resume_recovery` starts a new
+conversation carrying only the prompt that triggered it. Zimmer's timeline stays whole (the poller
+carries the stored transcript forward), the process exits 0, and the session parks in `needs_input`
+exactly as a completed turn does. Nothing in the *conversation* says the history is gone.
+
+So the user sees an agent that has forgotten what it was doing, with no way to tell that apart from
+an agent that answered badly. The recovery is logged at `warning` on the session, which is one pane
+away from where the symptom appears. Restoring the prior transcript into the fresh conversation, or
+marking the discontinuity in the timeline, is unbuilt.
+
 ### The approval gate can only be verified as far as Zimmer's own doorstep
 
 `CliSpawnEnv#apply_elicitation_env` gives both runtimes `ELICITATION_REQUEST_URL` and
