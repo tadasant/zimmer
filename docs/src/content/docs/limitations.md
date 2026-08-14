@@ -2447,31 +2447,6 @@ The risk is a future Docker release changing or dropping the flag, which would p
 upstream lands in [#421](https://github.com/tadasant/zimmer/issues/421) — see
 [Nested Docker for agent sessions](/operate/nested-docker/).
 
----
-
-## A session that archives after opening a PR stops hearing about that PR
-
-`Session.with_github_prs` is `where.not(status: %w[archived failed])`, and it is the only scope the
-three GitHub pollers iterate — `GithubCommentPollerJob`, `GitHubPullRequestPollerJob`, and
-`GitHubMergeConflictPollerJob`. `notify_merged_prs` reloads and re-checks the status for the same
-reason, logging `Skipping merged-PR message for archived session`.
-
-The PR goals in `config/goals.json` tell a session to archive once its PR is open, green, reviewed
-and labeled. Those two facts compose into a real gap: after the session archives, a review comment
-a human leaves on that PR reaches nobody, and neither does the merge notification or a
-merge-conflict notice. Nothing errors — the pollers skip the session by design — so the silence is
-invisible from both ends.
-
-This is the deliberate trade for keeping the action queue meaningful: an unmerged PR is tracked by
-GitHub, which is built for exactly that, rather than by a session parked in a human's queue. The PR
-is the durable artifact. What it costs is the comment-delivery loop for the producing session, and
-the way to get it back is to unarchive the session, which restores it to the pollers' scope.
-Closing the gap properly would mean widening the scope to archived sessions with tracked PRs and
-unarchiving on delivery, which the partial index `index_sessions_on_pr_url_active_id` mirrors and
-would have to change with it.
-
----
-
 ## CI cannot test the nested-Docker path, only the shape of it
 
 CI has no sysbox runtime and no user namespace, so nothing in the suite can start the
