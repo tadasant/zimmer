@@ -61,7 +61,7 @@ evidence. Each carries the identity at write time:
 | Table | Carries | Why |
 | --- | --- | --- |
 | `claude_account_quota_snapshots` | `account_email`, `account_runtime` | a reading attributable to nobody answers nothing |
-| `runtime_login_attempts` | `account_email` | "did this credential ever log in?" outlives the account |
+| `runtime_login_attempts` | `account_email` | "did this credential ever log in?" outlives the account, within the 1-day attempt retention window `CleanupRuntimeLoginAttemptsJob` already enforced |
 | `account_rotation_events` | `rotated_from_email`, `rotated_to_email`, `runtime` | the pool moved *from* and *to* something, and `/quotas` filters the table by runtime |
 
 The rotation table's `runtime` column is load-bearing. `/quotas` used to scope rotation
@@ -80,8 +80,12 @@ Two consequences worth knowing:
   `.ao-credentials-owner.json` marker is keyed by email and so *is* inherited, which is
   the same identity mismatch [#241](https://github.com/tadasant/zimmer/issues/241) closes
   with: filesystem ownership and history disagree about what "the same account" means.
-- `claude_accounts:clear_all` / `codex_accounts:clear_all` still destroy everything. They
-  are the deliberate start-over affordance, and they say so.
+- `claude_accounts:clear_all` / `codex_accounts:clear_all` still destroy everything, detached
+  rows included — they find those by the denormalized runtime, since there is no foreign key
+  left to find them by. They are the deliberate start-over affordance, and they say so.
+- Nothing else removes a detached quota snapshot. `claude_account_quota_snapshots` has no prune
+  job, so an account's readings are now permanent unless `clear_all` takes them. See
+  [limitations](/limitations/).
 
 ## The refresh loop
 

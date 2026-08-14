@@ -32,11 +32,6 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # nil key — pairing across them would invent consumption that never happened.
   scope :attached, -> { where.not(claude_account_id: nil) }
 
-  # Who this reading was taken for, whether or not that account still exists.
-  def account_label
-    claude_account&.email || account_email
-  end
-
   # The account this reading belonged to has since been deleted, leaving the row
   # behind as history.
   def detached?

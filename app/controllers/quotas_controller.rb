@@ -260,7 +260,7 @@ class QuotasController < ApplicationController
     # gives up a few ticks later, freezing the panel on whatever it last
     # rendered. Answer with a terminal panel instead so the user is told what
     # happened.
-    return render_lost_attempt(params[:attempt_id]) if attempt.nil? || attempt.claude_account.nil?
+    return render_lost_attempt(params[:attempt_id]) if attempt.nil? || attempt.detached?
 
     account = attempt.claude_account
 
@@ -291,7 +291,7 @@ class QuotasController < ApplicationController
     attempt = RuntimeLoginAttempt.find(params[:attempt_id])
     code = params[:code].to_s.strip
 
-    return render_lost_attempt(attempt.id) if attempt.claude_account.nil?
+    return render_lost_attempt(attempt.id) if attempt.detached?
 
     if code.present? && !attempt.terminal?
       attempt.update!(pasted_code: code)
@@ -306,9 +306,12 @@ class QuotasController < ApplicationController
   # premise of the orphan handling above.
   def cancel_login
     attempt = RuntimeLoginAttempt.find(params[:attempt_id])
-    attempt.update!(status: "canceled", pasted_code: nil) unless attempt.terminal?
+    # Guard before the write: a detached attempt has already been resolved by
+    # RuntimeLoginJob with the reason its account was deleted, and overwriting
+    # that with a bare "canceled" would lose the only explanation of what happened.
+    return render_lost_attempt(attempt.id) if attempt.detached?
 
-    return render_lost_attempt(attempt.id) if attempt.claude_account.nil?
+    attempt.update!(status: "canceled", pasted_code: nil) unless attempt.terminal?
 
     render_login_panel(attempt.claude_account)
   end

@@ -1037,16 +1037,21 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_match(/no longer being tracked/, response.body)
   end
 
-  test "cancel_login resolves an attempt whose account was deleted" do
+  test "cancel_login resolves an attempt whose account was deleted without overwriting its outcome" do
     account = ClaudeAccount.create!(email: "detached-cancel@example.com", runtime: "claude_code", priority: 99)
-    attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_code")
+    attempt = account.runtime_login_attempts.create!(
+      runtime: account.runtime, status: "failed",
+      error_message: "The account this login was for was deleted before the login completed."
+    )
     account.destroy!
 
     post cancel_login_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
-    assert_equal "canceled", attempt.reload.status
     assert_select "turbo-stream[target=?]", "login_attempt_#{attempt.id}"
+    attempt.reload
+    assert_equal "failed", attempt.status
+    assert_match(/deleted/, attempt.error_message, "the reason the login died must survive a stray cancel")
   end
 
   # The pasted code is single-use and credential-adjacent. It used to be left for

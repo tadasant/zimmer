@@ -29,6 +29,11 @@ class AccountRotationEvent < ApplicationRecord
   # ever the residue of a deleted account.
   validates :rotated_to, presence: true, on: :create
 
+  # The one filter /quotas applies to this table. Always derivable at create time
+  # (rotated_to is required), and validated so that stays true: an event with no
+  # runtime would silently vanish from the page it exists to inform.
+  validates :runtime, presence: true, on: :create
+
   before_validation :capture_account_identity, on: :create
 
   scope :recent, -> { order(created_at: :desc).limit(50) }

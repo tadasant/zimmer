@@ -701,6 +701,26 @@ healthy on evidence that has gone stale. Making that deterministic would mean pr
 account on a schedule, which costs a request per account per sweep for a condition the paths that
 matter already check at the moment they matter.
 
+### A deleted account's quota snapshots are kept forever
+
+🟢 Deleting a `ClaudeAccount` detaches its quota snapshots rather than destroying them, so the
+evidence of how the account behaved survives the delete-and-re-authenticate loop
+([#241](https://github.com/tadasant/zimmer/issues/241), and
+[Deleting an account keeps its history](/auth/harness/#deleting-an-account-keeps-its-history)). The
+cost is that the delete used to be the only thing that ever removed a snapshot:
+`claude_account_quota_snapshots` has no prune job, for live accounts either. A detached reading is
+therefore permanent unless `claude_accounts:clear_all` takes it, and nothing reads it — the rate
+metric skips detached rows on purpose, and `/quotas` only ever looks up snapshots by live account id.
+
+Small in practice: snapshots are written on rotation, on a `/quotas` view, and by the reset checker,
+so the table grows at operator pace rather than at session pace. The honest fix is a retention job
+for the whole table, not a carve-out for orphans — deleting exactly the rows this change exists to
+preserve would undo it.
+
+Login attempts are the opposite shape and worth not confusing with this: `CleanupRuntimeLoginAttemptsJob`
+hard-deletes every terminal attempt after a day, detached or not, so that history outlives its
+account by at most 24 hours.
+
 ### The quotas page can hold row-lock transactions across a token endpoint call
 
 🟡 `ClaudeAccount#refresh_token!` serializes on the account row and keeps that lock for the whole

@@ -37,6 +37,22 @@ class PreserveAccountHistoryOnDelete < ActiveRecord::Migration[8.0]
     add_column :account_rotation_events, :runtime, :string
     add_index :account_rotation_events, [ :runtime, :created_at ]
 
+    # ON DELETE SET NULL encodes the same intent as `dependent: :nullify` one layer
+    # down, where it holds for every writer — `ClaudeAccount.delete_all`, a raw
+    # DELETE, a psql session during an incident — and not only for the paths that
+    # run ActiveRecord callbacks. Same reasoning as
+    # EnforceOnDeleteRulesForSessionForeignKeys, which did this for `sessions`.
+    #
+    # Postgres cannot ALTER an existing constraint's ON DELETE action, so each key
+    # is dropped and re-added. Unlike that migration this one does not bother with
+    # NOT VALID + validate: the three child tables are small (quota readings and
+    # login attempts, not an append-everything log), so the validating scan is
+    # brief enough to take inside the migration's transaction.
+    replace_account_foreign_key :claude_account_quota_snapshots, on_delete: :nullify
+    replace_account_foreign_key :runtime_login_attempts, on_delete: :nullify
+    replace_account_foreign_key :account_rotation_events, column: :rotated_from_id, on_delete: :nullify
+    replace_account_foreign_key :account_rotation_events, column: :rotated_to_id, on_delete: :nullify
+
     execute <<~SQL.squish
       UPDATE claude_account_quota_snapshots s
          SET account_email = a.email, account_runtime = a.runtime
@@ -67,6 +83,11 @@ class PreserveAccountHistoryOnDelete < ActiveRecord::Migration[8.0]
   end
 
   def down
+    replace_account_foreign_key :account_rotation_events, column: :rotated_to_id, on_delete: nil
+    replace_account_foreign_key :account_rotation_events, column: :rotated_from_id, on_delete: nil
+    replace_account_foreign_key :runtime_login_attempts, on_delete: nil
+    replace_account_foreign_key :claude_account_quota_snapshots, on_delete: nil
+
     remove_index :account_rotation_events, [ :runtime, :created_at ]
     remove_column :account_rotation_events, :runtime
     remove_column :account_rotation_events, :rotated_to_email
@@ -83,5 +104,13 @@ class PreserveAccountHistoryOnDelete < ActiveRecord::Migration[8.0]
     change_column_null :account_rotation_events, :rotated_to_id, false
     change_column_null :runtime_login_attempts, :claude_account_id, false
     change_column_null :claude_account_quota_snapshots, :claude_account_id, false
+  end
+
+  private
+
+  def replace_account_foreign_key(table, on_delete:, column: nil)
+    options = column ? { column: column } : {}
+    remove_foreign_key table, :claude_accounts, **options
+    add_foreign_key table, :claude_accounts, **options, on_delete: on_delete
   end
 end
