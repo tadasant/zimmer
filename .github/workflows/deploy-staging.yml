@@ -291,9 +291,13 @@ jobs:
           STAGING_HOST: ${{ steps.host.outputs.staging_host }}
         run: |
           set -euo pipefail
+          # Diagnostic only, and deliberately not fatal: if the daemon or the SSH hop is
+          # broken, the sysbox check below fails anyway and says so in terms of the thing
+          # we actually care about. Letting this line abort the step first would replace
+          # that message with a raw docker/ssh error.
           echo "--- registered runtimes ---"
           ssh root@"${STAGING_HOST}" \
-            "docker info --format '{{range \$k,\$v := .Runtimes}}{{\$k}} {{end}}'"
+            "docker info --format '{{range \$k,\$v := .Runtimes}}{{\$k}} {{end}}'" || true
 
           if ! map=$(ssh root@"${STAGING_HOST}" \
                 'docker run --rm --runtime=sysbox-runc alpine head -1 /proc/self/uid_map' 2>&1); then
@@ -512,10 +516,12 @@ jobs:
           #    container bind-mounting / as root, and can control its sibling containers.
           #    Captured first so the failure message can show what IS mounted; -x pins
           #    the match to a whole line, so a path merely containing docker.sock does
-          #    not read as the host's socket.
+          #    not read as the host's socket. Both spellings, because /var/run is a
+          #    symlink to /run on systemd hosts and a future regression could mount
+          #    either -- this check exists to catch that, not just today's config.
           mounts=$(ssh root@"${STAGING_HOST}" \
             "docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' $w")
-          if printf '%s\n' "$mounts" | grep -qx '/var/run/docker.sock'; then
+          if printf '%s\n' "$mounts" | grep -qxE '/(var/)?run/docker\.sock'; then
             echo "::error::the worker mounts the HOST Docker socket. That is root-equivalent access to"
             echo "::error::the droplet from inside any agent session; nested Docker exists to avoid it."
             echo "--- worker mounts ---"
