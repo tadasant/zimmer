@@ -15,7 +15,7 @@ From `config/goals.json`:
 | ID | What it demands |
 | --- | --- |
 | `codebase-question` | Research and answer inline. Do not create files, PRs, or branches. Stop in `needs_input` if a human asked; report back to the parent and archive if a session did. |
-| `open-reviewed-green-pr` | Open the PR through the `open-pr` skill, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof, then apply the `ready to merge` label. Then archive. The default for most roots. |
+| `open-reviewed-green-pr` | Open the PR through the `open-pr` skill, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof, then apply the `ready to merge` label. Then stop, and archive when the PR merges. The default for most roots. |
 | `open-reviewed-green-pr-with-version-bump` | Same, plus a mandatory version bump when server source changed. |
 | `e2e-verified-green-pr` | Same, plus: state the critical path up front, spin up a real dev server, drive it with browser automation, record video and screenshots, embed them in the PR. |
 
@@ -30,22 +30,39 @@ PR and does **not** claim a human has reviewed it — it is the agent's own clai
 fresh-eyes review, and green CI are complete. It is fully compatible with leaving the PR
 unmerged; "do not merge" is not a reason to skip the label.
 
-The three PR goals then end by telling the agent to **archive itself**. The label is the handoff.
-A green, reviewed, labeled PR is a session that ran to completion, and a merge gate takes it from
-there: it decides whether to auto-merge, announces the merges it makes in the deployment's Slack
-updates channel, and parks *its own* session in `needs_input` when it holds a PR for you. This is
-the general rule from the injected system prompt's *Session Lifecycle Management* section applied
-to a PR — self-archival is the completion signal, and `needs_input` is reserved for the four cases
-where a human is genuinely required.
+The three PR goals then end by telling the agent to **stop in `needs_input`, and to archive when
+the PR merges**. The session that opened a PR is the session holding the work's context, so it is
+the one a human comes back to while the PR's disposition is unsettled.
 
-An unmerged PR is not one of those cases. GitHub already tracks open PRs, and a session parked
-next to one adds nothing a human can act on. It costs something real, though: an archived session
-drops out of the GitHub pollers' scope, so comments on that PR stop reaching it. See
-[Limitations](/limitations/).
+Nothing has to watch for the merge. `GitHubPullRequestPollerJob` sweeps unarchived sessions with
+recorded PR URLs, and on the open → merged transition it delivers `AutomatedPrompts.pr_merged_message`
+to the session. That message is the archive signal, and it makes the queue self-draining:
 
-`codebase-question` is the one goal that still says do not self-archive, and only when a human
-invoked the session directly. A research session a parent spawned reports its answer back to the
-parent and archives.
+```mermaid
+flowchart TD
+    A["Session opens PR,<br/>applies 'ready to merge'"] --> B["Stops in needs_input"]
+    B --> C{"Merge gate"}
+    C -->|auto-merges| D["Poller delivers<br/>pr_merged_message"]
+    D --> E["Session archives"]
+    C -->|holds for review| F["No message until<br/>a human merges it"]
+    F --> G["Session stays in needs_input<br/>— sanctioned case 2"]
+```
+
+Both outcomes are correct by construction, and neither needs a human to tidy up. A held PR keeps
+its session in the queue, which is the point — and when that human merges it, the same signal
+releases the session. A merged PR drains its own session out. A PR closed without merging ends the
+work, and the session archives on that too.
+
+The stop is conditional, and the condition is the merge message rather than a person's attention.
+A goal that makes a human the only thing able to release a session is what leaves sessions in
+`needs_input` for weeks after their PR has landed.
+
+Three cases stop the message arriving at all — an unrecorded PR URL, a merge the poller never saw
+open, and a swallowed delivery — and a session that hits one waits forever. The goal text tells the
+agent to check `get_session` for a recorded URL before settling in. See [Limitations](/limitations/).
+
+`codebase-question` stops for a different reason, and only when a human invoked the session
+directly. A research session a parent spawned reports its answer back to the parent and archives.
 
 ## How a goal is applied
 
@@ -154,16 +171,25 @@ exactly four sanctioned reasons to send it:
 
 1. The agent lacked the authorization scope or tools to finish, with no parent session to report
    back to.
-2. The merge gate declined to auto-merge a PR, so a human has to review and merge it.
+2. The session opened a PR whose merge disposition is unsettled. It archives when the PR merges;
+   a PR the merge gate holds keeps its session here for the human who must review and merge it.
 3. A human invoked the session to explore something or answer a question — it is the user's to
    close.
 4. Rare: an ambiguity both too dangerous and too irreversible to guess at.
 
+On top of those, one rule bounds the whole queue: **exactly one session per human-initiated goal
+stays unarchived.** Usually that is the router, while it is still orchestrating the sessions below
+it; if the router archived itself and handed the work to a child, it is that child. One request
+should leave one session in the queue, not a trail.
+
 Anything else — including "the user will want to read this" — goes in the final message, or in
 Slack `#updates` if it is a read-only FYI and the session has a Slack server, and the session
-archives. The prompt also names three things that *look* like reasons to park and are not: waiting
-on a machine (CI, an outage, a rate limit, a peer session: none of those is a human), a reason that went
-stale while the agent worked (the PR merged; the question is moot), and finishing with nothing to
-show (a sweep that found nothing and a gate that aborted both ran to completion).
+archives. Anything the agent noticed but could not fix goes in a **GitHub issue**, which is the
+other half of why a session can archive at all: an issue is a work item, and a parked session is
+not. The prompt also names three things that *look* like reasons to park and are not: waiting on a
+machine (CI, an outage, a rate limit, a peer session: none of those is a human, and an unmerged PR
+is the one carve-out), a reason that went stale while the agent worked (the PR merged; the question
+is moot), and finishing with nothing to show (a sweep that found nothing and a gate that aborted
+both ran to completion).
 
 Whether agents comply is, again, a matter of the model obeying English.

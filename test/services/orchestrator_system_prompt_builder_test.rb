@@ -215,10 +215,48 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     assert_includes prompt, "You lacked the authorization scope or the tools to finish the job"
-    assert_includes prompt, "A merge gate decided your PR should not be auto-merged"
+    assert_includes prompt, "You opened a PR and its merge disposition is unsettled"
     assert_includes prompt, "A human invoked this session — or the router above it — specifically to explore something or answer a question"
     assert_includes prompt, "RARE — you hit an ambiguity that is both too dangerous and too irreversible"
     assert_includes prompt, "It is not an escape hatch for \"I wasn't sure.\""
+  end
+
+  test "session lifecycle principle bounds the queue to one session per human-initiated goal" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "**Exactly one session per human-initiated goal stays unarchived.**"
+    assert_includes prompt, "usually the router, if it is still orchestrating the sessions below it"
+    assert_includes prompt, "if the router archived itself and handed the work to a child"
+  end
+
+  test "a PR session is told the merge message is its archive signal" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "tells you when the PR merges, and *that message is your signal to archive*"
+    assert_includes prompt, "A merge gate that holds the PR means no message arrives until a human merges it"
+    # The PR has to be carved out of "waiting on a machine", or the two rules collide.
+    assert_includes prompt, "The one exception is reason 2 above: an open PR parks you"
+    # Reason 2 has to outrank the one-session rule, or a router with several PR children
+    # gets contradictory instructions.
+    assert_includes prompt, "Reason 2 outranks this rule"
+
+    # A PR the transcript hook never captured can never produce a merge message, so the
+    # session would wait forever. It needs a stated way out.
+    assert_includes prompt, "**Zimmer never recorded a PR URL for this session**"
+    assert_includes prompt, "put the PR URL in your final message and archive rather than waiting forever"
+    assert_includes prompt, "the PR was closed without merging (the work is over)"
+    assert_includes prompt, "find your PR already merged, archive then"
+  end
+
+  test "includes the file-a-GitHub-issue principle" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "### 8. File a GitHub Issue for Anything You Cannot Fix Here"
+    assert_includes prompt, "**File a GitHub issue about it and keep going.**"
+    assert_includes prompt, "a stale assumption encoded somewhere your PR does not reach"
+    assert_includes prompt, "do not park the session so that a human reads about it"
+    assert_includes prompt, "File against the repository that owns the defect"
+    assert_includes prompt, "Do not stall your own task to do it"
   end
 
   test "session lifecycle principle rejects the three non-reasons for parking" do
@@ -241,7 +279,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "includes always-link-PRs-and-sessions principle" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "### 8. Always Link PRs and Zimmer Sessions"
+    assert_includes prompt, "### 9. Always Link PRs and Zimmer Sessions"
     assert_includes prompt, "https://github.com/tadasant/zimmer-catalog/pull/",
       "expected the principle to show an example GitHub PR URL"
     assert_includes prompt, "https://zimmer.example.com/sessions/",

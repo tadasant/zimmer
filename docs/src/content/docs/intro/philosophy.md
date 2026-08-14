@@ -75,8 +75,8 @@ declares victory, and hands back something that doesn't compile.
 Zimmer's answer is the **goal** — a stop condition attached to the session that defines what
 "done" actually requires. The default goal for most agent roots is `open-reviewed-green-pr`,
 and it means, in full: open a PR, wait for CI, confirm CI is green, run an independent
-fresh-eyes review, address every piece of that review's feedback, re-run CI, and *only then*
-come back to the human.
+fresh-eyes review, address every piece of that review's feedback, re-run CI, label it, and wait
+on the PR — archiving itself if the PR merges, and staying in your queue if it does not.
 
 The loop closes on external reality: a CI run or a review. The agent's own say-so doesn't count.
 
@@ -231,7 +231,8 @@ So the agent's job ends at "open a PR and prove it's green." The human's job sta
 The same instinct shows up in the session list: a session sitting in `needs_input` is on
 your homepage, and it stays there until you deal with it. `needs_input` is a to-do list, which
 only works if it stays short — so agents are told to archive themselves when they run to
-completion, and to stay put only when a human is genuinely required to move the work forward.
+completion, and to stay put only while something outside the session has to resolve first, which
+is nearly always a human.
 
 ## 10. Be honest about what's broken
 
