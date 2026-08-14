@@ -84,6 +84,10 @@ class ClaudeAccount < ApplicationRecord
   scope :available, -> { active.where.not(oauth_config: {}).order(:priority) }
   scope :for_runtime, ->(runtime) { where(runtime: runtime) }
 
+  # An account that lands in needs_reauth is dead until a human re-authenticates,
+  # and nothing else tells them. See #notify_status_transition.
+  after_update_commit :notify_status_transition
+
   # Postgres advisory lock namespace for serializing mutations of one runtime's
   # account pool (rotation, activation). Distinct from
   # Session::SESSION_ADVISORY_LOCK_NAMESPACE so the two subsystems can never
@@ -813,6 +817,53 @@ class ClaudeAccount < ApplicationRecord
   end
 
   private
+
+  # DM the operator when this account crosses INTO needs_reauth, and forget that
+  # DM when it crosses back out.
+  #
+  # A model callback rather than instrumentation at the call sites, so no path
+  # that condemns an account can forget to alert — including the Administrate
+  # admin form, which no service-level hook would see.
+  #
+  # Two exclusions fall out of this placement, and both are correct:
+  #
+  # - **Creation.** `after_update_commit` does not fire on insert, so the
+  #   credential-less account QuotasController seeds directly into needs_reauth
+  #   does not DM. The human is on the page adding it; telling them to go to the
+  #   page they are on is noise.
+  #
+  # - **Recovery restores.** {ClaudeAuthProvider#recover_needs_reauth} (and its
+  #   Codex twin) flips an already-dead account to active so `refresh_token!`
+  #   is not status-blocked, then writes needs_reauth back with `update_columns`
+  #   when the probe fails. `update_columns` skips callbacks, so those restores
+  #   are silent — which is what we want: the account was already needs_reauth
+  #   before recovery started, so that is a no-op round trip, not a new failure.
+  #   The probe itself cannot condemn the account either (`recovery_probe: true`
+  #   returns before the permanent-failure branch in `perform_claude_refresh!`).
+  #   Without both of those, every recovery sweep would look like a fresh
+  #   transition and re-nag on the dedup window's clock.
+  #
+  # AlertService suppresses repeats per account for OPERATOR_DM_DEDUP_WINDOW on
+  # top of this, so even a genuine flap cannot become a stream of DMs.
+  def notify_status_transition
+    return unless saved_change_to_status?
+
+    if needs_reauth?
+      AccountReauthAlertJob.perform_later(id)
+    else
+      # Any status other than needs_reauth means a pending nag about this account
+      # is stale, so drop the suppression. Phrased on the CURRENT status rather
+      # than on "did it just leave needs_reauth" so it stays a no-op cache delete
+      # for the statuses that never had a suppression to begin with, instead of
+      # depending on how the enum casts its previous value.
+      AccountReauthNotifier.clear(self)
+    end
+  rescue => e
+    # Never let alerting break the auth path. This runs after commit, so the
+    # status change is already durable; losing the notification is survivable,
+    # raising here is not.
+    Rails.logger.error "[ClaudeAccount] Failed to dispatch status-transition alert for #{email}: #{e.class} - #{e.message}"
+  end
 
   # True when an exception raised during token refresh is a transient network
   # failure (see TRANSIENT_REFRESH_ERRORS). Such failures are retried by the

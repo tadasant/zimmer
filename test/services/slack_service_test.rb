@@ -573,4 +573,97 @@ class SlackServiceTest < ActiveSupport::TestCase
     assert_equal "Message 2", messages[0].text
     assert_equal "Message 1", messages[1].text
   end
+
+  # === DM sending (open_dm / post_message / send_dm) ===
+
+  test "open_dm returns the IM channel id for a user" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    mock_client.expects(:conversations_open).with(users: "U0BFTSUN8MD").returns(
+      OpenStruct.new(channel: OpenStruct.new(id: "D123"))
+    )
+
+    assert_equal "D123", SlackService.open_dm("U0BFTSUN8MD")
+  end
+
+  test "open_dm raises ArgumentError without a user id" do
+    assert_raises(ArgumentError) { SlackService.open_dm(nil) }
+    assert_raises(ArgumentError) { SlackService.open_dm("") }
+  end
+
+  test "open_dm raises ApiError when Slack returns no channel" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    mock_client.expects(:conversations_open).returns(OpenStruct.new(channel: nil))
+
+    error = assert_raises(SlackService::ApiError) { SlackService.open_dm("U1") }
+    assert_includes error.message, "no DM channel"
+  end
+
+  test "open_dm surfaces a missing scope as a non-retried ApiError" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    # .once is the assertion: a scope does not grow back, so this must not retry.
+    mock_client.expects(:conversations_open).once.raises(
+      Slack::Web::Api::Errors::SlackError.new("missing_scope")
+    )
+
+    error = assert_raises(SlackService::ApiError) { SlackService.open_dm("U1") }
+    assert_includes error.message, "missing_scope"
+  end
+
+  test "post_message posts text and blocks to a channel" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    blocks = [ { type: "section" } ]
+    mock_client.expects(:chat_postMessage).with(channel: "D123", text: "hello", blocks: blocks).returns(true)
+
+    SlackService.post_message(channel: "D123", text: "hello", blocks: blocks)
+  end
+
+  test "post_message omits blocks and thread_ts when not given" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    mock_client.expects(:chat_postMessage).with(channel: "C1", text: "hi").returns(true)
+
+    SlackService.post_message(channel: "C1", text: "hi")
+  end
+
+  test "post_message threads a reply when thread_ts is given" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    mock_client.expects(:chat_postMessage).with(channel: "C1", text: "hi", thread_ts: "123.456").returns(true)
+
+    SlackService.post_message(channel: "C1", text: "hi", thread_ts: "123.456")
+  end
+
+  test "post_message raises ArgumentError without a channel" do
+    assert_raises(ArgumentError) { SlackService.post_message(channel: nil, text: "hi") }
+  end
+
+  test "post_message retries a network error and succeeds" do
+    attempts = 0
+    fake_client = Object.new
+    fake_client.define_singleton_method(:chat_postMessage) do |**_args|
+      attempts += 1
+      raise Faraday::TimeoutError, "timeout" if attempts < 3
+      true
+    end
+    SlackService.stubs(:client).returns(fake_client)
+    SlackService.stubs(:sleep)
+
+    SlackService.post_message(channel: "C1", text: "hi")
+    assert_equal 3, attempts
+  end
+
+  test "send_dm opens the conversation then posts into it" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    mock_client.expects(:conversations_open).with(users: "U9").returns(
+      OpenStruct.new(channel: OpenStruct.new(id: "D9"))
+    )
+    mock_client.expects(:chat_postMessage).with(channel: "D9", text: "ping").returns(true)
+
+    SlackService.send_dm(user_id: "U9", text: "ping")
+  end
 end

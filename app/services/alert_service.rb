@@ -30,6 +30,22 @@ class AlertService
   # Cache key prefix for deduplication
   CACHE_PREFIX = "alert_service:dedup:"
 
+  # How long to suppress a repeat operator DM about the same subject.
+  #
+  # Much longer than DEDUP_WINDOW on purpose. The conditions worth a DM stay
+  # broken until a human acts on them, and the background sweeps that discover
+  # them run every minute or two — an hourly re-nag would be 24 DMs a day about
+  # one dead account. A DM is cleared the moment the condition resolves (see
+  # {clear_dm_suppression}), so this window only ever bounds an unfixed problem.
+  OPERATOR_DM_DEDUP_WINDOW = 12.hours
+
+  # Read through SecretsLoader like the other Slack settings, unlike
+  # ALERTS_ENABLED_ENV_VAR. That var is ENV-only because it is the authorization
+  # to page, and a secret-store value travels into every agent clone's `.env`.
+  # This one is only an address — knowing it does not let a clone send anything,
+  # since the environment gate still has to open first.
+  OPERATOR_USER_ID_KEY = "OPERATOR_SLACK_USER_ID"
+
   # Upper bound on the Slack `text:` field. Slack imposes no hard cap there, but
   # it drives push notifications, so keep it sane.
   FALLBACK_TEXT_MAX_CHARS = 3500
@@ -131,6 +147,79 @@ class AlertService
       sent = post_to_slack(title, details: details, source: source, log_snippet: log_snippet)
       mark_sent(dedup_key) if sent
       sent
+    end
+
+    # Send an alert to the operator as a Slack DM rather than to #eng-alerts.
+    #
+    # Same environment gate, same Block Kit rendering, same cache-backed
+    # suppression as {raise_alert} — the difference is the destination and the
+    # throttle. A channel alert is a feed entry a human scrolls past; a DM is a
+    # nag aimed at one person, so it is reserved for conditions that stay broken
+    # until that person acts, and it repeats on a much slower clock
+    # (OPERATOR_DM_DEDUP_WINDOW rather than DEDUP_WINDOW).
+    #
+    # Deliberately NOT routed through AlertBatcher: the batcher collapses bursts
+    # of the same alert within one thread, which is a channel concern. A DM is
+    # already throttled per subject by its dedup key.
+    #
+    # @param title [String] short DM title
+    # @param details [String] the body, as Slack mrkdwn
+    # @param source [String] the model/job/service raising it
+    # @param dedup_key [String] REQUIRED and caller-owned: a DM should be keyed on
+    #   the subject that is broken (e.g. one account), not on title + source, so
+    #   two dead accounts produce two DMs rather than silently collapsing into one.
+    # @param dedup_window [ActiveSupport::Duration] how long to suppress a repeat
+    # @return [Boolean] true if a DM was sent
+    def dm_operator(title, details:, dedup_key:, source: nil, dedup_window: OPERATOR_DM_DEDUP_WINDOW)
+      return log_gated(title, details: details, source: source) unless enabled?
+
+      user_id = operator_user_id
+      if user_id.blank? || !SlackService.configured?
+        logger.warn(
+          "Operator DM not sent (missing SLACK_BOT_TOKEN or #{OPERATOR_USER_ID_KEY})",
+          title: title,
+          source: source
+        )
+        return false
+      end
+
+      if suppressed?(dedup_key)
+        logger.info("Operator DM suppressed (duplicate within #{dedup_window.inspect})", title: title, dedup_key: dedup_key)
+        return false
+      end
+
+      SlackService.send_dm(
+        user_id: user_id,
+        text: build_fallback_text(title, details: details, source: source),
+        blocks: build_slack_blocks(title, details: details, source: source)
+      )
+
+      mark_sent(dedup_key, expires_in: dedup_window)
+      logger.info("Operator DM sent", title: title, source: source)
+      true
+    rescue => e
+      # Blanket, and deliberately so: this fires from token-refresh and
+      # status-transition paths whose job is to keep the account pool running. A
+      # Slack outage, a missing scope or an unreachable cache must degrade to a
+      # logged false, never to a raise that strands an account mid-recovery.
+      logger.error("Failed to send operator DM", title: title, source: source, error: e.message)
+      false
+    end
+
+    # Forget a DM suppression so the next occurrence of the same subject sends
+    # immediately. Called when the underlying condition clears — otherwise an
+    # account that breaks, is fixed, and breaks again inside the window would be
+    # silently swallowed by the suppression its first failure wrote.
+    def clear_dm_suppression(dedup_key)
+      Rails.cache.delete(cache_key(dedup_key))
+    rescue => e
+      logger.warn("Cache delete failed", error: e.message)
+      false
+    end
+
+    # The Slack user operator DMs are addressed to, or nil when unconfigured.
+    def operator_user_id
+      SecretsLoader.get(OPERATOR_USER_ID_KEY) || ENV[OPERATOR_USER_ID_KEY]
     end
 
     # Check if the service is configured and ready to send alerts
@@ -238,8 +327,8 @@ class AlertService
     end
 
     # Mark an alert as sent in the cache
-    def mark_sent(key)
-      Rails.cache.write(cache_key(key), true, expires_in: DEDUP_WINDOW)
+    def mark_sent(key, expires_in: DEDUP_WINDOW)
+      Rails.cache.write(cache_key(key), true, expires_in: expires_in)
     rescue => e
       logger.warn("Cache write failed", error: e.message)
     end
