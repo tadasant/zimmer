@@ -12,8 +12,10 @@ class ClaudeLoginDriver < RuntimeLoginDriver
   # The OAuth authorization URL the CLI prints. --claudeai (subscription) emits a
   # claude.com/cai/oauth/authorize URL; the --console (API billing) variant emits
   # platform.claude.com/oauth/authorize. Match both so the driver is robust to
-  # either default.
-  URL_REGEX = %r{https://(?:claude\.com/cai|platform\.claude\.com)/oauth/authorize\?\S+}
+  # either default. The tail is built from URL_CHAR rather than `\S` so a match
+  # stops at a control character instead of swallowing the terminal decoration
+  # around the link — see RuntimeLoginDriver::URL_CHAR.
+  URL_REGEX = %r{https://(?:claude\.com/cai|platform\.claude\.com)/oauth/authorize\?#{URL_CHAR}+}
   # The CLI's stdin prompt that signals it is ready for the pasted auth code.
   PASTE_PROMPT = /Paste code here/i
   # Lines the CLI prints when a login can't complete. `Login failed:` is the

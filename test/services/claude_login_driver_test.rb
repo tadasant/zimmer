@@ -5,6 +5,28 @@ require "mocha/minitest"
 require "tmpdir"
 
 class ClaudeLoginDriverTest < ActiveSupport::TestCase
+  # The authorization URL as `claude auth login --claudeai` prints it, captured
+  # byte-for-byte off CLI 2.1.232 under a PTY into a scratch CLAUDE_CONFIG_DIR —
+  # the same spawn RuntimeLoginJob performs. The CLI renders the link as an OSC 8
+  # hyperlink, so the URL appears twice: once as the escape sequence's target and
+  # once as its visible label, with a BEL between them and a closing
+  # `ESC ] 8 ; ; BEL` after. Split across constants only so the query string stays
+  # readable; concatenated it is exactly what the CLI wrote.
+  CAPTURED_URL =
+    "https://claude.com/cai/oauth/authorize?code=true" \
+    "&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code" \
+    "&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback" \
+    "&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference" \
+    "+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload" \
+    "&code_challenge=wPNXozKm6JTE2heYH0lGD8PzpzWYYbEeJlzzO3UhF2E" \
+    "&code_challenge_method=S256&state=r8GeBLJt4jvkaRUllH6fBEMfngSWM6Kfurirlyc6Vn4"
+
+  CAPTURED_LOGIN_OUTPUT =
+    "Opening browser to sign in…\r\n" \
+    "If the browser didn't open, visit: " \
+    "\e]8;;#{CAPTURED_URL}\a#{CAPTURED_URL}\e]8;;\a\r\n" \
+    "Paste code here if prompted > "
+
   setup do
     # capture! probes the freshly-minted token against Anthropic before the
     # account enters the pool. Default to a token Anthropic honours.
@@ -32,6 +54,28 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
     details = @driver.parse_verification(@driver.strip_ansi(raw))
     assert_equal "https://claude.com/cai/oauth/authorize?code=abc&state=xyz", details[:url]
     assert_nil details[:code]
+  end
+
+  test "parse_verification extracts the exact URL from live OSC 8 hyperlinked output" do
+    # The regression: the CLI started hyperlinking its authorization link, and a
+    # `\S+` tail ran straight through the BEL terminator, the duplicated visible
+    # label and the closing escape — yielding a 907-character string that no
+    # browser could open, so the login could never be completed.
+    details = @driver.parse_verification(@driver.strip_ansi(CAPTURED_LOGIN_OUTPUT))
+    assert_equal CAPTURED_URL, details[:url]
+    assert_nil details[:code]
+  end
+
+  test "the paste prompt is still recognized in live hyperlinked output" do
+    assert_match @driver.paste_prompt, @driver.strip_ansi(CAPTURED_LOGIN_OUTPUT)
+  end
+
+  test "parse_verification stops at a control character even when an escape survives stripping" do
+    # Defence in depth: whatever future decoration a CLI wraps the link in, the
+    # match must end at the first control byte rather than swallow the rest.
+    raw = "visit: \x1b_unknown-sequence;https://claude.com/cai/oauth/authorize?state=abc\x07trailing"
+    assert_equal "https://claude.com/cai/oauth/authorize?state=abc",
+      @driver.parse_verification(@driver.strip_ansi(raw))[:url]
   end
 
   test "parse_verification matches the platform (console) authorize URL" do
