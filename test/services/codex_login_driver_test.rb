@@ -45,6 +45,17 @@ class CodexLoginDriverTest < ActiveSupport::TestCase
     assert_equal "https://chatgpt.com/device", details[:url]
   end
 
+  test "parse_verification survives an OSC 8 hyperlinked device link with a shortened label" do
+    # The drift that broke the Claude driver applies here too: if the CLI ever
+    # hyperlinks its device link, the URL lives in the escape target and the
+    # visible label may be nothing like it. URL_CHAR's control-character bound is
+    # what keeps the match from running through the BEL into that label.
+    raw = "1. Open this link\n\n   \e]8;;https://auth.openai.com/codex/device\aSign in\e]8;;\a\n\n   Z0PC-EQL0R\n"
+    details = @driver.parse_verification(@driver.strip_ansi(raw))
+    assert_equal "https://auth.openai.com/codex/device", details[:url]
+    assert_equal "Z0PC-EQL0R", details[:code]
+  end
+
   test "capture! stores OAuth auth.json verbatim and activates the account" do
     Dir.mktmpdir do |dir|
       auth = {
