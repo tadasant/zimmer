@@ -832,7 +832,7 @@ class SlackTriggerPollerJob < ApplicationJob
   # would match no DMs at all -- "everyone" would silently become "nobody".
   def process_dm_messages(condition, bot_id:)
     user_ids = condition.allow_all_users? ? nil : condition.allowed_user_ids
-    dm_channels = SlackService.list_dm_channels(user_ids: user_ids)
+    dm_channels = dm_channels_for(user_ids)
 
     # Never poll a DM with ourselves (the unrestricted path lists every IM there is).
     dm_channels = dm_channels.reject { |dm_channel| dm_channel.user == bot_id }
@@ -1017,6 +1017,24 @@ class SlackTriggerPollerJob < ApplicationJob
   rescue SlackService::SlackError => e
     Rails.logger.warn "[SlackTriggerPollerJob] No permalink for #{message_ts} in #{channel_id}: #{e.message}"
     nil
+  end
+
+  # The DM conversation list for one allow-list, memoized for this poll.
+  #
+  # `list_dm_channels` paginates every IM the bot has and filters client-side, so
+  # it is the most expensive call on the DM path — and now two condition types
+  # reach it (bot_mention and dm_message). A deployment that keeps its
+  # bot_mention condition and adds a dm_message one would otherwise walk the same
+  # pages twice a minute, on a singleton poller where one 429 defers polling for
+  # every trigger in the instance.
+  #
+  # Keyed on the allow-list, since that is what the result depends on. nil (every
+  # DM) and an explicit list are different queries and must not share an entry —
+  # hence the array key rather than a `.to_a` that would collapse nil into [].
+  def dm_channels_for(user_ids)
+    @dm_channel_cache ||= {}
+    key = user_ids.nil? ? :all : user_ids.sort
+    @dm_channel_cache[key] ||= SlackService.list_dm_channels(user_ids: user_ids)
   end
 
   def resolve_channel_name(channel_id)

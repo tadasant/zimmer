@@ -67,8 +67,11 @@ Mechanically it reuses the DM path `bot_mention` already had, so the semantics a
 documented above and below: one cursor per conversation in `configuration.dm_timestamps`, the first
 poll baselines instead of replaying history, the bot's own messages never fire, and a DM with the
 bot itself is skipped outright. The allow-list is applied by **enumeration** rather than filtering —
-`SlackService.list_dm_channels` is asked only for the allowed users' conversations — which is why an
-unrestricted condition passes `nil` rather than an empty array. See the caution below.
+`SlackService.list_dm_channels` returns only the allowed users' conversations — which is why an
+unrestricted condition passes `nil` rather than an empty array, since "everyone" cannot be written as
+a list of IDs and an empty list means nobody. (It still paginates every IM and filters client-side,
+so the allow-list narrows what is polled, not what is fetched. The poller memoizes the result per
+run, keyed on the allow-list, so two conditions sharing one do not walk those pages twice.)
 
 Leave the channel blank; `dm_message` ignores `channel_id` entirely, and `thread_ts` is rejected
 (there is nothing for it to scope). `SlackTriggerHealthCheckJob` skips these conditions for the same
@@ -76,12 +79,25 @@ reason it skips `bot_mention` — there is no single monitored source to measure
 
 :::caution[A `dm_message` condition and a `bot_mention` condition both fire on the same DM]
 `bot_mention` covers DMs unconditionally, and `dm_message` deliberately applies no mention filter.
-Two conditions watching the same conversation therefore each fire on it, spawning two sessions.
-Nothing dedupes them, because they belong to different triggers and Zimmer cannot tell an
-accidental overlap from a deliberate one. Pick one per conversation.
+Two conditions covering the same DM therefore each fire on it, spawning two sessions — and that
+holds whether they sit on two triggers or on the *same* one, which is the likelier mistake:
+`SlackTriggerPollerJob` iterates conditions, not triggers, and each one calls `create_session!`.
+Nothing dedupes them, because Zimmer cannot tell an accidental overlap from a deliberate one. Pick
+one per conversation.
 :::
 
-#### Who may trigger a `bot_mention` (or a passive listener)
+:::caution[The allow-list is open by default, and the form does not render it]
+`dm_message` inherits the [three allow-list layers](#who-may-trigger-a-bot_mention-or-a-passive-listener)
+below, including their default: **blank or unset means everyone**. No view renders
+`allowed_user_ids`, so a condition created in the Triggers form falls through to
+`SLACK_BOT_MENTION_ALLOWED_USER_IDS` — and if that is unset, any member of the workspace who opens a
+DM with the bot spawns a session. Enumeration is the only gate on the DM path; there is no
+second `user_allowed?` check behind it. Set the list through the API or the console, or set the env
+var, before pointing a `dm_message` trigger at anything consequential. See
+[the caveat](/limitations/#anyone-in-the-workspace-can-trigger-an-agent-via-bot-mention-by-default).
+:::
+
+#### Who may trigger a `bot_mention`, a `dm_message`, or a passive listener
 
 Three layers, most specific first:
 
