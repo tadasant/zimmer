@@ -477,7 +477,11 @@ class Api::V1::SessionsController < Api::BaseController
       main_transcript_file = find_main_transcript_file_for_session(@session, transcript_dir)
 
       if main_transcript_file
-        transcript_content = File.read(main_transcript_file)
+        # Through the runtime's TranscriptSource, not File.read: that is where
+        # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
+        # transcript over the redacted one the poller stored. It also decompresses a
+        # Codex .zst rollout, which a raw read would have stored as binary.
+        transcript_content = TranscriptRuntime.source_for(@session).read(main_transcript_file)
         message_count = count_transcript_messages(transcript_content)
 
         # Never let a refresh shrink the stored transcript. A shorter filesystem
@@ -1204,7 +1208,11 @@ class Api::V1::SessionsController < Api::BaseController
     main_transcript_file = find_main_transcript_file_for_session(session, transcript_dir)
     return false unless main_transcript_file
 
-    transcript_content = File.read(main_transcript_file)
+    # Through the runtime's TranscriptSource, not File.read: that is where
+    # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
+    # transcript over the redacted one the poller stored. It also decompresses a
+    # Codex .zst rollout, which a raw read would have stored as binary.
+    transcript_content = TranscriptRuntime.source_for(session).read(main_transcript_file)
     return false if session.transcript == transcript_content
 
     message_count = count_transcript_messages(transcript_content)

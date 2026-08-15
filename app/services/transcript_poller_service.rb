@@ -608,7 +608,10 @@ class TranscriptPollerService
 
     agent_files.each do |file|
       agent_id = File.basename(file, ".jsonl")
-      content = @file_system.read(file)
+      # Through the source, not the file system directly: a subagent transcript
+      # is stored and served exactly like a main one, so it goes through the
+      # same redaction door (TranscriptSource#read).
+      content = @source.read(file)
       message_count = content.lines.count { |l| l.strip.present? }
 
       with_db_retry do
