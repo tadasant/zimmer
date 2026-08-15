@@ -6,7 +6,12 @@ class NpxBinExecutableGuardTest < ActiveSupport::TestCase
   setup do
     @temp_dir = Dir.mktmpdir("npx_bin_guard_test")
     @original_home = ENV["HOME"]
+    @original_clones_dir = ENV["AGENT_CLONES_DIR"]
     ENV["HOME"] = @temp_dir
+    # ClonesDirectory.base prefers AGENT_CLONES_DIR over HOME. Left set, it would
+    # point the clones base somewhere else entirely and every assertion below would
+    # pass or fail for the wrong reason.
+    ENV.delete("AGENT_CLONES_DIR")
 
     # Mirror the production layout: ~/.zimmer/clones/<clone>/<subdir>
     @working_directory = File.join(
@@ -20,6 +25,7 @@ class NpxBinExecutableGuardTest < ActiveSupport::TestCase
 
   teardown do
     ENV["HOME"] = @original_home
+    ENV["AGENT_CLONES_DIR"] = @original_clones_dir
     FileUtils.rm_rf(@temp_dir) if @temp_dir && File.exist?(@temp_dir)
   end
 
@@ -85,6 +91,56 @@ class NpxBinExecutableGuardTest < ActiveSupport::TestCase
     assert_equal [ first[:target], second[:target] ].sort, repair.sort
     assert File.executable?(first[:target])
     assert File.executable?(second[:target])
+  end
+
+  test "repairs a bin entry npm wrote as a regular file rather than a symlink" do
+    bin_dir = File.join(@npx_dir, "aaaa1111bbbb2222", "node_modules", ".bin")
+    FileUtils.mkdir_p(bin_dir)
+    shim = File.join(bin_dir, "inline-server")
+    File.write(shim, "#!/usr/bin/env node\n")
+    File.chmod(0o644, shim)
+
+    assert_equal [ shim ], repair
+    assert File.executable?(shim)
+  end
+
+  test "repairs a target whose execute bits belong to another user" do
+    paths = install_package("cccc3333dddd4444", mode: 0o644)
+    # 0o744 owned by somebody else execs with the same EACCES, so the effective-uid
+    # check — not the raw bits — is what has to decide.
+    File.chmod(0o744, paths[:target])
+    File.stub(:executable?, false) do
+      assert_equal [ paths[:target] ], repair
+    end
+  end
+
+  test "logs the shim it refuses when a target escapes the cache" do
+    outside = File.join(@temp_dir, "escapee.js")
+    File.write(outside, "#!/usr/bin/env node\n")
+    File.chmod(0o644, outside)
+    bin_dir = File.join(@npx_dir, "eeee5555ffff6666", "node_modules", ".bin")
+    FileUtils.mkdir_p(bin_dir)
+    File.symlink(outside, File.join(bin_dir, "escaping-server"))
+
+    log = StringIO.new
+    assert_empty NpxBinExecutableGuard.repair!(
+      working_directory: @working_directory, logger: Logger.new(log)
+    )
+    assert_match(/Refusing to repair/, log.string)
+    assert_match(/escapee\.js/, log.string)
+  end
+
+  test "swallows an unexpected error rather than blocking the spawn" do
+    install_package("7777aaaa8888bbbb")
+    log = StringIO.new
+
+    Dir.stub(:glob, ->(*) { raise Errno::EIO }) do
+      assert_empty NpxBinExecutableGuard.repair!(
+        working_directory: @working_directory, logger: Logger.new(log)
+      )
+    end
+
+    assert_match(/Error repairing npx bin permissions/, log.string)
   end
 
   test "is idempotent" do

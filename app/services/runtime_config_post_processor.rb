@@ -17,13 +17,16 @@
 #      every stdio server's own `env` table.
 #   5. Resolve ${VAR} interpolations from SecretsLoader.
 #
-# A catalog entry's `command`/`args` are written through verbatim. Zimmer used to
-# splice `--prefix /tmp` into every npx invocation here; that pointed npm's
-# bin-linking at a directory that does not exist on the host, so the `chmod 0755`
-# that accompanies bin-linking never landed and the server died on `exec` with
-# EACCES for the life of the clone (zimmer#467). npx resolves against the
-# per-clone `_npx` cache (NPM_CONFIG_CACHE, ClaudeSpawnEnv#configure_mcp_env)
-# without any prefix flag, which is what the catalog entries already assume.
+# A catalog entry's `command`/`args` are written through verbatim — in particular,
+# no `--prefix` is spliced into an npx invocation. `--prefix /tmp` makes npm treat
+# /tmp as the project root, so the bin-link destination becomes
+# `/tmp/node_modules/.bin`, which is absent on the host; the `chmod 0755` that
+# accompanies bin-linking then does not land on the package entrypoint and the
+# server dies on `exec` with EACCES for the life of the clone (zimmer#467). It also
+# points npm at a host-shared path, defeating the per-clone cache isolation. npx
+# resolves against that per-clone `_npx` cache (NPM_CONFIG_CACHE,
+# ClaudeSpawnEnv#configure_mcp_env) with no prefix flag, which is what the catalog
+# entries already assume.
 #
 # The injected servers are streamable-HTTP entries pointing at this instance's
 # native /mcp endpoint (see McpController) — Zimmer speaks MCP itself, so nothing

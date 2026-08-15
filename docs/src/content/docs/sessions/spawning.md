@@ -175,7 +175,9 @@ Shared scrubbing (`CliSpawnEnv`):
 Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH=false` (baseline; the `mcp_tool_search`
 extension flips it), `CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default 1,000,000), and when MCP is on: `MCP_TIMEOUT=180000`,
-and a clone-local `NPM_CONFIG_CACHE`.
+a clone-local `NPM_CONFIG_CACHE`, and one filesystem side effect — `NpxBinExecutableGuard` restores
+the execute bit on any bin target in that cache which lost it
+([MCP servers](/air/mcp-servers/#timeouts-and-caching)).
 
 Codex adds `RUST_LOG=warn,rmcp=info` and `CODEX_HOME`.
 
