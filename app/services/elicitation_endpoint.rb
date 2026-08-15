@@ -65,7 +65,7 @@ class ElicitationEndpoint
       "#{AppUrl.base_url.to_s.chomp('/')}#{PATH}"
     end
 
-    # The two variables an MCP server needs to reach the approval endpoint.
+    # What an MCP server needs to reach the approval endpoint, and to choose it.
     # Session-less callers get the URL but no session tag; the API logs a warning
     # when a request arrives without one.
     #
