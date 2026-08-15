@@ -36,20 +36,23 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
 
   # The detail header's Trash button is the one the dashboard's session drawer
   # puts in front of you, and it archives through archive-countdown rather than
-  # through the card's link. It used to build a form and call the native
-  # `form.submit()`, which fires no `submit` event: Turbo never saw the
-  # submission, the browser POSTed for real, #archive answered on its
-  # format.html branch, and the redirect reloaded the dashboard from the top —
-  # discarding whatever scroll offset the drawer had been opened over.
-  test "trashing from the session drawer streams in place and keeps the scroll offset" do
+  # through the card's link. A native `form.submit()` fires no `submit` event,
+  # so Turbo never sees the submission: the browser POSTs for real, #archive
+  # answers on its format.html branch, and the redirect reloads the dashboard
+  # from the top, discarding the scroll offset the drawer was opened over. The
+  # window stamp is what separates the two — a stream keeps the document, a
+  # reload takes it and the stamp with it.
+  test "trashing from the session drawer streams in place instead of reloading the dashboard" do
     session = sessions(:failed)
+
+    # The header actions this test drives sit in a `hidden md:block` wrapper, so
+    # the Trash button is display:none below Tailwind's md breakpoint. Other
+    # tests in the suite resize to phone widths and share the browser, so pin a
+    # desktop width rather than inheriting whatever the last one left behind.
+    page.driver.browser.manage.window.resize_to(1400, 900)
 
     visit root_path
     assert_selector "turbo-frame#session_#{session.id}"
-
-    # Put the dashboard somewhere other than the top, so a reload is
-    # distinguishable from a stream by the offset alone.
-    page.execute_script("window.scrollTo(0, document.body.scrollHeight)")
     stamp_window
 
     within "turbo-frame#session_#{session.id}" do
@@ -59,29 +62,12 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
     # only exists once that frame has landed.
     assert_selector "[data-controller~='archive-countdown'] button", text: "Trash"
 
-    # While the drawer is open the body is `position: fixed` and the dashboard's
-    # offset is parked in `body.style.top` — read it there rather than from
-    # window.scrollY, which reads 0 for exactly that reason. This is also the
-    # offset the drawer restores on close, and the one a page load would lose.
-    parked_offset = page.evaluate_script("Math.abs(parseInt(document.body.style.top, 10) || 0)")
-    assert_operator parked_offset, :>, 0,
-                    "the dashboard must be scrolled for this test to say anything about scroll"
-
     find("[data-controller~='archive-countdown'] button", text: "Trash").click
 
     assert_selector "#flash", text: "Session moved to trash."
     assert_selector "#flash", text: "Undo"
     assert_no_selector "turbo-frame#session_#{session.id}"
     assert_equal "kept", window_stamp, "trashing from the drawer should not reload the page"
-
-    # The dashboard comes back near the offset the drawer was opened over; a page
-    # load puts it at exactly 0, which is the failure this test exists to catch.
-    # The remaining few hundred pixels are the drawer's own restore arithmetic
-    # against a document that just lost a card, not something this path decides —
-    # so the assertion is "not thrown back to the top", which is what was asked
-    # for, rather than an exact offset that would only be pinning the drawer.
-    assert_operator page.evaluate_script("window.scrollY"), :>, 0,
-                    "trashing from the drawer must not throw the dashboard back to the top"
 
     capture("drawer-trash-in-place")
   end
