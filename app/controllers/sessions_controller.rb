@@ -111,23 +111,27 @@ class SessionsController < ApplicationController
     # dashboard, so it has to happen before anything reads the cookie.
     return if reset_filters!
 
-    # Search inputs. A search is "active" when there is a free-text query OR an
-    # agent-root filter; the transcript-contents toggle only widens an existing
-    # text query, so it does not by itself count as an active search.
+    # Search inputs. A search is "active" when there is a free-text query, an
+    # agent-root filter, or a genesis narrowing — the three inputs that ask "find me
+    # sessions matching this" and so replace the category grid with a flat result
+    # list. The transcript-contents toggle only widens an existing text query, so it
+    # does not by itself count.
+    #
+    # The scheduling class is deliberately NOT one of them. It is a filter, and a
+    # filter narrows whichever view you are already in; treating it as a search would
+    # mean that picking "Spot" once — a choice that now persists — silently replaced
+    # the category grid with a flat list on every later visit, with nothing in the URL
+    # to explain it.
     @search_query = params[:q].to_s.strip
     @search_contents = params[:search_contents] == "1"
     @agent_root_filter = params[:agent_root].to_s.strip
-    # Narrowing to one exact origin, which the spot/priority control cannot express.
     @genesis_filter = params[:genesis].to_s.strip
     @genesis_filter = "" unless SessionGenesis.valid?(@genesis_filter)
+    @search_active = @search_query.present? || @agent_root_filter.present? ||
+                     @genesis_filter.present?
 
     # The Filters section: which statuses to show, and the spot/priority narrowing.
-    # Resolved before @search_active because the scheduling class feeds into it, and
-    # because the status default depends on whether a search is running.
-    resolve_filters(@search_query.present? || @agent_root_filter.present? || @genesis_filter.present?)
-
-    @search_active = @search_query.present? || @agent_root_filter.present? ||
-                     @priority_class_filter.present? || @genesis_filter.present?
+    resolve_filters
 
     # Build the base visibility scope, applying the status filter. Used for every
     # fresh scope constructed below so the filters stay consistent.
@@ -2755,10 +2759,11 @@ class SessionsController < ApplicationController
   # is why case 1 is detected by the form's hidden marker rather than by the presence
   # of status[] params.
   #
-  # @param searching [Boolean] whether a text/root/genesis search is running, which
-  #   changes only the *default*: narrowing an unasked-for search to needs_input
-  #   would make it unable to find the trashed or running session being looked for.
-  def resolve_filters(searching)
+  # A search does not widen this. The ticked boxes always describe the result set,
+  # including while searching — the alternative is a rule the user cannot see and
+  # cannot reach from the form, since submitting the form always states the statuses.
+  # Searching the trash means ticking Archived, or ticking nothing.
+  def resolve_filters
     if params[FILTERS_SUBMITTED_PARAM] == "1"
       @status_filter = sanitized_status_filter(params[:status])
       @priority_class_filter = sanitized_priority_class(params[:priority_class])
@@ -2775,7 +2780,7 @@ class SessionsController < ApplicationController
       return
     end
 
-    @status_filter = searching ? [] : DEFAULT_STATUS_FILTER.dup
+    @status_filter = DEFAULT_STATUS_FILTER.dup
     @priority_class_filter = sanitized_priority_class(params[:priority_class])
   end
 

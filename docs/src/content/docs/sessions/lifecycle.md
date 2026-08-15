@@ -362,9 +362,15 @@ Two behaviours are worth knowing:
   `sessions_filters` cookie, so the choice survives a reload and a bare visit to `/` — the same
   shape of preference as the view-mode cookie. **Reset filters** deletes it and returns you to
   `needs_input` only.
-- **An unfiltered search spans every status.** If you have never chosen a filter and you type a
-  query, narrowing it to `needs_input` would hide the trashed session you are searching for, so
-  the search widens instead. A selection you *did* make is respected while searching.
+- **The ticked boxes describe the result set in every view, search included.** Searching does not
+  quietly widen the status filter. That means a search from the default view returns `needs_input`
+  matches only — to search the trash, tick `Archived`; to search everything, tick nothing. The
+  status summary sits directly above the search box so the narrowing is visible rather than
+  surprising.
+
+The **scheduling class** is a filter rather than a search: it narrows whichever view you are in
+and leaves the category grid in place. A free-text query, an agent root, or a genesis *is* a
+search, and replaces the grid with a flat result list.
 
 The equivalent for an agent is `quick_search_sessions`, whose `status` argument takes one status
 or an array of them.
