@@ -1271,15 +1271,36 @@ completed turn, per session**, until the fork is harvested and archived.
 
 That is the design that was asked for, and the fork is what makes the summary specific enough to link
 to a message index rather than paraphrase. But it is not a cheap feature, and there is no rate limit,
-no minimum interval, and no off switch beyond not looking at it. `SessionStatusSummaryGenerator`
-refuses only when the session has not moved since the last summary — which, on a turn boundary, it
-always has.
+no minimum interval, and no off switch beyond not looking at it. On the automatic path
+`SessionStatusSummaryGenerator` refuses when the session has not moved since the last summary — which,
+on a turn boundary, it always has — when the session is in the trash, and when there is structurally
+nothing to fork (no clone on disk, no transcript, or a session that is itself a summary fork).
 
 Mitigations already in place: only resting transitions trigger it (a resume into `running` does not),
 a generation already in flight is never duplicated, the copy leaves out installed-dependency trees
 (`vendor/bundle`, `**/node_modules`) that the summarizer never uses, the fork is archived immediately
 on harvest so the clone copy is reclaimed on the normal trash path, and rendering the panel or reading
 the session over MCP/REST never generates.
+
+### Regenerating an archived session's Status summary usually cannot work — its clone is already gone
+
+Pressing **Regenerate** on an archived session is no longer refused on principle: the check is whether
+there is a clone to fork, not whether the session is in the trash. But `DeferredCloneCleanupJob`
+deletes an archived session's clone once the ten-second undo window closes, on the clean branch *and*
+on the branch that preserves unpushed artifacts first. Only a session whose artifact preservation
+*failed* keeps its clone, for the trash-retention window.
+
+So the case that actually works — an archived session with a live clone — is the ten seconds after
+archiving plus that failure case. For everything older, the panel disables the button and says the
+clone was deleted when the session went to the trash, the MCP action errors with the same sentence,
+and the REST endpoint answers 422. That is an honest answer rather than the silent no-op it replaced
+(the button used to be enabled, the panel flipped to "Generating", and no summary ever arrived) — but
+it is not the same as being able to re-summarize an old session.
+
+Closing the gap means giving the summarizer something other than the source clone to run in — a fresh
+clone of the branch, or a non-fork summarization path for sessions whose working tree is gone. Both
+are larger changes than the refusal fix, and neither is implemented. Tracked in
+[#463](https://github.com/tadasant/zimmer/issues/463).
 
 ### An interrupted clone delete still mangles a live working tree
 
