@@ -133,11 +133,18 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
 - `MCP_TIMEOUT = 180000` (3 minutes) — a flat startup timeout for **every** MCP server.
   Tracked in [#113](https://github.com/tadasant/zimmer/issues/113).
-- `NPM_CONFIG_CACHE` is set to a clone-local `.npm-cache`, so `npx`-based servers don't fight over a
-  shared cache.
+- `NPM_CONFIG_CACHE` is set to a clone-local `.npm-cache`, so `npx`-based servers in *different*
+  sessions don't fight over a shared cache.
+- Within one session they still could, because `npx` keys its install directory on the package spec
+  alone: two servers running the byte-identical `npx -y <pkg>@latest` resolve to the same
+  `_npx/<hash>` and, on a cold clone, race to populate it. `NpxCacheIsolator` finds those servers at
+  config-write time and gives each its own `NPM_CONFIG_CACHE` under
+  `.npm-cache/isolated/<server>/`, so there is nothing to race over. Servers that don't share a
+  package keep the single shared cache, so tarballs are still downloaded once.
 - `NpxCacheHealService` exists to detect and delete a corrupted `_npx` cache — by matching npm's
   error text (`ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT`). An entire service that self-heals a
-  filesystem bug by regexing stderr.
+  filesystem bug by regexing stderr. It is the repair half; the isolator above is the prevention
+  half, and healing still covers corruption from causes Zimmer can't see coming.
 - `NpxBinExecutableGuard` runs on the way into every **Claude** MCP spawn and restores the execute bit
   on any `_npx/*/node_modules/.bin` target that has none. Some packages publish their entrypoint as
   `-rw-r--r--` and rely on npm's bin-linking to `chmod` it; when that does not land, the server dies

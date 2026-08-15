@@ -15,7 +15,14 @@ class AgentSessionJobTest < ActiveJob::TestCase
       status: :waiting,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem"
+      execution_provider: "local_filesystem",
+      # These tests mock a process that runs and exits; a real one writes a
+      # transcript while doing so, and the mocked filesystem does not. Since
+      # handle_exit now treats a turn that left BOTH transcript stores empty as a
+      # runtime that never got going and restarts it (ProcessLifecycleManager#
+      # handle_empty_turn), a session standing in for "the agent ran" has to carry
+      # the output that implies. Tests about the empty case set this back to nil.
+      transcript: { "type" => "user", "message" => { "content" => "Test prompt" } }.to_json
     )
 
     # Use Dir.mktmpdir for an isolated temporary directory per test.
@@ -9002,6 +9009,146 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert_equal 1, awaited, "The spawn path must consult BootTasksReadiness exactly once"
     assert_equal 1, mock_cli_adapter.executed_commands.length
+  end
+
+  # ==========================================================================
+  # First-connect MCP failure must resolve without a human (prod session 4668)
+  #
+  # A 1Password MCP server died on its first connect with an npm ENOTEMPTY.
+  # Zimmer killed the agent, healed the cache and scheduled a retry — and then
+  # the retry `--resume`d a conversation the killed CLI had never written, which
+  # exited instantly, was read as a completed turn, and parked the session in
+  # needs_input with a blank transcript. It only got going 3m45s later when a
+  # human typed "continue".
+  #
+  # This drives the whole ladder: failure → automatic retry → session running
+  # with a real transcript, with nothing human-authored in between.
+  # ==========================================================================
+
+  test "an MCP server that fails on first connect gets the session running again with no human input" do
+    working_directory = "/tmp/mcp-first-connect-clone"
+    stderr_path = File.join(working_directory, "claude_stderr.log")
+    npx_error = "npm error code ENOTEMPTY npm error syscall rename npm error path " \
+                "#{working_directory}/.npm-cache/_npx/04f14e66d79e7af4/node_modules/which"
+
+    mock_fs = MockFileSystemAdapter.new
+    mock_pm = MockProcessManager.new
+    mock_cli = MockClaudeCliAdapter.new
+    mock_fs.mkdir_p(working_directory)
+    mock_fs.write(stderr_path, "")
+
+    # This session has never run: the point of the test is a first turn that dies
+    # during MCP connect, before the runtime writes anything.
+    @session.update!(transcript: nil)
+
+    live_pid = nil
+    mock_cli.execute_hook = ->(_opts) do
+      live_pid = (live_pid || 4000) + 1
+      { pid: live_pid, stderr_log_path: stderr_path }
+    end
+    mock_cli.resume_hook = ->(_opts) do
+      live_pid = (live_pid || 4000) + 1
+      { pid: live_pid, stderr_log_path: stderr_path }
+    end
+    mock_pm.running_hook = ->(pid) { pid == live_pid }
+
+    session = @session
+    statuses_while_polling = []
+    turn = :first
+
+    # Stands in for TranscriptPollerService: on the first turn it reports the MCP
+    # connection failure the way McpStatusPersisting does (leaving the transcript
+    # empty, because the agent never ran); on the second it writes real output.
+    poller_stub = ->(_session, file_system: nil, broadcast_service: nil) do
+      poller = Object.new
+      poller.define_singleton_method(:poll_and_broadcast) do
+        reloaded = Session.find(session.id)
+        statuses_while_polling << reloaded.status
+        if turn == :first
+          reloaded.update!(custom_metadata: (reloaded.custom_metadata || {}).merge(
+            "should_fail_session" => true,
+            "mcp_failure_reason" => "MCP server connection failed",
+            "mcp_failed_servers" => [ { "name" => "1password-tadas-rw", "status" => "error", "error" => npx_error } ]
+          ))
+        else
+          reloaded.update!(transcript: [
+            { "type" => "user", "message" => { "content" => "Test prompt" } }.to_json,
+            { "type" => "assistant", "message" => { "content" => [ { "type" => "text", "text" => "On it." } ] } }.to_json
+          ].join("\n"))
+        end
+        true
+      end
+      poller
+    end
+
+    thread_stub = ->(&_block) do
+      thread = Object.new
+      def thread.alive?; false; end
+      def thread.kill; end
+      def thread.join(*); end
+      thread
+    end
+
+    clone_result = { clone_path: working_directory, working_directory: working_directory }
+
+    run_turn = lambda do |follow_up|
+      job = AgentSessionJob.new
+      job.process_manager = mock_pm
+      job.file_system = mock_fs
+      job.cli_adapter = mock_cli
+
+      GitCloneService.stub(:create_clone, clone_result) do
+        TranscriptPollerService.stub(:new, poller_stub) do
+          Thread.stub(:new, thread_stub) do
+            job.stub(:sleep, ->(_d) { }) do
+              follow_up ? job.perform(session.id, follow_up) : job.perform(session.id)
+            end
+          end
+        end
+      end
+    end
+
+    # --- Turn 1: the MCP server fails to connect -----------------------------
+    # The process never exits on its own; the MCP-failure handler terminates it.
+    mock_pm.wait_hook = ->(_pid, _flags) { nil }
+    run_turn.call(nil)
+
+    session.reload
+    assert_equal "needs_input", session.status
+    assert_equal 1, session.metadata["mcp_retry_count"], "the MCP retry ladder should have taken its first rung"
+    assert session.transcript.blank?, "the agent produced nothing before it was killed"
+    assert_equal false, session.metadata["runtime_started"],
+      "a killed process that wrote no conversation must not leave a resume target behind"
+
+    retry_job = enqueued_jobs.find { |j| j["job_class"] == "AgentSessionJob" }
+    assert retry_job, "Zimmer must schedule its own retry — this is the step that replaces the human's 'continue'"
+    retry_prompt = retry_job["arguments"][1]
+    assert_equal session.prompt, retry_prompt
+
+    # --- Turn 2: Zimmer's own retry, no human involved -----------------------
+    turn = :second
+    executes_before_retry = mock_cli.executed_commands.size
+    resumes_before_retry = mock_cli.resumed_sessions.size
+    # This turn's process runs, writes a transcript, and completes normally.
+    polls = 0
+    mock_pm.wait_hook = ->(pid, _flags) do
+      polls += 1
+      polls >= 3 ? [ pid, MockProcessManager::MockStatus.new(0) ] : nil
+    end
+
+    run_turn.call(retry_prompt)
+
+    session.reload
+    assert_equal resumes_before_retry, mock_cli.resumed_sessions.size,
+      "the retry must NOT --resume a conversation the killed CLI never wrote"
+    assert_equal executes_before_retry + 1, mock_cli.executed_commands.size,
+      "the retry must spawn fresh, carrying the prompt"
+    assert_includes statuses_while_polling, "running",
+      "the session must actually get going on Zimmer's own retry"
+    assert session.transcript.present?, "the recovered turn must produce a real transcript"
+    assert_not_equal "failed", session.status
+    assert_nil session.custom_metadata["should_fail_session"],
+      "the stale MCP failure flag must be cleared so the recovered turn is not re-failed"
   end
 
   private

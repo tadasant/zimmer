@@ -313,6 +313,48 @@ class NpxCacheHealServiceTest < ActiveSupport::TestCase
     assert_empty result[:removed_paths]
   end
 
+  # A server that shares an npx package with another gets its own cache root at
+  # `.npm-cache/isolated/<server>/` (NpxCacheIsolator), so its `_npx` no longer
+  # sits directly under `.npm-cache`. Healing must still recognize it — otherwise
+  # isolation would trade one failure mode for a permanently un-healable cache.
+  test "heals an _npx tree inside a per-server isolated cache root" do
+    isolated_npx = File.join(@working_directory, ".npm-cache", "isolated", "1password-tadas-rw", "_npx")
+    dir = File.join(isolated_npx, "04f14e66d79e7af4")
+    FileUtils.mkdir_p(File.join(dir, "node_modules"))
+
+    failed = [ { "name" => "1password-tadas-rw",
+                 "error" => "npm error code ENOTEMPTY npm error syscall rename " \
+                            "npm error path #{dir}/node_modules/which" } ]
+
+    result = NpxCacheHealService.heal_from_failures(
+      failed_servers: failed, working_directory: @working_directory, logger: @logger
+    )
+
+    assert result[:healed]
+    assert_includes result[:removed_paths], dir
+    refute File.exist?(dir)
+  end
+
+  test "the bare-hash fallback finds an isolated cache root too" do
+    isolated_npx = File.join(@working_directory, ".npm-cache", "isolated", "1password-tadas-rw", "_npx")
+    dir = File.join(isolated_npx, "04f14e66d79e7af4")
+    FileUtils.mkdir_p(dir)
+    # A sibling hash in the same isolated root must survive the targeted fallback.
+    other = File.join(isolated_npx, "aaaaaaaaaaaaaaaa")
+    FileUtils.mkdir_p(other)
+
+    failed = [ { "name" => "1password-tadas-rw",
+                 "error" => "npm error code ENOTEMPTY rename _npx/04f14e66d79e7af4/node_modules/which" } ]
+
+    result = NpxCacheHealService.heal_from_failures(
+      failed_servers: failed, working_directory: @working_directory, logger: @logger
+    )
+
+    assert result[:healed]
+    refute File.exist?(dir)
+    assert File.exist?(other), "unrelated hash trees must survive the targeted fallback"
+  end
+
   test "npx_cache_corruption? requires both a marker and an _npx reference" do
     # MODULE_NOT_FOUND family
     assert NpxCacheHealService.npx_cache_corruption?("MODULE_NOT_FOUND in /x/_npx/abc")
