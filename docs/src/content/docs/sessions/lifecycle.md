@@ -381,6 +381,15 @@ than trusting the socket.
 Every one of these actions keeps its `format.html` branch, which still redirects with a real
 flash. That is what a non-Turbo client — and most of the controller test suite — gets.
 
+A stream only happens if the client asks for one, and that is a client-side property, not a
+controller one. The card's Trash link carries `data-turbo-method`, so Turbo builds the request
+and sends `Accept: text/vnd.turbo-stream.html`. The detail header's Trash button — the one the
+session drawer puts in front of you — builds its own form in `archive_countdown_controller`
+instead, and has to submit it with `requestSubmit()`. A native `form.submit()` fires no `submit`
+event, so Turbo never sees the submission: the browser POSTs for real, `#archive` answers on its
+`format.html` branch, and the redirect reloads the dashboard from the top, discarding the scroll
+offset the drawer was opened over.
+
 The session detail page is on the same footing: it carries a `cable-reconnect` Stimulus
 controller that watches each `<turbo-cable-stream-source>` for the `connected` attribute
 turbo-rails sets and clears, and re-subscribes any source still dark after a grace window
