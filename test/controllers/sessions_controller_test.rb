@@ -55,7 +55,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Create enough sessions to require pagination
     55.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
-    get root_url
+    get root_url(every_status_params)
     assert_response :success
 
     # Should show 50 session cards on the page (one for each session)
@@ -73,7 +73,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
     # Uncategorized's page key is the "uncategorized" sentinel, not a global ?page=.
-    get root_url(page: { uncategorized: 2 })
+    get root_url(every_status_params(page: { uncategorized: 2 }))
     assert_response :success
 
     # Should show remaining 10 sessions on second page
@@ -92,12 +92,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
     # Legacy scalar bookmark: ignored, Uncategorized renders its first 50.
-    get root_url(page: "2")
+    get root_url(every_status_params(page: "2"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 50
 
     # Malformed array param must not raise a TypeError.
-    get root_url("page[]" => "2")
+    get root_url(every_status_params("page[]" => "2"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 50
   end
@@ -116,7 +116,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "B#{i}", category: cat_b) }
 
     # Advance only category A to page 2; category B's key is absent, so it stays page 1.
-    get root_url(page: { cat_a.id.to_s => 2 })
+    get root_url(every_status_params(page: { cat_a.id.to_s => 2 }))
     assert_response :success
 
     # Category A's frame shows its remaining 10 cards (page 2 of 60).
@@ -139,7 +139,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     category = Category.create!(name: "Gamma")
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "G", category: category)
 
-    get root_url
+    get root_url(every_status_params)
     assert_response :success
 
     # Both the Uncategorized bucket and the real category are collapsible.
@@ -215,7 +215,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "#sessions_grid turbo-frame", count: 1
   end
 
-  test "should combine search with archived filter" do
+  test "should combine search with the status filter" do
     # Clean up first
     McpOauthPendingFlow.delete_all
     Notification.delete_all
@@ -226,18 +226,20 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     archived_session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Archived session", title: "Archived Test")
     archived_session.update!(status: :archived)
 
-    # A search defaults to including trash, so both sessions appear without any toggle.
+    # An unfiltered search spans every status, so both sessions appear. Narrowing a
+    # search the user did not narrow would hide the trashed session they are looking
+    # for, which is the whole reason to search.
     get root_url(q: "Test")
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 2
 
-    # The user can still explicitly hide trash after searching.
-    get root_url(q: "Test", show_archived: "false")
+    # The user can narrow the search to one status afterwards.
+    get root_url(every_status_params(q: "Test", status: [ "waiting" ]))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 1
 
-    # Explicitly including trash also shows both.
-    get root_url(q: "Test", show_archived: "true")
+    # Ticking nothing means every status, so both come back.
+    get root_url(every_status_params(q: "Test"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 2
   end
@@ -1360,37 +1362,39 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # Index filtering tests
   test "should hide archived sessions by default" do
     archived_session = sessions(:archived)
-    running_session = sessions(:running)
+    needs_input_session = sessions(:needs_input)
 
     get root_url
 
     assert_response :success
     # Archived session should not be in the response (check using session path)
     assert_not response.body.include?(session_path(archived_session))
-    # But running session should be
-    assert response.body.include?(session_path(running_session))
-    # Should show "Trashed hidden" status and "Show Trash" button
-    assert response.body.include?("Trashed hidden")
-    assert response.body.include?("Show Trash")
+    # But the needs_input session — the default filter — should be
+    assert response.body.include?(session_path(needs_input_session))
   end
 
-  test "should show archived sessions when requested" do
+  test "should show archived sessions when the status filter selects them" do
     archived_session = sessions(:archived)
 
-    get root_url(show_archived: true)
+    get root_url(every_status_params(status: [ "archived" ]))
 
     assert_response :success
     # Archived session should be in the response (check using session path)
     assert response.body.include?(session_path(archived_session))
   end
 
-  test "should show hide archived button when showing archived" do
-    get root_url(show_archived: "true")
+  test "index renders the Filters section with a checkbox per status" do
+    get root_url
 
     assert_response :success
-    # Should show "Including trashed" status and "Hide Trash" button
-    assert response.body.include?("Including trashed")
-    assert response.body.include?("Hide Trash")
+    assert_select "h2", text: "Filters"
+    SessionsController::STATUS_FILTER_OPTIONS.each do |status|
+      assert_select "input[type=checkbox][name='status[]'][value=?]", status, count: 1
+    end
+    # The default state is needs_input alone, pre-ticked.
+    assert_select "input#status-filter-needs-input[checked]", count: 1
+    assert_select "input[name='status[]'][checked]", count: 1
+    assert_select "a#reset-filters", count: 1
   end
 
   # Test follow_up action
@@ -4323,7 +4327,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     old_unfavorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Old Unfavorited", created_at: 1.day.ago, favorited: false)
     new_favorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "New Favorited", created_at: 1.minute.ago, favorited: true)
 
-    get root_url
+    get root_url(every_status_params)
     assert_response :success
 
     # Get the order of sessions in the response
@@ -4352,7 +4356,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "favorite star should appear in session card" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
 
-    get root_url
+    get root_url(every_status_params)
     assert_response :success
 
     # Should have the toggle_favorite form/button
@@ -5114,7 +5118,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "index hides archived sessions by default" do
     archived = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Archived", status: :archived)
-    active = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Active")
+    active = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Active", status: :needs_input)
 
     get root_url
     assert_response :success
@@ -5123,10 +5127,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(archived)}", count: 0
   end
 
-  test "index shows archived sessions when show_archived=true" do
+  test "index shows archived sessions when the status filter selects them" do
     archived = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Archived", status: :archived)
 
-    get root_url(show_archived: "true")
+    get root_url(every_status_params(status: [ "archived" ]))
     assert_response :success
 
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(archived)}"
@@ -5141,7 +5145,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "index View link disables Turbo prefetch to avoid drawer cache poisoning" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Drawer link")
 
-    get root_url
+    get root_url(every_status_params)
     assert_response :success
 
     # NOTE: the { count: 1 } equality is required. With the `?` substitution
@@ -5386,7 +5390,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     failed = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Failed card", status: :failed)
     running = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Running card", status: :running)
 
-    get root_url
+    get root_url(every_status_params)
     assert_response :success
 
     [ waiting, needs_input, failed ].each do |session|
@@ -5406,7 +5410,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Prove the running card is on the page BEFORE asserting its button is absent —
     # otherwise a scoping/pagination change that drops running cards entirely would
     # keep this green while the feature is broken.
-    assert_select "[data-block-picker-card-id=?]", running.id.to_s, { count: 1 },
+    assert_select "##{ActionView::RecordIdentifier.dom_id(running)}", { count: 1 },
       "the running session's card must be rendered for the absence assertion below to mean anything"
     assert_select "form[action=?]", refresh_session_path(running), { count: 0 },
       "a running session must not get an inline refresh button"
@@ -5416,7 +5420,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     Session.where.not(status: :archived).update_all(status: :archived)
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Starred card", status: :waiting, favorited: true)
 
-    get root_url
+    get root_url(every_status_params)
     assert_response :success
 
     assert_select "#pinned_section form[action=?]", refresh_starred_sessions_path, { count: 1 },

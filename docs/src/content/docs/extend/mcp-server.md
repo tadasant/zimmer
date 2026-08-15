@@ -92,7 +92,7 @@ but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartb
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
-`set_blocked`, `toggle_push_notifications` — are deliberately absent here: a session must not rewrite
+`toggle_push_notifications` — are deliberately absent here: a session must not rewrite
 its own capabilities, goal, or organizational placement through the server injected into it. (The
 *action* is narrowed, not the *target*: every tool takes a `session_id`, and a session is trusted to
 pass its own. See the caution above.)
@@ -218,7 +218,7 @@ prints each condition's id, which is what the array addresses.
 
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
-`change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`, `set_blocked`,
+`change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
 `toggle_push_notifications` — mirror the inline editors on the session page. List-valued fields
 (`mcp_servers`, `skills`, `hooks`, `plugins`) use **replace, not merge** semantics, and every id is
 validated against its catalog, so an unknown skill/hook/plugin id is rejected with the valid options

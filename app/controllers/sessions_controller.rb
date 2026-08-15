@@ -34,6 +34,29 @@ class SessionsController < ApplicationController
   # mobile/desktop default applies.
   VIEW_MODE_COOKIE = :sessions_view
 
+  # The statuses the dashboard's Filters section offers, in lifecycle order. The
+  # multi-select is the ONLY control over which statuses appear — including
+  # `archived`, which is the trash. There is deliberately no second trash toggle
+  # arguing with it.
+  STATUS_FILTER_OPTIONS = %w[waiting running needs_input failed archived].freeze
+
+  # What the dashboard shows before the user has chosen anything. The dashboard is
+  # an action queue and `needs_input` is the only status that is actually waiting on
+  # a human, so every view opens on those cards alone.
+  DEFAULT_STATUS_FILTER = %w[needs_input].freeze
+
+  # Cookie that persists an explicit Filters choice (statuses + scheduling class),
+  # so the selection survives a reload and a bare visit to "/" rather than snapping
+  # back to the default. Written only when the Filters form is submitted; cleared by
+  # "Reset filters". Same shape of preference as VIEW_MODE_COOKIE above.
+  FILTERS_COOKIE = :sessions_filters
+
+  # Hidden marker the Filters form submits. Its presence is what separates "the user
+  # submitted the form with no status ticked" — an explicit *show everything* — from
+  # "this request carries no filter params at all", where the persisted choice or the
+  # default applies. Without it those two cases are the same request.
+  FILTERS_SUBMITTED_PARAM = "filters"
+
   # SQL ordering for the "last touched" flat view. last_user_activity_at is not a
   # column — it lives in the metadata JSON (written as an ISO8601 string by
   # touch_user_activity!/touch_user_view!) and falls back to created_at when
@@ -84,45 +107,34 @@ class SessionsController < ApplicationController
   before_action :load_form_data, only: %i[new create]
 
   def index
+    # "Reset filters" drops the persisted choice and lands the user back on a bare
+    # dashboard, so it has to happen before anything reads the cookie.
+    return if reset_filters!
+
     # Search inputs. A search is "active" when there is a free-text query OR an
     # agent-root filter; the transcript-contents toggle only widens an existing
     # text query, so it does not by itself count as an active search.
     @search_query = params[:q].to_s.strip
     @search_contents = params[:search_contents] == "1"
     @agent_root_filter = params[:agent_root].to_s.strip
-    # Spot/priority filter. Blank means "both". Validated against the known
-    # classes so a hand-edited URL narrows to nothing rather than raising.
-    @priority_class_filter = params[:priority_class].to_s.strip
-    @priority_class_filter = "" unless SessionGenesis::CLASSES.include?(@priority_class_filter)
     # Narrowing to one exact origin, which the spot/priority control cannot express.
     @genesis_filter = params[:genesis].to_s.strip
     @genesis_filter = "" unless SessionGenesis.valid?(@genesis_filter)
+
+    # The Filters section: which statuses to show, and the spot/priority narrowing.
+    # Resolved before @search_active because the scheduling class feeds into it, and
+    # because the status default depends on whether a search is running.
+    resolve_filters(@search_query.present? || @agent_root_filter.present? || @genesis_filter.present?)
+
     @search_active = @search_query.present? || @agent_root_filter.present? ||
                      @priority_class_filter.present? || @genesis_filter.present?
 
-    # Whether the user explicitly chose a trash visibility (e.g. clicked
-    # "Show Trash"/"Hide Trash"). When they did, honor it verbatim. When they did
-    # NOT, trash is included by default whenever a search is active, and hidden
-    # otherwise. This lets "select an agent root, Search" surface trashed sessions
-    # without a separate toggle, while still letting the user hide trash afterward.
-    @show_archived_explicit = params[:show_archived].present?
-    @show_archived =
-      if @show_archived_explicit
-        params[:show_archived] == "true"
-      else
-        @search_active
-      end
-
-    # Hide sessions that are manually "blocked by" a still-active session by default,
-    # unless show_blocked param is present. A session is only effectively blocked while
-    # its blocker is not yet archived (trashed); once trashed, it reappears automatically.
-    @show_blocked = params[:show_blocked] == "true"
-
-    # Build the base visibility scope, applying both the archived and blocked filters.
-    # Used for every fresh scope constructed below so the filters stay consistent.
+    # Build the base visibility scope, applying the status filter. Used for every
+    # fresh scope constructed below so the filters stay consistent.
     base_scope = lambda do |scope|
-      scope = scope.where.not(status: :archived) unless @show_archived
-      scope = scope.not_effectively_blocked unless @show_blocked
+      # An empty status filter is "every status" — the user ticked nothing — so it
+      # narrows nothing here rather than matching nothing.
+      scope = scope.where(status: @status_filter) if @status_filter.any?
       # Status-summary forks are Zimmer's own bookkeeping, not the operator's
       # work — they are never a row on the dashboard, trash view included.
       scope.excluding_status_summary_forks
@@ -1921,60 +1933,6 @@ class SessionsController < ApplicationController
     end
   end
 
-  # Mark a session as blocked by another session (the blocker). The blocked session
-  # is hidden from the default index until the blocker is trashed (archived).
-  def mark_blocked
-    @session = find_session
-    blocker_id = params[:blocked_by_session_id].presence&.to_i
-
-    unless blocker_id
-      respond_to do |format|
-        format.html { redirect_back fallback_location: root_path, alert: "A blocker session ID is required" }
-        format.json { render json: { error: "A blocker session ID is required" }, status: :unprocessable_entity }
-      end
-      return
-    end
-
-    blocker = Session.find_by(id: blocker_id)
-    unless blocker
-      respond_to do |format|
-        format.html { redirect_back fallback_location: root_path, alert: "Session ##{blocker_id} not found" }
-        format.json { render json: { error: "Session ##{blocker_id} not found" }, status: :not_found }
-      end
-      return
-    end
-
-    if blocker.id == @session.id
-      respond_to do |format|
-        format.html { redirect_back fallback_location: root_path, alert: "A session cannot be blocked by itself" }
-        format.json { render json: { error: "A session cannot be blocked by itself" }, status: :unprocessable_entity }
-      end
-      return
-    end
-
-    @session.update!(blocked_by_session_id: blocker.id)
-    respond_to do |format|
-      format.html do
-        flash[:notice] = "Session ##{@session.id} is now blocked by ##{blocker.id}"
-        redirect_back fallback_location: root_path
-      end
-      format.json { render json: { success: true, session_id: @session.id, blocked_by_session_id: blocker.id } }
-    end
-  end
-
-  # Clear a session's "blocked by" relationship, making it visible in the default index again.
-  def unmark_blocked
-    @session = find_session
-    @session.update!(blocked_by_session_id: nil)
-    respond_to do |format|
-      format.html do
-        flash[:notice] = "Session ##{@session.id} is no longer blocked"
-        redirect_back fallback_location: root_path
-      end
-      format.json { render json: { success: true, session_id: @session.id, blocked_by_session_id: nil } }
-    end
-  end
-
   MAX_MCP_SERVERS = 50
   MAX_MCP_SERVER_NAME_LENGTH = 100
   MAX_CATALOG_SKILLS = 100
@@ -2770,6 +2728,82 @@ class SessionsController < ApplicationController
     return persisted if VALID_VIEW_MODES.include?(persisted)
 
     mobile_request? ? VIEW_MODE_LAST_TOUCHED : VIEW_MODE_CATEGORIES
+  end
+
+  # "Reset filters" is a GET that drops the persisted Filters choice and redirects to
+  # a bare dashboard. Writing a display preference on a GET is the same thing
+  # resolve_view_mode already does — this is a preference, not data.
+  #
+  # @return [Boolean] true when the request was a reset and a redirect was issued
+  def reset_filters!
+    return false unless params[:reset_filters] == "1"
+
+    cookies.delete(FILTERS_COOKIE)
+    redirect_to root_path
+    true
+  end
+
+  # Resolve the Filters section — the status multi-select and the spot/priority
+  # narrowing — from three sources, in order:
+  #
+  #   1. A submitted Filters form. Wins, and is persisted to FILTERS_COOKIE.
+  #   2. The persisted choice from a previous submit. This is what makes a selection
+  #      survive a reload and a bare visit to "/".
+  #   3. The defaults.
+  #
+  # An empty status list is a real answer ("every status"), not an absent one, which
+  # is why case 1 is detected by the form's hidden marker rather than by the presence
+  # of status[] params.
+  #
+  # @param searching [Boolean] whether a text/root/genesis search is running, which
+  #   changes only the *default*: narrowing an unasked-for search to needs_input
+  #   would make it unable to find the trashed or running session being looked for.
+  def resolve_filters(searching)
+    if params[FILTERS_SUBMITTED_PARAM] == "1"
+      @status_filter = sanitized_status_filter(params[:status])
+      @priority_class_filter = sanitized_priority_class(params[:priority_class])
+      cookies[FILTERS_COOKIE] = {
+        value: { "status" => @status_filter, "priority_class" => @priority_class_filter }.to_json,
+        expires: 1.year
+      }
+      return
+    end
+
+    if (persisted = persisted_filters)
+      @status_filter = sanitized_status_filter(persisted["status"])
+      @priority_class_filter = sanitized_priority_class(persisted["priority_class"])
+      return
+    end
+
+    @status_filter = searching ? [] : DEFAULT_STATUS_FILTER.dup
+    @priority_class_filter = sanitized_priority_class(params[:priority_class])
+  end
+
+  # The persisted Filters choice, or nil when there is none. A cookie a user (or a
+  # stale release) left in a shape we no longer understand is treated as absent
+  # rather than allowed to 500 the dashboard.
+  def persisted_filters
+    raw = cookies[FILTERS_COOKIE].to_s
+    return nil if raw.blank?
+
+    parsed = JSON.parse(raw)
+    parsed.is_a?(Hash) ? parsed : nil
+  rescue JSON::ParserError
+    nil
+  end
+
+  # Statuses narrowed to the known set, so a hand-edited URL or an out-of-date cookie
+  # drops the unknown entries instead of matching nothing (or raising).
+  def sanitized_status_filter(value)
+    list = value.is_a?(Array) ? value : Array(value.presence)
+    list.map(&:to_s) & STATUS_FILTER_OPTIONS
+  end
+
+  # Spot/priority filter. Blank means "both". Validated against the known classes so
+  # a hand-edited URL widens to both rather than narrowing to nothing.
+  def sanitized_priority_class(value)
+    klass = value.to_s.strip
+    SessionGenesis::CLASSES.include?(klass) ? klass : ""
   end
 
   # Coarse server-side mobile detection used only to pick the default view mode.
