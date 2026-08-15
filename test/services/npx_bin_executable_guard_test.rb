@@ -71,6 +71,13 @@ class NpxBinExecutableGuardTest < ActiveSupport::TestCase
     assert_equal 0o700, File.stat(paths[:target]).mode & 0o777
   end
 
+  test "grants the owner alone when the target carries no read bit at all" do
+    paths = install_package("bbbbccccddddeeee", mode: 0o000)
+
+    assert_equal [ paths[:target] ], repair
+    assert_equal 0o100, File.stat(paths[:target]).mode & 0o777
+  end
+
   test "repairs every hash tree in the cache" do
     first = install_package("1111111111111111", "first-mcp-server")
     second = install_package("2222222222222222", "second-mcp-server")

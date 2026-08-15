@@ -40,6 +40,12 @@ class NpxBinExecutableGuard
   # `exec` refuses with EACCES.
   EXECUTE_BITS = 0o111
 
+  # The read bits (u+r, g+r, o+r), and the shift that turns each one into the
+  # execute bit beside it. Repairing 0644 as 0755 and 0600 as 0700 grants execute
+  # exactly where read was already granted, rather than widening the file.
+  READ_BITS = 0o444
+  READ_TO_EXECUTE_SHIFT = 2
+
   class << self
     # Add the execute bit to every non-executable bin target in the clone's npx cache.
     #
@@ -91,11 +97,19 @@ class NpxBinExecutableGuard
       mode = File.stat(target).mode
       return nil unless (mode & EXECUTE_BITS).zero?
 
-      File.chmod(mode | EXECUTE_BITS, target)
+      File.chmod(mode | execute_bits_for(mode), target)
       target
     rescue => e
       logger.warn("[NpxBinExecutableGuard] Could not repair #{shim}: #{e.message}")
       nil
+    end
+
+    # Mirror the target's read bits into its execute bits (0644 -> 0755, 0600 ->
+    # 0700). A file with no read bit at all is not a shape npm produces; grant the
+    # owner alone in that case rather than leaving it unlaunchable.
+    def execute_bits_for(mode)
+      mirrored = (mode & READ_BITS) >> READ_TO_EXECUTE_SHIFT
+      mirrored.zero? ? 0o100 : mirrored
     end
 
     # Guard against chmod'ing anything outside the clone's own npx cache — a shim
