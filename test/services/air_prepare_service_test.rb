@@ -1059,7 +1059,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   test "prepare! hands off to the runtime's config post-processor after AIR runs" do
     # prepare! delegates MCP-config post-processing to the runtime bundle's
     # config_post_processor_class. Verify the .mcp.json AIR wrote is processed
-    # (e.g. npx --prefix injected) without AirPrepareService doing it inline.
+    # (the elicitation address reaches the stdio entry's env) without
+    # AirPrepareService doing it inline.
     mcp_config_path = File.join(@working_dir, ".mcp.json")
     @mock_fs.write(mcp_config_path, JSON.pretty_generate(
       "mcpServers" => {
@@ -1078,9 +1079,11 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       service.prepare!
     end
 
-    args = JSON.parse(@mock_fs.read(mcp_config_path)).dig("mcpServers", "some-npx-server", "args")
-    assert_includes args, "--prefix"
-    assert_includes args, "/tmp"
+    entry = JSON.parse(@mock_fs.read(mcp_config_path)).dig("mcpServers", "some-npx-server")
+    assert_equal ElicitationEndpoint.url, entry.dig("env", "ELICITATION_REQUEST_URL")
+    assert_equal @session.id.to_s, entry.dig("env", "ELICITATION_SESSION_ID")
+    assert_equal [ "-y", "some-package" ], entry["args"],
+      "the catalog's npx argv must survive post-processing unchanged (zimmer#467)"
   end
 
   test "ensure_baseline_mcp_config! delegates to the runtime's config post-processor" do
