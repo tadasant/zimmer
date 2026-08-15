@@ -124,38 +124,24 @@ class TriggersController < ApplicationController
 
   # Manually invoke a trigger, optionally with variable overrides
   def invoke
-    # Must stay in step with Trigger::USER_INPUT_VARIABLES — the manual-run form renders an
-    # input per variable the template uses, and anything not permitted here is silently
-    # dropped and interpolated as an empty string.
+    # The manual-run form renders an input per variable the template uses; anything
+    # outside Trigger::USER_INPUT_VARIABLES is dropped by Triggers::ManualFire and
+    # interpolated as an empty string.
     variables = params.permit(*Trigger::USER_INPUT_VARIABLES.map(&:to_sym))
-    prompt = @trigger.interpolate_prompt(**variables.to_h.symbolize_keys)
 
     # A human clicked Invoke in the web app, so this fire is web_ui regardless of
     # what the trigger's own conditions would derive.
-    session = @trigger.create_session!(prompt: prompt, genesis: SessionGenesis::WEB_UI)
+    result = Triggers::ManualFire.call(trigger: @trigger, genesis: SessionGenesis::WEB_UI, variables: variables)
 
-    if session.nil?
-      message = if @trigger.last_fire_burst_suppressed?
-        "Trigger \"#{@trigger.name}\" is in a burst: it exceeded its cap of " \
-        "#{@trigger.max_sessions_per_minute} session(s) per minute, so no session was created. " \
-        "See the burst-notice session it already spawned."
+    if result.session?
+      if result.fired?
+        redirect_to session_path(result.session), notice: result.message
       else
-        "Trigger \"#{@trigger.name}\" fired but created no session — its target session is no longer reusable."
+        redirect_to session_path(result.session), alert: result.message
       end
-
-      redirect_to trigger_path(@trigger), alert: message
-      return
+    else
+      redirect_to trigger_path(@trigger), alert: result.message
     end
-
-    if session.metadata["burst_notice"]
-      redirect_to session_path(session),
-        alert: "Trigger \"#{@trigger.name}\" exceeded its cap of #{@trigger.max_sessions_per_minute} " \
-               "session(s) per minute. This is the burst-notice session it spawned instead — the " \
-               "session you asked for was not created."
-      return
-    end
-
-    redirect_to session_path(session), notice: "Trigger \"#{@trigger.name}\" fired manually. Session created."
   rescue => e
     redirect_to trigger_path(@trigger), alert: "Failed to invoke trigger: #{e.message}"
   end

@@ -136,6 +136,7 @@ Rails.application.routes.draw do
       resources :triggers do
         member do
           post :toggle
+          post :invoke
         end
         collection do
           get :channels

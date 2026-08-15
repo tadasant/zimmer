@@ -5,7 +5,7 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::TriggersController < Api::BaseController
-  before_action :set_trigger, only: [ :show, :update, :destroy, :toggle ]
+  before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :invoke ]
 
   # GET /api/v1/triggers
   # List all triggers with optional filtering and pagination.
@@ -41,7 +41,7 @@ class Api::V1::TriggersController < Api::BaseController
 
     render json: {
       trigger: trigger_json(@trigger),
-      recent_sessions: recent_sessions.map { |s| { id: s.id, slug: s.slug, title: s.title, status: s.status, created_at: s.created_at.iso8601 } }
+      recent_sessions: recent_sessions.map { |s| session_summary_json(s) }
     }
   end
 
@@ -109,6 +109,52 @@ class Api::V1::TriggersController < Api::BaseController
   def toggle
     @trigger.toggle!
     render json: { trigger: trigger_json(@trigger) }
+  end
+
+  # POST /api/v1/triggers/:id/invoke
+  # Fire a trigger by hand, right now, without waiting for one of its conditions
+  # to match. The same thing the Invoke button on the trigger page does: the
+  # session is linked to the trigger, counts toward its fire counter, and reuses
+  # the trigger's target session when the trigger is a reuse trigger.
+  #
+  # Status is not consulted — a disabled trigger can still be invoked, which is
+  # how you test one before enabling it. `status` governs whether the trigger's
+  # own conditions fire it, not whether a caller may.
+  #
+  # Request body:
+  #   - variables: Optional hash of prompt-template variables to interpolate.
+  #     Only Trigger::USER_INPUT_VARIABLES are read ({{link}}, {{text}},
+  #     {{author}}, {{channel}}, {{event}}, {{repo}}, {{number}}, {{title}},
+  #     {{labels}}); any other key is ignored, and a variable the template names
+  #     but the caller omits interpolates as an empty string. {{time}} and
+  #     {{date}} fill themselves in.
+  def invoke
+    variables = invoke_variables
+
+    # An agent fired this over the API, so the session's genesis is `api` rather
+    # than the kind the trigger's conditions derive (which is what an actual
+    # condition match would give it) or `web_ui` (which is the button).
+    result = Triggers::ManualFire.call(trigger: @trigger, genesis: SessionGenesis::API, variables: variables)
+
+    case result.outcome
+    when :burst_suppressed
+      render_api_error("Burst suppressed", result.message, status: :too_many_requests,
+                       trigger: trigger_json(@trigger.reload))
+    when :not_reusable
+      render_api_error("No session created", result.message, status: :unprocessable_entity,
+                       trigger: trigger_json(@trigger.reload))
+    else
+      # :burst_notice comes back 201 too, carrying the burst-notice session the
+      # trigger spawned instead. It IS a session, and the message says whose.
+      render json: {
+        trigger: trigger_json(@trigger.reload),
+        session: session_summary_json(result.session),
+        burst_notice: result.outcome == :burst_notice,
+        message: result.message
+      }, status: :created
+    end
+  rescue AgentRootsConfig::AgentRootNotFoundError => e
+    render_api_error("Invalid agent_root", e.message, status: :unprocessable_entity)
   end
 
   # GET /api/v1/triggers/channels
@@ -191,6 +237,31 @@ class Api::V1::TriggersController < Api::BaseController
       sessions_created_count: trigger.sessions_created_count,
       created_at: trigger.created_at.iso8601,
       updated_at: trigger.updated_at.iso8601
+    }
+  end
+
+  # Prompt-template values for the invoke action. Restricted to the variables a
+  # template can name — the same list the web form renders an input per — so an
+  # unknown key is dropped at the boundary rather than carried inward. `labels`
+  # is the one that may arrive as an array, which Trigger#interpolate_prompt
+  # joins with commas.
+  def invoke_variables
+    raw = params[:variables]
+    return {} unless raw.is_a?(ActionController::Parameters)
+
+    raw.permit(*Trigger::USER_INPUT_VARIABLES.map(&:to_sym), labels: []).to_h
+  end
+
+  # The compact session shape this controller returns: enough to identify and
+  # follow a session the trigger produced, without restating what
+  # GET /api/v1/sessions/:id already serves.
+  def session_summary_json(session)
+    {
+      id: session.id,
+      slug: session.slug,
+      title: session.title,
+      status: session.status,
+      created_at: session.created_at.iso8601
     }
   end
 

@@ -52,7 +52,7 @@ the row. It is a column on `sessions`, assigned once at creation.
 | `github_label` | A `github_label` trigger fired — the `ready to merge` feed the PR merge gate reads. | spot | the trigger |
 | `schedule` | A cron-scheduled trigger fired. | spot | the trigger |
 | `ao_event` | A session-state trigger fired because another session changed state. | spot | the trigger |
-| `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**. | spot | `/quotas` |
+| `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**, or fired by hand over `POST /api/v1/triggers/:id/invoke` / `action_trigger`'s `invoke`. | spot | `/quotas` |
 | `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority | `/quotas` |
 
 Five of the eight kinds restate a trigger condition type, so their class lives on the **trigger**, not
