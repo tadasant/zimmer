@@ -54,6 +54,12 @@ module NpxCacheIsolator
   # npx flags that take a separate value argument. Their value must be skipped or
   # it would be mistaken for the package spec — a catalog entry that carries, say,
   # `--prefix /tmp` would otherwise be keyed on "/tmp".
+  #
+  # This list cannot be exhaustive — npx accepts any npm config flag in
+  # `--foo bar` form — and it does not need to be. The key it feeds is a
+  # *grouping* key, so getting one wrong is bounded either way: two servers that
+  # did not need isolating get it (one duplicated download) or two that did are
+  # left sharing a cache (today's behavior). It is never unsafe, only imprecise.
   VALUE_FLAGS = %w[--prefix -c --call --userconfig --cache --node-options --shell].freeze
 
   # npx flags that name a package explicitly instead of inferring it from the
@@ -121,9 +127,13 @@ module NpxCacheIsolator
       arg = args[index].to_s
 
       if arg == "--"
-        break
+        # End of npx's own flags. With an explicit --package already read, what
+        # follows is the command; otherwise the next argument is the package.
+        break if specs.any?
+
+        index += 1
       elsif PACKAGE_FLAGS.include?(arg)
-        specs << args[index + 1]
+        specs << args[index + 1].to_s
         index += 2
       elsif (flag = PACKAGE_FLAGS.find { |candidate| arg.start_with?("#{candidate}=") })
         specs << arg.delete_prefix("#{flag}=")
@@ -145,7 +155,14 @@ module NpxCacheIsolator
     specs.compact_blank
   end
 
+  # A filesystem-safe directory name for a server. `.` and `..` are rejected
+  # rather than sanitized: both resolve back to a shared parent, which would put
+  # the server on the very cache this class exists to keep it off. Every other
+  # name collapses to a plain segment inside the clone.
   def sanitize(server_name)
-    server_name.to_s.gsub(/[^A-Za-z0-9._-]/, "_")
+    sanitized = server_name.to_s.gsub(/[^A-Za-z0-9._-]/, "_")
+    return "unnamed" if sanitized.blank? || sanitized.delete(".").empty?
+
+    sanitized
   end
 end

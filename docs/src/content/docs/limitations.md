@@ -709,6 +709,7 @@ after the servers have already been wired for that run.
 | Auth lost → adopt/rotate/wait, respawn, then park | `/not logged in\|please run\s*\/login/i` | `auth_recovery_service.rb` |
 | Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb:44` |
 | Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb:75` |
+| Held runtime session id → resume it, or mint a new one | `/session id\b.*\balready in use/i` | `claude_retry_strategy.rb` |
 
 This has already caused an outage. When Claude Code's wording changed, account rotation stopped firing:
 the session fell through to the transient-rate-limit path, retried six times against an already-capped
@@ -724,7 +725,11 @@ about the same exit.
 
 Two gaps remain inside that, deliberately. The reporter sits on the *failure* branch, so an
 unrecognized error on a Claude exit 0 or 1 — which `normal_completion_exit?` reads as a finished
-turn — still reaches `needs_input` without a word. And `CodexRetryStrategy` classifies nothing but
+turn — still reaches `needs_input` without a word. The held-session-id row above is one of those:
+Claude reports that refusal with exit 1, so if the wording changes the classifier just stops
+matching, silently. What catches it then is not a pattern but a state check — a turn that ended
+with nothing written in either transcript store is restarted rather than parked (see
+[Spawning](/sessions/spawning/)) — which covers the first turn of a session and not a later one. And `CodexRetryStrategy` classifies nothing but
 a missing rollout, so every ordinary Codex failure is by construction an exit no classifier
 matched; it answers `classifies_exits? => false` and gets the loud log without a page, because
 paging on a runtime's designed-for path is how a channel gets ignored.
