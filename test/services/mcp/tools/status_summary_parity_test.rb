@@ -14,6 +14,10 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
     Session.any_instance.stubs(:broadcast_status_change)
 
     @context = Mcp::Context.new(tool_groups: "sessions")
+    # A real directory: regeneration is refused when there is no clone left to
+    # fork — see SessionStatusSummaryGenerator.unavailable_reason.
+    @clone_path = Dir.mktmpdir("status-summary-clone")
+
     @session = Session.create!(
       prompt: "Ship the thing",
       agent_runtime: "claude_code",
@@ -21,11 +25,13 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
       git_root: "https://github.com/test/repo.git",
       branch: "main",
       title: "Ship the thing",
+      metadata: { "clone_path" => @clone_path },
       transcript: "{}\n{}\n{}\n{}\n"
     )
   end
 
   teardown do
+    FileUtils.remove_entry(@clone_path) if @clone_path && File.directory?(@clone_path)
     Mocha::Mockery.instance.teardown
   end
 
@@ -81,6 +87,35 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
     end
 
     assert_includes result, "## Status Summary Regenerating"
+  end
+
+  # Parity with the panel's button and the REST endpoint: archived is not a
+  # reason to refuse, a reclaimed clone is — and an agent gets told which.
+  test "action_session regenerates an archived session that still has its clone" do
+    @session.update_column(:status, Session.statuses[:archived])
+
+    result = nil
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
+      result = Mcp::Tools::ActionSession.new(context: @context)
+        .call("action" => "regenerate_status_summary", "session_id" => @session.id)
+    end
+
+    assert_includes result, "## Status Summary Regenerating"
+  end
+
+  test "action_session errors with the reason when there is no clone left to fork" do
+    @session.update_column(:status, Session.statuses[:archived])
+    FileUtils.remove_entry(@clone_path)
+
+    error = nil
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      error = assert_raises(Mcp::ToolError) do
+        Mcp::Tools::ActionSession.new(context: @context)
+          .call("action" => "regenerate_status_summary", "session_id" => @session.id)
+      end
+    end
+
+    assert_match(/deleted when it went to the trash/, error.message)
   end
 
   test "the tool description documents the new action" do
