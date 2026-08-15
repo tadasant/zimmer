@@ -93,6 +93,10 @@ module ClaudeSpawnEnv
   # Sets a longer timeout for MCP server startup (package downloads on cold starts)
   # and isolates the npm cache per session to prevent corruption from concurrent
   # npx invocations (ENOTEMPTY / TAR_ENTRY_ERROR).
+  #
+  # Also repairs any npx bin shim in that cache whose target lost its execute bit,
+  # which would otherwise fail the server's `exec` with EACCES on every retry and
+  # orphan the session for the life of the clone (zimmer#467).
   def configure_mcp_env(env_vars, working_dir)
     env_vars["MCP_TIMEOUT"] = MCP_TIMEOUT_MS.to_s
     @logger.info "Setting MCP_TIMEOUT=#{MCP_TIMEOUT_MS}ms for MCP server startup"
@@ -101,6 +105,8 @@ module ClaudeSpawnEnv
     FileUtils.mkdir_p(npm_cache_dir)
     env_vars["NPM_CONFIG_CACHE"] = npm_cache_dir
     @logger.info "Isolating npm cache to #{npm_cache_dir}"
+
+    NpxBinExecutableGuard.repair!(working_directory: working_dir, logger: @logger)
   end
 
   # When ANTHROPIC_BASE_URL is set (e.g., pointing to a mock API for testing),

@@ -138,6 +138,11 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 - `NpxCacheHealService` exists to detect and delete a corrupted `_npx` cache — by matching npm's
   error text (`ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT`). An entire service that self-heals a
   filesystem bug by regexing stderr.
+- `NpxBinExecutableGuard` runs on the way into every MCP spawn and restores the execute bit on any
+  `_npx/*/node_modules/.bin` target that has none. Some packages publish their entrypoint as
+  `-rw-r--r--` and rely on npm's bin-linking to `chmod` it; when that does not land, the server dies
+  on `exec` with `EACCES` identically on every retry and the session is orphaned for the life of the
+  clone ([#467](https://github.com/tadasant/zimmer/issues/467)).
 - `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the npm and
   python packages listed in `mcp.json`, so a cold session doesn't pay the download.
 
