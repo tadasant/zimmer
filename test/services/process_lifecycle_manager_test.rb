@@ -892,6 +892,34 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal :idle, manager.current_state
   end
 
+  # Proves the counter is written on the path that actually loops, rather than
+  # only honoured when a test preloads it.
+  test "two successive empty turns exhaust the restart budget and then park" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil)
+    @mock_file_system.write(stderr_path, "")
+
+    pid = 12344
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      pid += 1
+      { pid: pid, stderr_log_path: stderr_path }
+    end
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES.times do |index|
+      decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+      assert_equal :continue, decision.action, "restart #{index + 1} should have been attempted"
+      assert_equal index + 1, @session.reload.metadata["empty_turn_recovery_count"]
+    end
+
+    final = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, final.action, "the budget must actually run out"
+    assert_equal :idle, manager.current_state
+  end
+
   test "handle_exit still parks a turn that produced output" do
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     @mock_file_system.write(stderr_path, "")
@@ -952,22 +980,31 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal 1, @session.metadata["session_id_conflict_count"]
   end
 
-  test "handle_exit refuses to replace a held session id that still names a real conversation" do
+  # The common shape in the wild: the CLI refuses the id precisely because a
+  # conversation for it exists. Resuming that conversation is the recovery — it is
+  # what a human typing "continue" used to achieve — and minting a new id would
+  # throw the history away.
+  test "handle_exit resumes the conversation a held session id names" do
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     original_session_id = @session.session_id
+    resume_pid = 77777
 
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
 
     @mock_file_system.write(stderr_path, "Error: Session ID #{original_session_id} is already in use.\n")
+    @mock_cli_adapter.resume_hook = ->(opts) { { pid: resume_pid, stderr_log_path: stderr_path } }
 
     decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
 
-    assert_equal :failed, decision.action
-    assert_match(/already in use/, decision.error_message)
+    assert_equal :continue, decision.action
+    assert_equal resume_pid, manager.current_pid
     assert_equal original_session_id, @session.reload.session_id,
       "minting a new id would abandon a conversation that still has history"
+    assert_equal original_session_id, @mock_cli_adapter.resumed_sessions.last[:session_id]
+    assert_equal true, @session.metadata["runtime_started"],
+      "the refusal is itself evidence the runtime has a conversation under this id"
   end
 
   test "handle_exit gives up on a held session id once the budget is spent" do

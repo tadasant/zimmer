@@ -20,9 +20,8 @@ class NpxCacheIsolatorTest < ActiveSupport::TestCase
   end
 
   test "skips the value of npx flags that take one" do
-    # This is the shape Zimmer actually spawns: NpxPrefixRewriter inserts
-    # `--prefix /tmp` right after `-y`, so "/tmp" sits where a naive parser would
-    # read the package name.
+    # A catalog entry that carries `--prefix /tmp` puts "/tmp" exactly where a
+    # naive parser would read the package name.
     assert_equal [ "onepassword-mcp-server@latest" ],
       NpxCacheIsolator.package_specs([ "-y", "--prefix", "/tmp", "onepassword-mcp-server@latest" ])
   end

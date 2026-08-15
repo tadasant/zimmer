@@ -9011,6 +9011,41 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal 1, mock_cli_adapter.executed_commands.length
   end
 
+  # The safety direction of the same correction: when the killed process DID write
+  # a conversation, runtime_started must survive, or the next turn would fresh-start
+  # over real history instead of resuming it.
+  test "terminating a process that wrote a conversation leaves runtime_started alone" do
+    working_directory = "/tmp/preserve-runtime-started"
+    mock_fs = MockFileSystemAdapter.new
+    mock_fs.mkdir_p(working_directory)
+
+    require "path_sanitizer"
+    transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(working_directory))
+    mock_fs.mkdir_p(transcript_dir)
+    @session.update!(
+      transcript: nil,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge(
+        "working_directory" => working_directory,
+        "clone_path" => working_directory,
+        "runtime_started" => true
+      )
+    )
+    mock_fs.write(
+      File.join(transcript_dir, "#{@session.session_id}.jsonl"),
+      "#{{ "type" => "user", "message" => { "content" => "Hello" } }.to_json}\n"
+    )
+
+    job = AgentSessionJob.new
+    job.file_system = mock_fs
+    job.process_manager = MockProcessManager.new
+
+    job.send(:clear_runtime_started_if_nothing_persisted, @session, LogBuffer.new(@session))
+
+    assert_equal true, @session.reload.metadata["runtime_started"],
+      "a conversation the runtime wrote must not be treated as nothing to resume"
+  end
+
   # ==========================================================================
   # First-connect MCP failure must resolve without a human (prod session 4668)
   #
@@ -9050,7 +9085,11 @@ class AgentSessionJobTest < ActiveJob::TestCase
       live_pid = (live_pid || 4000) + 1
       { pid: live_pid, stderr_log_path: stderr_path }
     end
-    mock_pm.running_hook = ->(pid) { pid == live_pid }
+    # A killed process actually dies: the MCP-failure handler terminates the agent,
+    # and ProcessTerminationService only reports success once it can see that.
+    killed = []
+    mock_pm.kill_hook = ->(_signal, pid) { killed << pid.abs }
+    mock_pm.running_hook = ->(pid) { pid == live_pid && killed.exclude?(pid.abs) }
 
     session = @session
     statuses_while_polling = []
@@ -9109,8 +9148,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
 
     # --- Turn 1: the MCP server fails to connect -----------------------------
-    # The process never exits on its own; the MCP-failure handler terminates it.
-    mock_pm.wait_hook = ->(_pid, _flags) { nil }
+    # The process never exits on its own; the MCP-failure handler terminates it,
+    # and only then does waiting on it report an exit. ProcessTerminationService
+    # answers liveness by reaping, and reports success only once it sees the exit.
+    mock_pm.wait_hook = lambda do |pid, _flags|
+      killed.include?(pid.abs) ? [ pid, MockProcessManager::MockStatus.new(143) ] : nil
+    end
     run_turn.call(nil)
 
     session.reload

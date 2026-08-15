@@ -2853,7 +2853,10 @@ class AgentSessionJob < ApplicationJob
       session: session
     )
     result = termination_service.terminate
-    clear_runtime_started_if_nothing_persisted(session, log_buffer)
+    # Only once the kill is proven. A termination that could not confirm the
+    # process is gone leaves an agent that may still be about to write its first
+    # line, and "it never wrote a conversation" is then not something we know.
+    clear_runtime_started_if_nothing_persisted(session, log_buffer) if result.success?
     result
   end
 
@@ -2873,7 +2876,10 @@ class AgentSessionJob < ApplicationJob
     return unless session.metadata&.dig("runtime_started")
     return if RuntimeConversationPresence.persisted?(
       session: session,
-      working_directory: session.metadata&.dig("working_directory"),
+      # Session#working_directory, not the bare metadata key: rows without it fall
+      # back to the clone path, and a blank working directory would silently reduce
+      # the presence check to Zimmer's polled copy alone.
+      working_directory: session.working_directory,
       file_system: @file_system
     )
 

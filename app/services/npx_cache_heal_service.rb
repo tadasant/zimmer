@@ -197,7 +197,7 @@ class NpxCacheHealService
 
     # Every `_npx` cache directory in the clone — the shared one directly under
     # `.npm-cache` and any isolated per-server roots beneath it. Restricted to one
-    # extra level of nesting so the glob stays bounded on a large cache.
+    # `isolated/<server>/` level of nesting so the glob stays bounded on a large cache.
     #
     # @param hash [String, nil] when given, the specific `_npx/<hash>` tree
     def npx_dirs(working_directory, hash = nil)

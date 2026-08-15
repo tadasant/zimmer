@@ -876,10 +876,12 @@ class ProcessLifecycleManager
   # needs_input with a blank transcript until a human typed "continue" (prod
   # session 4668).
   #
-  # So restart the turn instead, bounded by MAX_EMPTY_TURN_RECOVERIES. This is the
-  # general backstop behind every specific recovery above it: whatever the cause,
-  # a session Zimmer chose to keep driving never comes to rest empty and unattended
-  # while there is still budget to try again.
+  # So restart the turn instead, bounded by MAX_EMPTY_TURN_RECOVERIES. It is the
+  # cause-agnostic backstop behind every specific recovery above it — but scoped to
+  # a session that has NEVER produced a line, not to every empty turn: the question
+  # it asks is about the session's whole transcript, so a later turn that happens to
+  # write nothing still parks exactly as before. What it protects is a session that
+  # never got going at all.
   #
   # Note: Called while in :handling_exit state. Must transition to :running
   # on success or :idle on failure before returning.
@@ -896,30 +898,36 @@ class ProcessLifecycleManager
     with_db_retry { session.merge_metadata!("empty_turn_recovery_count" => attempt) }
 
     fresh_start!(working_dir, reason: "empty turn")
+  rescue => e
+    # The counter write is the only thing here outside #fresh_start!'s own rescue.
+    # A bookkeeping failure must park the session, not raise out of handle_exit.
+    @logger.error("Empty-turn recovery failed", error: e.message)
+    add_log("Could not restart the empty turn: #{e.message}", level: "error")
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :needs_input, error_message: "Empty-turn recovery failed: #{e.message}")
   end
 
   # The runtime refused to start because the session id it was handed is still
-  # held ("Session ID … is already in use"). The holder is a process from an
-  # earlier attempt at this same turn that outlived the job supervising it.
+  # held ("Session ID … is already in use"). Claude reports that refusal with exit
+  # code 1 — its "turn finished, awaiting input" convention — so without this
+  # handler it is indistinguishable from a completed turn and parks the session.
   #
-  # #fresh_start! now terminates such a process before spawning, so this branch is
-  # the belt to that braces: if the id is still taken anyway, mint a new one and
-  # try once more rather than reading the refusal — which Claude reports with its
-  # "turn complete" exit code 1 — as a finished turn. Only safe while nothing has
-  # been written: a new id abandons the conversation the old one names, and with
-  # history to lose that trade is the wrong one.
+  # Two shapes, two recoveries. If a conversation for that id exists, the id is
+  # held because there is something to resume, so resume it. If nothing has been
+  # written, the holder is a process from an earlier attempt at this same turn that
+  # outlived its job, and a new id costs nothing — #fresh_start! terminates such a
+  # process before spawning, so this is the belt to that braces.
   #
   # Note: Called while in :handling_exit state. Must transition to :running
   # on success or :idle on failure before returning.
   def handle_session_id_conflict(working_dir)
     session.reload
     attempt = session.metadata&.dig("session_id_conflict_count").to_i + 1
-    conversation_exists = conversation_persisted?(working_dir)
 
-    if conversation_exists || attempt > MAX_SESSION_ID_CONFLICT_RECOVERIES
+    if attempt > MAX_SESSION_ID_CONFLICT_RECOVERIES
       add_log(
-        "Runtime refused to start: session id #{session.session_id} is already in use, and it cannot be " \
-        "replaced (conversation_exists=#{conversation_exists}, attempt=#{attempt})",
+        "Runtime refused to start: session id #{session.session_id} is already in use, and the " \
+        "recovery budget is spent (#{MAX_SESSION_ID_CONFLICT_RECOVERIES} attempts)",
         level: "error"
       )
       surface_stderr_to_session_log
@@ -927,16 +935,43 @@ class ProcessLifecycleManager
       return ExitDecision.new(action: :failed, error_message: "Runtime session id #{session.session_id} is already in use")
     end
 
+    with_db_retry { session.merge_metadata!("session_id_conflict_count" => attempt) }
+
+    if conversation_persisted?(working_dir)
+      # The id names a real conversation. Minting a new one would abandon it;
+      # resuming is what the refusal is actually telling us to do. Restore
+      # runtime_started so the resume builds `--resume` rather than `--session-id`.
+      add_log(
+        "Runtime refused to start: session id #{session.session_id} is already in use and names an " \
+        "existing conversation — resuming it instead (attempt #{attempt}/#{MAX_SESSION_ID_CONFLICT_RECOVERIES})",
+        level: "warning"
+      )
+      @logger.warn("Resuming the conversation a held session id names", attempt: attempt)
+      with_db_retry { session.merge_metadata!("runtime_started" => true) }
+
+      return spawn_continuation(
+        working_dir: working_dir,
+        prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+        reason: "session id conflict"
+      )
+    end
+
     add_log(
-      "Runtime refused to start: session id #{session.session_id} is already in use — retrying under a " \
-      "new session id (attempt #{attempt}/#{MAX_SESSION_ID_CONFLICT_RECOVERIES})",
+      "Runtime refused to start: session id #{session.session_id} is already in use and nothing has been " \
+      "written under it — retrying under a new session id (attempt #{attempt}/#{MAX_SESSION_ID_CONFLICT_RECOVERIES})",
       level: "warning"
     )
     @logger.warn("Recovering from a held runtime session id", attempt: attempt, session_id: session.session_id)
 
-    with_db_retry { session.merge_metadata!("session_id_conflict_count" => attempt) }
-
     fresh_start!(working_dir, reason: "session id conflict", renew_session_id: true)
+  rescue => e
+    # Bookkeeping must never be the thing that fails the session: without this, a
+    # metadata write that exhausts its retries escapes handle_exit entirely.
+    error_msg = "Session id conflict recovery failed: #{e.message}"
+    add_log(error_msg, level: "error")
+    @logger.error("Session id conflict recovery failed", error: e.message)
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :failed, error_message: error_msg)
   end
 
   # Restart this turn from scratch: abandon whatever runtime conversation the
@@ -954,6 +989,15 @@ class ProcessLifecycleManager
   # @param renew_session_id [Boolean] Mint a new runtime session id first
   # @return [ExitDecision] Decision on what to do next
   def fresh_start!(working_dir, reason:, renew_session_id: false)
+    # Re-confirm before spawning, as every other respawn branch does: the status
+    # check at the top of #handle_exit is milliseconds stale, and a user pause
+    # landing in that window must not be answered with a restarted turn.
+    unless wait_and_confirm_still_running
+      add_log("Session status changed during #{reason} handling, aborting restart", level: "info")
+      @mutex.synchronize { @state = :idle }
+      return ExitDecision.new(action: :aborted)
+    end
+
     session.reload
 
     prompt = recovery_prompt

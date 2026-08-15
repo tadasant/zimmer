@@ -28,7 +28,11 @@ class ClaudeRetryStrategy
   # awaiting input" convention (see #normal_completion_exit?), so without this
   # pattern the refusal is indistinguishable from a completed turn and the session
   # parks with a blank transcript.
-  SESSION_ID_IN_USE_PATTERN = /Session ID \S+ is already in use/i
+  # Loose on purpose: this classifier sits on the normal-completion path, so a
+  # reworded message does not reach UnclassifiedFailureReporter — it just silently
+  # stops matching. Matching the phrase rather than the exact sentence buys some
+  # room before that happens.
+  SESSION_ID_IN_USE_PATTERN = /session id\b.*\balready in use/i
 
   def initialize(cli_adapter:, session:, file_system:, process_manager:, rate_limit_tracker:, logger: Rails.logger)
     @cli_adapter = cli_adapter
