@@ -46,33 +46,9 @@
   .category-collapsed .category-collapse-body {
     display: none;
   }
-  /* "Click to pick a blocker" mode: every session card becomes a click target. */
-  .block-picking [data-block-picker-card-id] {
-    cursor: pointer;
-  }
-  .block-picking [data-block-picker-card-id]:hover {
-    outline: 2px solid #f59e0b;
-    outline-offset: 2px;
-    border-radius: 0.5rem;
-  }
 </style>
 <div class="min-h-screen bg-gray-50"
-     data-controller="pull-to-refresh dashboard-notes stream-visibility-recovery block-picker session-drawer"
-     data-block-picker-mark-url-template-value="<%= mark_blocked_session_path("__ID__") %>">
-  <%# Blocker-selection banner: shown while picking a session to block by. %>
-  <div data-block-picker-target="banner" class="hidden sticky top-0 z-[70] bg-amber-500 text-white px-4 py-2 shadow-md">
-    <div class="flex items-center justify-between gap-3">
-      <div class="flex items-center gap-2 text-sm font-medium">
-        <svg class="h-4 w-4 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-          <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
-        </svg>
-        <span data-block-picker-target="label">Select the session that is blocking this one — click any session card.</span>
-      </div>
-      <button type="button" data-action="click->block-picker#cancel" class="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-md bg-white/20 hover:bg-white/30 flex-shrink-0">
-        Cancel (Esc)
-      </button>
-    </div>
-  </div>
+     data-controller="pull-to-refresh dashboard-notes stream-visibility-recovery session-drawer">
   <%= turbo_stream_from "sessions_index_individual" %>
   <%= turbo_stream_from "notification_badge" %>
   <!-- Ultrawide: sidebar + content layout. Below 2xl: stacked layout -->
@@ -259,51 +235,94 @@
         <% end %>
       </div>
 
-      <!-- Search Bar -->
-      <div class="bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200 mb-4">
-        <%= form_with url: root_path, method: :get, local: true, class: "space-y-3" do %>
-          <%# Only carry an explicit trash choice forward. When unset, the controller
-              defaults trash ON for any active search, so omitting the field here lets a
-              fresh search include trashed sessions without the user toggling anything. %>
-          <%= hidden_field_tag :show_archived, (@show_archived ? "true" : "false") if @show_archived_explicit %>
-          <%= hidden_field_tag :show_blocked, "true" if @show_blocked %>
-          <%# The spot/priority control lives outside this form (it is a set of links,
-              not a field), so carry the current choice across a search submit. %>
-          <%= hidden_field_tag :priority_class, @priority_class_filter if @priority_class_filter.present? %>
-          <div class="flex flex-col gap-3">
-            <!-- Search Input -->
-            <div class="flex-1">
-              <div class="relative">
-                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <svg class="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
-                  </svg>
-                </div>
-                <%= text_field_tag :q, @search_query, placeholder: "Search sessions...", class: "block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" %>
-              </div>
-            </div>
+      <!-- Filters -->
+      <%# One section, one form, one submit. Status, scheduling class and trash
+          visibility used to be three separate controls — two of them link-based —
+          that each had to carry the others' state through the query string. Folding
+          them in with the search box makes the whole filter state a single form, so
+          there is one obvious place to go and no cross-carrying to get wrong.
 
-            <!-- Search Button -->
-            <div class="flex items-center gap-2">
-              <%= submit_tag "Search", class: "flex-1 inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer" %>
-              <% if @search_active %>
-                <%# Clear drops both the text query and the agent-root filter, returning to
-                    the category grid. The user's explicit trash/blocked choice is preserved. %>
-                <%= link_to "Clear", root_path(show_archived: @show_archived_explicit ? (@show_archived ? "true" : "false") : nil, show_blocked: @show_blocked ? "true" : nil), class: "inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
-              <% end %>
-            </div>
+          Trash is not a control of its own any more: `archived` is simply one of the
+          statuses. Two controls arguing over the same rows is what produced the old
+          "show trash but hide blocked" corner cases. %>
+      <div class="bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200 mb-4">
+        <%= form_with url: root_path, method: :get, local: true, class: "space-y-4" do %>
+          <%# Marks the request as an explicit filter choice. Without it a submit with
+              every status box unticked is byte-identical to a plain visit, and
+              "none selected means show all" could never be expressed. %>
+          <%= hidden_field_tag SessionsController::FILTERS_SUBMITTED_PARAM, "1" %>
+
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-sm font-semibold text-gray-900">Filters</h2>
+            <%# Drops the persisted choice and returns to the default view. %>
+            <%= link_to "Reset filters", root_path(reset_filters: "1"),
+                  id: "reset-filters",
+                  class: "text-xs text-gray-500 hover:text-gray-900 underline whitespace-nowrap" %>
           </div>
 
-          <!-- Advanced Search Accordion -->
+          <!-- Search Input -->
+          <div class="relative">
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <svg class="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
+              </svg>
+            </div>
+            <%= text_field_tag :q, @search_query, placeholder: "Search sessions...", class: "block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" %>
+          </div>
+
+          <!-- Status -->
+          <fieldset>
+            <legend class="flex items-center gap-2 text-sm text-gray-600 mb-1.5">
+              <span>Status</span>
+              <span class="text-xs text-gray-400" id="status-filter-summary">
+                <%= @status_filter.any? ? "showing #{@status_filter.map { |s| s.humanize.downcase }.to_sentence}" : "showing every status" %>
+              </span>
+            </legend>
+            <div class="flex flex-wrap gap-1.5">
+              <% SessionsController::STATUS_FILTER_OPTIONS.each do |status| %>
+                <label for="status-filter-<%= status.dasherize %>"
+                       class="inline-flex items-center gap-1.5 cursor-pointer rounded-full border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50">
+                  <%= check_box_tag "status[]", status, @status_filter.include?(status),
+                        id: "status-filter-#{status.dasherize}",
+                        class: "h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
+                  <%= status.humanize %>
+                </label>
+              <% end %>
+            </div>
+            <p class="mt-1.5 text-xs text-gray-400">
+              Select none to show every status. "Archived" is the trash.
+            </p>
+          </fieldset>
+
+          <!-- Scheduling class -->
+          <%# "Is this session spot or priority" gets asked while quota is tight, so it
+              stays a first-class control here rather than a row in Advanced. %>
+          <fieldset>
+            <legend class="text-sm text-gray-600 mb-1.5">Scheduling class</legend>
+            <div class="inline-flex flex-wrap rounded-lg bg-gray-100 p-1 gap-1" role="group" aria-label="Filter by scheduling class">
+              <% [ [ "", "All" ], [ SessionGenesis::PRIORITY, "Priority" ], [ SessionGenesis::SPOT, "Spot" ] ].each do |(value, label)| %>
+                <% active = @priority_class_filter == value %>
+                <label for="priority-class-filter-<%= value.presence || 'all' %>"
+                       class="<%= active ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900 hover:bg-white/60' %> inline-flex items-center gap-1.5 cursor-pointer px-3 py-1.5 text-sm font-medium rounded-md whitespace-nowrap transition-colors">
+                  <%= radio_button_tag :priority_class, value, active,
+                        id: "priority-class-filter-#{value.presence || 'all'}",
+                        class: "h-3.5 w-3.5 border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
+                  <%= label %>
+                </label>
+              <% end %>
+            </div>
+          </fieldset>
+
+          <!-- Advanced -->
           <% advanced_active = @search_contents || @agent_root_filter.present? || @genesis_filter.present? %>
           <details class="text-sm"<%= " open" if advanced_active %>>
             <summary class="cursor-pointer text-gray-600 hover:text-gray-900 select-none">
-              Advanced Search<%= " (active)" if advanced_active %>
+              Advanced<%= " (active)" if advanced_active %>
             </summary>
             <div class="mt-2 pl-1 space-y-3">
               <%# Agent-root filter: type to autocomplete from the catalog (native
-                  datalist), then Search to see that root's recent sessions. The submitted
-                  value is the root's catalog name. %>
+                  datalist), then Apply to see that root's recent sessions. The
+                  submitted value is the root's catalog name. %>
               <div>
                 <label for="agent_root" class="block text-gray-600 mb-1">Agent root</label>
                 <div class="flex items-center gap-2">
@@ -334,94 +353,11 @@
               </label>
             </div>
           </details>
+
+          <div class="flex items-center gap-2">
+            <%= submit_tag "Apply filters", class: "flex-1 inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer" %>
+          </div>
         <% end %>
-      </div>
-
-      <!-- Spot / priority filter -->
-      <%# A first-class segmented control rather than a row in Advanced Search:
-          "is this session spot or priority" is a question about scheduling that
-          gets asked while quota is tight, and burying it two clicks deep would
-          make the answer arrive after the decision. Each option is a link that
-          preserves every other active filter. %>
-      <div class="flex items-center justify-between bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200">
-        <div class="flex items-center text-sm text-gray-600">
-          <span>Scheduling class</span>
-          <% if @priority_class_filter.present? %>
-            <span class="ml-2 text-xs text-gray-400">showing <%= @priority_class_filter %> only</span>
-          <% end %>
-        </div>
-        <%
-          class_link_params = lambda do |value|
-            {
-              priority_class: value,
-              q: @search_query.presence,
-              agent_root: @agent_root_filter.presence,
-              genesis: @genesis_filter.presence,
-              search_contents: @search_contents ? "1" : nil,
-              show_blocked: @show_blocked ? "true" : nil,
-              show_archived: @show_archived_explicit ? (@show_archived ? "true" : "false") : nil
-            }
-          end
-        %>
-        <div class="inline-flex rounded-lg bg-gray-100 p-1 gap-1" role="group" aria-label="Filter by scheduling class">
-          <% [ [ nil, "All" ], [ SessionGenesis::PRIORITY, "Priority" ], [ SessionGenesis::SPOT, "Spot" ] ].each do |(value, label)| %>
-            <% active = @priority_class_filter.presence == value %>
-            <%= link_to label, root_path(class_link_params.call(value)),
-                  "aria-pressed": active.to_s,
-                  id: "priority-class-filter-#{value || 'all'}",
-                  class: [
-                    "px-3 py-1.5 text-sm font-medium rounded-md whitespace-nowrap transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500",
-                    (active ? "bg-white text-indigo-700 shadow-sm" : "text-gray-600 hover:text-gray-900 hover:bg-white/60")
-                  ].join(" ") %>
-          <% end %>
-        </div>
-      </div>
-
-      <!-- Trash Filter -->
-      <div class="flex items-center justify-between bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200">
-        <div class="flex items-center text-sm text-gray-600">
-          <% if @show_archived %>
-            <svg class="h-4 w-4 mr-1.5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
-            </svg>
-            <span>Including trashed</span>
-          <% else %>
-            <span>Trashed hidden</span>
-          <% end %>
-        </div>
-        <div>
-          <% if @show_archived %>
-            <%# Pass show_archived=false explicitly so it survives an active search, where
-                an omitted param would otherwise re-default trash back on. %>
-            <%= link_to "Hide Trash", root_path(show_archived: "false", show_blocked: @show_blocked ? "true" : nil, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil, priority_class: @priority_class_filter.presence, genesis: @genesis_filter.presence), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
-          <% else %>
-            <%= link_to "Show Trash", root_path(show_archived: "true", show_blocked: @show_blocked ? "true" : nil, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil, priority_class: @priority_class_filter.presence, genesis: @genesis_filter.presence), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
-          <% end %>
-        </div>
-      </div>
-
-      <!-- Blocked Filter -->
-      <div class="flex items-center justify-between bg-white px-4 py-3 rounded-md shadow-sm border border-gray-200 mt-3">
-        <div class="flex items-center text-sm text-gray-600">
-          <% if @show_blocked %>
-            <svg class="h-4 w-4 mr-1.5 text-amber-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
-            </svg>
-            <span>Including blocked</span>
-          <% else %>
-            <span>Blocked hidden</span>
-          <% end %>
-        </div>
-        <div>
-          <%# Preserve the current trash state explicitly so toggling Blocked never
-              re-defaults trash on during an active search. %>
-          <% archived_param = @show_archived ? "true" : "false" %>
-          <% if @show_blocked %>
-            <%= link_to "Hide Blocked", root_path(show_archived: archived_param, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil, priority_class: @priority_class_filter.presence, genesis: @genesis_filter.presence), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
-          <% else %>
-            <%= link_to "Show Blocked", root_path(show_blocked: true, show_archived: archived_param, q: @search_query.presence, agent_root: @agent_root_filter.presence, search_contents: @search_contents ? "1" : nil, priority_class: @priority_class_filter.presence, genesis: @genesis_filter.presence), class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
-          <% end %>
-        </div>
       </div>
     </div>
 
@@ -810,7 +746,10 @@
           </p>
           <div class="mt-6">
             <% if @search_active %>
-              <%= link_to root_path(show_archived: @show_archived_explicit ? (@show_archived ? "true" : "false") : nil, show_blocked: @show_blocked ? "true" : nil), class: "inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+              <%# Drops the search terms but keeps the filter selection — the user is
+                  abandoning a query, not resetting how they filter. "Reset filters"
+                  in the Filters section is the control for the latter. %>
+              <%= link_to root_path(request.query_parameters.except("q", "agent_root", "genesis", "search_contents", "page")), class: "inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
                 Clear Search
               <% end %>
             <% else %>

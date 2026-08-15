@@ -86,16 +86,17 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     assert_select "#search_results", count: 0
   end
 
-  test "searching defaults to including trashed sessions" do
+  test "searching spans every status until the user narrows it" do
     @zimmer_legacy_session.update!(status: :archived)
 
-    # No show_archived param: trash is included by default because a search is active.
+    # No status filter chosen: a search spans every status, so the trashed session is
+    # reachable. Defaulting a search to needs_input would hide what is being searched for.
     get root_url(agent_root: "agent-orchestrator")
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 2
 
-    # The user can still explicitly hide trash after searching.
-    get root_url(agent_root: "agent-orchestrator", show_archived: "false")
+    # The user can narrow to one status after searching.
+    get root_url(every_status_params(agent_root: "agent-orchestrator", status: [ @zimmer_session.status ]))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 1
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"

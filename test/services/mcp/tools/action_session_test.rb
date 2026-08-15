@@ -497,35 +497,6 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/"category_id" parameter is required/, error.message)
   end
 
-  test "set_blocked sets and clears the blocked-by relationship" do
-    session = sessions(:needs_input)
-    blocker = sessions(:running)
-
-    blocked = @tool.call("action" => "set_blocked", "session_id" => session.id, "blocked_by_session_id" => blocker.id)
-    assert_includes blocked, "## Blocked-by Updated"
-    assert_includes blocked, "- **Blocked By:** ##{blocker.id}"
-    assert_equal blocker.id, session.reload.blocked_by_session_id
-
-    cleared = @tool.call("action" => "set_blocked", "session_id" => session.id, "blocked_by_session_id" => nil)
-    assert_includes cleared, "- **Blocked By:** (none)"
-    assert_nil session.reload.blocked_by_session_id
-  end
-
-  test "set_blocked refuses to block a session by itself" do
-    session = sessions(:needs_input)
-    error = assert_raises(Mcp::ToolError) do
-      @tool.call("action" => "set_blocked", "session_id" => session.id, "blocked_by_session_id" => session.id)
-    end
-    assert_match(/cannot be blocked by itself/, error.message)
-  end
-
-  test "set_blocked rejects a non-existent blocker session" do
-    error = assert_raises(Mcp::ToolError) do
-      @tool.call("action" => "set_blocked", "session_id" => sessions(:needs_input).id, "blocked_by_session_id" => 999_999)
-    end
-    assert_match(/Session #999999 not found/, error.message)
-  end
-
   test "toggle_push_notifications flips the push flag" do
     session = sessions(:needs_input)
     session.update!(push_notifications_enabled: false)

@@ -1,6 +1,6 @@
-<div class="flex flex-col h-full bg-white shadow rounded-lg relative max-w-[400px]" data-block-picker-card-id="<%= agent_session.id %>">
+<div class="flex flex-col h-full bg-white shadow rounded-lg relative max-w-[400px]">
   <%# Drag handle: only this grab bar starts a category drag, so taps on the card's
-      own controls (favorite star, title, block-picker) never trigger an accidental
+      own controls (favorite star, title) never trigger an accidental
       move. Top-center keeps it clear of the status badge (left) and star (right).
       touch-none lets a long-press here drag instead of scrolling on mobile.
       Right-click (contextmenu) opens the "move to category" menu as a no-drag
@@ -137,21 +137,6 @@
           <% end %>
         </div>
         <div class="flex flex-wrap items-center gap-2 ml-auto">
-          <%# Mark as blocked by / Unblock %>
-          <% if agent_session.blocked_by_session_id.present? %>
-            <%= button_to unmark_blocked_session_path(agent_session), method: :patch, class: "inline-flex items-center px-2.5 py-1.5 border border-amber-300 text-xs font-medium rounded-md text-amber-700 bg-amber-50 hover:bg-amber-100", title: "Blocked by ##{agent_session.blocked_by_session_id} — click to unblock", data: { turbo_frame: "_top" } do %>
-              <svg class="-ml-0.5 mr-1.5 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
-              </svg>
-              Unblock #<%= agent_session.blocked_by_session_id %>
-            <% end %>
-          <% elsif !agent_session.archived? %>
-            <button type="button" class="p-1.5 rounded text-gray-300 hover:text-amber-500" data-action="click->block-picker#start" data-block-picker-id-param="<%= agent_session.id %>" title="Mark as blocked by another session — then click the blocking session" aria-label="Mark this session as blocked by another session">
-              <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
-              </svg>
-            </button>
-          <% end %>
           <% if agent_session.failed? && !agent_session.archived? %>
             <%= button_to restart_session_path(agent_session), method: :post, class: "inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500", title: "Restart failed session", data: { turbo_submits_with: "Restarting..." } do %>
               <svg class="-ml-0.5 mr-1.5 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
