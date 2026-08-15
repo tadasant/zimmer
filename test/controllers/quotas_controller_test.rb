@@ -80,6 +80,79 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "Accounts"
   end
 
+  # ── the account-level badge tracks the reading, not the sticky column ──
+  #
+  # Production shape: two accounts wearing "Quota Exceeded" beside windows their
+  # own snapshots reported as Allowed at 35%/12%, hours after the sweep that was
+  # supposed to clear them. The column is only ever cleared by a background job,
+  # so anything that stops that job — a rotation stamping an account with no
+  # quota evidence, or a deploy that froze every queue for ten hours (#426) —
+  # leaves the page lying until someone notices.
+
+  test "show does not present an exceeded account whose windows have cleared" do
+    account = exceeded_account_with_cleared_windows
+
+    get quotas_url
+
+    assert_response :success
+    assert_equal "Active", account_badge_text(account)
+  end
+
+  test "show heals the status column of an exceeded account whose windows have cleared" do
+    # Not cosmetic: `available` and AccountRotationService read the column, so a
+    # page that only fixed the badge would still leave the account out of the pool.
+    account = exceeded_account_with_cleared_windows
+
+    get quotas_url
+
+    assert_response :success
+    assert account.reload.active?
+  end
+
+  test "show keeps the exceeded label for an account the API is still rejecting" do
+    account = claude_accounts(:exceeded)
+    ClaudeAccountQuotaSnapshot.delete_all
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: account, trigger: "scheduled",
+      utilization_5h: 0.0, status_5h: "allowed", reset_5h: 2.hours.from_now,
+      utilization_7d: 1.0, status_7d: "rejected", reset_7d: 3.days.from_now
+    )
+
+    get quotas_url
+
+    assert_response :success
+    assert_equal "Quota Exceeded", account_badge_text(account)
+    assert account.reload.quota_exceeded?, "an account that cannot serve must stay out of the pool"
+  end
+
+  test "show never softens needs_reauth, which only a human clears" do
+    account = claude_accounts(:exceeded)
+    account.update!(status: :needs_reauth)
+    ClaudeAccountQuotaSnapshot.delete_all
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: account, trigger: "scheduled",
+      utilization_5h: 0.35, status_5h: "allowed", reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, status_7d: "allowed", reset_7d: 6.days.from_now
+    )
+
+    get quotas_url
+
+    assert_response :success
+    assert_equal "Needs Reauth", account_badge_text(account)
+    assert account.reload.needs_reauth?
+  end
+
+  test "show counts a cleared account as active in the pool totals" do
+    exceeded_account_with_cleared_windows
+
+    get quotas_url
+
+    assert_response :success
+    # Every fixture account is healthy except :exceeded, which has just cleared.
+    pool_size = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).count
+    assert_match(/#{pool_size} Total #{pool_size} Active 0 Quota Exceeded/, aggregate_stats_text)
+  end
+
   # ── aggregate 5-hour figure reflects availability, not the raw counter ──
 
   test "show counts a 7d-blocked account as fully utilized in the 5-hour aggregate" do
@@ -1191,6 +1264,27 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       )
     end
     accounts
+  end
+
+  # The :exceeded fixture as production found it: still carrying the sticky
+  # column, with a fresh reading that says both its windows have headroom.
+  def exceeded_account_with_cleared_windows
+    account = claude_accounts(:exceeded)
+    ClaudeAccountQuotaSnapshot.delete_all
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: account, trigger: "scheduled",
+      utilization_5h: 0.35, status_5h: "allowed", reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, status_7d: "allowed", reset_7d: 6.days.from_now
+    )
+    account
+  end
+
+  # The account-level status badge on a card — the first pill after the email
+  # that is not the "Current" marker.
+  def account_badge_text(account)
+    css_select("#account_card_#{account.id} span.rounded-full")
+      .map { |el| el.text.strip }
+      .find { |text| text != "Current" }
   end
 
   def aggregate_stats_text

@@ -313,6 +313,37 @@ class QuotasHelperTest < ActionView::TestCase
     assert_equal "bg-gray-100 text-gray-700", badge
   end
 
+  # account_status_badge — the account-level badge, derived the way the
+  # per-window badge already is.
+
+  test "account_status_badge drops the exceeded label once the windows have cleared" do
+    account = claude_accounts(:exceeded)
+    cleared = snapshot(utilization_5h: 0.35, status_5h: "allowed", reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, status_7d: "allowed", reset_7d: 6.days.from_now)
+
+    badge = account_status_badge(account, cleared)
+
+    assert_match "Active", badge
+    assert_no_match(/Quota Exceeded/, badge)
+  end
+
+  test "account_status_badge keeps the exceeded label while the week is genuinely spent" do
+    account = claude_accounts(:exceeded)
+    rejecting = snapshot(utilization_5h: 0.0, status_5h: "allowed", reset_5h: 2.hours.from_now,
+      utilization_7d: 1.0, status_7d: "rejected", reset_7d: 3.days.from_now)
+
+    assert_match "Quota Exceeded", account_status_badge(account, rejecting)
+  end
+
+  test "account_status_badge keeps the exceeded label when there is no reading" do
+    assert_match "Quota Exceeded", account_status_badge(claude_accounts(:exceeded), nil)
+  end
+
+  test "account_status_badge renders the plain statuses unchanged" do
+    assert_match "Active", account_status_badge(claude_accounts(:primary), nil)
+    assert_match "Needs Reauth", account_status_badge_tag("needs_reauth")
+  end
+
   private
 
   def snapshot(**attributes)

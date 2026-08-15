@@ -275,11 +275,47 @@ protections. API-key Codex accounts skip the lock entirely: nothing to rotate, n
 The lock is re-entrant with the outer `account.with_lock` in
 `RuntimeAuthProvider#recover_needs_reauth` and in the sweep, so nesting is safe.
 
-`QuotaResetCheckerJob` (every 15 min, **Claude only**) restores `quota_exceeded` accounts when either
-window's reset time has passed, or utilization drops below 100% — except that a weekly window the API
-is still *rejecting* is never counted as clear, however far its counter has drifted. It then calls
+`QuotaResetCheckerJob` (every 15 min, **Claude only**) restores `quota_exceeded` accounts when
+`ClaudeAccountQuotaSnapshot#windows_clear?` says both windows have cleared: each window's reset time
+has passed, or its utilization has dropped below 100% — except that a weekly window the API is still
+*rejecting* is never counted as clear, however far its counter has drifted. It then calls
 `AuthOutageParkService.wake_parked_sessions!` so the sessions that were blocked on those accounts
 resume in the same sweep — see [When the pool runs dry](#when-the-pool-runs-dry).
+
+### The status column is sticky; the badge on /quotas is not
+
+`ClaudeAccount#status` is a durable column. Something writes `quota_exceeded` onto it and only the
+15-minute sweep above ever writes `active` back. That makes it a claim about the past, and two things
+routinely leave it stale:
+
+- **Rotation stamps the outgoing account whatever it rotated for.**
+  `AccountRotationService#rotate_under_lock` marks the account it is rotating away from, so one
+  rotated through on `auth_recovery` wears `quota_exceeded` with no quota evidence behind it at all.
+  The mark keeps that account out of the pool for now, but it was never meant to be durable — a
+  restore as soon as the reading is clear is the documented intent, not a leak (see
+  [Auth recovery can rotate away from an account that was fine](/limitations/#auth-recovery-can-rotate-away-from-an-account-that-was-fine)),
+  and what actually protects the next session is that rotation validates a candidate at pick time.
+- **The sweep is not guaranteed to run.** The deploy that froze every queue for ten hours
+  ([#426](https://github.com/tadasant/zimmer/issues/426)) froze every label with them.
+
+So the page does not render the column unquestioned. `ClaudeAccount#effective_status` derives what an
+account *presents* from `windows_clear?` on its own latest snapshot — the same predicate the sweep
+restores on — and the account-level badge and the pool tallies both read that. It is the
+account-level counterpart of the staleness rule `QuotasHelper#window_status_badge` already applies
+per window: a recorded status describes the window that was open when the reading was taken.
+
+The derivation runs one way, and only one. It softens `quota_exceeded` to `active` when the reading
+says the windows have cleared, and does nothing else: it never marks a healthy account, never touches
+`needs_reauth` — which only a human clears — and falls back to the column whenever there is no
+snapshot to judge by, which is every Codex account.
+
+It is also display-only. `ClaudeAccount.available` and `AccountRotationService` keep acting on the
+durable column, because a reading minutes old is not something to hand a session on. The column
+converges separately: `QuotasController#auto_heal_accounts` runs on page load as well as on refresh,
+from the same predicate, so looking at /quotas is the other thing that can restore an account when
+the sweep is the thing that has stopped. Only the account — the sessions parked on it still wait for
+the sweep's `wake_parked_sessions!` or their own timer, because resuming sessions is not something a
+page render should do.
 
 ### An account can be capped without ever having been current
 
@@ -368,6 +404,13 @@ it to decide what an account contributes, `QuotaSnapshotService` reads it to mar
 `QuotaResetCheckerJob` reads it to decide the account is not back yet. They used to disagree at the
 `rejected`-but-under-100% edge, which meant the page called an account spent while the healer called
 it clear.
+
+Its counterpart is `#windows_clear?`, on the same model for the same reason: `QuotaResetCheckerJob`
+restores an account on it, `QuotasController#auto_heal_accounts` heals one on it, and
+`ClaudeAccount#effective_status` decides what badge /quotas renders from it. It applies the
+status-outranks-the-counter rule to **both** windows. The 5-hour one was counter-only until the badge
+started deriving from this predicate, at which point a window the API reports as `rejected` at 90%
+would have rendered "Rejected" beside an account badge reading "Active".
 
 `pool_utilization_5h` itself is display-only — no scheduler or rotation path reads it. The underlying
 snapshot numbers are not: `QuotaResetCheckerJob` and `QuotasController#auto_heal_accounts` flip

@@ -7,7 +7,7 @@
         <% if is_current %>
           <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">Current</span>
         <% end %>
-        <%= account_status_badge(account.status) %>
+        <%= account_status_badge(account, snapshot) %>
       </div>
       <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400 sm:flex-shrink-0">
         <% if error.present? %>

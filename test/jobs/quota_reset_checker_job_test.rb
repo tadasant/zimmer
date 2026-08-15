@@ -62,7 +62,9 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
   test "restores when reset times are nil (treated as cleared)" do
     account = claude_accounts(:exceeded)
     snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
-    snapshot.update!(reset_5h: nil, reset_7d: nil)
+    # A serving 5-hour status alongside: an unexpired refusal outranks the
+    # counter on either window, and this test is about the nil reset times.
+    snapshot.update!(reset_5h: nil, reset_7d: nil, status_5h: "allowed")
 
     QuotaResetCheckerJob.perform_now
 
@@ -77,7 +79,8 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
       reset_5h: 3.hours.from_now,
       reset_7d: 5.days.from_now,
       utilization_5h: 0.0,
-      utilization_7d: 0.72
+      utilization_7d: 0.72,
+      status_5h: "allowed"
     )
 
     QuotaResetCheckerJob.perform_now
@@ -92,7 +95,8 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
       reset_5h: 3.hours.from_now,
       reset_7d: 5.days.from_now,
       utilization_5h: 0.0,
-      utilization_7d: 0.95
+      utilization_7d: 0.95,
+      status_5h: "allowed"
     )
 
     QuotaResetCheckerJob.perform_now
@@ -132,72 +136,6 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     QuotaResetCheckerJob.perform_now
 
     assert account.reload.active?
-  end
-
-  test "window_clear? class method returns true when both windows are below threshold" do
-    snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
-    snapshot.update!(
-      reset_5h: 3.hours.from_now,
-      reset_7d: 5.days.from_now,
-      utilization_5h: 0.3,
-      utilization_7d: 0.5
-    )
-
-    assert QuotaResetCheckerJob.window_clear?(snapshot)
-  end
-
-  test "window_clear? class method returns true when utilization is high but below 100%" do
-    snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
-    snapshot.update!(
-      reset_5h: 3.hours.from_now,
-      reset_7d: 5.days.from_now,
-      utilization_5h: 0.95,
-      utilization_7d: 0.90
-    )
-
-    assert QuotaResetCheckerJob.window_clear?(snapshot)
-  end
-
-  test "window_clear? class method returns false when utilization is at 100%" do
-    snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
-    snapshot.update!(
-      reset_5h: 3.hours.from_now,
-      reset_7d: 5.days.from_now,
-      utilization_5h: 1.0,
-      utilization_7d: 1.0
-    )
-
-    assert_not QuotaResetCheckerJob.window_clear?(snapshot)
-  end
-
-  test "window_clear? is false while the API is still rejecting for the week" do
-    # The healer and the marker must read the same evidence. Restoring an account
-    # the API is rejecting puts it straight back in front of rotation, which hands
-    # it to the next session (#248) — and the marker would exceed it again on the
-    # next reading, flipping the account on every sweep.
-    snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
-    snapshot.update!(
-      reset_5h: 1.hour.ago,
-      reset_7d: 2.days.from_now,
-      utilization_5h: 0.1,
-      utilization_7d: 0.9,
-      status_7d: "rejected"
-    )
-
-    assert_not QuotaResetCheckerJob.window_clear?(snapshot)
-  end
-
-  test "window_clear? is true once the rejecting weekly window has reset" do
-    snapshot = claude_account_quota_snapshots(:exceeded_snapshot)
-    snapshot.update!(
-      reset_5h: 1.hour.ago,
-      reset_7d: 1.minute.ago,
-      utilization_5h: 1.0,
-      utilization_7d: 1.0,
-      status_7d: "rejected"
-    )
-
-    assert QuotaResetCheckerJob.window_clear?(snapshot)
   end
 
   test "a rejecting weekly window keeps the account out of the pool across a sweep" do

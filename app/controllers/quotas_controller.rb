@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 class QuotasController < ApplicationController
-  # Page load — renders immediately with cached snapshots from DB.
-  # No API calls are made here.
+  # Page load — renders immediately with cached snapshots from DB. No API calls
+  # are made here; the one write it does make is #auto_heal_accounts converging a
+  # status column against the reading already on file.
   #
   # The runtime sub-tab (Claude Code / Codex) is selected via ?runtime=. Each
   # runtime keeps its own account pool, current account, and rotation history.
@@ -16,6 +17,21 @@ class QuotasController < ApplicationController
     @accounts = ClaudeAccount.for_runtime(current_runtime).order(:priority)
     @current_account = ClaudeAccount.current_account(current_runtime)
     @snapshots = latest_snapshots_for(@accounts)
+
+    # Converge the sticky status column against the readings we are about to
+    # render. The badges derive their own answer either way
+    # (ClaudeAccount#effective_status), so this is not what keeps the page
+    # honest — it is what keeps the POOL honest, because `available` and
+    # AccountRotationService read the column and would otherwise go on refusing
+    # an account whose card plainly says it has headroom. Costs one UPDATE per
+    # account whose label had drifted, and nothing at all once they agree.
+    #
+    # QuotaResetCheckerJob does this on a 15-minute sweep from the same
+    # predicate; opening the page is simply the other thing that can trigger it,
+    # which matters precisely when the sweep is the thing that has stopped
+    # running (#426).
+    auto_heal_accounts
+
     @rotation_events = rotation_events_for(current_runtime)
 
     # The filesystem-sync banner is Claude-specific (it reads ~/.claude.json and
@@ -457,11 +473,28 @@ class QuotasController < ApplicationController
     result
   end
 
+  # Converge the status column of every account whose latest reading says its
+  # windows have cleared. Same predicate QuotaResetCheckerJob restores on, logged
+  # the same way: a status flipping without a line saying which reading did it is
+  # not something anyone can reconstruct afterwards, and this path now runs on a
+  # page view rather than only on an explicit refresh.
+  #
+  # A healing failure must never take the page with it. /quotas is where a human
+  # goes to fix an auth problem, and a row that fails validation for some reason
+  # of its own is not a reason to deny them the page.
   def auto_heal_accounts
     ClaudeAccount.quota_exceeded.for_runtime(current_runtime).each do |account|
       snapshot = @snapshots[account.id]
       next unless snapshot
-      account.update!(status: :active) if QuotaResetCheckerJob.window_clear?(snapshot)
+      next unless snapshot.windows_clear?
+
+      account.update!(status: :active)
+      Rails.logger.info "[QuotasController] Restored #{account.email} to active: both windows are clear " \
+        "(5h #{snapshot.utilization_5h.inspect}/#{snapshot.status_5h.inspect}, " \
+        "7d #{snapshot.utilization_7d.inspect}/#{snapshot.status_7d.inspect}, " \
+        "reading taken #{snapshot.created_at&.iso8601})"
+    rescue ActiveRecord::RecordInvalid => e
+      Rails.logger.warn "[QuotasController] Could not restore #{account.email} to active: #{e.message}"
     end
   end
 
