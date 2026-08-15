@@ -97,4 +97,24 @@ class Triggers::ManualFireTest < ActiveSupport::TestCase
     assert_not result.session?
     assert_match(/no longer reusable/, result.message)
   end
+
+  # The one outcome that comes back carrying a session it did NOT fire:
+  # Trigger#create_session! hands the stale target straight back.
+  test "a one-time reuse trigger whose target session is unusable reports not_reusable, with the target" do
+    target = sessions(:failed)
+    @trigger.update!(reuse_session: true, last_session_id: target.id, resuscitate_archived: false)
+    @trigger.stubs(:one_time_reuse_trigger?).returns(true)
+    fired_at_before = @trigger.last_triggered_at
+
+    result = nil
+    assert_no_difference("Session.count") do
+      result = Triggers::ManualFire.call(trigger: @trigger, genesis: SessionGenesis::API)
+    end
+
+    assert_equal :not_reusable, result.outcome, "a session came back, but nothing fired"
+    assert_equal target.id, result.session.id
+    assert_match(/no longer reusable/, result.message)
+    assert_nil fired_at_before, "fixture sanity: the trigger has not fired yet"
+    assert_nil @trigger.reload.last_triggered_at, "a declined reuse must not record a fire"
+  end
 end

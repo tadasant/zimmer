@@ -355,7 +355,8 @@ trigger's own *conditions* fire it, not whether a caller may.
 Send `variables` — an object keyed by the prompt template's placeholders (`link`, `text`, `author`,
 `channel`, `event`, `repo`, `number`, `title`, `labels`) — to fill them in. Any other key is ignored,
 a placeholder the template names but the request omits interpolates as an empty string, and
-`{{time}}`/`{{date}}` fill themselves in.
+`{{time}}`/`{{date}}` fill themselves in. All of them take a string; `labels` also takes an array,
+which is joined with commas.
 
 ```bash
 curl -X POST https://zimmer.example.com/api/v1/triggers/12/invoke \
@@ -373,8 +374,9 @@ payload with its counters already updated. Two outcomes are not ordinary success
 - **429 Too Many Requests** (`error: "Burst suppressed"`) — the trigger is inside a burst it has
   already announced, so nothing at all was created.
 
-A one-time reuse trigger whose target session no longer exists returns 422
-(`error: "No session created"`), and an agent root that cannot be resolved returns 422
+A one-time reuse trigger whose target session is gone or is no longer reusable returns 422
+(`error: "No session created"`), with `session` carrying that target when the row still exists and
+`null` when it does not. An agent root that cannot be resolved returns 422
 (`error: "Invalid agent_root"`).
 
 The MCP equivalent is `action_trigger` with `action: "invoke"`.

@@ -876,6 +876,34 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_match(/is in a burst/, suppressed)
   end
 
+  test "invoke reports a target session it declined to reuse rather than claiming a fire" do
+    stub_session_creation
+    trigger = triggers(:enabled_slack_trigger)
+    target = sessions(:failed)
+    trigger.update!(reuse_session: true, last_session_id: target.id)
+    Trigger.any_instance.stubs(:one_time_reuse_trigger?).returns(true)
+
+    output = nil
+    assert_no_difference("Session.count") do
+      output = @tool.call("action" => "invoke", "id" => trigger.id)
+    end
+
+    assert_includes output, "## Trigger Not Fired"
+    assert_match(/no longer reusable/, output)
+    assert_includes output, "Target session: #{target.id}"
+  end
+
+  test "invoke turns an unresolvable agent root into a readable tool error" do
+    AgentRootsConfig.stubs(:find!).raises(AgentRootsConfig::AgentRootNotFoundError.new("Not found"))
+    trigger = triggers(:enabled_slack_trigger)
+
+    before_sessions = Session.count
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "invoke", "id" => trigger.id) }
+
+    assert_match(/Invalid agent_root/, error.message)
+    assert_equal before_sessions, Session.count
+  end
+
   test "invoke requires an id" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "invoke") }
 

@@ -29,12 +29,16 @@ module Triggers
     #   :burst_suppressed — the trigger is inside a burst it has already noticed,
     #                       so nothing at all was created
     #   :not_reusable     — a one-time reuse trigger whose target session is gone
+    #                       or is no longer reusable. `session` is that target
+    #                       when the row still exists, and nil when it does not;
+    #                       either way nothing was fired
     Result = Data.define(:trigger, :session, :outcome, :message) do
       def fired?
         outcome == :fired
       end
 
-      # Whether a session came back at all. False for both no-session outcomes.
+      # Whether a session came back at all. Not the same as "a fire happened":
+      # :burst_notice and :not_reusable can both carry one.
       def session?
         !session.nil?
       end
@@ -52,6 +56,7 @@ module Triggers
 
     def call
       prompt = @trigger.interpolate_prompt(**permitted_variables)
+      fired_at_before = @trigger.last_triggered_at
       session = @trigger.create_session!(prompt: prompt, genesis: @genesis)
 
       if session.nil?
@@ -60,6 +65,13 @@ module Triggers
       end
 
       return result(session, :burst_notice) if session.metadata["burst_notice"]
+
+      # A one-time reuse trigger whose target session still exists but is no
+      # longer reusable gets that stale session handed straight back, unfired
+      # (Trigger#create_session!). A session came back, so nil is not the tell —
+      # `last_triggered_at` is: every path that actually fires advances it, and
+      # this one deliberately does not.
+      return result(session, :not_reusable) if @trigger.last_triggered_at == fired_at_before
 
       result(session, :fired)
     end
