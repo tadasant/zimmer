@@ -18,12 +18,14 @@
 #   cannot help either. Production session 4388 was terminally orphaned three times
 #   in 31 minutes and a human had to detach the server by hand.
 #
-#   Zimmer's own `--prefix /tmp` injection was the trigger there (it aimed npm's
-#   bin-linking at a directory that does not exist on the host) and is gone. This
-#   guard is the defense that does not depend on that: the missing mode bit
-#   originates in the published tarball
+#   Zimmer no longer renders npx servers with `--prefix /tmp`, which pointed npm's
+#   bin-link destination at `/tmp/node_modules/.bin` — a directory absent on the
+#   host. That is the best explanation of the failing clone's end state rather than
+#   an observed step (see the issue's own "what I did not verify"), and this guard
+#   is deliberately the half that does not rest on the diagnosis: the missing mode
+#   bit originates in the published tarball
 #   (`npm pack onepassword-mcp-server@0.5.4` → `-rw-r--r-- package/build/index.js`),
-#   which Zimmer does not control.
+#   which Zimmer does not control at all.
 #
 # Strategy: before every spawn that has MCP servers (ClaudeSpawnEnv#configure_mcp_env),
 # walk the clone's `_npx/*/node_modules/.bin/*` shims, resolve each to its target,
@@ -36,10 +38,6 @@
 # (AgentSessionJob#schedule_mcp_retry respawns the process), so a session that hits
 # this recovers on its own instead of orphaning.
 class NpxBinExecutableGuard
-  # The execute bits (u+x, g+x, o+x). A target with none of them set is what
-  # `exec` refuses with EACCES.
-  EXECUTE_BITS = 0o111
-
   # The read bits (u+r, g+r, o+r), and the shift that turns each one into the
   # execute bit beside it. Repairing 0644 as 0755 and 0600 as 0700 grants execute
   # exactly where read was already granted, rather than widening the file.
@@ -56,6 +54,12 @@ class NpxBinExecutableGuard
     def repair!(working_directory:, logger: Rails.logger)
       npx_dir = npx_cache_dir(working_directory)
       return [] unless npx_dir && File.directory?(npx_dir)
+
+      # Resolve the base the same way targets are resolved. expand_path does not
+      # follow symlinks, so a symlinked HOME or AGENT_CLONES_DIR would fail every
+      # containment check and turn the guard into a silent no-op — the symptom of
+      # which is indistinguishable from the bug it exists to fix.
+      npx_dir = File.realpath(npx_dir)
 
       repaired = shim_paths(npx_dir).filter_map { |shim| repair_shim(shim, npx_dir, logger) }
 
@@ -92,11 +96,24 @@ class NpxBinExecutableGuard
 
       target = File.realpath(shim)
       return nil unless File.file?(target)
-      return nil unless within?(target, npx_dir)
 
-      mode = File.stat(target).mode
-      return nil unless (mode & EXECUTE_BITS).zero?
+      unless within?(target, npx_dir)
+        logger.warn(
+          "[NpxBinExecutableGuard] Refusing to repair #{shim}: it resolves to #{target}, " \
+          "outside the clone's own npx cache"
+        )
+        return nil
+      end
 
+      # File.executable? tests the effective uid, so it also catches a target whose
+      # execute bits belong to somebody else (0o744 owned by another user execs with
+      # the same EACCES). A chmod that then fails is rescued and logged below, which
+      # beats skipping in silence.
+      return nil if File.executable?(target)
+
+      # Permission bits only: setuid/setgid/sticky are dropped rather than carried
+      # into a file this guard is about to make executable.
+      mode = File.stat(target).mode & 0o777
       File.chmod(mode | execute_bits_for(mode), target)
       target
     rescue => e
