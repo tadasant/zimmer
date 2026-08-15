@@ -2,16 +2,9 @@
 
 # Periodic job that checks if quota-exceeded accounts can be restored to active.
 #
-# Uses both reset times and utilization from each account's latest quota snapshot
-# to determine if the quota window has cleared. Runs every 15 minutes in production.
-#
-# A window is considered clear if:
-# - The reset time is nil or in the past, OR
-# - The utilization is below RESTORE_UTILIZATION_THRESHOLD (sliding window dropped)
-#
-# Claude's API uses sliding windows, so utilization can drop below 100%
-# before the reset timestamp arrives. Relying solely on reset times causes
-# accounts to stay stuck in quota_exceeded status long after usage has dropped.
+# Probes each exceeded account for a fresh reading and restores the ones whose
+# windows have cleared, per ClaudeAccountQuotaSnapshot#windows_clear?. Runs every
+# 15 minutes in production.
 #
 # Restoring accounts is only half the job: sessions parked by
 # AuthOutageParkService because the pool had nothing usable are dormant in
@@ -22,13 +15,14 @@
 # changes the pool fingerprint an auth-unrecoverable park waits on, so the
 # sweep covers both park reasons; see AuthOutageParkService.wake_parked_sessions!
 # for the evidence each one requires.
+#
+# This job is the pool's healer, not the page's. A `quota_exceeded` account
+# whose windows have cleared must not PRESENT as exceeded on /quotas even when
+# this job has not run — the deploy that froze every queue for ten hours (#426)
+# is what that looks like — so the badge derives its own answer from the same
+# ClaudeAccountQuotaSnapshot#windows_clear? this job restores on. See
+# ClaudeAccount#effective_status.
 class QuotaResetCheckerJob < ApplicationJob
-  # Restore accounts when utilization drops below 100%.
-  # The previous 80% threshold was too conservative — it blocked restoration
-  # for accounts with 90% 7-day utilization even when the 5-hour window had
-  # fully reset, causing all accounts to stay stuck in quota_exceeded.
-  RESTORE_UTILIZATION_THRESHOLD = 1.0
-
   def perform
     logger = StructuredLogger.new({ service: "QuotaResetCheckerJob" })
 
@@ -38,7 +32,7 @@ class QuotaResetCheckerJob < ApplicationJob
       snapshot = fetch_fresh_snapshot(account, logger) || account.latest_snapshot
       next unless snapshot
 
-      if window_clear?(snapshot)
+      if snapshot.windows_clear?
         account.update!(status: :active)
         logger.info("Restored account to active",
           email: account.email,
@@ -53,41 +47,7 @@ class QuotaResetCheckerJob < ApplicationJob
     logger.info("Resumed sessions parked for auth outage", count: resumed) if resumed.positive?
   end
 
-  # Check if both quota windows are clear based on reset times and utilization.
-  # A window is clear if its reset time has passed OR its utilization has dropped
-  # below the restore threshold.
-  #
-  # Except on the weekly window, where the status Anthropic reported outranks the
-  # counter. An account the API is rejecting for the week cannot serve a request
-  # no matter what its utilization reads, and restoring it puts it straight back
-  # in front of rotation, which hands it to the next session (#248). This is the
-  # same reading QuotaSnapshotService marks the account on, so the healer and the
-  # marker cannot disagree and flip an account between states every sweep.
-  #
-  # The 5-hour window keeps the counter-only rule: it is a genuinely sliding
-  # window that clears within the hour, so a dropped counter there is real
-  # headroom rather than a stale status.
-  def self.window_clear?(snapshot)
-    return false if snapshot.seven_day_window_spent?
-
-    five_hour_clear = window_dimension_clear?(snapshot.reset_5h, snapshot.utilization_5h)
-    seven_day_clear = window_dimension_clear?(snapshot.reset_7d, snapshot.utilization_7d)
-
-    five_hour_clear && seven_day_clear
-  end
-
-  def self.window_dimension_clear?(reset_time, utilization)
-    return true if reset_time.nil? || reset_time <= Time.current
-    return true if utilization.present? && utilization < RESTORE_UTILIZATION_THRESHOLD
-
-    false
-  end
-
   private
-
-  def window_clear?(snapshot)
-    self.class.window_clear?(snapshot)
-  end
 
   # Fetch a fresh quota snapshot for a non-current account using its stored
   # OAuth token. Returns nil if the token is unavailable, expired without a
