@@ -421,6 +421,11 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     assert_equal content.lines.length, redacted.lines.length
   end
 
+  # The patterns are off the global cap by construction, so this is really about
+  # the `preceded_by` regexps, which are deliberately left on it. They decide
+  # whether an ENV_SECRET or BASIC_AUTH candidate is a credential or ordinary
+  # prose, so a cap that could abort one would change what is redacted rather
+  # than merely raise.
   test "the global cap changes nothing about what is redacted" do
     content = transcript_with_credentials
 
@@ -434,11 +439,16 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
 
   # --- Degrading rather than raising ----------------------------------------
 
-  test "a pattern pass that times out retries line by line and still redacts the rest" do
-    content = "sk-ant-oat01-#{'A1b2C3d4E5' * 4}\nUNSCANNABLE\nghp_#{'a1B2c3D4e5' * 4}\n"
-    original = TranscriptRedactor.method(:apply_patterns)
+  # The retry is only safe because scanning line by line finds exactly what
+  # scanning the whole string finds — no pattern can match across a newline, and
+  # every `preceded_by` name is `\z`-anchored, so nothing straddles a line
+  # boundary. That is the property a future pattern could silently break, so it
+  # is asserted against the real, undegraded output rather than spot-checked.
+  test "a pattern pass that times out retries line by line and finds exactly what it would have found" do
+    content = "sk-ant-oat01-#{'A1b2C3d4E5' * 4}\nUNSCANNABLE\n" + transcript_with_credentials(padding_bytes: 8 * 1024)
     # Times out on the whole transcript (it contains the poison line) but
     # succeeds on each line that does not.
+    original = TranscriptRedactor.method(:apply_patterns)
     scanner = lambda do |text|
       raise Regexp::TimeoutError, "regexp match timeout" if text.include?("UNSCANNABLE") && text.lines.length > 1
 
@@ -446,11 +456,14 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     end
 
     TranscriptRedactor.stub(:known_secrets, []) do
+      undegraded = TranscriptRedactor.redact(content)
+
       TranscriptRedactor.stub(:apply_patterns, scanner) do
         redacted = TranscriptRedactor.redact(content)
 
+        assert_equal undegraded, redacted
         assert_includes redacted, "[REDACTED:ANTHROPIC_OAUTH_TOKEN]"
-        assert_includes redacted, "[REDACTED:GITHUB_TOKEN]"
+        assert_includes redacted, "[REDACTED:ENV_SECRET]"
         assert_includes redacted, "UNSCANNABLE"
         assert_equal content.lines.length, redacted.lines.length
       end
