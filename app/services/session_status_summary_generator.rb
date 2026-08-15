@@ -26,6 +26,14 @@
 # Generation is refused when the session has not moved since the displayed
 # summary was written — that refusal is the caching requirement, and it is why
 # a page view can never trigger work.
+#
+# The other refusal is structural: there has to be a clone to fork. That, and
+# not `archived?`, is what a forced generation checks — an archived session is a
+# finished session, and a finished session is exactly the one someone opens
+# later to ask what happened. Its clone outlives the archive by the undo window
+# and, when there was unpushed work Zimmer could not preserve, by the whole
+# trash-retention window; once the clone is gone the request is answered with a
+# reason (`outcome: :unavailable`) rather than a job that declines in silence.
 class SessionStatusSummaryGenerator
   # Marks a session as a summary fork. Read by SessionStateMachine (to route the
   # fork's pause into harvesting rather than into the user's action queue) and by
@@ -54,9 +62,37 @@ class SessionStatusSummaryGenerator
 
   def self.call(...) = new(...).call
 
+  # Why a generation cannot run for this session at all — nil when one could.
+  #
+  # The three surfaces that offer "Regenerate" (the Status panel, the MCP
+  # `action_session` action, the REST endpoint) ask this BEFORE they enqueue, so
+  # a request that cannot possibly produce a summary is answered with the reason
+  # instead of a job that declines in silence. It reads the session and stats the
+  # clone directory; it writes nothing and enqueues nothing, so rendering the
+  # panel still cannot trigger generation.
+  def self.unavailable_reason(...) = new(...).unavailable_reason
+
+  # The instance half of the class method above.
+  def unavailable_reason
+    if session.status_summary_fork?
+      Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
+    elsif session.transcript_line_count.zero?
+      Result.new(outcome: :skipped, message: "Session has no transcript yet.")
+    elsif !source_clone_available?
+      Result.new(outcome: :unavailable, message: clone_unavailable_message)
+    end
+  end
+
   def call
     refusal = refuse_reason
-    return refusal if refusal
+
+    if refusal
+      # An operator (or an agent) asked for this one by name. A refusal it never
+      # sees is the bug — record it against the panel so the request that flipped
+      # the panel to "Generating" resolves to a reason instead of spinning.
+      record_failure(refusal.message) if force && refusal.outcome == :unavailable
+      return refusal
+    end
 
     summary = summary_record
     line_count = session.transcript_line_count
@@ -89,10 +125,20 @@ class SessionStatusSummaryGenerator
       # The same benign outcome as the archived-check below, reached from the
       # losing side of the same race: the session went to the trash while its
       # clone was being copied, and the cleanup deleted the tree out from under
-      # the copy. There is no fork to abandon and no failure worth recording —
-      # nobody reads a summary of a session in the trash — so the claim goes back
+      # the copy. For an AUTOMATIC generation there is no fork to abandon and no
+      # failure worth recording — nobody asked for it — so the claim goes back
       # exactly as it was found and this is a skip, not a failure.
+      #
+      # A forced one is the opposite: somebody is looking at the panel they just
+      # pressed. The claim keeps its `pending` state only long enough for
+      # #record_failure to write the reason over it, because releasing first
+      # would drop the claim this runner needs in order to record anything.
       if result.source_clone_discarded
+        if force
+          record_failure(clone_unavailable_message)
+          return Result.new(outcome: :unavailable, message: clone_unavailable_message)
+        end
+
         release_claim(summary)
         return Result.new(outcome: :skipped, message: "Session is in the trash.")
       end
@@ -115,7 +161,12 @@ class SessionStatusSummaryGenerator
       # and the answer can change during it. A fork of a session that has since
       # gone to the trash is a copy of a clone DeferredCloneCleanupJob is about
       # to delete, about a session nobody is looking at.
-      if session.reload.archived?
+      #
+      # `!force` for the same reason the trash is not a refusal for a forced run:
+      # somebody pressed Regenerate on this session, so it is not one nobody is
+      # looking at. The fork owns its own copy of the clone by now, so the
+      # source's going to the trash costs the fork nothing.
+      if !force && session.reload.archived?
         release_claim(summary)
         abandon_fork(fork)
         return Result.new(outcome: :skipped, message: "Session is in the trash.")
@@ -246,13 +297,39 @@ class SessionStatusSummaryGenerator
   def holds_claim?(summary) = summary.state == "pending" && summary.requested_at == @claim_token
 
   # Reasons a session is not a candidate at all, as opposed to "not stale yet".
+  #
+  # Being archived is NOT one of them for a forced run. Archive is how a Zimmer
+  # session finishes: its transcript stays readable, it is exactly the kind of
+  # session someone opens later to ask "what happened here", and the panel is
+  # what answers that. What generation actually needs is a clone to fork —
+  # #unavailable_reason is the check that asks for the thing rather than for a
+  # status that correlates with it. An AUTOMATIC generation still skips the
+  # trash: nothing enqueues one for an archived session on purpose, and paying
+  # for a clone copy on a session heading for deletion is waste.
   def refuse_reason
-    if session.status_summary_fork?
-      Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
-    elsif session.archived?
-      Result.new(outcome: :skipped, message: "Session is in the trash.")
-    elsif session.transcript_line_count.zero?
-      Result.new(outcome: :skipped, message: "Session has no transcript yet.")
+    unavailable_reason ||
+      (Result.new(outcome: :skipped, message: "Session is in the trash.") if !force && session.archived?)
+  end
+
+  # Whether there is still a clone to fork. The same two conditions
+  # ForkSessionService validates, asked here so the answer is available before a
+  # job is enqueued rather than only after one has quietly declined.
+  def source_clone_available?
+    clone_path = session.metadata&.dig("clone_path")
+    return false if clone_path.blank?
+
+    file_system.directory?(clone_path)
+  end
+
+  def file_system = @resolved_file_system ||= (@file_system || RealFileSystemAdapter.new)
+
+  # Written for whoever is reading the Status panel, so it says what is gone and
+  # why rather than naming a job they have never heard of.
+  def clone_unavailable_message
+    if session.archived?
+      "This session's working clone was deleted when it went to the trash, so there is nothing left to fork for a summary."
+    else
+      "This session has no working clone on disk, so there is nothing to fork for a summary."
     end
   end
 

@@ -101,11 +101,17 @@ Three things keep that from failing a fork:
 A summary fork's clone is therefore **not a runnable checkout** — `.bundle/config` still points at the
 `vendor/bundle` that is no longer there. See [Limitations](/limitations/#a-status-summary-forks-clone-is-missing-its-installed-dependencies-and-does-not-know-it).
 
-The generator also re-checks that the session is still out of the trash **after** the copy, not just
-before it. The copy takes real time, and a session that archived during it would otherwise get a fork
-of a clone `DeferredCloneCleanupJob` is about to delete. Such a fork is archived immediately, the
-claim below is released so the record does not sit in `pending` behind a fork that will never answer,
-and nothing is recorded against the summary.
+For an **automatic** generation, the generator also re-checks that the session is still out of the
+trash **after** the copy, not just before it. The copy takes real time, and a session that archived
+during it would otherwise get a fork of a clone `DeferredCloneCleanupJob` is about to delete, about a
+session nobody asked about. Such a fork is archived immediately, the claim below is released so the
+record does not sit in `pending` behind a fork that will never answer, and nothing is recorded against
+the summary.
+
+A **forced** generation does not take that exit — see
+[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
+Somebody pressed the button, so this is not a session nobody is looking at, and by this point the fork
+owns its own copy of the clone anyway.
 
 ### The trash can win that race, and that is not an error
 
@@ -118,9 +124,14 @@ was woken about a summary nobody was going to read.
 `ForkSessionService` classifies it instead. An `ENOENT` naming a path **inside the source clone**,
 raised while forking a session that — re-read from the database, because the archive lands during the
 copy — is **archived**, is reported as `Result#source_clone_discarded`: logged at `info`, not `error`.
-The generator reads that flag, releases its claim, and returns `skipped` — the same outcome the
-post-copy re-check produces, with no failure recorded against the panel. The same answer covers the
-case where the cleanup finished *before* the fork started and the clone is already gone at validation.
+For an automatic generation the generator reads that flag, releases its claim, and returns `skipped` —
+the same outcome the post-copy re-check produces, with no failure recorded against the panel.
+
+For a **forced** one it is the same benign condition with a different obligation: an operator is
+watching a panel that says "Generating". The reason is recorded on the record instead, so the panel
+resolves to *why* rather than spinning until `PENDING_TIMEOUT`. This is the narrow race the pre-flight
+check below cannot close — the clone was there when the button was pressed and gone by the time the
+job ran.
 
 The question it asks is about the **session**, not about the clone, and that is deliberate. `rm_rf`
 unlinks children bottom-up and removes the directory root last, so for the whole of a large clone's
@@ -218,8 +229,10 @@ about a session that has stopped, and summarizing at the start of a turn spends 
 the same turn invalidates.
 
 On top of that the generator refuses outright when the session has not moved since the last summary,
-when a generation is already in flight, when the session is in the trash, when it has no transcript,
-and when it is itself a summary fork.
+when a generation is already in flight, when it has no transcript, when there is no clone left to
+fork, and when it is itself a summary fork. An **automatic** generation additionally refuses a session
+in the trash: nothing enqueues one for an archived session on purpose, and paying for a clone copy on
+a session heading for deletion is waste.
 
 ## Regenerating on demand
 
@@ -242,6 +255,34 @@ The same capability is on the other two surfaces:
 And the summary is readable from both without generating anything: `get_session` renders a
 `### Status Summary` section with a freshness marker, and `GET /api/v1/sessions/:id` returns
 `status_summary` as a sibling of `session`.
+
+### The trash is not a refusal for a forced generation
+
+**An archived session regenerates like any other.** Archive is how a Zimmer session *finishes*, its
+transcript stays readable, and a finished session is exactly the one somebody opens later to ask what
+happened — which is the question the panel answers. Refusing on `archived?` made the one control in
+that panel dead, silently: the button was enabled, the panel flipped to "Generating", the job declined
+because the session was in the trash, and no new summary ever arrived.
+
+What generation actually needs is a **clone to fork**, and a clone outlives the archive — by the undo
+window, and by the whole trash-retention window when there was unpushed work Zimmer could not preserve
+into artifacts. So the check asks for the thing rather than for a status that correlates with it:
+`SessionStatusSummaryGenerator.unavailable_reason` answers whether a clone is still there, alongside
+the two other structural refusals (a session that is itself a summary fork, and one with no
+transcript).
+
+**All three surfaces ask it before they enqueue**, so a request that cannot produce a summary is
+answered with the reason instead of a job that declines where nobody can see it:
+
+| Surface | Clone still there | Clone reclaimed |
+| --- | --- | --- |
+| Status panel | button live, panel flips to "Generating" | button disabled, panel says why |
+| `action_session` | `## Status Summary Regenerating` | tool error carrying the reason |
+| `POST /api/v1/sessions/:id/regenerate_status_summary` | `202 Accepted` | `422 Unprocessable Entity` with the reason |
+
+The pre-flight reads the session and stats the clone directory. It writes nothing and enqueues
+nothing, so the rule that **rendering the panel never generates** still holds — the panel calls it on
+every page view.
 
 ## Failure and abandonment
 

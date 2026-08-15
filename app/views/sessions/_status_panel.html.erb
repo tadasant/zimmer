@@ -10,8 +10,9 @@
 
   Rendering this NEVER generates. A stale summary shows the cached text plus how
   many messages have landed since, and waits for the operator to press
-  Regenerate. The only automatic trigger is the session changing status — see
-  SessionStateMachine#enqueue_status_summary_refresh.
+  Regenerate. `unavailable_reason` reads the session and stats its clone; it
+  starts nothing. The only automatic trigger is the session changing status —
+  see SessionStateMachine#enqueue_status_summary_refresh.
 
   Local variables:
     agent_session: Session
@@ -22,6 +23,12 @@
 <% line_count = agent_session.transcript_line_count %>
 <% behind = summary&.messages_since(line_count).to_i %>
 <% generating = local_assigns.fetch(:generating, false) || summary&.pending? %>
+<%# Why regeneration cannot run at all — nil when it can. An archived session is
+    NOT one of these reasons; a session whose clone has been reclaimed is. The
+    button is dead in that case, so it says so rather than accepting a click it
+    cannot honour. %>
+<% unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: agent_session)&.message %>
+<% disabled = generating || unavailable.present? %>
 
 <div id="session_<%= agent_session.id %>_status_panel">
   <div class="px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
@@ -52,8 +59,9 @@
       <%= button_to regenerate_status_summary_session_path(agent_session),
             method: :post,
             form: { data: { turbo: true } },
-            disabled: generating,
-            class: "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium #{generating ? 'text-gray-400 bg-gray-50 cursor-not-allowed' : 'text-indigo-700 bg-indigo-50 hover:bg-indigo-100'}" do %>
+            disabled: disabled,
+            title: unavailable,
+            class: "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium #{disabled ? 'text-gray-400 bg-gray-50 cursor-not-allowed' : 'text-indigo-700 bg-indigo-50 hover:bg-indigo-100'}" do %>
         <svg class="h-3.5 w-3.5 <%= "animate-spin" if generating %>" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
         </svg>
@@ -75,6 +83,11 @@
       <% if summary.failed? && summary.error.present? %>
         <p class="mt-2 text-xs text-red-700">Last regeneration failed: <%= summary.error %></p>
       <% end %>
+      <%# Said next to a summary that IS there, because the operator's question
+          is "why can I not refresh this", not "why is it missing". %>
+      <% if unavailable.present? && !generating %>
+        <p class="mt-2 text-xs text-gray-500">This can no longer be regenerated. <%= unavailable %></p>
+      <% end %>
     <% elsif generating %>
       <p class="text-sm text-gray-500">Forking this session to write a summary. It will appear here when the fork's turn finishes.</p>
     <% elsif summary&.failed? %>
@@ -84,6 +97,9 @@
       <p class="text-sm text-gray-700">A summary was started but never came back. Press Regenerate to try again.</p>
     <% elsif line_count.zero? %>
       <p class="text-sm text-gray-500">Nothing to summarize yet — this session has no transcript.</p>
+    <% elsif unavailable.present? %>
+      <p class="text-sm text-gray-700">No summary, and one can no longer be written.</p>
+      <p class="mt-1 text-xs text-gray-500"><%= unavailable %></p>
     <% else %>
       <p class="text-sm text-gray-500">
         No summary yet. One is written automatically when this session next changes status, or press Regenerate now.

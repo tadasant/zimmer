@@ -1802,20 +1802,43 @@ class SessionsController < ApplicationController
   # with the person looking at the page.
   def regenerate_status_summary
     @session = find_session
+
+    # Asked before the job is enqueued, so a request that cannot produce a
+    # summary is answered with the reason. Enqueuing regardless is what left the
+    # panel on "Generating" forever: the job refused, and its refusal had nowhere
+    # to go. Archived is not one of these reasons — a reclaimed clone is.
+    unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: @session)
+
+    if unavailable
+      respond_to do |format|
+        format.turbo_stream { render turbo_stream: status_panel_replacement }
+        format.html { redirect_to @session, alert: unavailable.message }
+        format.json { render json: { success: false, error: unavailable.message }, status: :unprocessable_entity }
+      end
+      return
+    end
+
     SessionStatusSummaryJob.perform_later(@session.id, force: true)
 
     respond_to do |format|
-      format.turbo_stream do
-        render turbo_stream: turbo_stream.replace(
-          "session_#{@session.id}_status_panel",
-          partial: "sessions/status_panel",
-          locals: { agent_session: @session, generating: true }
-        )
-      end
+      format.turbo_stream { render turbo_stream: status_panel_replacement(generating: true) }
       format.html { redirect_to @session, notice: "Regenerating the status summary…" }
       format.json { render json: { success: true } }
     end
   end
+
+  # The Status panel, re-rendered in place. Both exits from the action use it:
+  # the refused one so the panel comes back with the button dead and the reason
+  # under it, the accepted one so it flips to "Generating" before the job has
+  # marked the record.
+  def status_panel_replacement(generating: false)
+    turbo_stream.replace(
+      "session_#{@session.id}_status_panel",
+      partial: "sessions/status_panel",
+      locals: { agent_session: @session, generating: generating }
+    )
+  end
+  private :status_panel_replacement
 
   def update_title
     @session = find_session

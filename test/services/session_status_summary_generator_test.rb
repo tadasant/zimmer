@@ -6,6 +6,8 @@ require "mocha/minitest"
 # The fork-backed generation path for the Status panel's blurb, and the caching
 # rule that decides when it may run at all.
 class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   setup do
     Log.any_instance.stubs(:broadcast_append_to_timeline)
     Session.any_instance.stubs(:broadcast_status_change)
@@ -250,10 +252,99 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal :skipped, generate.outcome
   end
 
-  test "an archived session is skipped" do
+  # --- The trash -------------------------------------------------------------
+
+  # Archive is how a Zimmer session FINISHES, and a finished session is exactly
+  # the one someone opens later to ask what happened. The panel is what answers
+  # that, so an operator pressing Regenerate on it gets a summary — the fork only
+  # needs a clone, and the clone outlives the archive.
+  test "an archived session with a clone still on disk regenerates when asked" do
+    @session.update_column(:status, Session.statuses[:archived])
+
+    result = generate(force: true)
+
+    assert_equal :started, result.outcome
+    assert_equal @session.id, result.fork_session.metadata[SessionStatusSummaryGenerator::FORK_MARKER]
+    assert_equal "pending", @session.reload.status_summary.state
+  end
+
+  # The other half: nothing enqueues an automatic generation for a session in the
+  # trash on purpose, and paying for a clone copy on a session heading for
+  # deletion is waste. Only the deliberate override gets through.
+  test "an archived session is still skipped by an automatic generation" do
     @session.update_column(:status, Session.statuses[:archived])
 
     assert_equal :skipped, generate.outcome
+    assert_nil @session.reload.status_summary, "an automatic skip claims nothing"
+  end
+
+  # The honest failure. Once DeferredCloneCleanupJob has reclaimed the clone
+  # there is nothing to fork, and the operator has to be told that rather than
+  # left watching a spinner that will never resolve.
+  test "an archived session whose clone is gone reports why instead of starting" do
+    @session.update_column(:status, Session.statuses[:archived])
+    @fs.rm_rf(@clone_path)
+
+    result = generate(force: true)
+
+    assert_equal :unavailable, result.outcome
+    assert_match(/deleted when it went to the trash/, result.message)
+    assert_equal 0, Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).count
+
+    record = @session.reload.status_summary
+    assert_equal "failed", record.state, "the panel resolves to a reason rather than spinning"
+    assert_equal result.message, record.error
+    assert_not record.pending?
+  end
+
+  # A session with no clone recorded at all cannot be forked either, and says so
+  # in its own terms rather than talking about a trash it never reached.
+  test "a session with no clone path at all reports why instead of starting" do
+    @session.update!(metadata: @session.metadata.except("clone_path"))
+
+    result = generate(force: true)
+
+    assert_equal :unavailable, result.outcome
+    assert_match(/no working clone on disk/, result.message)
+  end
+
+  # The pre-flight the three request surfaces share. It must answer without
+  # writing anything — a panel render calls it on every page view.
+  test "unavailable_reason answers without claiming, enqueuing or writing" do
+    assert_nil SessionStatusSummaryGenerator.unavailable_reason(session: @session, file_system: @fs)
+
+    @fs.rm_rf(@clone_path)
+
+    reason = nil
+    assert_no_difference -> { SessionStatusSummary.count } do
+      assert_no_enqueued_jobs do
+        reason = SessionStatusSummaryGenerator.unavailable_reason(session: @session, file_system: @fs)
+      end
+    end
+
+    assert_equal :unavailable, reason.outcome
+  end
+
+  # The race the pre-flight cannot close: the clone is there when the button is
+  # pressed and gone by the time the job runs. The forced run records the reason
+  # so the panel still resolves.
+  test "a forced generation whose clone the trash deletes during the copy records the reason" do
+    session = @session
+    clone = @clone_path
+    @fs.define_singleton_method(:cp_r) do |_src, _dest, exclude: []|
+      session.update_column(:status, Session.statuses[:archived])
+      rm_rf(clone)
+      raise Errno::ENOENT.new(File.join(clone, ".git/objects/e8"))
+    end
+
+    result = generate(force: true)
+
+    assert_equal :unavailable, result.outcome
+
+    record = @session.reload.status_summary
+    assert_equal "failed", record.state, "a forced request resolves to a reason rather than a released claim"
+    assert_match(/nothing left to fork/, record.error)
+    assert_not record.pending?
   end
 
   # The copy takes real time — tens of seconds on a repo with an installed
@@ -292,7 +383,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       super(src, dest, exclude: exclude)
     end
 
-    assert_equal :skipped, generate(force: true).outcome
+    assert_equal :skipped, generate.outcome
 
     record = @session.reload.status_summary
     assert_equal "failed", record.state
@@ -461,7 +552,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       end
     end
 
-    result = SessionStatusSummaryGenerator.call(session: @session, fork_service: failing)
+    result = SessionStatusSummaryGenerator.call(session: @session, fork_service: failing, file_system: @fs)
 
     assert_equal :failed, result.outcome
     assert_equal 1, SessionStatusSummary.where(session_id: @session.id).count
@@ -481,7 +572,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       end
     end
 
-    result = SessionStatusSummaryGenerator.call(session: @session, fork_service: failing)
+    result = SessionStatusSummaryGenerator.call(session: @session, fork_service: failing, file_system: @fs)
 
     assert_equal :failed, result.outcome, "the runner still reports its own failure to its caller"
     record = @session.reload.status_summary
@@ -496,7 +587,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       end
     end
 
-    result = SessionStatusSummaryGenerator.call(session: @session, fork_service: failing)
+    result = SessionStatusSummaryGenerator.call(session: @session, fork_service: failing, file_system: @fs)
 
     assert_equal :failed, result.outcome
     record = @session.reload.status_summary
