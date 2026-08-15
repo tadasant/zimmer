@@ -139,7 +139,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `POST` | `/sessions/:id/sleep` | `needs_input` → sleeps; `running` → sets `pending_sleep` |
 | `POST` | `/sessions/:id/restart` | clears stale retry metadata and re-queues the job; re-runs the whole setup pipeline if setup never finished (a failed clone, say) |
 | `POST` | `/sessions/:id/fork` | `message_index` required → 201 |
-| `POST` | `/sessions/:id/regenerate_status_summary` | → 202. Queues a forced rewrite of the [Status summary](/sessions/status-summary/); it forks the session and spends an agent turn, so it is asynchronous and must not be polled |
+| `POST` | `/sessions/:id/regenerate_status_summary` | → 202. Queues a forced rewrite of the [Status summary](/sessions/status-summary/); it forks the session and spends an agent turn, so it is asynchronous and must not be polled. 422 with the reason, rather than a 202 for work that cannot run, when there is nothing to fork: no clone on disk, no transcript, or a session that is itself a summary fork. An archived session is a normal candidate — the fork needs the session's clone, not its status — but its clone is reclaimed ~10s after archiving, so in practice an archived session usually answers 422 |
 | `POST` | `/sessions/:id/refresh` | re-read transcript from disk. A shorter filesystem transcript never overwrites a longer stored one — that happens when the clone was recreated at a new path, and the stored history wins |
 | `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. Sessions in a frozen category are parked and excluded |
 | `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors` |

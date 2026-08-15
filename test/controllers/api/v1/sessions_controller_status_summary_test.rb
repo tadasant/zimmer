@@ -16,17 +16,23 @@ class Api::V1::SessionsControllerStatusSummaryTest < ActionDispatch::Integration
     ENV["API_KEYS"] = @api_key
     @headers = { "X-API-Key" => @api_key }
 
+    # A real directory: regeneration is refused when there is no clone left to
+    # fork — see SessionStatusSummaryGenerator.unavailable_reason.
+    @clone_path = Dir.mktmpdir("status-summary-clone")
+
     @session = Session.create!(
       prompt: "Ship the thing",
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
+      metadata: { "clone_path" => @clone_path },
       transcript: "{}\n{}\n{}\n{}\n"
     )
   end
 
   teardown do
+    FileUtils.remove_entry(@clone_path) if @clone_path && File.directory?(@clone_path)
     ENV.delete("API_KEYS")
     Mocha::Mockery.instance.teardown
   end
@@ -88,6 +94,43 @@ class Api::V1::SessionsControllerStatusSummaryTest < ActionDispatch::Integration
 
     assert_response :accepted
     assert_equal "Status summary regeneration queued", JSON.parse(response.body)["message"]
+  end
+
+  # The same rule the Status panel's button follows: archived is not a reason to
+  # refuse, a reclaimed clone is.
+  test "regenerate_status_summary accepts an archived session that still has its clone" do
+    @session.update_column(:status, Session.statuses[:archived])
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
+      post "/api/v1/sessions/#{@session.id}/regenerate_status_summary", headers: @headers
+    end
+
+    assert_response :accepted
+  end
+
+  test "regenerate_status_summary refuses with a reason when the clone is gone" do
+    @session.update_column(:status, Session.statuses[:archived])
+    FileUtils.remove_entry(@clone_path)
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      post "/api/v1/sessions/#{@session.id}/regenerate_status_summary", headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_match "deleted when it went to the trash", response.body
+  end
+
+  # 422 covers every structural refusal, not just the clone — a caller must not
+  # read 202 for a session that has nothing to fork for any reason.
+  test "regenerate_status_summary refuses a session with no transcript" do
+    @session.update_column(:transcript, nil)
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      post "/api/v1/sessions/#{@session.id}/regenerate_status_summary", headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_match "no transcript", response.body
   end
 
   test "get_session's text-less states are distinguishable over MCP too" do

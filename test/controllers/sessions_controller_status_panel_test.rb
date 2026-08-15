@@ -12,6 +12,11 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     Log.any_instance.stubs(:broadcast_append_to_timeline)
     Session.any_instance.stubs(:broadcast_status_change)
 
+    # A real directory, because the panel and the regenerate action both ask
+    # whether there is still a clone to fork — see
+    # SessionStatusSummaryGenerator.unavailable_reason.
+    @clone_path = Dir.mktmpdir("status-panel-clone")
+
     @session = Session.create!(
       prompt: "Ship the thing",
       agent_runtime: "claude_code",
@@ -19,6 +24,7 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
       git_root: "https://github.com/test/repo.git",
       branch: "main",
       title: "Ship the thing",
+      metadata: { "clone_path" => @clone_path },
       transcript: [
         { "type" => "user", "message" => { "role" => "user", "content" => "Ship the thing" }, "timestamp" => "2026-08-01T10:00:00Z" },
         { "type" => "assistant", "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "Opened the PR" } ] }, "timestamp" => "2026-08-01T10:00:01Z" }
@@ -27,6 +33,7 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
   end
 
   teardown do
+    FileUtils.remove_entry(@clone_path) if @clone_path && File.directory?(@clone_path)
     Mocha::Mockery.instance.teardown
   end
 
@@ -154,5 +161,83 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     end
 
     assert_redirected_to session_path(@session)
+  end
+
+  # --- The trash -------------------------------------------------------------
+
+  # The bug this pair exists for: the button was enabled on an archived session,
+  # the panel flipped to "Generating", and the job then declined in silence.
+  test "an archived session with a clone still on disk regenerates like any other" do
+    @session.update_column(:status, Session.statuses[:archived])
+
+    get session_url(@session)
+
+    assert_response :success
+    assert_select "#session_#{@session.id}_status_panel button[disabled]", 0, "the button is live on an archived session"
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
+      post regenerate_status_summary_session_url(@session)
+    end
+  end
+
+  test "an archived session whose clone is gone says so instead of offering a dead button" do
+    @session.update_column(:status, Session.statuses[:archived])
+    FileUtils.remove_entry(@clone_path)
+
+    get session_url(@session)
+
+    assert_response :success
+    assert_select "#session_#{@session.id}_status_panel button[disabled]"
+    assert_match "deleted when it went to the trash", response.body
+  end
+
+  # A stale page can still POST at a button the render would now disable.
+  test "regenerating a session whose clone is gone enqueues nothing and says why" do
+    @session.update_column(:status, Session.statuses[:archived])
+    FileUtils.remove_entry(@clone_path)
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      post regenerate_status_summary_session_url(@session)
+    end
+
+    assert_redirected_to session_path(@session)
+    assert_match "deleted when it went to the trash", flash[:alert]
+  end
+
+  # The two non-clone structural refusals reach the same exits, so the surfaces
+  # answer them the same way rather than only knowing about the trash.
+  test "regenerating a session with no transcript is refused with its own reason" do
+    @session.update_column(:transcript, nil)
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      post regenerate_status_summary_session_url(@session)
+    end
+
+    assert_match "no transcript", flash[:alert]
+  end
+
+  test "the json refusal carries the reason and an unprocessable status" do
+    @session.update_column(:status, Session.statuses[:archived])
+    FileUtils.remove_entry(@clone_path)
+
+    post regenerate_status_summary_session_url(@session), as: :json
+
+    assert_response :unprocessable_entity
+    body = JSON.parse(response.body)
+    assert_equal false, body["success"]
+    assert_match "deleted when it went to the trash", body["error"]
+  end
+
+  # The turbo_stream response is what the button actually gets, and it must not
+  # come back saying "Generating" for work that was never queued.
+  test "the turbo response to a refused regenerate does not claim to be generating" do
+    @session.update_column(:status, Session.statuses[:archived])
+    FileUtils.remove_entry(@clone_path)
+
+    post regenerate_status_summary_session_url(@session), as: :turbo_stream
+
+    assert_response :success
+    assert_no_match(/Generating/, response.body)
+    assert_match "deleted when it went to the trash", response.body
   end
 end
