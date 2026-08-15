@@ -55,6 +55,32 @@
 #
 # The one shape that genuinely spans lines, an armored PEM block, is found by a
 # bounded line walk and replaced line for line.
+#
+# ## Off the global one-second regexp cap, on purpose
+#
+# `config.load_defaults 8.0` sets `Regexp.timeout = 1` process-wide. That cap is
+# sized for request-scoped strings, and it applies to a *single* search — not to
+# a `gsub` as a whole. A transcript is a multi-megabyte file, so two ordinary
+# things reach it, both measured on a real 32 MB session transcript:
+#
+#   * A gap. A `gsub` is a sequence of searches, one per stretch between matches,
+#     and DB_CONNECTION_STRING — a case-insensitive alternation with no literal
+#     to seek — scans a whole transcript that holds no database URL as one
+#     search. It raised at exactly 1.000 s.
+#   * A match. One line carrying a 3.5 MB base64 tool result is a single
+#     uninterrupted run of ENV_SECRET's value class, so that rule's greedy repeat
+#     consumes the entire run in one match. It raised at 2.2 s.
+#
+# Neither is a bad transcript; both are what a big one looks like. The
+# `Regexp::TimeoutError` propagated out of `TranscriptSource#read` into
+# `TranscriptPollerService#poll_and_broadcast`, which logged
+# `Error polling transcript for session N: regexp match timeout`, dropped the
+# whole transcript update, and paged `#alerts` on the ERROR record — every poll,
+# for as long as the session stayed alive (#472).
+#
+# The cap is not what keeps this scan honest, so every regexp that can be handed
+# transcript-scale input carries its own SCAN_TIMEOUT instead, and the pattern
+# pass degrades rather than raising. See SCAN_TIMEOUT and .scan_patterns.
 module TranscriptRedactor
   # A credential value shorter than this is not distinguishable from ordinary
   # text, and redacting every occurrence of it would shred the transcript.
@@ -89,8 +115,30 @@ module TranscriptRedactor
   # that costs 25ms per megabyte and one that costs 200ms — see ENV_SECRET below.
   Pattern = Struct.new(:label, :regexp, :mode, :preceded_by)
 
+  # The cap that replaces the global `Regexp.timeout` for every regexp here that
+  # can be handed a whole transcript or a whole transcript line.
+  #
+  # It is a ReDoS backstop, not a latency budget. The rules in PATTERNS are
+  # hand-audited and linear in the text they scan; what they are not is *small*,
+  # because the text is not small. The slowest single search measured against
+  # production transcripts is 2.2 s (ENV_SECRET over a 3.5 MB base64 run), and a
+  # whole 32 MB transcript redacts in ~7.6 s. Ten seconds leaves the real work
+  # several times the room it needs while still killing a genuinely exponential
+  # backtrack in bounded time.
+  #
+  # The `preceded_by` regexps are deliberately left on the global cap: they only
+  # ever run against a PRECEDING_WINDOW-byte slice.
+  SCAN_TIMEOUT = 10
+
+  # Recompile with SCAN_TIMEOUT. A regexp's own timeout takes precedence over
+  # `Regexp.timeout`, and rebuilding from `source`/`options` is exact.
+  def self.bounded(regexp)
+    Regexp.new(regexp.source, regexp.options, timeout: SCAN_TIMEOUT)
+  end
+  private_class_method :bounded
+
   def self.pattern(label, regexp, mode = :whole, preceded_by: nil)
-    Pattern.new(label, regexp, mode, preceded_by).freeze
+    Pattern.new(label, bounded(regexp), mode, preceded_by).freeze
   end
   private_class_method :pattern
 
@@ -210,8 +258,10 @@ module TranscriptRedactor
     )
   ].freeze
 
-  PRIVATE_KEY_BEGIN = /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/
-  PRIVATE_KEY_END = /-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/
+  # Bounded like the rules above: the BEGIN guard is matched against the whole
+  # transcript, and the other two against a whole line.
+  PRIVATE_KEY_BEGIN = bounded(/-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/)
+  PRIVATE_KEY_END = bounded(/-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/)
   # A 4096-bit RSA key armors to ~51 body lines; nothing legitimate is longer
   # than this. The cap is what stops a stray `-----BEGIN PRIVATE KEY-----` in
   # prose from opening a block that eats the rest of the transcript.
@@ -221,7 +271,7 @@ module TranscriptRedactor
   # rule would let ordinary prose bridge a BEGIN and an END that both appear in
   # running text, which is the exact over-redaction the block walk exists to
   # avoid.
-  PRIVATE_KEY_BODY_LINE = /\A(?:[A-Za-z0-9+\/=]*|(?:Proc-Type|DEK-Info):[ \t]?\S.*)\z/
+  PRIVATE_KEY_BODY_LINE = bounded(/\A(?:[A-Za-z0-9+\/=]*|(?:Proc-Type|DEK-Info):[ \t]?\S.*)\z/)
 
   class << self
     # Redact a whole transcript (or any transcript-shaped blob).
@@ -244,13 +294,13 @@ module TranscriptRedactor
       # ~4x the whole-string cost).
       out = redact_armored_private_keys(out)
 
+      # Exact string search, not a regexp, so no timeout applies here at all.
       known_secrets.each do |value, label|
         next unless out.include?(value)
 
         out = out.gsub(value, marker(label))
       end
-      PATTERNS.each { |pattern| out = apply(pattern, out) }
-      out
+      scan_patterns(out)
     end
 
     # The known-credential set, as [value, label] pairs ordered longest-first so
@@ -306,6 +356,46 @@ module TranscriptRedactor
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
+    # Run every pattern over the text, and never raise while doing it.
+    #
+    # SCAN_TIMEOUT is sized so that this path does not fire on any transcript
+    # this system has produced. It exists because the alternative — letting
+    # `Regexp::TimeoutError` escape — is what #472 was: the poller rescues it,
+    # logs an ERROR, and drops the transcript update entirely, so one unscannable
+    # line costs the session every message that arrived with it.
+    #
+    # Two tiers, because the cost is almost never spread evenly. A timeout means
+    # one region of the text is pathological, so the first retry re-runs the
+    # patterns line by line: every other line is scanned normally and only the
+    # offending one is left. That line is then replaced whole. Destroying one
+    # line of a transcript is worse than redacting it precisely and better than
+    # both of the alternatives, which are dropping the update and emitting a line
+    # no pattern was able to finish looking at.
+    def scan_patterns(text)
+      apply_patterns(text)
+    rescue Regexp::TimeoutError => e
+      Rails.logger.warn(
+        "[TranscriptRedactor] pattern scan exceeded #{SCAN_TIMEOUT}s over #{text.bytesize} bytes " \
+        "(#{e.class}); retrying line by line"
+      )
+      text.lines.map { |line| scan_line(line) }.join
+    end
+
+    def apply_patterns(text)
+      PATTERNS.reduce(text) { |carry, pattern| apply(pattern, carry) }
+    end
+
+    # The terminator is preserved, so the line count survives a line this
+    # redactor could not scan exactly as it survives one it could.
+    def scan_line(line)
+      apply_patterns(line)
+    rescue Regexp::TimeoutError
+      Rails.logger.warn(
+        "[TranscriptRedactor] redacting a #{line.bytesize}-byte line whole: no pattern pass finished within #{SCAN_TIMEOUT}s"
+      )
+      redacted_line("UNSCANNABLE_LINE", line)
+    end
+
     # Replace the lines of every well-formed multi-line PEM block, one marker
     # per line so the line count is untouched.
     #
@@ -322,7 +412,7 @@ module TranscriptRedactor
     # The BEGIN marker is a rare literal, so the whole walk is skipped with one
     # scan on the overwhelmingly common transcript that has no PEM in it.
     def redact_armored_private_keys(content)
-      return content unless content.match?(PRIVATE_KEY_BEGIN)
+      return content unless holds_private_key_marker?(content)
 
       lines = content.lines
       armored = Set.new
@@ -349,6 +439,16 @@ module TranscriptRedactor
       lines.each_with_index.map do |source, position|
         armored.include?(position) ? redacted_line("PRIVATE_KEY", source) : source
       end.join
+    end
+
+    # The only other regexp handed the whole transcript. It is a literal search
+    # (13 ms over 32 MB), so reaching SCAN_TIMEOUT here is not a thing that can
+    # happen — but the answer on timeout is "walk", not "skip". Skipping is the
+    # optimization; skipping when a key IS there would be a leak.
+    def holds_private_key_marker?(content)
+      content.match?(PRIVATE_KEY_BEGIN)
+    rescue Regexp::TimeoutError
+      true
     end
 
     def find_private_key_end(lines, begin_index)

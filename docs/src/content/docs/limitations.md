@@ -573,6 +573,14 @@ gap is worth naming precisely:
   Today every one of them is (`SLACK_BOT_TOKEN`, `STRAD_API_KEY`, `ZIMMER_PROD_API_KEY`). The first
   externalized-but-not-secret variable — an org slug, a model id, a base URL — will start being scrubbed
   out of every transcript that mentions it.
+- **A line the patterns cannot finish scanning is destroyed rather than redacted.** The rules carry
+  their own 10-second timeout instead of Rails' global one-second cap, which no transcript this system
+  has produced comes close to (a 32 MB one redacts in ~7.6 s). If one is reached anyway, the pass
+  retries line by line and replaces the offending line with `[REDACTED:UNSCANNABLE_LINE]` — the line
+  count survives, nothing unscanned is emitted, and that line's content is gone. It is the least bad of
+  three bad options; the other two are dropping the whole transcript update, which is what
+  [#472](https://github.com/tadasant/zimmer/issues/472) was, and emitting a line no pattern finished
+  looking at.
 
 None of this changes what a transcript is. Do not treat one as safe to expose because it has been
 through the redactor; the endpoint serving it still has no authorization check, and redaction lowers the

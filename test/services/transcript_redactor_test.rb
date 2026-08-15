@@ -359,4 +359,124 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
       assert_includes redacted, "[REDACTED:ANTHROPIC_OAUTH_TOKEN]"
     end
   end
+
+  # --- The global regexp cap must not be able to abort a scan ---------------
+  #
+  # Rails 8 sets `Regexp.timeout = 1` process-wide. A transcript is megabytes, so
+  # a single search reaches that cap on a large enough one — measured on a real
+  # 32 MB transcript, DB_CONNECTION_STRING's gap scan raised at exactly 1.000 s
+  # and ENV_SECRET's 3.5 MB match at 2.2 s. The error escaped
+  # `TranscriptSource#read` into the poller, which dropped the whole transcript
+  # update and paged `#alerts` (#472).
+  #
+  # These tests shrink the cap instead of growing the fixture: the failure mode
+  # is "the global cap aborts the scan", and a 1 ms cap over a small transcript
+  # exercises it exactly, in milliseconds rather than by materializing tens of
+  # megabytes in CI.
+
+  # Redaction shapes that must survive the whole exercise, in a transcript big
+  # enough that every pattern has real text to scan through.
+  def transcript_with_credentials(padding_bytes: 512 * 1024)
+    filler = %({"type":"assistant","message":{"content":[{"type":"text","text":"#{'ordinary transcript output. ' * 40}"}]}}\n)
+    [
+      %({"type":"user","content":"key sk-ant-oat01-#{'A1b2C3d4E5' * 4}"}\n),
+      filler * (padding_bytes / filler.bytesize),
+      %(  remote: https://x-access-token:ghs_abcdefghijklmnop@github.com/tadasant/zimmer.git\n),
+      %(  RAILS_MASTER_KEY=0123456789abcdef0123456789abcdef\n),
+      %(  -H "Authorization: Bearer abcdef0123456789abcdef0123456789"\n)
+    ].join
+  end
+
+  def with_regexp_timeout(seconds)
+    previous = Regexp.timeout
+    Regexp.timeout = seconds
+    yield
+  ensure
+    Regexp.timeout = previous
+  end
+
+  test "every pattern carries its own timeout so the global cap cannot abort it" do
+    TranscriptRedactor::PATTERNS.each do |pattern|
+      assert_equal TranscriptRedactor::SCAN_TIMEOUT, pattern.regexp.timeout,
+        "#{pattern.label} is still on the global Regexp.timeout, which a large transcript reaches"
+    end
+
+    [ :PRIVATE_KEY_BEGIN, :PRIVATE_KEY_END, :PRIVATE_KEY_BODY_LINE ].each do |name|
+      assert_equal TranscriptRedactor::SCAN_TIMEOUT, TranscriptRedactor.const_get(name).timeout,
+        "#{name} is matched against a whole transcript or a whole line and must carry its own timeout"
+    end
+  end
+
+  test "a transcript still redacts when the global regexp cap is far below the cost of scanning it" do
+    content = transcript_with_credentials
+
+    redacted = TranscriptRedactor.stub(:known_secrets, []) do
+      with_regexp_timeout(0.001) { TranscriptRedactor.redact(content) }
+    end
+
+    assert_includes redacted, "[REDACTED:ANTHROPIC_OAUTH_TOKEN]"
+    assert_includes redacted, "[REDACTED:URL_CREDENTIALS]"
+    assert_includes redacted, "[REDACTED:ENV_SECRET]"
+    assert_includes redacted, "[REDACTED:BEARER_TOKEN]"
+    assert_equal content.lines.length, redacted.lines.length
+  end
+
+  test "the global cap changes nothing about what is redacted" do
+    content = transcript_with_credentials
+
+    TranscriptRedactor.stub(:known_secrets, []) do
+      under_production_cap = with_regexp_timeout(1) { TranscriptRedactor.redact(content) }
+      under_no_cap = with_regexp_timeout(nil) { TranscriptRedactor.redact(content) }
+
+      assert_equal under_no_cap, under_production_cap
+    end
+  end
+
+  # --- Degrading rather than raising ----------------------------------------
+
+  test "a pattern pass that times out retries line by line and still redacts the rest" do
+    content = "sk-ant-oat01-#{'A1b2C3d4E5' * 4}\nUNSCANNABLE\nghp_#{'a1B2c3D4e5' * 4}\n"
+    original = TranscriptRedactor.method(:apply_patterns)
+    # Times out on the whole transcript (it contains the poison line) but
+    # succeeds on each line that does not.
+    scanner = lambda do |text|
+      raise Regexp::TimeoutError, "regexp match timeout" if text.include?("UNSCANNABLE") && text.lines.length > 1
+
+      original.call(text)
+    end
+
+    TranscriptRedactor.stub(:known_secrets, []) do
+      TranscriptRedactor.stub(:apply_patterns, scanner) do
+        redacted = TranscriptRedactor.redact(content)
+
+        assert_includes redacted, "[REDACTED:ANTHROPIC_OAUTH_TOKEN]"
+        assert_includes redacted, "[REDACTED:GITHUB_TOKEN]"
+        assert_includes redacted, "UNSCANNABLE"
+        assert_equal content.lines.length, redacted.lines.length
+      end
+    end
+  end
+
+  test "a line no pattern pass can finish is replaced whole rather than emitted or dropped" do
+    content = "ok before\nPOISON secret-looking-value\nok after\n"
+    original = TranscriptRedactor.method(:apply_patterns)
+    scanner = lambda do |text|
+      raise Regexp::TimeoutError, "regexp match timeout" if text.include?("POISON")
+
+      original.call(text)
+    end
+
+    TranscriptRedactor.stub(:known_secrets, []) do
+      TranscriptRedactor.stub(:apply_patterns, scanner) do
+        redacted = TranscriptRedactor.redact(content)
+
+        refute_includes redacted, "POISON"
+        assert_includes redacted, "[REDACTED:UNSCANNABLE_LINE]"
+        assert_includes redacted, "ok before"
+        assert_includes redacted, "ok after"
+        assert_equal content.lines.length, redacted.lines.length
+        assert redacted.end_with?("\n")
+      end
+    end
+  end
 end
