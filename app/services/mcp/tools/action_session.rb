@@ -117,7 +117,7 @@ module Mcp
         - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
         - **fork**: Fork a session from a specific transcript message (requires "message_index")
-        - **regenerate_status_summary**: Rewrite the session's Status blurb — the 2-3 sentence "where things stand" shown at the top of its detail page, and returned by get_session. Forced: it regenerates even when Zimmer considers the cached blurb current. Zimmer writes this automatically when a session comes to rest (needs_input or failed) and at no other time, so reach for this only when you need a summary of a session that has NOT changed status since its last one — never in a loop, and never to poll: it forks the session and spends a full agent turn.
+        - **regenerate_status_summary**: Rewrite the session's Status blurb — the 2-3 sentence "where things stand" shown at the top of its detail page, and returned by get_session. Forced: it regenerates even when Zimmer considers the cached blurb current. Zimmer writes this automatically when a session comes to rest (needs_input or failed) and at no other time, so reach for this only when you need a summary of a session that has NOT changed status since its last one — never in a loop, and never to poll: it forks the session and spends a full agent turn. An archived session is a normal candidate — what the fork needs is the session's clone, which outlives the archive; once that clone has been reclaimed this errors with the reason instead of queuing work that cannot run.
         - **refresh**: Refresh a single session's status from the execution provider
         - **refresh_all**: Refresh all active sessions (no session_id needed)
         - **update_notes**: Update the notes on a session (requires "session_notes")
@@ -783,6 +783,13 @@ module Mcp
       # than run inline: generation forks the session and waits on a whole agent
       # turn, which is far longer than a tool call should block.
       def regenerate_status_summary(session)
+        # Refused up front rather than by the job, which has nowhere to report a
+        # refusal to. An archived session is fine — a session whose clone has
+        # been reclaimed is not, and the caller is told which it hit instead of
+        # being handed a queued job that declines in silence.
+        unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: session)
+        raise ToolError, unavailable.message if unavailable
+
         SessionStatusSummaryJob.perform_later(session.id, force: true)
 
         [

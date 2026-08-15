@@ -454,7 +454,18 @@ class Api::V1::SessionsController < Api::BaseController
   # Rewrite the session's Status blurb. Forced — it regenerates even when the
   # cached blurb is current — and asynchronous, because generation forks the
   # session and spends a whole agent turn.
+  #
+  # An archived session is a normal candidate — what generation needs is a clone
+  # to fork, and that outlives the archive. When the clone HAS been reclaimed the
+  # answer is 422 with the reason, not a 202 for work that will never run.
   def regenerate_status_summary
+    unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: @session)
+
+    if unavailable
+      render_api_error("Cannot regenerate status summary", unavailable.message, status: :unprocessable_entity)
+      return
+    end
+
     SessionStatusSummaryJob.perform_later(@session.id, force: true)
 
     render json: {
