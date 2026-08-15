@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
+require "ostruct"
 
 class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
   setup do
@@ -775,5 +777,120 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
 
   test "requires an action" do
     assert_raises(Mcp::ToolError) { @tool.call({}) }
+  end
+
+  # invoke — firing a trigger by hand, the MCP half of POST /triggers/:id/invoke
+  # ---------------------------------------------------------------------------
+
+  def stub_session_creation
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+  end
+
+  test "the schema and the description both offer invoke" do
+    assert_includes Mcp::Tools::ActionTrigger::ACTIONS, "invoke"
+    schema = Mcp::Tools::ActionTrigger.input_schema.to_h
+    assert_includes schema.dig(:properties, :action, :enum), "invoke"
+    assert schema.dig(:properties, :variables), "variables must be part of the tool's contract"
+    assert_match(/\*\*invoke\*\*/, Mcp::Tools::ActionTrigger.description)
+  end
+
+  test "invoke fires the trigger: a session is linked to it and the fire counter moves" do
+    stub_session_creation
+    trigger = triggers(:enabled_slack_trigger)
+    before_count = trigger.sessions_created_count
+
+    output = nil
+    assert_difference("Session.count", 1) do
+      output = @tool.call("action" => "invoke", "id" => trigger.id)
+    end
+
+    session = Session.last
+    assert_equal trigger.id.to_s, session.metadata["trigger_id"].to_s
+    assert_equal before_count + 1, trigger.reload.sessions_created_count
+
+    assert_includes output, "## Trigger Invoked"
+    assert_includes output, "- **Trigger:** #{trigger.id} — #{trigger.name}"
+    assert_includes output, "- **Session:** #{session.id}"
+    assert_includes output, "/sessions/#{session.id}"
+    assert_includes output, "- **Sessions Created (lifetime):** #{before_count + 1}"
+  end
+
+  test "invoke interpolates the variables it is given" do
+    stub_session_creation
+    trigger = triggers(:enabled_slack_trigger)
+
+    @tool.call(
+      "action" => "invoke",
+      "id" => trigger.id,
+      "variables" => { "link" => "https://example.com/msg/9", "channel" => "eng-alerts", "nonsense" => "dropped" }
+    )
+
+    session = Session.last
+    assert_includes session.prompt, "https://example.com/msg/9"
+    assert_includes session.prompt, "#eng-alerts"
+    assert_not_includes session.prompt, "dropped"
+  end
+
+  test "a session invoked over MCP carries the api genesis" do
+    stub_session_creation
+
+    @tool.call("action" => "invoke", "id" => triggers(:enabled_slack_trigger).id)
+
+    assert_equal SessionGenesis::API, Session.last.genesis
+  end
+
+  test "invoke fires a disabled trigger without re-arming it" do
+    stub_session_creation
+    trigger = triggers(:disabled_slack_trigger)
+
+    assert_difference("Session.count", 1) do
+      @tool.call("action" => "invoke", "id" => trigger.id)
+    end
+
+    assert_equal "disabled", trigger.reload.status
+  end
+
+  test "invoke says so when the burst cap left nothing to create" do
+    stub_session_creation
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(max_sessions_per_minute: 1)
+
+    @tool.call("action" => "invoke", "id" => trigger.id)
+
+    notice = @tool.call("action" => "invoke", "id" => trigger.id)
+    assert_includes notice, "## Trigger Invoked — Burst Notice"
+    assert_match(/burst-notice session it spawned instead/, notice)
+
+    suppressed = nil
+    assert_no_difference("Session.count") do
+      suppressed = @tool.call("action" => "invoke", "id" => trigger.id)
+    end
+    assert_includes suppressed, "## Trigger Not Fired"
+    assert_match(/is in a burst/, suppressed)
+  end
+
+  test "invoke requires an id" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "invoke") }
+
+    assert_match(/"id" is required for the "invoke" action/, error.message)
+  end
+
+  test "invoke is blocked when the trigger's agent root is outside the allow list" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    before_sessions = Session.count
+    error = assert_raises(Mcp::ToolError) do
+      restricted_tool("pulsemcp").call("action" => "invoke", "id" => trigger.id)
+    end
+
+    assert_match(/not permitted/, error.message)
+    assert_equal before_sessions, Session.count, "a restricted connection must not fire another root's trigger"
   end
 end

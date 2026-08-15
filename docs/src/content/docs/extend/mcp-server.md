@@ -110,8 +110,8 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
   `[]`: on an unrestricted connection an explicit empty array is a valid request for no servers
   ([omitted vs `[]`](/air/agent-roots/#omitting-a-list-is-not-the-same-as-asking-for-an-empty-one)),
   but here it is a removal and is rejected unless the root has no defaults to begin with.
-- `action_trigger` may only create, update, delete, or toggle triggers on an allowed root, and
-  `search_triggers` only shows those.
+- `action_trigger` may only create, update, delete, toggle, or invoke triggers on an allowed root,
+  and `search_triggers` only shows those.
 - `action_session`'s `change_mcp_servers` — and `change_plugins`, since plugins can bundle MCP
   servers — are refused outright.
 - `wake_me_up_when_session_changes_state` refuses to watch a session outside the allowed roots. (A
@@ -197,7 +197,7 @@ curated `self_session` set does not include it. See
 
 The action tools are verb-multiplexers: `action_session` takes an `action` enum (`follow_up`,
 `pause`, `restart`, `archive`, `unarchive`, `fork`, `change_model`, …), `action_trigger` takes
-`create` / `update` / `delete` / `toggle`, and so on. `tools/list` carries the full schema for each —
+`create` / `update` / `delete` / `toggle` / `invoke`, and so on. `tools/list` carries the full schema for each —
 ask the server rather than trusting this table.
 
 `action_trigger` reaches parity with the conditions the triggers form and the REST API can express.
@@ -215,6 +215,14 @@ explicit (`{"id": 123, "remove": true}`). That asymmetry is deliberate — a Sla
 the keys an incoming configuration omits. Replace semantics would destroy the row and its cursors
 with it, silently re-baselining a live trigger. Fetching a trigger by id through `search_triggers`
 prints each condition's id, which is what the array addresses.
+
+`action_trigger`'s `invoke` fires a trigger now, without waiting for a condition to match — the MCP
+half of `POST /api/v1/triggers/:id/invoke`, and the same fire the **Run Now** button on the trigger
+page performs. Pass `variables` to fill in the template's placeholders. The session is linked to the
+trigger and counts toward its fire counter, a `disabled` trigger can still be invoked (and is not
+re-armed by it), and the trigger's [burst cap](/sessions/triggers/#burst-control) still applies — over
+it the tool returns the burst-notice session, or reports that nothing was created. See [firing a
+trigger by hand](/sessions/triggers/#firing-a-trigger-by-hand).
 
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,

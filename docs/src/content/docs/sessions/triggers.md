@@ -604,6 +604,30 @@ cleared by any clean poll). Every condition stuck on it stamps no heartbeat at a
 [background jobs](/operate/background-jobs/#trigger-poll-liveness).
 :::
 
+## Firing a trigger by hand
+
+A trigger does not have to wait for a condition. All three surfaces can fire one now:
+
+- **Web UI** — the **Run Now** button on the trigger page, which opens a panel with an input per
+  `{{variable}}` the template names.
+- **REST** — `POST /api/v1/triggers/:id/invoke`, with an optional `variables` object.
+- **MCP** — `action_trigger` with `action: "invoke"`, taking the same `variables` object.
+
+All three go through `Triggers::ManualFire` into `Trigger#create_session!`, the same chokepoint a
+poller-driven fire uses. So a manual fire is a real fire: the session is linked to the trigger,
+counts toward its fire counter, heals stale catalog references, reuses the target session if the
+trigger is a reuse trigger, and is subject to the [burst cap](#burst-control) — over it, you get a
+burst-notice session or nothing at all, and each surface says which.
+
+A **disabled** trigger can still be invoked by hand, from any of the three. `status` governs whether
+the trigger's own conditions fire it, not whether a person or an agent may; invoking one is how you
+test a trigger before enabling it, and it does not re-arm it.
+
+The one thing that differs is the session's [genesis](/sessions/spot-and-priority/#genesis): the
+button stamps `web_ui`, because a human clicked it, and the REST and MCP paths stamp `api`, because
+an agent called them. Neither takes the genesis the trigger's conditions would derive — no condition
+matched.
+
 ## Scheduling class
 
 A trigger can say whether its sessions are **spot** or **priority**
