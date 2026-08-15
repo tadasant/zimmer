@@ -11,7 +11,7 @@ export default class extends Controller {
     "slackConfig", "scheduleConfig", "aoEventConfig",
     "githubConfig", "githubLabelFields", "githubIssueFields",
     "channelSelect", "channelStatus", "channelId", "channelName",
-    "channelManual", "channelManualInput",
+    "channelManual", "channelManualInput", "slackChannelField", "slackEventTypeSelect",
     "unitSelect", "dayOfWeekContainer", "timeContainer", "timezoneContainer",
     "scheduleModeRadio", "recurringFields", "oneTimeFields", "scheduledAtInput",
     "destroyField", "conditionNumber",
@@ -47,6 +47,10 @@ export default class extends Controller {
       const typeSelect = card.querySelector("[data-trigger-form-target='conditionTypeSelect']")
       this.updateGithubFieldsInCard(card, typeSelect ? typeSelect.value : "")
 
+      // Initialize the Slack channel field's visibility for the saved event type
+      const eventTypeSelect = card.querySelector("[data-trigger-form-target='slackEventTypeSelect']")
+      if (eventTypeSelect) this.applySlackEventType(card, eventTypeSelect.value)
+
       // Lazily load the channel dropdown for any card whose Slack config is already visible
       this.maybeLoadChannels(card)
     })
@@ -78,6 +82,36 @@ export default class extends Controller {
 
     // Lazily load the channel list the first time this card's Slack config is shown
     if (type === "slack") this.loadChannelsForCard(card)
+  }
+
+  // Handle the Slack event-type select changing within a condition card
+  handleSlackEventTypeChange(event) {
+    const card = event.target.closest("[data-trigger-form-target='conditionCard']")
+    if (!card) return
+
+    this.applySlackEventType(card, event.target.value)
+  }
+
+  // dm_message watches DM conversations and never a channel, so hide the picker
+  // for it -- and blank the hidden inputs behind the picker, not just the widget.
+  //
+  // Hiding alone would leave a channel_id on the submitted configuration that the
+  // poller never reads: a record that looks configured for a channel it ignores,
+  // and a stale value that silently reappears if the type is switched back. The
+  // other channel-optional types (bot_mention, the passive listeners) genuinely
+  // use channel_id when it is set, so this is deliberately scoped to dm_message.
+  applySlackEventType(card, eventType) {
+    const field = card.querySelector("[data-trigger-form-target='slackChannelField']")
+    if (!field) return
+
+    const dmOnly = eventType === "dm_message"
+    field.classList.toggle("hidden", dmOnly)
+    if (!dmOnly) return
+
+    const channelId = card.querySelector("[data-trigger-form-target='channelId']")
+    const channelName = card.querySelector("[data-trigger-form-target='channelName']")
+    if (channelId) channelId.value = ""
+    if (channelName) channelName.value = ""
   }
 
   // Show/hide the GitHub fields for a card, and disable the ones that are hidden.
@@ -411,14 +445,17 @@ export default class extends Controller {
               <p class="mt-1 text-xs text-gray-500">Enter the channel ID directly. Find it in the channel's details in Slack, or in the channel URL.</p>
             </div>
             <button type="button" data-action="click->trigger-form#toggleChannelManual" class="mt-1 text-xs text-indigo-600 hover:text-indigo-500">Enter channel ID manually</button>
-            <p class="mt-1 text-xs text-gray-500">For "Bot mention" and the passive-listening types, leave the channel blank to monitor all channels the bot is in (plus DMs, for "Bot mention").</p>
+            <p class="mt-1 text-xs text-gray-500">For "Bot mention" and the passive-listening types, leave the channel blank to monitor all channels the bot is in (plus DMs, for "Bot mention"). "Direct message" ignores the channel entirely — it watches DMs only.</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Event Type</label>
             <select name="${name}[configuration][event_type]"
+                    data-trigger-form-target="slackEventTypeSelect"
+                    data-action="change->trigger-form#handleSlackEventTypeChange"
                     class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
               <option value="new_message">New message - All messages in channel</option>
               <option value="bot_mention">Bot mention - @mentions and DMs from allowed users</option>
+              <option value="dm_message">Direct message - Any DM to Zimmer (allow-list applies)</option>
               <option value="passive_listen_thread">Passive listen: threads - Replies in threads Zimmer has joined, no @mention needed</option>
               <option value="passive_listen_channel">Passive listen: channels - Messages in channels Zimmer posted in recently</option>
             </select>

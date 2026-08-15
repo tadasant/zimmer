@@ -1079,6 +1079,103 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_empty condition.reload.dm_timestamps
   end
 
+  # --- dm_message: the DM half of bot_mention, on its own -------------------
+
+  def stub_dm_message_condition(allowed_user_ids: nil)
+    condition = stub_bot_mention_condition(allowed_user_ids: allowed_user_ids)
+    config = condition.configuration.merge("event_type" => "dm_message")
+    # A dm_message condition watches no channel. The fixture it is built from is
+    # channel-scoped, so drop that here rather than leaving a channel the type
+    # ignores -- otherwise the test would not notice if it started polling it.
+    config.delete("channel_id")
+    config.delete("channel_name")
+    condition.configuration = config
+    condition.save!
+    condition
+  end
+
+  test "a dm_message condition polls DMs" do
+    condition = stub_dm_message_condition(allowed_user_ids: %w[U222])
+
+    SlackService.expects(:list_dm_channels).with(user_ids: %w[U222]).returns([])
+
+    SlackTriggerPollerJob.new.send(:process_condition, condition)
+  end
+
+  test "a dm_message condition polls no channel at all" do
+    condition = stub_dm_message_condition
+    SlackService.stubs(:list_dm_channels).returns([])
+
+    # The two channel-side entry points. bot_mention would call one of them; this
+    # type must call neither, whatever a leftover channel_id says.
+    SlackService.expects(:list_member_channels).never
+    SlackService.expects(:get_messages_since).never
+
+    SlackTriggerPollerJob.new.send(:process_condition, condition)
+    assert_not_nil condition.reload.last_polled_at
+  end
+
+  test "a dm_message condition fires on a plain DM with no @mention" do
+    condition = stub_dm_message_condition
+    condition.update!(configuration: condition.configuration.merge("dm_timestamps" => { "U222" => "1000.000000" }))
+
+    SlackService.stubs(:list_dm_channels).returns([ OpenStruct.new(id: "D222", user: "U222") ])
+    SlackService.stubs(:get_messages_since).returns([
+      OpenStruct.new(ts: "2000.000000", text: "hey can you look at this", user: "U222", bot_id: nil, thread_ts: nil)
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    assert_equal "2000.000000", condition.reload.dm_timestamps["U222"]
+  end
+
+  # Enumeration is the ONLY gate on the DM path: there is no user_allowed? check
+  # behind it. So this pins the enforcement where it actually lives -- a condition
+  # asks for exactly its allowed users' conversations -- rather than asserting a
+  # filter that does not exist. Hand it an unlisted user's DM anyway and it WOULD
+  # fire, which is why an unset allow-list means "everyone" (see limitations.md).
+  test "a dm_message condition asks Slack only for its allowed users' DMs" do
+    condition = stub_dm_message_condition(allowed_user_ids: %w[U999])
+
+    SlackService.expects(:list_dm_channels).with(user_ids: %w[U999]).returns([])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+  end
+
+  test "the DM conversation list is fetched once per poll, not once per condition" do
+    first = stub_dm_message_condition
+    second = stub_dm_message_condition
+
+    # bot_mention and dm_message both reach process_dm_messages, and list_dm_channels
+    # paginates every IM the bot has. Two conditions sharing an allow-list must not
+    # walk those pages twice on a singleton poller.
+    SlackService.expects(:list_dm_channels).with(user_ids: nil).once.returns([])
+
+    job = SlackTriggerPollerJob.new
+    job.send(:process_condition, first)
+    job.send(:process_condition, second)
+  end
+
+  test "a dm_message condition never fires on the bot's own message in a DM" do
+    condition = stub_dm_message_condition
+    condition.update!(configuration: condition.configuration.merge("dm_timestamps" => { "U222" => "1000.000000" }))
+
+    SlackService.stubs(:list_dm_channels).returns([ OpenStruct.new(id: "D222", user: "U222") ])
+    SlackService.stubs(:get_messages_since).returns([
+      OpenStruct.new(ts: "2000.000000", text: "on it", user: "U_BOT_123", bot_id: nil, thread_ts: nil)
+    ])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    # The cursor still advances past the bot's own message -- it is seen, just not
+    # acted on -- so the next poll does not re-read it.
+    assert_equal "2000.000000", condition.reload.dm_timestamps["U222"]
+  end
+
   private
 
   # A bot_mention condition on a single channel, with Slack and session-creation

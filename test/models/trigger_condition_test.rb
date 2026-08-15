@@ -68,7 +68,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "slack condition validates event_type if present" do
     @slack_condition.configuration["event_type"] = "invalid_event"
     assert_not @slack_condition.valid?
-    assert_includes @slack_condition.errors[:configuration], "event_type must be one of: new_message, bot_mention, passive_listen_thread, passive_listen_channel, passive_listen"
+    assert_includes @slack_condition.errors[:configuration], "event_type must be one of: new_message, bot_mention, dm_message, passive_listen_thread, passive_listen_channel, passive_listen"
   end
 
   # thread_ts (thread-scoped new_message) tests
@@ -352,6 +352,37 @@ class TriggerConditionTest < ActiveSupport::TestCase
   end
 
   # Scopes
+  test "a dm_message condition is valid without a channel_id" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "slack",
+      configuration: { "event_type" => "dm_message" }
+    )
+
+    assert_predicate condition, :valid?
+  end
+
+  test "a dm_message condition rejects thread_ts, which has nothing to scope" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "slack",
+      configuration: { "channel_id" => "C1", "event_type" => "dm_message", "thread_ts" => "123.456" }
+    )
+
+    assert_not condition.valid?
+    assert_includes condition.errors[:configuration], "thread_ts is not supported for dm_message conditions"
+  end
+
+  test "dm_message describes itself as a DM watcher, not a channel one" do
+    condition = TriggerCondition.new(
+      trigger: triggers(:enabled_slack_trigger),
+      condition_type: "slack",
+      configuration: { "event_type" => "dm_message", "allowed_user_ids" => %w[U1 U2] }
+    )
+
+    assert_equal "Slack: DMs to Zimmer from 2 allowed user(s)", condition.description
+  end
+
   test "slack scope returns only slack conditions" do
     slack_conditions = TriggerCondition.slack
     assert slack_conditions.all? { |c| c.condition_type == "slack" }

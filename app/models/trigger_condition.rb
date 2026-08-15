@@ -7,10 +7,12 @@
 # Condition types:
 # - "slack": Fires when a new message is posted in a Slack channel. `event_type`
 #     picks the flavour: "new_message" (everything in one channel), "bot_mention"
-#     (@mentions + DMs), "passive_listen_thread" (replies in threads Zimmer has
-#     participated in), or "passive_listen_channel" (top-level messages in channels
-#     Zimmer posted in recently). The last two are separate conditions on purpose:
-#     a Trigger ORs its conditions, so carrying both is how you get "either".
+#     (@mentions + DMs), "dm_message" (DMs only — the DM half of bot_mention,
+#     without the channel half), "passive_listen_thread" (replies in threads Zimmer
+#     has participated in), or "passive_listen_channel" (top-level messages in
+#     channels Zimmer posted in recently). The passive pair are separate conditions
+#     on purpose: a Trigger ORs its conditions, so carrying both is how you get
+#     "either".
 # - "schedule": Fires on a time-based schedule (recurring or one-time)
 #     Recurring: { "unit" => "hours", "interval" => 2, "timezone" => "UTC" }
 #     One-time:  { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "America/New_York" }
@@ -39,12 +41,17 @@ class TriggerCondition < ApplicationRecord
   # steps are in https://github.com/tadasant/zimmer/issues/253.
   DEPRECATED_EVENT_TYPES = %w[passive_listen].freeze
 
-  EVENT_TYPES = (%w[new_message bot_mention] + PASSIVE_EVENT_TYPES).freeze
+  EVENT_TYPES = (%w[new_message bot_mention dm_message] + PASSIVE_EVENT_TYPES).freeze
 
-  # Slack event types that monitor a whole workspace rather than one channel, so
+  # Slack event types that monitor many sources rather than one channel, so
   # channel_id is optional for them and their cursors live per-source inside
   # `configuration` instead of in last_message_ts.
-  ALL_CHANNEL_EVENT_TYPES = (%w[bot_mention] + PASSIVE_EVENT_TYPES).freeze
+  #
+  # `dm_message` qualifies for the same reason `bot_mention` does: it fans out
+  # across one DM conversation per allowed user, each with its own entry in
+  # `dm_timestamps`. There is no single "newest message" for the health check to
+  # measure staleness against, and a thread_ts would have nothing to scope.
+  ALL_CHANNEL_EVENT_TYPES = (%w[bot_mention dm_message] + PASSIVE_EVENT_TYPES).freeze
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
   AO_EVENT_NAMES = %w[session_needs_input session_failed session_archived].freeze
@@ -447,6 +454,8 @@ class TriggerCondition < ApplicationRecord
       case event_type
       when "bot_mention"
         channel_name.present? ? "Slack: @mention in ##{channel_name} + DMs" : "Slack: @mention in all channels + DMs"
+      when "dm_message"
+        allow_all_users? ? "Slack: DMs to Zimmer" : "Slack: DMs to Zimmer from #{allowed_user_ids.size} allowed user(s)"
       when "passive_listen_thread"
         scope = channel_name.present? ? "in ##{channel_name}" : "in all channels"
         "Slack: replies in threads Zimmer joined, #{scope}"

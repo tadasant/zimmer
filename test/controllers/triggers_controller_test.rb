@@ -26,13 +26,14 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "New Trigger"
   end
 
-  test "new form offers the two passive-listening event types, and not the deprecated one" do
+  test "new form offers the DM and passive-listening event types, and not the deprecated one" do
     get new_trigger_path
     assert_response :success
 
     assert_select "select[name=?]", "trigger[trigger_conditions_attributes][0][configuration][event_type]" do
       assert_select "option[value=passive_listen_thread]", 1
       assert_select "option[value=passive_listen_channel]", 1
+      assert_select "option[value=dm_message]", 1
       # The combined type still works for triggers that already name it, but a new
       # condition should never be created with it.
       assert_select "option[value=passive_listen]", 0
@@ -270,6 +271,36 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     condition = trigger.trigger_conditions.first
     assert_equal "slack", condition.condition_type
     assert_equal "bot_mention", condition.event_type
+  end
+
+  test "should create slack trigger with the dm_message event type and no channel" do
+    assert_difference("Trigger.count") do
+      post triggers_path, params: {
+        trigger: {
+          name: "DM Listener",
+          status: "enabled",
+          agent_root_name: "zimmer",
+          prompt_template: "Someone DM'd you: {{text}}",
+          mcp_servers: [],
+          trigger_conditions_attributes: [
+            {
+              condition_type: "slack",
+              configuration: {
+                channel_id: "",
+                channel_name: "",
+                event_type: "dm_message"
+              }
+            }
+          ]
+        }
+      }
+    end
+
+    trigger = Trigger.last
+    assert_redirected_to trigger_path(trigger)
+    condition = trigger.trigger_conditions.first
+    assert_equal "dm_message", condition.event_type
+    assert_equal "", condition.channel_id
   end
 
   test "should create slack trigger with a passive-listening event type and no channel" do

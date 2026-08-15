@@ -15,7 +15,7 @@ Conditions on a trigger are ORed. Any one firing fires the trigger.
 ```mermaid
 flowchart LR
     subgraph conditions["TriggerCondition"]
-        SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention |<br/>passive_listen_thread | passive_listen_channel)"]
+        SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention | dm_message |<br/>passive_listen_thread | passive_listen_channel)"]
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
         AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived"]
         GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
@@ -37,8 +37,9 @@ flowchart LR
 
 ### `slack`
 
-Polls a channel for `new_message`, `bot_mention`, or one of the two passive-listening event types.
-Optionally scoped to a thread (`thread_ts`) and an allowlist of user IDs.
+Polls a channel for `new_message`, `bot_mention`, or one of the two passive-listening event types —
+or, with `dm_message`, polls the bot's DMs instead of a channel. Optionally scoped to a thread
+(`thread_ts`) and an allowlist of user IDs.
 
 #### Picking the channel
 
@@ -51,7 +52,52 @@ API error, or a workspace the bot isn't in — the form falls back to a manual c
 trigger can still be created, and a saved channel that is no longer in the accessible list is kept
 selected rather than silently blanked.
 
-#### Who may trigger a `bot_mention` (or a passive listener)
+#### DMs: `dm_message`
+
+`dm_message` fires on **every message the bot receives in a DM** from a user the condition allows.
+It is the DM half of `bot_mention`, available on its own.
+
+That split is the whole feature. `bot_mention` has always polled DMs — unconditionally, with no
+mention required, because a DM is already addressed to the bot — but it polls them *as well as*
+@mentions in every channel the bot is in. So a trigger that should answer your DMs and nothing else
+could not be expressed: you had to accept a trigger anyone could fire from any channel. `dm_message`
+is that trigger.
+
+Mechanically it reuses the DM path `bot_mention` already had, so the semantics are the ones
+documented above and below: one cursor per conversation in `configuration.dm_timestamps`, the first
+poll baselines instead of replaying history, the bot's own messages never fire, and a DM with the
+bot itself is skipped outright. The allow-list is applied by **enumeration** rather than filtering —
+`SlackService.list_dm_channels` returns only the allowed users' conversations — which is why an
+unrestricted condition passes `nil` rather than an empty array, since "everyone" cannot be written as
+a list of IDs and an empty list means nobody. (It still paginates every IM and filters client-side,
+so the allow-list narrows what is polled, not what is fetched. The poller memoizes the result per
+run, keyed on the allow-list, so two conditions sharing one do not walk those pages twice.)
+
+Leave the channel blank; `dm_message` ignores `channel_id` entirely, and `thread_ts` is rejected
+(there is nothing for it to scope). `SlackTriggerHealthCheckJob` skips these conditions for the same
+reason it skips `bot_mention` — there is no single monitored source to measure staleness against.
+
+:::caution[A `dm_message` condition and a `bot_mention` condition both fire on the same DM]
+`bot_mention` covers DMs unconditionally, and `dm_message` deliberately applies no mention filter.
+Two conditions covering the same DM therefore each fire on it, spawning two sessions — and that
+holds whether they sit on two triggers or on the *same* one, which is the likelier mistake:
+`SlackTriggerPollerJob` iterates conditions, not triggers, and each one calls `create_session!`.
+Nothing dedupes them, because Zimmer cannot tell an accidental overlap from a deliberate one. Pick
+one per conversation.
+:::
+
+:::caution[The allow-list is open by default, and the form does not render it]
+`dm_message` inherits the [three allow-list layers](#who-may-trigger-a-bot_mention-or-a-passive-listener)
+below, including their default: **blank or unset means everyone**. No view renders
+`allowed_user_ids`, so a condition created in the Triggers form falls through to
+`SLACK_BOT_MENTION_ALLOWED_USER_IDS` — and if that is unset, any member of the workspace who opens a
+DM with the bot spawns a session. Enumeration is the only gate on the DM path; there is no
+second `user_allowed?` check behind it. Set the list through the API or the console, or set the env
+var, before pointing a `dm_message` trigger at anything consequential. See
+[the caveat](/limitations/#anyone-in-the-workspace-can-trigger-an-agent-via-bot-mention-by-default).
+:::
+
+#### Who may trigger a `bot_mention`, a `dm_message`, or a passive listener
 
 Three layers, most specific first:
 
