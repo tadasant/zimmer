@@ -325,6 +325,24 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal :unavailable, reason.outcome
   end
 
+  # The post-copy re-check, from the forced side. The copy SUCCEEDED, so there is
+  # a fork holding its own copy of the clone — the source reaching the trash
+  # during the copy costs that fork nothing, and an operator is waiting on it.
+  test "a forced generation whose session archives during a successful copy still dispatches the fork" do
+    session = @session
+    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+      session.update_column(:status, Session.statuses[:archived])
+      super(src, dest, exclude: exclude)
+    end
+
+    result = generate(force: true)
+
+    assert_equal :started, result.outcome
+    assert_not summary_fork.archived?, "the fork is dispatched, not abandoned"
+    assert_equal "pending", @session.reload.status_summary.state, "the claim is held, not released"
+    assert_equal summary_fork.id, @session.status_summary.fork_session_id
+  end
+
   # The race the pre-flight cannot close: the clone is there when the button is
   # pressed and gone by the time the job runs. The forced run records the reason
   # so the panel still resolves.

@@ -120,6 +120,19 @@ class Api::V1::SessionsControllerStatusSummaryTest < ActionDispatch::Integration
     assert_match "deleted when it went to the trash", response.body
   end
 
+  # 422 covers every structural refusal, not just the clone — a caller must not
+  # read 202 for a session that has nothing to fork for any reason.
+  test "regenerate_status_summary refuses a session with no transcript" do
+    @session.update_column(:transcript, nil)
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      post "/api/v1/sessions/#{@session.id}/regenerate_status_summary", headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_match "no transcript", response.body
+  end
+
   test "get_session's text-less states are distinguishable over MCP too" do
     SessionStatusSummary.create!(session: @session, state: "pending", requested_at: 1.minute.ago)
 

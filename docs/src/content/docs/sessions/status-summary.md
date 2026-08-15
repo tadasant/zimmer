@@ -250,7 +250,7 @@ The same capability is on the other two surfaces:
 
 - **MCP** — `action_session` with `"action": "regenerate_status_summary"`. Enqueued, not run inline:
   generation waits on a whole agent turn.
-- **REST** — `POST /api/v1/sessions/:id/regenerate_status_summary`, which returns `202 Accepted`.
+- **REST** — `POST /api/v1/sessions/:id/regenerate_status_summary`, which returns `202 Accepted` (or `422` with a reason — see below).
 
 And the summary is readable from both without generating anything: `get_session` renders a
 `### Status Summary` section with a freshness marker, and `GET /api/v1/sessions/:id` returns
@@ -264,25 +264,38 @@ happened — which is the question the panel answers. Refusing on `archived?` ma
 that panel dead, silently: the button was enabled, the panel flipped to "Generating", the job declined
 because the session was in the trash, and no new summary ever arrived.
 
-What generation actually needs is a **clone to fork**, and a clone outlives the archive — by the undo
-window, and by the whole trash-retention window when there was unpushed work Zimmer could not preserve
-into artifacts. So the check asks for the thing rather than for a status that correlates with it:
-`SessionStatusSummaryGenerator.unavailable_reason` answers whether a clone is still there, alongside
-the two other structural refusals (a session that is itself a summary fork, and one with no
-transcript).
+What generation actually needs is a **clone to fork**, so the check asks for the thing rather than for
+a status that correlates with it. `SessionStatusSummaryGenerator.unavailable_reason` answers whether
+a clone is still on disk, alongside the two other structural refusals (a session that is itself a
+summary fork, and one with no transcript).
 
 **All three surfaces ask it before they enqueue**, so a request that cannot produce a summary is
 answered with the reason instead of a job that declines where nobody can see it:
 
-| Surface | Clone still there | Clone reclaimed |
+| Surface | Something to fork | Nothing to fork |
 | --- | --- | --- |
 | Status panel | button live, panel flips to "Generating" | button disabled, panel says why |
 | `action_session` | `## Status Summary Regenerating` | tool error carrying the reason |
 | `POST /api/v1/sessions/:id/regenerate_status_summary` | `202 Accepted` | `422 Unprocessable Entity` with the reason |
 
+The right column covers all three structural refusals, not just the clone — a transcript-less session
+and a summary fork answer the same way.
+
 The pre-flight reads the session and stats the clone directory. It writes nothing and enqueues
 nothing, so the rule that **rendering the panel never generates** still holds — the panel calls it on
 every page view.
+
+**How often the left column actually applies is another matter.** `DeferredCloneCleanupJob` deletes an
+archived session's clone once the ten-second undo window closes — on the clean branch *and* on the
+branch that preserved unpushed artifacts first; only a session whose artifacts Zimmer failed to
+preserve keeps its clone for the trash-retention window. So the honest summary of this section is that
+an archived session is no longer *refused on principle*, and one archived minutes ago will still
+usually land in the right-hand column — with a sentence saying why, which is the part that was missing.
+See [Limitations](/limitations/#regenerating-an-archived-sessions-status-summary-usually-cannot-work--its-clone-is-already-gone).
+
+The narrow race the pre-flight cannot close is the clone going away between the click and the job. A
+forced run that hits it records the reason on the record rather than releasing its claim, so the panel
+resolves to *why* instead of spinning for the full `PENDING_TIMEOUT`.
 
 ## Failure and abandonment
 

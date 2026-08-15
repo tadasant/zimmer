@@ -30,10 +30,15 @@
 # The other refusal is structural: there has to be a clone to fork. That, and
 # not `archived?`, is what a forced generation checks — an archived session is a
 # finished session, and a finished session is exactly the one someone opens
-# later to ask what happened. Its clone outlives the archive by the undo window
-# and, when there was unpushed work Zimmer could not preserve, by the whole
-# trash-retention window; once the clone is gone the request is answered with a
-# reason (`outcome: :unavailable`) rather than a job that declines in silence.
+# later to ask what happened.
+#
+# Be clear-eyed about how far that gets you today. DeferredCloneCleanupJob
+# deletes an archived session's clone once the undo window (10 seconds) closes,
+# on both the clean branch and the artifacts-preserved one; only a session whose
+# unpushed work Zimmer failed to preserve keeps its clone for the trash-retention
+# window. So the live-clone case is narrow, and the common answer for a session
+# archived minutes ago is the refusal — `outcome: :unavailable`, carrying a reason
+# the operator can read, rather than a job that declines in silence.
 class SessionStatusSummaryGenerator
   # Marks a session as a summary fork. Read by SessionStateMachine (to route the
   # fork's pause into harvesting rather than into the user's action queue) and by
@@ -73,6 +78,10 @@ class SessionStatusSummaryGenerator
   def self.unavailable_reason(...) = new(...).unavailable_reason
 
   # The instance half of the class method above.
+  #
+  # A reason a FORCED run must resolve on the panel carries `:unavailable` — #call
+  # keys the failure it records off that symbol, so a new structural reason added
+  # here as `:skipped` would silently reintroduce the spinner this exists to kill.
   def unavailable_reason
     if session.status_summary_fork?
       Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
@@ -314,13 +323,22 @@ class SessionStatusSummaryGenerator
   # Whether there is still a clone to fork. The same two conditions
   # ForkSessionService validates, asked here so the answer is available before a
   # job is enqueued rather than only after one has quietly declined.
+  #
+  # `.to_s` because `metadata` is a JSON column: a non-string `clone_path` is
+  # representable there, and `File.directory?` answers a TypeError rather than
+  # false. This runs on the panel's render path and inside the panel broadcast,
+  # neither of which may raise over a malformed row.
   def source_clone_available?
-    clone_path = session.metadata&.dig("clone_path")
+    clone_path = session.metadata&.dig("clone_path").to_s
     return false if clone_path.blank?
 
     file_system.directory?(clone_path)
   end
 
+  # A separate ivar from `@file_system` deliberately: that one is passed on to
+  # ForkSessionService and TranscriptRuntime only when a caller supplied it, and
+  # both build their own default otherwise. Memoizing the default into it would
+  # start handing them an adapter they were never given.
   def file_system = @resolved_file_system ||= (@file_system || RealFileSystemAdapter.new)
 
   # Written for whoever is reading the Status panel, so it says what is gone and

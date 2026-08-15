@@ -204,6 +204,30 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     assert_match "deleted when it went to the trash", flash[:alert]
   end
 
+  # The two non-clone structural refusals reach the same exits, so the surfaces
+  # answer them the same way rather than only knowing about the trash.
+  test "regenerating a session with no transcript is refused with its own reason" do
+    @session.update_column(:transcript, nil)
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      post regenerate_status_summary_session_url(@session)
+    end
+
+    assert_match "no transcript", flash[:alert]
+  end
+
+  test "the json refusal carries the reason and an unprocessable status" do
+    @session.update_column(:status, Session.statuses[:archived])
+    FileUtils.remove_entry(@clone_path)
+
+    post regenerate_status_summary_session_url(@session), as: :json
+
+    assert_response :unprocessable_entity
+    body = JSON.parse(response.body)
+    assert_equal false, body["success"]
+    assert_match "deleted when it went to the trash", body["error"]
+  end
+
   # The turbo_stream response is what the button actually gets, and it must not
   # come back saying "Generating" for work that was never queued.
   test "the turbo response to a refused regenerate does not claim to be generating" do
