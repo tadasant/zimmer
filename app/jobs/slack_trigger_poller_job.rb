@@ -29,8 +29,8 @@
 #   apps' messages don't fire passively either — passive listening is for the
 #   conversation Zimmer is already in, not for feeds — and neither do @mentions,
 #   which belong to bot_mention (see #passive_candidate?).
-# - No DM polling: every DM to the bot is already directed at it, and a bot_mention
-#   condition covers DMs unconditionally.
+# - No DM polling: every DM to the bot is already directed at it, and both the
+#   bot_mention and dm_message condition types cover DMs unconditionally.
 class SlackTriggerPollerJob < ApplicationJob
   # Runs on the dedicated `pollers` queue (like every other *PollerJob), NOT on
   # `default`. A single poll is a long, external-API-bound unit of work: it makes
@@ -247,6 +247,8 @@ class SlackTriggerPollerJob < ApplicationJob
     case condition.event_type
     when "bot_mention"
       process_bot_mention_condition(condition)
+    when "dm_message"
+      process_dm_message_condition(condition)
     when *TriggerCondition::PASSIVE_EVENT_TYPES
       process_passive_listen_condition(condition)
     else
@@ -305,6 +307,25 @@ class SlackTriggerPollerJob < ApplicationJob
 
     # Part 2: Poll DM channels with allowed users
     process_dm_messages(condition, bot_id: bot_id)
+
+    condition.update!(last_polled_at: Time.current)
+  end
+
+  # Process a dm_message condition: every DM the bot receives from an allowed
+  # user fires the trigger.
+  #
+  # This is the DM half of bot_mention on its own, and it exists because the two
+  # were only ever available welded together. A trigger that should answer DMs and
+  # nothing else had to be a bot_mention condition, which also fires on @mentions
+  # in every channel the bot is in — so "let me DM Zimmer" cost you a trigger that
+  # anyone could fire from any channel.
+  #
+  # No mention filter, deliberately: a DM to the bot is already addressed to it,
+  # and requiring "@zimmer" inside a one-on-one conversation is a tax nobody
+  # would pay twice. That does mean a dm_message condition and a bot_mention
+  # condition watching the same conversation BOTH fire on it — pick one.
+  def process_dm_message_condition(condition)
+    process_dm_messages(condition, bot_id: SlackService.bot_user_id)
 
     condition.update!(last_polled_at: Time.current)
   end
@@ -811,7 +832,7 @@ class SlackTriggerPollerJob < ApplicationJob
   # would match no DMs at all -- "everyone" would silently become "nobody".
   def process_dm_messages(condition, bot_id:)
     user_ids = condition.allow_all_users? ? nil : condition.allowed_user_ids
-    dm_channels = SlackService.list_dm_channels(user_ids: user_ids)
+    dm_channels = dm_channels_for(user_ids)
 
     # Never poll a DM with ourselves (the unrestricted path lists every IM there is).
     dm_channels = dm_channels.reject { |dm_channel| dm_channel.user == bot_id }
@@ -996,6 +1017,24 @@ class SlackTriggerPollerJob < ApplicationJob
   rescue SlackService::SlackError => e
     Rails.logger.warn "[SlackTriggerPollerJob] No permalink for #{message_ts} in #{channel_id}: #{e.message}"
     nil
+  end
+
+  # The DM conversation list for one allow-list, memoized for this poll.
+  #
+  # `list_dm_channels` paginates every IM the bot has and filters client-side, so
+  # it is the most expensive call on the DM path — and now two condition types
+  # reach it (bot_mention and dm_message). A deployment that keeps its
+  # bot_mention condition and adds a dm_message one would otherwise walk the same
+  # pages twice a minute, on a singleton poller where one 429 defers polling for
+  # every trigger in the instance.
+  #
+  # Keyed on the allow-list, since that is what the result depends on. nil (every
+  # DM) and an explicit list are different queries and must not share an entry —
+  # hence the array key rather than a `.to_a` that would collapse nil into [].
+  def dm_channels_for(user_ids)
+    @dm_channel_cache ||= {}
+    key = user_ids.nil? ? :all : user_ids.sort
+    @dm_channel_cache[key] ||= SlackService.list_dm_channels(user_ids: user_ids)
   end
 
   def resolve_channel_name(channel_id)
