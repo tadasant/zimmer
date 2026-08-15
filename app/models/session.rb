@@ -819,6 +819,30 @@ class Session < ApplicationRecord
     merge_metadata!("last_user_activity_at" => Time.current.iso8601)
   end
 
+  # Resume this session because Zimmer restarted its process, not because anyone
+  # decided it should wake up.
+  #
+  # Every automatic recovery path (deployment restart, orphaned process,
+  # hung-process reap, health-monitor retry) resumes a session that may have been
+  # asleep on wake-up triggers. Going through `resume!` directly consumes those
+  # triggers, which is right for a deliberate resume and wrong here — see
+  # SessionStateMachine#system_recovery_resume. Recovery paths call this instead.
+  #
+  # The flag is cleared in an ensure block so it can never leak into a later,
+  # genuinely deliberate resume of the same in-memory instance.
+  #
+  # @return [Boolean] true when the session was resumed, false when it was not in
+  #   a resumable state
+  def resume_for_system_recovery!
+    return false unless may_resume?
+
+    self.system_recovery_resume = true
+    resume!
+    true
+  ensure
+    self.system_recovery_resume = false
+  end
+
   # Deliver a follow-up prompt to an idle (waiting / needs_input) session.
   #
   # Drop the stale per-turn state, transition to running, stamp the prompt where the

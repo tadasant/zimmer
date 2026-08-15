@@ -1903,7 +1903,7 @@ class AgentSessionJob < ApplicationJob
         metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
       )
 
-      session.resume! if session.may_resume?
+      session.resume_for_system_recovery!
 
       AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
 

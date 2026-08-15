@@ -111,6 +111,32 @@ Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
 cancels pending one-time wake-up triggers targeting this session, so a scheduled wake
 doesn't fire on a session you already resumed by hand.
 
+#### A system-recovery resume keeps the wake-ups
+
+That cancellation is right for a *deliberate* resume and wrong for a recovery one. When Zimmer
+restarts a session's process after an interruption — a deployment restart, an orphaned process, a
+hung process reaped, a health-monitor retry — the session did not choose to wake, so the wake-ups
+it was sleeping on are still exactly what it is waiting for. Consuming them there is how an
+orchestrator gets stranded: it comes back with nothing armed, ends its turn, and sits in
+`needs_input` indefinitely with children it was supposed to be watching.
+
+Recovery paths therefore call `Session#resume_for_system_recovery!` rather than `resume!`. It sets
+the transient `system_recovery_resume` flag for the duration of the transition, and
+`cancel_pending_one_time_wake_triggers` takes a preserve branch instead:
+
+- The pending conditions are **left armed** — nothing is consumed.
+- If one of them is a one-time *schedule* (a `wake_me_up_later` deadline backstop), `pending_sleep`
+  is set so the session returns to `waiting` once the recovery turn ends. A wall-clock wake fires
+  regardless of what else happens, so sleeping on it cannot strand the session.
+- If the only pending wakes are session-scoped `ao_event` watchers, the session comes to rest in
+  `needs_input` with those watchers still armed. A watched session may have reached the state being
+  watched for *during* the outage, and that transition is not replayed — so sleeping would trade a
+  long stall for an indefinite one. `Trigger#follow_up_session!` delivers to a `needs_input` session
+  just as well, and the operator can see it in the meantime.
+
+The invariant this restores: a session that was in `waiting` with wake-ups registered does not
+silently end up in `needs_input` with none.
+
 ### `sleep` — `needs_input → waiting`
 
 The "wake me up later" path. The session goes dormant and a one-time schedule trigger will
