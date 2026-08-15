@@ -255,8 +255,12 @@
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold text-gray-900">Filters</h2>
             <%# Drops the persisted choice and returns to the default view. %>
+            <%# Deleting the cookie is a state change, so Turbo's hover prefetch must
+                not fire it — a speculative GET would silently reset the user's
+                filters as the pointer passed over the link. %>
             <%= link_to "Reset filters", root_path(reset_filters: "1"),
                   id: "reset-filters",
+                  data: { turbo_prefetch: false },
                   class: "text-xs text-gray-500 hover:text-gray-900 underline whitespace-nowrap" %>
           </div>
 

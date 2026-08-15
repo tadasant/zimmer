@@ -166,7 +166,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Second session", title: "Beta Analysis")
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Third session", title: "Alpha Summary")
 
-    get root_url(q: "Alpha")
+    get root_url(every_status_params(q: "Alpha"))
     assert_response :success
 
     # Should find sessions with "Alpha" in title
@@ -185,7 +185,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Another session")
 
-    get root_url(q: "test-project")
+    get root_url(every_status_params(q: "test-project"))
     assert_response :success
 
     # Should find session with matching metadata
@@ -205,12 +205,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Session two")
 
     # Without search_contents, should not find by transcript
-    get root_url(q: "unique content", search_contents: "0")
+    get root_url(every_status_params(q: "unique content", search_contents: "0"))
     assert_response :success
     assert_match /No sessions found/, response.body
 
     # With search_contents, should find by transcript
-    get root_url(q: "unique content", search_contents: "1")
+    get root_url(every_status_params(q: "unique content", search_contents: "1"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 1
   end
@@ -226,22 +226,20 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     archived_session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Archived session", title: "Archived Test")
     archived_session.update!(status: :archived)
 
-    # An unfiltered search spans every status, so both sessions appear. Narrowing a
-    # search the user did not narrow would hide the trashed session they are looking
-    # for, which is the whole reason to search.
-    get root_url(q: "Test")
+    # Ticking nothing means every status, so a search spans both.
+    get root_url(every_status_params(q: "Test"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 2
 
-    # The user can narrow the search to one status afterwards.
+    # Naming one status narrows the same search to it.
     get root_url(every_status_params(q: "Test", status: [ "waiting" ]))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 1
 
-    # Ticking nothing means every status, so both come back.
-    get root_url(every_status_params(q: "Test"))
+    # And naming archived is how the trash is searched.
+    get root_url(every_status_params(q: "Test", status: [ "archived" ]))
     assert_response :success
-    assert_select "#sessions_grid turbo-frame", count: 2
+    assert_select "#sessions_grid turbo-frame", count: 1
   end
 
   test "should display search query in form" do

@@ -100,10 +100,25 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
     assert_cards [ @needs_input ]
   end
 
-  test "an unfiltered search spans every status" do
-    # The default would hide the trashed or running session the search is for, so an
-    # un-narrowed search widens instead.
+  test "the status filter still applies while searching" do
+    # The ticked boxes describe the result set in every view, search included. A rule
+    # that quietly widened a search would not be visible in the form, and the form is
+    # the only thing telling the user what they are looking at.
     get root_url(q: "Filterable")
+
+    assert_response :success
+    assert_cards [ @needs_input ]
+  end
+
+  test "searching the trash means naming archived in the filter" do
+    get root_url(filters: "1", status: %w[archived], q: "Filterable")
+
+    assert_response :success
+    assert_cards [ @archived ]
+  end
+
+  test "a search with no status ticked spans every status" do
+    get root_url(filters: "1", q: "Filterable")
 
     assert_response :success
     assert_cards [ @waiting, @running, @needs_input, @failed, @archived ]
@@ -116,6 +131,20 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
     get root_url(q: "Filterable")
     assert_response :success
     assert_cards [ @archived ]
+  end
+
+  test "the scheduling class filter keeps the category grid rather than flattening it" do
+    # It is a filter, not a search: it narrows the view you are in. Persisting it must
+    # not silently replace the category grid with the flat results list forever.
+    get root_url(filters: "1", priority_class: SessionGenesis::PRIORITY)
+    assert_response :success
+    assert_select "#category_sections", count: 1
+    assert_select "#search_results", count: 0
+
+    get root_url
+    assert_response :success
+    assert_select "#category_sections", count: 1
+    assert_select "#search_results", count: 0
   end
 
   private
