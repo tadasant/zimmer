@@ -118,21 +118,32 @@ module TranscriptRedactor
   # The cap that replaces the global `Regexp.timeout` for every regexp here that
   # can be handed a whole transcript or a whole transcript line.
   #
-  # It is a ReDoS backstop, not a latency budget. The rules in PATTERNS are
-  # hand-audited and linear in the text they scan; what they are not is *small*,
-  # because the text is not small. The slowest single search measured against
-  # production transcripts is 2.2 s (ENV_SECRET over a 3.5 MB base64 run), and a
-  # whole 32 MB transcript redacts in ~7.6 s. Ten seconds leaves the real work
-  # several times the room it needs while still killing a genuinely exponential
-  # backtrack in bounded time.
+  # It is a ReDoS backstop, not a latency budget, and — like the cap it replaces
+  # — it bounds one search rather than a whole `gsub`. So the number to compare
+  # it against is the slowest *single* search measured against production
+  # transcripts, 2.2 s: ENV_SECRET over a 3.5 MB base64 run. Ten seconds leaves
+  # that four times the room it needs while still killing a genuinely
+  # exponential backtrack in bounded time. It says nothing about how long
+  # .redact takes overall, which is a whole 32 MB transcript in ~7.6 s.
   #
   # The `preceded_by` regexps are deliberately left on the global cap: they only
   # ever run against a PRECEDING_WINDOW-byte slice.
-  SCAN_TIMEOUT = 10
+  SCAN_TIMEOUT = 10.0
 
   # Recompile with SCAN_TIMEOUT. A regexp's own timeout takes precedence over
-  # `Regexp.timeout`, and rebuilding from `source`/`options` is exact.
+  # `Regexp.timeout`.
+  #
+  # `source` plus `options` is a faithful round-trip for an ASCII-only pattern
+  # with no encoding flag, which every pattern in this file is. It is NOT
+  # faithful in general: `options` does not carry the fixed-encoding bit, so a
+  # `/u`, `/e` or `/s` pattern — or one with a non-ASCII literal in it — would
+  # come back out encoding-agnostic. Patterns get added here routinely, so that
+  # is a guard rather than a caveat in a comment.
   def self.bounded(regexp)
+    if regexp.fixed_encoding? || !regexp.source.ascii_only?
+      raise ArgumentError, "TranscriptRedactor.bounded cannot round-trip an encoding-bound pattern: #{regexp.inspect}"
+    end
+
     Regexp.new(regexp.source, regexp.options, timeout: SCAN_TIMEOUT)
   end
   private_class_method :bounded
@@ -290,8 +301,12 @@ module TranscriptRedactor
       # Multi-line PEM armor is the one shape that has to be found by walking
       # lines. Everything after it scans the whole string once per pattern: a
       # transcript is megabytes and is re-read on every poll, so paying per-line
-      # call overhead once per pattern per line is not affordable (measured at
-      # ~4x the whole-string cost).
+      # call overhead once per pattern per line is not affordable. How
+      # unaffordable depends on how long the lines are — measured over 4 MB, 3.1x
+      # the whole-string cost at 80 bytes a line, 2.2x at 400, 1.3x at 4 KB, and
+      # 1.1x on a real 15.5 MB transcript, whose lines average 3 KB. It is also
+      # what .scan_patterns falls back to, where paying it once beats dropping
+      # the update.
       out = redact_armored_private_keys(out)
 
       # Exact string search, not a regexp, so no timeout applies here at all.
@@ -371,6 +386,12 @@ module TranscriptRedactor
     # line of a transcript is worse than redacting it precisely and better than
     # both of the alternatives, which are dropping the update and emitting a line
     # no pattern was able to finish looking at.
+    #
+    # Both warnings below repeat on every poll for as long as the transcript
+    # holds the line, because the poller re-reads and re-redacts the whole file
+    # each time (#477). That is deliberate: a transcript this redactor cannot
+    # read is worth saying every time, and WARN is a severity below the one the
+    # alert rule watches.
     def scan_patterns(text)
       apply_patterns(text)
     rescue Regexp::TimeoutError => e
@@ -441,10 +462,22 @@ module TranscriptRedactor
       end.join
     end
 
-    # The only other regexp handed the whole transcript. It is a literal search
-    # (13 ms over 32 MB), so reaching SCAN_TIMEOUT here is not a thing that can
-    # happen — but the answer on timeout is "walk", not "skip". Skipping is the
-    # optimization; skipping when a key IS there would be a leak.
+    # The only other search handed the whole transcript. PRIVATE_KEY_BEGIN is a
+    # literal-prefixed alternation, so the engine seeks `-----BEGIN` rather than
+    # trying every offset — 13 ms over 32 MB — and reaching SCAN_TIMEOUT here is
+    # not a thing that can happen. It is rescued anyway because the answer on
+    # timeout is "walk", not "skip": skipping is the optimization, and skipping
+    # when a key IS there would be a leak.
+    #
+    # The walk's own per-line matches (this constant again, PRIVATE_KEY_END,
+    # PRIVATE_KEY_BODY_LINE) are not rescued. They are the same shape — literal
+    # prefix, or `\A`-anchored so a non-armor line fails at the first character
+    # — and they carry SCAN_TIMEOUT like everything else, so the cap #472 was
+    # about cannot reach them. What they do not have is a conservative answer
+    # that is the same at all four call sites: "assume a timeout means key
+    # material" closes a block at one and opens one at another. Rescuing them
+    # would mean four different fallbacks for a case none of them can hit, so
+    # the contract stops here — .scan_patterns is what cannot raise.
     def holds_private_key_marker?(content)
       content.match?(PRIVATE_KEY_BEGIN)
     rescue Regexp::TimeoutError

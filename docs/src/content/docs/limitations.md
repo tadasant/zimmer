@@ -574,13 +574,19 @@ gap is worth naming precisely:
   externalized-but-not-secret variable — an org slug, a model id, a base URL — will start being scrubbed
   out of every transcript that mentions it.
 - **A line the patterns cannot finish scanning is destroyed rather than redacted.** The rules carry
-  their own 10-second timeout instead of Rails' global one-second cap, which no transcript this system
-  has produced comes close to (a 32 MB one redacts in ~7.6 s). If one is reached anyway, the pass
-  retries line by line and replaces the offending line with `[REDACTED:UNSCANNABLE_LINE]` — the line
-  count survives, nothing unscanned is emitted, and that line's content is gone. It is the least bad of
-  three bad options; the other two are dropping the whole transcript update, which is what
-  [#472](https://github.com/tadasant/zimmer/issues/472) was, and emitting a line no pattern finished
-  looking at.
+  their own 10-second timeout instead of Rails' global one-second cap. Both bound a single search, and
+  the slowest single search any transcript here has produced is 2.2 s, so there is a factor of four in
+  hand. If the 10 s is reached anyway, the pass retries line by line and replaces the offending line
+  with `[REDACTED:UNSCANNABLE_LINE]` — the line count survives, nothing unscanned is emitted, and that
+  line's content is gone. It is the least bad of three bad options; the other two are dropping the
+  whole transcript update, which is what [#472](https://github.com/tadasant/zimmer/issues/472) was,
+  and emitting a line no pattern finished looking at.
+- **That guarantee covers the pattern pass, not the PEM block walk.** `scan_patterns` is the part that
+  cannot raise on a timeout. The line walk that finds multi-line PEM armor still can, in principle:
+  its three regexps carry the same 10-second timeout, but they are not rescued, because "assume a
+  timeout means key material" closes a block at one of their call sites and opens one at another, and
+  four different fallbacks for a case none of them can reach is worse than the gap. They are
+  literal-prefixed or `\A`-anchored, so a non-armor line fails at the first character.
 
 None of this changes what a transcript is. Do not treat one as safe to expose because it has been
 through the redactor; the endpoint serving it still has no authorization check, and redaction lowers the
