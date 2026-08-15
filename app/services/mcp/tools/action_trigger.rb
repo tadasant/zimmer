@@ -358,21 +358,33 @@ module Mcp
         variables = args["variables"].is_a?(Hash) ? args["variables"] : {}
         result = Triggers::ManualFire.call(trigger: trigger, genesis: SessionGenesis::API, variables: variables)
 
-        return "## Trigger Not Fired\n\n#{result.message}" unless result.session?
-
         session = result.session
-        lines = [
-          result.fired? ? "## Trigger Invoked" : "## Trigger Invoked — Burst Notice",
-          "",
-          "- **Trigger:** #{trigger.id} — #{trigger.name}",
-          "- **Session:** #{session.id}#{" (#{session.slug})" if session.slug.present?}",
-          "- **Session Status:** #{session.status}",
-          "- **Session URL:** #{session_url(session)}",
-          "- **Sessions Created (lifetime):** #{trigger.reload.sessions_created_count}",
-          "",
-          result.message
-        ]
-        lines.join("\n")
+
+        # `not_reusable` can still hand back the target session it declined to
+        # reuse, so "did a session come back" is the wrong question here — "did
+        # anything fire" is.
+        unless result.fired? || result.outcome == :burst_notice
+          lines = [ "## Trigger Not Fired", "", result.message ]
+          lines << "\nTarget session: #{session.id} — #{session_url(session)}" if session
+          return lines.join("\n")
+        end
+
+        <<~TEXT.strip
+          #{result.fired? ? '## Trigger Invoked' : '## Trigger Invoked — Burst Notice'}
+
+          - **Trigger:** #{trigger.id} — #{trigger.name}
+          - **Session:** #{session.id}#{" (#{session.slug})" if session.slug.present?}
+          - **Session Status:** #{session.status}
+          - **Session URL:** #{session_url(session)}
+          - **Sessions Created (lifetime):** #{trigger.reload.sessions_created_count}
+
+          #{result.message}
+        TEXT
+      rescue AgentRootsConfig::AgentRootNotFoundError => e
+        # Every other failure mode of this tool reaches the caller as a readable
+        # tool error it can act on; an unresolvable agent root must too, rather
+        # than escaping as a protocol-level error the model never sees.
+        raise ToolError, "Invalid agent_root: #{e.message}"
       end
 
       # The flat pair and the array describe the same thing two different ways, so

@@ -612,6 +612,23 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert suppressed["trigger"]["bursting"]
   end
 
+  test "a target session that cannot be reused is a 422 that names it, not a 201" do
+    stub_session_creation
+    target = sessions(:failed)
+    @trigger.update!(reuse_session: true, last_session_id: target.id)
+    Trigger.any_instance.stubs(:one_time_reuse_trigger?).returns(true)
+
+    assert_no_difference("Session.count") do
+      post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "No session created", json["error"]
+    assert_match(/no longer reusable/, json["message"])
+    assert_equal target.id, json["session"]["id"]
+  end
+
   test "invoke reports an unresolvable agent root as a 422 rather than a 500" do
     AgentRootsConfig.stubs(:find!).raises(AgentRootsConfig::AgentRootNotFoundError.new("Not found"))
 

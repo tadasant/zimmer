@@ -141,8 +141,11 @@ class Api::V1::TriggersController < Api::BaseController
       render_api_error("Burst suppressed", result.message, status: :too_many_requests,
                        trigger: trigger_json(@trigger.reload))
     when :not_reusable
+      # The target session is reported when the row still exists — it is the
+      # thing to go and look at — and null when it is gone.
       render_api_error("No session created", result.message, status: :unprocessable_entity,
-                       trigger: trigger_json(@trigger.reload))
+                       trigger: trigger_json(@trigger.reload),
+                       session: result.session && session_summary_json(result.session))
     else
       # :burst_notice comes back 201 too, carrying the burst-notice session the
       # trigger spawned instead. It IS a session, and the message says whose.
@@ -154,7 +157,8 @@ class Api::V1::TriggersController < Api::BaseController
       }, status: :created
     end
   rescue AgentRootsConfig::AgentRootNotFoundError => e
-    render_api_error("Invalid agent_root", e.message, status: :unprocessable_entity)
+    render_api_error("Invalid agent_root", e.message, status: :unprocessable_entity,
+                     trigger: trigger_json(@trigger))
   end
 
   # GET /api/v1/triggers/channels
