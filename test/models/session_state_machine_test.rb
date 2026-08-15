@@ -1156,6 +1156,125 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not_nil condition.last_triggered_at, "One-time schedule condition should be marked fired after resume"
   end
 
+  # === system-recovery resume preserves pending wake-ups ===
+  #
+  # An interruption nudge is Zimmer restarting the session's own process, not
+  # anyone deciding it should wake. Consuming its wake-ups there is what stranded
+  # orchestrator #4388 in needs_input for ~22 hours with five children it was
+  # supposed to be watching and a deadline backstop that could no longer fire.
+
+  # Build the wake set an orchestrator actually registers: watchers on children
+  # plus a wake_me_up_later deadline backstop.
+  def wake_set_for(session, watched:, scheduled_at: 30.minutes.from_now.iso8601)
+    conditions = watched.map do |watched_session|
+      { condition_type: "ao_event",
+        configuration: { "event_name" => "session_archived", "watched_session_id" => watched_session.id } }
+    end
+    conditions << { condition_type: "schedule",
+                    configuration: { "scheduled_at" => scheduled_at, "timezone" => "UTC" } } if scheduled_at
+
+    conditions.map do |condition|
+      Trigger.create!(
+        name: "Wake ##{session.id}",
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: "Wake",
+        reuse_session: true,
+        last_session_id: session.id,
+        trigger_conditions_attributes: [ condition ]
+      ).trigger_conditions.first
+    end
+  end
+
+  test "system-recovery resume leaves pending one-time wake-ups armed" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+
+    conditions = wake_set_for(session, watched: [ child ])
+    assert_equal 2, conditions.size
+
+    session.reload
+    session.resume_for_system_recovery!
+
+    conditions.each do |condition|
+      assert_nil condition.reload.last_triggered_at,
+        "a system-recovery resume must not consume wake condition #{condition.id}"
+    end
+  end
+
+  # The regression test for the stall itself: recovered, ran its turn, and got
+  # back to waiting with its wake set intact instead of resting in needs_input.
+  test "system-recovery resume returns the session to waiting when a scheduled backstop is armed" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ])
+
+    session.reload
+    session.resume_for_system_recovery!
+    assert session.running?
+    assert_equal true, session.reload.metadata["pending_sleep"]
+
+    session.pause!
+
+    assert session.reload.waiting?,
+      "a recovered session with wake-ups still armed must go back to sleep, not sit in needs_input"
+    conditions.each { |condition| assert_nil condition.reload.last_triggered_at }
+  end
+
+  # Without a scheduled backstop there is nothing guaranteed to fire, and a
+  # watched transition that happened during the outage is not replayed. Resting
+  # in needs_input keeps the session visible rather than trading a long stall for
+  # an indefinite one. The watchers stay armed either way.
+  test "system-recovery resume rests in needs_input when only session watchers are armed" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ], scheduled_at: nil)
+
+    session.reload
+    session.resume_for_system_recovery!
+
+    assert_not session.reload.metadata["pending_sleep"],
+      "no scheduled backstop means no guaranteed wake, so the session must not be put back to sleep"
+
+    session.pause!
+
+    assert session.reload.needs_input?
+    conditions.each { |condition| assert_nil condition.reload.last_triggered_at }
+  end
+
+  test "resume_for_system_recovery! does not leak the flag into a later deliberate resume" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+
+    session.reload
+    session.resume_for_system_recovery!
+    assert_not session.system_recovery_resume
+
+    session.pause!
+    conditions = wake_set_for(session, watched: [ child ])
+
+    session.reload
+    session.resume!
+
+    conditions.each do |condition|
+      assert_not_nil condition.reload.last_triggered_at,
+        "a deliberate resume after a recovery must still consume wake condition #{condition.id}"
+    end
+  end
+
+  test "resume_for_system_recovery! is a no-op on a session that cannot resume" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+
+    session.reload
+    assert_not session.resume_for_system_recovery!
+    assert session.reload.running?
+  end
+
   test "resume does not cancel recurring schedule conditions" do
     session = sessions(:waiting)
     session.update!(status: :needs_input)
