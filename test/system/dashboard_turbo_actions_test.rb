@@ -16,7 +16,7 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
   test "trashing a session streams the card away and offers Undo in the flash" do
     session = sessions(:failed)
 
-    visit root_path
+    visit root_path(every_status_params)
     assert_selector "turbo-frame#session_#{session.id}"
     stamp_window
 
@@ -37,7 +37,7 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
   test "Undo puts the trashed card back without leaving the dashboard" do
     session = sessions(:failed)
 
-    visit root_path
+    visit root_path(every_status_params)
     assert_selector "turbo-frame#session_#{session.id}"
 
     within "turbo-frame#session_#{session.id}" do
