@@ -263,7 +263,11 @@ signal death:
 ```mermaid
 flowchart TD
     E["Process exited"] --> N{"normal_completion_exit?"}
-    N -->|yes| P["pause! → needs_input"]
+    N -->|yes| SI{"session_id_conflict?<br/>(stderr)"}
+    SI -->|yes| SIR["new session id +<br/>restart from scratch<br/>(MAX_SESSION_ID_CONFLICT_RECOVERIES = 2)"]
+    SI -->|no| ET{"both transcript stores<br/>still completely empty?"}
+    ET -->|yes| ETR["restart from scratch<br/>(MAX_EMPTY_TURN_RECOVERIES = 2)"]
+    ET -->|no| P["pause! → needs_input"]
     N -->|no| C{"context_length_error?<br/>(stderr)"}
     C -->|yes| CR["ContextLengthRetryService<br/>compact + retry (MAX_RETRIES = 2)"]
     C -->|no| A{"auth_recovery_needed?<br/>(transcript)"}
@@ -329,6 +333,30 @@ sets `active_follow_up_prompt` to the exact expanded runtime prompt for every
 follow-up turn before it clears the pending marker, including automated deploy
 continuations and status-summary forks that never had a pending marker. That slot
 is removed when the turn finishes normally.
+
+A turn that ends with the runtime having written **nothing at all** is the general backstop behind
+every specific branch above. A normal-looking exit over a completely empty transcript is not a
+completed turn — it is what "the agent never got going" looks like from the outside — so Zimmer
+restarts it from scratch instead of parking, bounded by `MAX_EMPTY_TURN_RECOVERIES`. "Nothing at
+all" is asked of both stores (`RuntimeConversationPresence`): Zimmer's polled `session.transcript`
+*and* the runtime's own file on disk, so a lagging poller can never be enough to abandon a real
+conversation. The invariant it restores: a failure Zimmer chose to retry never leaves the session at
+rest with an empty transcript and nothing driving it forward. Before it existed, a five-second npm
+hiccup during MCP connect could park a session in `needs_input` with a blank transcript until a
+human noticed and typed "continue".
+
+Two supporting rules make that reachable rather than theoretical. `runtime_started` is set the
+moment a pid is recorded, before the runtime has written a line — so when Zimmer kills a process
+that persisted no conversation, `AgentSessionJob#terminate_process` clears the flag, and the next
+turn spawns fresh instead of issuing a `--resume` that is dead on arrival. And when the runtime
+refuses a `--session-id` because that id is still held, Zimmer mints a new one and retries rather
+than reading the refusal — which Claude reports with its "turn complete" exit code 1 — as a
+finished turn.
+
+Every replacement process is monitored. The recovery paths spawn through the same
+`AgentProcessLiveness` guard `#spawn` uses, and the job cleans up the lifecycle manager's current pid
+rather than its own stale local copy — otherwise a replacement outlives the job that spawned it,
+stays on the clone, and keeps the runtime session id reserved.
 
 When the job itself finishes, it reports the terminal status it actually reached. A job whose
 monitor loop already moved the session to `failed` closes its log at `warning` naming the
