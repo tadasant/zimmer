@@ -372,11 +372,25 @@ Two actions stream a card as well, because a broadcast cannot reach one:
   Uncategorized, `#category_grid_<id>` for a category). Its own restore broadcast is a `replace`,
   and there is nothing left in the DOM to replace.
 
-`#unarchive` and `#pause` stream one more thing: the session page's own status badge and header
-actions. `Session#broadcast_status_change` already pushes both over the cable, but a broadcast is
-fire-and-forget and this whole change exists because a cable can be silently dead. The direct
-reply to the user's click cannot be lost, so a status-changing action carries its chrome rather
-than trusting the socket.
+`#archive`, `#unarchive` and `#pause` stream one more thing: the session page's own status badge
+and header actions. `Session#broadcast_status_change` already pushes both over the cable, but a
+broadcast is fire-and-forget and this whole change exists because a cable can be silently dead.
+The direct reply to the user's click cannot be lost, so a status-changing action carries its
+chrome rather than trusting the socket. Both targets are absent when the click came from a
+dashboard card, where those streams are a no-op.
+
+That chrome is what makes trashing from the session page itself work: it leaves you on the page,
+with the toast and its **Undo**, and the button you just clicked turns into **Restore**. Only the
+dashboard card's Trash takes something out from under you, and all it takes is the card.
+
+A stream only happens if the client asks for one, and that is a client-side property, not a
+controller one. The card's Trash link carries `data-turbo-method`, so Turbo builds the request
+and sends `Accept: text/vnd.turbo-stream.html`. The detail header's Trash button — the one the
+session drawer puts in front of you — builds its own form in `archive_countdown_controller`
+instead, and has to submit it with `requestSubmit()`. A native `form.submit()` fires no `submit`
+event, so Turbo never sees the submission: the browser POSTs for real, `#archive` answers on its
+`format.html` branch, and the redirect reloads the dashboard from the top, discarding the scroll
+offset the drawer was opened over.
 
 Every one of these actions keeps its `format.html` branch, which still redirects with a real
 flash. That is what a non-Turbo client — and most of the controller test suite — gets.

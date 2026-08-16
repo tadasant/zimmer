@@ -1005,6 +1005,21 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session.reload.archived?
   end
 
+  # Archiving from the session page — or from the drawer showing it — leaves the
+  # user looking at that page, so the reply has to flip its Trash button to
+  # Restore itself. Session#broadcast_status_change pushes the same chrome over
+  # the cable, but a cable can be silently dead and the direct reply cannot.
+  test "archive turbo_stream carries the session page's own chrome" do
+    session = sessions(:failed)
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_match(/<turbo-stream\s+action="replace"\s+target="session_#{session.id}_status_badge"/, response.body)
+    assert_match(/<turbo-stream\s+action="replace"\s+target="session_#{session.id}_header_actions"/, response.body)
+    assert_match(/Restore/, response.body)
+  end
+
   test "archive should render idempotent turbo_stream for already-archived session" do
     session = sessions(:archived)
 

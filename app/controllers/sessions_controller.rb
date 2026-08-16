@@ -779,8 +779,15 @@ class SessionsController < ApplicationController
   # `dom_id(session)` turbo_frame wrapping the session's card, and streams the
   # notice into the layout's #flash target — without that second stream the
   # card vanished silently and the Undo button in the toast never appeared.
+  #
+  # It carries the session page's chrome for the same reason #unarchive and
+  # #pause do: archiving from the session page (or from the drawer showing it)
+  # leaves the user looking at it, so the Trash button has to become Restore in
+  # the reply itself rather than only over a cable that can be silently dead.
+  # Both chrome targets are absent when the click came from a dashboard card.
   def archive_remove_streams(session, notice:)
-    [ turbo_stream.remove(dom_id(session)), flash_stream(notice: notice) ]
+    [ turbo_stream.remove(dom_id(session)), flash_stream(notice: notice) ] +
+      session_chrome_streams(session)
   end
   private :archive_remove_streams
 
