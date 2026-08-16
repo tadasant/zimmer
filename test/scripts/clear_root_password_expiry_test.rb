@@ -84,10 +84,33 @@ class ClearRootPasswordExpiryTest < ActiveSupport::TestCase
     assert_match(%r{1/2 of those attempts could not reach it}, out)
   end
 
+  test "a host that drops off AFTER a failed repair is not advertised as still reachable" do
+    # 7 first, then 255 -- the mirror of the test above, and the ordering that matters. The
+    # host answered once, so this still lands in the repair branch, but the LAST attempt
+    # timed out. Keying the closing advice off the tally rather than the final attempt sent
+    # the operator to a ":22 that still works" while the tally two lines above said the path
+    # was flapping: a message that contradicted itself.
+    ssh_body = <<~SH
+      n=$(cat "$COUNTER" 2>/dev/null || echo 0)
+      echo $((n + 1)) > "$COUNTER"
+      if [ "$n" -eq 0 ]; then exit 7; fi
+      exit 255
+    SH
+
+    code, out = run_script(ssh_body: ssh_body, extra_env: { "COUNTER" => "__DIR__/n" })
+
+    assert_equal EXIT_FAILED, code
+    assert_match(/Reached testhost/, out)
+    assert_match(%r{1/2 of those attempts could not reach it}, out)
+    assert_match(/do not count on :22 answering/, out)
+    refute_match(/answered on the last attempt/, out)
+  end
+
   test "rejects a non-positive or non-numeric ATTEMPTS instead of describing work it never did" do
     # Without the guard these skip the loop and still print a confident closing message
-    # about a host that was never contacted.
-    [ "0", "abc" ].each do |bad|
+    # about a host that was never contacted. "00" is the interesting one: it is all digits,
+    # so a glob check alone waves it through and `seq 1 00` then expands to nothing.
+    [ "0", "00", "abc" ].each do |bad|
       code, out = run_script(ssh_body: "exit 0", attempts: bad)
 
       assert_equal EXIT_BAD_USAGE, code, "ATTEMPTS=#{bad.inspect} should be rejected"

@@ -31,11 +31,20 @@ ATTEMPTS="${ATTEMPTS:-6}"
 # message describing a host that was never contacted. Reject the input instead of emitting
 # a confident sentence about work that did not happen.
 case "$ATTEMPTS" in
-  ''|*[!0-9]*|0)
+  ''|*[!0-9]*)
     echo "::error::ATTEMPTS must be a positive integer (got '${ATTEMPTS}')"
     exit 2
     ;;
 esac
+
+# Digits alone are not enough: `00` satisfies the glob above, `seq 1 00` expands to nothing,
+# and the loop is skipped just as it would be for `0`. Compare arithmetically so that every
+# spelling of zero is caught, and so the loop below is guaranteed to run at least once --
+# which is what lets the closing message rely on `rc` holding a real attempt's status.
+if [ "$ATTEMPTS" -lt 1 ]; then
+  echo "::error::ATTEMPTS must be a positive integer (got '${ATTEMPTS}')"
+  exit 2
+fi
 
 # accept-new + /dev/null: a rebuilt droplet has a new host key (staging does not pin one),
 # and BatchMode alone would just fail on the unknown key instead of prompting.
@@ -123,6 +132,9 @@ if [ "$transport_failures" -eq "$ATTEMPTS" ]; then
   echo "::error::still reports the node Online (so \`tailscale status\` looks fine). Those outages clear on"
   echo "::error::their own, so :22 may well answer by the time you read this -- that it does now is not"
   echo "::error::evidence the deploy was wrong to fail."
+  echo "::error::Memory is the likely cause but not the only one: 255 is also what ssh returns when the"
+  echo "::error::tailnet identity is refused. If the attempts failed instantly rather than hanging, suspect"
+  echo "::error::an SSH-policy or ACL change, an expired node key, or a box rebuilt without Tailscale SSH."
 else
   echo "::error::Reached ${HOST}, but could not clear the forced root-password expiry after ${ATTEMPTS} attempts."
   if [ "$transport_failures" -gt 0 ]; then
@@ -131,6 +143,18 @@ else
   fi
   echo "::error::Leaving it unrepaired would mean publickey auth on :2222 succeeds and then EVERY session"
   echo "::error::is rejected by pam_unix -- the ssh-agent-mcp-server healthcheck fails and nobody can get a"
-  echo "::error::shell. Tailscale SSH (tailnet :22) still works, so repair it there by hand."
+  echo "::error::shell."
+
+  # Whether to send someone to :22 turns on the LAST attempt, not on the tally. `rc` is the
+  # only observation of whether that path answers NOW, and on a flapping host the repair can
+  # fail early and the box drop off afterwards -- in which case claiming ":22 still works" on
+  # the strength of an attempt from minutes ago is the same over-claim this branch exists to
+  # stop making, and it contradicts the flapping note printed just above.
+  if [ "$rc" -eq 255 ]; then
+    echo "::error::The last attempt could not reach it either, so do not count on :22 answering for you."
+    echo "::error::Retry, and if it keeps timing out treat it as the reachability case above."
+  else
+    echo "::error::Tailscale SSH (tailnet :22) answered on the last attempt, so repair it there by hand."
+  fi
 fi
 exit 1
