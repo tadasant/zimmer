@@ -51,10 +51,6 @@ class WorkerWedgeAlert
     "disabled" => "recovery is switched off on this host (ZIMMER_WATCHDOG_RECOVER=0)"
   }.freeze
 
-  # Outcomes that mean a human still has to do something. `restarted` is the only one
-  # that does not.
-  UNRESOLVED_OUTCOMES = (RECOVERY_OUTCOMES.keys - [ "restarted" ]).freeze
-
   RUNBOOK = "https://docs.zimmer.tadasant.com/operate/nested-docker/#when-the-worker-wedges"
 
   # @param payload [String] the watchdog's incident JSON, read from stdin
@@ -92,8 +88,15 @@ class WorkerWedgeAlert
 
   def host = data["host"].presence || "unknown host"
 
+  # The watchdog reports two shapes. `wedged` is the #502 case: a container Docker
+  # still calls `running`. `absent` is its sequel — the same container, later, no
+  # longer listed at all, which is what a cleared-but-not-restarted wedge looks like
+  # and is just as silent, because nothing else in Zimmer notices a missing worker.
+  def absent? = data["kind"].to_s == "absent"
+
   def title
     return "Worker watchdog reported a wedge (unreadable payload)" unless parsed?
+    return "No worker container running on #{host}" if absent?
 
     "Worker container wedged on #{host}"
   end
@@ -107,6 +110,7 @@ class WorkerWedgeAlert
 
   def details
     return unparseable_details unless parsed?
+    return absent_details if absent?
 
     lines = [
       "The worker container reports `running` while `docker exec` into it fails, so it is " \
@@ -146,6 +150,18 @@ class WorkerWedgeAlert
     lines.join("\n")
   end
 
+  def absent_details
+    <<~DETAILS
+      The worker container this watchdog reported wedged is no longer running at all — nothing matches its name on the host, so no jobs and no agent sessions are being executed. Every Zimmer cron job runs in the worker, so nothing else on this instance will notice.
+
+      *Host:* #{host}
+      *Container:* `#{container["id"].presence || "?"}` (last seen wedged)
+      *Detected:* #{data["detected_at"].presence || "?"}
+
+      This needs a redeploy to bring a worker back. The watchdog will keep repeating this until one is running: #{RUNBOOK}
+    DETAILS
+  end
+
   def unparseable_details
     "The worker watchdog reported a wedged worker, but its payload could not be parsed as JSON, " \
     "so the detail below is raw. Treat it as a real incident anyway: the watchdog sends nothing at " \
@@ -161,8 +177,11 @@ class WorkerWedgeAlert
     known
   end
 
+  # `restarted` is the only outcome that means nobody has to do anything. Everything
+  # else -- including an outcome this class does not recognise, and a missing one --
+  # leaves the worker not running work, so it must fail towards telling someone.
   def unresolved?
-    UNRESOLVED_OUTCOMES.include?(recovery["outcome"].to_s) || recovery["outcome"].blank?
+    recovery["outcome"].to_s != "restarted"
   end
 
   def truncate(value, limit)

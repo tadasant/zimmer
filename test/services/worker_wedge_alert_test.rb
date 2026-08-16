@@ -107,6 +107,52 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     assert_includes details, "unrecognised outcome"
   end
 
+  # An outcome nobody recognises means nobody knows the worker recovered, so the alert
+  # has to fail towards telling someone. Getting this backwards is silent in exactly
+  # the way this whole mechanism exists to prevent.
+  test "an unrecognised outcome is still treated as unresolved" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["recovery"]["outcome"] = "teleported"
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "This one is not over"
+    assert_includes details, WorkerWedgeAlert::RUNBOOK
+  end
+
+  test "a missing recovery block is treated as unresolved" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload.delete("recovery")
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "This one is not over"
+  end
+
+  # The watchdog's second shape: the container it reported wedged is no longer listed
+  # at all. `docker ps` goes quiet, so without its own page this failure is invisible.
+  test "an absent worker pages with its own title and body" do
+    payload = {
+      "schema" => 1,
+      "kind" => "absent",
+      "host" => "zimmer-staging",
+      "detected_at" => "2026-08-16T17:20:03Z",
+      "container" => { "id" => "8f1c2b3d4e5f", "running" => false },
+      "probe" => { "consecutive_failures" => 7, "last_error" => "no container matches 'zimmer-worker'" },
+      "recovery" => { "attempted" => false, "outcome" => "exited", "steps" => "" }
+    }
+
+    captured = capture_alert { WorkerWedgeAlert.report(payload.to_json) }
+
+    assert_equal "No worker container running on zimmer-staging", captured[:title]
+    assert_includes captured[:details], "no longer running at all"
+    assert_includes captured[:details], "8f1c2b3d4e5f"
+    assert_includes captured[:details], "redeploy"
+    assert_includes captured[:details], WorkerWedgeAlert::RUNBOOK
+    # Same container, same throttle bucket as the wedge page that preceded it.
+    assert_equal "worker_wedge:8f1c2b3d4e5f", captured[:dedup_key]
+  end
+
   # The producer is hand-rolled shell quoting running on a host that is by definition
   # in a bad state. If it emits something unparseable, the page still has to happen --
   # losing the alert to a formatting bug is the one failure this whole mechanism
