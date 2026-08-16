@@ -259,13 +259,62 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "Do not stall your own task to do it"
   end
 
-  test "session lifecycle principle rejects the three non-reasons for parking" do
+  test "session lifecycle principle rejects the four non-reasons for parking" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "Three things that look like reasons to park and are not:"
+    assert_includes prompt, "Four things that look like reasons to park and are not:"
     assert_includes prompt, "None of those is a human. Sleep on a wake-up trigger and come back to it"
     assert_includes prompt, "re-check the real state of the PR, issue, or task"
     assert_includes prompt, "Your own transcript is not the record of last resort"
+  end
+
+  # A blocker somebody else is already fixing is the machine wait agents miss: it
+  # looks like a handoff ("main is broken, it's yours once it's fixed"), so the
+  # generic "waiting on a machine" bullet did not bind and sessions escalated.
+  test "a blocker another session is already fixing is named as a machine wait, not a handoff" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "**A blocker that is already somebody else's job.**"
+    assert_includes prompt, "Red CI on `main` from a failure unrelated to your diff",
+      "expected the canonical tell — an unrelated failure on the base branch — to be named"
+    assert_includes prompt, "wearing the costume of a human handoff",
+      "expected the prompt to explain why this case gets escalated despite being a machine wait"
+  end
+
+  test "the blocked-by-a-session rule tells the agent to search for the session working the blocker" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "**Look before you escalate:**"
+    assert_includes prompt, "`quick_search_sessions`",
+      "expected the search tool to be named so the agent can actually go looking"
+    assert_includes prompt, "rather than assuming nobody is on it"
+  end
+
+  test "the blocked-by-a-session rule requires all three state wakes plus a deadline backstop" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "set `wake_me_up_when_session_changes_state` on that session for **all three**"
+    assert_includes prompt, "`session_archived`, `session_needs_input` and `session_failed`"
+    # A clean finish self-archives without ever passing through needs_input, so a
+    # lone needs_input wake never fires — the reason all three are required.
+    assert_includes prompt, "self-archives without ever passing through `needs_input`"
+    assert_includes prompt, "paired with a `wake_me_up_later` deadline as a backstop"
+    # A fired one-time wake destroys the session's other one-time wakes.
+    assert_includes prompt, "re-register on every wake round"
+    assert_includes prompt, "not as proof that anyone finished"
+  end
+
+  test "the blocked-by-a-session rule bounds the wait and names the honest escalation" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    # Resuming the work is the point — waking up is not the finish line.
+    assert_includes prompt, "go back and finish your own job",
+      "expected the agent to be told to resume its own work once the blocker clears"
+    assert_includes prompt, "instead of leaving it half-done for the human"
+    assert_includes prompt, "still blocked after ~3 hours",
+      "expected a concrete upper bound so the wait is not open-ended"
+    assert_includes prompt, "\"Somebody else's fix is in flight\" is not an escalation; " \
+      "\"nobody is on it and I can't change that\" is."
   end
 
   test "session lifecycle principle scopes the Slack #updates rule to sessions with a Slack server" do
