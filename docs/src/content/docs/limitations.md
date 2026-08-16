@@ -976,6 +976,20 @@ The asymmetry is silent, which is the part worth knowing: a server that reads a 
 received behaves as if the operator never set it. A catalog entry that names the variable in its own
 `env`/`env_vars` is the way through today.
 
+### The npx bin-permission repair only reaches Claude sessions, and only on the next launch
+
+`NpxBinExecutableGuard` restores the execute bit on `_npx` bin targets that a package published
+without one — the failure that orphaned production session 4388 three times in 31 minutes
+([#467](https://github.com/tadasant/zimmer/issues/467)). Two edges come with it.
+
+It runs from `ClaudeSpawnEnv#configure_mcp_env`, so a Codex session never calls it. Codex also never
+sets `NPM_CONFIG_CACHE`, so its npx servers install into the host-shared `~/.npm` cache, which the
+guard's clones-base safety check would refuse to touch anyway.
+
+And it repairs the tree it finds on the way *in*, so a package that installs broken during a launch
+is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
+A session recovers by itself; it does not connect on the first attempt.
+
 ### Extension env contributions are unreachable from Codex
 
 `Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — despite the hook

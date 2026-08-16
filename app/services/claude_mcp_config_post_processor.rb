@@ -39,10 +39,9 @@ class ClaudeMcpConfigPostProcessor < RuntimeConfigPostProcessor
     { "type" => "http", "url" => url, http_headers_key => headers.dup }
   end
 
-  def resolve_and_rewrite!(servers)
+  def resolve_secrets!(servers)
     servers.each_value do |entry|
       secrets_interpolator.resolve_entry!(entry)
-      NpxPrefixRewriter.rewrite!(entry)
     end
   end
 end

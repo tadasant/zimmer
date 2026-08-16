@@ -15,7 +15,18 @@
 #      local-dev or staging session orchestrates itself, not production.
 #   4. Write the elicitation address (ELICITATION_REQUEST_URL / _SESSION_ID) into
 #      every stdio server's own `env` table.
-#   5. Resolve ${VAR} interpolations from SecretsLoader and rewrite npx commands.
+#   5. Resolve ${VAR} interpolations from SecretsLoader.
+#
+# A catalog entry's `command`/`args` are written through verbatim — in particular,
+# no `--prefix` is spliced into an npx invocation. `--prefix /tmp` makes npm treat
+# /tmp as the project root, so the bin-link destination becomes
+# `/tmp/node_modules/.bin`, which is absent on the host; the `chmod 0755` that
+# accompanies bin-linking then does not land on the package entrypoint and the
+# server dies on `exec` with EACCES for the life of the clone (zimmer#467). It also
+# points npm at a host-shared path, defeating the per-clone cache isolation. npx
+# resolves against that per-clone `_npx` cache (NPM_CONFIG_CACHE,
+# ClaudeSpawnEnv#configure_mcp_env) with no prefix flag, which is what the catalog
+# entries already assume.
 #
 # The injected servers are streamable-HTTP entries pointing at this instance's
 # native /mcp endpoint (see McpController) — Zimmer speaks MCP itself, so nothing
@@ -24,11 +35,11 @@
 # Steps 1-4 operate purely on the normalized server hash (`command`/`args`/`env`
 # for stdio, `url`/header-table for http) that both formats share, so they live
 # here as concrete shared logic. Steps tied to the file format and serialization
-# (read/parse, server-table extraction, per-entry secret/npx resolution, write)
+# (read/parse, server-table extraction, per-entry secret resolution, write)
 # are template-method hooks each concrete subclass implements
 # (ClaudeMcpConfigPostProcessor for JSON, CodexConfigTomlPostProcessor for TOML),
-# reusing the shared helpers SelfSessionInjector, SecretsInterpolator, and
-# NpxPrefixRewriter for the format-agnostic value logic.
+# reusing the shared helpers SelfSessionInjector and SecretsInterpolator for the
+# format-agnostic value logic.
 #
 # Subclasses append the names of any auto-injected servers to
 # #injected_mcp_servers so callers can record them in session metadata.
@@ -46,8 +57,7 @@ class RuntimeConfigPostProcessor
   end
 
   # Post-process the MCP config AIR wrote: inject servers, retarget, resolve
-  # secrets, rewrite npx. Reads the runtime's config file, mutates it, writes it
-  # back.
+  # secrets. Reads the runtime's config file, mutates it, writes it back.
   #
   # AIR only writes a config file when the session has explicit MCP servers. A
   # session that is skills/hooks/plugins-only (so it takes this prepare! branch)
@@ -67,7 +77,7 @@ class RuntimeConfigPostProcessor
     inject_self_session_server!(servers)
     retarget_zimmer_servers_to_current_env!(servers)
     inject_elicitation_env!(servers)
-    resolve_and_rewrite!(servers)
+    resolve_secrets!(servers)
 
     persist_config!(config)
   end
@@ -106,7 +116,7 @@ class RuntimeConfigPostProcessor
     # the two paths stay identical: a stdio server that ever reaches here must not
     # be the one server on the instance that silently loses its approval address.
     inject_elicitation_env!(servers)
-    resolve_and_rewrite!(servers)
+    resolve_secrets!(servers)
 
     persist_config!(config)
   end
@@ -174,10 +184,11 @@ class RuntimeConfigPostProcessor
     nil
   end
 
-  # Resolve ${VAR} interpolations and apply the npx --prefix rewrite to every
-  # server entry, in the runtime's native field layout.
-  def resolve_and_rewrite!(_servers)
-    raise NotImplementedError, "#{self.class} must implement #resolve_and_rewrite!"
+  # Resolve ${VAR} interpolations in every server entry, in the runtime's native
+  # field layout. `command`/`args` are otherwise passed through as the catalog
+  # wrote them.
+  def resolve_secrets!(_servers)
+    raise NotImplementedError, "#{self.class} must implement #resolve_secrets!"
   end
 
   # @param config [Hash] the mutated config

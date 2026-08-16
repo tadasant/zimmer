@@ -15,8 +15,8 @@ require "tmpdir"
 # adapter id (claude → "claude", codex → "codex"). After AIR runs, this service
 # hands off to the runtime's RuntimeConfigPostProcessor, which resolves
 # remaining ${VAR} interpolations from SecretsLoader and applies Zimmer-specific
-# tweaks (server injection, env retargeting, npx --prefix) in the runtime's
-# native config format.
+# tweaks (server injection, env retargeting, the elicitation address) in the
+# runtime's native config format.
 class AirPrepareService
   class AirPrepareError < StandardError; end
 
