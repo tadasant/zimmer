@@ -45,6 +45,12 @@ module SessionStateMachine
   # Session#resume_for_system_recovery!.
   attr_accessor :system_recovery_resume
 
+  # Metadata marker written alongside `pending_sleep` by the system-recovery
+  # preserve branch. It means "sleep only if something is still armed to wake
+  # you", and distinguishes that conditional intent from a deliberate sleep,
+  # which is executed whether or not any wake-up exists.
+  PENDING_SLEEP_REQUIRES_WAKE = "pending_sleep_requires_wake"
+
   included do
     include AASM
 
@@ -759,8 +765,26 @@ module SessionStateMachine
   def execute_pending_sleep
     return unless metadata&.dig("pending_sleep") == true
 
+    # A sleep intent recorded by the system-recovery preserve branch is only
+    # valid while the wake-ups it was recorded for are still armed. They may not
+    # be: a backstop whose wall time elapsed during the outage is due the moment
+    # recovery resumes the session, so it can fire mid-recovery-turn, destroy its
+    # siblings, and hand off to a new turn without ever pausing. Sleeping on that
+    # stale intent would put the session in `waiting` with nothing armed and no
+    # `paused_by` — invisible to both recovery sweeps, which is a worse stall than
+    # the one this preserve branch exists to prevent. Drop the intent instead and
+    # let the session come to rest in needs_input, where the operator can see it.
+    if metadata[PENDING_SLEEP_REQUIRES_WAKE] && !armed_one_time_wake?
+      update_column(:metadata, metadata.except("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE))
+      Rails.logger.info(
+        "[SessionStateMachine] Dropped the preserved re-sleep for session #{id} — its wake-ups " \
+        "fired or were destroyed during the recovery turn, so sleeping would strand it"
+      )
+      return
+    end
+
     sleep!
-    update_column(:metadata, metadata.except("pending_sleep"))
+    update_column(:metadata, metadata.except("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE))
   rescue => e
     # Alert: the session asked to sleep and did not. It sits in needs_input on
     # the user's homepage as if it wanted attention, and the pending_sleep flag
@@ -826,7 +850,14 @@ module SessionStateMachine
     backstopped = conditions.any?(&:one_time_schedule?)
 
     if backstopped
-      update_column(:metadata, (metadata || {}).merge("pending_sleep" => true))
+      # Paired with PENDING_SLEEP_REQUIRES_WAKE: this sleep intent is only good
+      # while something is still armed to undo it. A deliberate sleep (the API's
+      # sleep_session, which arms nothing) carries no such marker and is executed
+      # unconditionally.
+      update_column(:metadata, (metadata || {}).merge(
+        "pending_sleep" => true,
+        PENDING_SLEEP_REQUIRES_WAKE => true
+      ))
     end
 
     Rails.logger.info(
@@ -848,6 +879,13 @@ module SessionStateMachine
   # Callers still filter to the one-time shapes (one-time schedule or
   # session-scoped ao_event) — recurring schedules and broadcast ao_events are
   # not per-session wake-ups and are left alone.
+  # Whether any one-time wake-up is still armed against this session.
+  def armed_one_time_wake?
+    pending_one_time_wake_conditions.any? do |condition|
+      condition.one_time_schedule? || condition.session_scoped_ao_event?
+    end
+  end
+
   def pending_one_time_wake_conditions
     TriggerCondition
       .joins(:trigger)

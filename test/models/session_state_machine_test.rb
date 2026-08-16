@@ -1266,6 +1266,45 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     end
   end
 
+  # The inverse stall. A backstop whose wall time elapsed during the outage is due
+  # the instant recovery resumes the session, so it can fire during the recovery
+  # turn and destroy its siblings. Sleeping on the now-stale intent would land the
+  # session in waiting with nothing armed and no paused_by — invisible to both
+  # recovery sweeps, which is worse than the needs_input stall being fixed.
+  test "a preserved re-sleep is dropped when its wake-ups are gone by the end of the turn" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ])
+
+    session.reload
+    session.resume_for_system_recovery!
+    assert_equal true, session.reload.metadata["pending_sleep"]
+
+    # The backstop fires mid-turn and takes its siblings with it.
+    conditions.each { |condition| condition.trigger.destroy! }
+
+    session.pause!
+
+    session.reload
+    assert session.needs_input?,
+      "with nothing left armed the session must stay visible in needs_input, not sleep into waiting"
+    assert_nil session.metadata["pending_sleep"]
+    assert_nil session.metadata[SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE]
+  end
+
+  # The deliberate-sleep contract is unchanged: it arms nothing on purpose, so it
+  # must never be second-guessed by the conditional re-sleep above.
+  test "a deliberate pending_sleep still sleeps the session with nothing armed" do
+    session = sessions(:waiting)
+    session.update!(status: :running, metadata: { "pending_sleep" => true })
+
+    session.reload.pause!
+
+    assert session.reload.waiting?
+    assert_nil session.metadata["pending_sleep"]
+  end
+
   test "resume_for_system_recovery! is a no-op on a session that cannot resume" do
     session = sessions(:waiting)
     session.update!(status: :running)
