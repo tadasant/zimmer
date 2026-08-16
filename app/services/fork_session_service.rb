@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "open3"
 require "path_sanitizer"
 
 # Service for forking a session at a specific message in the conversation.
@@ -97,8 +98,8 @@ class ForkSessionService
     @extra_metadata = extra_metadata || {}
     @copy_exclusions = copy_exclusions || []
     @scaffold_missing_clone = scaffold_missing_clone
-    # Set by the two paths that can end on a missing source clone — see
-    # #archived_source_clone? — and carried out on the Result.
+    # Set by the paths that can end on a missing source clone — see
+    # #archived_source_session? — and carried out on the Result.
     @source_clone_discarded = false
     # Whether this fork's clone was scaffolded rather than copied. Recorded on
     # the fork's metadata so an operator reading an oddly-empty clone knows it
@@ -256,7 +257,7 @@ class ForkSessionService
   def create_forked_clone
     new_clone_path = generate_fork_clone_path
 
-    file_system.mkdir_p(ClonesDirectory.base)
+    file_system.mkdir_p(File.dirname(new_clone_path))
     materialize_fork_clone(new_clone_path)
 
     # Generate MCP configuration for the forked session
@@ -331,9 +332,10 @@ class ForkSessionService
   # fork answers from the conversation it was forked with and is told not to run
   # tools, so what it needs from the filesystem is a directory to be spawned in
   # and the transcript this service writes under ~/.claude/projects. That makes
-  # a summary regenerable for a session archived long enough ago that
-  # DeferredCloneCleanupJob has reclaimed its clone, which is every archived
-  # session an operator actually opens later.
+  # a summary regenerable for a session whose clone Zimmer has already reclaimed
+  # — DeferredCloneCleanupJob for one archived more than the undo window ago,
+  # which is every archived session an operator actually opens later, and
+  # StaleCloneCleanupJob for one that failed more than a day ago.
   def scaffold_clone?
     return false unless scaffold_missing_clone
 
@@ -345,10 +347,43 @@ class ForkSessionService
   # working directory points into created too — the spawn chdirs there, and a
   # working directory that does not exist fails the fork at the process rather
   # than here.
+  #
+  # A live source is not an error here, only a rarer one: StaleCloneCleanupJob
+  # reclaims a FAILED session's clone after 24 hours, and a day-old failed
+  # session is exactly the kind an operator opens to press Regenerate. It is
+  # logged at `warn` rather than `info` because the archived case is expected and
+  # this one is worth noticing.
   def scaffold_clone(new_clone_path)
-    @logger.info("Scaffolding an empty clone for a fork that does not read the source tree", destination: new_clone_path)
+    if archived_source_session?
+      @logger.info("Scaffolding an empty clone for a fork that does not read the source tree", destination: new_clone_path)
+    else
+      @logger.warn("Scaffolding an empty clone for a fork of a session that is not in the trash", destination: new_clone_path)
+    end
+
     @clone_scaffolded = true
     file_system.mkdir_p(calculate_working_directory(new_clone_path))
+    initialize_scaffold_repository(new_clone_path)
+  end
+
+  # `git init`, because a bare directory is not a working tree every runtime will
+  # start in. `codex exec` refuses to run outside a git repository unless it is
+  # given --skip-git-repo-check, which Zimmer does not pass and should not have to:
+  # every clone it has ever spawned into was a real repository, and an empty repo
+  # keeps that true for a scaffold at the cost of one cheap subprocess.
+  #
+  # Guarded on the REAL directory rather than the adapter's, so a fork driven by a
+  # test double does not reach out and create a tree on disk. Best-effort: a
+  # runtime that does not care must not lose its summary because git is
+  # unavailable, so a failure is logged and the fork carries on.
+  def initialize_scaffold_repository(new_clone_path)
+    return unless File.directory?(new_clone_path)
+
+    _out, error, status = Open3.capture3("git", "init", "--quiet", new_clone_path)
+    return if status.success?
+
+    @logger.warn("Could not initialize a repository in a scaffolded clone", path: new_clone_path, error: error.to_s.strip)
+  rescue StandardError => e
+    @logger.warn("Could not initialize a repository in a scaffolded clone", path: new_clone_path, error: e.message)
   end
 
   def generate_fork_clone_path
