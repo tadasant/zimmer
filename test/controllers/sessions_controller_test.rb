@@ -1365,12 +1365,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       execution_provider: "local_filesystem"
     )
 
-    # Each archive creates 2 logs: state machine log + controller log
-    # So 2 sessions * 2 logs = 4 total
-    assert_difference("Log.count", 4) do
+    # One log per archive: the state machine's line, which carries the actor.
+    assert_difference("Log.count", 2) do
       post bulk_archive_sessions_url, params: {
         session_ids: [ failed_session.id, failed_session2.id ]
       }
+    end
+
+    [ failed_session, failed_session2 ].each do |session|
+      assert_equal "[State Machine] Session moved to trash by a user in the web UI (bulk action)",
+                   session.logs.sole.content
     end
   end
 
