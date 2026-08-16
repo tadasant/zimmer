@@ -5,6 +5,19 @@
 # (GitHub runners get no MagicDNS, so the workflow resolves the IP from
 # `tailscale status --json` and exports it). Both roles and both accessories run on
 # the single staging droplet.
+#
+# Nested Docker is ON by default here, and off by default in production. Staging is
+# where that arrangement gets proven: the droplet is provisioned for it (sysbox-runc
+# registered, `features.time-namespaces: false` in daemon.json -- see
+# docs/operate/nested-docker.md), and staging runs no one else's work, so a worker
+# that refuses to start costs a redeploy rather than an outage.
+#
+# Resolved once, here, and read by all three settings below. They are only safe
+# together, so they must never be able to disagree -- and a default expressed three
+# times is a default that eventually drifts twice. `ZIMMER_NESTED_DOCKER=0` in the
+# deploy environment still disarms all three, which is the rollback if a sysbox
+# deploy misbehaves.
+<% nested_docker = ENV.fetch("ZIMMER_NESTED_DOCKER", "1") == "1" %>
 servers:
   web:
     hosts:
@@ -35,20 +48,19 @@ servers:
     proxy: false
     options:
       init: true
-      # Nested Docker, off by default. ZIMMER_NESTED_DOCKER=1 at deploy time runs this
-      # role under sysbox, which gives the container its own user namespace, and starts
-      # it as (namespaced) root so the entrypoint can bring up an inner dockerd before
-      # dropping back to uid 1000. Unset, both values are exactly what Docker would do
-      # anyway, so a host without sysbox installed deploys unchanged.
+      # Nested Docker (on by default here -- see the header). Sysbox gives this role
+      # its own user namespace, and container-root lets the entrypoint bring up an
+      # inner dockerd before dropping back to uid 1000. Agent sessions run in this
+      # container, and `.agent-containers/` is what they need a daemon for.
       #
       # The switch is deliberately one variable rather than three: a host with the
       # runtime but not the user, or the user but not the env, fails in ways that look
       # like an app bug. See docs/operate/nested-docker.md.
-      runtime: <%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "sysbox-runc" : "runc" %>
+      runtime: <%= nested_docker ? "sysbox-runc" : "runc" %>
       # Quoted: YAML reads a bare 0:0 as a sexagesimal integer and hands Kamal `0`,
       # which is uid 0 with the image's default gid -- close enough to look right and
       # wrong in a way nothing would report.
-      user: "<%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "0:0" : "1000:1000" %>"
+      user: "<%= nested_docker ? "0:0" : "1000:1000" %>"
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
@@ -73,7 +85,11 @@ env:
     # Armed only when the worker is running under sysbox (see the role's options
     # above). The entrypoint reads it to decide whether to start an inner dockerd,
     # and refuses if the container turns out not to be user-namespaced.
-    ZIMMER_NESTED_DOCKER: "<%= ENV.fetch("ZIMMER_NESTED_DOCKER", "0") %>"
+    #
+    # This lands on BOTH roles -- env.clear is destination-wide -- but only worker
+    # runs as root, and the entrypoint's dockerd block is inside the `id -u = 0`
+    # branch. web reads it as uid 1000 and skips the whole thing.
+    ZIMMER_NESTED_DOCKER: "<%= nested_docker ? "1" : "0" %>"
     # Canonical external host: the custom domain (Caddy terminates TLS on :443 in
     # front of kamal-proxy). Without this, McpOauthService falls back to
     # localhost:3000 and every OAuth callback breaks.
