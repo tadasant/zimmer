@@ -241,12 +241,16 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
       sweep = stubs.lines.grep(/^FIND-ARGV /).first
       assert sweep, "the entrypoint never swept:\n#{output}"
 
-      roots = sweep.split[1..].take_while { |a| a.start_with?("/") }
+      # Skip the flags that precede the operands (`-H`), then take the operands.
+      roots = sweep.split[1..].drop_while { |a| !a.start_with?("/") }.take_while { |a| a.start_with?("/") }
       assert_equal [ "#{app_home}/.claude", "#{app_home}/.config/gh", "#{app_home}/.zimmer" ], roots.sort,
         "the sweep must cover the mounted volumes, and only those"
       refute_includes roots, app_home, "sweeping all of $HOME would rewrite container-layer state"
       refute_includes roots, "#{app_home}/.cache"
 
+      # -H: `[ -d ]` above follows a symlinked root, so find must too, or such a root
+      # is swept as a single inode while still logging as though it had run.
+      assert_match(/\AFIND-ARGV -H /, sweep)
       # -xdev: a dev stack's own container filesystems can appear under these paths,
       # and they are not ours to rewrite.
       assert_match(/ -xdev /, sweep)
