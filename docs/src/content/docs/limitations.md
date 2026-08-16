@@ -2789,18 +2789,27 @@ from a droplet that is down, rebooting, or wedged; DigitalOcean meanwhile report
 no power events, because nothing about the virtual machine has changed. The app is fine throughout.
 `/up` answers 200 in under a tenth of a second the moment the pressure lifts.
 
-The worker now runs with `memory: 2g` (`config/deploy.staging.yml`). That does not prevent the
+Staging's worker carries `memory: 2g` (`config/deploy.staging.yml`). That does not prevent the
 runaway; it confines it. The kill lands in the worker's cgroup, the worker restarts under
 `unless-stopped`, and sshd stays up — which is the property that matters, because the alternative is
 an outage nobody can log in to diagnose. A restarting worker is still a stalled queue on staging
 until the underlying allocation is found.
 
+Production's worker carries no such cap. That is not an oversight, but it is a real gap: the same
+image runs the same jobs there, so the same allocation is possible. It survives on headroom alone —
+the production droplet is 16 GB against staging's 4 GB, so 2.8 GB is absorbed rather than fatal. The
+gap is that headroom is not a bound. An allocation that scales with the data it touches has no
+ceiling that 16 GB is guaranteed to sit above, and production is where agent sessions actually live.
+
 Two diagnostic notes, since this one wastes time in a predictable way. `staging.zimmer.tadasant.com`
 resolves to a **tailnet** address, and the droplet's firewall allows inbound UDP/41641 only — so a
 curl from off the tailnet times out whether staging is healthy or not, and that timeout is never
 evidence of anything. And a Kamal `RestartCount` climbing into the hundreds on the worker is the
-signature of this loop rather than of a crash on boot: check `dmesg -T | grep "Out of memory"` for
-`global_oom` before reading the application logs, which will show nothing at all across the window.
+signature of this loop rather than of a crash on boot. Reach for `dmesg -T | grep oom-kill` before
+the application logs, which show nothing at all across the window. Grep that line rather than the
+`Out of memory: Killed process` one: the victim line names the process but not the scope, and it is
+the `oom-kill:` line that carries both `global_oom` — host-wide, every cgroup at risk — and
+`task_memcg=/system.slice/docker-<id>.scope`, which is the container ID to blame.
 
 ---
 
