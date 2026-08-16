@@ -624,6 +624,25 @@ jobs:
           fi
           echo "✅ worker is user-namespaced, socket-free, and its HOME is usable at uid 1000"
 
+      # Everything above proves the worker is healthy AT THIS MOMENT. This installs the
+      # thing that keeps asking.
+      #
+      # The failure it watches for is #502: a cgroup OOM under sysbox can empty the
+      # worker of every process while Docker still reports `Status=running,
+      # Restarts=0`, so `unless-stopped` never fires and every container-shaped check
+      # -- including the ones in this workflow -- passes against a worker that runs no
+      # jobs and no sessions. The watchdog probes with a real `docker exec` instead,
+      # which is the operation that actually breaks.
+      #
+      # Unconditional, not gated on nested_docker: a worker that cannot be exec'd into
+      # is worth catching under plain runc too, and a host that flips the switch off
+      # should not silently lose its watchdog. It is a converge, not a one-off -- the
+      # droplet is persistent and cloud-init only ever runs once.
+      - name: Install the worker watchdog (converge)
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+        run: bash scripts/install-worker-watchdog.sh "$STAGING_HOST"
+
       # `/up` above is a liveness ping, not a health check: Rails answers it 200 for
       # any process that finished booting, so a container with a dead database, an
       # unreachable Redis, or a cache store that silently drops every write walks
