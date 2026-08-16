@@ -7,11 +7,11 @@
 # Two checks, both against numbers that have already been measured. A spot
 # session starts while BOTH hold:
 #
-#   1. **The serving Claude Code account is under both targets.** Utilization as
-#      last read, not a projection of it. Once a window reaches its target, spot
-#      work pauses until utilization comes back down — the 5-hour window falls on
-#      its own as its sliding window ages events out, and the weekly one behind
-#      it.
+#   1. **The account pool is under both targets, in aggregate.** Utilization as
+#      last read, averaged across every account, not a projection of it. Once a
+#      window reaches its target, spot work pauses until utilization comes back
+#      down — the 5-hour window falls on its own as its sliding window ages
+#      events out, and the weekly one behind it.
 #   2. **The fleet has a free slot.** `spot_max_concurrent_sessions` (10 by
 #      default, set on /quotas) caps how many sessions run at once, which is
 #      what bounds how fast the quota can be spent.
@@ -34,20 +34,28 @@
 # session is not reconsidered when the fleet grows or a window fills; the
 # decision point that means something is "should this work begin at all".
 #
-# == The account that will actually serve
+# == The pool decides, not one account
 #
-# Utilization is read from the account Zimmer is serving from, because that is
-# the one a session started now will spend against: rotation happens when the
-# serving account is REFUSED, not when it reaches a target, so a spare's headroom
-# is not headroom this session can use. A spare's reading is also the stalest
-# thing in the pool — ClaudeUsageSamplerJob refreshes only the serving account,
-# and a spare is read on rotation or a /quotas visit — so deciding on the
-# roomiest account would mean deciding on the number least likely to be true.
+# The targets are read across the whole pool — `ClaudeAccountPool`, the same
+# average /quotas renders as "Avg 5-Hour Utilization (effective)". One account
+# at its cap therefore does not stop the fleet while the rest of the pool has
+# room, which is what a pool is for: rotation moves work off a refused account
+# onto the accounts that still have headroom, so the quota the deployment can
+# actually spend is the pool's, not whichever account happens to be serving this
+# minute.
 #
-# With no current account, the first available one stands in: that is who would
-# serve. `available` is the pool AccountRotationService picks from — active
-# status, credentials on file — so an account already marked quota_exceeded is
-# skipped rather than read.
+# **Every account counts, whatever its status** — active, quota_exceeded, and
+# needs_reauth alike. A needs_reauth account is one Zimmer cannot serve from
+# right now, not one whose quota is spent: its windows keep draining while it
+# waits for a human, and its headroom is real again the moment they log back in.
+# Dropping it would shrink the denominator to the serving accounts and make the
+# average jump every time an account fell out of the pool or came back.
+#
+# The average carries one correction, and it is the page's, not a second rule
+# invented here: an account whose 7-day window is spent counts as 100% in the
+# 5-hour figure, because its 5-hour headroom cannot be served. That is the whole
+# reason the aggregate does not simply hand a dead account's empty 5-hour
+# counter back as room to spend.
 #
 # == "Hold" means DEFER, not refuse
 #
@@ -85,8 +93,9 @@ class SpotGateService
     end
   end
 
-  # One account's two windows, so the pool can be compared account by account.
-  AccountReading = Data.define(:email, :five_hour, :weekly) do
+  # The pool's two windows, averaged across every account, and how many accounts
+  # went into that average.
+  PoolReading = Data.define(:five_hour, :weekly, :account_count, :read_count) do
     # Window label => reading, skipping a window with no usable number. Labelled
     # rather than positional because two windows can hold equal values and Data
     # compares by value — telling them apart by identity would occasionally name
@@ -96,10 +105,18 @@ class SpotGateService
     def at_limit = labelled.select { |_label, window| window.at_limit? }
 
     def at_limit? = at_limit.any?
+
+    # How the average was taken, for the sentence that reports it. Says "3 of 4"
+    # only when they differ, because an account with no reading at all is the
+    # case worth naming — the pool figure is quietly over a smaller set.
+    def accounts_phrase
+      counted = read_count == account_count ? "all #{account_count}" : "#{read_count} of #{account_count}"
+      "averaged across #{counted} #{'account'.pluralize(account_count)}"
+    end
   end
 
   Decision = Data.define(:allowed, :reason, :detail, :five_hour, :weekly,
-                         :active_sessions, :fleet_cap, :account_email) do
+                         :active_sessions, :fleet_cap, :accounts_read, :pool_size) do
     def allowed? = allowed
     def held? = !allowed
 
@@ -110,7 +127,8 @@ class SpotGateService
         detail: detail,
         active_sessions: active_sessions,
         fleet_cap: fleet_cap,
-        account_email: account_email,
+        accounts_read: accounts_read,
+        pool_size: pool_size,
         five_hour: five_hour&.to_h,
         weekly: weekly&.to_h
       }
@@ -122,7 +140,8 @@ class SpotGateService
   ALWAYS_ALLOWED = Decision.new(
     allowed: true, reason: "priority",
     detail: "Priority sessions are never gated on quota or on the fleet cap.",
-    five_hour: nil, weekly: nil, active_sessions: nil, fleet_cap: nil, account_email: nil
+    five_hour: nil, weekly: nil, active_sessions: nil, fleet_cap: nil,
+    accounts_read: nil, pool_size: nil
   ).freeze
 
   class << self
@@ -158,17 +177,17 @@ class SpotGateService
       return allow("gating_disabled", "Spot gating is turned off — spot sessions start like any other.")
     end
 
-    account = serving_reading(setting)
-    return allow("no_snapshot", "No Claude Code quota reading to decide on.") if account.nil?
+    pool = pool_reading(setting)
+    return allow("no_snapshot", "No Claude Code quota reading to decide on.") if pool.nil?
 
     fleet_cap = setting.spot_max_concurrent_sessions
 
-    if account.at_limit?
-      at_limit(account, fleet_cap)
+    if pool.at_limit?
+      at_limit(pool, fleet_cap)
     elsif active_sessions >= fleet_cap
-      at_fleet_cap(account, fleet_cap)
+      at_fleet_cap(pool, fleet_cap)
     else
-      allowed(account, fleet_cap)
+      allowed(pool, fleet_cap)
     end
   # StandardError, deliberately broad. ActiveRecord::ConnectionNotEstablished and
   # its ConnectionTimeoutError subclass descend from AdapterError, NOT from
@@ -194,7 +213,7 @@ class SpotGateService
       allowed: true, reason: "unavailable",
       detail: "Could not evaluate the spot gate (#{error.class}); allowing the session.",
       five_hour: nil, weekly: nil,
-      active_sessions: @active_sessions, fleet_cap: nil, account_email: nil
+      active_sessions: @active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil
     )
   end
 
@@ -202,50 +221,51 @@ class SpotGateService
     Decision.new(
       allowed: true, reason: reason, detail: detail,
       five_hour: nil, weekly: nil,
-      active_sessions: active_sessions, fleet_cap: nil, account_email: nil
+      active_sessions: active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil
     )
   end
 
-  def allowed(account, fleet_cap)
+  def allowed(pool, fleet_cap)
     decision(
       allowed: true, reason: "within_limits",
-      detail: "#{slots_phrase(fleet_cap)} taken, and #{window_phrase(account)} on #{account.email}.",
-      account: account, fleet_cap: fleet_cap
+      detail: "#{slots_phrase(fleet_cap)} taken, and #{window_phrase(pool)}, #{pool.accounts_phrase}.",
+      pool: pool, fleet_cap: fleet_cap
     )
   end
 
-  # A window has reached its target. Spot work pauses until utilization comes
-  # back down; nothing is projected and nothing is cancelled.
-  def at_limit(account, fleet_cap)
-    reached = account.at_limit.map do |label, window|
+  # A window has reached its target across the pool. Spot work pauses until
+  # utilization comes back down; nothing is projected and nothing is cancelled.
+  def at_limit(pool, fleet_cap)
+    reached = pool.at_limit.map do |label, window|
       "#{label} window at #{window.current_pct.round}% of its #{window.threshold_pct.round}% target"
     end
 
     decision(
       allowed: false, reason: "at_utilization_limit",
-      detail: "Holding spot sessions: #{reached.join(' and ')} on #{account.email}. " \
+      detail: "Holding spot sessions: #{reached.join(' and ')}, #{pool.accounts_phrase}. " \
               "Spot work waits for utilization to come back down. Priority sessions are unaffected.",
-      account: account, fleet_cap: fleet_cap
+      pool: pool, fleet_cap: fleet_cap
     )
   end
 
   # Every slot is taken. Priority sessions occupy slots and are never held by
   # this — a fleet of priority work crowding spot work out is the intent.
-  def at_fleet_cap(account, fleet_cap)
+  def at_fleet_cap(pool, fleet_cap)
     decision(
       allowed: false, reason: "fleet_at_cap",
       detail: "Holding spot sessions: #{slots_phrase(fleet_cap)} taken. Every running session " \
               "counts, priority included — priority work is meant to crowd spot work out. Raise the " \
               "limit on /quotas to widen it.",
-      account: account, fleet_cap: fleet_cap
+      pool: pool, fleet_cap: fleet_cap
     )
   end
 
-  def decision(allowed:, reason:, detail:, account:, fleet_cap:)
+  def decision(allowed:, reason:, detail:, pool:, fleet_cap:)
     Decision.new(
       allowed: allowed, reason: reason, detail: detail.squish,
-      five_hour: account.five_hour, weekly: account.weekly,
-      active_sessions: active_sessions, fleet_cap: fleet_cap, account_email: account.email
+      five_hour: pool.five_hour, weekly: pool.weekly,
+      active_sessions: active_sessions, fleet_cap: fleet_cap,
+      accounts_read: pool.read_count, pool_size: pool.account_count
     )
   end
 
@@ -253,46 +273,31 @@ class SpotGateService
     "#{active_sessions} of #{fleet_cap} session #{'slot'.pluralize(fleet_cap)}"
   end
 
-  def window_phrase(account)
-    account.labelled.map do |label, window|
+  def window_phrase(pool)
+    pool.labelled.map do |label, window|
       "#{label} at #{window.current_pct.round}% of its #{window.threshold_pct.round}% target"
     end.join(", ")
   end
 
-  # The account a session started now would spend against: the one marked
-  # current, or the first the pool would serve from when none is. An account with
-  # no reading, or none whose windows can be read, leaves nothing to decide on and
-  # the gate falls open.
-  def serving_reading(setting)
-    serving_accounts.lazy.filter_map { |account| reading_for(account, setting) }.first
-  end
+  # Both windows as the pool is carrying them. A pool where nothing has been read,
+  # or where neither window can be read, leaves nothing to decide on and the gate
+  # falls open.
+  def pool_reading(setting)
+    measure = ClaudeAccountPool.measure
+    return nil unless measure.any_readings?
 
-  def serving_accounts
-    scope = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME)
-    current = scope.find_by(is_current: true)
-    ([ current ].compact + scope.available.to_a).uniq
-  end
-
-  def reading_for(account, setting)
-    snapshot = account.latest_snapshot
-    return nil if snapshot.nil?
-
-    five_hour = reading(snapshot.utilization_5h, snapshot.reset_5h,
-                        setting.spot_gate_five_hour_threshold_pct)
-    weekly = reading(snapshot.utilization_7d, snapshot.reset_7d,
-                     setting.spot_gate_weekly_threshold_pct)
-    # Neither window readable is a reading in name only — skip it rather than let
-    # an account with nothing to say answer for the deployment.
+    five_hour = reading(measure.five_hour, setting.spot_gate_five_hour_threshold_pct)
+    weekly = reading(measure.weekly, setting.spot_gate_weekly_threshold_pct)
     return nil if five_hour.nil? && weekly.nil?
 
-    AccountReading.new(email: account.email, five_hour: five_hour, weekly: weekly)
+    PoolReading.new(five_hour: five_hour, weekly: weekly,
+                    account_count: measure.account_count, read_count: measure.read_count)
   end
 
-  # A window's utilization as it stands. Past its reset the sliding window has
-  # cleared, so `effective_utilization` reads it as zero rather than holding work
-  # against a number that no longer applies.
-  def reading(utilization, reset_at, threshold_pct)
-    current = ClaudeAccountQuotaSnapshot.effective_utilization(utilization, reset_at)
+  # A window's pooled utilization against its target. ClaudeAccountPool has
+  # already applied the reset rule per account — a window past its reset carries
+  # nothing — so what arrives here is the average of numbers that still apply.
+  def reading(current, threshold_pct)
     return nil if current.nil?
 
     Reading.new(current: current, threshold: threshold_pct.to_f / 100.0)

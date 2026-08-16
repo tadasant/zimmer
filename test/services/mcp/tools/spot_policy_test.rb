@@ -46,8 +46,8 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   # The page and the tool render the same decision, which is the property that
   # keeps the card's badge and the tool's answer from disagreeing.
   test "get_spot_policy reports the live decision and both windows" do
-    # The gate reads the serving account, and the fixtures ship one. Leave only
-    # this account with anything to read.
+    # The gate averages every account with a reading. Leave only this one with
+    # anything to say.
     ClaudeAccountQuotaSnapshot.delete_all
     account = ClaudeAccount.create!(email: "mcp-window@example.com", runtime: "claude_code",
                                     oauth_config: { "x" => 1 }, is_current: true)
@@ -60,7 +60,10 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     output = get_policy
     decision = SpotGateService.evaluate
 
-    assert_match(/Windows read from:\*\* mcp-window@example\.com/, output)
+    assert_match(/Windows averaged across:\*\* 1 of \d+ accounts in the pool/, output)
+    assert_match(/needs_reauth included/, output)
+    refute_match(/mcp-window@example\.com/, output,
+                 "the decision is the pool's, so no single account is named as the one that decides")
     assert_match(/Utilization now:\*\* 42\.0%/, output)
     assert_match(/At the target:\*\* no/, output)
     assert_equal decision.allowed?, output.include?("**Spot sessions:** running"),
@@ -81,6 +84,29 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_match(/Spot sessions:\*\* HELD/, output)
     assert_match(/Reason:\*\* `at_utilization_limit`/, output)
     assert_match(/At the target:\*\* yes — spot work is paused until it falls/, output)
+  end
+
+  # Parity with /quotas: an agent asking why it is held has to see the same
+  # aggregate the page shows, including the accounts a human cannot serve from.
+  test "get_spot_policy averages every account, needs_reauth included" do
+    ClaudeAccountQuotaSnapshot.delete_all
+    ClaudeAccount.for_runtime("claude_code").destroy_all
+    serving = ClaudeAccount.create!(email: "mcp-serving@example.com", runtime: "claude_code",
+                                    oauth_config: { "x" => 1 }, is_current: true)
+    reauth = ClaudeAccount.create!(email: "mcp-reauth@example.com", runtime: "claude_code",
+                                   oauth_config: { "x" => 1 }, status: :needs_reauth)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: serving, utilization_5h: 0.95, utilization_7d: 0.10,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1, trigger: "usage_sample")
+    ClaudeAccountQuotaSnapshot.create!(claude_account: reauth, utilization_5h: 0.05, utilization_7d: 0.10,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1, trigger: "usage_sample")
+    AppSetting.editable.update!(spot_gating_enabled: true,
+                                spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+
+    output = get_policy
+
+    assert_match(/Windows averaged across:\*\* all 2 accounts in the pool/, output)
+    assert_match(/Utilization now:\*\* 50\.0%/, output,
+                 "the serving account alone reads 95% — the pool average is what the tool reports")
   end
 
   test "get_spot_policy reflects a demotion" do

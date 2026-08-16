@@ -113,21 +113,11 @@ module QuotasHelper
     snapshot.seven_day_window_spent?
   end
 
-  # The 5-hour utilization an account contributes to the pool view.
-  #
-  # An account whose weekly allowance is spent cannot serve a request no matter
-  # how much 5-hour headroom its counter reports, so it counts as fully utilized.
-  # Anywhere else this is the raw 5-hour figure, which keeps the number to one
-  # statement: 5-hour utilization, with weekly-blocked accounts counted as 100%.
-  #
-  # The correction runs one way. The 7-day window subsumes the 5-hour one: an
-  # account at its 5-hour cap is idle for minutes and then serves again, so it
-  # must never be reported as having burned its week.
+  # The 5-hour utilization an account contributes to the pool view. The rule
+  # lives on ClaudeAccountQuotaSnapshot because the spot gate decides on the same
+  # figure this page renders — see ClaudeAccountPool.
   def pool_utilization_5h(snapshot)
-    return nil if snapshot.nil?
-    return 1.0 if seven_day_window_spent?(snapshot)
-
-    effective_utilization(snapshot.utilization_5h, snapshot.reset_5h)
+    snapshot&.pool_utilization_5h
   end
 
   # True when an account's 5-hour counter reads as headroom the account cannot
