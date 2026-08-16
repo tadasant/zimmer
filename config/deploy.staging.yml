@@ -139,8 +139,8 @@ env:
     - SECRET_KEY_BASE
     # Decrypts the committed config/credentials/staging.yml.enc, so SecretsLoader
     # can serve mcp_secrets (SLACK_BOT_TOKEN, ENG_ALERTS_SLACK_CHANNEL_ID,
-    # OPERATOR_SLACK_USER_ID) to
-    # SlackService, AlertService, and any MCP server with a ${VAR} placeholder.
+    # OPERATOR_SLACK_USER_ID) to SlackService, AlertService, and any MCP server
+    # with a ${VAR} placeholder.
     # Blank or unset simply leaves the credentials inert -- see .kamal/secrets.staging.
     - RAILS_MASTER_KEY
     - API_KEYS

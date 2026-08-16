@@ -35,15 +35,21 @@ class AlertService
   # Much longer than DEDUP_WINDOW on purpose. The conditions worth a DM stay
   # broken until a human acts on them, and the background sweeps that discover
   # them run every minute or two — an hourly re-nag would be 24 DMs a day about
-  # one dead account. A DM is cleared the moment the condition resolves (see
-  # {clear_dm_suppression}), so this window only ever bounds an unfixed problem.
+  # one dead account. The suppression is dropped when a human resolves the
+  # condition (see {clear_dm_suppression}, called from the login drivers'
+  # `capture!`), so in the ordinary case this window only bounds an unfixed
+  # problem. It is deliberately NOT dropped when the status merely changes —
+  # ClaudeAccount#latch_needs_reauth_transition explains why that would flood.
   OPERATOR_DM_DEDUP_WINDOW = 12.hours
 
   # Read through SecretsLoader like the other Slack settings, unlike
   # ALERTS_ENABLED_ENV_VAR. That var is ENV-only because it is the authorization
   # to page, and a secret-store value travels into every agent clone's `.env`.
-  # This one is only an address — knowing it does not let a clone send anything,
-  # since the environment gate still has to open first.
+  # This one is only an address. That is a smaller escalation, not none: the same
+  # bundle already carries SLACK_BOT_TOKEN, so what a clone gains is *which human*
+  # to DM rather than the ability to DM at all. Weighed against keeping the
+  # recipient configurable per deployment, and recorded in
+  # docs/limitations.md alongside the token itself.
   OPERATOR_USER_ID_KEY = "OPERATOR_SLACK_USER_ID"
 
   # Upper bound on the Slack `text:` field. Slack imposes no hard cap there, but
