@@ -78,6 +78,7 @@ class RuntimeConfigPostProcessor
     retarget_zimmer_servers_to_current_env!(servers)
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
+    isolate_colliding_npx_caches!(servers)
 
     persist_config!(config)
   end
@@ -117,6 +118,7 @@ class RuntimeConfigPostProcessor
     # be the one server on the instance that silently loses its approval address.
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
+    isolate_colliding_npx_caches!(servers)
 
     persist_config!(config)
   end
@@ -360,6 +362,40 @@ class RuntimeConfigPostProcessor
     # process; this is the other half.
     Rails.logger.info "[#{self.class.name}] Wrote #{ElicitationEndpoint::VARIABLES.join(' + ')} " \
       "into the env of #{written.size} stdio MCP server(s): #{written.join(', ')}"
+  end
+
+  # Give each stdio server that shares an `npx` install with another server in
+  # this config its own npm cache, so the two cannot race to populate the same
+  # `_npx/<hash>` directory on a cold clone.
+  #
+  # This is the prevention half of the npx-cache story; NpxCacheHealService is the
+  # repair half. See NpxCacheIsolator for why a per-clone cache is not enough and
+  # why only colliding servers are isolated.
+  #
+  # Runs after #resolve_secrets! so the args it reads are the final ones the
+  # runtime will execute.
+  def isolate_colliding_npx_caches!(servers)
+    return if working_directory.blank?
+
+    isolated = NpxCacheIsolator.colliding_server_names(servers).filter_map do |name|
+      entry = servers[name]
+      env = (entry["env"] ||= {})
+      next unless env.is_a?(Hash)
+      # An explicit cache location in the catalog entry is the operator's call.
+      next if env[NpxCacheIsolator::NPM_CACHE_VAR].present?
+
+      env[NpxCacheIsolator::NPM_CACHE_VAR] = NpxCacheIsolator.cache_dir_for(working_directory, name)
+      # Codex would otherwise have two sources for one variable (see
+      # #inject_elicitation_env!); the literal we just wrote is the one Zimmer means.
+      drop_forwarded_env_var!(entry, NpxCacheIsolator::NPM_CACHE_VAR)
+      name
+    end
+
+    return if isolated.empty?
+
+    Rails.logger.info "[#{self.class.name}] #{isolated.size} MCP server(s) share an npx package " \
+      "(#{isolated.join(', ')}) — giving each its own #{NpxCacheIsolator::NPM_CACHE_VAR} so their " \
+      "installs cannot race the same _npx cache directory."
   end
 
   # The elicitation variables as the agent process will see them, so a server's

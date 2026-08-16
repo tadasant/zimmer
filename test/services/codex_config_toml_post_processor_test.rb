@@ -687,6 +687,39 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "Written .codex/config.toml must match the golden serialization byte-for-byte"
   end
 
+  # ---------------------------------------------------------------------------
+  # Per-server npm cache for servers that share an npx package
+  #
+  # The isolation lives in the shared base class, so it runs for Codex too — and
+  # Codex is where the forwarding table matters: a name written literally into
+  # `env` must not also sit in `env_vars`, or Codex has two sources for one
+  # variable and Zimmer no say in which wins.
+  # ---------------------------------------------------------------------------
+
+  test "post_process! isolates the npm cache of Codex servers that share an npx package" do
+    write_config(
+      "1password-tadas-rw" => {
+        "command" => "npx", "args" => [ "-y", "onepassword-mcp-server@latest" ],
+        "env_vars" => [ "NPM_CONFIG_CACHE" ]
+      },
+      "1password-pulsemcp-rw" => { "command" => "npx", "args" => [ "-y", "onepassword-mcp-server@latest" ] },
+      "solo" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+    tadas = servers["1password-tadas-rw"]
+    pulsemcp = servers["1password-pulsemcp-rw"]
+
+    assert tadas.dig("env", "NPM_CONFIG_CACHE").present?
+    assert_not_equal tadas.dig("env", "NPM_CONFIG_CACHE"), pulsemcp.dig("env", "NPM_CONFIG_CACHE")
+    assert_nil servers.dig("solo", "env", "NPM_CONFIG_CACHE"),
+      "a server that shares no package keeps the shared per-clone cache"
+    assert_nil tadas["env_vars"],
+      "the host-env forwarding rule must go once Zimmer writes the value literally"
+  end
+
   private
 
   def build_processor

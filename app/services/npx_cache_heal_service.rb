@@ -172,10 +172,15 @@ class NpxCacheHealService
     # 1. Absolute paths: every distinct `_npx/<hash>` directory named in the
     #    error's require stack (deleted as-is).
     # 2. Recovered hashes: when only a bare `_npx/<hash>` token is present (e.g. a
-    #    relativized/truncated log), rebuild `<working_directory>/.npm-cache/_npx/<hash>`
-    #    so the fallback is still a single-package eviction.
+    #    relativized/truncated log), glob for that hash under the clone's cache so
+    #    the fallback is still a single-package eviction.
     # 3. Last resort: when the error references `_npx` but no hash at all can be
-    #    parsed out, the whole per-clone `_npx` directory under working_directory.
+    #    parsed out, every `_npx` directory under the clone's `.npm-cache`.
+    #
+    # Both fallbacks glob rather than assuming one fixed location, because a server
+    # that shares an npx package with another gets its own cache root under
+    # `.npm-cache/isolated/<server>/` (NpxCacheIsolator) and its `_npx` therefore
+    # does not sit directly under `.npm-cache`.
     def corrupt_cache_paths(error, working_directory)
       text = error.to_s
 
@@ -184,22 +189,36 @@ class NpxCacheHealService
 
       hashes = text.scan(NPX_HASH_TOKEN_PATTERN).flatten.uniq
       if hashes.any? && working_directory.present?
-        return hashes.map { |hash| File.join(working_directory, ".npm-cache", "_npx", hash) }
+        return hashes.flat_map { |hash| npx_dirs(working_directory, hash) }.uniq
       end
 
-      fallback = per_clone_npx_dir(working_directory)
-      fallback ? [ fallback ] : []
+      npx_dirs(working_directory)
     end
 
-    def per_clone_npx_dir(working_directory)
-      return nil if working_directory.blank?
+    # Every `_npx` cache directory in the clone — the shared one directly under
+    # `.npm-cache` and any isolated per-server roots beneath it. Restricted to one
+    # `isolated/<server>/` level of nesting so the glob stays bounded on a large cache.
+    #
+    # @param hash [String, nil] when given, the specific `_npx/<hash>` tree
+    def npx_dirs(working_directory, hash = nil)
+      return [] if working_directory.blank?
 
-      File.join(working_directory, ".npm-cache", "_npx")
+      leaf = hash ? File.join("_npx", hash) : "_npx"
+      cache_root = File.join(working_directory, ".npm-cache")
+
+      [ File.join(cache_root, leaf), File.join(cache_root, "*", "*", leaf) ]
+        .flat_map { |pattern| pattern.include?("*") ? Dir.glob(pattern) : [ pattern ] }
+        .uniq
     end
 
     # Guard against deleting anything outside a Zimmer clone's npm cache. Only paths
-    # that live under ~/.zimmer/clones AND inside a `.npm-cache/_npx`
+    # that live under ~/.zimmer/clones AND carry both a `.npm-cache` and an `_npx`
     # segment are eligible.
+    #
+    # The two segments are checked independently rather than as one adjacent
+    # `.npm-cache/_npx` string: a server isolated by NpxCacheIsolator keeps its
+    # cache at `.npm-cache/isolated/<server>/_npx/<hash>`, which is just as much
+    # this clone's npm cache and just as safe to evict.
     def safe_to_remove?(path)
       return false if path.blank?
 
@@ -208,9 +227,11 @@ class NpxCacheHealService
       # path has a single source of truth (it's a lambda so it honors Dir.home at
       # call time, which lets tests redirect HOME).
       clones_base = File.expand_path(CacheClearService::CLONES_BASE_DIR.call)
+      separator = File::SEPARATOR
 
-      expanded.start_with?(clones_base + File::SEPARATOR) &&
-        expanded.include?("#{File::SEPARATOR}.npm-cache#{File::SEPARATOR}_npx")
+      expanded.start_with?(clones_base + separator) &&
+        expanded.include?("#{separator}.npm-cache#{separator}") &&
+        (expanded.include?("#{separator}_npx#{separator}") || expanded.end_with?("#{separator}_npx"))
     end
   end
 end
