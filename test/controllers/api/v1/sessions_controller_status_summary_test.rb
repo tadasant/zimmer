@@ -108,20 +108,19 @@ class Api::V1::SessionsControllerStatusSummaryTest < ActionDispatch::Integration
     assert_response :accepted
   end
 
-  test "regenerate_status_summary refuses with a reason when the clone is gone" do
+  test "regenerate_status_summary accepts an archived session whose clone is gone" do
     @session.update_column(:status, Session.statuses[:archived])
     FileUtils.remove_entry(@clone_path)
 
-    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
       post "/api/v1/sessions/#{@session.id}/regenerate_status_summary", headers: @headers
     end
 
-    assert_response :unprocessable_entity
-    assert_match "deleted when it went to the trash", response.body
+    assert_response :accepted
   end
 
-  # 422 covers every structural refusal, not just the clone — a caller must not
-  # read 202 for a session that has nothing to fork for any reason.
+  # 422 covers the refusals that remain — a caller must not read 202 for a
+  # session that has nothing to summarize at all.
   test "regenerate_status_summary refuses a session with no transcript" do
     @session.update_column(:transcript, nil)
 

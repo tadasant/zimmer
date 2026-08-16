@@ -7,7 +7,9 @@ require "path_sanitizer"
 #
 # Forking creates a new session that is a "carbon copy" of the source session
 # up to and including the specified message index. The new session:
-# - Has a new clone directory (copy of the source clone's git state)
+# - Has a new clone directory (copy of the source clone's git state — or, for a
+#   caller that passes `scaffold_missing_clone` and whose fork does not read the
+#   tree, an empty directory when the source clone is already gone)
 # - Has a new session_id UUID for Claude CLI
 # - Has a truncated transcript containing only messages up to the fork point
 # - Starts in needs_input status, ready for user to provide a new prompt
@@ -74,7 +76,7 @@ class ForkSessionService
       .min
   end
 
-  attr_reader :source_session, :message_index, :file_system, :extra_metadata, :copy_exclusions
+  attr_reader :source_session, :message_index, :file_system, :extra_metadata, :copy_exclusions, :scaffold_missing_clone
 
   # @param extra_metadata [Hash] merged into the forked session's metadata at
   #   CREATE time. Callers that need the fork classified from its very first
@@ -84,15 +86,24 @@ class ForkSessionService
   # @param copy_exclusions [Array<String>] fnmatch patterns, relative to the
   #   clone root, to leave out of the copied clone. Empty by default: a
   #   user-initiated fork is a working session and wants the tree it forked.
-  def initialize(source_session:, message_index:, file_system: nil, extra_metadata: {}, copy_exclusions: [])
+  # @param scaffold_missing_clone [Boolean] when the source clone is gone, give
+  #   the fork an empty working directory instead of failing. Off by default,
+  #   and only for callers whose fork does not read the tree — see
+  #   #scaffold_clone.
+  def initialize(source_session:, message_index:, file_system: nil, extra_metadata: {}, copy_exclusions: [], scaffold_missing_clone: false)
     @source_session = source_session
     @message_index = message_index
     @file_system = file_system || RealFileSystemAdapter.new
     @extra_metadata = extra_metadata || {}
     @copy_exclusions = copy_exclusions || []
+    @scaffold_missing_clone = scaffold_missing_clone
     # Set by the two paths that can end on a missing source clone — see
     # #archived_source_clone? — and carried out on the Result.
     @source_clone_discarded = false
+    # Whether this fork's clone was scaffolded rather than copied. Recorded on
+    # the fork's metadata so an operator reading an oddly-empty clone knows it
+    # was made that way on purpose.
+    @clone_scaffolded = false
     @logger = StructuredLogger.new({ session_id: source_session.id, service: "ForkSessionService" })
   end
 
@@ -191,6 +202,23 @@ class ForkSessionService
     # Source session must exist and have a transcript
     return "Source session has no transcript" if source_session.transcript.blank?
 
+    clone_error = validate_source_clone
+    return clone_error if clone_error
+
+    # Parse transcript and validate message_index
+    parsed = parse_transcript
+    return "Failed to parse transcript" if parsed.nil?
+    return "Message index #{message_index} is out of range (transcript has #{parsed.length} messages)" if message_index < 0 || message_index >= parsed.length
+
+    nil # No error
+  end
+
+  # A source clone this fork can be built from — unless the caller has said it
+  # does not need one, in which case a missing clone is a scaffold rather than a
+  # failure and there is nothing here to check.
+  def validate_source_clone
+    return nil if scaffold_missing_clone
+
     # Source session must have clone metadata
     source_clone_path = source_session.metadata&.dig("clone_path")
     return "Source session has no clone path" if source_clone_path.blank?
@@ -203,12 +231,7 @@ class ForkSessionService
       return "Source clone directory does not exist"
     end
 
-    # Parse transcript and validate message_index
-    parsed = parse_transcript
-    return "Failed to parse transcript" if parsed.nil?
-    return "Message index #{message_index} is out of range (transcript has #{parsed.length} messages)" if message_index < 0 || message_index >= parsed.length
-
-    nil # No error
+    nil
   end
 
   def parse_transcript
@@ -231,31 +254,10 @@ class ForkSessionService
   end
 
   def create_forked_clone
-    source_clone_path = source_session.metadata["clone_path"]
+    new_clone_path = generate_fork_clone_path
 
-    # Generate new clone path the way GitCloneService#generate_clone_path does:
-    # "<repo>-<branch>-<timestamp>-<random>", with the repository name taken
-    # from the git root and the branch's slashes flattened. Deriving either from
-    # the source clone's directory name instead cannot be done unambiguously —
-    # both halves can contain dashes ("tadasant-internal", a branch
-    # "claude/fix-x") — and an unsanitized branch would nest the fork one level
-    # below the clones base, where the orphan sweeps, which scan the base's
-    # direct children, would never see it.
-    timestamp = Time.now.to_i
-    random = SecureRandom.hex(4)
-    branch = source_session.branch || "main"
-    repo_name = File.basename(source_session.git_root.to_s, ".git")
-    safe_branch = branch.tr("/", "-")
-
-    base_path = ClonesDirectory.base
-    file_system.mkdir_p(base_path)
-
-    new_clone_path = File.join(base_path, "#{repo_name}-#{safe_branch}-#{timestamp}-#{random}")
-
-    copy_clone_directory(source_clone_path, new_clone_path)
-
-    # Clean up Claude-specific files that shouldn't be inherited
-    cleanup_inherited_files(new_clone_path)
+    file_system.mkdir_p(ClonesDirectory.base)
+    materialize_fork_clone(new_clone_path)
 
     # Generate MCP configuration for the forked session
     # This is critical because:
@@ -285,6 +287,78 @@ class ForkSessionService
     # 2h reclamation path.
     discard_partial_clone(new_clone_path)
     nil
+  end
+
+  # Fills the fork's clone directory: a copy of the source tree, or — when the
+  # caller allows it and there is no source tree left — an empty one.
+  #
+  # The fallback inside the copy is the same case one race later. #validate_inputs
+  # saw a live clone, DeferredCloneCleanupJob unlinked it during the copy, and a
+  # caller that said it does not need the tree still does not need it.
+  def materialize_fork_clone(new_clone_path)
+    return scaffold_clone(new_clone_path) if scaffold_clone?
+
+    begin
+      copy_clone_directory(source_session.metadata["clone_path"], new_clone_path)
+    rescue Errno::ENOENT => e
+      raise unless scaffold_missing_clone && source_clone_enoent?(e)
+
+      @logger.info("Scaffolding an empty clone for a fork whose source tree vanished mid-copy", error: e.message)
+      # cp_r into a surviving partial tree nests or merges rather than failing,
+      # so the scaffold starts from nothing or not at all — the same
+      # precondition #copy_clone_directory enforces before a retry.
+      discard_partial_clone(new_clone_path)
+      raise if file_system.exists?(new_clone_path)
+
+      return scaffold_clone(new_clone_path)
+    end
+
+    # Clean up Claude-specific files that shouldn't be inherited
+    cleanup_inherited_files(new_clone_path)
+  end
+
+  # Whether this fork gets an empty working directory instead of a copy.
+  #
+  # Only for a fork that never reads the tree it runs in — a status-summary
+  # fork answers from the conversation it was forked with and is told not to run
+  # tools, so what it needs from the filesystem is a directory to be spawned in
+  # and the transcript this service writes under ~/.claude/projects. That makes
+  # a summary regenerable for a session archived long enough ago that
+  # DeferredCloneCleanupJob has reclaimed its clone, which is every archived
+  # session an operator actually opens later.
+  def scaffold_clone?
+    return false unless scaffold_missing_clone
+
+    source_clone_path = source_session.metadata&.dig("clone_path").to_s
+    source_clone_path.blank? || !file_system.directory?(source_clone_path)
+  end
+
+  # An empty tree at the fork's clone path, with the subdirectory the session's
+  # working directory points into created too — the spawn chdirs there, and a
+  # working directory that does not exist fails the fork at the process rather
+  # than here.
+  def scaffold_clone(new_clone_path)
+    @logger.info("Scaffolding an empty clone for a fork that does not read the source tree", destination: new_clone_path)
+    @clone_scaffolded = true
+    file_system.mkdir_p(calculate_working_directory(new_clone_path))
+  end
+
+  def generate_fork_clone_path
+    # Generate new clone path the way GitCloneService#generate_clone_path does:
+    # "<repo>-<branch>-<timestamp>-<random>", with the repository name taken
+    # from the git root and the branch's slashes flattened. Deriving either from
+    # the source clone's directory name instead cannot be done unambiguously —
+    # both halves can contain dashes ("tadasant-internal", a branch
+    # "claude/fix-x") — and an unsanitized branch would nest the fork one level
+    # below the clones base, where the orphan sweeps, which scan the base's
+    # direct children, would never see it.
+    timestamp = Time.now.to_i
+    random = SecureRandom.hex(4)
+    branch = source_session.branch || "main"
+    repo_name = File.basename(source_session.git_root.to_s, ".git")
+    safe_branch = branch.tr("/", "-")
+
+    File.join(ClonesDirectory.base, "#{repo_name}-#{safe_branch}-#{timestamp}-#{random}")
   end
 
   # Copies the source clone, retrying the whole copy when a file vanishes from
@@ -468,6 +542,11 @@ class ForkSessionService
           "broadcast_message_count" => @truncated_message_count, # Set to transcript length to prevent replay
           "runtime_started" => true # Required for --resume mode on first follow-up
         }.merge(extra_metadata)
+
+        # An empty clone is a deliberate state, not a half-finished copy — say so
+        # on the record, so anyone who finds the directory (or the fork) can tell
+        # the two apart without reading this service.
+        new_metadata["clone_scaffolded"] = true if @clone_scaffolded
 
         # The fork copies the source's server list verbatim, so it has to copy
         # the reason that list is empty too. This metadata is built from scratch

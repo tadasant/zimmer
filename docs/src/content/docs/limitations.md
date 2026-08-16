@@ -1324,8 +1324,9 @@ That is the design that was asked for, and the fork is what makes the summary sp
 to a message index rather than paraphrase. But it is not a cheap feature, and there is no rate limit,
 no minimum interval, and no off switch beyond not looking at it. On the automatic path
 `SessionStatusSummaryGenerator` refuses when the session has not moved since the last summary — which,
-on a turn boundary, it always has — when the session is in the trash, and when there is structurally
-nothing to fork (no clone on disk, no transcript, or a session that is itself a summary fork).
+on a turn boundary, it always has — when the session is in the trash, when its clone has been
+reclaimed, and when there is structurally nothing to summarize (no transcript, or a session that is
+itself a summary fork).
 
 Mitigations already in place: only resting transitions trigger it (a resume into `running` does not),
 a generation already in flight is never duplicated, the copy leaves out installed-dependency trees
@@ -1333,25 +1334,23 @@ a generation already in flight is never duplicated, the copy leaves out installe
 on harvest so the clone copy is reclaimed on the normal trash path, and rendering the panel or reading
 the session over MCP/REST never generates.
 
-### Regenerating an archived session's Status summary usually cannot work — its clone is already gone
+### A regenerated summary for an old session is written in an empty directory
 
-Pressing **Regenerate** on an archived session is no longer refused on principle: the check is whether
-there is a clone to fork, not whether the session is in the trash. But `DeferredCloneCleanupJob`
-deletes an archived session's clone once the ten-second undo window closes, on the clean branch *and*
-on the branch that preserves unpushed artifacts first. Only a session whose artifact preservation
-*failed* keeps its clone, for the trash-retention window.
+Pressing **Regenerate** on a session archived long ago works, but not by restoring anything.
+`DeferredCloneCleanupJob` deletes an archived session's clone once the ten-second undo window closes,
+so there is no working tree left to fork; the fork is given an **empty directory** to run in instead,
+and answers from the conversation Zimmer forked it with.
 
-So the case that actually works — an archived session with a live clone — is the ten seconds after
-archiving plus that failure case. For everything older, the panel disables the button and says the
-clone was deleted when the session went to the trash, the MCP action errors with the same sentence,
-and the REST endpoint answers 422. That is an honest answer rather than the silent no-op it replaced
-(the button used to be enabled, the panel flipped to "Generating", and no summary ever arrived) — but
-it is not the same as being able to re-summarize an old session.
+That is sound for the summarizer, which is told not to run tools — but it is a real constraint on what
+the blurb can contain. A summary fork for a session whose clone is gone cannot read a file, check out
+a branch, or run `git log`; anything not in the transcript is not available to it. In practice the
+prompt already forbids all of that, so the difference shows up only if the summary prompt ever grows a
+step that touches the filesystem. It would silently degrade for exactly the old sessions this path
+exists to serve.
 
-Closing the gap means giving the summarizer something other than the source clone to run in — a fresh
-clone of the branch, or a non-fork summarization path for sessions whose working tree is gone. Both
-are larger changes than the refusal fix, and neither is implemented. Tracked in
-[#463](https://github.com/tadasant/zimmer/issues/463).
+The scaffolded directory belongs to the fork, is reclaimed when the fork is archived on harvest, and
+nothing about the source session is restored, mutated, or left behind. See
+[Status summary](/sessions/status-summary/#what-a-scaffolded-fork-leaves-behind).
 
 ### An interrupted clone delete still mangles a live working tree
 

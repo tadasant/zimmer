@@ -1069,4 +1069,104 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert @mock_fs.exists?(File.join(result.forked_session.metadata["clone_path"], "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md")),
       "a user-initiated fork is a working session and keeps its installed dependencies"
   end
+
+  # --- Scaffolding a clone that is no longer there ---------------------------
+
+  # For a caller whose fork never reads the tree — SessionStatusSummaryGenerator's
+  # summarizer answers from the conversation and is told not to run tools. The
+  # session's clone is reclaimed about ten seconds after it is archived, so
+  # without this every fork of an archived session fails on a missing directory.
+  test "a missing source clone is scaffolded when the caller allows it" do
+    @source_session.update_column(:status, Session.statuses[:archived])
+    @mock_fs.rm_rf(@clone_path)
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      scaffold_missing_clone: true
+    )
+
+    assert result.success?
+    fork = result.forked_session
+    assert_equal true, fork.metadata["clone_scaffolded"]
+    assert @mock_fs.directory?(fork.metadata["clone_path"]), "the fork gets a directory to be spawned in"
+    assert_equal fork.metadata["clone_path"], fork.metadata["working_directory"]
+    assert_not result.source_clone_discarded, "a scaffolded clone is not a discarded one"
+  end
+
+  test "a scaffolded clone creates the subdirectory the working directory points into" do
+    @source_session.update!(subdirectory: "docs")
+    @mock_fs.rm_rf(@clone_path)
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      scaffold_missing_clone: true
+    )
+
+    assert result.success?
+    working_directory = result.forked_session.metadata["working_directory"]
+    assert_equal File.join(result.forked_session.metadata["clone_path"], "docs"), working_directory
+    assert @mock_fs.directory?(working_directory)
+  end
+
+  # The same case one race later: the tree was there at validation and
+  # DeferredCloneCleanupJob unlinked it during the copy. A caller that does not
+  # need the tree still does not need it, so this costs the copy, not the fork.
+  test "a source clone deleted mid-copy is scaffolded rather than failed when allowed" do
+    @source_session.update_column(:status, Session.statuses[:archived])
+    clone = @clone_path
+    @mock_fs.define_singleton_method(:cp_r) do |_src, _dest, exclude: []|
+      rm_rf(clone)
+      raise Errno::ENOENT.new(File.join(clone, ".git/objects/e8"))
+    end
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      scaffold_missing_clone: true
+    )
+
+    assert result.success?
+    assert_equal true, result.forked_session.metadata["clone_scaffolded"]
+  end
+
+  # Scaffolding is opt-in, and it does not swallow a fault that has nothing to do
+  # with the source tree. An ENOENT from anywhere else still fails the fork.
+  test "scaffolding does not rescue an ENOENT that is not the source clone" do
+    @mock_fs.define_singleton_method(:cp_r) do |_src, _dest, exclude: []|
+      raise Errno::ENOENT.new("/home/test/.zimmer/clones")
+    end
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      scaffold_missing_clone: true
+    )
+
+    assert_not result.success?
+    assert_equal "Failed to create forked clone directory", result.error
+  end
+
+  # A live tree is still copied. Scaffolding is the answer to a clone that is
+  # gone, not a cheaper fork.
+  test "an available source clone is copied even when scaffolding is allowed" do
+    @mock_fs.write(File.join(@clone_path, "README.md"), "hello")
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      scaffold_missing_clone: true
+    )
+
+    assert result.success?
+    fork = result.forked_session
+    assert_nil fork.metadata["clone_scaffolded"]
+    assert @mock_fs.exists?(File.join(fork.metadata["clone_path"], "README.md"))
+  end
 end
