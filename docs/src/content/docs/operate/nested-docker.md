@@ -111,10 +111,11 @@ session root on the host.
 
 ### The environment has to be dropped too, not just the credentials
 
-`setpriv` changes credentials and nothing else. Docker derives `HOME` from the container's
-`--user`, so under `user: "0:0"` it is `/root` — and it survives the drop untouched. The
-app would then run as uid 1000 with a `HOME` that is mode `0700` and owned by root, which
-uid 1000 cannot even traverse.
+`setpriv` changes credentials and nothing else, so whatever `HOME` the container started
+with survives the drop untouched. Left to the runtime, `user: "0:0"` would make that `/root`
+— mode `0700` and owned by root, which uid 1000 cannot even traverse — and the app would run
+as uid 1000 pointed at it. (The image pins `HOME` so it never comes to that; the two layers
+are reconciled in [the subsection below](#the-entrypoint-only-covers-what-the-entrypoint-runs).)
 
 That is not cosmetic, and it is not a tidiness problem. It took production down for ten
 hours on 2026-08-13:
@@ -136,6 +137,48 @@ uid 1000 cannot traverse and write that directory:
 Refusing to start: HOME=/home/rails is not writable by uid 1000, which this
 entrypoint is about to become.
 ```
+
+#### The entrypoint only covers what the entrypoint runs
+
+That fixup reaches the app process and its children, and nothing else. Two things in the
+container never pass through it:
+
+- **PID 1.** Every role sets `init: true`, so PID 1 is `docker-init`, which *forks* the
+  entrypoint rather than exec'ing it. Its environment is the one Docker built from
+  `--user`, untouched.
+- **Every `docker exec`.** Docker builds an exec's environment from the container's
+  config, not from PID 1's descendants. `docker exec -u 1000:1000 <worker> …` — the shape
+  an operator debugging a session reaches for — therefore lands on `HOME=/root` at a uid
+  that cannot traverse it.
+
+So the image pins it too, with `ENV HOME=/home/rails` in the `Dockerfile`. That makes
+`HOME` a property of the app user rather than of the uid the container happens to be
+started as, and the two layers cover different halves: the image ENV makes the *container's*
+environment right for everything that never runs the entrypoint, and the entrypoint proves
+the directory is actually usable and refuses to boot when it is not — which no `ENV` can
+check. Losing either reopens a real path to `/root`.
+
+#### `kamal app exec --reuse` runs as root, and skips the entrypoint
+
+`--reuse` is a bare `docker exec` into the running container
+(`kamal/commands/app/execution.rb`), so it does **not** run the ENTRYPOINT and it inherits
+the container's configured user — which under nested Docker is `user: "0:0"`. Your command
+therefore runs as **root**, with none of the entrypoint's normalization applied.
+
+The image `ENV` means it at least gets a working `HOME`, so DB-touching commands no longer
+die on `could not open certificate file "/root/.postgresql/postgresql.crt": Permission
+denied`. What it does not do is make the command run as uid 1000. Anything that writes under
+`~` — `~/.zimmer/clones`, `~/.claude`, `~/.config/gh` — leaves **root-owned files in volumes
+that `web` and the app read at uid 1000**, and those are unwritable afterwards.
+
+So on the worker, prefer plain `kamal app exec` (no `--reuse`): that is a `docker run`
+against the image, which runs the entrypoint and drops to uid 1000 properly. It is not free
+— `execute_in_new_container` passes the role's option and env args too, so on the worker it
+starts a throwaway container under sysbox that boots its own disposable inner `dockerd`
+before your command runs. Expect the latency.
+
+Reach for `--reuse` only for read-only inspection, and pass `docker exec -u 1000:1000`
+directly if you need the app's identity inside the existing container.
 
 A container that refuses to start is a failed deploy. One that starts and quietly claims
 nothing is ten hours of silence — which is exactly what happened, because every check that
@@ -189,11 +232,19 @@ docker run --rm --runtime=sysbox-runc alpine head -1 /proc/self/uid_map
 **After** the cutover it asserts the properties an agent session actually depends on: the
 container's runtime is `sysbox-runc`, its `uid_map` is non-identity, the host socket is
 **not** among its mounts, the inner daemon answers `docker version` **as uid 1000** (not
-merely as root — uid 1000 is what a session runs as after the privilege drop), and PID 1
-kept `HOME=/home/rails` through that drop.
+merely as root — uid 1000 is what a session runs as after the privilege drop), and the
+container's `HOME` is `/home/rails` and is traversable and writable at uid 1000.
 
-That last one is not padding. `HOME=/root` surviving the drop is precisely how the
-2026-08-13 freeze presented, and every container-shaped check stayed green throughout it.
+That last one is not padding, and it is worth being precise about what it reads. It takes
+`HOME` off PID 1, which is `docker-init` — so it sees the environment Docker derived from
+`--user`, *not* the one `bin/docker-entrypoint` exports. That is deliberate: the entrypoint's
+own guard already covers the app process and refuses to boot without it, so the useful thing
+left to assert is the half nothing else checks — the environment every `docker exec` into the
+worker inherits. It fails when the image stops pinning `ENV HOME=/home/rails` and Docker falls
+back to deriving `/root` from `user: "0:0"`.
+
+`HOME=/root` reaching the app is how the 2026-08-13 freeze presented, and every
+container-shaped check stayed green throughout it.
 
 ### Extending it to production
 
