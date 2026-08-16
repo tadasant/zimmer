@@ -108,6 +108,31 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
       window_dimension_clear?(reset_7d, utilization_7d)
   end
 
+  # The 5-hour utilization this account contributes to a pool figure.
+  #
+  # An account whose weekly allowance is spent cannot serve a request no matter
+  # how much 5-hour headroom its counter reports, so it counts as fully utilized.
+  # Anywhere else this is the raw 5-hour figure, which keeps the number to one
+  # statement: 5-hour utilization, with weekly-blocked accounts counted as 100%.
+  #
+  # The correction runs one way. The 7-day window subsumes the 5-hour one: an
+  # account at its 5-hour cap is idle for minutes and then serves again, so it
+  # must never be reported as having burned its week.
+  #
+  # Lives here rather than in the view helper because the spot gate decides on
+  # the same figure /quotas renders — see ClaudeAccountPool.
+  def pool_utilization_5h
+    return 1.0 if seven_day_window_spent?
+
+    self.class.effective_utilization(utilization_5h, reset_5h)
+  end
+
+  # The 7-day utilization this account contributes to a pool figure. Needs no
+  # correction: a spent weekly window already reads as 100% here.
+  def pool_utilization_7d
+    self.class.effective_utilization(utilization_7d, reset_7d)
+  end
+
   # Returns a hash suitable for display, mirroring QuotaCheckService::Result fields
   def to_display_hash
     {

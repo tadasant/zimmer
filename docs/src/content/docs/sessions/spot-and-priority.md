@@ -13,7 +13,7 @@ Zimmer's answer is to classify sessions by where they came from, and to let the 
 | Class | Behavior |
 | --- | --- |
 | **priority** | Starts whenever it is ready. Never consulted about quota or concurrency. |
-| **spot** | Starts while a Claude Code account is under both window targets and a session slot is free. Otherwise it waits and starts later. |
+| **spot** | Starts while the Claude Code account pool averages under both window targets and a session slot is free. Otherwise it waits and starts later. |
 
 A held spot session is **deferred, never cancelled**. Nothing is lost.
 
@@ -128,7 +128,7 @@ statements about numbers that have already been read.
 
 | Check | What it means | Reason when it fails |
 | --- | --- | --- |
-| **Under the targets** | The serving Claude Code account is below its 5-hour *and* weekly targets, as last read. When it reaches one, spot work pauses until utilization comes back down. | `at_utilization_limit` |
+| **Under the targets** | The Claude Code account pool averages below the 5-hour *and* weekly targets, as last read. When either average reaches its target, spot work pauses until utilization comes back down. | `at_utilization_limit` |
 | **A free slot** | Fewer sessions are running than **Max sessions at once**. | `fleet_at_cap` |
 
 There is no rate, no projection and no horizon. The gate holds work when a window *has arrived* at
@@ -151,19 +151,31 @@ semantics are deliberately asymmetric:
 It is checked **when a session starts** and never again. Lowering the limit under a running fleet
 holds the next start; it never interrupts work already underway.
 
-### Read from the account that will serve
+### Read across the whole pool, not one account
 
-Utilization is read from the account Zimmer is **serving from** — the one a session started now
-would spend against. Rotation happens when the serving account is *refused*, not when it reaches a
-target, so a spare's headroom is not headroom this session can use.
+Utilization is the **pool average** — every Claude Code account's latest reading, averaged. It is the
+same number `/quotas` prints as **Avg 5-Hour Utilization (effective)** and **Avg 7-Day Utilization**
+in its Account Pool section, computed once in `ClaudeAccountPool` and read by both, so the page's
+headline figure and the gate's decision cannot disagree.
 
-It is also the freshest number available. `ClaudeUsageSamplerJob` refreshes the serving account every
-15 minutes; a spare is read only on rotation or when somebody opens `/quotas`, so deciding on the
-roomiest account in the pool would mean deciding on the number least likely to still be true.
+Deciding on a single account meant one account at its cap stopped the whole fleet while the rest of
+the pool sat idle. Rotation moves work off a refused account onto the accounts that still have
+headroom, so the quota a deployment can actually spend is the pool's, not whichever account happens
+to be serving this minute.
 
-With no current account, the first account the pool would serve from stands in — `available`, the
-same scope `AccountRotationService` picks from, so an account already marked `quota_exceeded` is
-skipped. An account with no reading at all is skipped too; when nothing has a readable window the
+**Every account counts, whatever its status** — `active`, `quota_exceeded` and `needs_reauth` alike.
+An account in `needs_reauth` is one Zimmer cannot serve from *right now*, not one whose quota is
+spent: its windows keep draining while it waits for a human, and its headroom is real again the
+moment they log back in. Leaving it out would shrink the denominator to the serving accounts and make
+the average jump every time an account fell out of the pool or came back.
+
+The average carries one correction, and it is the page's rule rather than a second one invented for
+the gate: an account whose **7-day window is spent counts as 100%** in the 5-hour figure, because its
+5-hour headroom cannot be served. Without it, a dead account's empty 5-hour counter would read as room
+to spend.
+
+An account with no reading at all contributes nothing and is left out of the denominator too — the
+decision says how many of the pool's accounts it averaged. When nothing has a readable window the
 gate falls open on `no_snapshot`.
 
 Targets and the concurrency limit are set together on the Claude Code tab of `/quotas`, on the same
@@ -179,8 +191,8 @@ Every uncertain condition **allows** the session, and the reason is named so the
 | `gating_disabled` | The toggle is off. |
 | `no_snapshot` | No Claude Code quota reading to decide on. |
 | `unavailable` | The gate could not be evaluated at all. |
-| `within_limits` | Under both targets, with a slot free. |
-| `at_utilization_limit` | **Held.** A window has reached its target; spot work waits for utilization to come down. |
+| `within_limits` | The pool is under both targets, with a slot free. |
+| `at_utilization_limit` | **Held.** A window's pool average has reached its target; spot work waits for utilization to come down. |
 | `fleet_at_cap` | **Held.** Every session slot is taken — by spot work, priority work, or both. |
 
 A monitoring gap must not become an outage of all automated work.
@@ -200,7 +212,7 @@ during a busy afternoon would never run at all.
 
 ### A hold lasts as long as the number does
 
-There is no escape hatch and no deadline: while every account sits at a target, spot work waits. That
+There is no escape hatch and no deadline: while the pool average sits at a target, spot work waits. That
 is the intent — the pause is meant to last exactly as long as the utilization that caused it. The
 5-hour window falls on its own within hours; a weekly window pinned near its target can hold a queue
 for considerably longer, which is the cost of a hard stop and is visible on `/quotas` the whole time.

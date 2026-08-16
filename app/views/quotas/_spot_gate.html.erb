@@ -9,7 +9,7 @@
     <h2 class="text-lg font-medium text-gray-900">Spot vs priority</h2>
     <p class="mt-1 text-sm text-gray-500">
       Every session runs as <strong>priority</strong> or <strong>spot</strong>. Priority sessions always
-      start. A spot session starts while some Claude Code account is still under both targets below
+      start. A spot session starts while the Claude Code account pool is under both targets below on average
       and a session slot is free — a target is a level to reach, not a line to stay clear of. Once a
       window reaches its target, or every slot is taken, a spot session waits and starts later; it is
       never cancelled. A session's class is the one chosen for it, or the one its trigger carries, or
@@ -142,11 +142,13 @@
           </dd>
         </div>
       </dl>
-      <% if @spot_decision.account_email %>
-        <p class="mt-2 text-xs text-gray-500">
-          Windows read from <%= @spot_decision.account_email %> — the account a session started now
-          would spend against. Zimmer rotates to a spare when this one is refused, so a spare's
-          headroom is not headroom a session starting now can use.
+      <% if @spot_decision.pool_size %>
+        <p class="mt-2 text-xs text-gray-500" id="spot-gate-pool-note">
+          Windows averaged across
+          <%= @spot_decision.accounts_read == @spot_decision.pool_size ? "all #{pluralize(@spot_decision.pool_size, 'account')}" : "#{@spot_decision.accounts_read} of #{pluralize(@spot_decision.pool_size, 'account')}" %>
+          in the pool, every status included — the same figure the Account Pool section above shows.
+          One account at its cap does not hold the fleet while the rest still has room; an account
+          whose 7-day window is spent counts as 100% here, because its 5-hour headroom can't be served.
         </p>
       <% end %>
     </div>

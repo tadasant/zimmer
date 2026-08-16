@@ -4,10 +4,11 @@ require "test_helper"
 
 class SpotGateServiceTest < ActiveSupport::TestCase
   setup do
-    # The gate reads the serving account's latest snapshot and counts every running
+    # The gate averages every account's latest snapshot and counts every running
     # session, so a fixture reading or a fixture session in `running` silently
     # changes what these tests assert on. Clear both, then build the one account
-    # this suite reads.
+    # this suite seeds by default. Fixture accounts stay in the pool with nothing
+    # to read, which is exactly what an un-probed account contributes: nothing.
     ClaudeAccountQuotaSnapshot.delete_all
     ClaudeAccount.update_all(is_current: false)
     Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
@@ -34,11 +35,14 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     )
   end
 
-  def seed_spare(email:, current_5h:, current_7d:)
-    spare = ClaudeAccount.create!(email: email, runtime: "claude_code", oauth_config: { "x" => 1 })
+  def seed_spare(email:, current_5h:, current_7d:, status: :active)
+    spare = ClaudeAccount.create!(email: email, runtime: "claude_code",
+                                  oauth_config: { "x" => 1 }, status: status)
     seed(current_5h: current_5h, current_7d: current_7d, account: spare)
     spare
   end
+
+  def pool_size = ClaudeAccount.for_runtime("claude_code").count
 
   # --- fail-open ---------------------------------------------------------------
 
@@ -139,40 +143,126 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal 0.0, decision.five_hour.current
   end
 
-  # --- which account is read -------------------------------------------------
+  # --- the pool, not one account ----------------------------------------------
 
-  # Rotation happens when the serving account is REFUSED, not when it reaches a
-  # target, so a spare's headroom is not headroom a session starting now can
-  # spend. The serving account's number is the one that binds.
-  test "the serving account decides, not a spare with more room" do
+  # What Tadas asked for: one account at 95% used to hold the whole fleet while
+  # the rest of the pool sat idle. Rotation moves work off a refused account onto
+  # the ones with headroom, so the quota a deployment can spend is the pool's.
+  test "one account at its cap does not hold the fleet while the pool has room" do
     seed(current_5h: 0.95, current_7d: 0.10)
     seed_spare(email: "spare@example.com", current_5h: 0.05, current_7d: 0.10)
 
     decision = SpotGateService.evaluate
-    refute decision.allowed?, "a spare cannot lend headroom the serving account does not have"
-    assert_equal "gate-test@example.com", decision.account_email
+    assert decision.allowed?, "the pool averages 50% — well under the 80% target"
+    assert_in_delta 50.0, decision.five_hour.current_pct, 0.001
+    assert_equal 2, decision.accounts_read
   end
 
-  test "with no current account, the first the pool would serve from is read" do
-    @account.update!(is_current: false)
+  test "the pool holds once the average reaches the target" do
     seed(current_5h: 0.95, current_7d: 0.10)
-    spare = seed_spare(email: "spare@example.com", current_5h: 0.05, current_7d: 0.10)
-    ClaudeAccount.where.not(id: spare.id).update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    seed_spare(email: "spare@example.com", current_5h: 0.75, current_7d: 0.10)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "85% averaged across the pool is past the 80% target"
+    assert_equal "at_utilization_limit", decision.reason
+    assert_in_delta 85.0, decision.five_hour.current_pct, 0.001
+  end
+
+  # The explicit half of the ask. An account waiting on a human to re-authenticate
+  # is one Zimmer cannot serve from this minute, not one whose quota is spent —
+  # its window keeps draining, and its headroom is real again on the next login.
+  test "an account in needs_reauth counts toward the aggregate" do
+    seed(current_5h: 0.95, current_7d: 0.10)
+    seed_spare(email: "reauth@example.com", current_5h: 0.05, current_7d: 0.10,
+               status: :needs_reauth)
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?, "a needs_reauth account's headroom counts in the average"
+    assert_equal 2, decision.accounts_read
+    assert_in_delta 50.0, decision.five_hour.current_pct, 0.001
+  end
+
+  test "a needs_reauth account with a spent window raises the average like any other" do
+    seed(current_5h: 0.70, current_7d: 0.10)
+    seed_spare(email: "reauth-spent@example.com", current_5h: 0.99, current_7d: 0.10,
+               status: :needs_reauth)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "counting it cuts both ways — 84.5% averaged is past the target"
+    assert_equal "at_utilization_limit", decision.reason
+    assert_equal 2, decision.accounts_read
+  end
+
+  # An account already marked quota_exceeded is in the pool too — its reading is
+  # what says it has nothing left, and dropping it would flatter the average.
+  test "a quota_exceeded account is averaged in rather than skipped" do
+    seed(current_5h: 0.30, current_7d: 0.10)
+    seed_spare(email: "pool-exceeded@example.com", current_5h: 0.99, current_7d: 0.10,
+               status: :quota_exceeded)
+
+    decision = SpotGateService.evaluate
+    assert_equal 2, decision.accounts_read
+    assert_in_delta 64.5, decision.five_hour.current_pct, 0.001
+  end
+
+  # The one correction the pool figure carries, and it is the page's rule, not a
+  # second one invented for the gate: an account whose week is gone cannot serve
+  # a request, so its empty 5-hour counter is not headroom.
+  test "an account whose weekly window is spent counts as 100% in the 5-hour figure" do
+    seed(current_5h: 0.60, current_7d: 0.10)
+    seed_spare(email: "weekly-spent@example.com", current_5h: 0.01, current_7d: 1.0)
+
+    decision = SpotGateService.evaluate
+    assert_in_delta 80.0, decision.five_hour.current_pct, 0.001
+    refute decision.allowed?, "the dead account's 1% is not room the pool can spend"
+  end
+
+  test "an account with no reading is left out of the average and named as such" do
+    seed(current_5h: 0.85, current_7d: 0.10)
+    ClaudeAccount.create!(email: "unread@example.com", runtime: "claude_code",
+                          oauth_config: { "x" => 1 })
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "the accounts that HAVE readings are the ones that decide"
+    assert_equal 1, decision.accounts_read
+    assert_equal pool_size, decision.pool_size
+    assert_match(/averaged across 1 of #{pool_size} accounts/, decision.detail)
+  end
+
+  # The decision names the aggregate rather than an account, on every surface that
+  # renders it — /quotas, get_spot_policy, and Decision#to_h all read these.
+  test "the hold detail names the pool, not one account" do
+    seed(current_5h: 0.95, current_7d: 0.10)
+    seed_spare(email: "spare@example.com", current_5h: 0.95, current_7d: 0.10)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?
+    assert_match(/5-hour window at 95% of its 80% target, averaged across 2 of #{pool_size} accounts/,
+                 decision.detail)
+    refute_match(/@example\.com/, decision.detail, "no single account may be named as the reason")
+    assert_equal 2, decision.to_h[:accounts_read]
+    assert_equal pool_size, decision.to_h[:pool_size]
+  end
+
+  test "an allowed decision reports the pool it read, too" do
+    seed(current_5h: 0.10, current_7d: 0.10)
 
     decision = SpotGateService.evaluate
     assert decision.allowed?
-    assert_equal "spare@example.com", decision.account_email
+    assert_match(/averaged across 1 of #{pool_size} accounts/, decision.detail)
   end
 
-  test "an account with no reading is skipped rather than answering for the gate" do
-    @account.update!(is_current: false)
-    ClaudeAccount.create!(email: "unread@example.com", runtime: "claude_code",
-                          oauth_config: { "x" => 1 }, is_current: true)
-    seed(current_5h: 0.85, current_7d: 0.10)
+  # The pool figure the gate decides on and the one /quotas prints in its headline
+  # are the same computation, so the page cannot show 42% beside a hold at 95%.
+  test "the gate decides on the same average /quotas renders" do
+    seed(current_5h: 0.95, current_7d: 0.10)
+    seed_spare(email: "spare@example.com", current_5h: 0.05, current_7d: 0.10)
 
+    measure = ClaudeAccountPool.measure
     decision = SpotGateService.evaluate
-    refute decision.allowed?, "the account that HAS a reading is the one that decides"
-    assert_equal "gate-test@example.com", decision.account_email
+
+    assert_in_delta measure.five_hour * 100, decision.five_hour.current_pct, 0.001
+    assert_in_delta measure.weekly * 100, decision.weekly.current_pct, 0.001
   end
 
   # A snapshot whose two utilization columns are both nil says nothing. Reading it
