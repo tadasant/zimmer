@@ -60,11 +60,15 @@ jobs:
       # and dies a minute later on "git failed with exit code 1" without naming the ref.
       # See scripts/resolve-deploy-ref.sh. The input goes through `env:` rather than into
       # the command line so that a dispatch cannot inject shell.
+      #
+      # The fallback is github.sha, not github.ref: the checkout above already resolved the
+      # branch to that commit, so re-resolving the branch name here would let the two
+      # checkouts land on different commits if someone pushed in between.
       - name: Resolve the ref to deploy
         id: ref
         env:
           REQUESTED_REF: ${{ inputs.ref }}
-          FALLBACK_REF: ${{ github.ref }}
+          FALLBACK_REF: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/resolve-deploy-ref.sh
 

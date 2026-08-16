@@ -39,16 +39,17 @@ class DeployRefInputTest < ActiveSupport::TestCase
   WORKFLOWS.each do |path|
     name = path.basename.to_s
 
-    test "#{name} never checks out a dispatch ref input without resolving it first" do
+    test "#{name} never checks out a dispatch input without resolving it first" do
       workflow = YAML.safe_load(path.read, aliases: true)
-      next unless dispatch_inputs(workflow).key?("ref")
 
       checkouts(workflow).each do |step|
         ref = step.dig("with", "ref").to_s
 
-        refute_match(/inputs\.ref/, ref,
-          "#{name} hands `ref` straight to actions/checkout, which cannot check out an " \
-          "abbreviated SHA -- pass it through #{RESOLVER} first")
+        # Any dispatch input, whatever it is called -- `ref`, `sha`, `commit`, `tag` --
+        # carries the same hazard, so the guard is on the wiring, not on the name.
+        refute_match(/inputs\./, ref,
+          "#{name} hands a dispatch input straight to actions/checkout, which cannot " \
+          "check out an abbreviated SHA -- pass it through #{RESOLVER} first")
       end
     end
   end
@@ -63,7 +64,7 @@ class DeployRefInputTest < ActiveSupport::TestCase
     # Via `env:`, never interpolated into the command line: a dispatch input on a shell
     # command line is a script-injection hole.
     assert_equal "${{ inputs.ref }}", deploy_steps[resolver].dig("env", "REQUESTED_REF")
-    assert_equal "${{ github.ref }}", deploy_steps[resolver].dig("env", "FALLBACK_REF")
+    assert_equal "${{ github.sha }}", deploy_steps[resolver].dig("env", "FALLBACK_REF")
 
     deploying = deploy_steps.index do |step|
       step["uses"].to_s.start_with?("actions/checkout") &&
