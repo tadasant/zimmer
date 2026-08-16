@@ -773,11 +773,8 @@ class SessionsController < ApplicationController
     end
 
     result = with_db_retry do
+      @session.archive_actor = "a user in the web UI"
       @session.archive! if @session.may_archive?
-      @session.logs.create!(
-        content: "Session moved to trash by user",
-        level: "info"
-      )
     end
 
     # Only respond if the operation succeeded (not false from max retry handler)
@@ -1008,11 +1005,8 @@ class SessionsController < ApplicationController
       ActiveRecord::Base.transaction do
         sessions.each do |session|
           unless session.archived?
+            session.archive_actor = "a user in the web UI (bulk action)"
             session.archive! if session.may_archive?
-            session.logs.create!(
-              content: "Session moved to trash via bulk action",
-              level: "info"
-            )
             archived_count += 1
           end
         end

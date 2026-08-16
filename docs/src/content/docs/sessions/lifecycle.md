@@ -221,6 +221,58 @@ Status-summary forks are carved out inside the hook rather than at the call site
 strips the goal a fork inherits, but only in `prepare_fork` — a fork abandoned before that point
 still carries the source's "open a PR", so the goal check alone would not have covered it.
 
+#### The archive line names who did it
+
+Every other transition has one obvious cause. `archive` has six unrelated callers — the web UI,
+the REST API, the MCP API, `HealthMonitorService`'s stale-session sweep, status-summary fork
+cleanup, and a session archiving itself — and they all used to leave the same five words in the
+timeline. So "why did my session get archived?" could not be answered from the session page:
+a human clicking **Trash** and another agent archiving the session out from under its own
+unfinished work looked identical, and telling them apart meant reading a different session's raw
+transcript off disk.
+
+Callers set `session.archive_actor` immediately before `archive!`, and the line names it:
+
+```
+[State Machine] Session moved to trash by session #5225 via the MCP API
+[State Machine] Session moved to trash by a user in the web UI
+[State Machine] Session moved to trash by Zimmer's stale-session sweep (untouched for 7 days)
+```
+
+The actor is transient, never persisted, and never inferred. An archive from a console or a test
+says `by an unrecorded caller` rather than claiming an actor it does not have.
+
+On the MCP API the actor is **self-declared**, through the same `acting_session_id` argument
+`follow_up` uses and for the same reason: the API key is shared by the whole fleet, so nothing
+about the request identifies the caller. An archive that declares nothing is logged as
+`by an undeclared MCP API caller` — which still answers the question that matters, because a
+human archiving a session does it from the web UI. The injected self-session server names itself
+separately (`via the self-session MCP server`), since its tool group narrows the *actions* a
+session may take, not the `session_id` it may aim them at.
+
+#### …and what the archive cost
+
+Archiving is what takes a session out of `GitHubPullRequestPollerJob`'s scope — `with_github_prs`
+excludes archived sessions — so it also ends any chance of the merge message the PR goals in
+`config/goals.json` promise the session: *"the pull-request poller sends this session a message
+when the PR merges, and THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE"*. A session archived before the
+poller's next pass never receives it.
+
+When the session still has tracked PRs that Zimmer never saw reach a terminal state (`merged` or
+`closed`), the archive line says so and names them:
+
+```
+[State Machine] Session moved to trash by session #5225 via the MCP API — 1 tracked pull request
+had not reached a terminal state, so no merge notification will be delivered for it:
+https://github.com/tadasant/strad/pull/152
+```
+
+This rides on the archive line rather than raising a `warning` of its own, deliberately. A merge
+gate archives the producing session within seconds of merging — well inside the poller's
+30-second cadence — so an unresolved PR at archive time is the common case rather than an anomaly
+worth alerting on. What it is worth is one sentence in the place someone asking where their
+session went is already looking.
+
 The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a short undo
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
 `TRASH_RETENTION_PERIOD`, which is `4.days`. `EmptyTrashJob` deletes them once that expires.

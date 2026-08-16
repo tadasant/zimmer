@@ -415,6 +415,7 @@ class HealthMonitorService
     sessions.find_each do |session|
       begin
         with_db_retry do
+          session.archive_actor = "Zimmer's stale-session sweep (untouched for #{older_than.inspect})"
           session.archive! if session.may_archive?
         end
         results[:archived] << session.id
