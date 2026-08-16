@@ -284,6 +284,12 @@ directory** instead of a copy — `ForkSessionService`'s `scaffold_missing_clone
 `clone_scaffolded` in its metadata, so an empty tree reads as deliberate rather than as a copy that
 died halfway.
 
+It is an empty **git repository**, not a bare directory. `codex exec` refuses to start outside a
+repository unless it is given `--skip-git-repo-check`, which Zimmer does not pass and should not have
+to — every clone it has ever spawned into was a real repository, and `git init` on the scaffold keeps
+that true for the price of one subprocess. It is best-effort: a runtime that does not care must not
+lose its summary because `git` was unavailable, so a failure is logged and the fork carries on.
+
 Scaffolding also closes the race the pre-flight cannot: a clone that was there when the button was
 pressed and unlinked while the copy walked it. The copy fails with `ENOENT` inside the source tree,
 and a forced fork scaffolds rather than giving up — it did not need the tree in the first place.
