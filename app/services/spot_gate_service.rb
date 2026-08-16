@@ -7,11 +7,11 @@
 # Two checks, both against numbers that have already been measured. A spot
 # session starts while BOTH hold:
 #
-#   1. **Some usable Claude Code account is under both targets.** Utilization as
-#      last read, not a projection of it. When every account has reached a
-#      target, spot work pauses until utilization comes back down — the 5-hour
-#      window falls on its own as its sliding window ages events out, and the
-#      weekly one behind it.
+#   1. **The serving Claude Code account is under both targets.** Utilization as
+#      last read, not a projection of it. Once a window reaches its target, spot
+#      work pauses until utilization comes back down — the 5-hour window falls on
+#      its own as its sliding window ages events out, and the weekly one behind
+#      it.
 #   2. **The fleet has a free slot.** `spot_max_concurrent_sessions` (10 by
 #      default, set on /quotas) caps how many sessions run at once, which is
 #      what bounds how fast the quota can be spent.
