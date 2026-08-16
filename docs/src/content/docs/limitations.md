@@ -2913,9 +2913,14 @@ that number here would have OOM-killed the worker on the deploy that applied it.
 has to trip before the host degrades: #449's thrash set in at 11.6 GB, so `10g` stops short of it
 and still leaves 5.6 GiB against the 0.9 GiB everything else on the droplet actually uses.
 
-The same cap absorbs #495 rather than tripping on it — 2.8 GB on top of even a full sixteen-session
-worker stays inside 10 GiB — so #495 does not become a restart loop on production the way it does on
-staging.
+One thing is deliberately not claimed: that `10g` sits above the worker's true peak demand. The
+per-session figure behind the floor was taken at three concurrent sessions, #449 was observed at ten
+to thirteen, and nothing establishes that the cost per session stays linear in between — so a heavy
+enough load may reach the cap. That is accepted rather than solved. At that same load, uncapped,
+#449 already ends in a dead worker about twenty minutes in; the cap does not add a failure, it
+relocates one out of the host and into a cgroup, before the box has spent minutes thrashing on the
+way there. The same margin is comfortably above #495's 2.8 GB, so that job does not become a restart
+loop here the way it does on staging.
 
 None of this fixes #449; it bounds the blast radius. Under sustained heavy load the worker still
 restarts and still interrupts the sessions it supervises. What changes is that the rest of the
