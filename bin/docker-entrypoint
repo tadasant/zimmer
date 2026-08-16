@@ -190,7 +190,8 @@ if [ "$(id -u)" = "0" ]; then
 
   # `while sleep` rather than `while :; do sleep`: the loop then ends when sleep
   # does, which is what lets a test drive it to a stop instead of hanging on the
-  # inherited stdout forever. Set the interval to 0 to disable the sweep.
+  # inherited stdout forever. An interval of 0 drops the repeat and keeps the
+  # boot sweep, which is the correctness half and costs under a second.
   ZIMMER_RECLAIM_INTERVAL="${ZIMMER_RECLAIM_INTERVAL:-60}"
   if [ "$ZIMMER_RECLAIM_INTERVAL" -gt 0 ] 2>/dev/null; then
     while sleep "$ZIMMER_RECLAIM_INTERVAL"; do zimmer_reclaim; done &

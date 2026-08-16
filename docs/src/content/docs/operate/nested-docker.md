@@ -201,8 +201,8 @@ find ~/.claude ~/.codex ~/.config/gh ~/.local ~/.zimmer -xdev ! -uid 1000 -print
 ```
 
 Once synchronously, so the app never starts on a volume it cannot read, and then every
-`ZIMMER_RECLAIM_INTERVAL` seconds (default 60, `0` disables) from a process forked before the
-privilege drop — which is what lets it keep the root credentials `chown` needs. A one-shot
+`ZIMMER_RECLAIM_INTERVAL` seconds (default 60; `0` drops the repeat and keeps the boot sweep)
+from a process forked before the privilege drop — which is what lets it keep the root credentials `chown` needs. A one-shot
 repair would only be undone by the next exec.
 
 It is eventually consistent, and the window is real: a file root writes is unreadable to the
