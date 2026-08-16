@@ -75,23 +75,31 @@ servers:
       # devdb, kamal-proxy, and above all sshd -- keeps its memory and stays reachable.
       #
       # 10g is derived from THIS droplet and is not transferable. The two bounds it sits
-      # between:
+      # between, both measured rather than modelled:
       #
-      #   floor   a healthy worker must never touch it. Measured at 1.6 GiB anon with 3
-      #           concurrent sessions (0.8 GiB good_job master + ~0.3 GiB per session,
-      #           agent process plus its MCP servers). Staging's 2g sits BELOW this, which
-      #           is why copying that number here would OOM-kill the worker on the deploy
-      #           that applied it.
-      #   ceiling it must trip before the host does. #449's thrash set in with the worker
-      #           at 11.6 GB; 10g stops it short of that, and leaves 5.6 GiB against the
+      #   floor   a healthy worker must not reach it. Observed at 1.6 GiB anon with 3
+      #           concurrent sessions -- so a cap has to be well above that. Staging's 2g
+      #           sits BELOW this floor, which is why copying that number here would
+      #           OOM-kill the worker on the deploy that applied it.
+      #   ceiling it has to trip before the host does. #449's thrash set in with the worker
+      #           at 11.6 GB; 10g stops short of that, and leaves 5.6 GiB against the
       #           0.9 GiB everything else on the box actually uses.
       #
       # Raising it toward 12g would trade that margin for a slightly later kill, and the
       # margin is what keeps SSH answering -- which is the property being bought here.
       #
-      # This does NOT fix #449; it bounds its blast radius. Until that leak is understood,
-      # a sustained heavy load still ends in a worker restart that interrupts the sessions
-      # on it. The difference is that the rest of the droplet no longer goes down with it.
+      # What is deliberately NOT claimed: that 10g is above the worker's true peak demand.
+      # The per-session figure behind the floor was taken at 3 concurrent sessions, and
+      # #449 -- whose growth mechanism is still unknown -- was observed at 10-13. Nothing
+      # here establishes that the cost per session stays linear in between, so a heavy
+      # enough load may well reach 10g. That is accepted rather than solved: at that same
+      # load, uncapped, #449 already ends in a dead worker roughly 20 minutes in. The cap
+      # does not add a failure, it relocates one -- out of the host and into this cgroup,
+      # before the box has spent minutes thrashing on the way there.
+      #
+      # So this does NOT fix #449; it bounds its blast radius. Until that leak is
+      # understood, sustained heavy load still ends in a worker restart that interrupts the
+      # sessions on it. What changes is that the rest of the droplet stays up.
       memory: 10g
       volume:
         - zimmer_data:/home/rails/.zimmer

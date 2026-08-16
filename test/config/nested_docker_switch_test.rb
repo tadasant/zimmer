@@ -114,6 +114,12 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
     end
   end
 
+  # destination => the cap its own droplet is sized for. The two numbers are deliberately
+  # different and neither is transferable: staging's 2g is sized against a 4 GB box, and is
+  # BELOW production's measured worker steady state, so copying it onto production would
+  # OOM-kill the worker on the deploy that applied it. Each config carries its own derivation.
+  CAPS = { "production" => "10g", "staging" => "2g" }.freeze
+
   # Each destination's worker is the only role running work whose peak allocation nothing in
   # this config knows in advance, on a swapless droplet. Uncapped, one such allocation is a
   # GLOBAL OOM: the kernel takes victims host-wide, sshd and Caddy lose their working set, and
@@ -121,12 +127,6 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
   # keeps the kill inside the worker's cgroup, and it is invisible in every green check -- so
   # pin it here, where dropping it fails loudly.
   #
-  # destination => the cap its own droplet is sized for. The two numbers are deliberately
-  # different and neither is transferable: staging's 2g is sized against a 4 GB box, and is
-  # BELOW production's measured worker steady state, so copying it onto production would
-  # OOM-kill the worker on the deploy that applied it. Each config carries its own derivation.
-  CAPS = { "production" => "10g", "staging" => "2g" }.freeze
-
   # Asserted under both switch positions on purpose. The cap is not conditional on the switch
   # today, and that is the property being pinned: arming nested Docker puts an inner dockerd and
   # the session's containers inside this same cgroup, which is the change most likely to tempt
