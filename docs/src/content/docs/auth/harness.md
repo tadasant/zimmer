@@ -332,6 +332,17 @@ So Zimmer DMs you. When a `ClaudeAccount` crosses **into** `needs_reauth`, an
 links to `/quotas`. It goes to `OPERATOR_SLACK_USER_ID`; unset, the DM is logged and dropped and
 nothing else changes.
 
+The transition is **latched during the save** (`after_update`) and only acted on after the commit,
+which is not ceremony. `reload` nils `@mutations_before_last_save`, so a commit-time
+`saved_change_to_status?` answers "nothing changed" whenever anything reloaded the record between the
+write and the commit. `RefreshRuntimeAuthTokensJob` does exactly that: it wraps the refresh in an
+outer `account.with_lock`, and `ClaudeAuthProvider#refresh!` reloads on its failure branch to decide
+whether the error is `:needs_reauth` or `:transient`. `with_lock` opens a transaction without
+`requires_new`, so `refresh_token!`'s inner lock joins it and the commit callback does not run until
+that outer transaction commits — long after the reload. Asking at commit time meant the
+every-5-minutes sweep, the likeliest discoverer of a dead refresh token, never DM'd at all. A plain
+ivar survives `reload`; the dirty state does not.
+
 A model callback rather than instrumentation at the sites that condemn an account, so no path can
 forget to alert — including the Administrate admin form, which no service-level hook would see. Two
 writes deliberately do *not* alert, and both fall out of that placement:
@@ -365,7 +376,9 @@ raises.
 ```mermaid
 flowchart LR
     R[refresh_token! hits a<br/>permanent failure] -->|update!| S[status = needs_reauth]
-    S --> C[after_update_commit]
+    S --> L[after_update:<br/>latch the transition]
+    L -.->|a reload here would erase<br/>the dirty state; the ivar survives| L
+    L --> C[after_update_commit]
     C --> J[AccountReauthAlertJob]
     J --> N[AccountReauthNotifier]
     N --> D{suppressed<br/>&lt;12h?}
