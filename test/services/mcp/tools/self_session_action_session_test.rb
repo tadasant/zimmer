@@ -35,6 +35,24 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     assert_equal "archived", session.reload.status
   end
 
+  test "names the self-session server as the surface, and the session when it declares itself" do
+    session = sessions(:needs_input)
+
+    @tool.call("action" => "archive", "session_id" => session.id, "acting_session_id" => session.id)
+
+    line = session.reload.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by session ##{session.id} via the self-session MCP server", line
+  end
+
+  test "does not claim a self-archive when the caller did not declare itself" do
+    session = sessions(:needs_input)
+
+    @tool.call("action" => "archive", "session_id" => session.id)
+
+    line = session.reload.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by an undeclared self-session MCP server caller", line
+  end
+
   test "updates notes, title, and the heartbeat" do
     session = sessions(:needs_input)
 

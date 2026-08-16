@@ -394,6 +394,7 @@ class SessionStatusSummaryGenerator
     return if fork.nil?
 
     @logger.info("Abandoning an undispatched status summary fork", fork_session_id: fork.id)
+    fork.archive_actor = "Zimmer's status-summary fork cleanup (never dispatched)"
     fork.archive! if fork.may_archive?
   rescue StandardError => e
     @logger.error("Failed to abandon status summary fork", fork_session_id: fork&.id, error: e.message)

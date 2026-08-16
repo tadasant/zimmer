@@ -982,16 +982,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Session is already in trash.", flash[:notice]
   end
 
-  test "should create log entry when archiving" do
+  test "should create log entry naming the web UI as the actor when archiving" do
     session = sessions(:failed)
 
-    # State machine creates 1 log + controller creates 1 log = 2 logs total
-    assert_difference("session.logs.count", 2) do
+    # One log: the state machine's archive line, which carries the actor.
+    assert_difference("session.logs.count", 1) do
       post archive_session_url(session)
     end
 
     log = session.logs.last
-    assert_includes log.content, "moved to trash by user"
+    assert_equal "[State Machine] Session moved to trash by a user in the web UI", log.content
   end
 
   test "archive should render turbo_stream that removes the session card target" do
@@ -1343,6 +1343,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert failed_session2.archived?
     assert_redirected_to root_path
     assert_includes flash[:notice], "2 session(s) moved to trash"
+    assert_equal "[State Machine] Session moved to trash by a user in the web UI (bulk action)",
+                 failed_session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
   end
 
   test "should handle empty bulk archive selection" do
@@ -1363,12 +1365,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       execution_provider: "local_filesystem"
     )
 
-    # Each archive creates 2 logs: state machine log + controller log
-    # So 2 sessions * 2 logs = 4 total
-    assert_difference("Log.count", 4) do
+    # One log per archive: the state machine's line, which carries the actor.
+    assert_difference("Log.count", 2) do
       post bulk_archive_sessions_url, params: {
         session_ids: [ failed_session.id, failed_session2.id ]
       }
+    end
+
+    [ failed_session, failed_session2 ].each do |session|
+      assert_equal "[State Machine] Session moved to trash by a user in the web UI (bulk action)",
+                   session.logs.sole.content
     end
   end
 
