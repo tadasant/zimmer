@@ -453,6 +453,39 @@ on the queue it watches, or the outage it exists to report would starve it into 
 `SystemHealthMonitorJob` documents the same rule inverted — it watches `default`, so it runs on
 `pollers`.
 
+### What "queue backlog" counts
+
+The backlog is **ready work only** — rows in `good_jobs` that are unfinished, due now, and not yet
+claimed by a worker. `HealthMonitorService#queue_statistics` splits the unfinished rows into three
+populations, and only the first is waiting on anything:
+
+| Population | Meaning | Backlog? |
+| --- | --- | --- |
+| `ready_count` | due now, unclaimed — waiting on a worker | **yes** |
+| `claimed_count` | `locked_by_id` set — a worker is executing it right now | no |
+| `scheduled_count` | `scheduled_at` in the future — wake-up triggers, scheduled polls, retry backoffs, waiting on the clock | no |
+
+`pending_count` is the sum of all unfinished rows and is still reported, but nothing alerts on it.
+Alerting on the sum is what made the "Queue backlog critical" page fire four times in three days on
+the Tadasant production deployment in August 2026 — the firing on 2026-08-16 counted 106 jobs, of
+which 23 were scheduled for later and 15 were mid-execution, leaving 68 actually waiting.
+
+Depth alone is not enough either. Zimmer's workers clear on the order of a thousand jobs an hour, so
+a hundred ready jobs is about five minutes of work on a healthy instance and an outage in front of a
+wedged one. `critical` therefore requires **both** conditions:
+
+- `ready_count` ≥ `QUEUE_DEPTH_CRITICAL_THRESHOLD` (100), **and**
+- `oldest_ready_age_seconds` ≥ `QUEUE_STALL_CRITICAL_AGE` (10 minutes)
+
+A deep queue that is still draining is a `warning`: visible on `/health`, silent in Slack. The two
+conditions are ANDed rather than ORed because age alone would page on a job that is legitimately
+parked — a singleton poller held by `good_job_control_concurrency_with` sits ready-but-unrunnable
+while its sibling executes, which is normal operation, not a stall.
+
+`oldest_ready_age_seconds` dates a job from `scheduled_at` when it had one and `created_at`
+otherwise, so a wake-up trigger enqueued yesterday starts accruing wait when it comes due rather
+than looking like a day-old stall the moment it becomes runnable.
+
 ### "N active / M registered" workers
 
 The worker line in the queue-backlog alert (and on `/health`) comes from
