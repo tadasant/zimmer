@@ -66,9 +66,17 @@ if [ -r /etc/default/zimmer-worker-watchdog ]; then
   . /etc/default/zimmer-worker-watchdog
 fi
 
-# Name substring identifying the worker container. Kamal names it
-# zimmer-worker-<dest>-<dest>-<sha>, so the role prefix is the stable part.
-FILTER="${ZIMMER_WATCHDOG_CONTAINER_FILTER:-zimmer-worker}"
+# WHICH container this watches. Kamal labels every container it starts with
+# `service` and `role`, and those select the worker exactly -- unlike a name filter,
+# which Docker treats as a SUBSTRING. That distinction is the whole point: a substring
+# can match somebody else's container and page about it, and it can match two at once
+# (a Kamal swap runs old and new together) and then silently pick one.
+SERVICE="${ZIMMER_WATCHDOG_SERVICE:-zimmer}"
+ROLE="${ZIMMER_WATCHDOG_ROLE:-worker}"
+
+# Fallback only, for a container Kamal did not label -- and the override the tests use.
+# When set explicitly it wins, because naming a container by hand is an instruction.
+FILTER="${ZIMMER_WATCHDOG_CONTAINER_FILTER:-}"
 
 # The healthy container the Slack alert is delivered through. Same image, same
 # credentials, unaffected by the worker's cgroup.
@@ -219,6 +227,37 @@ write_state() {
   printf '%s %s %s\n' "$1" "$2" "$3" >"${STATE_FILE}.new" && mv "${STATE_FILE}.new" "$STATE_FILE"
 }
 clear_state() { rm -f "$STATE_FILE" "${STATE_FILE}.new"; }
+
+# ---------------------------------------------------------------------------
+# Find the worker. Labels first, name substring only as a fallback.
+#
+# `docker ps` lists newest first, so when a deploy swap has two workers up at once the
+# newest is the one Kamal just cut traffic to -- the one whose health matters. That is
+# a choice rather than an accident, so it is logged when it happens: an OLD container
+# left wedged behind a swap is a case this does not watch, and a human reading the
+# journal should be able to see that it applied.
+# ---------------------------------------------------------------------------
+find_worker() {
+  local matches
+  if [ -n "$FILTER" ]; then
+    matches=$(dk ps --filter "name=${FILTER}" --format '{{.ID}}' 2>/dev/null)
+  else
+    matches=$(dk ps --filter "label=service=${SERVICE}" --filter "label=role=${ROLE}" \
+      --format '{{.ID}}' 2>/dev/null)
+    # A host whose containers predate the labels still needs watching.
+    if [ -z "$matches" ]; then
+      matches=$(dk ps --filter "name=${SERVICE}-${ROLE}" --format '{{.ID}}' 2>/dev/null)
+      [ -n "$matches" ] && log "no labelled ${SERVICE}/${ROLE} container; fell back to the name filter '${SERVICE}-${ROLE}'"
+    fi
+  fi
+
+  local count
+  count=$(printf '%s\n' "$matches" | grep -c . || true)
+  if [ "${count:-0}" -gt 1 ]; then
+    log "WARNING: ${count} containers match; probing the newest only. The others are not watched: $(printf '%s' "$matches" | tr '\n' ' ')"
+  fi
+  printf '%s' "$matches" | head -1
+}
 
 # ---------------------------------------------------------------------------
 # The probe. `/bin/true` is the cheapest possible exec: it exercises the setns path
@@ -466,7 +505,7 @@ recover() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-cid=$(dk ps --filter "name=${FILTER}" --format '{{.ID}}' 2>/dev/null | head -1)
+cid=$(find_worker)
 if [ -z "$cid" ]; then
   load_state
   now_epoch=$(date -u +%s)
@@ -528,6 +567,55 @@ fi
 full=$(dk inspect -f '{{.Id}}' "$cid" 2>/dev/null)
 name=$(dk inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
 [ -n "$full" ] || { err "could not inspect container ${cid}"; exit 1; }
+
+# A PAUSED container is not this failure, and saying it is would be a false claim.
+# `docker pause` freezes the cgroup, so every `docker exec` fails with an error that
+# reads exactly like the wedge -- but the cause is known, benign and reversible, the
+# processes are all still there, and `docker unpause` fixes it. Deciding this BEFORE
+# the probe is deliberate: it is the difference between an alarm that reports what it
+# saw and one that reports what it assumed.
+#
+# It is still worth a page on a worker, because a paused worker runs nothing. It just
+# has to be paged as what it is.
+paused=$(dk inspect -f '{{.State.Paused}}' "$cid" 2>/dev/null)
+if [ "$paused" = "true" ]; then
+  read_state "$full"
+  now_epoch=$(date -u +%s)
+  if [ "$LAST_REPORT" -gt 0 ] && [ $((now_epoch - LAST_REPORT)) -lt "$REALERT_INTERVAL" ]; then
+    log "${name}: paused (reported $((now_epoch - LAST_REPORT))s ago, suppressed)"
+    exit 0
+  fi
+  err "${name} (${cid}) is PAUSED: every exec into it fails and it is running no jobs, but this is not the #502 wedge -- 'docker unpause' clears it"
+  paused_payload=$(
+    cat <<JSON
+{
+  "schema": 1,
+  "kind": "paused",
+  "host": "$(json_escape "$(hostname)")",
+  "detected_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "container": {
+    "id": "$(json_escape "$cid")",
+    "name": "$(json_escape "$name")",
+    "running": true
+  },
+  "recovery": {
+    "attempted": false,
+    "outcome": "skipped",
+    "steps": "a paused container is never recovered automatically -- unpausing is a decision for whoever paused it"
+  }
+}
+JSON
+  )
+  printf '%s\n' "$paused_payload" >"${INCIDENT_DIR}/$(date -u +%Y-%m-%dT%H-%M-%SZ)-${cid}-paused.json"
+  command -v logger >/dev/null 2>&1 &&
+    logger -t "$TAG" -p daemon.err "worker ${name} is paused; it is running no jobs"
+  if alert "$paused_payload"; then
+    write_state "$full" "0" "$now_epoch"
+  else
+    write_state "$full" "0" "$((now_epoch - REALERT_INTERVAL + ALERT_RETRY_INTERVAL))"
+  fi
+  exit 0
+fi
 
 read_state "$full"
 

@@ -153,6 +153,30 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     assert_equal "worker_wedge:8f1c2b3d4e5f", captured[:dedup_key]
   end
 
+  # A paused container fails exec exactly like the wedge does. Calling it a wedge —
+  # and asserting "this one is not over" about a container `docker unpause` fixes —
+  # is the kind of overstatement that costs an alarm its credibility.
+  test "a paused worker is reported as paused, not as a wedge" do
+    payload = {
+      "schema" => 1,
+      "kind" => "paused",
+      "host" => "zimmer-staging",
+      "detected_at" => "2026-08-16T17:30:03Z",
+      "container" => { "id" => "8f1c2b3d4e5f", "name" => "zimmer-worker-staging", "running" => true },
+      "recovery" => { "attempted" => false, "outcome" => "skipped", "steps" => "never recovered automatically" }
+    }
+
+    captured = capture_alert { WorkerWedgeAlert.report(payload.to_json) }
+
+    assert_equal "Worker container is paused on zimmer-staging", captured[:title]
+    assert_includes captured[:details], "docker unpause"
+    assert_includes captured[:details], "not* the #502"
+    assert_includes captured[:details], "running no jobs"
+    # The claims the wedge page makes must NOT appear: nothing here established them.
+    assert_not_includes captured[:details], "This one is not over"
+    assert_not_includes captured[:details], "cgroup-OOM wedge from"
+  end
+
   # The producer is hand-rolled shell quoting running on a host that is by definition
   # in a bad state. If it emits something unparseable, the page still has to happen --
   # losing the alert to a formatting bug is the one failure this whole mechanism

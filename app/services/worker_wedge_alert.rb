@@ -94,9 +94,17 @@ class WorkerWedgeAlert
   # and is just as silent, because nothing else in Zimmer notices a missing worker.
   def absent? = data["kind"].to_s == "absent"
 
+  # A paused container fails every exec exactly the way the wedge does, so the
+  # watchdog checks for it first and labels it rather than letting it masquerade.
+  # Reporting "the worker is wedged and this is not over" about a container someone
+  # paused is a claim the alarm never established, and an alarm that overstates once
+  # is an alarm nobody trusts the next time.
+  def paused? = data["kind"].to_s == "paused"
+
   def title
     return "Worker watchdog reported a wedge (unreadable payload)" unless parsed?
     return "No worker container running on #{host}" if absent?
+    return "Worker container is paused on #{host}" if paused?
 
     "Worker container wedged on #{host}"
   end
@@ -111,6 +119,7 @@ class WorkerWedgeAlert
   def details
     return unparseable_details unless parsed?
     return absent_details if absent?
+    return paused_details if paused?
 
     lines = [
       "The worker container reports `running` while `docker exec` into it fails, so it is " \
@@ -148,6 +157,20 @@ class WorkerWedgeAlert
     end
 
     lines.join("\n")
+  end
+
+  def paused_details
+    <<~DETAILS
+      The worker container is **paused**, so every `docker exec` into it fails and it is running no jobs or agent sessions. Its processes are all still there and intact.
+
+      This is *not* the #502 cgroup-OOM wedge, and it is reversible: `docker unpause #{container["id"].presence || "<container>"}`. Nothing in Zimmer pauses a container on its own, so something or someone else did.
+
+      *Host:* #{host}
+      *Container:* #{container["name"].presence || "?"} (`#{container["id"].presence || "?"}`)
+      *Detected:* #{data["detected_at"].presence || "?"}
+
+      The watchdog took no action: a paused container is never recovered automatically, because unpausing is a decision for whoever paused it.
+    DETAILS
   end
 
   def absent_details
