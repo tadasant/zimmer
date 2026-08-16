@@ -576,10 +576,23 @@ jobs:
           # entrypoint applies to itself before dropping privileges. A HOME that reads back
           # correctly but that uid 1000 cannot traverse and write fails in exactly the way
           # the string comparison above cannot see.
-          if ! ssh root@"${STAGING_HOST}" \
-                 "docker exec -u 1000:1000 $w test -x '${home}' -a -w '${home}'"; then
-            echo "::error::the worker's HOME=${home} is not traversable and writable by uid 1000, which is"
-            echo "::error::the uid agent sessions run as. libpq's TLS probe and every ~/ path fail through it."
+          #
+          # ${home} needs no quoting hardening: it can only reach here as the literal
+          # /home/rails, because the exact-string comparison above exits otherwise. Keep that
+          # ordering if you touch this -- it is what makes the interpolation safe.
+          #
+          # Status and output are captured separately so a transport failure does not get
+          # reported as an unusable directory: a dropped ssh, a stopped container and a
+          # missing /usr/bin/test all exit nonzero here and have nothing to do with the mode
+          # bits on ${home}.
+          probe_rc=0
+          probe_out=$(ssh root@"${STAGING_HOST}" \
+            "docker exec -u 1000:1000 $w test -x '${home}' -a -w '${home}'" 2>&1) || probe_rc=$?
+          if [ "${probe_rc}" -ne 0 ]; then
+            echo "::error::the usability probe for HOME=${home} exited ${probe_rc}: ${probe_out:-<no output>}"
+            echo "::error::If that is a plain nonzero with no output, uid 1000 -- the uid agent sessions"
+            echo "::error::run as -- cannot traverse and write it, and libpq's TLS probe and every ~/ path"
+            echo "::error::fail through it. Any other output is the probe failing to run at all."
             ssh root@"${STAGING_HOST}" "docker exec $w ls -ld '${home}'" || true
             exit 1
           fi

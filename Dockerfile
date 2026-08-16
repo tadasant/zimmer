@@ -108,11 +108,15 @@ USER 1000:1000
 #
 #   - PID 1. Every role sets `init: true`, so PID 1 is docker-init, which never runs
 #     bin/docker-entrypoint and so never sees the entrypoint's fixup below.
-#   - Every `docker exec` into the container, including `docker exec -u 1000:1000` --
-#     the shape an operator debugging a session uses. At uid 1000, HOME=/root is mode
-#     0700 and root-owned: not traversable, not writable.
-#   - Anything the app spawns that rebuilds its child's environment from scratch rather
-#     than inheriting the parent's.
+#   - Every `docker exec` into the container -- Docker builds an exec's environment from
+#     the container config, never from PID 1's. That includes `docker exec -u 1000:1000`,
+#     the shape an operator debugging a session uses, where /root is mode 0700 and
+#     root-owned: not traversable, not writable.
+#
+# The value is hardcoded here while bin/docker-entrypoint reads it from /etc/passwd. It
+# has to match Dockerfile.base's `useradd rails --uid 1000 --create-home`, and for the
+# `web` role -- which starts as uid 1000, so the entrypoint's root branch never runs --
+# this ENV is the only thing setting it.
 #
 # What lands at /home/rails is not incidental: libpq probes $HOME/.postgresql/postgresql.crt
 # on every TLS connection and treats EACCES (unlike ENOENT) as fatal, and ~/.claude,

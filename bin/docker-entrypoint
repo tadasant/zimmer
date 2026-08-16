@@ -18,10 +18,15 @@
 # test, CI -- skips this entirely and the entrypoint behaves exactly as before.
 # ---------------------------------------------------------------------------
 if [ "$(id -u)" = "0" ]; then
-  # setpriv changes credentials. It does NOT touch the environment -- and Docker
-  # derived HOME from the container's `--user`, so under `user: "0:0"` HOME is
-  # /root and would survive the drop. The app would then run as uid 1000 with a
-  # HOME that is mode 0700 and owned by root, which uid 1000 cannot even traverse.
+  # setpriv changes credentials. It does NOT touch the environment, so whatever
+  # HOME the container started with survives the drop. Under `user: "0:0"` the
+  # runtime would derive that from uid 0 and hand the app /root -- mode 0700 and
+  # owned by root, which uid 1000 cannot even traverse.
+  #
+  # The image pins `ENV HOME=/home/rails` so it never comes to that (a runtime only
+  # synthesizes HOME when it is absent). This block re-derives it from /etc/passwd
+  # anyway, and treats that as the authority: the two cannot silently disagree, and
+  # a container run against an image without the ENV is still correct here.
   #
   # That is not cosmetic. libpq probes $HOME/.postgresql/postgresql.crt on every
   # TLS connection and tolerates only ENOENT/ENOTDIR; EACCES is fatal. So with

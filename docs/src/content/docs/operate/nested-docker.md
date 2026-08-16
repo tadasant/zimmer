@@ -111,10 +111,11 @@ session root on the host.
 
 ### The environment has to be dropped too, not just the credentials
 
-`setpriv` changes credentials and nothing else. Docker derives `HOME` from the container's
-`--user`, so under `user: "0:0"` it is `/root` — and it survives the drop untouched. The
-app would then run as uid 1000 with a `HOME` that is mode `0700` and owned by root, which
-uid 1000 cannot even traverse.
+`setpriv` changes credentials and nothing else, so whatever `HOME` the container started
+with survives the drop untouched. Left to the runtime, `user: "0:0"` would make that `/root`
+— mode `0700` and owned by root, which uid 1000 cannot even traverse — and the app would run
+as uid 1000 pointed at it. (The image pins `HOME` so it never comes to that; the two layers
+are reconciled in [the subsection below](#the-entrypoint-only-covers-what-the-entrypoint-runs).)
 
 That is not cosmetic, and it is not a tidiness problem. It took production down for ten
 hours on 2026-08-13:
@@ -171,9 +172,13 @@ denied`. What it does not do is make the command run as uid 1000. Anything that 
 that `web` and the app read at uid 1000**, and those are unwritable afterwards.
 
 So on the worker, prefer plain `kamal app exec` (no `--reuse`): that is a `docker run`
-against the image, which runs the entrypoint and drops to uid 1000 properly. Reach for
-`--reuse` only for read-only inspection, and pass `docker exec -u 1000:1000` directly if you
-need the app's identity inside the existing container.
+against the image, which runs the entrypoint and drops to uid 1000 properly. It is not free
+— `execute_in_new_container` passes the role's option and env args too, so on the worker it
+starts a throwaway container under sysbox that boots its own disposable inner `dockerd`
+before your command runs. Expect the latency.
+
+Reach for `--reuse` only for read-only inspection, and pass `docker exec -u 1000:1000`
+directly if you need the app's identity inside the existing container.
 
 A container that refuses to start is a failed deploy. One that starts and quietly claims
 nothing is ten hours of silence — which is exactly what happened, because every check that
