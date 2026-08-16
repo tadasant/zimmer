@@ -286,8 +286,16 @@ container-shaped check stayed green throughout it.
 ### Extending it to production
 
 The mechanism is identical and already written — production's config resolves the same
-switch, and its role, image and entrypoint are the same ones staging uses. What production
-needs is the two things staging has:
+switch, and its role, image and entrypoint are the same ones staging uses.
+
+One prerequisite is **already in place**: production's worker carries `memory: 10g`, so
+cgroup OOM is the containment path before the runtime is ever armed. That ordering is not
+cosmetic. Arming sysbox without a cap makes a runaway allocation a *global* OOM that takes
+sshd and Caddy with it; adding a cap makes the kill land in one cgroup instead. The
+detection and bounded recovery for a worker wedged by that kill landed separately
+([#513](https://github.com/tadasant/zimmer/pull/513)).
+
+What production still needs:
 
 1. **The host half.** `infra/terraform/cloud-init.yaml.tftpl` covers a *new* droplet. A
    live production droplet predates it, so sysbox has to be applied out of band by the
@@ -296,6 +304,16 @@ needs is the two things staging has:
 2. **The switch.** `ZIMMER_NESTED_DOCKER=1` in production's deploy environment, plus the
    preflight and post-deploy assertions that `Deploy staging` carries, ported to
    production's deploy workflow.
+3. **A bound on how many sessions may hold a dev stack at once.** This is the item the cap
+   makes load-bearing rather than optional, because the droplet is not being resized.
+   Measured on staging: one `.agent-containers` stack sits around 700 MB anon and fits;
+   a *second* concurrent stack produced a cgroup OOM kill at `anon-rss:1244540kB`.
+   Production permits sixteen concurrent agent sessions (`GOOD_JOB_AGENTS_THREADS`), and
+   sixteen stacks do not fit inside `10g` alongside the worker's own residency. Nothing
+   bounds this today — `spot_max_concurrent_sessions` caps *sessions*, holds only spot
+   ones, and is inert unless spot gating is on. Until something bounds stacks
+   specifically, arming the switch means the cap is what stops the overshoot, by killing
+   the worker and every session on it.
 
 Do it as its own change, after staging has run on it. The blast radius is not comparable:
 production is where agent sessions actually execute, and the failure mode of arming the
