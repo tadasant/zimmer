@@ -4,8 +4,9 @@
 # into an *alert a human actually sees*.
 #
 # Background: HealthMonitorService#system_health already computes a
-# `status: :critical` ("Queue backlog critical: N pending jobs") once the GoodJob
-# backlog crosses QUEUE_DEPTH_CRITICAL_THRESHOLD. That status was surfaced only in
+# `status: :critical` ("Queue backlog critical: N jobs ready") once the ready GoodJob
+# backlog crosses QUEUE_DEPTH_CRITICAL_THRESHOLD and stops draining
+# (QUEUE_STALL_CRITICAL_AGE). That status was surfaced only in
 # the on-demand health report — nothing paged on it — so a real backlog collapse
 # (the SlackTriggerPollerJob thread-starvation incident) grew for ~5 hours before
 # anyone noticed. This job closes that gap: it re-evaluates system health on a
@@ -89,7 +90,8 @@ class SystemHealthMonitorJob < ApplicationJob
     # would additionally trip the "any Zimmer ERROR → critical" Grafana rule on top of
     # the Slack page (double-alerting). See CLAUDE.md logging philosophy.
     Rails.logger.warn(
-      "[SystemHealthMonitorJob] Queue backlog critical: #{depth} pending job(s) " \
+      "[SystemHealthMonitorJob] Queue backlog critical: #{depth} ready job(s), oldest waiting " \
+      "#{system_health[:queue_stats][:oldest_ready_age_seconds].to_i}s, " \
       "for #{streak} consecutive check(s); alerting #eng-alerts."
     )
 
@@ -110,8 +112,10 @@ class SystemHealthMonitorJob < ApplicationJob
     [
       "GoodJob backlog is critical.",
       "",
-      "• Pending: #{system_health[:queue_depth]} " \
-        "(ready #{stats[:ready_count]}, claimed #{stats[:claimed_count]}, scheduled #{stats[:scheduled_count]})",
+      "• Ready (waiting on a worker): #{stats[:ready_count]}, " \
+        "oldest waiting #{stats[:oldest_ready_age_seconds].to_i}s",
+      "• Not backlog: #{stats[:claimed_count]} claimed (executing now), " \
+        "#{stats[:scheduled_count]} scheduled (future-dated)",
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
       "• Workers: #{workers[:active_workers]} active / #{workers[:total_workers]} registered",
       "",
