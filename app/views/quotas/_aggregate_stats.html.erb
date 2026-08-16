@@ -1,39 +1,24 @@
 <div id="aggregate_stats">
   <% if accounts.any? %>
     <%
-      all_utilizations_5h = []
-      all_utilizations_7d = []
       # Counted from the same derived status the cards below render, so the
       # tallies and the badges cannot disagree about the same account — see
       # ClaudeAccount#effective_status.
       status_counts = Hash.new(0)
-
-      weekly_spent_count = 0
-
-      accounts.each do |account|
-        snap = snapshots[account.id]
-        status_counts[account.effective_status(snap)] += 1
-
-        if snap
-          # The 5-hour figure counts weekly-blocked accounts as fully utilized:
-          # their 5-hour headroom cannot be served. The 7-day figure needs no
-          # such correction — a spent weekly window already reads as 100% there.
-          pool_5h = pool_utilization_5h(snap)
-          eff_7d = effective_utilization(snap.utilization_7d, snap.reset_7d)
-          all_utilizations_5h << pool_5h if pool_5h
-          all_utilizations_7d << eff_7d if eff_7d
-          weekly_spent_count += 1 if seven_day_window_spent?(snap)
-        end
-      end
+      accounts.each { |account| status_counts[account.effective_status(snapshots[account.id])] += 1 }
 
       active_count = status_counts["active"]
       exceeded_count = status_counts["quota_exceeded"]
       reauth_count = status_counts["needs_reauth"]
 
-      avg_5h = all_utilizations_5h.any? ? all_utilizations_5h.sum / all_utilizations_5h.size : nil
-      avg_7d = all_utilizations_7d.any? ? all_utilizations_7d.sum / all_utilizations_7d.size : nil
-      max_5h = all_utilizations_5h.any? ? all_utilizations_5h.max : nil
-      max_7d = all_utilizations_7d.any? ? all_utilizations_7d.max : nil
+      # The same measure the spot gate decides on, so the headline number here
+      # and the gate's decision cannot disagree — see ClaudeAccountPool.
+      pool = ClaudeAccountPool.new(accounts: accounts, snapshots: snapshots).measure
+      avg_5h = pool.five_hour
+      avg_7d = pool.weekly
+      max_5h = pool.worst_five_hour
+      max_7d = pool.worst_weekly
+      weekly_spent_count = pool.weekly_spent_count
     %>
 
     <div class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6">

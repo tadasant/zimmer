@@ -504,11 +504,10 @@ class QuotasController < ApplicationController
     })
   end
 
+  # One query for the readings the page renders and the pool figure averages.
+  # The definition lives on ClaudeAccountPool because the spot gate loads the
+  # same set when it evaluates away from a page render.
   def latest_snapshots_for(accounts)
-    ClaudeAccountQuotaSnapshot
-      .where(claude_account_id: accounts.pluck(:id))
-      .select("DISTINCT ON (claude_account_id) *")
-      .order(:claude_account_id, created_at: :desc)
-      .index_by(&:claude_account_id)
+    ClaudeAccountPool.latest_snapshots(accounts)
   end
 end
