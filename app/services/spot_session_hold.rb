@@ -1,31 +1,21 @@
 # frozen_string_literal: true
 
-# Holds a spot session at the starting line when the fleet is already at the
-# concurrency the quota can carry, and re-queues it to try again.
+# Holds a spot session at the starting line when a quota window has reached its
+# target or every session slot is taken, and re-queues it to try again.
 #
 # A held session is left in `waiting` — Zimmer's existing "created, not started"
 # status — and AgentSessionJob is re-enqueued with a delay. GoodJob persists a
 # delayed job in Postgres, so the retry survives a worker restart or a deploy;
 # nothing depends on this process staying alive.
 #
-# The delay is one control interval plus a little jitter. Without the jitter a
-# backlog held in the same minute re-checks in the same minute forever, and every
-# one of them reads the same fleet size before any of them has started — so the
-# whole queue would either stampede past capacity together or wait together.
+# The delay carries a little jitter. Without it a backlog held in the same minute
+# re-checks in the same minute forever, and every one of them reads the same
+# fleet size before any of them has started — so the whole queue either stampedes
+# past the cap together or waits together.
 #
 # The hold is recorded in `metadata` so the session detail page can explain
 # itself rather than looking mysteriously stuck, and a log line lands in the
 # session's own log for the same reason.
-#
-# == The starvation floor
-#
-# A window that stays at its ceiling holds spot work for as long as it stays
-# there, and nothing in the forecast bounds that: production ran a session
-# waiting 23 hours. So a session held past STARVATION_DEADLINE is let through
-# once the fleet is empty. Both halves matter — the deadline is what guarantees
-# the queue eventually moves, and the empty fleet is what keeps that guarantee
-# from becoming a second, unbudgeted way to run work while the deployment is
-# already busy.
 #
 # Only the FIRST start of a session is gated. A follow-up, a monitoring resume
 # and a clone-only setup all pass straight through: interrupting a conversation
@@ -34,16 +24,12 @@
 # point that means something is "should this work begin at all".
 class SpotSessionHold
   HELD_AT = "spot_hold_at"
-  HELD_SINCE = "spot_hold_since"
   HELD_REASON = "spot_hold_reason"
   HELD_DETAIL = "spot_hold_detail"
   HELD_RETRY_AT = "spot_hold_retry_at"
   HELD_COUNT = "spot_hold_count"
 
-  METADATA_KEYS = [ HELD_AT, HELD_SINCE, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT ].freeze
-
-  # How long a session may be held before the floor lets it through.
-  STARVATION_DEADLINE = 2.hours
+  METADATA_KEYS = [ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT ].freeze
 
   # Spread over which held sessions re-check, so a backlog does not re-evaluate
   # in lockstep.
@@ -61,17 +47,10 @@ class SpotSessionHold
       return false unless session.spot?
 
       # The one seam. SpotGateService.allow_start? reads the same method, so the
-      # readable predicate and the production path cannot drift apart — and
-      # start_decision counts the candidate session, which the argument-free
-      # `evaluate` (the informational reading) does not.
+      # readable predicate and the production path cannot drift apart.
       decision = SpotGateService.start_decision(session)
       if decision.allowed?
         clear(session)
-        return false
-      end
-
-      if starved?(session)
-        release_starved(session, decision, log_buffer: log_buffer)
         return false
       end
 
@@ -89,38 +68,10 @@ class SpotSessionHold
       Rails.logger.warn("[SpotSessionHold] Could not clear hold on session #{session.id}: #{e.message}")
     end
 
-    # When this session was first held, or nil if it never has been.
-    def held_since(session)
-      raw = (session.metadata || {})[HELD_SINCE]
-      return nil if raw.blank?
-
-      Time.zone.parse(raw.to_s)
-    end
-
     private
 
-    # Held longer than the deadline, with nothing running to spend against. The
-    # fleet check is what stops the floor from admitting the entire backlog at
-    # once the moment it goes stale.
-    def starved?(session)
-      since = held_since(session)
-      return false if since.nil? || Time.current - since < STARVATION_DEADLINE
-
-      ClaudeUsageRateService.active_session_count.zero?
-    end
-
-    def release_starved(session, decision, log_buffer:)
-      waited = ((Time.current - held_since(session)) / 3600.0).round(1)
-      message = "Spot session released after #{waited}h held (#{decision.reason}): nothing is running, " \
-                "and a spot session is deferred work, not abandoned work. #{decision.detail}"
-      log_buffer&.add(message, level: "warning")
-      Rails.logger.info("[SpotSessionHold] Session #{session.id} released by the starvation floor after #{waited}h")
-
-      clear(session)
-    end
-
     def hold!(session, decision, log_buffer:, images:, files:)
-      delay = SpotGateService::CONTROL_INTERVAL + rand(RETRY_JITTER.to_i).seconds
+      delay = SpotGateService::RETRY_DELAY + rand(RETRY_JITTER.to_i).seconds
       retry_at = Time.current + delay
       metadata = session.metadata || {}
       count = metadata[HELD_COUNT].to_i + 1
@@ -128,9 +79,6 @@ class SpotSessionHold
       session.update_columns(
         metadata: metadata.merge(
           HELD_AT => Time.current.iso8601,
-          # First hold wins: this is what the starvation floor measures against,
-          # so re-holding must not keep resetting the clock.
-          HELD_SINCE => metadata[HELD_SINCE].presence || Time.current.iso8601,
           HELD_REASON => decision.reason,
           HELD_DETAIL => decision.detail,
           HELD_RETRY_AT => retry_at.iso8601,
@@ -138,7 +86,7 @@ class SpotSessionHold
         )
       )
 
-      message = "Spot session held for quota headroom: #{decision.detail} " \
+      message = "Spot session held: #{decision.detail} " \
                 "Re-checking at #{retry_at.iso8601} (hold ##{count}). " \
                 "Its class was #{session.scheduling_class_source}. " \
                 "Make this one session priority to start it now."

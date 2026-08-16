@@ -334,25 +334,25 @@ class QuotasController < ApplicationController
 
   private
 
-  # The spot gate card: the policy, the forecast it acts on, and the per-genesis
+  # The spot gate card: the policy, the reading it acts on, and the per-genesis
   # classes. It reads the same Claude Code quota windows the rest of this page
   # reports, which is why it renders here and only on the Claude tab.
   #
-  # One decision, not two. The card used to render a forecast for the fleet as it
-  # stands beside the answer a starting session would actually get, and the two
+  # One decision, not two. The card used to render a fleet-as-it-stands forecast
+  # beside the answer a starting session would actually get, and the two
   # disagreed in the obvious way — a green "headroom available" badge above the
-  # line "a spot session starting right now would be held". `current_decision` is
-  # the operative one, and `get_spot_policy` reads the same method.
+  # line "a spot session starting right now would be held". There is now a single
+  # decision, and `get_spot_policy` renders the same one.
   def load_spot_gate
     @app_setting = AppSetting.current
-    @spot_decision = SpotGateService.current_decision
+    @spot_decision = SpotGateService.evaluate
     @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
     @genesis_counts = Session.genesis_counts
   end
 
-  # Append a re-rendered spot gate to a refresh response. The card's forecast is
-  # computed from the very snapshots a refresh has just replaced, so without this
-  # a refreshed page would show new utilization bars beside a reading taken before
+  # Append a re-rendered spot gate to a refresh response. The card's decision is
+  # read from the very snapshots a refresh has just replaced, so without this a
+  # refreshed page would show new utilization bars beside a decision taken before
   # them. Takes whatever collects the streams — the enumerator's yielder for the
   # streaming refresh, an array for the single-account one.
   def spot_gate_stream(sink, runtime: current_runtime)

@@ -43,35 +43,45 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     SessionGenesis::KEYS.each { |key| assert_match(/`#{key}`/, output) }
   end
 
-  # The page and the tool render the same decision — the one about a session
-  # starting right now. They used to ask different questions, which is how the
-  # card came to show a green "headroom available" badge above the line "a spot
-  # session starting right now would be held".
-  test "get_spot_policy reports the concurrency the gate is admitting" do
-    # The gate sizes every usable account, so the fixtures' readings would decide
-    # which one is roomiest. Leave only this one with anything to forecast from.
+  # The page and the tool render the same decision. They used to ask different
+  # questions, which is how the card came to show a green "headroom available"
+  # badge above the line "a spot session starting right now would be held".
+  test "get_spot_policy reports the live decision and both windows" do
+    # The gate reads every usable account, so the fixtures' readings would decide
+    # which one has the most room. Leave only this one with anything to read.
     ClaudeAccountQuotaSnapshot.delete_all
-    account = ClaudeAccount.create!(email: "mcp-capacity@example.com", runtime: "claude_code",
+    account = ClaudeAccount.create!(email: "mcp-window@example.com", runtime: "claude_code",
                                     oauth_config: { "x" => 1 }, is_current: true)
-    now = Time.current
-    util = 0.50
-    [ 90, 60, 30, 0 ].each do |mins|
-      ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: util, utilization_7d: 0.10,
-        reset_5h: now + 2.hours, reset_7d: now + 2.days, active_session_count: 1,
-        trigger: "usage_sample", created_at: now - mins.minutes)
-      util += 0.02
-    end
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: 0.42, utilization_7d: 0.10,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
+      trigger: "usage_sample")
     AppSetting.editable.update!(spot_gating_enabled: true,
                                 spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
 
     output = get_policy
-    decision = SpotGateService.current_decision
+    decision = SpotGateService.evaluate
 
-    assert_match(/Concurrent spot capacity:\*\* #{decision.capacity}/, output)
-    assert_match(/Sized against:\*\* mcp-capacity@example\.com/, output)
-    assert_match(/Concurrent sessions it can carry/, output)
+    assert_match(/Windows read from:\*\* mcp-window@example\.com/, output)
+    assert_match(/Utilization now:\*\* 42\.0%/, output)
+    assert_match(/At the target:\*\* no/, output)
     assert_equal decision.allowed?, output.include?("**Spot sessions:** running"),
       "the tool must report the same decision the page renders"
+  end
+
+  test "get_spot_policy says when a window has reached its target" do
+    ClaudeAccountQuotaSnapshot.delete_all
+    account = ClaudeAccount.create!(email: "mcp-at-limit@example.com", runtime: "claude_code",
+                                    oauth_config: { "x" => 1 }, is_current: true)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: 0.85, utilization_7d: 0.10,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
+      trigger: "usage_sample")
+    AppSetting.editable.update!(spot_gating_enabled: true,
+                                spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+
+    output = get_policy
+    assert_match(/Spot sessions:\*\* HELD/, output)
+    assert_match(/Reason:\*\* `at_utilization_limit`/, output)
+    assert_match(/At the target:\*\* yes — spot work is paused until it falls/, output)
   end
 
   test "get_spot_policy reflects a demotion" do

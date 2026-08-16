@@ -2469,29 +2469,23 @@ and resume.
 
 ---
 
-## The spot gate cannot see spend it never sampled
+## The spot gate decides on a reading up to 15 minutes old
 
-`ClaudeUsageRateService` differentiates `ClaudeAccountQuotaSnapshot` rows, so its resolution is
-whatever the sampling cadence happens to be. `ClaudeUsageSamplerJob` reads the serving account every
-15 minutes, which is enough for a rate but not for a spike: a burst that starts and finishes inside
-one 15-minute gap is invisible, and the forecast that follows is built on a rate that never saw it.
+The gate compares each window's utilization against its target, and that utilization comes from the
+last `ClaudeAccountQuotaSnapshot` on file. `ClaudeUsageSamplerJob` refreshes the serving account
+every 15 minutes, so between samples the gate is deciding on a number that may already have moved.
 
 Two consequences worth knowing:
 
-- The gate reacts on a 15-minute lag at best. Twenty spot sessions launched at once all evaluate
-  against the same pre-burst rate and all start.
-- A session counts against capacity only once it is `running`, and it becomes `running` after its
-  clone and spawn — so a burst that evaluates before any of it has started reads the same fleet size
-  and can overshoot the capacity by up to the width of the `agents` queue. The overshoot is bounded
-  by that queue, corrected at the next evaluation, and spread by the jitter on a held session's
-  re-check, but it is real: capacity is enforced per decision, not held as a reservation.
-- A pair of readings that straddles a window reset is dropped rather than clamped, because the
-  counters slide downward on their own and the difference measures nothing. If resets happen to line
-  up with the sample cadence, usable pairs get scarce and the gate falls open on
-  `insufficient_data`.
-
-Both are deliberate — the alternative is a gate that guesses — but they mean the gate is a brake on
-sustained burn, not a circuit breaker on a spike.
+- **A burst can overshoot the target before the reading catches up.** Ten sessions started at once
+  spend for up to fifteen minutes against a utilization figure taken before any of them existed. The
+  concurrency limit is what bounds the damage — it is the reason the limit exists — but the target is
+  a level the deployment crosses and then stops at, not a line it never passes.
+- **A session counts against the limit only once it is `running`,** which happens after its clone and
+  spawn. A burst that evaluates before any of it has started reads the same fleet size and can
+  briefly exceed the limit. The next evaluation corrects it, and the jitter on a held session's
+  re-check spreads the backlog out, but the limit is enforced per decision rather than held as a
+  reservation.
 
 ---
 
@@ -2508,15 +2502,18 @@ whose `spot_hold_retry_at` is well past would close this.
 
 ---
 
-## The starvation floor can spend past the target
+## A spot session has no starvation escape, by design
 
-A session held longer than `SpotSessionHold::STARVATION_DEADLINE` starts anyway once nothing is
-running, whatever the windows say — including past the hard stop. That is deliberate — a window pinned at its ceiling for a day
-would otherwise hold a queue for a day, which is what happened in production — but it means the
-target is a target and not a hard cap: a fully spent pool still lets one session through every two
-idle hours. The floor is narrow on purpose (deadline passed **and** an empty fleet), so it drains a
-starved queue rather than running alongside a busy one, and it cannot release a backlog in parallel:
-each release occupies the fleet the next one checks.
+While every usable account sits at a window target, spot work waits — with no deadline and no
+override. A 5-hour window falls within hours, but a weekly window pinned near its target can hold a
+queue for a long time, and the queue will not drain on its own until the number comes down. That is
+the behaviour the deployment asked for: the pause is meant to last exactly as long as the utilization
+that caused it.
+
+The levers, when one piece of work genuinely cannot wait, are per-session rather than global:
+promote that session to priority from its hold banner, or raise the target on `/quotas`. `/quotas`
+shows the held state and the reason the whole time, so a queue waiting on a window is visible rather
+than mysterious.
 
 ---
 
@@ -2535,7 +2532,7 @@ with a large table should expect the lock.
 ## Only a session's first start is gated
 
 `SpotSessionHold` runs on the new-session path only. A follow-up, a monitoring resume and a
-clone-only setup all pass through regardless of forecast, so a long-running spot session keeps
+clone-only setup all pass through regardless of the gate, so a long-running spot session keeps
 spending after the gate has closed behind it. Interrupting a conversation already underway would
 strand it half-done and waste the tokens already spent, so this is the intended trade — but "spot
 sessions are held" means "not started", not "not running".

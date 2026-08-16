@@ -24,12 +24,11 @@ module Mcp
         - **set_gating**: Turn the spot gate on or off, set the two window targets, and set the ceiling
           on how many sessions run at once. Any of `enabled`, `five_hour_threshold_pct`,
           `weekly_threshold_pct` and `max_concurrent_sessions` may be given; omitted ones are left alone.
-          With the gate on, spot sessions fill the fleet up to the concurrency the quota can carry before
-          a window reaches its target — the target is a level to reach, not a line to stay clear of —
-          and stop outright once a window HAS reached it, until utilization comes back down.
-          `max_concurrent_sessions` bounds the fleet: every running session counts toward it, priority
-          included, but only spot sessions are held by it. With gating off, spot sessions start like any
-          other.
+          With the gate on, a spot session starts while some Claude Code account is under both targets
+          and a slot is free — a target is a level to reach, not a line to stay clear of, and reaching
+          one pauses spot work until utilization comes back down. `max_concurrent_sessions` bounds the
+          fleet: every running session counts toward it, priority included, but only spot sessions are
+          held by it. With gating off, spot sessions start like any other.
         - **promote_genesis**: Make a genesis kind `priority` (requires `genesis`). This is the one-click
           promotion: it reclassifies every session from that genesis, including ones that already exist,
           because a session's class is derived from its genesis unless something named one for it.
@@ -73,13 +72,13 @@ module Mcp
             type: "integer",
             minimum: 0,
             maximum: 100,
-            description: "set_gating: utilization target for the 5-hour window, 0-100. Capacity is sized to land on it."
+            description: "set_gating: utilization target for the 5-hour window, 0-100. Reaching it pauses spot work."
           },
           weekly_threshold_pct: {
             type: "integer",
             minimum: 0,
             maximum: 100,
-            description: "set_gating: utilization target for the weekly window, 0-100. Capacity is sized to land on it."
+            description: "set_gating: utilization target for the weekly window, 0-100. Reaching it pauses spot work."
           },
           max_concurrent_sessions: {
             type: "integer",
@@ -167,7 +166,7 @@ module Mcp
       # Every write echoes back what the gate now decides, so a caller does not
       # have to make a second call to learn whether its change took effect.
       def decision_summary
-        decision = SpotGateService.current_decision
+        decision = SpotGateService.evaluate
         "Spot sessions are now #{decision.allowed? ? 'running' : 'HELD'} (`#{decision.reason}`): #{decision.detail}"
       end
     end

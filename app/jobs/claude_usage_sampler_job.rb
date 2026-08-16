@@ -1,19 +1,16 @@
 # frozen_string_literal: true
 
 # Takes a scheduled quota reading of the account that is currently serving, so
-# the usage rate has an evenly spaced time series to differentiate.
+# the spot gate is deciding on a fresh number.
 #
 # == Why this job has to exist
 #
 # QuotaResetCheckerJob already runs every 15 minutes and already writes snapshots
 # — but only for accounts in `quota_exceeded`, because its job is to notice when
-# one recovers. That is exactly the wrong population to measure a rate from: an
-# exceeded account's utilization is pinned at the cap and rises by nothing.
-# A healthy account only got a reading when somebody opened /quotas or a rotation
-# happened, which can be days apart.
-#
-# So the rate metric had no signal. This job supplies it, sampling the one
-# account that spend is actually accruing against.
+# one recovers. A healthy account only got a reading when somebody opened /quotas
+# or a rotation happened, which can be days apart — and the serving account is
+# the one utilization is actually accruing against, so its reading is what the
+# spot gate holds and releases work on.
 #
 # == Cost
 #
@@ -21,10 +18,11 @@
 # POST, purely to read the rate-limit response headers. At the 15-minute cadence
 # in config/environments/*.rb that is 96 probes a day against one account.
 #
-# Failures are swallowed. A missing sample degrades the rate metric's resolution;
-# it must never take down the scheduler or mark an account on a network blip —
-# only QuotaSnapshotService decides what a reading means for account status, and
-# it does so identically no matter which caller supplied the reading.
+# Failures are swallowed. A missing sample leaves the gate deciding on a slightly
+# older reading; it must never take down the scheduler or mark an account on a
+# network blip — only QuotaSnapshotService decides what a reading means for
+# account status, and it does so identically no matter which caller supplied the
+# reading.
 class ClaudeUsageSamplerJob < ApplicationJob
   queue_as :default
 

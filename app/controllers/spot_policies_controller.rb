@@ -2,8 +2,8 @@
 
 # The spot gate policy: whether the gate holds spot sessions at all, the two
 # window targets it fills up to, and the ceiling on how many sessions run at
-# once. The card lives on /quotas because the windows it forecasts are the ones
-# that page reports.
+# once. The card lives on /quotas because the windows it reads are the ones that
+# page reports.
 #
 # Separate from AppSettingsController, which persists the settings page's own
 # forms, so each page's forms write only their own fields.
