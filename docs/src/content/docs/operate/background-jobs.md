@@ -478,9 +478,12 @@ wedged one. `critical` therefore requires **both** conditions:
 - `oldest_ready_age_seconds` ≥ `QUEUE_STALL_CRITICAL_AGE` (10 minutes)
 
 A deep queue that is still draining is a `warning`: visible on `/health`, silent in Slack. The two
-conditions are ANDed rather than ORed because age alone would page on a job that is legitimately
-parked — a singleton poller held by `good_job_control_concurrency_with` sits ready-but-unrunnable
-while its sibling executes, which is normal operation, not a stall.
+conditions are ANDed rather than ORed because age alone says nothing about scale — three jobs that
+have sat for twenty minutes on an otherwise idle instance is not something to wake anyone for, and
+paging on it would rebuild the noise this threshold exists to remove.
+
+The three populations partition `pending_count` exactly: `scheduled_count` counts only *unclaimed*
+future-dated rows, so a locked row dated in the future is counted once, as claimed.
 
 `oldest_ready_age_seconds` dates a job from `scheduled_at` when it had one and `created_at`
 otherwise, so a wake-up trigger enqueued yesterday starts accruing wait when it comes due rather

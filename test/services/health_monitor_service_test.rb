@@ -242,9 +242,11 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     GoodJob::Job.insert_all(rows) if rows.any?
   end
 
+  # `scheduled_at` matches `created_at` because that is the shape GoodJob writes:
+  # `GoodJob::Job.enqueue_args` always populates it, even for an immediate enqueue.
   def enqueue_ready_jobs(count, waiting_for: HealthMonitorService::QUEUE_STALL_CRITICAL_AGE + 1.minute)
     enqueued_at = waiting_for.ago
-    insert_good_jobs(count) { { created_at: enqueued_at, updated_at: enqueued_at } }
+    insert_good_jobs(count) { { created_at: enqueued_at, updated_at: enqueued_at, scheduled_at: enqueued_at } }
   end
 
   def enqueue_scheduled_jobs(count, due_in: 1.hour)
@@ -338,6 +340,42 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     age = @service.system_health[:queue_stats][:oldest_ready_age_seconds]
 
     assert_in_delta 180, age, 5
+  end
+
+  # GoodJob always writes scheduled_at today, but the ready query has always tolerated
+  # a NULL, so the age calculation has to agree with it rather than return nil.
+  test "oldest_ready_age_seconds falls back to created_at when scheduled_at is null" do
+    insert_good_jobs(1) { { created_at: 4.minutes.ago, updated_at: 4.minutes.ago } }
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_equal 1, stats[:ready_count]
+    assert_in_delta 240, stats[:oldest_ready_age_seconds], 5
+  end
+
+  # The alert body presents ready/claimed/scheduled as the whole of pending, so they
+  # have to partition it — including for a locked row dated in the future, which would
+  # otherwise be counted as both claimed and scheduled.
+  test "ready, claimed and scheduled partition pending exactly" do
+    enqueue_ready_jobs(4)
+    enqueue_scheduled_jobs(3)
+    claim_jobs(2)
+    insert_good_jobs(1) { { locked_by_id: SecureRandom.uuid, locked_at: Time.current, scheduled_at: 1.hour.from_now } }
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_equal 3, stats[:claimed_count], "the locked future-dated row is claimed, not scheduled"
+    assert_equal 3, stats[:scheduled_count]
+    assert_equal 4, stats[:ready_count]
+    assert_equal stats[:pending_count],
+      stats[:ready_count] + stats[:claimed_count] + stats[:scheduled_count]
+  end
+
+  test "format_wait renders seconds, minutes and hours" do
+    assert_equal "45s", HealthMonitorService.format_wait(45)
+    assert_equal "12m", HealthMonitorService.format_wait(12 * 60)
+    assert_equal "2h 5m", HealthMonitorService.format_wait((2 * 3600) + (5 * 60))
+    assert_equal "0s", HealthMonitorService.format_wait(nil)
   end
 
   # === Worker Statistics Tests ===

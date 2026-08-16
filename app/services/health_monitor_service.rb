@@ -40,10 +40,10 @@ class HealthMonitorService
   # requires both: depth over the threshold AND the head of the queue waiting longer
   # than this.
   #
-  # The two conditions are ANDed rather than ORed on purpose. Age alone would page on
-  # a job that is legitimately parked: a singleton poller held by
-  # `good_job_control_concurrency_with` sits ready-but-unrunnable while its sibling
-  # executes, and that is normal operation, not a stall.
+  # The two conditions are ANDed rather than ORed on purpose. Age alone says nothing
+  # about scale: three jobs that have sat for twenty minutes on an otherwise idle
+  # instance is not something to wake anyone for, and paging on it would rebuild the
+  # noise this threshold exists to remove. Depth is what makes a stall an incident.
   QUEUE_STALL_CRITICAL_AGE = 10.minutes
   FAILURE_RATE_WARNING_THRESHOLD = 0.1
   FAILURE_RATE_CRITICAL_THRESHOLD = 0.25
@@ -60,6 +60,17 @@ class HealthMonitorService
   # up on a process, deletes the row and releases its jobs, so a worker that is
   # inactive by this measure is one GoodJob is about to reap.
   WORKER_ACTIVE_INTERVAL = GoodJob::Process::EXPIRED_INTERVAL
+
+  # Compact human-readable wait ("45s", "12m", "2h 5m"). Public because the Slack page
+  # `SystemHealthMonitorJob` sends is the one surface where a human, not a parser,
+  # reads this number — "oldest waiting 18000s" is worse there than "5h 0m".
+  def self.format_wait(seconds)
+    seconds = seconds.to_i
+    return "#{seconds}s" if seconds < 60
+    return "#{seconds / 60}m" if seconds < 3600
+
+    "#{seconds / 3600}h #{(seconds % 3600) / 60}m"
+  end
 
   # Structured result for health status
   HealthStatus = Struct.new(:status, :message, keyword_init: true) do
@@ -475,9 +486,12 @@ class HealthMonitorService
   def queue_statistics
     # GoodJob stores jobs in good_jobs table
     pending_jobs = GoodJob::Job.where(finished_at: nil)
-    ready_jobs = pending_jobs.where(locked_by_id: nil).where("scheduled_at <= ? OR scheduled_at IS NULL", Time.current)
-    scheduled_jobs = GoodJob::Job.where(finished_at: nil).where("scheduled_at > ?", Time.current)
-    running_jobs = GoodJob::Job.where(finished_at: nil).where.not(locked_by_id: nil)
+    unclaimed_jobs = pending_jobs.where(locked_by_id: nil)
+    ready_jobs = unclaimed_jobs.where("scheduled_at <= ? OR scheduled_at IS NULL", Time.current)
+    # Unclaimed, so the three populations partition `pending_count` exactly rather
+    # than counting a locked future-dated row as both claimed and scheduled.
+    scheduled_jobs = unclaimed_jobs.where("scheduled_at > ?", Time.current)
+    running_jobs = pending_jobs.where.not(locked_by_id: nil)
     failed_jobs = GoodJob::Job.where.not(error: nil).where(finished_at: nil)
 
     # Calculate processing rate (jobs completed in last hour)
@@ -502,14 +516,17 @@ class HealthMonitorService
   # correctly parked would make every wake-up trigger look like a stall — falling back
   # to `created_at` for a row with no `scheduled_at` at all.
   #
-  # Read back through the model rather than `minimum(Arel.sql(...))`: a calculation
-  # over a raw SQL expression has no column to infer a type from, so the adapter
-  # decides whether you get a Time or a String. The attribute readers do not.
+  # Read real columns rather than `minimum(Arel.sql(...))`: a calculation over a raw
+  # SQL expression has no column to infer a type from, so the adapter decides whether
+  # you get a Time or a String. `pick` on the columns themselves does not, and it
+  # avoids materializing a whole row (including its `serialized_params` jsonb) on a
+  # path that runs on every /health render and every monitor tick.
   def oldest_ready_age_seconds(ready_jobs)
-    oldest = ready_jobs.order(Arel.sql("COALESCE(scheduled_at, created_at) ASC")).first
-    return nil if oldest.nil?
+    scheduled_at, created_at = ready_jobs.order(Arel.sql("COALESCE(scheduled_at, created_at) ASC"))
+                                         .pick(:scheduled_at, :created_at)
+    waiting_since = scheduled_at || created_at
+    return nil if waiting_since.nil?
 
-    waiting_since = oldest.scheduled_at || oldest.created_at
     [ (Time.current - waiting_since).round, 0 ].max
   end
 
@@ -748,12 +765,8 @@ class HealthMonitorService
     end
   end
 
-  # Compact human-readable wait ("45s", "12m", "2h 5m") for status messages.
   def format_wait(seconds)
-    return "#{seconds}s" if seconds < 60
-    return "#{seconds / 60}m" if seconds < 3600
-
-    "#{seconds / 3600}h #{(seconds % 3600) / 60}m"
+    self.class.format_wait(seconds)
   end
 
   # Calculate overall system status

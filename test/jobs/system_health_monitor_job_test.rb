@@ -24,12 +24,16 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
   # waiting QUEUE_STALL_CRITICAL_AGE. Drive that with real rows so the job exercises
   # the real health computation rather than a stub.
 
-  # Ready work: due now (GoodJob leaves scheduled_at NULL for an immediate enqueue)
-  # and unclaimed. `waiting_for` backdates it — a queue whose oldest job arrived a
-  # moment ago is draining, not stalled, and is deliberately not critical.
+  # Ready work: due now and unclaimed. `waiting_for` backdates it — a queue whose
+  # oldest job arrived a moment ago is draining, not stalled, and is deliberately not
+  # critical.
+  #
+  # `scheduled_at` is set to match `created_at` because that is the shape GoodJob
+  # actually writes: `GoodJob::Job.enqueue_args` always populates `scheduled_at`,
+  # defaulting it to the creation time, even for an immediate enqueue.
   def enqueue_ready_jobs(count, waiting_for: HealthMonitorService::QUEUE_STALL_CRITICAL_AGE + 1.minute)
     enqueued_at = waiting_for.ago
-    insert_jobs(count) { { created_at: enqueued_at, updated_at: enqueued_at } }
+    insert_jobs(count) { { created_at: enqueued_at, updated_at: enqueued_at, scheduled_at: enqueued_at } }
   end
 
   # Future-dated work: wake-up triggers, scheduled polls, retry backoffs. Waiting on
@@ -126,7 +130,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
 
     SystemHealthMonitorJob.perform_now # streak -> 1
 
-    details = nil
+    details = ""
     AlertService.expects(:raise_alert).once.with do |_title, opts|
       details = opts[:details].to_s
       true
