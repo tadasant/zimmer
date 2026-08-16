@@ -2773,12 +2773,7 @@ reads at uid 1000**. Previously those writes landed in `/root` on the container 
 evaporated at the next deploy; now they persist. That is a real trade, taken deliberately: a
 working admin path with a caveat beats one that always fails.
 
-The damage no longer accumulates. The entrypoint sweeps the volume roots and hands anything
-not owned by uid 1000 back to it — once before the privilege drop, then every 60 seconds from
-a process that kept its root credentials for exactly that. What remains is a **window**: a
-file root writes is unreadable to the app until the next sweep. Set `ZIMMER_RECLAIM_INTERVAL`
-lower if that matters, or `0` to drop the repeat — the sweep before the privilege drop still
-runs, so a deploy always heals the volume.
+The damage does not accumulate: the entrypoint sweeps the volume roots and hands anything not owned by uid 1000 back to it — once before the privilege drop, then every 60 seconds from a process that kept its root credentials for exactly that. What remains is a **window**: a file root writes is unreadable to the app until the next sweep. `ZIMMER_RECLAIM_INTERVAL` tunes it (`0` drops the repeat and keeps the boot sweep), but no destination passes that variable today, so changing it means adding it to `env: clear:` in the deploy config rather than setting it at deploy time.
 
 Use plain `kamal app exec` (a `docker run`, which runs the entrypoint and drops properly), or
 `docker exec -u 1000:1000` if you need the app's identity inside the existing container — see
@@ -2798,13 +2793,15 @@ transcripts found in staging's `claude_home` volume, and the 4,442 root-owned
 `tmp/cache/bootsnap/` files that made `ac.sh destroy`'s clone removal fail for the uid
 sessions run as.
 
-The entrypoint's reclaim sweep covers this on a nested-Docker worker, because the clone and
-the runtime homes are under the volume roots it sweeps. It does **not** cover a dev stack
-started anywhere else — on a laptop there is no root process sweeping afterwards, so a stack
-run there still leaves files its own user cannot delete. Fixing the source means running the
-`app` service as uid 1000, which is a change to the dev image (bundle path, the Claude CLI's
-install prefix, and the docker socket's group), and is tracked as a should-do on the
-nested-Docker production checklist rather than done here.
+The entrypoint's reclaim sweep covers this on a nested-Docker worker, because the clone and the runtime homes are under the volume roots it sweeps. It does **not** cover a dev stack started anywhere else — on a laptop there is no root process sweeping afterwards, so a stack run there still leaves files its own user cannot delete. Fixing the source means running the `app` service as uid 1000, which is a change to the dev image (bundle path, the Claude CLI's install prefix, and the docker socket's group). Tracked in [#510](https://github.com/tadasant/zimmer/issues/510).
+
+---
+
+## The reclaim sweep re-resolves paths it already looked at
+
+The sweep collects paths with `find` and then hands them to `chown` in a second step, so an intermediate directory component can be swapped between the two. `~/.zimmer/clones` is writable by uid 1000 by construction, so an agent could plant a path the sweep will match, then replace one of its parent directories with a symlink before `chown -h` resolves it — retargeting a file outside the volume to `rails:rails`. The repeat makes the race retryable rather than one-shot.
+
+`-h` closes the same trick on the final component, and the bound on the rest is the role's existing privilege rather than anything the sweep does: on a nested-Docker worker uid 1000 already holds the inner Docker socket and is therefore already equivalent to container root, which sysbox keeps namespaced away from the host. So this grants no capability that role did not have. It would matter on a container started as root under plain `runc` with `ZIMMER_NESTED_DOCKER` unset — a combination the deploy configs cannot produce, because runtime and user are derived from the same variable, and the one case where this PR also leaves a root shell loop running for the container's lifetime where previously root `exec`'d itself away.
 
 ---
 
