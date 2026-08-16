@@ -98,6 +98,33 @@ LABEL service="zimmer"
 # Switch to non-root user for security
 USER 1000:1000
 
+# HOME is a property of this image's app user, not of the uid a container happens to
+# be STARTED as -- so pin it here rather than letting Docker derive it.
+#
+# Docker resolves HOME from `--user` against /etc/passwd. Left implicit, uid 1000 gets
+# /home/rails and everything is fine; but the worker role runs `user: "0:0"` when nested
+# Docker is armed (it needs container-root to bring up dockerd), and uid 0 resolves to
+# /root. That /root then IS the container's environment, and three things inherit it:
+#
+#   - PID 1. Every role sets `init: true`, so PID 1 is docker-init, which never runs
+#     bin/docker-entrypoint and so never sees the entrypoint's fixup below.
+#   - Every `docker exec` into the container, including `docker exec -u 1000:1000` --
+#     the shape an operator debugging a session uses. At uid 1000, HOME=/root is mode
+#     0700 and root-owned: not traversable, not writable.
+#   - Anything the app spawns that rebuilds its child's environment from scratch rather
+#     than inheriting the parent's.
+#
+# What lands at /home/rails is not incidental: libpq probes $HOME/.postgresql/postgresql.crt
+# on every TLS connection and treats EACCES (unlike ENOENT) as fatal, and ~/.claude,
+# ~/.config/gh, ~/.local and ~/.zimmer are the Kamal volumes agent sessions live out of.
+# Pointed at /root they are absent. That combination is the 2026-08-13 ten-hour freeze.
+#
+# bin/docker-entrypoint still derives HOME from /etc/passwd and proves it writable before
+# dropping to uid 1000. This does not replace that -- the entrypoint covers the app process
+# and refuses to boot when the home directory is unusable, which no ENV can check. This
+# covers everything that never runs the entrypoint.
+ENV HOME=/home/rails
+
 # Entrypoint prepares the database.
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 
