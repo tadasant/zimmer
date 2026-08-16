@@ -115,6 +115,7 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
   # set, and the droplet stops answering SSH and HTTPS while the app itself is fine. The
   # cap is what keeps the kill inside the worker's cgroup, and it is invisible in every
   # green check -- so pin it here, where dropping it fails loudly.
+  #
   # Asserted under both switch positions on purpose. The cap is not conditional on the switch
   # today, and that is the property being pinned: arming nested Docker puts an inner dockerd and
   # the session's containers inside this same cgroup, which is the change most likely to tempt

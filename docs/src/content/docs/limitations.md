@@ -2777,9 +2777,11 @@ directly; nothing measures it today.
 ## A runaway job on staging presents as a dead droplet, not as a dead job
 
 Staging is a 4 GB droplet with no swap, and the worker is the one role running work whose peak
-allocation is a function of the data it touches. Something in that role periodically allocates
-around 2.8 GB. What does it is not yet identified — it produces no log line, and by the time the
-box is reachable again the process is gone. ([#468](https://github.com/tadasant/zimmer/issues/468))
+allocation is a function of the data it touches. `TranscriptArchiveJob` is such a job, and on
+staging it allocates around 2.8 GB every ten minutes
+([#495](https://github.com/tadasant/zimmer/issues/495)): with no archive on disk it treats every
+session as changed and loads all of their transcripts at once, then dies before writing the archive
+that would have made the next run cheap. It cannot bootstrap, so it retries forever.
 
 The failure that follows is worth knowing by shape, because it misdirects. The allocation exhausts
 the host, so the kernel declares a *global* out-of-memory condition and takes victims across every
@@ -2792,8 +2794,15 @@ no power events, because nothing about the virtual machine has changed. The app 
 Staging's worker carries `memory: 2g` (`config/deploy.staging.yml`). That does not prevent the
 runaway; it confines it. The kill lands in the worker's cgroup, the worker restarts under
 `unless-stopped`, and sshd stays up — which is the property that matters, because the alternative is
-an outage nobody can log in to diagnose. A restarting worker is still a stalled queue on staging
-until the underlying allocation is found.
+an outage nobody can log in to diagnose. It does not make the queue usable, though: a worker
+restarting every ten minutes is a queue that never drains.
+
+So on staging the `transcript_archive` cron key is also disabled at runtime, in the
+`good_job_settings` table (`cron_keys_disabled`), which is what actually stops the loop. That is a
+live database row rather than anything in this repository, so it survives deploys and is invisible
+in the config: staging builds no transcript archives until someone runs
+`GoodJob::Setting.cron_key_enable("transcript_archive")`. Re-enabling it before #495 is fixed
+restores the crash loop.
 
 Production's worker carries no such cap. That is not an oversight, but it is a real gap: the same
 image runs the same jobs there, so the same allocation is possible. It survives on headroom alone —
