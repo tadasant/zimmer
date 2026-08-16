@@ -11,7 +11,10 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Branch/tag/SHA to build & deploy"
+        description: >-
+          Branch, tag, or commit SHA to build & deploy. An abbreviated SHA (9e95b4d) is
+          fine -- it is resolved to a full one before checkout. Empty deploys the branch
+          this workflow was dispatched from.
         required: false
         default: ""
       recreate_droplet:
@@ -46,9 +49,32 @@ jobs:
     runs-on: self-hosted
     environment: staging
     steps:
+      # Two checkouts, because the resolver below lives in this repo and so has to be on
+      # disk before the ref it resolves can be checked out. This first one is the branch
+      # the workflow was dispatched from, at checkout's default single-commit depth; it is
+      # here for scripts/, and the second checkout is the one that decides what gets built.
+      - uses: actions/checkout@v4
+
+      # `ref` never reaches actions/checkout raw: checkout only special-cases a full
+      # 40-character SHA, so an abbreviated one is read as a branch name, matches no ref,
+      # and dies a minute later on "git failed with exit code 1" without naming the ref.
+      # See scripts/resolve-deploy-ref.sh. The input goes through `env:` rather than into
+      # the command line so that a dispatch cannot inject shell.
+      #
+      # The fallback is github.sha, not github.ref: the checkout above already resolved the
+      # branch to that commit, so re-resolving the branch name here would let the two
+      # checkouts land on different commits if someone pushed in between.
+      - name: Resolve the ref to deploy
+        id: ref
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          FALLBACK_REF: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/resolve-deploy-ref.sh
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ steps.ref.outputs.ref }}
 
       # The self-hosted host runs many runner workers as one OS user, so the
       # default ~/.docker is shared mutable state across concurrently-running
