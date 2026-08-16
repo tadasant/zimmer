@@ -102,7 +102,7 @@ class SmokeTest < ApplicationSystemTestCase
           "mcpServers" => {
             "playwright-custom" => {
               "command" => "npx",
-              "args" => [ "--prefix", "/tmp", "-y", "@anthropic/playwright-mcp-server" ]
+              "args" => [ "-y", "@anthropic/playwright-mcp-server" ]
             }
           }
         }

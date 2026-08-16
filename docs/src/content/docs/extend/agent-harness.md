@@ -175,7 +175,7 @@ Tracked in [#96](https://github.com/tadasant/zimmer/issues/96).
   `project_instructions_filename` (`CLAUDE.md` vs `AGENTS.md`), `delivered_via_file?`,
   `system_prompt_filename`.
 - **`RuntimeConfigPostProcessor`** — a template-method base. Implement `config_path`, `parse_config`,
-  `empty_config`, `servers_map`, `build_server_entry`, `resolve_and_rewrite!`, `serialize_config`.
+  `empty_config`, `servers_map`, `build_server_entry`, `resolve_secrets!`, `serialize_config`.
 - **`RuntimeMcpCredentialWriter`** — `write!(working_directory:, credentials:)`,
   `credential_key_for(server_name, server_config)`.
 - **`RuntimeAuthProvider`** — `accounts`, `current_account`, `select_account_for`, `refresh!`,

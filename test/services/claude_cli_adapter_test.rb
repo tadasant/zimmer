@@ -1946,6 +1946,31 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     refute env_vars.key?("NPM_CONFIG_CACHE"), "NPM_CONFIG_CACHE should not be set when has_mcp is false"
   end
 
+  # A bin target that lost its execute bit fails `exec` with EACCES identically on
+  # every retry, so a session that hits it is orphaned for the life of the clone
+  # (zimmer#467). The repair runs on the way into every MCP spawn, which is the
+  # retry AgentSessionJob already schedules.
+  test "spawn_process repairs npx bin permissions when has_mcp is true" do
+    repaired_for = []
+    NpxBinExecutableGuard.stub(:repair!, ->(working_directory:, logger: nil) {
+      repaired_for << working_directory
+      []
+    }) do
+      @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: true)
+    end
+
+    assert_equal [ @test_dir ], repaired_for
+  end
+
+  test "spawn_process does not repair npx bin permissions when has_mcp is false" do
+    called = false
+    NpxBinExecutableGuard.stub(:repair!, ->(**) { called = true; [] }) do
+      @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: false)
+    end
+
+    refute called, "a session without MCP servers has no npx cache to repair"
+  end
+
   test "spawn_process does not set NPM_CONFIG_CACHE by default" do
     command = [ "claude", "test" ]
     @adapter.send(:spawn_process, command, working_dir: @test_dir)

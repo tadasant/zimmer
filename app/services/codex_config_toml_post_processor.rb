@@ -92,7 +92,7 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     entry.delete("env_vars") if forwarded.empty?
   end
 
-  def resolve_and_rewrite!(servers)
+  def resolve_secrets!(servers)
     servers.each_value do |entry|
       next unless entry.is_a?(Hash)
 
@@ -103,7 +103,6 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
       # resolve those explicitly for any renamed/partial refs AIR left literal.
       secrets_interpolator.resolve_entry!(entry)
       secrets_interpolator.resolve_hash_values!(entry["http_headers"]) if entry["http_headers"].is_a?(Hash)
-      NpxPrefixRewriter.rewrite!(entry)
     end
   end
 
