@@ -1670,6 +1670,16 @@ class AgentSessionJob < ApplicationJob
         log_streaming_thread.join(1)
       end
 
+      # The pid this job is actually responsible for. `process_pid` is the local
+      # copy, refreshed by the monitoring loop's :continue branch — but a recovery
+      # can spawn a replacement on a path that exits before the loop refreshes it
+      # (an exception, an early return). The lifecycle manager's own pid is the
+      # authoritative answer in every case: it is set by whichever code spawned
+      # last, and nil once an exit has been handled without a replacement. Cleaning
+      # up the stale local pid instead is how a live replacement gets orphaned onto
+      # the clone, still holding the runtime session id (prod session 4668).
+      process_pid = lifecycle_manager.current_pid || process_pid
+
       # Only cleanup if session is in a terminal state
       # Don't cleanup for needs_input (includes paused sessions waiting for follow-up)
       if session
@@ -2842,7 +2852,45 @@ class AgentSessionJob < ApplicationJob
       log_buffer: log_buffer,
       session: session
     )
-    termination_service.terminate
+    result = termination_service.terminate
+    # Only once the kill is proven. A termination that could not confirm the
+    # process is gone leaves an agent that may still be about to write its first
+    # line, and "it never wrote a conversation" is then not something we know.
+    clear_runtime_started_if_nothing_persisted(session, log_buffer) if result.success?
+    result
+  end
+
+  # A process Zimmer killed before the runtime wrote anything leaves no
+  # conversation behind — so it must not leave `runtime_started` claiming there is
+  # one. That flag is what makes the next turn spawn `--resume <id>`, and a resume
+  # into a conversation that was never written exits instantly with nothing to
+  # show for it. That is the doomed retry that stalled prod session 4668.
+  #
+  # Deliberately here rather than in any one caller: this is the job's single
+  # funnel for killing this session's agent, so every reason for killing it — an
+  # MCP server that failed to connect, a supersede, an interrupt, an archive —
+  # gets the same correction. Best-effort; a failure here costs one wasted resume,
+  # which the failed-resume recovery already handles.
+  def clear_runtime_started_if_nothing_persisted(session, log_buffer)
+    session.reload
+    return unless session.metadata&.dig("runtime_started")
+    return if RuntimeConversationPresence.persisted?(
+      session: session,
+      # Session#working_directory, not the bare metadata key: rows without it fall
+      # back to the clone path, and a blank working directory would silently reduce
+      # the presence check to Zimmer's polled copy alone.
+      working_directory: session.working_directory,
+      file_system: @file_system
+    )
+
+    with_db_retry { session.merge_metadata!("runtime_started" => false) }
+    log_buffer.add(
+      "The terminated process never wrote a conversation — clearing runtime_started so the next " \
+      "turn starts fresh instead of resuming a runtime session that does not exist",
+      level: "info"
+    )
+  rescue => e
+    Rails.logger.warn "[AgentSessionJob] Could not reconcile runtime_started after termination: #{e.message}"
   end
 
   # Check if a process is running

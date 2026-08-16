@@ -79,6 +79,20 @@ class ProcessLifecycleManager
   # toward a permanent failure over its lifetime.
   MAX_SIGNAL_DEATH_RETRIES = 3
 
+  # Maximum number of times a turn that ended with the runtime having written
+  # NOTHING is restarted from scratch before the session is allowed to come to
+  # rest. See #handle_empty_turn.
+  #
+  # No reset logic pairs with this counter, and none is needed: the branch fires
+  # only while neither transcript store holds a byte, so a session that ever
+  # produces output can never reach it again. A session still empty after two
+  # restarts is not going to be fixed by a third.
+  MAX_EMPTY_TURN_RECOVERIES = 2
+
+  # Maximum number of times a fresh start that the runtime refused because the
+  # session id was still held is retried under a newly minted id.
+  MAX_SESSION_ID_CONFLICT_RECOVERIES = 2
+
   # Result structures
   SpawnResult = Struct.new(:success, :pid, :stderr_log_path, :error, keyword_init: true) do
     def success?
@@ -414,6 +428,20 @@ class ProcessLifecycleManager
           return handle_failed_resume_recovery(working_dir)
         end
 
+        # The runtime refused to start because the session id it was handed is
+        # still held. Recoverable by minting a new one — see #handle_session_id_conflict.
+        if session_id_conflict?
+          return handle_session_id_conflict(working_dir)
+        end
+
+        # Last, because every branch above is a *specific* diagnosis and this one
+        # is the catch-all: the process exited cleanly having written nothing at
+        # all. That is never a completed turn, so drive the session forward
+        # instead of parking it with an empty transcript for a human to notice.
+        if empty_turn_recovery_needed?(working_dir)
+          return handle_empty_turn(working_dir)
+        end
+
         add_log("Process exited successfully", level: "info")
 
         @mutex.synchronize { @state = :idle }
@@ -444,6 +472,12 @@ class ProcessLifecycleManager
       if retry_strategy.failed_resume_recovery_needed?(stderr_log_path: @stderr_log_path)
         add_log("Resume failed: runtime session no longer exists. Attempting fresh start recovery.", level: "warning")
         return handle_failed_resume_recovery(working_dir)
+      end
+
+      # Same reasoning as the matching check in the success branch above, for a
+      # runtime that reports a held session id with a non-zero exit.
+      if session_id_conflict?
+        return handle_session_id_conflict(working_dir)
       end
 
       # SIGTERM case - may need retry
@@ -814,55 +848,161 @@ class ProcessLifecycleManager
   # Handle recovery from a failed --resume attempt by starting fresh with --session-id.
   #
   # When Claude CLI can't find a session to resume (e.g., the original process was
-  # killed before the conversation persisted on Anthropic's servers), we recover by:
-  # 1. Resetting runtime_started so the next spawn uses --session-id instead of --resume
-  # 2. Spawning a fresh CLI process with the best durable prompt
+  # killed before the conversation persisted on Anthropic's servers), we recover by
+  # restarting the turn from scratch — see #fresh_start!.
   #
   # This commonly happens during deploy-interrupt recovery: the original session barely
   # started (e.g., 1 transcript line), got killed by GoodJob shutdown, and the auto-recovery
   # tried to --resume a session that never persisted.
-  #
-  # Falls back to permanent failure if there's no prompt to retry with.
   #
   # No retry counter needed (unlike SIGTERM/compact/API error handlers) because
   # the recovery uses execute (--session-id), not resume (--resume). A successful
   # fresh start won't re-trigger failed_resume_recovery_needed?, and a failed spawn returns :failed
   # immediately — so there's no loop risk.
   #
+  # @param working_dir [String] Working directory for spawning fresh process
+  # @return [ExitDecision] Decision on what to do next
+  def handle_failed_resume_recovery(working_dir)
+    fresh_start!(working_dir, reason: "failed resume")
+  end
+
+  # A turn ended with the runtime having written NOTHING — not one transcript
+  # line — and every specific classifier said the exit was normal.
+  #
+  # That combination is never a completed turn. It is what a first-connect failure
+  # looks like from here: something killed or refused the process before the agent
+  # produced output, and the exit that followed carried no signature to classify.
+  # Parking on it is how a five-second npm hiccup became a session that sat in
+  # needs_input with a blank transcript until a human typed "continue" (prod
+  # session 4668).
+  #
+  # So restart the turn instead, bounded by MAX_EMPTY_TURN_RECOVERIES. It is the
+  # cause-agnostic backstop behind every specific recovery above it — but scoped to
+  # a session that has NEVER produced a line, not to every empty turn: the question
+  # it asks is about the session's whole transcript, so a later turn that happens to
+  # write nothing still parks exactly as before. What it protects is a session that
+  # never got going at all.
+  #
+  # Note: Called while in :handling_exit state. Must transition to :running
+  # on success or :idle on failure before returning.
+  def handle_empty_turn(working_dir)
+    attempt = empty_turn_recovery_count + 1
+
+    add_log(
+      "Process exited without the runtime writing a single transcript line — restarting the turn " \
+      "(attempt #{attempt}/#{MAX_EMPTY_TURN_RECOVERIES}) rather than leaving the session at rest with an empty transcript",
+      level: "warning"
+    )
+    @logger.warn("Recovering from an empty turn", attempt: attempt)
+
+    with_db_retry { session.merge_metadata!("empty_turn_recovery_count" => attempt) }
+
+    fresh_start!(working_dir, reason: "empty turn")
+  rescue => e
+    # The counter write is the only thing here outside #fresh_start!'s own rescue.
+    # A bookkeeping failure must park the session, not raise out of handle_exit.
+    @logger.error("Empty-turn recovery failed", error: e.message)
+    add_log("Could not restart the empty turn: #{e.message}", level: "error")
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :needs_input, error_message: "Empty-turn recovery failed: #{e.message}")
+  end
+
+  # The runtime refused to start because the session id it was handed is still
+  # held ("Session ID … is already in use"). Claude reports that refusal with exit
+  # code 1 — its "turn finished, awaiting input" convention — so without this
+  # handler it is indistinguishable from a completed turn and parks the session.
+  #
+  # Two shapes, two recoveries. If a conversation for that id exists, the id is
+  # held because there is something to resume, so resume it. If nothing has been
+  # written, the holder is a process from an earlier attempt at this same turn that
+  # outlived its job, and a new id costs nothing — #fresh_start! terminates such a
+  # process before spawning, so this is the belt to that braces.
+  #
+  # Note: Called while in :handling_exit state. Must transition to :running
+  # on success or :idle on failure before returning.
+  def handle_session_id_conflict(working_dir)
+    session.reload
+    attempt = session.metadata&.dig("session_id_conflict_count").to_i + 1
+
+    if attempt > MAX_SESSION_ID_CONFLICT_RECOVERIES
+      add_log(
+        "Runtime refused to start: session id #{session.session_id} is already in use, and the " \
+        "recovery budget is spent (#{MAX_SESSION_ID_CONFLICT_RECOVERIES} attempts)",
+        level: "error"
+      )
+      surface_stderr_to_session_log
+      @mutex.synchronize { @state = :idle }
+      return ExitDecision.new(action: :failed, error_message: "Runtime session id #{session.session_id} is already in use")
+    end
+
+    with_db_retry { session.merge_metadata!("session_id_conflict_count" => attempt) }
+
+    if conversation_persisted?(working_dir)
+      # The id names a real conversation. Minting a new one would abandon it;
+      # resuming is what the refusal is actually telling us to do. Restore
+      # runtime_started so the resume builds `--resume` rather than `--session-id`.
+      add_log(
+        "Runtime refused to start: session id #{session.session_id} is already in use and names an " \
+        "existing conversation — resuming it instead (attempt #{attempt}/#{MAX_SESSION_ID_CONFLICT_RECOVERIES})",
+        level: "warning"
+      )
+      @logger.warn("Resuming the conversation a held session id names", attempt: attempt)
+      with_db_retry { session.merge_metadata!("runtime_started" => true) }
+
+      return spawn_continuation(
+        working_dir: working_dir,
+        prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+        reason: "session id conflict"
+      )
+    end
+
+    add_log(
+      "Runtime refused to start: session id #{session.session_id} is already in use and nothing has been " \
+      "written under it — retrying under a new session id (attempt #{attempt}/#{MAX_SESSION_ID_CONFLICT_RECOVERIES})",
+      level: "warning"
+    )
+    @logger.warn("Recovering from a held runtime session id", attempt: attempt, session_id: session.session_id)
+
+    fresh_start!(working_dir, reason: "session id conflict", renew_session_id: true)
+  rescue => e
+    # Bookkeeping must never be the thing that fails the session: without this, a
+    # metadata write that exhausts its retries escapes handle_exit entirely.
+    error_msg = "Session id conflict recovery failed: #{e.message}"
+    add_log(error_msg, level: "error")
+    @logger.error("Session id conflict recovery failed", error: e.message)
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :failed, error_message: error_msg)
+  end
+
+  # Restart this turn from scratch: abandon whatever runtime conversation the
+  # session was pointed at and spawn a NEW one carrying the best durable prompt.
+  #
+  # Shared by every recovery that concludes there is nothing to resume into — a
+  # resume the runtime could not find, a session id the runtime would not accept,
+  # and a turn that ended without a single line of output.
+  #
   # Note: Called while in :handling_exit state. Must transition to :running
   # on success or :idle on failure before returning.
   #
   # @param working_dir [String] Working directory for spawning fresh process
+  # @param reason [String] Human-readable cause, for logs and error messages
+  # @param renew_session_id [Boolean] Mint a new runtime session id first
   # @return [ExitDecision] Decision on what to do next
-  def handle_failed_resume_recovery(working_dir)
+  def fresh_start!(working_dir, reason:, renew_session_id: false)
+    # Re-confirm before spawning, as every other respawn branch does: the status
+    # check at the top of #handle_exit is milliseconds stale, and a user pause
+    # landing in that window must not be answered with a restarted turn.
+    unless wait_and_confirm_still_running
+      add_log("Session status changed during #{reason} handling, aborting restart", level: "info")
+      @mutex.synchronize { @state = :idle }
+      return ExitDecision.new(action: :aborted)
+    end
+
     session.reload
 
-    # Prefer the in-flight follow-up over the original session prompt. A failed
-    # --resume means this turn never reached the runtime's durable conversation, so
-    # the fresh start must replay the prompt that spawned the failed resume:
-    #
-    # - active_follow_up_prompt: AgentSessionJob moves trigger/deploy/heartbeat
-    #   recovery prompts here while delivering the turn, after clearing the
-    #   "not picked up yet" pending marker. It holds the expanded prompt Zimmer
-    #   attempted to deliver to the runtime, including goal/notes/provenance.
-    # - sent_message: web follow-ups keep this until transcript polling confirms
-    #   the user message landed.
-    # - pending_follow_up_prompt: fallback for paths that have stamped a prompt
-    #   but have not yet reached AgentSessionJob's delivery handoff.
-    # - session.prompt: original prompt for a barely-started session with no
-    #   follow-up in flight.
-    #
-    # Without the active/pending follow-up fallbacks, deploy auto-continuation can
-    # lose its recovery prompt after Codex rejects `thread/resume` with "no rollout
-    # found", parking the session in needs_input with unfinished side effects.
-    recovery_prompt =
-      session.metadata&.dig("active_follow_up_prompt").presence ||
-      session.metadata&.dig("sent_message").presence ||
-      session.metadata&.dig("pending_follow_up_prompt").presence ||
-      session.prompt
-
-    unless recovery_prompt.present?
-      error_msg = "Resume failed and no prompt available for fresh start recovery"
+    prompt = recovery_prompt
+    unless prompt.present?
+      error_msg = "Cannot restart the turn after #{reason}: no prompt available for fresh start recovery"
       add_log(error_msg, level: "error")
       @mutex.synchronize { @state = :idle }
       return ExitDecision.new(action: :failed, error_message: error_msg)
@@ -883,8 +1023,21 @@ class ProcessLifecycleManager
       )
     end
 
-    add_log("Recovering from failed resume: starting fresh CLI session with recovered prompt", level: "info")
-    @logger.info("Failed resume recovery: spawning fresh CLI session")
+    renew_runtime_session_id! if renew_session_id
+
+    add_log("Recovering from #{reason}: starting fresh CLI session with recovered prompt", level: "info")
+    @logger.info("Fresh start recovery: spawning fresh CLI session", reason: reason)
+
+    # One session, one live agent process — the same invariant #spawn enforces,
+    # applied to the recovery path. Without it, a replacement spawned by an earlier
+    # recovery that its job stopped monitoring stays alive on the clone and keeps
+    # the runtime session id reserved, which is what turned a recoverable failure
+    # into "Session ID … is already in use" in prod session 4668.
+    AgentProcessLiveness.ensure_no_live_process!(
+      session,
+      process_manager: @process_manager,
+      log_buffer: @log_buffer
+    )
 
     # Reconstruct mcp_config_path if the session uses MCP servers (including
     # auto-injected self-session servers) — without this, the recovered session
@@ -894,7 +1047,7 @@ class ProcessLifecycleManager
     end
 
     spawn_result = @cli_adapter.execute(
-      prompt: recovery_prompt,
+      prompt: prompt,
       session_id: session.session_id,
       working_dir: working_dir,
       mcp_config_path: mcp_config_path,
@@ -921,15 +1074,97 @@ class ProcessLifecycleManager
       @state = :running
     end
 
-    @logger.info("Failed resume recovery successful", new_pid: new_pid)
+    @logger.info("Fresh start recovery successful", new_pid: new_pid, reason: reason)
 
     ExitDecision.new(action: :continue)
   rescue => e
-    error_msg = "Failed resume recovery failed: #{e.message}"
+    error_msg = "Fresh start recovery after #{reason} failed: #{e.message}"
     add_log(error_msg, level: "error")
-    @logger.error("Failed resume recovery failed", error: e.message)
+    @logger.error("Fresh start recovery failed", reason: reason, error: e.message)
     @mutex.synchronize { @state = :idle }
     ExitDecision.new(action: :failed, error_message: error_msg)
+  end
+
+  # The best durable prompt to replay when a turn has to start over.
+  #
+  # Prefer the in-flight follow-up over the original session prompt. A turn that
+  # never reached the runtime's durable conversation has to replay the prompt that
+  # spawned it:
+  #
+  # - active_follow_up_prompt: AgentSessionJob moves trigger/deploy/heartbeat
+  #   recovery prompts here while delivering the turn, after clearing the
+  #   "not picked up yet" pending marker. It holds the expanded prompt Zimmer
+  #   attempted to deliver to the runtime, including goal/notes/provenance.
+  # - sent_message: web follow-ups keep this until transcript polling confirms
+  #   the user message landed.
+  # - pending_follow_up_prompt: fallback for paths that have stamped a prompt
+  #   but have not yet reached AgentSessionJob's delivery handoff.
+  # - session.prompt: original prompt for a barely-started session with no
+  #   follow-up in flight.
+  #
+  # Without the active/pending follow-up fallbacks, deploy auto-continuation can
+  # lose its recovery prompt after Codex rejects `thread/resume` with "no rollout
+  # found", parking the session in needs_input with unfinished side effects.
+  def recovery_prompt
+    session.metadata&.dig("active_follow_up_prompt").presence ||
+      session.metadata&.dig("sent_message").presence ||
+      session.metadata&.dig("pending_follow_up_prompt").presence ||
+      session.prompt
+  end
+
+  # Whether a normal-looking exit should be answered by restarting the turn
+  # because the runtime never wrote anything. See #handle_empty_turn.
+  def empty_turn_recovery_needed?(working_dir)
+    session.reload
+    return false if empty_turn_recovery_count >= MAX_EMPTY_TURN_RECOVERIES
+    return false if recovery_prompt.blank?
+
+    !conversation_persisted?(working_dir)
+  rescue => e
+    # A backstop that cannot answer must not become the thing that breaks exit
+    # handling; fall through to the pre-existing park.
+    @logger.error("Failed to evaluate empty-turn recovery", error: e.message)
+    false
+  end
+
+  # Whether either transcript store holds anything for this session. Asked of both
+  # (RuntimeConversationPresence) rather than of Zimmer's polled copy alone: a
+  # lagging or broken poller must not be enough to make Zimmer conclude the
+  # runtime wrote nothing and abandon a conversation that really exists.
+  def conversation_persisted?(working_dir)
+    RuntimeConversationPresence.persisted?(
+      session: session,
+      working_directory: working_dir,
+      file_system: @file_system
+    )
+  end
+
+  def empty_turn_recovery_count
+    session.metadata&.dig("empty_turn_recovery_count").to_i
+  end
+
+  # Whether the runtime refused this spawn because the session id was still held.
+  # Runtimes whose strategy does not answer the question (Codex) never route here.
+  def session_id_conflict?
+    return false unless retry_strategy.respond_to?(:session_id_conflict?)
+
+    retry_strategy.session_id_conflict?(stderr_log_path: @stderr_log_path)
+  rescue => e
+    @logger.error("Failed to ask the retry strategy about a session id conflict", error: e.message)
+    false
+  end
+
+  # Mint a new runtime session id so a fresh start is not blocked by the old one.
+  #
+  # A no-op for runtimes that mint their own (Codex): the id Zimmer holds is a
+  # record of what the runtime chose, not an instruction to it, and
+  # #release_stale_runtime_session_id! is what clears that.
+  def renew_runtime_session_id!
+    return if TranscriptRuntime.normalizer_for(session).mints_own_session_id?
+
+    new_id = SecureRandom.uuid
+    add_log("Replacing held runtime session id #{session.session_id} with #{new_id}", level: "warning")
+    with_db_retry { session.update_column(:session_id, new_id) }
   end
 
   # Drop the runtime session id that the just-failed resume was targeting, for

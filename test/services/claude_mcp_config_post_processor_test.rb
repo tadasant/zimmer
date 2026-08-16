@@ -961,6 +961,69 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       "Written .mcp.json must match the golden serialization byte-for-byte"
   end
 
+  # ---------------------------------------------------------------------------
+  # Per-server npm cache for servers that share an npx package
+  #
+  # Regression for prod session 4668: the `zimmer-router` root carries both
+  # 1Password servers, both run the byte-identical `npx -y onepassword-mcp-server@latest`,
+  # and on a cold clone the two installs raced the same `_npx/<hash>` directory.
+  # The loser died with ENOTEMPTY, which killed the agent process five seconds
+  # into the session's first turn.
+  # ---------------------------------------------------------------------------
+
+  test "post_process! gives each of two servers sharing an npx package its own npm cache" do
+    write_config(
+      "1password-tadas-rw" => { "command" => "npx", "args" => [ "-y", "onepassword-mcp-server@latest" ] },
+      "1password-pulsemcp-rw" => { "command" => "npx", "args" => [ "-y", "onepassword-mcp-server@latest" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcpServers"]
+    tadas_cache = servers.dig("1password-tadas-rw", "env", "NPM_CONFIG_CACHE")
+    pulsemcp_cache = servers.dig("1password-pulsemcp-rw", "env", "NPM_CONFIG_CACHE")
+
+    assert tadas_cache.present?, "colliding server should be given its own NPM_CONFIG_CACHE"
+    assert pulsemcp_cache.present?, "colliding server should be given its own NPM_CONFIG_CACHE"
+    assert_not_equal tadas_cache, pulsemcp_cache,
+      "two servers sharing an npx package must not share an _npx cache directory — " \
+      "that is exactly the race that killed session 4668"
+    assert tadas_cache.start_with?(File.join(@working_dir, ".npm-cache")),
+      "the isolated cache must stay inside the clone so CacheClearService still reclaims it"
+  end
+
+  # The common case must stay byte-identical: one shared per-clone cache, so npm
+  # still downloads each tarball once.
+  test "post_process! leaves a lone npx server on the shared per-clone npm cache" do
+    write_config(
+      "context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] },
+      "playwright-custom" => { "command" => "npx", "args" => [ "-y", "@playwright/mcp@latest" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcpServers"]
+    assert_nil servers.dig("context7", "env", "NPM_CONFIG_CACHE")
+    assert_nil servers.dig("playwright-custom", "env", "NPM_CONFIG_CACHE")
+  end
+
+  test "post_process! does not override an npm cache the catalog entry set explicitly" do
+    write_config(
+      "a" => {
+        "command" => "npx",
+        "args" => [ "-y", "shared-pkg@latest" ],
+        "env" => { "NPM_CONFIG_CACHE" => "/operators/choice" }
+      },
+      "b" => { "command" => "npx", "args" => [ "-y", "shared-pkg@latest" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcpServers"]
+    assert_equal "/operators/choice", servers.dig("a", "env", "NPM_CONFIG_CACHE")
+    assert_not_equal "/operators/choice", servers.dig("b", "env", "NPM_CONFIG_CACHE")
+  end
+
   private
 
   def build_processor

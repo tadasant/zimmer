@@ -11,7 +11,14 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       branch: "main",
       execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
-      metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" }
+      metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" },
+      # A session whose agent process has run has a transcript. handle_exit treats a
+      # session with nothing in EITHER transcript store as "the runtime never got
+      # going" and restarts the turn (see #handle_empty_turn), so tests that mean
+      # "this process did work and then exited" must not look like a session that
+      # never produced a line. Tests for the empty-turn backstop itself blank this
+      # out deliberately.
+      transcript: { "type" => "user", "message" => { "content" => "Test prompt" } }.to_json
     )
 
     @mock_process_manager = MockProcessManager.new
@@ -744,7 +751,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
 
     assert_equal :failed, decision.action
-    assert_match(/Failed resume recovery failed/, decision.error_message)
+    assert_match(/Fresh start recovery after failed resume failed/, decision.error_message)
     assert_equal :idle, manager.current_state
   end
 
@@ -787,6 +794,252 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   end
 
   # ===========================================================================
+  # Empty-turn recovery (prod session 4668)
+  #
+  # An MCP server failed to connect five seconds into the session's first turn.
+  # Zimmer killed the process, healed the cache, and scheduled a retry — and then
+  # the retry's exit was classified as a completed turn, so the session came to
+  # rest in needs_input with a completely blank transcript. Nothing was driving it
+  # forward; a human had to notice and type "continue" 3m45s later.
+  #
+  # The invariant these pin: a normal-looking exit from a runtime that never wrote
+  # a single line is not a completed turn, and Zimmer restarts it instead of
+  # parking. Deliberately general — it is the backstop behind every specific
+  # classifier, not an MCP special case.
+  # ===========================================================================
+
+  test "handle_exit restarts the turn when the runtime exited cleanly having written nothing" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil)
+    @mock_file_system.write(stderr_path, "")
+
+    recovery_pid = 99999
+    call_count = 0
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      call_count += 1
+      { pid: call_count == 1 ? 12345 : recovery_pid, stderr_log_path: stderr_path }
+    end
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action,
+      "a turn that produced no transcript at all must not be reported as complete"
+    assert_equal :running, manager.current_state
+    assert_equal recovery_pid, manager.current_pid,
+      "the replacement process must be the one the manager goes on to monitor"
+
+    @session.reload
+    assert_equal recovery_pid, @session.metadata["process_pid"]
+    assert_equal 1, @session.metadata["empty_turn_recovery_count"]
+    assert_equal @session.prompt, @mock_cli_adapter.executed_commands.last[:prompt]
+  end
+
+  # Claude exits 1 for "turn finished, awaiting input", so the empty-turn check has
+  # to cover that convention too — it is the exit code the real stall arrived on.
+  test "handle_exit restarts an empty turn that exited with Claude's normal-completion code 1" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: "")
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+  end
+
+  # The runtime's own transcript file is the other half of the question: a poller
+  # that is merely lagging must not be enough for Zimmer to conclude the runtime
+  # wrote nothing and abandon a real conversation.
+  test "handle_exit parks an empty-in-Zimmer turn when the runtime's own transcript exists" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil)
+    @mock_file_system.write(stderr_path, "")
+    write_runtime_transcript("/tmp/test-clone", @session.session_id)
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action
+  end
+
+  test "handle_exit parks an empty turn once the restart budget is spent" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(
+      transcript: nil,
+      metadata: @session.metadata.merge(
+        "empty_turn_recovery_count" => ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES
+      )
+    )
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "the backstop is bounded — a session that stays empty must still be allowed to rest"
+    assert_equal :idle, manager.current_state
+  end
+
+  # Proves the counter is written on the path that actually loops, rather than
+  # only honoured when a test preloads it.
+  test "two successive empty turns exhaust the restart budget and then park" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil)
+    @mock_file_system.write(stderr_path, "")
+
+    pid = 12344
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      pid += 1
+      { pid: pid, stderr_log_path: stderr_path }
+    end
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES.times do |index|
+      decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+      assert_equal :continue, decision.action, "restart #{index + 1} should have been attempted"
+      assert_equal index + 1, @session.reload.metadata["empty_turn_recovery_count"]
+    end
+
+    final = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, final.action, "the budget must actually run out"
+    assert_equal :idle, manager.current_state
+  end
+
+  test "handle_exit still parks a turn that produced output" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action
+    assert_nil @session.reload.metadata["empty_turn_recovery_count"]
+  end
+
+  test "handle_exit parks an empty turn when there is no prompt to restart it with" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil, prompt: nil)
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "with nothing to replay, restarting cannot help — park as before rather than failing"
+  end
+
+  # ===========================================================================
+  # Held runtime session id ("Session ID … is already in use")
+  #
+  # The other half of the 4668 dead end: a replacement process left running by an
+  # earlier recovery kept the session id reserved, so the next fresh start was
+  # refused — with exit code 1, which Claude uses for "turn complete". The refusal
+  # was therefore indistinguishable from success and parked the session again.
+  # ===========================================================================
+
+  test "handle_exit mints a new session id when the runtime refuses a held one" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    original_session_id = @session.session_id
+    @session.update!(transcript: nil)
+
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    @mock_file_system.write(stderr_path, "Error: Session ID #{original_session_id} is already in use.\n")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 99999, stderr_log_path: stderr_path } }
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    @session.reload
+    assert_not_equal original_session_id, @session.session_id,
+      "a held id must be replaced, not retried into"
+    assert_equal @session.session_id, @mock_cli_adapter.executed_commands.last[:session_id]
+    assert_equal 1, @session.metadata["session_id_conflict_count"]
+  end
+
+  # The common shape in the wild: the CLI refuses the id precisely because a
+  # conversation for it exists. Resuming that conversation is the recovery — it is
+  # what a human typing "continue" used to achieve — and minting a new id would
+  # throw the history away.
+  test "handle_exit resumes the conversation a held session id names" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    original_session_id = @session.session_id
+    resume_pid = 77777
+
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    @mock_file_system.write(stderr_path, "Error: Session ID #{original_session_id} is already in use.\n")
+    @mock_cli_adapter.resume_hook = ->(opts) { { pid: resume_pid, stderr_log_path: stderr_path } }
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_equal resume_pid, manager.current_pid
+    assert_equal original_session_id, @session.reload.session_id,
+      "minting a new id would abandon a conversation that still has history"
+    assert_equal original_session_id, @mock_cli_adapter.resumed_sessions.last[:session_id]
+    assert_equal true, @session.metadata["runtime_started"],
+      "the refusal is itself evidence the runtime has a conversation under this id"
+  end
+
+  test "handle_exit gives up on a held session id once the budget is spent" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(
+      transcript: nil,
+      metadata: @session.metadata.merge(
+        "session_id_conflict_count" => ProcessLifecycleManager::MAX_SESSION_ID_CONFLICT_RECOVERIES
+      )
+    )
+
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    @mock_file_system.write(stderr_path, "Error: Session ID #{@session.session_id} is already in use.\n")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_equal :idle, manager.current_state
+  end
+
+  # The runtime's own conversation file, where TranscriptSource#locate looks for it.
+  def write_runtime_transcript(working_dir, session_uuid)
+    require "path_sanitizer"
+    dir = File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(working_dir))
+    @mock_file_system.mkdir_p(dir)
+    @mock_file_system.write(
+      File.join(dir, "#{session_uuid}.jsonl"),
+      "#{{ "type" => "user", "message" => { "content" => "Hello" } }.to_json}\n"
+    )
+  end
+
+  # ===========================================================================
   # Codex Runtime Exit Classification Tests
   #
   # Codex does NOT share Claude's "exit 1 means paused for input" convention:
@@ -805,7 +1058,9 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       branch: "main",
       execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
-      metadata: { "clone_path" => "/tmp/codex-clone", "working_directory" => "/tmp/codex-clone" }
+      metadata: { "clone_path" => "/tmp/codex-clone", "working_directory" => "/tmp/codex-clone" },
+      # See the note on the Claude session in `setup`.
+      transcript: { "type" => "user", "message" => { "content" => "Codex test prompt" } }.to_json
     )
   end
 

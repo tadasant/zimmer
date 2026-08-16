@@ -22,6 +22,18 @@ class ClaudeRetryStrategy
   # conversation persisted). The only signal is this stderr line.
   FAILED_RESUME_PATTERN = /No conversation found with session ID/i
 
+  # Claude CLI refuses a `--session-id <id>` spawn while that id is still held —
+  # by a live process, or by a conversation it already wrote — and says so on
+  # stderr before exiting. The exit code is 1, which is Claude's "turn finished,
+  # awaiting input" convention (see #normal_completion_exit?), so without this
+  # pattern the refusal is indistinguishable from a completed turn and the session
+  # parks with a blank transcript.
+  # Loose on purpose: this classifier sits on the normal-completion path, so a
+  # reworded message does not reach UnclassifiedFailureReporter — it just silently
+  # stops matching. Matching the phrase rather than the exact sentence buys some
+  # room before that happens.
+  SESSION_ID_IN_USE_PATTERN = /session id\b.*\balready in use/i
+
   def initialize(cli_adapter:, session:, file_system:, process_manager:, rate_limit_tracker:, logger: Rails.logger)
     @cli_adapter = cli_adapter
     @session = session
@@ -62,15 +74,19 @@ class ClaudeRetryStrategy
   # spawns a resume that instantly exits 0 with no work done, transitioning back
   # to needs_input indefinitely.
   def failed_resume_recovery_needed?(stderr_log_path:)
-    return false unless stderr_log_path
-    return false unless @file_system.exists?(stderr_log_path)
-
-    content = @file_system.read(stderr_log_path)
-    return false if content.blank?
-
-    content.match?(FAILED_RESUME_PATTERN)
+    stderr_matches?(stderr_log_path, FAILED_RESUME_PATTERN)
   rescue => e
     @logger.error("Error checking stderr for failed resume", error: e.message)
+    false
+  end
+
+  # Check whether the CLI refused to start because the session id it was handed
+  # is still in use. Recoverable by minting a new one — see
+  # ProcessLifecycleManager#handle_session_id_conflict.
+  def session_id_conflict?(stderr_log_path:)
+    stderr_matches?(stderr_log_path, SESSION_ID_IN_USE_PATTERN)
+  rescue => e
+    @logger.error("Error checking stderr for a session id conflict", error: e.message)
     false
   end
 
@@ -148,6 +164,18 @@ class ClaudeRetryStrategy
   end
 
   private
+
+  # Whether the process's stderr log matches +pattern+. Shared by the classifiers
+  # that read a single Claude CLI stderr line.
+  def stderr_matches?(stderr_log_path, pattern)
+    return false unless stderr_log_path
+    return false unless @file_system.exists?(stderr_log_path)
+
+    content = @file_system.read(stderr_log_path)
+    return false if content.blank?
+
+    content.match?(pattern)
+  end
 
   # Check if stderr contains a context length error.
   def context_length_error_in_stderr?(stderr_log_path)
