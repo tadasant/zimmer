@@ -21,8 +21,30 @@ class HealthMonitorService
   # Health status thresholds
   ORPHANED_PROCESS_WARNING_THRESHOLD = 1
   ORPHANED_PROCESS_CRITICAL_THRESHOLD = 5
+  # Backlog thresholds are measured against **ready** work only — jobs that are due
+  # now and not yet claimed by a worker. They are deliberately not measured against
+  # every unfinished row in `good_jobs`, which also holds two populations that are
+  # not a backlog by any definition: jobs `scheduled` for a future time (wake-up
+  # triggers, scheduled polls, retry backoffs — waiting on the clock, not on a
+  # worker) and jobs already `claimed` and executing right now. Counting those meant
+  # a healthy instance could page purely because somebody scheduled thirty wake-ups
+  # for tomorrow. See #queue_statistics.
   QUEUE_DEPTH_WARNING_THRESHOLD = 50
   QUEUE_DEPTH_CRITICAL_THRESHOLD = 100
+
+  # A deep queue is only an incident if it is also *not moving*. Zimmer's workers
+  # clear on the order of a thousand jobs an hour, so a hundred ready jobs is about
+  # five minutes of work when everything is healthy — indistinguishable, by count
+  # alone, from a hundred ready jobs in front of a wedged worker. The age of the
+  # longest-waiting ready job is what separates "busy" from "stuck", so `critical`
+  # requires both: depth over the threshold AND the head of the queue waiting longer
+  # than this.
+  #
+  # The two conditions are ANDed rather than ORed on purpose. Age alone says nothing
+  # about scale: three jobs that have sat for twenty minutes on an otherwise idle
+  # instance is not something to wake anyone for, and paging on it would rebuild the
+  # noise this threshold exists to remove. Depth is what makes a stall an incident.
+  QUEUE_STALL_CRITICAL_AGE = 10.minutes
   FAILURE_RATE_WARNING_THRESHOLD = 0.1
   FAILURE_RATE_CRITICAL_THRESHOLD = 0.25
 
@@ -38,6 +60,17 @@ class HealthMonitorService
   # up on a process, deletes the row and releases its jobs, so a worker that is
   # inactive by this measure is one GoodJob is about to reap.
   WORKER_ACTIVE_INTERVAL = GoodJob::Process::EXPIRED_INTERVAL
+
+  # Compact human-readable wait ("45s", "12m", "2h 5m"). Public because the Slack page
+  # `SystemHealthMonitorJob` sends is the one surface where a human, not a parser,
+  # reads this number — "oldest waiting 18000s" is worse there than "5h 0m".
+  def self.format_wait(seconds)
+    seconds = seconds.to_i
+    return "#{seconds}s" if seconds < 60
+    return "#{seconds / 60}m" if seconds < 3600
+
+    "#{seconds / 3600}h #{(seconds % 3600) / 60}m"
+  end
 
   # Structured result for health status
   HealthStatus = Struct.new(:status, :message, keyword_init: true) do
@@ -263,12 +296,14 @@ class HealthMonitorService
     recent_errors = recent_error_logs
 
     {
-      queue_depth: queue_stats[:pending_count],
+      # Ready work, not every unfinished row — the number an operator means when they
+      # ask "how deep is the queue?". `queue_stats` still carries the full breakdown.
+      queue_depth: queue_stats[:ready_count],
       queue_stats: queue_stats,
       worker_stats: worker_stats,
       recent_errors: recent_errors,
       database_status: database_health_status,
-      status: system_health_status(queue_stats[:pending_count])
+      status: system_health_status(queue_stats)
     }
   end
 
@@ -443,11 +478,20 @@ class HealthMonitorService
   end
 
   # Calculate queue statistics using GoodJob
+  #
+  # `pending_count` is every unfinished row and is reported for continuity, but it is
+  # not the backlog: it sums three populations with different meanings. `ready_count`
+  # is the one that means "work waiting on a worker", and it is what the thresholds
+  # and the alert read.
   def queue_statistics
     # GoodJob stores jobs in good_jobs table
     pending_jobs = GoodJob::Job.where(finished_at: nil)
-    scheduled_jobs = GoodJob::Job.where(finished_at: nil).where("scheduled_at > ?", Time.current)
-    running_jobs = GoodJob::Job.where(finished_at: nil).where.not(locked_by_id: nil)
+    unclaimed_jobs = pending_jobs.where(locked_by_id: nil)
+    ready_jobs = unclaimed_jobs.where("scheduled_at <= ? OR scheduled_at IS NULL", Time.current)
+    # Unclaimed, so the three populations partition `pending_count` exactly rather
+    # than counting a locked future-dated row as both claimed and scheduled.
+    scheduled_jobs = unclaimed_jobs.where("scheduled_at > ?", Time.current)
+    running_jobs = pending_jobs.where.not(locked_by_id: nil)
     failed_jobs = GoodJob::Job.where.not(error: nil).where(finished_at: nil)
 
     # Calculate processing rate (jobs completed in last hour)
@@ -455,12 +499,35 @@ class HealthMonitorService
 
     {
       pending_count: pending_jobs.count,
-      ready_count: pending_jobs.where(locked_by_id: nil).where("scheduled_at <= ? OR scheduled_at IS NULL", Time.current).count,
+      ready_count: ready_jobs.count,
       scheduled_count: scheduled_jobs.count,
       claimed_count: running_jobs.count,
       failed_count: failed_jobs.count,
+      oldest_ready_age_seconds: oldest_ready_age_seconds(ready_jobs),
       processing_rate_per_hour: completed_last_hour
     }
+  end
+
+  # How long the longest-waiting ready job has been waiting, in seconds — nil when
+  # nothing is ready.
+  #
+  # "Waiting since" is `scheduled_at` for a job that was future-dated — it only became
+  # backlog when its scheduled time arrived, and charging it for the hours it spent
+  # correctly parked would make every wake-up trigger look like a stall — falling back
+  # to `created_at` for a row with no `scheduled_at` at all.
+  #
+  # Read real columns rather than `minimum(Arel.sql(...))`: a calculation over a raw
+  # SQL expression has no column to infer a type from, so the adapter decides whether
+  # you get a Time or a String. `pick` on the columns themselves does not, and it
+  # avoids materializing a whole row (including its `serialized_params` jsonb) on a
+  # path that runs on every /health render and every monitor tick.
+  def oldest_ready_age_seconds(ready_jobs)
+    scheduled_at, created_at = ready_jobs.order(Arel.sql("COALESCE(scheduled_at, created_at) ASC"))
+                                         .pick(:scheduled_at, :created_at)
+    waiting_since = scheduled_at || created_at
+    return nil if waiting_since.nil?
+
+    [ (Time.current - waiting_since).round, 0 ].max
   end
 
   # Calculate worker statistics using GoodJob
@@ -678,15 +745,28 @@ class HealthMonitorService
     end
   end
 
-  # Determine system health status based on queue depth
-  def system_health_status(queue_depth)
-    if queue_depth >= QUEUE_DEPTH_CRITICAL_THRESHOLD
-      HealthStatus.new(status: :critical, message: "Queue backlog critical: #{queue_depth} pending jobs")
-    elsif queue_depth >= QUEUE_DEPTH_WARNING_THRESHOLD
-      HealthStatus.new(status: :warning, message: "Queue backlog elevated: #{queue_depth} pending jobs")
+  # Determine system health status from the ready backlog and how long its head has
+  # been waiting. Critical needs both — deep *and* stalled; see the threshold
+  # constants. A deep queue that is still draining is a warning, which surfaces on the
+  # health dashboard without paging anyone.
+  def system_health_status(queue_stats)
+    depth = queue_stats[:ready_count].to_i
+    waiting_for = queue_stats[:oldest_ready_age_seconds].to_i
+
+    if depth >= QUEUE_DEPTH_CRITICAL_THRESHOLD && waiting_for >= QUEUE_STALL_CRITICAL_AGE
+      HealthStatus.new(
+        status: :critical,
+        message: "Queue backlog critical: #{depth} jobs ready, oldest waiting #{format_wait(waiting_for)}"
+      )
+    elsif depth >= QUEUE_DEPTH_WARNING_THRESHOLD
+      HealthStatus.new(status: :warning, message: "Queue backlog elevated: #{depth} jobs ready")
     else
       HealthStatus.new(status: :healthy, message: "Queue processing normally")
     end
+  end
+
+  def format_wait(seconds)
+    self.class.format_wait(seconds)
   end
 
   # Calculate overall system status

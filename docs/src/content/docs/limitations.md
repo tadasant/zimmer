@@ -2715,6 +2715,26 @@ answered.
 
 ---
 
+## A worker wedged on jobs it already claimed pages nobody
+
+The queue-backlog alert measures ready work — jobs due now and unclaimed — and deliberately ignores
+the `claimed` population, because a claimed job is one a worker is executing rather than one that is
+waiting. See [What "queue backlog" counts](/operate/background-jobs/#what-queue-backlog-counts).
+
+That leaves one shape uncovered. A worker that wedges while *holding* claimed jobs, on a queue with
+no further inflow, produces a `claimed_count` that never falls and a `ready_count` that never rises,
+so nothing crosses the threshold and no page is sent. The old rule would eventually have paged on
+it, by accident, because it counted claimed jobs as backlog.
+
+In practice inflow is what makes a wedged worker visible: Zimmer's queues are fed by cron pollers
+and by sessions, so a stuck worker normally accumulates ready work within a poll interval and pages
+on that. The uncovered case is a wedge on a genuinely idle queue. `GoodJob::Process::EXPIRED_INTERVAL`
+also bounds it — GoodJob reaps a process that stops renewing its heartbeat and releases the jobs it
+held, which returns them to `ready`. An explicit `oldest_claimed_age` signal would close the gap
+directly; nothing measures it today.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

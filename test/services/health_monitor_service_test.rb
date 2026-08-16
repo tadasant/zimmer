@@ -226,6 +226,158 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert health[:status].healthy?
   end
 
+  # === Queue Backlog Tests ===
+  #
+  # "Backlog" means work waiting on a worker: due now, unclaimed. The `good_jobs`
+  # table also holds future-dated rows (wake-up triggers, scheduled polls, retry
+  # backoffs) and rows a worker is executing right now — neither is waiting on
+  # anything. Counting all three as one number paged four times in three days on the
+  # Tadasant production deployment with no real backlog behind it.
+
+  def insert_good_jobs(count)
+    now = Time.current
+    rows = Array.new(count) do
+      { queue_name: "default", job_class: "PlaceholderJob", created_at: now, updated_at: now }.merge(yield)
+    end
+    GoodJob::Job.insert_all(rows) if rows.any?
+  end
+
+  # `scheduled_at` matches `created_at` because that is the shape GoodJob writes:
+  # `GoodJob::Job.enqueue_args` always populates it, even for an immediate enqueue.
+  def enqueue_ready_jobs(count, waiting_for: HealthMonitorService::QUEUE_STALL_CRITICAL_AGE + 1.minute)
+    enqueued_at = waiting_for.ago
+    insert_good_jobs(count) { { created_at: enqueued_at, updated_at: enqueued_at, scheduled_at: enqueued_at } }
+  end
+
+  def enqueue_scheduled_jobs(count, due_in: 1.hour)
+    insert_good_jobs(count) { { scheduled_at: due_in.from_now } }
+  end
+
+  def claim_jobs(count)
+    insert_good_jobs(count) { { locked_by_id: SecureRandom.uuid, locked_at: Time.current } }
+  end
+
+  test "queue_depth counts ready work only, not scheduled or claimed jobs" do
+    enqueue_ready_jobs(68)
+    enqueue_scheduled_jobs(23)
+    claim_jobs(15)
+
+    health = @service.system_health
+    stats = health[:queue_stats]
+
+    assert_equal 106, stats[:pending_count], "every unfinished row is still reported"
+    assert_equal 68, stats[:ready_count]
+    assert_equal 23, stats[:scheduled_count]
+    assert_equal 15, stats[:claimed_count]
+    assert_equal 68, health[:queue_depth], "queue_depth is the ready backlog, not every unfinished row"
+  end
+
+  # The 2026-08-16 03:28Z production alert, exactly.
+  test "the 2026-08-16 firing's numbers are not critical" do
+    enqueue_ready_jobs(68)
+    enqueue_scheduled_jobs(23)
+    claim_jobs(15)
+
+    status = @service.system_health[:status]
+
+    refute status.critical?, "106 unfinished rows with only 68 ready is not a backlog collapse"
+    assert status.warning?, "68 ready is still past the warning threshold and belongs on the dashboard"
+  end
+
+  test "a deep but draining queue is a warning, not critical" do
+    enqueue_ready_jobs(HealthMonitorService::QUEUE_DEPTH_CRITICAL_THRESHOLD + 50, waiting_for: 5.seconds)
+
+    status = @service.system_health[:status]
+
+    refute status.critical?, "a deep queue whose head arrived seconds ago is busy, not stalled"
+    assert status.warning?
+  end
+
+  test "a deep queue that has stopped draining is critical" do
+    enqueue_ready_jobs(200, waiting_for: 30.minutes)
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert_includes status.message, "200 jobs ready"
+    assert_includes status.message, "30m"
+  end
+
+  test "a queue of only future-dated jobs is healthy however deep it is" do
+    enqueue_scheduled_jobs(500)
+
+    health = @service.system_health
+
+    assert_equal 0, health[:queue_depth]
+    assert health[:status].healthy?, "work scheduled for later is waiting on the clock, not on a worker"
+  end
+
+  test "oldest_ready_age_seconds measures the head of the ready queue" do
+    enqueue_ready_jobs(1, waiting_for: 15.minutes)
+    enqueue_ready_jobs(1, waiting_for: 2.minutes)
+
+    age = @service.system_health[:queue_stats][:oldest_ready_age_seconds]
+
+    assert_in_delta 900, age, 5
+  end
+
+  test "oldest_ready_age_seconds ignores jobs that are not ready" do
+    enqueue_scheduled_jobs(5)
+    claim_jobs(5)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_nil stats[:oldest_ready_age_seconds], "nothing is waiting on a worker"
+    assert @service.system_health[:status].healthy?
+  end
+
+  # A future-dated job that comes due starts waiting at its scheduled time, not at
+  # the time it was created — otherwise a wake-up trigger enqueued yesterday would
+  # look like a day-old stall the moment it becomes runnable.
+  test "oldest_ready_age_seconds dates a due job from its scheduled time" do
+    insert_good_jobs(1) { { created_at: 1.day.ago, updated_at: 1.day.ago, scheduled_at: 3.minutes.ago } }
+
+    age = @service.system_health[:queue_stats][:oldest_ready_age_seconds]
+
+    assert_in_delta 180, age, 5
+  end
+
+  # GoodJob always writes scheduled_at today, but the ready query has always tolerated
+  # a NULL, so the age calculation has to agree with it rather than return nil.
+  test "oldest_ready_age_seconds falls back to created_at when scheduled_at is null" do
+    insert_good_jobs(1) { { created_at: 4.minutes.ago, updated_at: 4.minutes.ago } }
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_equal 1, stats[:ready_count]
+    assert_in_delta 240, stats[:oldest_ready_age_seconds], 5
+  end
+
+  # The alert body presents ready/claimed/scheduled as the whole of pending, so they
+  # have to partition it — including for a locked row dated in the future, which would
+  # otherwise be counted as both claimed and scheduled.
+  test "ready, claimed and scheduled partition pending exactly" do
+    enqueue_ready_jobs(4)
+    enqueue_scheduled_jobs(3)
+    claim_jobs(2)
+    insert_good_jobs(1) { { locked_by_id: SecureRandom.uuid, locked_at: Time.current, scheduled_at: 1.hour.from_now } }
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_equal 3, stats[:claimed_count], "the locked future-dated row is claimed, not scheduled"
+    assert_equal 3, stats[:scheduled_count]
+    assert_equal 4, stats[:ready_count]
+    assert_equal stats[:pending_count],
+      stats[:ready_count] + stats[:claimed_count] + stats[:scheduled_count]
+  end
+
+  test "format_wait renders seconds, minutes and hours" do
+    assert_equal "45s", HealthMonitorService.format_wait(45)
+    assert_equal "12m", HealthMonitorService.format_wait(12 * 60)
+    assert_equal "2h 5m", HealthMonitorService.format_wait((2 * 3600) + (5 * 60))
+    assert_equal "0s", HealthMonitorService.format_wait(nil)
+  end
+
   # === Worker Statistics Tests ===
   #
   # A GoodJob capsule renews its process row every STALE_INTERVAL + jitter
