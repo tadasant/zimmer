@@ -50,7 +50,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `SecretProviders`, `ParameterStore::*`, `SecretsLocation` | `operate/secrets-parameter-store.md` |
 | `infra/`, `.github/workflows/**`, `Dockerfile*` | `operate/deploying.md`, `operate/provisioning.md` |
 | sshd, the firewall, `admin_ssh_pubkeys`, Tailscale SSH | `operate/ssh-access.md` |
-| `config/goals.json` | `sessions/goals.md` |
+| `config/goals.json`, `app/services/orchestrator_system_prompt_builder.rb` | `sessions/goals.md` |
 | any cron job | `operate/background-jobs.md` |
 | `config/initializers/otel_logs_exporter.rb`, `config/initializers/sentry.rb`, `lib/tasks/obs.rake` | `operate/observability.md` |
 | `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |
