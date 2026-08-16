@@ -50,6 +50,11 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
       "without container-root the entrypoint cannot start dockerd"
     assert_equal "1", config.dig("env", "clear", "ZIMMER_NESTED_DOCKER"),
       "without the env var the entrypoint never starts dockerd"
+    # Not part of the three-way switch, but the HOME reasoning downstream of it depends on
+    # this being true: with `init: true` PID 1 is docker-init, which is why the deploy's
+    # PID-1 HOME check reads the container's environment rather than the entrypoint's.
+    assert_equal true, options["init"],
+      "PID 1 is no longer docker-init, so the deploy's PID-1 HOME check reads something else"
   end
 
   def assert_disarmed(config)
@@ -141,11 +146,17 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
   # uid the container starts as. Asserted here rather than in a Dockerfile-shaped test because
   # this is the file that owns the `user: "0:0"` decision that creates the need for it.
   #
+  # Scoped to the LAST build stage, because only that one ships. An ENV in the `build` stage
+  # is discarded with it, so a whole-file match would stay green while the shipped image had
+  # no HOME pinned at all.
+  #
   # A predicate rather than assert_match on the file: matching a regexp against the whole
   # Dockerfile dumps all 120 lines of it into the failure message, which buries the sentence
   # that says what to do about it.
   def image_pins_home?
-    Rails.root.join("Dockerfile").read.match?(/^ENV HOME=\/home\/rails$/)
+    final_stage = Rails.root.join("Dockerfile").read.split(/^FROM .*$/).last
+
+    final_stage.match?(/^ENV HOME=\/home\/rails$/)
   end
 
   # Both halves together, per destination, because the pairing is the invariant: a role that
@@ -163,18 +174,6 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
         "so Docker derives HOME=/root from --user. At uid 1000 that is untraversable: libpq's TLS " \
         "probe gets EACCES and ~/.claude, ~/.config/gh, ~/.local, ~/.zimmer are absent."
     end
-  end
-
-  # The entrypoint's own fixup is the other half, and the stronger one: it covers the app
-  # process and refuses to boot when uid 1000 cannot use the directory, which no image ENV
-  # can check. The image ENV does not replace it -- losing either reopens the failure.
-  test "the entrypoint still derives HOME from /etc/passwd and proves it usable" do
-    script = Rails.root.join("bin/docker-entrypoint").read
-
-    assert_match(/export HOME=/, script,
-      "the entrypoint no longer sets HOME; the app process would keep whatever --user derived")
-    assert_match(/setpriv --reuid=1000 --regid=1000 --init-groups test -x "\$HOME" -a -w "\$HOME"/, script,
-      "the entrypoint no longer proves HOME usable at uid 1000 before dropping to it")
   end
 
   # The entrypoint is the piece that actually decides whether dockerd starts, and its guard

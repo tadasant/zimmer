@@ -2713,11 +2713,36 @@ none asserted it was *working*.
 The integrated coverage lives in the `Deploy staging` workflow rather than in CI, because
 running it needs a sysbox host and CI has none: it preflights the droplet by starting a real
 sysbox container, and after the cutover asserts the worker is user-namespaced, has no host
-socket, answers `docker version` as uid 1000, and kept `HOME` through the privilege drop.
+socket, answers `docker version` as uid 1000, and that its `HOME` is `/home/rails` and is
+traversable and writable at uid 1000.
 That is still a *staging* signal, not a CI one — the suite itself will keep asserting only
 the shape, and a `main` that is green says nothing about whether the nested path works.
 Production remains off by default and owes its own staging-proven rollout — see
 [Nested Docker for agent sessions](/operate/nested-docker/).
+
+---
+
+## `kamal app exec --reuse` runs as root on a nested-Docker worker
+
+`--reuse` is a bare `docker exec` into the running container, so it does not run the image
+ENTRYPOINT and it inherits the container's configured user. Under nested Docker that user is
+`0:0`, so the command runs as **root** with none of the entrypoint's privilege drop applied.
+
+The image pins `ENV HOME=/home/rails`, so it at least gets a working `HOME` — before that,
+any DB-touching command invoked this way died on `could not open certificate file
+"/root/.postgresql/postgresql.crt": Permission denied`, which reads as a broken deploy rather
+than as the wrong invocation. What the pin does *not* do is make the command run as uid 1000.
+
+So anything invoked this way that writes under `~` — `~/.zimmer/clones`, `~/.claude`,
+`~/.config/gh`, `~/.local`, `~/.codex` — leaves **root-owned files in named volumes the app
+reads at uid 1000**, and they are unwritable afterwards. Previously those writes landed in
+`/root` on the container layer and evaporated at the next deploy; now they persist. That is a
+real trade, taken deliberately: a working admin path with a caveat beats one that always
+fails, and the mitigation is this warning rather than anything mechanical.
+
+Use plain `kamal app exec` (a `docker run`, which runs the entrypoint and drops properly), or
+`docker exec -u 1000:1000` if you need the app's identity inside the existing container — see
+[Nested Docker for agent sessions](/operate/nested-docker/#kamal-app-exec---reuse-runs-as-root-and-skips-the-entrypoint).
 
 ---
 
