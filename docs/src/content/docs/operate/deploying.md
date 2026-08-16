@@ -626,6 +626,47 @@ Two things follow from this that did not used to be true:
   `claude_home`, `codex_home`, `gh_config`, `claude_local`), which are re-attached to each new
   container instead of being destroyed with the droplet.
 
+### The worker watchdog is converged on every deploy
+
+Everything above proves the deploy is healthy *at the moment it finishes*. `Install the worker
+watchdog (converge)` installs the thing that keeps asking: `scripts/install-worker-watchdog.sh`
+drops `scripts/worker-watchdog.sh` on the host as `/usr/local/sbin/zimmer-worker-watchdog` and
+drives it from a 60-second systemd timer.
+
+It exists because a container can pass every check in this document while running nothing. A
+cgroup OOM under `sysbox-runc` can leave the worker reporting `Status=running, Restarts=0` with
+`docker exec` permanently broken ([#502](https://github.com/tadasant/zimmer/issues/502)), so the
+probe is a real `docker exec` rather than a status read. What it does on a confirmed wedge, and the
+manual ladder for the rung it will not take on its own, are in
+[When the worker wedges](/operate/nested-docker/#when-the-worker-wedges).
+
+Two properties of the step itself. It runs **unconditionally**, not gated on `nested_docker`: an
+unexecable worker is worth catching under plain `runc` too, and a deploy that disarms sysbox should
+not silently disarm its watchdog. And it is a **converge**, not a one-off install — the droplet is
+persistent and cloud-init only ever runs at first boot, so re-running is how a changed script
+reaches a box that already exists. Same shape as `Clear forced root-password expiry (converge)`.
+
+### The worker watchdog is converged on every deploy
+
+Every assertion above proves the deploy is healthy *at that moment*. `Install the worker watchdog
+(converge)` installs the thing that keeps asking: `scripts/install-worker-watchdog.sh` drops
+`scripts/worker-watchdog.sh` onto the host as `/usr/local/sbin/zimmer-worker-watchdog` and drives it
+from a 60-second systemd timer.
+
+It probes the worker with a real `docker exec` rather than reading container state, because the
+failure it exists for ([#502](https://github.com/tadasant/zimmer/issues/502)) is a container that
+reports `running` with `Restarts=0` while exec is permanently broken — a shape every check on this
+page passes. See [When the worker wedges](/operate/nested-docker/#when-the-worker-wedges).
+
+Two properties worth knowing. It runs **unconditionally**, not only when `nested_docker` is checked:
+an unexecable worker is worth catching under plain `runc` too, and a deploy that disarms sysbox
+should not silently drop its watchdog. And it is a **converge**, for the same reason
+`clear-root-password-expiry.sh` is — the droplet is persistent and cloud-init only ever runs at first
+boot, so anything that must exist on an already-running host has to be re-applied by the deploy.
+
+Production has no deploy workflow in this repository, so there the same script is run out of band:
+`bash scripts/install-worker-watchdog.sh <prod-tailnet-host>`.
+
 ### What changed, and why
 
 The old flow re-rendered the whole app stack into cloud-init's `user_data` — a **replace-forcing**
