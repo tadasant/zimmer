@@ -284,11 +284,17 @@ directory** instead of a copy — `ForkSessionService`'s `scaffold_missing_clone
 `clone_scaffolded` in its metadata, so an empty tree reads as deliberate rather than as a copy that
 died halfway.
 
-It is an empty **git repository**, not a bare directory. `codex exec` refuses to start outside a
-repository unless it is given `--skip-git-repo-check`, which Zimmer does not pass and should not have
-to — every clone it has ever spawned into was a real repository, and `git init` on the scaffold keeps
-that true for the price of one subprocess. It is best-effort: a runtime that does not care must not
-lose its summary because `git` was unavailable, so a failure is logged and the fork carries on.
+The scaffold is `git init`ed rather than left as a bare directory, because "a directory to be spawned
+in" is not quite the whole requirement: `codex exec` refuses to start outside a git repository unless
+it is passed `--skip-git-repo-check`, which Zimmer does not pass and should not have to — every clone
+it has ever spawned into has been a real repository. An empty repository keeps that true for the cost
+of one subprocess. It is best-effort: a `git init` that fails is logged and the fork carries on, since
+a Claude Code summary fork does not care either way.
+
+Scaffolding is not only for the trash, either. `StaleCloneCleanupJob` reclaims a **failed** session's
+clone after 24 hours, and a day-old failed session is exactly the kind someone opens to ask what
+happened. That case scaffolds too, logged at `warn` rather than `info` — the archived case is
+expected, and this one is worth noticing.
 
 Scaffolding also closes the race the pre-flight cannot: a clone that was there when the button was
 pressed and unlinked while the copy walked it. The copy fails with `ENOENT` inside the source tree,
@@ -329,8 +335,8 @@ on either the success or the failure path:
 - **Failure before dispatch** — the generator archives the fork it made rather than leaving it on the
   floor (`#abandon_fork`), which reclaims the directory the same way.
 - **The process dies in between** — the fork is a `needs_input` session with a directory holding an
-  `.mcp.json` and whatever `air prepare` injected alongside it, and nothing of the repository. It is
-  invisible to operator lists, and its summary record ages out at
+  empty `.git`, an `.mcp.json` and whatever `air prepare` injected alongside it, and nothing of the
+  repository. It is invisible to operator lists, and its summary record ages out at
   `PENDING_TIMEOUT` into the "started but never came back" state the panel already renders. Nothing
   about the source session is different from before the click.
 
