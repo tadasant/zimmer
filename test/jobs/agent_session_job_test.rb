@@ -9332,4 +9332,61 @@ class AgentSessionJobTest < ActiveJob::TestCase
     klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
     klass.const_set(:CLAUDE_CREDENTIALS_PATH, original)
   end
+
+  # Recovery resumes the session with running_job_id nil and enqueues this job.
+  # DeploymentRecoveryJob#orphaned_running_session? treats a blank running_job_id
+  # as orphaned with no grace period, so a reap can land in that gap and bounce
+  # the session out of running before the job starts. Re-resuming it here is the
+  # tail of that same recovery and must not consume what recovery preserved.
+  test "re-resuming to deliver the recovery prompt preserves the wake set" do
+    @session.update!(status: :needs_input)
+    conditions = arm_wake_set(@session)
+
+    AgentSessionJob.new.send(
+      :resume_for_recovery_prompt, @session.reload, AutomatedPrompts::SYSTEM_RECOVERY
+    )
+
+    assert @session.reload.running?
+    conditions.each do |condition|
+      assert_nil condition.reload.last_triggered_at,
+        "the recovery prompt's re-resume must not consume wake condition #{condition.id}"
+    end
+  end
+
+  test "re-resuming to deliver an ordinary follow-up still consumes the wake set" do
+    @session.update!(status: :needs_input)
+    conditions = arm_wake_set(@session)
+
+    AgentSessionJob.new.send(:resume_for_recovery_prompt, @session.reload, "Please continue")
+
+    assert @session.reload.running?
+    conditions.each do |condition|
+      assert_not_nil condition.reload.last_triggered_at,
+        "a deliberate follow-up must still consume wake condition #{condition.id}"
+    end
+  end
+
+  private
+
+  # A watcher on a child plus a wake_me_up_later backstop.
+  def arm_wake_set(session)
+    watched = Session.create!(
+      prompt: "Child", agent_runtime: "claude_code", status: :running,
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem"
+    )
+
+    [
+      { condition_type: "ao_event",
+        configuration: { "event_name" => "session_archived", "watched_session_id" => watched.id } },
+      { condition_type: "schedule",
+        configuration: { "scheduled_at" => 30.minutes.from_now.iso8601, "timezone" => "UTC" } }
+    ].map do |condition|
+      Trigger.create!(
+        name: "Wake ##{session.id}", status: "enabled", agent_root_name: "zimmer",
+        prompt_template: "Wake", reuse_session: true, last_session_id: session.id,
+        trigger_conditions_attributes: [ condition ]
+      ).trigger_conditions.first
+    end
+  end
 end
