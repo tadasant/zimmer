@@ -2893,11 +2893,35 @@ in the config: staging builds no transcript archives until someone runs
 `GoodJob::Setting.cron_key_enable("transcript_archive")`. Re-enabling it before #495 is fixed
 restores the crash loop.
 
-Production's worker carries no such cap. That is not an oversight, but it is a real gap: the same
-image runs the same jobs there, so the same allocation is possible. It survives on headroom alone —
-the production droplet is 16 GB against staging's 4 GB, so 2.8 GB is absorbed rather than fatal. The
-gap is that headroom is not a bound. An allocation that scales with the data it touches has no
-ceiling that 16 GB is guaranteed to sit above, and production is where agent sessions actually live.
+Production's worker carries `memory: 10g` (`config/deploy.production.yml`), for the same reason and
+with the same effect — but the number is derived from its own droplet rather than copied, and the
+runaway it is sized against is a different one. On production the dominant consumer is not #495 but
+[#449](https://github.com/tadasant/zimmer/issues/449): the `good_job` process itself climbs from
+~700 MB at rest to **11.6 GB RSS in about eighteen minutes** under ten to thirteen concurrent
+sessions, and then dies. Why it grows is still unknown.
+
+Uncapped, that climb is what the 16 GB is spent on. Measured on 2026-08-14, the host reached 139 MB
+available with 40% iowait and a load average of 13.57 on 8 vCPU; single-row `SELECT`s took 31
+seconds, the queue backed up until it paged, and every agent session on the box slowed down — and
+the process died at the end of it anyway, taking each session's child process with it. So the cap
+does not decide whether the worker restarts. #449 does that either way. The cap decides whether the
+restart is preceded by several minutes of host-wide thrash.
+
+`10g` sits between two measured bounds. Below it, a healthy worker must never reach the cap: 1.6 GiB
+of anon at three concurrent sessions. Staging's `2g` sits *under* that floor, which is why copying
+that number here would have OOM-killed the worker on the deploy that applied it. Above it, the cap
+has to trip before the host degrades: #449's thrash set in at 11.6 GB, so `10g` stops short of it
+and still leaves 5.6 GiB against the 0.9 GiB everything else on the droplet actually uses.
+
+The same cap absorbs #495 rather than tripping on it — 2.8 GB on top of even a full sixteen-session
+worker stays inside 10 GiB — so #495 does not become a restart loop on production the way it does on
+staging.
+
+None of this fixes #449; it bounds the blast radius. Under sustained heavy load the worker still
+restarts and still interrupts the sessions it supervises. What changes is that the rest of the
+droplet no longer goes down with it, and headroom stops being asked to do a bound's job — which it
+cannot, since an allocation with no steady state has no ceiling any droplet size is guaranteed to
+sit above.
 
 Two diagnostic notes, since this one wastes time in a predictable way. `staging.zimmer.tadasant.com`
 resolves to a **tailnet** address, and the droplet's firewall allows inbound UDP/41641 only — so a
