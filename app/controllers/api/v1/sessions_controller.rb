@@ -455,13 +455,14 @@ class Api::V1::SessionsController < Api::BaseController
   # cached blurb is current — and asynchronous, because generation forks the
   # session and spends a whole agent turn.
   #
-  # An archived session is a normal candidate — what generation needs is a clone
-  # to fork, not a status. 422 with the reason, rather than a 202 for work that
-  # will never run, when there is nothing to fork at all: no clone (which is the
-  # usual answer for a session archived more than the ten-second undo window
-  # ago), no transcript, or a session that is itself a summary fork.
+  # An archived session is a normal candidate, and so is one whose clone Zimmer
+  # reclaimed when it went to the trash: the fork answers from the conversation,
+  # and is given an empty working directory when there is no tree left. 422 with
+  # the reason, rather than a 202 for work that will never run, for the two cases
+  # that stay impossible — no transcript at all, or a session that is itself a
+  # summary fork.
   def regenerate_status_summary
-    unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: @session)
+    unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: @session, force: true)
 
     if unavailable
       render_api_error("Cannot regenerate status summary", unavailable.message, status: :unprocessable_entity)

@@ -103,9 +103,21 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
     assert_includes result, "## Status Summary Regenerating"
   end
 
-  test "action_session errors with the reason when there is no clone left to fork" do
+  test "action_session regenerates an archived session whose clone is gone" do
     @session.update_column(:status, Session.statuses[:archived])
     FileUtils.remove_entry(@clone_path)
+
+    result = nil
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
+      result = Mcp::Tools::ActionSession.new(context: @context)
+        .call("action" => "regenerate_status_summary", "session_id" => @session.id)
+    end
+
+    assert_includes result, "## Status Summary Regenerating"
+  end
+
+  test "action_session errors with the reason when the session has nothing to summarize" do
+    @session.update_column(:transcript, nil)
 
     error = nil
     assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
@@ -115,7 +127,16 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
       end
     end
 
-    assert_match(/deleted when it went to the trash/, error.message)
+    assert_match(/no transcript/, error.message)
+  end
+
+  # The tool's prose is the only thing an agent reads before choosing the
+  # action, so it has to carry the same rule the behaviour does.
+  test "the tool description says an archived session is a candidate however long ago" do
+    description = Mcp::Tools::ActionSession.description_value
+
+    assert_match(/archived session is a normal candidate, however long ago/, description)
+    assert_no_match(/ten seconds after it is archived/, description)
   end
 
   test "the tool description documents the new action" do

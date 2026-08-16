@@ -27,18 +27,19 @@
 # summary was written — that refusal is the caching requirement, and it is why
 # a page view can never trigger work.
 #
-# The other refusal is structural: there has to be a clone to fork. That, and
-# not `archived?`, is what a forced generation checks — an archived session is a
-# finished session, and a finished session is exactly the one someone opens
-# later to ask what happened.
+# A FORCED generation needs no clone at all. DeferredCloneCleanupJob deletes an
+# archived session's clone once the undo window (10 seconds) closes, so every
+# archived session an operator actually opens later has no tree left — and an
+# archived session is exactly the one someone opens later to ask what happened.
+# The fork does not read that tree: it answers from the conversation it was
+# forked with and is told not to run tools. So when the clone is gone, the fork
+# is given an empty working directory instead (ForkSessionService's
+# `scaffold_missing_clone`), and the summary is written anyway.
 #
-# Be clear-eyed about how far that gets you today. DeferredCloneCleanupJob
-# deletes an archived session's clone once the undo window (10 seconds) closes,
-# on both the clean branch and the artifacts-preserved one; only a session whose
-# unpushed work Zimmer failed to preserve keeps its clone for the trash-retention
-# window. So the live-clone case is narrow, and the common answer for a session
-# archived minutes ago is the refusal — `outcome: :unavailable`, carrying a reason
-# the operator can read, rather than a job that declines in silence.
+# An AUTOMATIC generation still refuses on a missing clone, and still skips the
+# trash. Nothing enqueues one for an archived session on purpose, and paying to
+# stand a fork up for a session nobody is looking at is the waste those two
+# refusals exist to prevent.
 class SessionStatusSummaryGenerator
   # Marks a session as a summary fork. Read by SessionStateMachine (to route the
   # fork's pause into harvesting rather than into the user's action queue) and by
@@ -72,36 +73,43 @@ class SessionStatusSummaryGenerator
   # The three surfaces that offer "Regenerate" (the Status panel, the MCP
   # `action_session` action, the REST endpoint) ask this BEFORE they enqueue, so
   # a request that cannot possibly produce a summary is answered with the reason
-  # instead of a job that declines in silence. It reads the session and stats the
-  # clone directory; it writes nothing and enqueues nothing, so rendering the
-  # panel still cannot trigger generation.
+  # instead of a job that declines in silence. All three pass `force: true`,
+  # because all three ARE the forced path — they are asking whether the button
+  # they are about to offer would do anything. It reads the session and, for an
+  # automatic run, stats the clone directory; it writes nothing and enqueues
+  # nothing, so rendering the panel still cannot trigger generation.
   def self.unavailable_reason(...) = new(...).unavailable_reason
 
   # The instance half of the class method above.
   #
-  # A reason a FORCED run must resolve on the panel carries `:unavailable` — #call
-  # keys the failure it records off that symbol, so a new structural reason added
-  # here as `:skipped` would silently reintroduce the spinner this exists to kill.
+  # The first two are genuinely impossible and refuse whatever the caller wants:
+  # a fork asked to summarize itself has nothing to say, and a session with no
+  # transcript has nothing to say it about. A missing clone is not in that class
+  # — a forced run scaffolds one — so it only refuses an automatic run, and is
+  # the only reason here that carries `:unavailable`.
+  #
+  # Every reason a FORCED run can hit is therefore answered by the three surfaces
+  # BEFORE they enqueue, which is what keeps the panel off a spinner that never
+  # resolves. A new reason that a forced run cannot resolve has to be answered the
+  # same way — and, since #call would then reach it with a claim already taken,
+  # would need #call to record it against the record on the way out.
   def unavailable_reason
     if session.status_summary_fork?
       Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
     elsif session.transcript_line_count.zero?
       Result.new(outcome: :skipped, message: "Session has no transcript yet.")
-    elsif !source_clone_available?
+    elsif !force && !source_clone_available?
       Result.new(outcome: :unavailable, message: clone_unavailable_message)
     end
   end
 
   def call
+    # Nothing is recorded against the panel here. Every refusal a forced run can
+    # reach is one the three request surfaces already answered from
+    # #unavailable_reason before enqueuing, so there is no click waiting on a
+    # panel that would spin — and no claim has been taken yet to record against.
     refusal = refuse_reason
-
-    if refusal
-      # An operator (or an agent) asked for this one by name. A refusal it never
-      # sees is the bug — record it against the panel so the request that flipped
-      # the panel to "Generating" resolves to a reason instead of spinning.
-      record_failure(refusal.message) if force && refusal.outcome == :unavailable
-      return refusal
-    end
+    return refusal if refusal
 
     summary = summary_record
     line_count = session.transcript_line_count
@@ -125,7 +133,12 @@ class SessionStatusSummaryGenerator
       # installed-dependency trees buys it nothing and costs it the tens of
       # seconds that make a concurrent-mutation race likely in the first place.
       # A user-initiated fork keeps them; it is a working session.
-      copy_exclusions: ForkSessionService::DEPENDENCY_DIRECTORIES
+      copy_exclusions: ForkSessionService::DEPENDENCY_DIRECTORIES,
+      # The whole reason Regenerate works on a session archived long ago: its
+      # clone is gone, and this fork does not need it. Forced only — restoring
+      # anything for a session nobody is looking at is the waste the automatic
+      # path's refusals exist to prevent.
+      scaffold_missing_clone: force
     }
     fork_args[:file_system] = @file_system if @file_system
     result = @fork_service.call(**fork_args)
@@ -134,20 +147,17 @@ class SessionStatusSummaryGenerator
       # The same benign outcome as the archived-check below, reached from the
       # losing side of the same race: the session went to the trash while its
       # clone was being copied, and the cleanup deleted the tree out from under
-      # the copy. For an AUTOMATIC generation there is no fork to abandon and no
-      # failure worth recording — nobody asked for it — so the claim goes back
-      # exactly as it was found and this is a skip, not a failure.
+      # the copy. There is no fork to abandon and no failure worth recording —
+      # nobody asked for this one — so the claim goes back exactly as it was
+      # found and this is a skip, not a failure.
       #
-      # A forced one is the opposite: somebody is looking at the panel they just
-      # pressed. The claim keeps its `pending` state only long enough for
-      # #record_failure to write the reason over it, because releasing first
-      # would drop the claim this runner needs in order to record anything.
-      if result.source_clone_discarded
-        if force
-          record_failure(clone_unavailable_message)
-          return Result.new(outcome: :unavailable, message: clone_unavailable_message)
-        end
-
+      # Reachable in practice only on the automatic path: a forced run tells the
+      # fork service to scaffold rather than fail when the tree is gone, so
+      # losing that race costs it an empty directory instead of the generation.
+      # A forced run can still be handed the flag if the scaffold could not be
+      # started — the partial destination would not clear — and that is a real
+      # failure it reports as one, below, rather than as a quiet skip.
+      if result.source_clone_discarded && !force
         release_claim(summary)
         return Result.new(outcome: :skipped, message: "Session is in the trash.")
       end
@@ -307,22 +317,23 @@ class SessionStatusSummaryGenerator
 
   # Reasons a session is not a candidate at all, as opposed to "not stale yet".
   #
-  # Being archived is NOT one of them for a forced run. Archive is how a Zimmer
-  # session finishes: its transcript stays readable, it is exactly the kind of
-  # session someone opens later to ask "what happened here", and the panel is
-  # what answers that. What generation actually needs is a clone to fork —
-  # #unavailable_reason is the check that asks for the thing rather than for a
-  # status that correlates with it. An AUTOMATIC generation still skips the
-  # trash: nothing enqueues one for an archived session on purpose, and paying
-  # for a clone copy on a session heading for deletion is waste.
+  # Being archived is NOT one of them for a forced run, and neither is having no
+  # clone left. Archive is how a Zimmer session finishes: its transcript stays
+  # readable, it is exactly the kind of session someone opens later to ask "what
+  # happened here", and the panel is what answers that. What generation actually
+  # needs is the conversation, which is in the database — the fork's working
+  # directory is scaffolded when the clone is gone. An AUTOMATIC generation still
+  # skips both: nothing enqueues one for an archived session on purpose, and
+  # standing up a fork for a session heading for deletion is waste.
   def refuse_reason
     unavailable_reason ||
       (Result.new(outcome: :skipped, message: "Session is in the trash.") if !force && session.archived?)
   end
 
   # Whether there is still a clone to fork. The same two conditions
-  # ForkSessionService validates, asked here so the answer is available before a
-  # job is enqueued rather than only after one has quietly declined.
+  # ForkSessionService validates for a copy, asked here so an AUTOMATIC
+  # generation declines before a job is enqueued rather than after one has
+  # quietly declined. A forced run never asks: it scaffolds instead.
   #
   # `.to_s` because `metadata` is a JSON column: a non-string `clone_path` is
   # representable there, and `File.directory?` answers a TypeError rather than
@@ -341,14 +352,12 @@ class SessionStatusSummaryGenerator
   # start handing them an adapter they were never given.
   def file_system = @resolved_file_system ||= (@file_system || RealFileSystemAdapter.new)
 
-  # Written for whoever is reading the Status panel, so it says what is gone and
-  # why rather than naming a job they have never heard of.
+  # Why an AUTOMATIC generation declined. It reaches a log line and a Result, not
+  # the panel — the three request surfaces are all forced, and a forced run
+  # scaffolds rather than declines — so it is one sentence rather than prose
+  # branched on how the clone came to be missing.
   def clone_unavailable_message
-    if session.archived?
-      "This session's working clone was deleted when it went to the trash, so there is nothing left to fork for a summary."
-    else
-      "This session has no working clone on disk, so there is nothing to fork for a summary."
-    end
+    "This session has no working clone on disk, so no summary is written for it automatically."
   end
 
   # A fork inherits the source's goal, and a goal is an instruction to act — a
