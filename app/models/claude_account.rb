@@ -336,8 +336,12 @@ class ClaudeAccount < ApplicationRecord
     runtime == CodexAuthProvider::RUNTIME
   end
 
+  # The `id` tiebreaker matters because two readings can share a timestamp — a
+  # rotation captures the outgoing and incoming accounts in the same instant, and
+  # a test seeds a series without stamping distinct times. Ordering by time alone
+  # then picks arbitrarily, and the spot gate would decide on either one.
   def latest_snapshot
-    quota_snapshots.order(created_at: :desc).first
+    quota_snapshots.order(created_at: :desc, id: :desc).first
   end
 
   # The status this account should PRESENT, derived from its own latest quota

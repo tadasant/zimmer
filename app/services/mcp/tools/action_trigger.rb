@@ -100,8 +100,8 @@ module Mcp
 
         **Scheduling class:**
         - **scheduling_class**: `priority` (sessions start whenever they are ready) or `spot` (they
-          start only while both Claude Code quota windows are forecast to stay under their ceilings,
-          and otherwise wait and start later — deferred, never cancelled). Omit (or send null) to take
+          start only while a Claude Code account is under both quota targets and a session slot is
+          free, and otherwise wait and start later — deferred, never cancelled). Omit (or send null) to take
           the default for the trigger's condition type: slack is priority, and github_issue,
           github_label, schedule and ao_event are spot. Setting it applies to sessions the trigger
           spawns from now on; ones it already spawned keep the class they started with.

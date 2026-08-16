@@ -189,6 +189,25 @@ class Session < ApplicationRecord
       .to_set
   end
 
+  # Sessions burning Claude Code quota right now — the number the spot gate
+  # checks its fleet cap against, and the number recorded on every quota
+  # snapshot so a reading can be attributed to the fleet that produced it.
+  #
+  # `running` only: a `waiting` session has no process and a `needs_input` one is
+  # idle at a prompt. Runtime-scoped because a Codex session spends nothing
+  # against a Claude account.
+  #
+  # Any database trouble reads as zero rather than raising: the spot gate calls
+  # this on the path that decides whether a session may start, and a monitoring
+  # gap must never fail a session. ConnectionNotEstablished descends from
+  # AdapterError rather than StatementInvalid, so the rescue is deliberately the
+  # whole ActiveRecordError family.
+  def self.running_claude_code_count
+    where(status: :running, agent_runtime: ClaudeAuthProvider::RUNTIME).count
+  rescue ActiveRecord::ActiveRecordError
+    0
+  end
+
   # The SIGTERM retry counters alone. Follow-up delivery paths that only need to hand
   # the session a fresh SIGTERM budget (triggers, the GitHub pollers) clear this subset
   # rather than the full stale set, which would also discard state those paths have no

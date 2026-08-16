@@ -141,14 +141,15 @@ module Mcp
       # Why a spot session is sitting in `waiting`. Emitted only when a hold is
       # actually recorded, so an ordinary session's output is unchanged — but when
       # it IS held, an agent reading its own session must be able to tell "deferred
-      # for quota headroom, will start by itself" apart from "stuck".
+      # by the spot gate, will start by itself" apart from "stuck".
       def spot_hold_lines(session)
         detail = session.metadata&.dig(SpotSessionHold::HELD_DETAIL)
         return [] if detail.blank?
 
         retry_at = session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT)
+        reason = session.metadata&.dig(SpotSessionHold::HELD_REASON)
         [
-          "- **Held for quota headroom:** #{detail}",
+          "- **Held by the spot gate#{reason.present? ? " (`#{reason}`)" : ''}:** #{detail}",
           "- **Hold re-check at:** #{retry_at.presence || 'unknown'}",
           "- **Holds so far:** #{session.metadata&.dig(SpotSessionHold::HELD_COUNT).to_i}"
         ]

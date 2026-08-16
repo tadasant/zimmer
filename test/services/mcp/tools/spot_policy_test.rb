@@ -38,9 +38,49 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     output = get_policy
 
     assert_match(/Gating enabled:\*\* no/, output)
-    assert_match(/5-hour window limit:\*\* 80%/, output)
+    assert_match(/5-hour window target:\*\* 80%/, output)
     assert_match(/Current decision/, output)
     SessionGenesis::KEYS.each { |key| assert_match(/`#{key}`/, output) }
+  end
+
+  # The page and the tool render the same decision, which is the property that
+  # keeps the card's badge and the tool's answer from disagreeing.
+  test "get_spot_policy reports the live decision and both windows" do
+    # The gate reads the serving account, and the fixtures ship one. Leave only
+    # this account with anything to read.
+    ClaudeAccountQuotaSnapshot.delete_all
+    account = ClaudeAccount.create!(email: "mcp-window@example.com", runtime: "claude_code",
+                                    oauth_config: { "x" => 1 }, is_current: true)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: 0.42, utilization_7d: 0.10,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
+      trigger: "usage_sample")
+    AppSetting.editable.update!(spot_gating_enabled: true,
+                                spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+
+    output = get_policy
+    decision = SpotGateService.evaluate
+
+    assert_match(/Windows read from:\*\* mcp-window@example\.com/, output)
+    assert_match(/Utilization now:\*\* 42\.0%/, output)
+    assert_match(/At the target:\*\* no/, output)
+    assert_equal decision.allowed?, output.include?("**Spot sessions:** running"),
+      "the tool must report the same decision the page renders"
+  end
+
+  test "get_spot_policy says when a window has reached its target" do
+    ClaudeAccountQuotaSnapshot.delete_all
+    account = ClaudeAccount.create!(email: "mcp-at-limit@example.com", runtime: "claude_code",
+                                    oauth_config: { "x" => 1 }, is_current: true)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: 0.85, utilization_7d: 0.10,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
+      trigger: "usage_sample")
+    AppSetting.editable.update!(spot_gating_enabled: true,
+                                spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+
+    output = get_policy
+    assert_match(/Spot sessions:\*\* HELD/, output)
+    assert_match(/Reason:\*\* `at_utilization_limit`/, output)
+    assert_match(/At the target:\*\* yes — spot work is paused until it falls/, output)
   end
 
   test "get_spot_policy reflects a demotion" do
@@ -88,6 +128,23 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert setting.spot_gating_enabled, "an omitted enabled flag must not turn the gate off"
     assert_equal 55, setting.spot_gate_five_hour_threshold_pct
     assert_equal 45, setting.spot_gate_weekly_threshold_pct
+  end
+
+  # Parity: the cap is on the /quotas form, so an agent has to be able to set it
+  # and read it back without a human at the page.
+  test "set_gating sets the max concurrent sessions cap, and get reports it" do
+    action(action: "set_gating", enabled: true, max_concurrent_sessions: 4)
+
+    assert_equal 4, AppSetting.current.spot_max_concurrent_sessions
+    assert_match(/Max sessions at once:\*\* 4/, get_policy)
+  end
+
+  test "an out-of-range cap comes back as a message rather than an internal error" do
+    AppSetting.editable.update!(spot_max_concurrent_sessions: 10)
+
+    error = assert_raises(Mcp::ToolError) { action(action: "set_gating", max_concurrent_sessions: 0) }
+    assert_match(/Invalid spot policy/, error.message)
+    assert_equal 10, AppSetting.current.spot_max_concurrent_sessions
   end
 
   test "set_gating with nothing to change is an error rather than a silent no-op" do
@@ -154,6 +211,6 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) do
       action(action: "set_gating", five_hour_threshold_pct: 150)
     end
-    assert_match(/Invalid thresholds/, error.message)
+    assert_match(/Invalid spot policy/, error.message)
   end
 end

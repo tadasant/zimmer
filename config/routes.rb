@@ -232,7 +232,7 @@ Rails.application.routes.draw do
   get "quotas/login/:attempt_id", to: "quotas#login_status", as: :login_status_quotas
   post "quotas/login/:attempt_id/code", to: "quotas#submit_login_code", as: :submit_login_code_quotas
   post "quotas/login/:attempt_id/cancel", to: "quotas#cancel_login", as: :cancel_login_quotas
-  # The spot gate card, which lives on this page because it forecasts the quota
+  # The spot gate card, which lives on this page because it reads the quota
   # windows this page reports: the policy form, then one click per genesis kind.
   patch "quotas/spot_policy", to: "spot_policies#update", as: :spot_policy
   patch "quotas/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class

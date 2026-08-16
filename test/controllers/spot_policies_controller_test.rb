@@ -62,6 +62,29 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
     assert_equal 55, setting.spot_gate_weekly_threshold_pct
   end
 
+  # The fleet cap round-trips through the same form as the two targets — it is a
+  # spot control, so it lives beside them rather than on the settings page.
+  test "persists the max concurrent sessions cap" do
+    patch spot_policy_path, params: { app_setting: {
+      spot_gating_enabled: "1",
+      spot_gate_five_hour_threshold_pct: "80",
+      spot_gate_weekly_threshold_pct: "80",
+      spot_max_concurrent_sessions: "4"
+    } }
+
+    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_equal 4, AppSetting.current.spot_max_concurrent_sessions
+  end
+
+  test "a cap of zero is refused — that is what turning the gate off is for" do
+    AppSetting.editable.update!(spot_max_concurrent_sessions: 10)
+
+    patch spot_policy_path, params: { app_setting: { spot_max_concurrent_sessions: "0" } }
+
+    assert_match(/not saved/, flash[:alert])
+    assert_equal 10, AppSetting.current.spot_max_concurrent_sessions
+  end
+
   test "a scalar app_setting param is refused rather than raising" do
     patch spot_policy_path, params: { app_setting: "nonsense" }
 

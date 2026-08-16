@@ -12,10 +12,13 @@ Zimmer's answer is to classify sessions by where they came from, and to let the 
 
 | Class | Behavior |
 | --- | --- |
-| **priority** | Starts whenever it is ready. Never consulted about quota. |
-| **spot** | Starts only while both Claude Code quota windows are forecast to stay under their ceilings. Otherwise it waits and starts later. |
+| **priority** | Starts whenever it is ready. Never consulted about quota or concurrency. |
+| **spot** | Starts while a Claude Code account is under both window targets and a session slot is free. Otherwise it waits and starts later. |
 
 A held spot session is **deferred, never cancelled**. Nothing is lost.
+
+The targets on `/quotas` are a **level to reach, not a line to stay clear of**. A deployment sitting
+idle should be idle because its windows are at 80%, never because the gate was being careful.
 
 ## Where the class comes from
 
@@ -118,54 +121,54 @@ To move one of those, move that session: the **Make this session priority** butt
 the **Scheduling class** selector on its detail page, `action_session` with
 `change_scheduling_class`, or `PATCH /api/v1/sessions/:id`.
 
-## The usage rate
-
-**Claude Code usage rate per active session** is the fraction of a quota window one running session
-consumes per hour:
-
-```
-rate = Σ(utilization consumed) / Σ(active sessions × hours elapsed)
-```
-
-Both sums run over consecutive pairs of `ClaudeAccountQuotaSnapshot` rows inside a rolling 6-hour
-lookback. The numerator is the *rise* in `utilization_5h` (or `utilization_7d`) between two readings.
-The denominator is session-hours: the mean of the two readings' `active_session_count` times the
-hours between them. A rate of `0.02` means one session running for one hour consumes 2% of the
-5-hour window.
-
-`active_session_count` is recorded on the snapshot row at capture time, because session status is
-mutable and keeps no history — a reading taken today cannot be attributed to a session count
-tomorrow.
-
-A pair is **skipped** rather than guessed at when:
-
-- the window reset between the readings, or utilization fell (Anthropic's counters are sliding
-  windows; they go down on their own, and differencing across that boundary measures nothing);
-- either reading predates `active_session_count`, so the pair has no denominator;
-- nothing was running, so there is no one to attribute the usage to.
-
-`ClaudeUsageSamplerJob` runs every 15 minutes and takes a reading of the account that is actually
-serving. Before it existed, the only *scheduled* readings were of `quota_exceeded` accounts — whose
-utilization is pinned at the cap and therefore useless as a rate signal.
-
 ## The gate
 
-With gating on, a spot session starts only while **both** forecasts stay under their ceilings:
+With gating on, a spot session starts while **both** of these hold. Neither is a forecast: both are
+statements about numbers that have already been read.
 
-```
-forecast = utilization now + (rate × sessions × hours left in window)
-```
+| Check | What it means | Reason when it fails |
+| --- | --- | --- |
+| **Under the targets** | The serving Claude Code account is below its 5-hour *and* weekly targets, as last read. When it reaches one, spot work pauses until utilization comes back down. | `at_utilization_limit` |
+| **A free slot** | Fewer sessions are running than **Max sessions at once**. | `fleet_at_cap` |
 
-`sessions` is the running fleet **plus the session being decided about**. A gate answers "if I start
-this, where does the window land", and the fleet does not include it yet — with an idle fleet, a
-forecast built on the running count alone is flat and could never breach. The reading on `/quotas`
-deliberately uses the fleet as it stands (and says so), and shows the start decision beside it.
+There is no rate, no projection and no horizon. The gate holds work when a window *has arrived* at
+its target, not when it might. Utilization falls on its own — Anthropic's counters are sliding
+windows — so the pause ends when the number does, on the next re-check.
 
-`hours left` is the time to that window's own reset, capped at 24 hours — a weekly window can have six
-days left, and multiplying a per-hour rate out that far produces a number with no predictive content.
+### The concurrency limit
 
-Thresholds are set on the Claude Code tab of `/quotas` (5-hour and weekly, both default 80%), on the
-same page as the windows they are forecast against.
+**Max sessions at once** (default 10) is what bounds how fast the quota can be spent, and its
+semantics are deliberately asymmetric:
+
+- **Priority sessions are never held by it.** A priority session starts whenever it is ready, even
+  with every slot taken.
+- **Priority sessions still count toward it.** The number counted is every running Claude Code
+  session, whatever its class. (Codex sessions spend nothing against a Claude account, so they do not
+  take a slot.)
+- **So ten running priority sessions leave zero spot slots** — priority work is meant to crowd spot
+  work out, and that is the intent rather than a side effect.
+
+It is checked **when a session starts** and never again. Lowering the limit under a running fleet
+holds the next start; it never interrupts work already underway.
+
+### Read from the account that will serve
+
+Utilization is read from the account Zimmer is **serving from** — the one a session started now
+would spend against. Rotation happens when the serving account is *refused*, not when it reaches a
+target, so a spare's headroom is not headroom this session can use.
+
+It is also the freshest number available. `ClaudeUsageSamplerJob` refreshes the serving account every
+15 minutes; a spare is read only on rotation or when somebody opens `/quotas`, so deciding on the
+roomiest account in the pool would mean deciding on the number least likely to still be true.
+
+With no current account, the first account the pool would serve from stands in — `available`, the
+same scope `AccountRotationService` picks from, so an account already marked `quota_exceeded` is
+skipped. An account with no reading at all is skipped too; when nothing has a readable window the
+gate falls open on `no_snapshot`.
+
+Targets and the concurrency limit are set together on the Claude Code tab of `/quotas`, on the same
+page as the windows they are measured against, and all three are settable over MCP with
+`action_spot_policy` (`set_gating`).
 
 ### Fail-open
 
@@ -174,23 +177,34 @@ Every uncertain condition **allows** the session, and the reason is named so the
 | Reason | Meaning |
 | --- | --- |
 | `gating_disabled` | The toggle is off. |
-| `insufficient_data` | Fewer than 3 usable sample pairs — the rate is not measurable yet. |
-| `no_snapshot` | No Claude Code quota reading to forecast from. |
+| `no_snapshot` | No Claude Code quota reading to decide on. |
 | `unavailable` | The gate could not be evaluated at all. |
-| `within_forecast` | Both windows have headroom. |
-| `forecast_breached` | **Held.** One or both windows are forecast past their ceiling. |
+| `within_limits` | Under both targets, with a slot free. |
+| `at_utilization_limit` | **Held.** A window has reached its target; spot work waits for utilization to come down. |
+| `fleet_at_cap` | **Held.** Every session slot is taken — by spot work, priority work, or both. |
 
 A monitoring gap must not become an outage of all automated work.
 
 ### What "hold" does
 
 A held session stays in `waiting` — the status Zimmer already uses for "created, not started" — and
-`AgentSessionJob` re-enqueues itself with a 10-minute delay. GoodJob persists the delayed job in
-Postgres, so the retry survives a worker restart or a deploy. When headroom returns, or simply when
-the 5-hour window resets, the same job starts the session normally.
+`AgentSessionJob` re-enqueues itself after ten minutes plus a little jitter. GoodJob persists the
+delayed job in Postgres, so the retry survives a worker restart or a deploy. When a slot frees, or
+utilization falls back under the target, the same job starts the session normally.
+
+The jitter matters at a backlog: without it, sessions held in the same minute re-check in the same
+minute forever, every one of them reading the same fleet size before any of them has started.
 
 Refusing instead would mean the gate silently deletes work: a `github_issue` trigger that fires once
 during a busy afternoon would never run at all.
+
+### A hold lasts as long as the number does
+
+There is no escape hatch and no deadline: while every account sits at a target, spot work waits. That
+is the intent — the pause is meant to last exactly as long as the utilization that caused it. The
+5-hour window falls on its own within hours; a weekly window pinned near its target can hold a queue
+for considerably longer, which is the cost of a hard stop and is visible on `/quotas` the whole time.
+Promoting one session to priority is the lever for a single piece of work that cannot wait.
 
 **Only a session's first start is gated.** Follow-ups, monitoring resumes and clone-only setups pass
 straight through. Interrupting a conversation already underway strands it half-done and wastes the
@@ -205,14 +219,17 @@ time, and how to start it now.
 | --- | --- | --- |
 | Read a session's genesis and class | Hierarchy panel, dashboard card | `get_session` |
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
-| Read the usage rate and forecast | Spot gate card on the Claude Code tab of `/quotas` | `get_spot_policy` |
-| Toggle gating, set thresholds | `/quotas` | `action_spot_policy` (`set_gating`) |
+| Read the windows, the concurrency limit, and the current decision | Spot gate card on the Claude Code tab of `/quotas` | `get_spot_policy` |
+| Toggle gating, set the window targets, set the max sessions at once | `/quotas` | `action_spot_policy` (`set_gating`) |
 | One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
 | Reset all genesis classes | `/quotas` | `action_spot_policy` (`reset_genesis_classes`) |
 | Set a trigger's class | Trigger edit form | `action_trigger` (`scheduling_class`) |
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
+
+The page and the tool render the **same** decision — `SpotGateService.evaluate`, of which there is
+exactly one — so the card's badge and the tool's answer cannot disagree.
 
 Both MCP tools are in the **`health`** group, not `sessions`: they are about the deployment's quota
 posture rather than about one session, and a `self_session` connection has no business rewriting the
