@@ -27,14 +27,31 @@ set -euo pipefail
 HOST="${1:?usage: clear-root-password-expiry.sh <tailnet-host-or-ip>}"
 ATTEMPTS="${ATTEMPTS:-6}"
 
+# A zero or non-numeric ATTEMPTS skips the loop entirely, which would leave the closing
+# message describing a host that was never contacted. Reject the input instead of emitting
+# a confident sentence about work that did not happen.
+case "$ATTEMPTS" in
+  ''|*[!0-9]*|0)
+    echo "::error::ATTEMPTS must be a positive integer (got '${ATTEMPTS}')"
+    exit 2
+    ;;
+esac
+
 # accept-new + /dev/null: a rebuilt droplet has a new host key (staging does not pin one),
 # and BatchMode alone would just fail on the unknown key instead of prompting.
+#
+# ConnectTimeout bounds the handshake only. A box thrashing badly enough to matter here can
+# complete the handshake and then stop scheduling sshd, which would hang with no timeout of
+# its own -- the workflow sets no timeout-minutes, so that stalls the deploy for hours. The
+# keepalives bound a silent session to ~30s and keep the retry budget below meaningful.
 SSH_OPTS=(
   -o BatchMode=yes
   -o StrictHostKeyChecking=accept-new
   -o UserKnownHostsFile=/dev/null
   -o LogLevel=ERROR
   -o ConnectTimeout=10
+  -o ServerAliveInterval=10
+  -o ServerAliveCountMax=3
 )
 
 # `usermod -p '*'` sets an INVALID hash, not an empty one -- `passwd -d` would leave the
@@ -52,28 +69,30 @@ repair='
 # serving yet, and unattended-upgrades can hold the /etc/passwd lock ("usermod: cannot lock
 # /etc/passwd; try again later"). It also has to outlast a box that is briefly off the
 # tailnet -- a host thrashing on memory starves tailscaled, and every connection to it times
-# out for MINUTES while the control plane still reports the node Online. A flat 15s gap was
-# sized for the boot case and is too short for the second one.
+# out for MINUTES while the control plane still reports the node Online. The backoff is sized
+# for that second case: a lock clears in seconds, an unreachable host does not.
 transport_failures=0
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
   echo "Clearing any forced root-password expiry on ${HOST} (Tailscale SSH, :22) — attempt ${attempt}/${ATTEMPTS}…"
 
-  # Not `if ssh …`: the exit status is the only thing separating "never got a connection"
-  # from "ran the repair and it failed", and those two need different advice at the end.
-  set +e
-  ssh "${SSH_OPTS[@]}" root@"${HOST}" "$repair"
-  rc=$?
-  set -e
+  # `|| rc=$?` rather than branching on `if ssh …`: the status has to be inspected, not just
+  # tested, because it is what separates "never got a session" from "ran the repair and it
+  # failed". Safe under `set -e` -- the `||` list succeeds, and the assignment returns 0 even
+  # when rc is non-zero.
+  rc=0
+  ssh "${SSH_OPTS[@]}" root@"${HOST}" "$repair" || rc=$?
 
   if [ "$rc" -eq 0 ]; then
     echo "✅ root password neutralized and aging disabled on ${HOST}"
     exit 0
   fi
 
-  # 255 is ssh's own failure (connect timed out, host unreachable, auth rejected), not a
-  # status forwarded from the remote command. It conflates connection and auth failures,
-  # but both mean the same thing here: the repair did not run.
+  # 255 is ssh's own failure -- connect timed out, host unreachable, auth rejected, or the
+  # connection dropped mid-command -- rather than a status forwarded from the remote command.
+  # That last case is why the closing message says the repair did not run TO COMPLETION and
+  # not that it never started: on a box that OOM-kills processes, a session can establish,
+  # begin the repair, and lose sshd part-way through.
   if [ "$rc" -eq 255 ]; then
     transport_failures=$((transport_failures + 1))
     echo "   could not reach ${HOST} over Tailscale SSH (ssh exit 255)"
@@ -97,14 +116,19 @@ done
 # carried on would leave :2222 answering publickey and then refusing every session. What
 # differs is where the operator should go and look.
 if [ "$transport_failures" -eq "$ATTEMPTS" ]; then
-  echo "::error::Could not REACH ${HOST} on any of ${ATTEMPTS} attempts. The repair never ran, so root's"
-  echo "::error::password expiry is still whatever it already was: this is a reachability problem, not a"
-  echo "::error::repair problem. Tailscale SSH (:22) is the path that failed, so it will not work by hand"
-  echo "::error::either -- do not go looking for a broken password. Check the host: a box thrashing on"
-  echo "::error::memory starves tailscaled and times out every connection for minutes at a stretch, while"
-  echo "::error::the control plane still reports the node Online (so \`tailscale status\` looks fine)."
+  echo "::error::Could not complete an SSH session with ${HOST} on any of ${ATTEMPTS} attempts, so the repair"
+  echo "::error::did not run to completion: this is a reachability problem, not a repair problem. Do not go"
+  echo "::error::looking for a broken password. Check the host instead: a box thrashing on memory starves"
+  echo "::error::tailscaled and times out every connection for minutes at a stretch, while the control plane"
+  echo "::error::still reports the node Online (so \`tailscale status\` looks fine). Those outages clear on"
+  echo "::error::their own, so :22 may well answer by the time you read this -- that it does now is not"
+  echo "::error::evidence the deploy was wrong to fail."
 else
   echo "::error::Reached ${HOST}, but could not clear the forced root-password expiry after ${ATTEMPTS} attempts."
+  if [ "$transport_failures" -gt 0 ]; then
+    echo "::error::(${transport_failures}/${ATTEMPTS} of those attempts could not reach it at all, so the tailnet"
+    echo "::error::path to it is flapping rather than healthy.)"
+  fi
   echo "::error::Leaving it unrepaired would mean publickey auth on :2222 succeeds and then EVERY session"
   echo "::error::is rejected by pam_unix -- the ssh-agent-mcp-server healthcheck fails and nobody can get a"
   echo "::error::shell. Tailscale SSH (tailnet :22) still works, so repair it there by hand."
