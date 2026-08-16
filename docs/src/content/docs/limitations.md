@@ -2774,6 +2774,54 @@ directly; nothing measures it today.
 
 ---
 
+## A runaway job on staging presents as a dead droplet, not as a dead job
+
+Staging is a 4 GB droplet with no swap, and the worker is the one role running work whose peak
+allocation is a function of the data it touches. `TranscriptArchiveJob` is such a job, and on
+staging it allocates around 2.8 GB every ten minutes
+([#495](https://github.com/tadasant/zimmer/issues/495)): with no archive on disk it treats every
+session as changed and loads all of their transcripts at once, then dies before writing the archive
+that would have made the next run cheap. It cannot bootstrap, so it retries forever.
+
+The failure that follows is worth knowing by shape, because it misdirects. The allocation exhausts
+the host, so the kernel declares a *global* out-of-memory condition and takes victims across every
+cgroup — not just the offender's. sshd and Caddy lose their working set, and the droplet stops
+answering SSH on 2222 and HTTPS on 443 at the same moment. From outside, that is indistinguishable
+from a droplet that is down, rebooting, or wedged; DigitalOcean meanwhile reports it `active` with
+no power events, because nothing about the virtual machine has changed. The app is fine throughout.
+`/up` answers 200 in under a tenth of a second the moment the pressure lifts.
+
+Staging's worker carries `memory: 2g` (`config/deploy.staging.yml`). That does not prevent the
+runaway; it confines it. The kill lands in the worker's cgroup, the worker restarts under
+`unless-stopped`, and sshd stays up — which is the property that matters, because the alternative is
+an outage nobody can log in to diagnose. It does not make the queue usable, though: a worker
+restarting every ten minutes is a queue that never drains.
+
+So on staging the `transcript_archive` cron key is also disabled at runtime, in the
+`good_job_settings` table (`cron_keys_disabled`), which is what actually stops the loop. That is a
+live database row rather than anything in this repository, so it survives deploys and is invisible
+in the config: staging builds no transcript archives until someone runs
+`GoodJob::Setting.cron_key_enable("transcript_archive")`. Re-enabling it before #495 is fixed
+restores the crash loop.
+
+Production's worker carries no such cap. That is not an oversight, but it is a real gap: the same
+image runs the same jobs there, so the same allocation is possible. It survives on headroom alone —
+the production droplet is 16 GB against staging's 4 GB, so 2.8 GB is absorbed rather than fatal. The
+gap is that headroom is not a bound. An allocation that scales with the data it touches has no
+ceiling that 16 GB is guaranteed to sit above, and production is where agent sessions actually live.
+
+Two diagnostic notes, since this one wastes time in a predictable way. `staging.zimmer.tadasant.com`
+resolves to a **tailnet** address, and the droplet's firewall allows inbound UDP/41641 only — so a
+curl from off the tailnet times out whether staging is healthy or not, and that timeout is never
+evidence of anything. And a Kamal `RestartCount` climbing into the hundreds on the worker is the
+signature of this loop rather than of a crash on boot. Reach for `dmesg -T | grep oom-kill` before
+the application logs, which show nothing at all across the window. Grep that line rather than the
+`Out of memory: Killed process` one: the victim line names the process but not the scope, and it is
+the `oom-kill:` line that carries both `global_oom` — host-wide, every cgroup at risk — and
+`task_memcg=/system.slice/docker-<id>.scope`, which is the container ID to blame.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

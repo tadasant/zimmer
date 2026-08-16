@@ -109,6 +109,27 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
     end
   end
 
+  # Staging's worker is the only role running work whose peak allocation nothing in this
+  # config knows in advance, on a 4 GB droplet with no swap. Uncapped, one such allocation
+  # is a GLOBAL OOM: the kernel takes victims host-wide, sshd and Caddy lose their working
+  # set, and the droplet stops answering SSH and HTTPS while the app itself is fine. The
+  # cap is what keeps the kill inside the worker's cgroup, and it is invisible in every
+  # green check -- so pin it here, where dropping it fails loudly.
+  #
+  # Asserted under both switch positions on purpose. The cap is not conditional on the switch
+  # today, and that is the property being pinned: arming nested Docker puts an inner dockerd and
+  # the session's containers inside this same cgroup, which is the change most likely to tempt
+  # someone into making the cap conditional -- or into dropping it to make room.
+  test "staging's worker is capped so a runaway allocation cannot take the droplet down" do
+    %w[0 1].each do |state|
+      memory = deploy_config("staging", nested: state).dig("servers", "worker", "options", "memory")
+
+      assert_equal "2g", memory,
+        "staging's worker memory cap is #{memory.inspect} (switch=#{state}); uncapped, a runaway " \
+        "job takes the whole droplet down with it, sshd included"
+    end
+  end
+
   # The entrypoint is the piece that actually decides whether dockerd starts, and its guard
   # is the only thing standing between "misconfigured host" and "every session has host
   # root". Assert the guard exists rather than trusting a comment.
