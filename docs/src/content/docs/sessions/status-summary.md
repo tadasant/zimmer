@@ -130,11 +130,12 @@ copy — is **archived**, is reported as `Result#source_clone_discarded`: logged
 For an automatic generation the generator reads that flag, releases its claim, and returns `skipped` —
 the same outcome the post-copy re-check produces, with no failure recorded against the panel.
 
-For a **forced** one it is the same benign condition with a different obligation: an operator is
-watching a panel that says "Generating". The reason is recorded on the record instead, so the panel
-resolves to *why* rather than spinning until `PENDING_TIMEOUT`. This is the narrow race the pre-flight
-check below cannot close — the clone was there when the button was pressed and gone by the time the
-job ran.
+For a **forced** one the same condition is not a loss at all: an operator is watching a panel that
+says "Generating", and the fork did not need the tree. The copy that died is discarded, an empty
+working directory is scaffolded in its place, and the generation carries on — see
+[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
+That closes the narrow race the pre-flight check cannot: the clone was there when the button was
+pressed and gone by the time the job ran.
 
 The question it asks is about the **session**, not about the clone, and that is deliberate. `rm_rf`
 unlinks children bottom-up and removes the directory root last, so for the whole of a large clone's
@@ -322,7 +323,8 @@ on either the success or the failure path:
 - **Failure before dispatch** — the generator archives the fork it made rather than leaving it on the
   floor (`#abandon_fork`), which reclaims the directory the same way.
 - **The process dies in between** — the fork is a `needs_input` session with a directory holding an
-  `.mcp.json` and nothing else. It is invisible to operator lists, and its summary record ages out at
+  `.mcp.json` and whatever `air prepare` injected alongside it, and nothing of the repository. It is
+  invisible to operator lists, and its summary record ages out at
   `PENDING_TIMEOUT` into the "started but never came back" state the panel already renders. Nothing
   about the source session is different from before the click.
 

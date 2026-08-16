@@ -87,10 +87,8 @@
         <p class="mt-2 text-xs text-red-700">Last regeneration failed: <%= summary.error %></p>
       <% end %>
       <%# Said next to a summary that IS there, because the operator's question
-          is "why can I not refresh this", not "why is it missing". Skipped when
-          the recorded failure already says it: a forced run that lost the race
-          to the cleanup stores this very sentence as the error above. %>
-      <% if unavailable.present? && !generating && summary.error != unavailable %>
+          is "why can I not refresh this", not "why is it missing". %>
+      <% if unavailable.present? && !generating %>
         <p class="mt-2 text-xs text-gray-500">This cannot be regenerated. <%= unavailable %></p>
       <% end %>
     <% elsif generating %>

@@ -295,13 +295,21 @@ class ForkSessionService
   # The fallback inside the copy is the same case one race later. #validate_inputs
   # saw a live clone, DeferredCloneCleanupJob unlinked it during the copy, and a
   # caller that said it does not need the tree still does not need it.
+  #
+  # `archived_source_session?` is what keeps that narrow. An ENOENT naming a path
+  # inside the source clone is ALSO what an exhausted retry budget looks like on a
+  # LIVE tree being churned by its own agent — a genuine copy failure, which must
+  # keep failing loudly rather than being written off as an empty scaffold. The
+  # session's status is the discriminator for the same reason #archived_source_session?
+  # explains: rm_rf removes the clone root last, so asking the tree answers "still
+  # there" for exactly the window this races.
   def materialize_fork_clone(new_clone_path)
     return scaffold_clone(new_clone_path) if scaffold_clone?
 
     begin
       copy_clone_directory(source_session.metadata["clone_path"], new_clone_path)
     rescue Errno::ENOENT => e
-      raise unless scaffold_missing_clone && source_clone_enoent?(e)
+      raise unless scaffold_missing_clone && source_clone_enoent?(e) && archived_source_session?
 
       @logger.info("Scaffolding an empty clone for a fork whose source tree vanished mid-copy", error: e.message)
       # cp_r into a surviving partial tree nests or merges rather than failing,
