@@ -377,10 +377,13 @@ class SessionsTest < ApplicationSystemTestCase
 
   # Test session list functionality
   test "sessions index shows recent sessions first" do
-    # Create sessions with known order
+    # Create sessions with known order. Cards render the TITLE, not the prompt, so
+    # both carry an explicit one — without it neither string is ever on the page and
+    # the ordering assertion below never runs.
     old_session = Session.create!(
       git_root: "https://github.com/test/repo.git",
       prompt: "Old session",
+      title: "Old session",
       status: :archived,
       created_at: 2.days.ago
     )
@@ -388,21 +391,21 @@ class SessionsTest < ApplicationSystemTestCase
     new_session = Session.create!(
       git_root: "https://github.com/test/repo.git",
       prompt: "New session",
+      title: "New session",
       status: :running,
       created_at: 1.hour.ago
     )
 
-    visit root_path
+    visit root_path(every_status_params)
 
     # Should show newer session first (in HTML order)
     page_text = page.text
     new_position = page_text.index("New session")
     old_position = page_text.index("Old session")
 
-    # If both are present, new should come before old
-    if new_position && old_position
-      assert new_position < old_position
-    end
+    assert new_position, "the newer session's card is missing from the dashboard"
+    assert old_position, "the older session's card is missing from the dashboard"
+    assert new_position < old_position, "the newer session should be listed first"
   end
 
   # Test complete user workflow
@@ -500,7 +503,7 @@ class SessionsTest < ApplicationSystemTestCase
       slug: "test-title-20251114-1230"
     )
 
-    visit root_path
+    visit root_path(every_status_params)
 
     # Session ID should be displayed
     assert_text "##{session.id}"
@@ -516,7 +519,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_path
+    visit root_path(every_status_params)
 
     # Slug should not be shown
     assert_no_text /\A[a-z0-9-]+-\d{8}-\d{4}\z/
@@ -531,7 +534,7 @@ class SessionsTest < ApplicationSystemTestCase
       title: "Original Title"
     )
 
-    visit root_path
+    visit root_path(every_status_params)
 
     # Title should be displayed
     assert_text "Original Title"
@@ -571,7 +574,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_path
+    visit root_path(every_status_params)
 
     within("#session_#{session.id}") do
       assert_link "Trash"
@@ -585,7 +588,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :archived
     )
 
-    visit root_path(show_archived: "true")
+    visit root_path(every_status_params(status: [ "archived" ]))
 
     within("#session_#{session.id}") do
       # Check that there's no link pointing to the archive action
@@ -603,7 +606,7 @@ class SessionsTest < ApplicationSystemTestCase
       title: "My Custom Title"
     )
 
-    visit root_path
+    visit root_path(every_status_params)
 
     assert_text "My Custom Title"
   end
@@ -615,7 +618,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_path
+    visit root_path(every_status_params)
 
     # Auto-generated title is shown (set by after_create callback)
     assert_text "Session #{session.id}"
@@ -985,7 +988,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url
+    visit root_url(every_status_params)
 
     # The panel exists in the DOM but is dismissed (translated off-screen).
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
@@ -994,7 +997,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Drawer is now open and the dashboard did NOT navigate away.
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
-    assert_current_path root_path
+    assert_current_path root_path, ignore_query: true
     # The detail loaded into the lazy frame, streaming subscriptions and all.
     # Assert on the session id (always rendered in the detail header) and the
     # follow-up form (the whole point — acting on the session from the drawer);
@@ -1012,7 +1015,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url
+    visit root_url(every_status_params)
     view_link = "a[aria-label='View session #{session.id}']"
 
     # Close via the in-drawer Close control.
@@ -1056,7 +1059,7 @@ class SessionsTest < ApplicationSystemTestCase
     # Below the sm: 640px breakpoint the controller treats the viewport as mobile.
     page.driver.browser.manage.window.resize_to(375, 812)
     begin
-      visit root_url
+      visit root_url(every_status_params)
 
       # The drawer panel starts dismissed.
       assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
@@ -1085,7 +1088,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url
+    visit root_url(every_status_params)
     find("a[aria-label='View session #{session.id}']").click
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
 
@@ -1100,7 +1103,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Drawer is still open and the dashboard was never navigated away.
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
-    assert_current_path root_path
+    assert_current_path root_path, ignore_query: true
 
     # And the message actually persisted.
     session.reload
@@ -1124,7 +1127,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url
+    visit root_url(every_status_params)
     view_link = "a[aria-label='View session #{session.id}']"
     find(view_link).click
 
@@ -1141,7 +1144,7 @@ class SessionsTest < ApplicationSystemTestCase
     # On the way out the gate is re-armed, so a click chasing a control that is
     # sliding away lands on nothing.
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='true'].pointer-events-none", visible: :all
-    assert_current_path root_path
+    assert_current_path root_path, ignore_query: true
   end
 
   # The trap in #180: gate the panel on `transitionend` and a user who asked for
@@ -1158,7 +1161,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     emulate_reduced_motion
     begin
-      visit root_url
+      visit root_url(every_status_params)
 
       # Fail loudly rather than vacuously if the emulation didn't take.
       assert page.evaluate_script("window.matchMedia('(prefers-reduced-motion: reduce)').matches"),
@@ -1189,7 +1192,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url
+    visit root_url(every_status_params)
     find("a[aria-label='View session #{session.id}']").click
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']:not(.pointer-events-none)"
     assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
@@ -1201,7 +1204,7 @@ class SessionsTest < ApplicationSystemTestCase
     js_click(find("[data-session-drawer-target='overlay']"))
 
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
-    assert_current_path root_path
+    assert_current_path root_path, ignore_query: true
   end
 
   # Close and "open full page" are adjacent controls with opposite consequences,
@@ -1213,7 +1216,7 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    visit root_url
+    visit root_url(every_status_params)
     find("a[aria-label='View session #{session.id}']").click
     assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
 

@@ -2211,6 +2211,13 @@ All four are open issues:
 
 Also:
 
+- **Live card updates ignore the status filter.** The dashboard broadcasts on one global stream and
+  the server cannot know which statuses a given browser has ticked, so it only special-cases
+  `archived`. With the default `needs_input`-only view, a session that transitions out of
+  `needs_input` has its card replaced in place rather than removed, and a newly created `waiting`
+  session is prepended into a grid that filters it out. Both correct themselves on the next reload.
+  Fixing it properly means either per-filter stream names or a client that re-evaluates the filter
+  on each broadcast.
 - Notes autosave as you type (a 1.5s debounce) and flush again on disconnect via a keepalive
   `fetch`. The disconnect flush is best-effort, so an abrupt close can drop the last sub-debounce
   keystrokes — not the note.

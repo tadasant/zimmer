@@ -40,6 +40,32 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_includes output, "### Research deployment options (ID: #{sessions(:router_child_archived).id})"
   end
 
+  # Parity with the dashboard's status multi-select: an agent must be able to ask the
+  # same "any of these statuses" question a human can tick in the Filters section.
+  test "status accepts an array and matches any of them" do
+    running = sessions(:router_child_running)
+    needs_input = sessions(:needs_input)
+
+    output = @tool.call("status" => [ "running", "needs_input" ], "per_page" => 100)
+
+    assert_includes output, "(ID: #{running.id})"
+    assert_includes output, "(ID: #{needs_input.id})"
+    assert_not_includes output, "(ID: #{sessions(:waiting).id})"
+  end
+
+  test "naming archived in the status filter is enough to see archived sessions" do
+    archived = sessions(:router_child_archived)
+
+    output = @tool.call("status" => "archived", "per_page" => 100)
+
+    assert_includes output, "(ID: #{archived.id})"
+  end
+
+  test "an invalid status inside the array is rejected" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("status" => [ "running", "chartreuse" ]) }
+    assert_match(/Invalid status: chartreuse/, error.message)
+  end
+
   test "status filter and pagination footer" do
     output = @tool.call("status" => "running", "per_page" => 1)
 
