@@ -100,6 +100,9 @@ Three things keep that from failing a fork:
 
 A summary fork's clone is therefore **not a runnable checkout** — `.bundle/config` still points at the
 `vendor/bundle` that is no longer there. See [Limitations](/limitations/#a-status-summary-forks-clone-is-missing-its-installed-dependencies-and-does-not-know-it).
+And when there is no source clone left to copy at all, a forced generation gives the fork an empty
+directory rather than failing — see
+[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
 
 For an **automatic** generation, the generator also re-checks that the session is still out of the
 trash **after** the copy, not just before it. The copy takes real time, and a session that archived
@@ -229,10 +232,11 @@ about a session that has stopped, and summarizing at the start of a turn spends 
 the same turn invalidates.
 
 On top of that the generator refuses outright when the session has not moved since the last summary,
-when a generation is already in flight, when it has no transcript, when there is no clone left to
-fork, and when it is itself a summary fork. An **automatic** generation additionally refuses a session
-in the trash: nothing enqueues one for an archived session on purpose, and paying for a clone copy on
-a session heading for deletion is waste.
+when a generation is already in flight, when it has no transcript, and when it is itself a summary
+fork. An **automatic** generation additionally refuses a session in the trash and one whose clone has
+already been reclaimed: nothing enqueues one for an archived session on purpose, and standing a fork
+up for a session heading for deletion is waste. A **forced** generation refuses neither — see
+[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
 
 ## Regenerating on demand
 
@@ -264,38 +268,63 @@ happened — which is the question the panel answers. Refusing on `archived?` ma
 that panel dead, silently: the button was enabled, the panel flipped to "Generating", the job declined
 because the session was in the trash, and no new summary ever arrived.
 
-What generation actually needs is a **clone to fork**, so the check asks for the thing rather than for
-a status that correlates with it. `SessionStatusSummaryGenerator.unavailable_reason` answers whether
-a clone is still on disk, alongside the two other structural refusals (a session that is itself a
-summary fork, and one with no transcript).
+**A reclaimed clone is not a refusal either.** `DeferredCloneCleanupJob` deletes an archived session's
+clone once the ten-second undo window closes — on the clean branch *and* on the branch that preserves
+unpushed artifacts first; only a session whose artifacts Zimmer failed to preserve keeps its clone for
+the trash-retention window. So every archived session an operator actually opens later has no working
+tree at all, and a check for one would refuse exactly the sessions the panel exists to serve.
 
-**All three surfaces ask it before they enqueue**, so a request that cannot produce a summary is
+What generation actually needs is the **conversation**, and that is in the database. The summarizer is
+told not to run tools and answers from the transcript it was forked with; what it needs from the
+filesystem is a directory to be spawned in and the resume transcript `ForkSessionService` writes under
+`~/.claude/projects`. So when the source clone is gone, the fork is given an **empty working
+directory** instead of a copy — `ForkSessionService`'s `scaffold_missing_clone`, which
+`SessionStatusSummaryGenerator` passes only on a forced run. The fork's clone is stamped
+`clone_scaffolded` in its metadata, so an empty tree reads as deliberate rather than as a copy that
+died halfway.
+
+Scaffolding also closes the race the pre-flight cannot: a clone that was there when the button was
+pressed and unlinked while the copy walked it. The copy fails with `ENOENT` inside the source tree,
+and a forced fork scaffolds rather than giving up — it did not need the tree in the first place.
+
+Nothing is resuscitated on the **automatic** path. `unavailable_reason` still stats the clone for a
+non-forced run, and an automatic generation for a session whose clone is gone is refused. Paying to
+stand a fork up for a session nobody is looking at is the waste the automatic refusals exist to
+prevent.
+
+Two refusals remain, and they are the ones no amount of scaffolding can fix: a session that is itself
+a summary fork (it has nothing to say), and one with no transcript (nothing to say it about).
+`SessionStatusSummaryGenerator.unavailable_reason` answers with those.
+
+**All three surfaces ask it before they enqueue** — as the *forced* run they perform, so they get the
+answer for the click rather than for the automatic path. A request that cannot produce a summary is
 answered with the reason instead of a job that declines where nobody can see it:
 
-| Surface | Something to fork | Nothing to fork |
+| Surface | Something to summarize | Nothing to summarize |
 | --- | --- | --- |
 | Status panel | button live, panel flips to "Generating" | button disabled, panel says why |
 | `action_session` | `## Status Summary Regenerating` | tool error carrying the reason |
 | `POST /api/v1/sessions/:id/regenerate_status_summary` | `202 Accepted` | `422 Unprocessable Entity` with the reason |
 
-The right column covers all three structural refusals, not just the clone — a transcript-less session
-and a summary fork answer the same way.
+The pre-flight reads the session. It writes nothing and enqueues nothing, so the rule that **rendering
+the panel never generates** still holds — the panel calls it on every page view.
 
-The pre-flight reads the session and stats the clone directory. It writes nothing and enqueues
-nothing, so the rule that **rendering the panel never generates** still holds — the panel calls it on
-every page view.
+### What a scaffolded fork leaves behind
 
-**How often the left column actually applies is another matter.** `DeferredCloneCleanupJob` deletes an
-archived session's clone once the ten-second undo window closes — on the clean branch *and* on the
-branch that preserved unpushed artifacts first; only a session whose artifacts Zimmer failed to
-preserve keeps its clone for the trash-retention window. So the honest summary of this section is that
-an archived session is no longer *refused on principle*, and one archived minutes ago will still
-usually land in the right-hand column — with a sentence saying why, which is the part that was missing.
-See [Limitations](/limitations/#regenerating-an-archived-sessions-status-summary-usually-cannot-work--its-clone-is-already-gone).
+Nothing that outlives it, and nothing new. The scaffolded directory *is* the fork's own clone — Zimmer
+does not restore the source session's clone, does not touch the source session's status, and does not
+write to the source session's metadata. So there is no half-restored state to unwind on the way out,
+on either the success or the failure path:
 
-The narrow race the pre-flight cannot close is the clone going away between the click and the job. A
-forced run that hits it records the reason on the record rather than releasing its claim, so the panel
-resolves to *why* instead of spinning for the full `PENDING_TIMEOUT`.
+- **Success** — `SessionStatusSummaryHarvestJob` lifts the blurb onto the source session and archives
+  the fork. `DeferredCloneCleanupJob` reclaims the scaffolded directory on the normal trash path, the
+  same as any other fork's clone.
+- **Failure before dispatch** — the generator archives the fork it made rather than leaving it on the
+  floor (`#abandon_fork`), which reclaims the directory the same way.
+- **The process dies in between** — the fork is a `needs_input` session with a directory holding an
+  `.mcp.json` and nothing else. It is invisible to operator lists, and its summary record ages out at
+  `PENDING_TIMEOUT` into the "started but never came back" state the panel already renders. Nothing
+  about the source session is different from before the click.
 
 ## Failure and abandonment
 

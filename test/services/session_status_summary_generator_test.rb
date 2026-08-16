@@ -278,34 +278,47 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_nil @session.reload.status_summary, "an automatic skip claims nothing"
   end
 
-  # The honest failure. Once DeferredCloneCleanupJob has reclaimed the clone
-  # there is nothing to fork, and the operator has to be told that rather than
-  # left watching a spinner that will never resolve.
-  test "an archived session whose clone is gone reports why instead of starting" do
+  # The headline case, and the one #463 was filed for: DeferredCloneCleanupJob
+  # reclaims an archived session's clone about ten seconds after it goes to the
+  # trash, so every archived session an operator actually opens later has no tree
+  # left. The fork does not need one — it answers from the conversation it was
+  # forked with — so it is given an empty working directory and the summary is
+  # written anyway.
+  test "an archived session whose clone is gone regenerates into a scaffolded fork" do
     @session.update_column(:status, Session.statuses[:archived])
     @fs.rm_rf(@clone_path)
 
     result = generate(force: true)
 
-    assert_equal :unavailable, result.outcome
-    assert_match(/deleted when it went to the trash/, result.message)
-    assert_equal 0, Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).count
-
-    record = @session.reload.status_summary
-    assert_equal "failed", record.state, "the panel resolves to a reason rather than spinning"
-    assert_equal result.message, record.error
-    assert_not record.pending?
+    assert_equal :started, result.outcome
+    fork = result.fork_session
+    assert_equal @session.id, fork.metadata[SessionStatusSummaryGenerator::FORK_MARKER]
+    assert_equal true, fork.metadata["clone_scaffolded"]
+    assert @fs.directory?(fork.metadata["clone_path"]), "the fork has a working directory to be spawned in"
+    assert_equal "pending", @session.reload.status_summary.state
   end
 
-  # A session with no clone recorded at all cannot be forked either, and says so
-  # in its own terms rather than talking about a trash it never reached.
-  test "a session with no clone path at all reports why instead of starting" do
+  # A session with no clone recorded at all — one whose clone was reclaimed and
+  # whose metadata never named one — is the same case one step earlier.
+  test "a session with no clone path at all still regenerates when forced" do
     @session.update!(metadata: @session.metadata.except("clone_path"))
 
     result = generate(force: true)
 
+    assert_equal :started, result.outcome
+    assert_equal true, result.fork_session.metadata["clone_scaffolded"]
+  end
+
+  # The other half of the bargain: nothing is stood up for a session nobody is
+  # looking at. An automatic generation still wants a real clone.
+  test "an automatic generation on a session whose clone is gone is unavailable" do
+    @fs.rm_rf(@clone_path)
+
+    result = generate
+
     assert_equal :unavailable, result.outcome
-    assert_match(/no working clone on disk/, result.message)
+    assert_equal 0, Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).count
+    assert_nil @session.reload.status_summary, "an automatic refusal claims nothing"
   end
 
   # The pre-flight the three request surfaces share. It must answer without
@@ -322,7 +335,10 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       end
     end
 
-    assert_equal :unavailable, reason.outcome
+    assert_equal :unavailable, reason.outcome, "an automatic generation still wants a clone"
+
+    assert_nil SessionStatusSummaryGenerator.unavailable_reason(session: @session, force: true, file_system: @fs),
+      "the three request surfaces ask as the forced run they perform, and a missing clone does not stop one"
   end
 
   # The post-copy re-check, from the forced side. The copy SUCCEEDED, so there is
@@ -344,9 +360,9 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   end
 
   # The race the pre-flight cannot close: the clone is there when the button is
-  # pressed and gone by the time the job runs. The forced run records the reason
-  # so the panel still resolves.
-  test "a forced generation whose clone the trash deletes during the copy records the reason" do
+  # pressed and gone by the time the copy walks it. A forced run does not need
+  # the tree, so losing the race costs it the copy and not the generation.
+  test "a forced generation whose clone the trash deletes during the copy scaffolds instead" do
     session = @session
     clone = @clone_path
     @fs.define_singleton_method(:cp_r) do |_src, _dest, exclude: []|
@@ -357,12 +373,9 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
     result = generate(force: true)
 
-    assert_equal :unavailable, result.outcome
-
-    record = @session.reload.status_summary
-    assert_equal "failed", record.state, "a forced request resolves to a reason rather than a released claim"
-    assert_match(/nothing left to fork/, record.error)
-    assert_not record.pending?
+    assert_equal :started, result.outcome
+    assert_equal true, result.fork_session.metadata["clone_scaffolded"]
+    assert_equal "pending", @session.reload.status_summary.state
   end
 
   # The copy takes real time — tens of seconds on a repo with an installed

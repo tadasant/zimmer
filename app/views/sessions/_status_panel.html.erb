@@ -10,9 +10,9 @@
 
   Rendering this NEVER generates. A stale summary shows the cached text plus how
   many messages have landed since, and waits for the operator to press
-  Regenerate. `unavailable_reason` reads the session and stats its clone; it
-  starts nothing. The only automatic trigger is the session changing status —
-  see SessionStateMachine#enqueue_status_summary_refresh.
+  Regenerate. `unavailable_reason` reads the session; it starts nothing. The only
+  automatic trigger is the session changing status — see
+  SessionStateMachine#enqueue_status_summary_refresh.
 
   Local variables:
     agent_session: Session
@@ -23,11 +23,14 @@
 <% line_count = agent_session.transcript_line_count %>
 <% behind = summary&.messages_since(line_count).to_i %>
 <% generating = local_assigns.fetch(:generating, false) || summary&.pending? %>
-<%# Why regeneration cannot run at all — nil when it can. An archived session is
-    NOT one of these reasons; a session whose clone has been reclaimed is. The
-    button is dead in that case, so it says so rather than accepting a click it
-    cannot honour. %>
-<% unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: agent_session)&.message %>
+<%# Why regeneration cannot run at all — nil when it can. Asked as the FORCED
+    run this button performs, so it answers for the click rather than for the
+    automatic path: neither an archived session nor a reclaimed clone is a
+    reason, because the fork is scaffolded when there is no tree left. What
+    remains is genuinely impossible — a summary fork asked to summarize itself,
+    a session with no transcript — and the button says so rather than accepting
+    a click it cannot honour. %>
+<% unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: agent_session, force: true)&.message %>
 <% disabled = generating || unavailable.present? %>
 
 <div id="session_<%= agent_session.id %>_status_panel">
