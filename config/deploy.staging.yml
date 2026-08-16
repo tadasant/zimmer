@@ -61,6 +61,24 @@ servers:
       # which is uid 0 with the image's default gid -- close enough to look right and
       # wrong in a way nothing would report.
       user: "<%= nested_docker ? "0:0" : "1000:1000" %>"
+      # The droplet is 4 GB with no swap, and this role is the only one that runs
+      # arbitrary work: agent sessions, and jobs whose peak allocation is a function
+      # of the data they touch rather than of anything this config knows. Uncapped,
+      # a single such allocation is a GLOBAL out-of-memory event -- the kernel picks
+      # victims across the whole host, so sshd and Caddy lose their working set and
+      # the droplet stops answering SSH and HTTPS. It looks exactly like a dead box,
+      # and it is not: the app is fine, the host is thrashing.
+      #
+      # The cap does not stop a runaway job. It confines one: the kill lands in this
+      # cgroup, the worker restarts under `unless-stopped`, and everything else on the
+      # droplet -- web, postgres, redis, kamal-proxy, and above all sshd -- keeps its
+      # memory and stays reachable. A restarting worker is a bad afternoon; an
+      # unreachable droplet is one nobody can log in to diagnose.
+      #
+      # 2g against ~1.4 GB of steady-state non-worker residency leaves the host about
+      # 500 MB of headroom. Raising it trades that headroom away, and the headroom is
+      # what keeps SSH answering -- which is the property being bought here.
+      memory: 2g
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
