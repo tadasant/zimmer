@@ -38,9 +38,40 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     output = get_policy
 
     assert_match(/Gating enabled:\*\* no/, output)
-    assert_match(/5-hour window limit:\*\* 80%/, output)
+    assert_match(/5-hour window target:\*\* 80%/, output)
     assert_match(/Current decision/, output)
     SessionGenesis::KEYS.each { |key| assert_match(/`#{key}`/, output) }
+  end
+
+  # The page and the tool render the same decision — the one about a session
+  # starting right now. They used to ask different questions, which is how the
+  # card came to show a green "headroom available" badge above the line "a spot
+  # session starting right now would be held".
+  test "get_spot_policy reports the concurrency the gate is admitting" do
+    # The gate sizes every usable account, so the fixtures' readings would decide
+    # which one is roomiest. Leave only this one with anything to forecast from.
+    ClaudeAccountQuotaSnapshot.delete_all
+    account = ClaudeAccount.create!(email: "mcp-capacity@example.com", runtime: "claude_code",
+                                    oauth_config: { "x" => 1 }, is_current: true)
+    now = Time.current
+    util = 0.50
+    [ 90, 60, 30, 0 ].each do |mins|
+      ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: util, utilization_7d: 0.10,
+        reset_5h: now + 2.hours, reset_7d: now + 2.days, active_session_count: 1,
+        trigger: "usage_sample", created_at: now - mins.minutes)
+      util += 0.02
+    end
+    AppSetting.editable.update!(spot_gating_enabled: true,
+                                spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+
+    output = get_policy
+    decision = SpotGateService.current_decision
+
+    assert_match(/Concurrent spot capacity:\*\* #{decision.capacity}/, output)
+    assert_match(/Sized against:\*\* mcp-capacity@example\.com/, output)
+    assert_match(/Concurrent sessions it can carry/, output)
+    assert_equal decision.allowed?, output.include?("**Spot sessions:** running"),
+      "the tool must report the same decision the page renders"
   end
 
   test "get_spot_policy reflects a demotion" do
@@ -88,6 +119,23 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert setting.spot_gating_enabled, "an omitted enabled flag must not turn the gate off"
     assert_equal 55, setting.spot_gate_five_hour_threshold_pct
     assert_equal 45, setting.spot_gate_weekly_threshold_pct
+  end
+
+  # Parity: the cap is on the /quotas form, so an agent has to be able to set it
+  # and read it back without a human at the page.
+  test "set_gating sets the max concurrent sessions cap, and get reports it" do
+    action(action: "set_gating", enabled: true, max_concurrent_sessions: 4)
+
+    assert_equal 4, AppSetting.current.spot_max_concurrent_sessions
+    assert_match(/Max sessions at once:\*\* 4/, get_policy)
+  end
+
+  test "an out-of-range cap comes back as a message rather than an internal error" do
+    AppSetting.editable.update!(spot_max_concurrent_sessions: 10)
+
+    error = assert_raises(Mcp::ToolError) { action(action: "set_gating", max_concurrent_sessions: 0) }
+    assert_match(/Invalid spot policy/, error.message)
+    assert_equal 10, AppSetting.current.spot_max_concurrent_sessions
   end
 
   test "set_gating with nothing to change is an error rather than a silent no-op" do
@@ -154,6 +202,6 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) do
       action(action: "set_gating", five_hour_threshold_pct: 150)
     end
-    assert_match(/Invalid thresholds/, error.message)
+    assert_match(/Invalid spot policy/, error.message)
   end
 end

@@ -34,10 +34,13 @@
 #     attribute it to is real but unattributable — dividing by zero here would
 #     produce an infinite rate that then dominates the forecast.
 #
-# `#sample_count` reports how many pairs survived, and every consumer is expected
-# to treat a rate built from too few pairs as absent rather than as zero. A
-# missing rate must never read as "no usage" — see SpotGateService, which fails
-# open on exactly that condition.
+# `#sample_count` reports how many pairs survived and `#session_hours` how much
+# running time they observed between them; `#sufficient?` requires both to clear
+# a floor, because a handful of pairs taken while one session ran for forty
+# minutes is not a trend a whole queue should be held on. Every consumer is
+# expected to treat an insufficient rate as absent rather than as zero. A missing
+# rate must never read as "no usage" — see SpotGateService, which fails open on
+# exactly that condition.
 #
 # == Where the samples come from
 #
@@ -61,10 +64,19 @@ class ClaudeUsageRateService
   # changed several times in the interval and the mean is meaningless.
   MAX_PAIR_GAP = 90.minutes
 
+  # How much observed session activity a rate has to be built on before anything
+  # is allowed to act on it. Three pairs taken twenty minutes apart while a
+  # single session ran is 0.75 session-hours of evidence — an anecdote, and not
+  # something to hold a queue of work on for the rest of the day. A fleet under
+  # real load clears a full session-hour within the hour; a nearly idle one does
+  # not, which is exactly when the gate should stand down.
+  MIN_SESSION_HOURS = 1.0
+
   Result = Data.define(:rate_5h, :rate_7d, :sample_count, :session_hours, :lookback, :window_start) do
-    # Whether there is enough evidence to forecast from.
+    # Whether there is enough evidence to forecast from: enough pairs, and
+    # enough observed session activity behind them.
     def sufficient?
-      sample_count >= MIN_SAMPLES && session_hours.positive? && !rate_5h.nil?
+      sample_count >= MIN_SAMPLES && session_hours >= MIN_SESSION_HOURS && !rate_5h.nil?
     end
 
     # Percent of the 5-hour window one session consumes per hour.

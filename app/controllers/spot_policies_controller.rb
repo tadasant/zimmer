@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-# The spot gate policy: whether the gate holds spot sessions at all, and the two
-# forecast ceilings it holds them against. The card lives on /quotas because the
-# windows it forecasts are the ones that page reports.
+# The spot gate policy: whether the gate holds spot sessions at all, the two
+# window targets it fills up to, and the ceiling on how many sessions run at
+# once. The card lives on /quotas because the windows it forecasts are the ones
+# that page reports.
 #
 # Separate from AppSettingsController, which persists the settings page's own
 # forms, so each page's forms write only their own fields.
@@ -24,6 +25,9 @@ class SpotPoliciesController < ApplicationController
     end
     if spot_params.key?(:spot_gate_weekly_threshold_pct)
       setting.spot_gate_weekly_threshold_pct = spot_params[:spot_gate_weekly_threshold_pct]
+    end
+    if spot_params.key?(:spot_max_concurrent_sessions)
+      setting.spot_max_concurrent_sessions = spot_params[:spot_max_concurrent_sessions]
     end
 
     if setting.save
