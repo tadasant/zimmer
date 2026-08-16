@@ -27,7 +27,7 @@ module TriggersHelper
     [
       [ default, "" ],
       [ "Priority — starts whenever it is ready", SessionGenesis::PRIORITY ],
-      [ "Spot — waits for quota headroom", SessionGenesis::SPOT ]
+      [ "Spot — waits for quota room or a free slot", SessionGenesis::SPOT ]
     ]
   end
 

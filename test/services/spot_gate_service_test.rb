@@ -4,10 +4,10 @@ require "test_helper"
 
 class SpotGateServiceTest < ActiveSupport::TestCase
   setup do
-    # The gate reads every usable account's latest snapshot and counts every
-    # running session, so a fixture reading or a fixture session in `running`
-    # silently changes what these tests assert on. Clear both, then build the one
-    # account this suite reads.
+    # The gate reads the serving account's latest snapshot and counts every running
+    # session, so a fixture reading or a fixture session in `running` silently
+    # changes what these tests assert on. Clear both, then build the one account
+    # this suite reads.
     ClaudeAccountQuotaSnapshot.delete_all
     ClaudeAccount.update_all(is_current: false)
     Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
@@ -139,41 +139,67 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal 0.0, decision.five_hour.current
   end
 
-  # --- the pool ----------------------------------------------------------------
+  # --- which account is read -------------------------------------------------
 
-  # Zimmer rotates accounts automatically when the serving one is refused, so the
-  # question is whether the POOL has room — not whether the account that happens
-  # to be current does. Production held a queue for a day while three spare
-  # accounts sat under 50%.
-  test "a spare account with room runs work the serving account could not" do
+  # Rotation happens when the serving account is REFUSED, not when it reaches a
+  # target, so a spare's headroom is not headroom a session starting now can
+  # spend. The serving account's number is the one that binds.
+  test "the serving account decides, not a spare with more room" do
     seed(current_5h: 0.95, current_7d: 0.10)
-    assert SpotGateService.evaluate.held?
-
     seed_spare(email: "spare@example.com", current_5h: 0.05, current_7d: 0.10)
 
     decision = SpotGateService.evaluate
-    assert decision.allowed?, "the pool has room even though the serving account does not"
-    assert_equal "spare@example.com", decision.account_email
-    assert_equal 2, decision.accounts_considered
+    refute decision.allowed?, "a spare cannot lend headroom the serving account does not have"
+    assert_equal "gate-test@example.com", decision.account_email
   end
 
-  test "an account already marked quota_exceeded does not vote on the pool's room" do
+  test "with no current account, the first the pool would serve from is read" do
+    @account.update!(is_current: false)
     seed(current_5h: 0.95, current_7d: 0.10)
     spare = seed_spare(email: "spare@example.com", current_5h: 0.05, current_7d: 0.10)
-    assert SpotGateService.evaluate.allowed?
+    ClaudeAccount.where.not(id: spare.id).update_all(status: ClaudeAccount.statuses[:quota_exceeded])
 
-    spare.update!(status: :quota_exceeded)
-    assert SpotGateService.evaluate.held?, "a spent account cannot lend headroom it does not have"
+    decision = SpotGateService.evaluate
+    assert decision.allowed?
+    assert_equal "spare@example.com", decision.account_email
   end
 
-  test "the whole pool at its target holds, and says so" do
-    seed(current_5h: 0.90, current_7d: 0.10)
-    seed_spare(email: "spare@example.com", current_5h: 0.85, current_7d: 0.10)
+  test "an account with no reading is skipped rather than answering for the gate" do
+    @account.update!(is_current: false)
+    ClaudeAccount.create!(email: "unread@example.com", runtime: "claude_code",
+                          oauth_config: { "x" => 1 }, is_current: true)
+    seed(current_5h: 0.85, current_7d: 0.10)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "the account that HAS a reading is the one that decides"
+    assert_equal "gate-test@example.com", decision.account_email
+  end
+
+  # A snapshot whose two utilization columns are both nil says nothing. Reading it
+  # as "no window at its target" would let an empty row run the deployment.
+  test "a reading with neither window readable is not a reading" do
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: @account, utilization_5h: nil, utilization_7d: nil,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+      active_session_count: 1, trigger: "usage_sample"
+    )
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?
+    assert_equal "no_snapshot", decision.reason
+  end
+
+  test "one unreadable window still decides on the other" do
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: @account, utilization_5h: nil, utilization_7d: 0.85,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+      active_session_count: 1, trigger: "usage_sample"
+    )
 
     decision = SpotGateService.evaluate
     refute decision.allowed?
-    assert_equal "at_utilization_limit", decision.reason
-    assert_match(/every one of 2 usable Claude Code accounts has reached a target/, decision.detail)
+    assert_nil decision.five_hour
+    assert decision.weekly.at_limit?
   end
 
   # --- the fleet cap -----------------------------------------------------------
@@ -192,7 +218,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal "fleet_at_cap", decision.reason
     assert_equal 3, decision.fleet_cap
     assert_equal 3, decision.active_sessions
-    assert_match(/3 of 3 session slots are taken/, decision.detail)
+    assert_match(/3 of 3 session slots taken/, decision.detail)
   end
 
   test "the cap is the operator's, and raising it runs work immediately" do
@@ -306,26 +332,35 @@ class SpotGateServiceTest < ActiveSupport::TestCase
   # --- the incident ------------------------------------------------------------
 
   # The state production was in at 2026-08-16T01:10Z: the serving account at 69%
-  # weekly with the 5-hour window freshly reset to 1%, three spares well under
-  # their targets, one session running — and 25 spot sessions that had been
-  # waiting up to 23 hours behind a forecast that projected 122%.
+  # weekly with the 5-hour window freshly reset to 1%, one session running — and
+  # 25 spot sessions that had been waiting up to 23 hours behind a forecast that
+  # projected 122%.
   test "the production incident runs the queue" do
     seed(current_5h: 0.01, current_7d: 0.69)
-    seed_spare(email: "bob@example.com", current_5h: 0.05, current_7d: 0.47)
-    seed_spare(email: "jon@example.com", current_5h: 0.05, current_7d: 0.15)
-    seed_spare(email: "sam@example.com", current_5h: 0.05, current_7d: 0.55)
     running_session(0)
 
     decision = SpotGateService.evaluate
-    assert decision.allowed?, "every window is under its target — the queue has to run"
+    assert decision.allowed?, "both windows are under their targets — the queue has to run"
     assert_equal "within_limits", decision.reason
     assert_equal 1, decision.active_sessions
     assert_equal 10, decision.fleet_cap
 
-    # And it runs in parallel: nine more start before the cap binds.
+    # And it runs in parallel: nine more start before the limit binds.
     9.times { |i| running_session(i + 1) }
     assert SpotGateService.evaluate.held?
     assert_equal "fleet_at_cap", SpotGateService.evaluate.reason
+  end
+
+  # Both brakes engaged at once: the target is the one reported, because a window
+  # at its target is the more specific fact and the one that outlasts the fleet.
+  test "a window at its target outranks a full fleet in the reason" do
+    seed(current_5h: 0.85, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?
+    assert_equal "at_utilization_limit", decision.reason
   end
 
   private

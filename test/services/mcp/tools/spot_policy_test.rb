@@ -43,12 +43,11 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     SessionGenesis::KEYS.each { |key| assert_match(/`#{key}`/, output) }
   end
 
-  # The page and the tool render the same decision. They used to ask different
-  # questions, which is how the card came to show a green "headroom available"
-  # badge above the line "a spot session starting right now would be held".
+  # The page and the tool render the same decision, which is the property that
+  # keeps the card's badge and the tool's answer from disagreeing.
   test "get_spot_policy reports the live decision and both windows" do
-    # The gate reads every usable account, so the fixtures' readings would decide
-    # which one has the most room. Leave only this one with anything to read.
+    # The gate reads the serving account, and the fixtures ship one. Leave only
+    # this account with anything to read.
     ClaudeAccountQuotaSnapshot.delete_all
     account = ClaudeAccount.create!(email: "mcp-window@example.com", runtime: "claude_code",
                                     oauth_config: { "x" => 1 }, is_current: true)

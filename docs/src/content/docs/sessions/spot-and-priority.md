@@ -128,7 +128,7 @@ statements about numbers that have already been read.
 
 | Check | What it means | Reason when it fails |
 | --- | --- | --- |
-| **Under the targets** | Some usable Claude Code account is below its 5-hour *and* weekly targets, as last read. When every account has reached one, spot work pauses until utilization comes back down. | `at_utilization_limit` |
+| **Under the targets** | The serving Claude Code account is below its 5-hour *and* weekly targets, as last read. When it reaches one, spot work pauses until utilization comes back down. | `at_utilization_limit` |
 | **A free slot** | Fewer sessions are running than **Max sessions at once**. | `fleet_at_cap` |
 
 There is no rate, no projection and no horizon. The gate holds work when a window *has arrived* at
@@ -151,21 +151,20 @@ semantics are deliberately asymmetric:
 It is checked **when a session starts** and never again. Lowering the limit under a running fleet
 holds the next start; it never interrupts work already underway.
 
-### Sized against the pool, not the serving account
+### Read from the account that will serve
 
-Zimmer rotates accounts automatically when the serving one is refused, so "can this deployment absorb
-more work" is a question about the **pool**. The gate reads every usable account — `active`, with
-credentials, the same pool `AccountRotationService` picks from — and uses the one with the most room.
-Holding a queue because the current account is at 69% while three spares sit under 50% starves the
-work for capacity that is right there.
+Utilization is read from the account Zimmer is **serving from** — the one a session started now
+would spend against. Rotation happens when the serving account is *refused*, not when it reaches a
+target, so a spare's headroom is not headroom this session can use.
 
-An account already marked `quota_exceeded` is not in that pool and gets no vote. When nothing is
-available at all, the serving account's own reading is what is left to read, so a fully spent
-deployment holds rather than falling through to "no snapshot".
+It is also the freshest number available. `ClaudeUsageSamplerJob` refreshes the serving account every
+15 minutes; a spare is read only on rotation or when somebody opens `/quotas`, so deciding on the
+roomiest account in the pool would mean deciding on the number least likely to still be true.
 
-`ClaudeUsageSamplerJob` runs every 15 minutes and takes a reading of the account that is actually
-serving, which is what keeps the gate deciding on a fresh number rather than on whatever the last
-rotation happened to record.
+With no current account, the first account the pool would serve from stands in — `available`, the
+same scope `AccountRotationService` picks from, so an account already marked `quota_exceeded` is
+skipped. An account with no reading at all is skipped too; when nothing has a readable window the
+gate falls open on `no_snapshot`.
 
 Targets and the concurrency limit are set together on the Claude Code tab of `/quotas`, on the same
 page as the windows they are measured against, and all three are settable over MCP with
@@ -230,9 +229,7 @@ time, and how to start it now.
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 
 The page and the tool render the **same** decision — `SpotGateService.evaluate`, of which there is
-exactly one. They used to ask different questions, which is how the card came
-to show a green "headroom available" badge directly above the line "a spot session starting right
-now would be held".
+exactly one — so the card's badge and the tool's answer cannot disagree.
 
 Both MCP tools are in the **`health`** group, not `sessions`: they are about the deployment's quota
 posture rather than about one session, and a `self_session` connection has no business rewriting the

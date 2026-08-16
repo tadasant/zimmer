@@ -54,7 +54,7 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type=submit][value=?]", "Save experimental settings"
   end
 
-  # The spot gate moved to /quotas, where the windows it forecasts are reported.
+  # The spot gate moved to /quotas, where the windows it reads are reported.
   test "should not render the spot gate" do
     get settings_url
     assert_select "#spot-gate", count: 0

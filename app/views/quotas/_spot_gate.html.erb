@@ -98,9 +98,8 @@
         <span class="text-xs text-gray-500 font-mono"><%= @spot_decision.reason %></span>
       </div>
       <p class="mt-2 text-sm text-gray-700"><%= @spot_decision.detail %></p>
-      <%# One decision, rendered once. The card used to show a second,
-          fleet-as-it-stands forecast beside this line, which is how it came to
-          render a green badge directly above the words "would be held". %>
+      <%# One decision, rendered once, so the badge above and this line are the
+          same answer rather than two readings that can disagree. %>
       <p class="mt-1 text-sm <%= @spot_decision.allowed? ? "text-gray-500" : "text-amber-800 font-medium" %>" id="spot-gate-start-decision">
         A spot session starting right now would be
         <strong><%= @spot_decision.allowed? ? "started" : "held" %></strong>.
@@ -111,9 +110,9 @@
           <dt class="text-gray-500">Sessions running</dt>
           <dd class="font-medium text-gray-900" id="spot-active-sessions">
             <%= @spot_decision.active_sessions %>
-            <span class="text-gray-400 font-normal">
-              of <%= @spot_decision.fleet_cap || @app_setting.spot_max_concurrent_sessions %>
-            </span>
+            <% if @spot_decision.fleet_cap %>
+              <span class="text-gray-400 font-normal">of <%= @spot_decision.fleet_cap %></span>
+            <% end %>
           </dd>
         </div>
         <div>
@@ -145,9 +144,9 @@
       </dl>
       <% if @spot_decision.account_email %>
         <p class="mt-2 text-xs text-gray-500">
-          Windows read from <%= @spot_decision.account_email %>, the account with the most room of
-          <%= pluralize(@spot_decision.accounts_considered, "usable account") %>. Zimmer rotates to it
-          when the serving account is refused, so the pool's best account is what decides.
+          Windows read from <%= @spot_decision.account_email %> — the account a session started now
+          would spend against. Zimmer rotates to a spare when this one is refused, so a spare's
+          headroom is not headroom a session starting now can use.
         </p>
       <% end %>
     </div>
