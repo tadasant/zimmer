@@ -130,6 +130,53 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
     end
   end
 
+  # Arming the switch sets `user: "0:0"`, and Docker derives HOME from --user: uid 0 resolves
+  # to /root. That becomes the CONTAINER's environment, which is what PID 1 (docker-init --
+  # every role sets `init: true`) and every `docker exec -u 1000` inherit, none of which ever
+  # run bin/docker-entrypoint. At uid 1000 /root is mode 0700 and root-owned, so libpq's probe
+  # of $HOME/.postgresql/postgresql.crt gets EACCES -- fatal, unlike the ENOENT it tolerates --
+  # and ~/.claude, ~/.config/gh, ~/.local and ~/.zimmer are absent.
+  #
+  # Pinning HOME in the image is what makes it a property of the app user rather than of the
+  # uid the container starts as. Asserted here rather than in a Dockerfile-shaped test because
+  # this is the file that owns the `user: "0:0"` decision that creates the need for it.
+  #
+  # A predicate rather than assert_match on the file: matching a regexp against the whole
+  # Dockerfile dumps all 120 lines of it into the failure message, which buries the sentence
+  # that says what to do about it.
+  def image_pins_home?
+    Rails.root.join("Dockerfile").read.match?(/^ENV HOME=\/home\/rails$/)
+  end
+
+  # Both halves together, per destination, because the pairing is the invariant: a role that
+  # starts as container-root against an image that does not pin HOME is what produces /root.
+  # Either one alone is harmless. Production matters as much as staging here -- it resolves
+  # the same switch to the same `user: "0:0"`, so it carries the same latent bug the moment
+  # ZIMMER_NESTED_DOCKER=1 reaches it.
+  DESTINATIONS.each do |destination|
+    test "#{destination}'s worker starts as container-root only against an image that pins HOME" do
+      user = deploy_config(destination, nested: "1").dig("servers", "worker", "options", "user")
+
+      assert_equal "0:0", user, "guard assumption changed: arming no longer starts the worker as root"
+      assert image_pins_home?,
+        "#{destination}'s worker starts as uid 0 but the image no longer pins ENV HOME=/home/rails, " \
+        "so Docker derives HOME=/root from --user. At uid 1000 that is untraversable: libpq's TLS " \
+        "probe gets EACCES and ~/.claude, ~/.config/gh, ~/.local, ~/.zimmer are absent."
+    end
+  end
+
+  # The entrypoint's own fixup is the other half, and the stronger one: it covers the app
+  # process and refuses to boot when uid 1000 cannot use the directory, which no image ENV
+  # can check. The image ENV does not replace it -- losing either reopens the failure.
+  test "the entrypoint still derives HOME from /etc/passwd and proves it usable" do
+    script = Rails.root.join("bin/docker-entrypoint").read
+
+    assert_match(/export HOME=/, script,
+      "the entrypoint no longer sets HOME; the app process would keep whatever --user derived")
+    assert_match(/setpriv --reuid=1000 --regid=1000 --init-groups test -x "\$HOME" -a -w "\$HOME"/, script,
+      "the entrypoint no longer proves HOME usable at uid 1000 before dropping to it")
+  end
+
   # The entrypoint is the piece that actually decides whether dockerd starts, and its guard
   # is the only thing standing between "misconfigured host" and "every session has host
   # root". Assert the guard exists rather than trusting a comment.

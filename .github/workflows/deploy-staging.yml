@@ -542,20 +542,48 @@ jobs:
           }
           echo "✅ nested dockerd ${v} answering as uid 1000"
 
-          # 5. HOME survived the privilege drop. Read off the real PID 1 rather than a
-          #    fresh exec, because PID 1 is the process whose libpq/~/.claude/~/.config
-          #    lookups are in question -- `HOME=/root` here is exactly how the ten-hour
-          #    freeze presented, and every container-shaped check stayed green through it.
+          # 5. The CONTAINER's HOME. PID 1 is docker-init (the role sets `init: true`), so
+          #    this reads the environment Docker built from `--user` -- NOT the app's, and
+          #    not one bin/docker-entrypoint has touched: docker-init never runs it.
+          #
+          #    That makes it the right thing to assert, because it is the environment
+          #    nothing inherits from the entrypoint gets: every `docker exec` into the
+          #    worker, and anything the app spawns that rebuilds a child environment from
+          #    scratch. Under `user: "0:0"` Docker resolves it to /root, which at uid 1000
+          #    is mode 0700 and root-owned -- untraversable, so libpq's probe of
+          #    $HOME/.postgresql/postgresql.crt gets EACCES (fatal, unlike ENOENT) and
+          #    ~/.claude and ~/.config/gh are simply absent. `ENV HOME=/home/rails` in the
+          #    Dockerfile is what pins it independent of the uid the container starts as.
+          #
+          #    The app process is covered separately and more strongly: the entrypoint
+          #    derives HOME from /etc/passwd and refuses to boot unless uid 1000 can
+          #    traverse and write it, so a worker that reached step 4 above already proved
+          #    that half. This is the half nothing else checks.
           home=$(ssh root@"${STAGING_HOST}" "docker exec $w cat /proc/1/environ" \
             | tr '\0' '\n' | sed -n 's/^HOME=//p')
           echo "worker PID 1 HOME=${home}"
           if [ "${home}" != "/home/rails" ]; then
-            echo "::error::the worker's PID 1 has HOME='${home}', not /home/rails. libpq cannot open a TLS"
-            echo "::error::connection through it and the runtime volumes (~/.claude, ~/.config/gh) are absent,"
-            echo "::error::so the worker would run without ever claiming a job."
+            echo "::error::the worker's container HOME is '${home}', not /home/rails (read off PID 1,"
+            echo "::error::which is docker-init and so carries what Docker derived from --user)."
+            echo "::error::Every 'docker exec -u 1000' into this worker then runs with a HOME it cannot"
+            echo "::error::traverse: libpq's TLS probe gets EACCES and ~/.claude, ~/.config/gh are absent."
+            echo "::error::Pin it with ENV HOME=/home/rails in the Dockerfile rather than leaving Docker"
+            echo "::error::to derive it from user: \"0:0\"."
             exit 1
           fi
-          echo "✅ worker is user-namespaced, socket-free, and kept HOME through the drop"
+
+          # And prove it is usable, as the uid agent sessions run as -- the same test the
+          # entrypoint applies to itself before dropping privileges. A HOME that reads back
+          # correctly but that uid 1000 cannot traverse and write fails in exactly the way
+          # the string comparison above cannot see.
+          if ! ssh root@"${STAGING_HOST}" \
+                 "docker exec -u 1000:1000 $w test -x '${home}' -a -w '${home}'"; then
+            echo "::error::the worker's HOME=${home} is not traversable and writable by uid 1000, which is"
+            echo "::error::the uid agent sessions run as. libpq's TLS probe and every ~/ path fail through it."
+            ssh root@"${STAGING_HOST}" "docker exec $w ls -ld '${home}'" || true
+            exit 1
+          fi
+          echo "✅ worker is user-namespaced, socket-free, and its HOME is usable at uid 1000"
 
       # `/up` above is a liveness ping, not a health check: Rails answers it 200 for
       # any process that finished booting, so a container with a dead database, an
