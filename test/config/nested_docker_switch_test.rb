@@ -109,6 +109,21 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
     end
   end
 
+  # Staging's worker is the only role running work whose peak allocation nothing in this
+  # config knows in advance, on a 4 GB droplet with no swap. Uncapped, one such allocation
+  # is a GLOBAL OOM: the kernel takes victims host-wide, sshd and Caddy lose their working
+  # set, and the droplet stops answering SSH and HTTPS while the app itself is fine. The
+  # cap is what keeps the kill inside the worker's cgroup, and it is invisible in every
+  # green check -- so pin it here, where dropping it fails loudly.
+  test "staging's worker is capped so a runaway allocation cannot take the droplet down" do
+    %w[0 1].each do |state|
+      memory = deploy_config("staging", nested: state).dig("servers", "worker", "options", "memory")
+
+      assert_equal "2g", memory,
+        "staging's worker has no memory cap (switch=#{state}); a runaway job OOMs the whole droplet, sshd included"
+    end
+  end
+
   # The entrypoint is the piece that actually decides whether dockerd starts, and its guard
   # is the only thing standing between "misconfigured host" and "every session has host
   # root". Assert the guard exists rather than trusting a comment.
