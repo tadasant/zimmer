@@ -28,6 +28,29 @@ require "aasm"
 module SessionStateMachine
   extend ActiveSupport::Concern
 
+  # Marks the in-flight `resume` as Zimmer restarting this session's own process
+  # after an interruption (a deployment restart, an orphaned process, a hung
+  # process reaped) rather than a human or an agent deliberately waking it.
+  #
+  # The two are not the same event and must not have the same side effects. A
+  # deliberate resume means "someone has taken this session over" — its pending
+  # wake-ups are moot and get consumed. A system-recovery resume means "the
+  # process died and we started it again"; the session never chose to wake, so
+  # its sleep intent and its pending wake-ups are still exactly what it is
+  # waiting on. Consuming them there is what strands an orchestrator: it comes
+  # back with nothing armed, ends its turn, and sits in needs_input forever with
+  # children it was supposed to be watching.
+  #
+  # Transient (never persisted) and scoped to a single resume by
+  # Session#resume_for_system_recovery!.
+  attr_accessor :system_recovery_resume
+
+  # Metadata marker written alongside `pending_sleep` by the system-recovery
+  # preserve branch. It means "sleep only if something is still armed to wake
+  # you", and distinguishes that conditional intent from a deliberate sleep,
+  # which is executed whether or not any wake-up exists.
+  PENDING_SLEEP_REQUIRES_WAKE = "pending_sleep_requires_wake"
+
   included do
     include AASM
 
@@ -742,8 +765,26 @@ module SessionStateMachine
   def execute_pending_sleep
     return unless metadata&.dig("pending_sleep") == true
 
+    # A sleep intent recorded by the system-recovery preserve branch is only
+    # valid while the wake-ups it was recorded for are still armed. They may not
+    # be: a backstop whose wall time elapsed during the outage is due the moment
+    # recovery resumes the session, so it can fire mid-recovery-turn, destroy its
+    # siblings, and hand off to a new turn without ever pausing. Sleeping on that
+    # stale intent would put the session in `waiting` with nothing armed and no
+    # `paused_by` — invisible to both recovery sweeps, which is a worse stall than
+    # the one this preserve branch exists to prevent. Drop the intent instead and
+    # let the session come to rest in needs_input, where the operator can see it.
+    if metadata[PENDING_SLEEP_REQUIRES_WAKE] && !armed_one_time_wake?
+      update_column(:metadata, metadata.except("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE))
+      Rails.logger.info(
+        "[SessionStateMachine] Dropped the preserved re-sleep for session #{id} — its wake-ups " \
+        "fired or were destroyed during the recovery turn, so sleeping would strand it"
+      )
+      return
+    end
+
     sleep!
-    update_column(:metadata, metadata.except("pending_sleep"))
+    update_column(:metadata, metadata.except("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE))
   rescue => e
     # Alert: the session asked to sleep and did not. It sits in needs_input on
     # the user's homepage as if it wanted attention, and the pending_sleep flag
@@ -752,7 +793,7 @@ module SessionStateMachine
   end
 
   # Cancel any pending one-time wake-up conditions that were targeting this
-  # session. When a session resumes (via any path — user follow-up,
+  # session. When a session is deliberately resumed (user follow-up,
   # force_immediate, restart, or the trigger itself firing), these conditions
   # should not fire again on an already-active session.
   #
@@ -760,14 +801,24 @@ module SessionStateMachine
   # which makes the firing path skip it. The trigger itself stays enabled (it
   # may have other conditions).
   #
+  # A system-recovery resume is the exception and takes the preserve branch: the
+  # session did not choose to wake, so its wake-ups are not moot. See
+  # #system_recovery_resume.
+  #
   # Scoped to: conditions on triggers where this session is the reuse target,
   # that haven't fired yet, and that are one-time wake-ups — either a one-time
   # schedule (scheduled_at present) or a session-scoped ao_event
   # (watched_session_id present). Recurring schedules and broadcast ao_events
   # are left alone.
   def cancel_pending_one_time_wake_triggers
-    pending_one_time_wake_conditions.find_each do |condition|
-      next unless condition.one_time_schedule? || condition.session_scoped_ao_event?
+    conditions = pending_one_time_wake_conditions.select do |condition|
+      condition.one_time_schedule? || condition.session_scoped_ao_event?
+    end
+    return if conditions.empty?
+
+    return preserve_pending_one_time_wakes(conditions) if system_recovery_resume
+
+    conditions.each do |condition|
       condition.update!(last_triggered_at: Time.current)
       Rails.logger.info(
         "[SessionStateMachine] Cancelled pending one-time wake-up " \
@@ -775,10 +826,52 @@ module SessionStateMachine
       )
     end
   rescue => e
-    # Don't raise — trigger cleanup failures shouldn't block the resume. But do
-    # alert: an uncancelled one-time wake stays armed and fires later against an
-    # already-active session, injecting a wake-up prompt into live work.
+    # Don't raise — trigger bookkeeping failures shouldn't block the resume. But
+    # do alert: on the cancel branch an uncancelled one-time wake stays armed and
+    # fires later against an already-active session, injecting a wake-up prompt
+    # into live work; on the preserve branch a session that should have gone back
+    # to sleep comes to rest in needs_input instead.
     report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Leave a system-recovered session's wake-ups armed, and put it back to sleep
+  # afterwards when doing so cannot strand it.
+  #
+  # The re-sleep is deliberately conditional. A one-time schedule fires at a wall
+  # time no matter what else happens, so a session holding one is guaranteed to
+  # be woken and can safely go back to `waiting`. A session holding only
+  # session-scoped ao_event watchers has no such guarantee: a watched session may
+  # have reached the state being watched for during the outage, and that
+  # transition is not replayed, so sleeping on it would trade a 22-hour stall for
+  # an indefinite one. Those sessions come to rest in `needs_input` instead —
+  # visible on the operator's homepage, with the watchers still armed, because
+  # Trigger#follow_up_session! delivers to a needs_input session just as well.
+  def preserve_pending_one_time_wakes(conditions)
+    backstopped = conditions.any?(&:one_time_schedule?)
+
+    if backstopped
+      # Paired with PENDING_SLEEP_REQUIRES_WAKE: this sleep intent is only good
+      # while something is still armed to undo it. A deliberate sleep (the API's
+      # sleep_session, which arms nothing) carries no such marker and is executed
+      # unconditionally.
+      update_column(:metadata, (metadata || {}).merge(
+        "pending_sleep" => true,
+        PENDING_SLEEP_REQUIRES_WAKE => true
+      ))
+    end
+
+    Rails.logger.info(
+      "[SessionStateMachine] Preserved #{conditions.size} pending wake-up(s) across a " \
+      "system-recovery resume of session #{id} " \
+      "(trigger_conditions #{conditions.map(&:id).join(', ')}); " \
+      "#{backstopped ? 'will return to waiting after this turn' : 'will rest in needs_input — no one-time schedule backstop among them'}"
+    )
+
+    logs.create!(
+      content: "Recovered from a system interruption with #{conditions.size} wake-up(s) still armed — " \
+        "#{backstopped ? 'returning to waiting after this turn' : 'no scheduled backstop, so this session will rest in needs_input'}",
+      level: "info"
+    )
   end
 
   # Unfired trigger conditions that could still wake this session: conditions on
@@ -786,6 +879,13 @@ module SessionStateMachine
   # Callers still filter to the one-time shapes (one-time schedule or
   # session-scoped ao_event) — recurring schedules and broadcast ao_events are
   # not per-session wake-ups and are left alone.
+  # Whether any one-time wake-up is still armed against this session.
+  def armed_one_time_wake?
+    pending_one_time_wake_conditions.any? do |condition|
+      condition.one_time_schedule? || condition.session_scoped_ao_event?
+    end
+  end
+
   def pending_one_time_wake_conditions
     TriggerCondition
       .joins(:trigger)

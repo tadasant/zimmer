@@ -3,6 +3,7 @@ class AgentSessionJob < ApplicationJob
   include McpServerBackfill
 
   require "path_sanitizer"
+  require "automated_prompts"
 
   queue_as :agents
 
@@ -390,7 +391,14 @@ class AgentSessionJob < ApplicationJob
               "Follow-up job re-resuming session (status was #{session.status})",
               level: "info"
             )
-            session.resume!
+            # Carrying the recovery prompt means this re-transition is still part
+            # of the same system recovery, so it must preserve the wake-ups that
+            # recovery deliberately kept. The window is real: recovery resumes the
+            # session with running_job_id nil and enqueues this job, and
+            # DeploymentRecoveryJob#orphaned_running_session? treats a blank
+            # running_job_id as orphaned with no grace period. A reap in that gap
+            # would otherwise land here and consume the whole preserved set.
+            resume_for_recovery_prompt(session, follow_up_prompt)
           else
             log_buffer.add(
               "Follow-up job skipped - session cannot be resumed (status: #{session.status})",
@@ -1152,7 +1160,7 @@ class AgentSessionJob < ApplicationJob
               "Session was externally moved to #{session.status} before process spawn — re-transitioning to running",
               level: "warning"
             )
-            session.resume!
+            resume_for_recovery_prompt(session, follow_up_prompt)
           end
         end
 
@@ -1872,6 +1880,24 @@ class AgentSessionJob < ApplicationJob
     Rails.logger.error "[AgentSessionJob] Error handling InterruptError for session #{session_id}: #{e.message}"
   end
 
+  # Re-transition a session to running for a prompt this job is already carrying.
+  #
+  # The prompt says which kind of resume this is. A session being re-resumed to
+  # deliver SYSTEM_RECOVERY never chose to wake — it is the tail of a recovery
+  # that already decided to preserve its wake-ups — so consuming them here would
+  # undo that decision and strand it. Any other prompt is somebody deliberately
+  # driving the session, where consuming the now-moot wake-ups is correct.
+  #
+  # @param session [Session] the session to re-transition
+  # @param prompt [String, nil] the follow-up prompt this job is delivering
+  # @return [Boolean] true when the session was resumed
+  def resume_for_recovery_prompt(session, prompt)
+    return session.resume_for_system_recovery! if prompt == AutomatedPrompts::SYSTEM_RECOVERY
+
+    session.resume!
+    true
+  end
+
   # Attempt to immediately auto-continue a session after InterruptError.
   # Validates the session is resumable, clears stale metadata, transitions to
   # running, and enqueues a new job with a recovery prompt.
@@ -1903,7 +1929,7 @@ class AgentSessionJob < ApplicationJob
         metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
       )
 
-      session.resume! if session.may_resume?
+      session.resume_for_system_recovery!
 
       AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
 
