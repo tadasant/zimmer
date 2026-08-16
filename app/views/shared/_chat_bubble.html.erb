@@ -18,8 +18,8 @@
   <%# Overlay backdrop.
       Stacking: the Quick Router sits ABOVE the session detail drawer
       (sessions/index.html.erb: backdrop z-[60] / panel z-[65]) so it stays
-      reachable while the drawer is open, and BELOW the block-picker banner
-      (z-[70]) and the category-edit modal (z-[80]), which must remain on top. %>
+      reachable while the drawer is open, and BELOW the category-edit modal
+      (z-[80]), which must remain on top. %>
   <div data-chat-bubble-target="overlay"
        data-action="click->chat-bubble#close"
        class="hidden fixed inset-0 z-[66] bg-black/20 transition-opacity"></div>

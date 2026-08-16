@@ -12,9 +12,9 @@
 # layer down, where it holds for every writer.
 #
 # sessions.parent_session_id carried no foreign key at all, so a row-level delete of
-# a parent left its children pointing at a session that no longer exists. Its two
-# siblings — sessions.blocked_by_session_id and sessions.category_id — already pair
-# ON DELETE SET NULL with `dependent: :nullify`; parent_session_id now matches.
+# a parent left its children pointing at a session that no longer exists. Its sibling
+# sessions.category_id already pairs ON DELETE SET NULL with `dependent: :nullify`;
+# parent_session_id now matches.
 #
 # Postgres cannot ALTER an existing constraint's ON DELETE action, so each key is
 # dropped and re-added. Adding it in one shot would rescan the whole child table

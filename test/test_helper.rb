@@ -190,6 +190,14 @@ module ActiveSupport
     include LogCaptureHelpers
     include McpOauthTestHelpers
 
+    # The sessions dashboard shows `needs_input` only until the user filters. A
+    # test that is about something else — pagination, card chrome, category
+    # sections — asks for every status the way the UI does: an explicit Filters
+    # submit with no status ticked, which means "show all".
+    def every_status_params(extra = {})
+      { SessionsController::FILTERS_SUBMITTED_PARAM => "1" }.merge(extra)
+    end
+
     # Add more helper methods to be used by all tests here...
   end
 end

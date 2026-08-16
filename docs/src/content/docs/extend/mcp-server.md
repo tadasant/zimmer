@@ -92,7 +92,7 @@ but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartb
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
-`set_blocked`, `toggle_push_notifications` — are deliberately absent here: a session must not rewrite
+`toggle_push_notifications` — are deliberately absent here: a session must not rewrite
 its own capabilities, goal, or organizational placement through the server injected into it. (The
 *action* is narrowed, not the *target*: every tool takes a `session_id`, and a session is trusted to
 pass its own. See the caution above.)
@@ -110,8 +110,8 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
   `[]`: on an unrestricted connection an explicit empty array is a valid request for no servers
   ([omitted vs `[]`](/air/agent-roots/#omitting-a-list-is-not-the-same-as-asking-for-an-empty-one)),
   but here it is a removal and is rejected unless the root has no defaults to begin with.
-- `action_trigger` may only create, update, delete, or toggle triggers on an allowed root, and
-  `search_triggers` only shows those.
+- `action_trigger` may only create, update, delete, toggle, or invoke triggers on an allowed root,
+  and `search_triggers` only shows those.
 - `action_session`'s `change_mcp_servers` — and `change_plugins`, since plugins can bundle MCP
   servers — are refused outright.
 - `wake_me_up_when_session_changes_state` refuses to watch a session outside the allowed roots. (A
@@ -197,7 +197,7 @@ curated `self_session` set does not include it. See
 
 The action tools are verb-multiplexers: `action_session` takes an `action` enum (`follow_up`,
 `pause`, `restart`, `archive`, `unarchive`, `fork`, `change_model`, …), `action_trigger` takes
-`create` / `update` / `delete` / `toggle`, and so on. `tools/list` carries the full schema for each —
+`create` / `update` / `delete` / `toggle` / `invoke`, and so on. `tools/list` carries the full schema for each —
 ask the server rather than trusting this table.
 
 `action_trigger` reaches parity with the conditions the triggers form and the REST API can express.
@@ -216,9 +216,17 @@ the keys an incoming configuration omits. Replace semantics would destroy the ro
 with it, silently re-baselining a live trigger. Fetching a trigger by id through `search_triggers`
 prints each condition's id, which is what the array addresses.
 
+`action_trigger`'s `invoke` fires a trigger now, without waiting for a condition to match — the MCP
+half of `POST /api/v1/triggers/:id/invoke`, and the same fire the **Run Now** button on the trigger
+page performs. Pass `variables` to fill in the template's placeholders. The session is linked to the
+trigger and counts toward its fire counter, a `disabled` trigger can still be invoked (and is not
+re-armed by it), and the trigger's [burst cap](/sessions/triggers/#burst-control) still applies — over
+it the tool returns the burst-notice session, or reports that nothing was created. See [firing a
+trigger by hand](/sessions/triggers/#firing-a-trigger-by-hand).
+
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
-`change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`, `set_blocked`,
+`change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
 `toggle_push_notifications` — mirror the inline editors on the session page. List-valued fields
 (`mcp_servers`, `skills`, `hooks`, `plugins`) use **replace, not merge** semantics, and every id is
 validated against its catalog, so an unknown skill/hook/plugin id is rejected with the valid options

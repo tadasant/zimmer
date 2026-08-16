@@ -334,6 +334,47 @@ the group one more second to drain, then SIGKILLs it — and skips silently when
 already empty, which is the common case. A group we may not signal, or a sweep that fails, never
 downgrades the result: the leader is dead either way, and that is what the caller acted on.
 
+## What the dashboard shows you
+
+The dashboard opens on the sessions that are waiting for you and nothing else: **`needs_input`
+only**, out of the box. That is the point of the queue. Everything else — the run you started
+five minutes ago, the failures you already read, the trash — is one tick away in the **Filters**
+section in the sidebar.
+
+Filters is a single form covering four things: the search box, the **status** multi-select, the
+**scheduling class** narrowing, and an **Advanced** disclosure holding the agent-root, genesis and
+transcript-contents controls. One form, one Apply, and the whole filter state travels together.
+
+**Status is a multi-select over the five states, and selecting none means every status.** There is
+no separate trash toggle: `archived` is simply one of the five, so trash visibility is answered by
+the same control as everything else rather than by a second toggle arguing with it.
+
+| You want | Tick |
+| --- | --- |
+| The queue (the default) | `Needs input` |
+| Live work | `Waiting` + `Running` |
+| The trash | `Archived` |
+| Everything | nothing |
+
+Two behaviours are worth knowing:
+
+- **A selection persists.** Applying the form writes the statuses and the scheduling class to a
+  `sessions_filters` cookie, so the choice survives a reload and a bare visit to `/` — the same
+  shape of preference as the view-mode cookie. **Reset filters** deletes it and returns you to
+  `needs_input` only.
+- **The ticked boxes describe the result set in every view, search included.** Searching does not
+  quietly widen the status filter. That means a search from the default view returns `needs_input`
+  matches only — to search the trash, tick `Archived`; to search everything, tick nothing. The
+  status summary sits directly above the search box so the narrowing is visible rather than
+  surprising.
+
+The **scheduling class** is a filter rather than a search: it narrows whichever view you are in
+and leaves the category grid in place. A free-text query, an agent root, or a genesis *is* a
+search, and replaces the grid with a flat result list.
+
+The equivalent for an agent is `quick_search_sessions`, whose `status` argument takes one status
+or an array of them.
+
 ## Manual refresh
 
 The dashboard's refresh controls are the human counterpart to those background actors. There
@@ -372,11 +413,25 @@ Two actions stream a card as well, because a broadcast cannot reach one:
   Uncategorized, `#category_grid_<id>` for a category). Its own restore broadcast is a `replace`,
   and there is nothing left in the DOM to replace.
 
-`#unarchive` and `#pause` stream one more thing: the session page's own status badge and header
-actions. `Session#broadcast_status_change` already pushes both over the cable, but a broadcast is
-fire-and-forget and this whole change exists because a cable can be silently dead. The direct
-reply to the user's click cannot be lost, so a status-changing action carries its chrome rather
-than trusting the socket.
+`#archive`, `#unarchive` and `#pause` stream one more thing: the session page's own status badge
+and header actions. `Session#broadcast_status_change` already pushes both over the cable, but a
+broadcast is fire-and-forget and this whole change exists because a cable can be silently dead.
+The direct reply to the user's click cannot be lost, so a status-changing action carries its
+chrome rather than trusting the socket. Both targets are absent when the click came from a
+dashboard card, where those streams are a no-op.
+
+That chrome is what makes trashing from the session page itself work: it leaves you on the page,
+with the toast and its **Undo**, and the button you just clicked turns into **Restore**. Only the
+dashboard card's Trash takes something out from under you, and all it takes is the card.
+
+A stream only happens if the client asks for one, and that is a client-side property, not a
+controller one. The card's Trash link carries `data-turbo-method`, so Turbo builds the request
+and sends `Accept: text/vnd.turbo-stream.html`. The detail header's Trash button — the one the
+session drawer puts in front of you — builds its own form in `archive_countdown_controller`
+instead, and has to submit it with `requestSubmit()`. A native `form.submit()` fires no `submit`
+event, so Turbo never sees the submission: the browser POSTs for real, `#archive` answers on its
+`format.html` branch, and the redirect reloads the dashboard from the top, discarding the scroll
+offset the drawer was opened over.
 
 Every one of these actions keeps its `format.html` branch, which still redirects with a real
 flash. That is what a non-Turbo client — and most of the controller test suite — gets.

@@ -136,6 +136,7 @@ Rails.application.routes.draw do
       resources :triggers do
         member do
           post :toggle
+          post :invoke
         end
         collection do
           get :channels
@@ -323,8 +324,6 @@ Rails.application.routes.draw do
       patch :toggle_heartbeat
       patch :update_heartbeat_interval
       patch :set_category
-      patch :mark_blocked
-      patch :unmark_blocked
       get :timeline_items
       get :transcript
       post :fork

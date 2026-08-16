@@ -573,6 +573,20 @@ gap is worth naming precisely:
   Today every one of them is (`SLACK_BOT_TOKEN`, `STRAD_API_KEY`, `ZIMMER_PROD_API_KEY`). The first
   externalized-but-not-secret variable — an org slug, a model id, a base URL — will start being scrubbed
   out of every transcript that mentions it.
+- **A line the patterns cannot finish scanning is destroyed rather than redacted.** The rules carry
+  their own 10-second timeout instead of Rails' global one-second cap. Both bound a single search, and
+  the slowest single search any transcript here has produced is 2.2 s, so there is a factor of four in
+  hand. If the 10 s is reached anyway, the pass retries line by line and replaces the offending line
+  with `[REDACTED:UNSCANNABLE_LINE]` — the line count survives, nothing unscanned is emitted, and that
+  line's content is gone. It is the least bad of three bad options; the other two are dropping the
+  whole transcript update, which is what [#472](https://github.com/tadasant/zimmer/issues/472) was,
+  and emitting a line no pattern finished looking at.
+- **That guarantee covers the pattern pass, not the PEM block walk.** `scan_patterns` is the part that
+  cannot raise on a timeout. The line walk that finds multi-line PEM armor still can, in principle:
+  its three regexps carry the same 10-second timeout, but they are not rescued, because "assume a
+  timeout means key material" closes a block at one of their call sites and opens one at another, and
+  four different fallbacks for a case none of them can reach is worse than the gap. They are
+  literal-prefixed or `\A`-anchored, so a non-armor line fails at the first character.
 
 None of this changes what a transcript is. Do not treat one as safe to expose because it has been
 through the redactor; the endpoint serving it still has no authorization check, and redaction lowers the
@@ -961,6 +975,20 @@ the agent and, on Claude, the servers that inherit its environment — but on Co
 The asymmetry is silent, which is the part worth knowing: a server that reads a variable it never
 received behaves as if the operator never set it. A catalog entry that names the variable in its own
 `env`/`env_vars` is the way through today.
+
+### The npx bin-permission repair only reaches Claude sessions, and only on the next launch
+
+`NpxBinExecutableGuard` restores the execute bit on `_npx` bin targets that a package published
+without one — the failure that orphaned production session 4388 three times in 31 minutes
+([#467](https://github.com/tadasant/zimmer/issues/467)). Two edges come with it.
+
+It runs from `ClaudeSpawnEnv#configure_mcp_env`, so a Codex session never calls it. Codex also never
+sets `NPM_CONFIG_CACHE`, so its npx servers install into the host-shared `~/.npm` cache, which the
+guard's clones-base safety check would refuse to touch anyway.
+
+And it repairs the tree it finds on the way *in*, so a package that installs broken during a launch
+is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
+A session recovers by itself; it does not connect on the first attempt.
 
 ### Extension env contributions are unreachable from Codex
 
@@ -2183,6 +2211,13 @@ All four are open issues:
 
 Also:
 
+- **Live card updates ignore the status filter.** The dashboard broadcasts on one global stream and
+  the server cannot know which statuses a given browser has ticked, so it only special-cases
+  `archived`. With the default `needs_input`-only view, a session that transitions out of
+  `needs_input` has its card replaced in place rather than removed, and a newly created `waiting`
+  session is prepended into a grid that filters it out. Both correct themselves on the next reload.
+  Fixing it properly means either per-filter stream names or a client that re-evaluates the filter
+  on each broadcast.
 - Notes autosave as you type (a 1.5s debounce) and flush again on disconnect via a keepalive
   `fetch`. The disconnect flush is best-effort, so an abrupt close can drop the last sub-debounce
   keystrokes — not the note.

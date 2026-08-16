@@ -29,7 +29,7 @@ module RuntimeRegistry
   # `air_adapter_name` is the AIR CLI adapter id this runtime is prepared with
   # (`air prepare <adapter>`): claude → "claude", codex → "codex".
   # `config_post_processor_class` applies Zimmer-specific tweaks to the MCP config
-  # AIR writes (server injection, env retargeting, secret/npx rewrites) in the
+  # AIR writes (server injection, env retargeting, secret resolution) in the
   # runtime's native format (`.mcp.json` for Claude, `.codex/config.toml` for
   # Codex).
   Bundle = Struct.new(

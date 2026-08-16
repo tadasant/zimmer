@@ -2,7 +2,8 @@
 
 module Mcp
   module Tools
-    # Mirrors POST/PATCH/DELETE /api/v1/triggers and POST /api/v1/triggers/:id/toggle.
+    # Mirrors POST/PATCH/DELETE /api/v1/triggers, POST /api/v1/triggers/:id/toggle
+    # and POST /api/v1/triggers/:id/invoke.
     #
     # Two ways to express a trigger's conditions, because a Trigger ORs its
     # conditions and the flat contract can only describe one of them:
@@ -26,7 +27,7 @@ module Mcp
     # would destroy the row and take its cursors with it, silently re-baselining a
     # live trigger; an omitted-means-untouched upsert cannot.
     class ActionTrigger < Tool
-      ACTIONS = %w[create update delete toggle].freeze
+      ACTIONS = %w[create update delete toggle invoke].freeze
       TRIGGER_TYPES = %w[slack schedule github_label github_issue].freeze
       # Derived from the model, not re-declared, so the tool cannot drift behind
       # it. `failed` is subtracted because it is Zimmer's to set — ScheduleTriggerJob
@@ -40,7 +41,7 @@ module Mcp
       tool_name "action_trigger"
 
       description <<~DESC
-        Create, update, delete, or toggle automation triggers.
+        Create, update, delete, toggle, or invoke automation triggers.
 
         **Actions:**
         - **create**: Create a new trigger (requires name, trigger_type, agent_root_name, prompt_template)
@@ -52,6 +53,14 @@ module Mcp
           `ao_event` wake is weaker: it only fires when the session it watches transitions AGAIN,
           so if that session has already finished, re-arming delivers nothing and the session
           waiting on it must be resumed directly.
+        - **invoke**: Fire a trigger NOW (requires "id"), without waiting for a condition to match —
+          the same thing the Invoke button on the trigger page does. The session is linked to the
+          trigger and counts toward its fire counter, and a reuse trigger follows up its target
+          session rather than spawning a new one. Pass `variables` to fill in the template's
+          `{{...}}` placeholders. Status is not consulted: a `disabled` trigger can still be
+          invoked, which is how you test one before enabling it. The trigger's burst cap still
+          applies — over it, the fire produces a burst-notice session or nothing at all, and the
+          result says which.
 
         **Conditions (OR semantics):** a trigger fires when ANY of its conditions matches.
         Two ways to say so:
@@ -131,7 +140,7 @@ module Mcp
         type: "object",
         properties: {
           action: { type: "string", enum: ACTIONS, description: "Action to perform." },
-          id: { type: "number", description: "Trigger ID. Required for update, delete, toggle." },
+          id: { type: "number", description: "Trigger ID. Required for update, delete, toggle, invoke." },
           name: { type: "string", description: "Trigger name. Required for create." },
           trigger_type: {
             type: "string",
@@ -159,6 +168,13 @@ module Mcp
             type: "array",
             items: { type: "string" },
             description: "MCP servers for triggered sessions."
+          },
+          variables: {
+            type: "object",
+            description: "For the \"invoke\" action: values for the prompt template's placeholders. " \
+                         "Recognized keys are #{Trigger::USER_INPUT_VARIABLES.join(', ')} — anything else is " \
+                         "ignored, and a placeholder the template names but this omits interpolates as an " \
+                         "empty string. {{time}} and {{date}} fill themselves in."
           },
           configuration: {
             type: "object",
@@ -205,6 +221,7 @@ module Mcp
         when "update" then update(args)
         when "delete" then destroy(args)
         when "toggle" then toggle(args)
+        when "invoke" then invoke(args)
         else raise ToolError, "Unknown action \"#{args['action']}\""
         end
       end
@@ -328,6 +345,46 @@ module Mcp
           - **Name:** #{trigger.name}
           - **New Status:** #{trigger.status}
         TEXT
+      end
+
+      # Fire the trigger now. Triggers::ManualFire is the same service the Invoke
+      # button calls, so the session is linked to the trigger, counts toward its
+      # fire counter and honours the burst cap identically — the genesis is the
+      # only thing that differs, and it differs because the caller does.
+      def invoke(args)
+        trigger = find_trigger(args["id"], "invoke")
+        enforce_allowed_root!(trigger.agent_root_name)
+
+        variables = args["variables"].is_a?(Hash) ? args["variables"] : {}
+        result = Triggers::ManualFire.call(trigger: trigger, genesis: SessionGenesis::API, variables: variables)
+
+        session = result.session
+
+        # `not_reusable` can still hand back the target session it declined to
+        # reuse, so "did a session come back" is the wrong question here — "did
+        # anything fire" is.
+        unless result.fired? || result.outcome == :burst_notice
+          lines = [ "## Trigger Not Fired", "", result.message ]
+          lines << "\nTarget session: #{session.id} — #{session_url(session)}" if session
+          return lines.join("\n")
+        end
+
+        <<~TEXT.strip
+          #{result.fired? ? '## Trigger Invoked' : '## Trigger Invoked — Burst Notice'}
+
+          - **Trigger:** #{trigger.id} — #{trigger.name}
+          - **Session:** #{session.id}#{" (#{session.slug})" if session.slug.present?}
+          - **Session Status:** #{session.status}
+          - **Session URL:** #{session_url(session)}
+          - **Sessions Created (lifetime):** #{trigger.reload.sessions_created_count}
+
+          #{result.message}
+        TEXT
+      rescue AgentRootsConfig::AgentRootNotFoundError => e
+        # Every other failure mode of this tool reaches the caller as a readable
+        # tool error it can act on; an unresolvable agent root must too, rather
+        # than escaping as a protocol-level error the model never sees.
+        raise ToolError, "Invalid agent_root: #{e.message}"
       end
 
       # The flat pair and the array describe the same thing two different ways, so

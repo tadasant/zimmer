@@ -44,7 +44,7 @@ class TurboStreamsTest < ApplicationSystemTestCase
     running_session = sessions(:running)
     waiting_session = sessions(:waiting)
 
-    visit root_path
+    visit root_path(every_status_params)
 
     # Running session should have green badge
     within "turbo-frame#session_#{running_session.id}" do
@@ -88,7 +88,7 @@ class TurboStreamsTest < ApplicationSystemTestCase
       created_at: 3.hours.ago
     )
 
-    visit root_path
+    visit root_path(every_status_params)
 
     # Check each timestamp format
     within "turbo-frame#session_#{recent_session.id}" do
