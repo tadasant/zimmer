@@ -19,6 +19,37 @@ class ClaudeAccountNeedsReauthTest < ActiveSupport::TestCase
     end
   end
 
+  # The regression test for the gap the fresh-eyes review found: the bare
+  # `update!` above passes even when the every-5-minutes refresh sweep — the
+  # likeliest discoverer of a dead refresh token — cannot alert at all.
+  #
+  # RefreshRuntimeAuthTokensJob wraps the refresh in an OUTER `account.with_lock`,
+  # and ClaudeAuthProvider#refresh! reloads on its failure branch to classify the
+  # error. `with_lock` opens a transaction without `requires_new`, so the write
+  # and the reload land in one transaction and the commit callback fires only
+  # after both. `reload` nils the dirty state, so a commit-time
+  # `saved_change_to_status?` sees nothing and the DM is skipped.
+  #
+  # Driven through the real ClaudeAuthProvider#refresh! and the real nesting, so
+  # that a future change which reintroduces the commit-time dirty read fails here.
+  test "the refresh sweep's reload-inside-the-transaction still alerts" do
+    account = @account
+    account.stubs(:refresh_token!).returns(false)
+
+    assert_enqueued_with(job: AccountReauthAlertJob, args: [ account.id ]) do
+      account.with_lock do
+        # What perform_claude_refresh!'s permanent-failure branch does, inside the
+        # lock the provider call is nested in.
+        account.update!(status: :needs_reauth)
+
+        # ...and this is the reload that used to erase the evidence of it.
+        result = ClaudeAuthProvider.new.refresh!(account)
+        assert_not result.ok?
+        assert_equal :needs_reauth, result.error
+      end
+    end
+  end
+
   test "a save that does not touch status enqueues nothing" do
     assert_no_enqueued_jobs(only: AccountReauthAlertJob) do
       @account.update!(priority: 7)
