@@ -277,44 +277,76 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "**A blocker that is already somebody else's job.**"
     assert_includes prompt, "Red CI on `main` from a failure unrelated to your diff",
       "expected the canonical tell — an unrelated failure on the base branch — to be named"
-    assert_includes prompt, "wearing the costume of a human handoff",
+    assert_includes prompt, "the costume of a human handoff",
       "expected the prompt to explain why this case gets escalated despite being a machine wait"
+  end
+
+  # Reason 2 parks a session on an open PR, so without this carve-out the two
+  # rules collide on exactly the case that motivated the bullet: a PR that is
+  # not green because its base is red.
+  test "the blocked-by-a-session rule is reconciled with reason 2's open-PR parking" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "Reason 2 does not cover it: that parks a *finished* PR awaiting a merge decision"
   end
 
   test "the blocked-by-a-session rule tells the agent to search for the session working the blocker" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "**Look before you escalate:**"
+    assert_includes prompt, "**Look before you escalate.**"
     assert_includes prompt, "`quick_search_sessions`",
       "expected the search tool to be named so the agent can actually go looking"
-    assert_includes prompt, "rather than assuming nobody is on it"
+    # quick_search_sessions lives in the `sessions` tool group, which is not part
+    # of the self_session set injected into every session — and it matches titles
+    # only. Both caveats are stated so the step does not dead-end.
+    assert_includes prompt, "if you have a sessions-scoped MCP server"
+    assert_includes prompt, "it matches titles only, so scan rather than keyword-search"
+    assert_includes prompt, "check the tracking issue for a linked session or PR"
   end
 
   test "the blocked-by-a-session rule requires all three state wakes plus a deadline backstop" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "set `wake_me_up_when_session_changes_state` on that session for **all three**"
+    assert_includes prompt, "set `wake_me_up_when_session_changes_state` on that session for all three of"
     assert_includes prompt, "`session_archived`, `session_needs_input` and `session_failed`"
     # A clean finish self-archives without ever passing through needs_input, so a
     # lone needs_input wake never fires — the reason all three are required.
-    assert_includes prompt, "self-archives without ever passing through `needs_input`"
-    assert_includes prompt, "paired with a `wake_me_up_later` deadline as a backstop"
-    # A fired one-time wake destroys the session's other one-time wakes.
-    assert_includes prompt, "re-register on every wake round"
-    assert_includes prompt, "not as proof that anyone finished"
+    assert_includes prompt, "a clean finish self-archives without passing through `needs_input`"
+    assert_includes prompt, "plus a `wake_me_up_later` deadline as a backstop"
+    # Trigger#destroy_sibling_wakes! keys on last_session_id — the requester's
+    # own wakes are the ones destroyed, not the watched session's.
+    assert_includes prompt, "A fired one-time wake destroys your other one-time wakes"
+    assert_includes prompt, "re-register every round"
+    assert_includes prompt, "a wake means re-poll and decide, not that anyone finished"
   end
 
   test "the blocked-by-a-session rule bounds the wait and names the honest escalation" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     # Resuming the work is the point — waking up is not the finish line.
-    assert_includes prompt, "go back and finish your own job",
+    assert_includes prompt, "When the blocker clears, finish your own job: re-run CI against the fixed base",
       "expected the agent to be told to resume its own work once the blocker clears"
-    assert_includes prompt, "instead of leaving it half-done for the human"
     assert_includes prompt, "still blocked after ~3 hours",
       "expected a concrete upper bound so the wait is not open-ended"
     assert_includes prompt, "\"Somebody else's fix is in flight\" is not an escalation; " \
       "\"nobody is on it and I can't change that\" is."
+  end
+
+  # The heading counts the bullets, so adding a fifth without renumbering leaves
+  # the prompt lying to every session. The golden fixture would happily absorb
+  # that, so assert the word against the actual bullet count.
+  test "the non-reasons heading counts the bullets that follow it" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    list = prompt[/^(\w+) things that look like reasons to park and are not:\n\n((?:- \*\*.+\n)+)/]
+    refute_nil list, "expected the non-reasons list to be found"
+
+    counted = Regexp.last_match(1)
+    bullets = Regexp.last_match(2).lines.count
+
+    assert_equal 4, bullets, "expected four non-reasons-to-park bullets"
+    assert_equal "Four", counted,
+      "the heading says #{counted.inspect} but #{bullets} bullets follow it"
   end
 
   test "session lifecycle principle scopes the Slack #updates rule to sessions with a Slack server" do
