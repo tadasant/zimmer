@@ -2663,9 +2663,16 @@ neither is the integrated thing.
 
 This is the gap that let that outage ship: every automated check asserted the worker
 container was *shaped* correctly (right runtime, right uid map, inner daemon answering) and
-none asserted it was *working*. Turning nested Docker on therefore still owes a staging run
-that boots a real worker under `--runtime=sysbox-runc --user 0:0` and watches it claim and
-finish a job — see [Nested Docker for agent sessions](/operate/nested-docker/).
+none asserted it was *working*.
+
+The integrated coverage lives in the `Deploy staging` workflow rather than in CI, because
+running it needs a sysbox host and CI has none: it preflights the droplet by starting a real
+sysbox container, and after the cutover asserts the worker is user-namespaced, has no host
+socket, answers `docker version` as uid 1000, and kept `HOME` through the privilege drop.
+That is still a *staging* signal, not a CI one — the suite itself will keep asserting only
+the shape, and a `main` that is green says nothing about whether the nested path works.
+Production remains off by default and owes its own staging-proven rollout — see
+[Nested Docker for agent sessions](/operate/nested-docker/).
 
 ---
 

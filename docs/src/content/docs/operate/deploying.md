@@ -122,6 +122,13 @@ role (`config/deploy.staging.yml`), alongside the `web` role — so cron, poller
 token refresh, and catalog refresh all run. The deploy workflow asserts the worker container is up
 before it reports success.
 
+On **staging** the worker role also runs under the `sysbox-runc` runtime as container-root, so agent
+sessions get their own Docker daemon inside it and can use `.agent-containers/`. `Deploy staging`
+carries a `nested_docker` dispatch input, **on by default**; unchecking it deploys the worker under
+plain `runc` as uid 1000, which is the rollback. The workflow preflights the droplet for sysbox before
+the cutover and verifies the running worker after it. Production is unaffected and still defaults off —
+see [Nested Docker for agent sessions](/operate/nested-docker/).
+
 Both roles mount the same durable named volumes, so state survives a deploy and a container recreate:
 
 - `zimmer_data` → `/home/rails/.zimmer` — the clones (`~/.zimmer/clones`) and scratch.

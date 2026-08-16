@@ -93,6 +93,36 @@ app_running() {
 # clone — create and boot a new isolated session
 # --------------------------------------------------------------------------- #
 
+# Set only while cmd_clone is between "the clone directory exists" and "the stack is
+# up". Empty at every other moment, which is what keeps the trap below a no-op for
+# every other command.
+PARTIAL_CLONE_NAME=""
+
+# `clone` is a long sequence of steps under `set -e` — checkout, build, setup.sh,
+# run.sh — and any one of them aborting used to leave the clone directory behind,
+# usually alongside a half-built stack. That is not merely untidy: `session_exists`
+# is a plain directory test, so the obvious retry (`clone` with the same name) then
+# died with "session 'x' already exists (use 'destroy' first)" — and `destroy` on a
+# session that never finished booting is not an obvious thing to reach for. The only
+# way forward was a manual `rm -rf` of a path the script never printed.
+#
+# A stack that boots but fails its health check is deliberately NOT swept: that is a
+# running stack to inspect with `logs`, which is why the trap is disarmed before the
+# health wait rather than after it.
+cleanup_partial_clone() {
+  local status=$?
+  trap - EXIT INT TERM
+  if (( status != 0 )) && [[ -n "$PARTIAL_CLONE_NAME" ]]; then
+    err "clone failed (exit ${status}) — removing the partial session '${PARTIAL_CLONE_NAME}'"
+    # Best-effort: the stack may never have been created, and a compose error here
+    # must not mask the real failure or block the directory removal.
+    compose "$PARTIAL_CLONE_NAME" down -v --remove-orphans >/dev/null 2>&1 || true
+    rm -rf "$(session_dir "$PARTIAL_CLONE_NAME")"
+    err "Removed. Retry with: $0 clone ${PARTIAL_CLONE_NAME}"
+  fi
+  exit "$status"
+}
+
 cmd_clone() {
   local name="${1:-}"
   local branch="${2:-}"
@@ -104,6 +134,11 @@ cmd_clone() {
   if session_exists "$name"; then
     die "session '$name' already exists at $dir (use 'destroy' first, or pick another name)"
   fi
+
+  # Armed before the directory can exist, so nothing this command creates can outlive
+  # a failure. See cleanup_partial_clone above.
+  PARTIAL_CLONE_NAME="$name"
+  trap cleanup_partial_clone EXIT INT TERM
 
   log "Cloning $SOURCE_REPO → $dir"
   mkdir -p "$SESSIONS_DIR"
@@ -127,6 +162,11 @@ cmd_clone() {
 
   local port; port="$(host_port "$name")"
   [[ -n "$port" ]] || die "could not determine host port for session '$name'"
+
+  # The stack is up and addressable. Everything past this point — the health wait, the
+  # tmux window — leaves something worth keeping and inspecting, so stop sweeping.
+  PARTIAL_CLONE_NAME=""
+  trap - EXIT INT TERM
 
   log "Waiting for http://localhost:${port}/up (timeout ${HEALTH_TIMEOUT}s)"
   if wait_for_health "$port"; then
