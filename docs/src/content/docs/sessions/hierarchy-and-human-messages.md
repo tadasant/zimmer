@@ -66,6 +66,10 @@ by the whole fleet, so it establishes a caller but not a session, and the MCP en
 session is byte-identical across all of them. Omitting `acting_session_id` records nothing, which is
 the right answer for a human with a curl command or an MCP client.
 
+`action_session` `archive` accepts `acting_session_id` too, but it records **no edge** — archiving a
+session is not taking it over. There it is provenance only, named on the archived session's own
+timeline; see [the archive line](/sessions/lifecycle/#the-archive-line-names-who-did-it).
+
 Read an uncle edge as **a claim of seniority, not proof of one**. See
 [Limitations](/limitations/) for what that means for provenance.
 
