@@ -340,11 +340,46 @@ Five of those fields are easy to misread:
 ## Triggers
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,
-limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` · `GET /triggers/channels`
-(Slack; 503 when Slack is unconfigured).
+limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` ·
+`POST /triggers/:id/invoke` · `GET /triggers/channels` (Slack; 503 when Slack is unconfigured).
 
-Conditions are nested via `trigger_conditions_attributes`. The web UI's `triggers#invoke` route has
-no API equivalent.
+Conditions are nested via `trigger_conditions_attributes`.
+
+`POST /triggers/:id/invoke` fires the trigger now, without waiting for one of its conditions to
+match — the same fire the Invoke button on the trigger page performs, through the same code path. The
+session is linked to the trigger, counts toward `sessions_created_count`, and a reuse trigger follows
+up its target session rather than spawning a new one. `status` is not consulted: a `disabled` trigger
+can still be invoked, which is how you test one before enabling it — `status` governs whether the
+trigger's own *conditions* fire it, not whether a caller may.
+
+Send `variables` — an object keyed by the prompt template's placeholders (`link`, `text`, `author`,
+`channel`, `event`, `repo`, `number`, `title`, `labels`) — to fill them in. Any other key is ignored,
+a placeholder the template names but the request omits interpolates as an empty string, and
+`{{time}}`/`{{date}}` fill themselves in. All of them take a string; `labels` also takes an array,
+which is joined with commas.
+
+```bash
+curl -X POST https://zimmer.example.com/api/v1/triggers/12/invoke \
+  -H "X-API-Key: $ZIMMER_API_KEY" -H "Content-Type: application/json" \
+  -d '{"variables": {"link": "https://example.com/msg/1", "channel": "eng-alerts"}}'
+```
+
+`201 Created` returns `{trigger, session, burst_notice, message}` — `session` is the compact
+`{id, slug, title, status, created_at}` shape `recent_sessions` uses, and `trigger` is the full
+payload with its counters already updated. Two outcomes are not ordinary successes:
+
+- **`burst_notice: true`** (still 201) — the trigger blew its [burst
+  cap](/sessions/triggers/#burst-control), so `session` is the burst-notice session it spawned
+  instead of the one you asked for.
+- **429 Too Many Requests** (`error: "Burst suppressed"`) — the trigger is inside a burst it has
+  already announced, so nothing at all was created.
+
+A one-time reuse trigger whose target session is gone or is no longer reusable returns 422
+(`error: "No session created"`), with `session` carrying that target when the row still exists and
+`null` when it does not. An agent root that cannot be resolved returns 422
+(`error: "Invalid agent_root"`).
+
+The MCP equivalent is `action_trigger` with `action: "invoke"`.
 
 `max_sessions_per_minute` (integer, nullable) sets the trigger's [burst
 cap](/sessions/triggers/#burst-control); `null` — the default — means unbounded. The trigger payload
