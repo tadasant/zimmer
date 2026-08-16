@@ -313,6 +313,28 @@ root password**, which mails a new one *and* force-expires it again (`lastchg=0`
 buys you a console also re-breaks `:2222` until the next staging deploy converges it, or until
 `scripts/clear-root-password-expiry.sh` is run against the box.
 
+### A node can report Online while every connection to it times out
+
+`tailscale status` and the Tailscale API both answer from the **control plane**: `Online`,
+`connectedToControl` and `lastSeen` say the node is holding its control connection, not that a packet
+can reach it. Those are different things, and they come apart under load. A host thrashing on memory
+starves `tailscaled` of the CPU it needs to service the data path, so every connection — `:22`, `:2222`,
+HTTP over the tailnet — times out with no TCP handshake at all, for minutes at a stretch, while the
+control connection (long-lived, cheap, already established) keeps reporting the node perfectly healthy.
+
+The failure looks like a network fault and is actually a capacity fault. Two things mislead you:
+
+- **`Connection timed out`, not `refused`.** Nothing is rejecting the connection, so it reads like a
+  firewall or a routing problem. It is neither.
+- **Every control-plane check passes.** `Reap stale tailnet node` sees a healthy node, and the deploy's
+  `Prepare Kamal SSH + resolve host` step gates on `.Online==true` — so it resolves the host
+  successfully and the *next* step fails to reach it seconds later.
+
+`scripts/clear-root-password-expiry.sh` distinguishes the two cases and says which one it hit, because
+its advice differs: an unreachable host is not a broken password and will not repair by hand over the
+same `:22` that just timed out. When you see that message, look at the host's memory and load — start
+with `dmesg -T | grep -i "killed process"` — rather than at its SSH configuration.
+
 ### 🔴 The database's connection ceiling is a plan property, and Terraform will not raise it for you
 
 Zimmer's connection promise is derived and checked ([the connection

@@ -25,7 +25,7 @@
 set -euo pipefail
 
 HOST="${1:?usage: clear-root-password-expiry.sh <tailnet-host-or-ip>}"
-ATTEMPTS="${ATTEMPTS:-5}"
+ATTEMPTS="${ATTEMPTS:-6}"
 
 # accept-new + /dev/null: a rebuilt droplet has a new host key (staging does not pin one),
 # and BatchMode alone would just fail on the unknown key instead of prompting.
@@ -47,26 +47,66 @@ repair='
   chage -l root | grep -E "Last password change|Password expires"
 '
 
-# Retried: on a freshly-rebuilt box this runs moments after the node reports Online, while
-# cloud-init is still working. sshd may not be serving yet, and unattended-upgrades can hold
-# the /etc/passwd lock ("usermod: cannot lock /etc/passwd; try again later").
+# Retried with backoff, for two different transients. On a freshly-rebuilt box this runs
+# moments after the node reports Online, while cloud-init is still working: sshd may not be
+# serving yet, and unattended-upgrades can hold the /etc/passwd lock ("usermod: cannot lock
+# /etc/passwd; try again later"). It also has to outlast a box that is briefly off the
+# tailnet -- a host thrashing on memory starves tailscaled, and every connection to it times
+# out for MINUTES while the control plane still reports the node Online. A flat 15s gap was
+# sized for the boot case and is too short for the second one.
+transport_failures=0
+
 for attempt in $(seq 1 "$ATTEMPTS"); do
   echo "Clearing any forced root-password expiry on ${HOST} (Tailscale SSH, :22) — attempt ${attempt}/${ATTEMPTS}…"
 
-  if ssh "${SSH_OPTS[@]}" root@"${HOST}" "$repair"; then
+  # Not `if ssh …`: the exit status is the only thing separating "never got a connection"
+  # from "ran the repair and it failed", and those two need different advice at the end.
+  set +e
+  ssh "${SSH_OPTS[@]}" root@"${HOST}" "$repair"
+  rc=$?
+  set -e
+
+  if [ "$rc" -eq 0 ]; then
     echo "✅ root password neutralized and aging disabled on ${HOST}"
     exit 0
   fi
 
+  # 255 is ssh's own failure (connect timed out, host unreachable, auth rejected), not a
+  # status forwarded from the remote command. It conflates connection and auth failures,
+  # but both mean the same thing here: the repair did not run.
+  if [ "$rc" -eq 255 ]; then
+    transport_failures=$((transport_failures + 1))
+    echo "   could not reach ${HOST} over Tailscale SSH (ssh exit 255)"
+  else
+    echo "   reached ${HOST}, but the repair exited ${rc}"
+  fi
+
   # `if`, not `[ … ] && sleep`: on the last attempt that AND-list returns 1, and under
-  # `set -e` it would exit here, swallowing the diagnostics below.
+  # `set -e` it would exit here, swallowing the diagnostics below. Same reason the clamp
+  # below is an `if` rather than `[ … ] && backoff=60`.
   if [ "$attempt" -lt "$ATTEMPTS" ]; then
-    sleep 15
+    backoff=$(( attempt * 15 ))
+    if [ "$backoff" -gt 60 ]; then
+      backoff=60
+    fi
+    sleep "$backoff"
   fi
 done
 
-echo "::error::Could not clear the forced root-password expiry on ${HOST} after ${ATTEMPTS} attempts."
-echo "::error::Leaving it unrepaired would mean publickey auth on :2222 succeeds and then EVERY session"
-echo "::error::is rejected by pam_unix -- the ssh-agent-mcp-server healthcheck fails and nobody can get a"
-echo "::error::shell. Tailscale SSH (tailnet :22) still works, so repair it there by hand."
+# Both branches exit 1 -- an unrepaired box is a broken box either way, and a deploy that
+# carried on would leave :2222 answering publickey and then refusing every session. What
+# differs is where the operator should go and look.
+if [ "$transport_failures" -eq "$ATTEMPTS" ]; then
+  echo "::error::Could not REACH ${HOST} on any of ${ATTEMPTS} attempts. The repair never ran, so root's"
+  echo "::error::password expiry is still whatever it already was: this is a reachability problem, not a"
+  echo "::error::repair problem. Tailscale SSH (:22) is the path that failed, so it will not work by hand"
+  echo "::error::either -- do not go looking for a broken password. Check the host: a box thrashing on"
+  echo "::error::memory starves tailscaled and times out every connection for minutes at a stretch, while"
+  echo "::error::the control plane still reports the node Online (so \`tailscale status\` looks fine)."
+else
+  echo "::error::Reached ${HOST}, but could not clear the forced root-password expiry after ${ATTEMPTS} attempts."
+  echo "::error::Leaving it unrepaired would mean publickey auth on :2222 succeeds and then EVERY session"
+  echo "::error::is rejected by pam_unix -- the ssh-agent-mcp-server healthcheck fails and nobody can get a"
+  echo "::error::shell. Tailscale SSH (tailnet :22) still works, so repair it there by hand."
+fi
 exit 1
