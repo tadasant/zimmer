@@ -309,6 +309,26 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal true, result.fork_session.metadata["clone_scaffolded"]
   end
 
+  # The safety property, pinned at the argument boundary rather than only at the
+  # refusal upstream of it: an automatic generation must never ask the fork
+  # service to scaffold. A "simplification" of `scaffold_missing_clone: force` to
+  # a bare `true` would start paying to stand a fork up for sessions nobody is
+  # looking at, and every other test here would still pass.
+  test "only a forced generation asks the fork service to scaffold" do
+    asked = []
+    recorder = Class.new do
+      define_singleton_method(:call) do |**args|
+        asked << args[:scaffold_missing_clone]
+        ForkSessionService::Result.new(success?: false, error: "stop here")
+      end
+    end
+
+    SessionStatusSummaryGenerator.call(session: @session, fork_service: recorder, file_system: @fs)
+    SessionStatusSummaryGenerator.call(session: @session, force: true, fork_service: recorder, file_system: @fs)
+
+    assert_equal [ false, true ], asked
+  end
+
   # The other half of the bargain: nothing is stood up for a session nobody is
   # looking at. An automatic generation still wants a real clone.
   test "an automatic generation on a session whose clone is gone is unavailable" do

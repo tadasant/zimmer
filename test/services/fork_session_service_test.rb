@@ -1134,6 +1134,29 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_equal true, result.forked_session.metadata["clone_scaffolded"]
   end
 
+  # The guard against over-scaffolding, and the mirror of "a source clone that
+  # vanishes while the session is live is not retried and still pages". An
+  # exhausted retry budget on a LIVE tree — its own agent churning `vendor/bundle`
+  # under the copy — raises the same shape of ENOENT as a tree being deleted. That
+  # is a genuine copy failure, and scaffolding over it would swallow the alert.
+  test "an exhausted retry budget on a live source clone fails rather than scaffolding" do
+    clone = @clone_path
+    @mock_fs.define_singleton_method(:cp_r) do |_src, _dest, exclude: []|
+      raise Errno::ENOENT.new(File.join(clone, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"))
+    end
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      scaffold_missing_clone: true
+    )
+
+    assert_not result.success?
+    assert_equal "Failed to create forked clone directory", result.error
+    assert_not result.source_clone_discarded
+  end
+
   # Scaffolding is opt-in, and it does not swallow a fault that has nothing to do
   # with the source tree. An ENOENT from anywhere else still fails the fork.
   test "scaffolding does not rescue an ENOENT that is not the source clone" do

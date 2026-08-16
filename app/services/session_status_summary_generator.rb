@@ -82,14 +82,17 @@ class SessionStatusSummaryGenerator
 
   # The instance half of the class method above.
   #
-  # A reason a FORCED run must resolve on the panel carries `:unavailable` — #call
-  # keys the failure it records off that symbol, so a new structural reason added
-  # here as `:skipped` would silently reintroduce the spinner this exists to kill.
-  #
   # The first two are genuinely impossible and refuse whatever the caller wants:
   # a fork asked to summarize itself has nothing to say, and a session with no
   # transcript has nothing to say it about. A missing clone is not in that class
-  # — a forced run scaffolds one — so it only refuses an automatic run.
+  # — a forced run scaffolds one — so it only refuses an automatic run, and is
+  # the only reason here that carries `:unavailable`.
+  #
+  # Every reason a FORCED run can hit is therefore answered by the three surfaces
+  # BEFORE they enqueue, which is what keeps the panel off a spinner that never
+  # resolves. A new reason that a forced run cannot resolve has to be answered the
+  # same way — and, since #call would then reach it with a claim already taken,
+  # would need #call to record it against the record on the way out.
   def unavailable_reason
     if session.status_summary_fork?
       Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
@@ -101,15 +104,12 @@ class SessionStatusSummaryGenerator
   end
 
   def call
+    # Nothing is recorded against the panel here. Every refusal a forced run can
+    # reach is one the three request surfaces already answered from
+    # #unavailable_reason before enqueuing, so there is no click waiting on a
+    # panel that would spin — and no claim has been taken yet to record against.
     refusal = refuse_reason
-
-    if refusal
-      # An operator (or an agent) asked for this one by name. A refusal it never
-      # sees is the bug — record it against the panel so the request that flipped
-      # the panel to "Generating" resolves to a reason instead of spinning.
-      record_failure(refusal.message) if force && refusal.outcome == :unavailable
-      return refusal
-    end
+    return refusal if refusal
 
     summary = summary_record
     line_count = session.transcript_line_count
@@ -151,9 +151,12 @@ class SessionStatusSummaryGenerator
       # nobody asked for this one — so the claim goes back exactly as it was
       # found and this is a skip, not a failure.
       #
-      # Only reachable on the automatic path. A forced run tells the fork service
-      # to scaffold rather than fail when the tree is gone, so losing that race
-      # costs it an empty directory instead of the generation.
+      # Reachable in practice only on the automatic path: a forced run tells the
+      # fork service to scaffold rather than fail when the tree is gone, so
+      # losing that race costs it an empty directory instead of the generation.
+      # A forced run can still be handed the flag if the scaffold could not be
+      # started — the partial destination would not clear — and that is a real
+      # failure it reports as one, below, rather than as a quiet skip.
       if result.source_clone_discarded && !force
         release_claim(summary)
         return Result.new(outcome: :skipped, message: "Session is in the trash.")
@@ -349,15 +352,12 @@ class SessionStatusSummaryGenerator
   # start handing them an adapter they were never given.
   def file_system = @resolved_file_system ||= (@file_system || RealFileSystemAdapter.new)
 
-  # Why an AUTOMATIC generation declined, in terms of the thing that is missing.
-  # It reaches a log line and a Result rather than the panel: the three request
-  # surfaces are all forced, and a forced run scaffolds rather than declines.
+  # Why an AUTOMATIC generation declined. It reaches a log line and a Result, not
+  # the panel — the three request surfaces are all forced, and a forced run
+  # scaffolds rather than declines — so it is one sentence rather than prose
+  # branched on how the clone came to be missing.
   def clone_unavailable_message
-    if session.archived?
-      "This session's working clone was deleted when it went to the trash, so no summary is written for it automatically."
-    else
-      "This session has no working clone on disk, so no summary is written for it automatically."
-    end
+    "This session has no working clone on disk, so no summary is written for it automatically."
   end
 
   # A fork inherits the source's goal, and a goal is an instruction to act — a
