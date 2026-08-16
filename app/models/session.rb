@@ -198,6 +198,24 @@ class Session < ApplicationRecord
   # comparison is robust to trailing slashes / non-canonical forms and can never
   # spuriously treat a live clone as an orphan.
   #
+  # Sessions burning Claude Code quota right now — the number the spot gate
+  # checks its fleet cap against, and the number recorded on every quota
+  # snapshot so a reading can be attributed to the fleet that produced it.
+  #
+  # `running` only: a `waiting` session has no process and a `needs_input` one is
+  # idle at a prompt. Runtime-scoped because a Codex session spends nothing
+  # against a Claude account.
+  # Any database trouble reads as zero rather than raising: the spot gate calls
+  # this on the path that decides whether a session may start, and a monitoring
+  # gap must never fail a session. ConnectionNotEstablished descends from
+  # AdapterError rather than StatementInvalid, so the rescue is deliberately the
+  # whole ActiveRecordError family.
+  def self.running_claude_code_count
+    where(status: :running, agent_runtime: ClaudeAuthProvider::RUNTIME).count
+  rescue ActiveRecord::ActiveRecordError
+    0
+  end
+
   # @return [Set<String>]
   def self.live_clone_paths
     where(status: NON_REAPABLE_STATUSES)

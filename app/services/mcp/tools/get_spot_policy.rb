@@ -13,16 +13,15 @@ module Mcp
       tool_name "get_spot_policy"
 
       description <<~DESC
-        Read Zimmer's spot/priority scheduling policy, the live Claude Code usage rate, and the
-        concurrency the spot gate is currently admitting.
+        Read Zimmer's spot/priority scheduling policy and the live decision the spot gate is making.
 
-        Every session runs as `priority` (always starts) or `spot`. Spot sessions fill the fleet up to
-        the number of concurrent sessions the Claude Code quota can carry before a window lands on its
-        target — the targets are a level to reach, not a line to stay clear of. Two brakes bound that:
-        spot work stops outright once a window HAS reached its target and waits for utilization to come
-        back down, and no more than `spot_max_concurrent_sessions` run at once. Every running session
-        counts toward that cap, priority included, but only spot sessions are held by it. A held spot
-        session is deferred, never cancelled: it stays `waiting` and starts on its own.
+        Every session runs as `priority` (always starts) or `spot`. A spot session starts while some
+        Claude Code account is still under both window targets AND a session slot is free. Nothing is
+        forecast: when a window reaches its target, spot work pauses until utilization comes back down.
+        Every running session counts toward the concurrency limit, priority included, but only spot
+        sessions are held by it — priority work is meant to crowd spot work out. A held spot session is
+        deferred, never cancelled: it stays `waiting` and starts on its own once a slot frees or the
+        window falls.
 
         A session's class is whichever of these speaks first: a class named for that session at spawn,
         the `scheduling_class` on the trigger that fired it, or the default for its **genesis** — where
@@ -30,16 +29,14 @@ module Mcp
 
         Returns:
         - the gate setting (on/off, both window targets, and the max sessions at once)
-        - the current decision: running or held, the reason, and the concurrent capacity
-        - the usage rate: fraction of a quota window consumed per active session per hour
-        - each window's utilization now and how many concurrent sessions it can carry
+        - the current decision: running or held, the reason, and how many sessions are running
+        - each window's utilization as last read, against its target
         - every genesis kind, its current class, and how many live sessions derive from it
         - every trigger that carries a class of its own
 
         **Use cases:**
         - Find out why a spot session has not started
-        - Check for headroom before spawning a batch of automated sessions
-        - Read the usage rate per active session
+        - Check for room before spawning a batch of automated sessions
         - See which origins are currently classified spot
       DESC
 
@@ -56,9 +53,8 @@ module Mcp
       def call(_args)
         setting = AppSetting.current
         # The same method /quotas renders, so the page and this tool cannot answer
-        # the same question differently: what a spot session starting right now
-        # would actually get.
-        decision = SpotGateService.current_decision
+        # the same question differently.
+        decision = SpotGateService.evaluate
         classes = SessionGenesis.effective_classes(setting.genesis_class_overrides)
         counts = Session.genesis_counts
 
@@ -76,23 +72,17 @@ module Mcp
           "- **Spot sessions:** #{decision.allowed? ? "running" : "HELD"}",
           "- **Reason:** `#{decision.reason}`",
           "- **Detail:** #{decision.detail}",
-          "- **Active Claude Code sessions:** #{decision.active_sessions}"
+          "- **Running Claude Code sessions:** #{decision.active_sessions}"
         ]
 
-        if decision.capacity
-          lines.concat([
-            "- **Concurrent spot capacity:** #{decision.capacity} " \
-            "(never more than the #{decision.fleet_cap} sessions allowed at once)",
-            "- **Forecast is for a fleet of:** #{decision.forecast_sessions} " \
-            "(what is running, plus the session being decided about)",
-            "- **Sized against:** #{decision.account_email} " \
-            "(roomiest of #{decision.accounts_considered} usable Claude Code #{'account'.pluralize(decision.accounts_considered)})"
-          ])
+        if decision.account_email
+          lines << "- **Windows read from:** #{decision.account_email} " \
+                   "(most room of #{decision.accounts_considered} usable Claude Code " \
+                   "#{'account'.pluralize(decision.accounts_considered)})"
         end
 
-        lines.concat(rate_lines(decision.rate))
-        lines.concat(forecast_lines("5-hour", decision.forecast_5h))
-        lines.concat(forecast_lines("Weekly", decision.forecast_7d))
+        lines.concat(window_lines("5-hour", decision.five_hour))
+        lines.concat(window_lines("Weekly", decision.weekly))
         lines.concat(genesis_lines(classes, counts))
         lines.concat(trigger_lines)
 
@@ -101,34 +91,16 @@ module Mcp
 
       private
 
-      def rate_lines(rate)
-        return [ "", "### Usage rate", "", "No rate available." ] if rate.nil?
-
-        [
-          "",
-          "### Usage rate per active session",
-          "",
-          "- **5-hour window:** #{format_pct(rate.rate_5h_pct)} per session-hour",
-          "- **Weekly window:** #{format_pct(rate.rate_7d_pct)} per session-hour",
-          "- **Usable sample pairs:** #{rate.sample_count} (lookback #{(rate.lookback / 3600).round}h)",
-          "- **Observed session-hours:** #{rate.session_hours.round(2)}",
-          "- **Sufficient to forecast from:** #{rate.sufficient? ? "yes" : "no"}"
-        ]
-      end
-
-      def forecast_lines(label, forecast)
-        return [ "", "### #{label} window", "", "Not available." ] if forecast.nil?
+      def window_lines(label, reading)
+        return [ "", "### #{label} window", "", "No reading available." ] if reading.nil?
 
         [
           "",
           "### #{label} window",
           "",
-          "- **Current:** #{format_pct(forecast.current_pct)}",
-          "- **Target:** #{format_pct(forecast.threshold_pct)}",
-          "- **Concurrent sessions it can carry:** #{forecast.capacity || "no measurable burn"}",
-          "- **Projected at that fleet size:** #{format_pct(forecast.projected_pct)} " \
-          "in #{(forecast.horizon_hours * 60).round} minutes",
-          "- **Over target:** #{forecast.breached? ? "yes" : "no"}"
+          "- **Utilization now:** #{format_pct(reading.current_pct)}",
+          "- **Target:** #{format_pct(reading.threshold_pct)}",
+          "- **At the target:** #{reading.at_limit? ? "yes — spot work is paused until it falls" : "no"}"
         ]
       end
 

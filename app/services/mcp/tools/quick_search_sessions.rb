@@ -60,7 +60,7 @@ module Mcp
           priority_class: {
             type: "string",
             enum: SessionGenesis::CLASSES,
-            description: "Filter by scheduling class. \"priority\" sessions always start; \"spot\" sessions start only while there is forecast Claude Code headroom. A session's class is the one set on it, else the one its trigger stamped, else the default for its genesis — and that last case resolves live, so moving a genesis in Settings moves those sessions here immediately."
+            description: "Filter by scheduling class. \"priority\" sessions always start; \"spot\" sessions start only while a Claude Code account is under both quota targets and a session slot is free. A session's class is the one set on it, else the one its trigger stamped, else the default for its genesis — and that last case resolves live, so moving a genesis in Settings moves those sessions here immediately."
           },
           genesis: {
             type: "string",

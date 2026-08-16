@@ -315,8 +315,8 @@ class AgentSessionJob < ApplicationJob
         end
       end
 
-      # Hold a spot session at the starting line when the Claude Code forecast
-      # says there is no headroom for it. Gated here rather than at creation so
+      # Hold a spot session at the starting line when a Claude Code quota window
+      # has reached its target or every session slot is taken. Gated here rather than at creation so
       # the session still exists, is visible, and simply starts later — the job
       # re-enqueues itself with a delay. Only a first start is gated; a follow-up,
       # a monitoring resume, and a clone-only setup all pass through.

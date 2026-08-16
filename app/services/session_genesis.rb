@@ -20,7 +20,7 @@
 # == Spot vs priority
 #
 # `priority` work runs whenever it is ready. `spot` work runs only while there is
-# forecast headroom in the Claude Code quota windows (see SpotGateService); when
+# headroom in the Claude Code quota windows (see SpotGateService); when
 # there is not, it is deferred and started later.
 #
 # The defaults below are policy, not physics — but where you change them depends

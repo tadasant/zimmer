@@ -61,9 +61,8 @@ class QuotaSnapshotService
       trigger: trigger,
       # Captured here because nothing else can reconstruct it later: session
       # status is mutable and keeps no history, so a reading taken today cannot
-      # be attributed to a number of sessions tomorrow. ClaudeUsageRateService
-      # divides utilization consumed by the session-hours this number implies.
-      active_session_count: ClaudeUsageRateService.active_session_count
+      # be attributed to a number of sessions tomorrow.
+      active_session_count: Session.running_claude_code_count
     )
   end
   private_class_method :create_snapshot

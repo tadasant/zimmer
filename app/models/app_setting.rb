@@ -22,8 +22,9 @@ class AppSetting < ApplicationRecord
   # historical behavior before the section became reorderable.
   DEFAULT_UNCATEGORIZED_POSITION = 0
 
-  # The forecast ceiling a spot session must stay under to start, as a percentage
-  # of the window. 80 is the value Tadas named; both windows default to it.
+  # The utilization a window fills toward before spot work pauses, as a
+  # percentage of the window. 80 is the value Tadas named; both windows default
+  # to it.
   DEFAULT_SPOT_GATE_THRESHOLD_PCT = 80
 
   # How many sessions may run at once. The gate admits spot work in parallel up to
