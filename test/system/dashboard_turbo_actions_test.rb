@@ -51,7 +51,10 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
     # desktop width rather than inheriting whatever the last one left behind.
     page.driver.browser.manage.window.resize_to(1400, 900)
 
-    visit root_path
+    # The dashboard's default filter is the `needs_input` queue, and this test
+    # drives a `failed` session — so it has to ask for every status, exactly as
+    # its sibling above does.
+    visit root_path(every_status_params)
     assert_selector "turbo-frame#session_#{session.id}"
     stamp_window
 
