@@ -168,8 +168,9 @@ therefore runs as **root**, with none of the entrypoint's normalization applied.
 The image `ENV` means it at least gets a working `HOME`, so DB-touching commands no longer
 die on `could not open certificate file "/root/.postgresql/postgresql.crt": Permission
 denied`. What it does not do is make the command run as uid 1000. Anything that writes under
-`~` — `~/.zimmer/clones`, `~/.claude`, `~/.config/gh` — leaves **root-owned files in volumes
-that `web` and the app read at uid 1000**, and those are unwritable afterwards.
+`~` — `~/.zimmer/clones`, `~/.claude`, `~/.config/gh` — writes **root-owned files into
+volumes that `web` and the app read at uid 1000**, and at mode 0600 those are not merely
+unwritable, they are unreadable.
 
 So on the worker, prefer plain `kamal app exec` (no `--reuse`): that is a `docker run`
 against the image, which runs the entrypoint and drops to uid 1000 properly. It is not free
@@ -179,6 +180,40 @@ before your command runs. Expect the latency.
 
 Reach for `--reuse` only for read-only inspection, and pass `docker exec -u 1000:1000`
 directly if you need the app's identity inside the existing container.
+
+#### The entrypoint reclaims what root leaves behind
+
+Advice is not a mechanism, and `docker exec` is not the only root writer: a
+`.agent-containers` dev stack runs its `app` service as root and bind-mounts `${HOME}/.claude`
+and the clone straight into itself, so it writes root-owned files into the same volumes
+without anyone typing `--reuse` at all. That is what actually filled
+`~/.claude/projects/-app/` on staging with mode-0600 `root:root` session transcripts —
+precisely what transcript polling reads as uid 1000 — and what left 4,442 root-owned
+`tmp/cache/bootsnap/` files in a clone that uid 1000 then could not delete.
+
+No process can make *another* root process write as uid 1000. So the entrypoint reclaims the
+result instead. While it is still root, before it drops, it sweeps the five volume roots and
+hands anything not owned by uid 1000 back to it:
+
+```bash
+find ~/.claude ~/.codex ~/.config/gh ~/.local ~/.zimmer -xdev ! -uid 1000 -print0 \
+  | xargs -0r chown -h 1000:1000
+```
+
+Once synchronously, so the app never starts on a volume it cannot read, and then every
+`ZIMMER_RECLAIM_INTERVAL` seconds (default 60, `0` disables) from a process forked before the
+privilege drop — which is what lets it keep the root credentials `chown` needs. A one-shot
+repair would only be undone by the next exec.
+
+It is eventually consistent, and the window is real: a file root writes is unreadable to the
+app for up to one interval. That is tolerable for what this protects, because the transcripts
+Zimmer itself polls are written by the app at uid 1000 and were never the problem — the
+damage is done by *other* root writers, whose files nothing is waiting on. It is also cheap:
+one sweep of 88,285 inodes on staging is 0.77s wall and 0.58s CPU, about 1% of one core at
+the default interval.
+
+Only a container that *starts* as root sweeps, which is exactly the nested-Docker worker.
+`web`, dev, test and CI start as uid 1000, skip the whole block, and pay nothing.
 
 A container that refuses to start is a failed deploy. One that starts and quietly claims
 nothing is ten hours of silence — which is exactly what happened, because every check that
