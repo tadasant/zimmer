@@ -65,6 +65,14 @@ if [[ "$requested" =~ ^[0-9a-fA-F]{40}$ ]]; then
   exit 0
 fi
 
+# The ref is interpolated into a URL path, so hold it to what git itself allows in a ref
+# name: nothing that could graft a query, a fragment, or (via curl's own `..` normalizing)
+# a different endpoint onto the request. `git check-ref-format` rejects every one of those
+# too, so no ref anyone could actually push is turned away here.
+if [[ ! "$requested" =~ ^[A-Za-z0-9][A-Za-z0-9._/@+-]*$ ]] || [[ "$requested" == *".."* ]]; then
+  fail "Cannot deploy ref '${requested}': that is not a valid branch, tag, or commit name."
+fi
+
 api_url="${GITHUB_API_URL:-https://api.github.com}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set to owner/name}"
 token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
@@ -102,11 +110,16 @@ code=000
 for _ in $(seq 1 "$attempts"); do
   # The `.sha` media type answers with the 40 characters and nothing else -- no commit
   # diff, no file list -- so this stays a ~40-byte request however large the commit is.
+  # curl prints `%{http_code}` -- 000 when it never got a response -- and THEN exits
+  # non-zero, so `|| echo 000` would append a second status to the one it already printed
+  # and produce "000000", which matches no case below. `|| true` keeps `set -e` off the
+  # substitution without touching what curl wrote.
   code="$(curl -sS -o "$body" -w '%{http_code}' --max-time 20 \
     -H "Accept: application/vnd.github.sha" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     ${auth[@]+"${auth[@]}"} \
-    "${api_url}/repos/${repo}/commits/${requested}" 2>/dev/null || echo 000)"
+    "${api_url}/repos/${repo}/commits/${requested}" 2>/dev/null || true)"
+  code="${code:-000}"
 
   case "$code" in
     # Only a transport failure or a server-side wobble is worth another go. A 4xx is a

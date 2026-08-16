@@ -42,6 +42,10 @@ class ResolveDeployRefTest < ActiveSupport::TestCase
       done
       [ -n "$out" ] && printf '%s' "$STUB_BODY" > "$out"
       printf '%s' "$code"
+      # Faithful to curl: on a transport failure it prints 000 for %{http_code} AND exits
+      # non-zero. A stub that exits 0 here hides a whole class of status-capture bug.
+      [ "$code" = "000" ] && exit 7
+      exit 0
     SH
     File.write(File.join(dir, "sleep"), "#!/bin/sh\nexit 0\n")
     %w[curl sleep].each { |bin| File.chmod(0o755, File.join(dir, bin)) }
@@ -167,6 +171,19 @@ class ResolveDeployRefTest < ActiveSupport::TestCase
     assert_equal EXIT_UNRESOLVED, code
     assert_match(/not a commit SHA/, out)
     assert_empty github_output
+  end
+
+  # The ref lands in a URL path. `..` is the interesting one: curl normalizes it away, so
+  # an unchecked input could aim the request at a different endpoint entirely.
+  test "a ref that is not a ref is refused before a request is made" do
+    [ "../../users/octocat", "main?per_page=1", "main#x", "-oops" ].each do |junk|
+      code, out, github_output, urls = resolve(requested: junk)
+
+      assert_equal EXIT_UNRESOLVED, code, "#{junk.inspect} was not refused"
+      assert_match(/not a valid branch, tag, or commit name/, out)
+      assert_empty urls, "#{junk.inspect} reached the API"
+      assert_empty github_output
+    end
   end
 
   test "being called with neither a requested nor a fallback ref is a usage error" do
