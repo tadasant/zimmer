@@ -326,14 +326,18 @@ The failure looks like a network fault and is actually a capacity fault. Two thi
 
 - **`Connection timed out`, not `refused`.** Nothing is rejecting the connection, so it reads like a
   firewall or a routing problem. It is neither.
-- **Every control-plane check passes.** `Reap stale tailnet node` sees a healthy node, and the deploy's
-  `Prepare Kamal SSH + resolve host` step gates on `.Online==true` — so it resolves the host
-  successfully and the *next* step fails to reach it seconds later.
+- **Every control-plane check passes.** The deploy's `Prepare Kamal SSH + resolve host` step gates on
+  `.Online==true` from `tailscale status --json`, so it resolves the host successfully and the *next*
+  step fails to reach it seconds later. The Tailscale API agrees throughout, reporting
+  `connectedToControl: true` with a current `lastSeen`.
 
 `scripts/clear-root-password-expiry.sh` distinguishes the two cases and says which one it hit, because
-its advice differs: an unreachable host is not a broken password and will not repair by hand over the
-same `:22` that just timed out. When you see that message, look at the host's memory and load — start
-with `dmesg -T | grep -i "killed process"` — rather than at its SSH configuration.
+its advice differs: an unreachable host is not a broken password, so there is nothing to repair by
+hand. When you see that message, look at the host's memory and load — start with `dmesg -T | grep -i
+"killed process"` — rather than at its SSH configuration. Note that the outage clears on its own in a
+few minutes, so `:22` answering by the time you investigate does not mean the deploy failed spuriously.
+
+Tracked in [#469](https://github.com/tadasant/zimmer/issues/469).
 
 ### 🔴 The database's connection ceiling is a plan property, and Terraform will not raise it for you
 
