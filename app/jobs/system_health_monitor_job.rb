@@ -91,7 +91,7 @@ class SystemHealthMonitorJob < ApplicationJob
     # the Slack page (double-alerting). See CLAUDE.md logging philosophy.
     Rails.logger.warn(
       "[SystemHealthMonitorJob] Queue backlog critical: #{depth} ready job(s), oldest waiting " \
-      "#{system_health[:queue_stats][:oldest_ready_age_seconds].to_i}s, " \
+      "#{HealthMonitorService.format_wait(system_health[:queue_stats][:oldest_ready_age_seconds])}, " \
       "for #{streak} consecutive check(s); alerting #eng-alerts."
     )
 
@@ -113,7 +113,7 @@ class SystemHealthMonitorJob < ApplicationJob
       "GoodJob backlog is critical.",
       "",
       "• Ready (waiting on a worker): #{stats[:ready_count]}, " \
-        "oldest waiting #{stats[:oldest_ready_age_seconds].to_i}s",
+        "oldest waiting #{HealthMonitorService.format_wait(stats[:oldest_ready_age_seconds])}",
       "• Not backlog: #{stats[:claimed_count]} claimed (executing now), " \
         "#{stats[:scheduled_count]} scheduled (future-dated)",
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
