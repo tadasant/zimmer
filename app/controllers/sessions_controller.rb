@@ -772,9 +772,14 @@ class SessionsController < ApplicationController
       return
     end
 
+    # The block returns a sentinel rather than the transition's own value: AASM's
+    # bang event answers `false` when the underlying save fails, which `with_db_retry`
+    # also uses to mean "gave up retrying". Without the sentinel those two are one
+    # value, and the failed-save case would fall through to an implicit render.
     result = with_db_retry do
       @session.archive_actor = "a user in the web UI"
       @session.archive! if @session.may_archive?
+      :archived
     end
 
     # Only respond if the operation succeeded (not false from max retry handler)

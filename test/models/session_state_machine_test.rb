@@ -253,7 +253,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal "[State Machine] Session moved to trash by an unrecorded caller", line
   end
 
-  test "archive survives a pull request metadata shape it cannot read" do
+  test "archive tolerates a statuses value that is not a hash" do
     session = sessions(:waiting)
     session.update!(
       status: :needs_input,
@@ -268,6 +268,35 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.reload.archived?, "a bad metadata shape must not take the transition down"
     line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
     assert_includes line, "https://github.com/o/r/pull/1"
+  end
+
+  test "archive falls back to the plain line rather than letting the description break the transition" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    session.stubs(:unresolved_pr_clause).raises(StandardError, "unreadable")
+
+    session.archive!
+
+    assert session.reload.archived?, "describing the archive must not be able to take the transition down"
+    assert_equal "[State Machine] Session moved to trash",
+                 session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_not_nil session.trash_after, "the trash bookkeeping after the log line must still run"
+  end
+
+  test "archive does not reuse an actor across a later archive of the same instance" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+
+    session.archive_actor = "a user in the web UI"
+    session.archive!
+    assert_nil session.archive_actor, "the actor is consumed by the line it feeds"
+
+    session.unarchive_to_needs_input!
+    session.archive!
+
+    lines = session.logs.where("content LIKE ?", "%Session moved to trash%").order(:id).pluck(:content)
+    assert_equal [ "[State Machine] Session moved to trash by a user in the web UI",
+                   "[State Machine] Session moved to trash by an unrecorded caller" ], lines
   end
 
   test "archive sets archived_at timestamp" do

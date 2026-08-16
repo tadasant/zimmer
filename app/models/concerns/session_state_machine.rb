@@ -238,6 +238,9 @@ module SessionStateMachine
         after do
           set_archived_at
           log_state_change(archive_log_message)
+          # Consumed by the line above, and single-use: an instance archived,
+          # unarchived and archived again must not reuse the first actor.
+          self.archive_actor = nil
           cleanup_running_job
           dismiss_notifications
           fire_ao_event_triggers("session_archived")
@@ -701,7 +704,7 @@ module SessionStateMachine
   # state, named on the archive line.
   #
   # Archiving is what removes a session from GitHubPullRequestPollerJob's scope
-  # (`with_github_prs` excludes archived sessions), so it also ends any chance
+  # (`with_github_prs` excludes archived and failed sessions), so it also ends any chance
   # of the merge message the PR goals in config/goals.json promise: "the
   # pull-request poller sends this session a message when the PR merges, and
   # THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE". A session archived first never
