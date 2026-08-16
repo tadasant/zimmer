@@ -357,6 +357,120 @@ The same reading applies to an empty `good_job_processes` table. A worker that c
 the database cannot register itself, which is why "no tracked processes" and "everything
 looks healthy" showed up together for ten hours.
 
+## When the worker wedges
+
+A `memory:` cap makes cgroup OOM the *designed* containment path: a runaway allocation is
+killed inside the worker's cgroup instead of becoming a global out-of-memory event that
+takes sshd and the proxy with it. Under plain `runc` that path terminates cleanly — the
+container exits and `unless-stopped` restarts it.
+
+Under `sysbox-runc` it can end somewhere else
+([#502](https://github.com/tadasant/zimmer/issues/502)). The kill empties the container of
+every process, but the container never *exits*, so:
+
+```
+Status=running   Running=true   Restarts=0   OOMKilled=true
+```
+
+`docker ps` says `Up`. The restart policy never fires. Every check that reads container
+state passes. And every `docker exec` into it fails:
+
+```
+OCI runtime exec failed: exec failed: container_linux.go:439:
+starting container process caused: process_linux.go:119:
+executing setns process caused: exit status 1
+```
+
+That combination is the whole problem: the worker keeps its slot, reports healthy, and
+runs no jobs and no agent sessions. Nothing about its shape says so.
+
+### What watches for it
+
+`zimmer-worker-watchdog`, a systemd timer on the host. It does not read container state —
+it runs a real `docker exec` every 60 seconds, because exec is the operation that actually
+breaks. Three consecutive failures against a container Docker still reports as `running`
+is the signature.
+
+It lives on the host, not in the app, because the app cannot watch this: Zimmer's cron runs
+on GoodJob **in the worker**, so a job that watches the worker is a job that dies with it.
+The alert is delivered the other way round, through the *web* container
+(`bin/rails zimmer:worker_wedge_alert`, see `app/services/worker_wedge_alert.rb`), which
+shares the image and the Slack credentials and is untouched by the worker's cgroup. So
+detection needs no Rails and delivery needs no secret on the host.
+
+| Where | What |
+| --- | --- |
+| `scripts/worker-watchdog.sh` | the probe, installed as `/usr/local/sbin/zimmer-worker-watchdog` |
+| `scripts/install-worker-watchdog.sh <host>` | the converge installer (unit + timer), run by `Deploy staging` |
+| `/etc/default/zimmer-worker-watchdog` | per-host settings; `ZIMMER_WATCHDOG_RECOVER=0` turns recovery off |
+| `/var/lib/zimmer-worker-watchdog/incidents/` | one JSON record per incident, for forensics |
+| `journalctl -u zimmer-worker-watchdog` | every probe, healthy or not |
+
+Production has no deploy workflow in this repository, so there it is installed by hand or
+from the companion repo: `bash scripts/install-worker-watchdog.sh <prod-tailnet-host>`.
+
+### What it will and will not do on its own
+
+Recovery is gated on a census of the container's cgroup — **recursively**, because under
+nested Docker the inner dockerd and its containers live in child cgroups, and a
+non-recursive read would call a busy container empty. If any process other than the
+`init: true` shim is alive in there, the watchdog alerts and touches nothing. Zero live
+workload means nothing can be lost by killing the container, which is what makes the
+automation safe rather than clever.
+
+It re-checks before every destructive step, not just at the start. The container id
+survives a restart, so the cgroup and the containerd task directory are the *same* paths a
+restarted container uses — and Docker's restart policy can bring the worker back inside the
+poll interval. A stale census would then authorise killing a live worker and report success.
+
+When it does act, it walks the first rungs of the ladder below and stops before the last
+one. `docker rm` plus a redeploy is deliberately manual: nothing on the host can recreate
+the container, so a misfire there would replace a wedged worker with no worker at all.
+
+A worker that ends up gone rather than merely wedged keeps paging. `docker ps` stops listing
+an absent container, so the probe would otherwise fall silent and the single page already
+sent would be the only signal a permanently dead worker ever produced — and nothing else in
+Zimmer notices, because every cron job runs in the worker. Once a wedge has been reported,
+the watchdog keeps repeating "no worker is running" on the same throttle until a healthy one
+appears.
+
+### The manual ladder
+
+Nothing below the rung that works, works. This is the sequence that recovered staging on
+2026-08-16:
+
+```bash
+w=$(docker ps --filter name=zimmer-worker --format '{{.ID}}' | head -1)
+full=$(docker inspect -f '{{.Id}}' "$w")
+
+# 1. docker restart / kill / rm -f  ->  all fail:
+#    "tried to kill container, but did not receive an exit event"
+
+# 2. kill the containerd shim. This is what actually moves it to `exited`.
+pkill -9 -f "containerd-shim.*${full}"
+
+# 3. the init: true shim is reparented to PID 1 rather than reaped -- kill it too
+#    (find it in the container's cgroup: /sys/fs/cgroup/system.slice/docker-<id>.scope)
+
+# 4. docker start  ->  "mkdir /run/containerd/io.containerd.runtime.v2.task/moby/<id>:
+#    file exists"
+rm -rf "/run/containerd/io.containerd.runtime.v2.task/moby/${full}"
+
+# 5. docker start  ->  "failed to register with sysbox-mgr: redundant container
+#    registration". The container id is burned; only a NEW one gets past this.
+
+# 6. docker rm "$w", then re-run the deploy.
+```
+
+**Do not restart `sysbox-fs` to clear a stuck registration.** Any process blocked in it is
+*permanently* orphaned: on staging that left 19 processes in `D` state (`runc:[…]` in
+`fuse_flush`) which inflate load average and clear only on reboot.
+
+Before reaching for any of it, confirm the shape rather than assuming it. `dmesg -T | grep
+oom-kill` names both the scope and the victim, and the two cases read differently: a
+`uid=1000` kill in the scope root is a plain-`runc` worker, which recovers on its own; the
+sysbox wedge carries the uid-shifted `uid=101000` and `task_memcg=.../init.scope`.
+
 ## Kernel requirements
 
 Sysbox needs either shiftfs or ID-mapped mounts. DigitalOcean's Ubuntu image ships the

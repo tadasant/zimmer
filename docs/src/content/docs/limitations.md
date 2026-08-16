@@ -2911,6 +2911,44 @@ the `oom-kill:` line that carries both `global_oom` — host-wide, every cgroup 
 
 ---
 
+## The worker wedge is detected and reported, not fixed
+
+A cgroup OOM under `sysbox-runc` can leave the worker container reporting `running` with
+`Restarts=0` while every `docker exec` into it fails, so it runs nothing while looking
+healthy ([#502](https://github.com/tadasant/zimmer/issues/502)). `zimmer-worker-watchdog`
+catches that — a real `docker exec` on a 60-second timer, on the host, outside the thing it
+is watching. See [When the worker wedges](/operate/nested-docker/#when-the-worker-wedges).
+
+What it does **not** do is make the failure survivable, and four gaps are worth stating.
+
+**The last rung of recovery is manual.** The watchdog kills the container's shim and
+retries `docker start`, which is where the wedge usually ends: `sysbox-mgr` refuses the
+container id it already holds (`redundant container registration`), and only a *new* id
+gets past that. Creating one needs a redeploy, and nothing on the host can run one — so the
+automated path stops at a container in `exited` and keeps paging — once a wedge has been
+reported, the watchdog repeats "no worker is running" on its re-alert throttle until a
+healthy worker exists, because `docker ps` stops listing the container and the probe would
+otherwise go silent. That is deliberate: `docker rm` cannot be undone from the host, so a misfire would
+turn a wedged worker into no worker.
+
+**The root cause inside sysbox is still unknown.** Nobody has established *why* the
+namespace becomes unusable after the OOM, only that it does and that every documented
+Docker recovery path fails. The watchdog treats a symptom.
+
+**Detection has to be installed, and on production that is by hand.** `Deploy staging`
+converges the timer on every deploy. This repository has no production deploy workflow, so
+on production `scripts/install-worker-watchdog.sh` is run out of band — and a host where
+nobody ran it has no detection at all, silently.
+
+**Delivery depends on the web container.** The alert reaches Slack by running
+`bin/rails zimmer:worker_wedge_alert` inside the *web* container, because the worker is the
+broken thing and the Slack credentials live in Rails' encrypted credentials rather than
+anywhere a host script can read. If web is also down — a whole-host OOM rather than a
+cgroup-scoped one — the incident is still written to
+`/var/lib/zimmer-worker-watchdog/incidents/` and to journald, but nobody is paged.
+
+---
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
