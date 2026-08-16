@@ -2777,7 +2777,8 @@ The damage no longer accumulates. The entrypoint sweeps the volume roots and han
 not owned by uid 1000 back to it — once before the privilege drop, then every 60 seconds from
 a process that kept its root credentials for exactly that. What remains is a **window**: a
 file root writes is unreadable to the app until the next sweep. Set `ZIMMER_RECLAIM_INTERVAL`
-lower if that matters, or `0` to turn the sweep off.
+lower if that matters, or `0` to drop the repeat — the sweep before the privilege drop still
+runs, so a deploy always heals the volume.
 
 Use plain `kamal app exec` (a `docker run`, which runs the entrypoint and drops properly), or
 `docker exec -u 1000:1000` if you need the app's identity inside the existing container — see
