@@ -168,8 +168,9 @@ therefore runs as **root**, with none of the entrypoint's normalization applied.
 The image `ENV` means it at least gets a working `HOME`, so DB-touching commands no longer
 die on `could not open certificate file "/root/.postgresql/postgresql.crt": Permission
 denied`. What it does not do is make the command run as uid 1000. Anything that writes under
-`~` — `~/.zimmer/clones`, `~/.claude`, `~/.config/gh` — leaves **root-owned files in volumes
-that `web` and the app read at uid 1000**, and those are unwritable afterwards.
+`~` — `~/.zimmer/clones`, `~/.claude`, `~/.config/gh` — writes **root-owned files into
+volumes that `web` and the app read at uid 1000**, and at mode 0600 those are not merely
+unwritable, they are unreadable.
 
 So on the worker, prefer plain `kamal app exec` (no `--reuse`): that is a `docker run`
 against the image, which runs the entrypoint and drops to uid 1000 properly. It is not free
@@ -186,6 +187,42 @@ existed asked whether the container was *shaped* right, not whether the worker w
 *working*. `test/config/docker_entrypoint_privilege_drop_test.rb` runs the real script with
 `id`, `getent` and `setpriv` stubbed and asserts on the environment it hands over; it fails
 against the entrypoint as it shipped that morning.
+
+#### The entrypoint reclaims what root leaves behind
+
+Advice is not a mechanism, and `docker exec` is not the only root writer: a
+`.agent-containers` dev stack runs its `app` service as root and bind-mounts `${HOME}/.claude`
+and the clone straight into itself, so it writes root-owned files into the same volumes
+without anyone typing `--reuse` at all. That is what actually filled
+`~/.claude/projects/-app/` on staging with mode-0600 `root:root` session transcripts —
+precisely what transcript polling reads as uid 1000 — and what left 4,442 root-owned
+`tmp/cache/bootsnap/` files in a clone that uid 1000 then could not delete.
+
+No process can make *another* root process write as uid 1000. So the entrypoint reclaims the
+result instead. While it is still root, before it drops, it sweeps the five volume roots and
+hands anything not owned by uid 1000 back to it:
+
+```bash
+# in outline -- the real thing batches through a list file and swallows errors
+find -H ~/.claude ~/.codex ~/.config/gh ~/.local ~/.zimmer -xdev ! -uid 1000 -print0 \
+  | xargs -0r chown -h 1000:1000
+```
+
+It fails quietly by design, so the line to grep for in `docker logs` is
+`Reclaimed N path(s) not owned by uid 1000`; nothing is logged when a sweep finds nothing.
+
+Once synchronously, so the app never starts on a volume it cannot read, and then every `ZIMMER_RECLAIM_INTERVAL` seconds from a process forked before the privilege drop — which is what lets it keep the root credentials `chown` needs. A one-shot repair would only be undone by the next exec.
+
+The interval defaults to 60 and is read from the container's environment; `0` drops the repeat and keeps the boot sweep, and anything else that is not a positive integer does the same and says so on stderr. No destination passes it today, so changing it means adding it to that destination's `env: clear:` in `config/deploy.*.yml`, the way `ZIMMER_NESTED_DOCKER` is wired.
+
+It is eventually consistent, and the window is real: a file root writes is unreadable to the
+app for up to one interval. That is tolerable for what this protects, because the transcripts
+Zimmer itself polls are written by the app at uid 1000 and were never the problem — the
+damage is done by *other* root writers, whose files nothing is waiting on. It is also cheap:
+one sweep of 88,285 inodes on staging is 0.77s wall and 0.58s CPU, about 1% of one core at
+the default interval.
+
+The sweep keys on the container's *starting* uid, not on `ZIMMER_NESTED_DOCKER` — so it runs on a worker armed for nested Docker (`user: "0:0"`), and not on `web`, dev, test, CI, or a worker running with nested Docker off, all of which start as uid 1000 and skip the whole block. A rolled-back worker therefore stops healing its volumes, which is worth remembering when reading them.
 
 ## The workaround this depends on
 

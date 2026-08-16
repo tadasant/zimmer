@@ -34,10 +34,39 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
   #               it runs (as this process's own uid, via bash's builtin -- so these
   #               tests cover the entrypoint's logic, NOT setpriv's ability to assume
   #               uid 1000), and the final re-exec, which reports the environment
-  #               instead of running the app
+  #               instead of running the app. It echoes its own argv first, because
+  #               WHICH credentials it is asked for is half of what this file guards:
+  #               a handover that re-exec'd as `--reuid=0` would leave the app running
+  #               as root, which is the thing the whole block exists to prevent, and
+  #               a stub that swallowed its flags could not tell the difference.
+  #   chown    -- the reclaim sweep's only side effect, recorded rather than performed
+  #               (these tests are not root, and `find`/`chown` are the sweep's whole
+  #               implementation, so its argv IS its behaviour)
+  #   find     -- records argv and then hands off to the real binary, so the sweep's
+  #               scope is assertable without faking what it actually finds.
+  #               `find_emits:` instead makes it print a fixed NUL-separated list,
+  #               which is the only way to assert what the sweep DOES with a hit on
+  #               a machine whose own uid is 1000 and which therefore cannot create
+  #               one.
+  #
+  # Those last two record to a file rather than to stdout, and the file is the third
+  # element `run_entrypoint` returns. They have no usable stream: the sweep redirects
+  # find's stdout into the list it is building, and both its stderr and xargs' into
+  # /dev/null, so anything either stub printed would land in the data or be discarded.
+  #
+  #   sleep    -- fails, which ends the `while sleep` repeat loop after zero
+  #               iterations. The loop is forked and inherits stdout, so a real sleep
+  #               would hold the pipe `IO.popen` reads until the interval elapsed --
+  #               forever, at the default 60s, since the loop never ends on its own.
+  #               `sleep_succeeds_once:` lets one iteration through instead. Note
+  #               that this stub is also on PATH for the dockerd wait loop, where a
+  #               failing `sleep` is the last command in the body and would abort the
+  #               script under `-e`; no test reaches that loop today, because the
+  #               user-namespace guard exits first.
   #
   # Pass `passwd: nil` to make the lookup find no uid 1000 at all.
-  def run_entrypoint(app_home:, env: {}, app_name: "rails", passwd: :present)
+  def run_entrypoint(app_home:, env: {}, app_name: "rails", passwd: :present, sleep_succeeds_once: false,
+    find_emits: nil)
     Dir.mktmpdir do |stubs|
       write_stub stubs, "id", <<~SH
         #!/bin/bash
@@ -55,17 +84,54 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
 
       write_stub stubs, "setpriv", <<~SH
         #!/bin/bash
+        echo "SETPRIV-ARGV $*"
         while [[ "$1" == --* ]]; do shift; done
         if [ "$1" = "test" ]; then shift; test "$@"; exit $?; fi
         echo "DROPPED HOME=$HOME USER=$USER LOGNAME=$LOGNAME"
+      SH
+
+      stub_log = File.join(stubs, "stub.log")
+
+      write_stub stubs, "chown", <<~SH
+        #!/bin/bash
+        echo "CHOWN-ARGV $*" >> "#{stub_log}"
+      SH
+
+      write_stub stubs, "find", if find_emits
+        <<~SH
+          #!/bin/bash
+          echo "FIND-ARGV $*" >> "#{stub_log}"
+          printf '%s\\0' #{find_emits.map { |p| "'#{p}'" }.join(' ')}
+        SH
+      else
+        <<~SH
+          #!/bin/bash
+          echo "FIND-ARGV $*" >> "#{stub_log}"
+          exec #{real_find} "$@"
+        SH
+      end
+
+      write_stub stubs, "sleep", sleep_succeeds_once ? <<~SH : "#!/bin/bash\nexit 1\n"
+        #!/bin/bash
+        marker="$(dirname "$0")/.slept"
+        if [ -e "$marker" ]; then exit 1; fi
+        : > "$marker"
+        exit 0
       SH
 
       # `-e` explicitly: the shebang carries it, and `bash <script>` does not honour a
       # shebang, so without it this would exercise a shell the container never runs.
       full_env = { "PATH" => "#{stubs}:#{ENV['PATH']}" }.merge(env)
       output = IO.popen(full_env, [ "bash", "-e", ENTRYPOINT, "true" ], err: %i[child out], &:read)
-      [ output, $?.exitstatus ]
+      [ output, $?.exitstatus, File.exist?(stub_log) ? File.read(stub_log) : "" ]
     end
+  end
+
+  # The sweep stub delegates to the real thing rather than faking results, so the
+  # `! -uid 1000` predicate is exercised and not merely spelled.
+  def real_find
+    @real_find ||= %w[/usr/bin/find /bin/find].find { |p| File.executable?(p) } ||
+      raise("no find binary to delegate to")
   end
 
   def write_stub(dir, name, body)
@@ -111,6 +177,164 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
     assert_equal 1, status, "expected the entrypoint to refuse, got:\n#{output}"
     assert_match(/Refusing to start/, output)
     refute_match(/DROPPED/, output, "it handed over anyway")
+  end
+
+  # #496 item 2. The covered refusal above is ENOENT -- a HOME that is not there at all.
+  # The route that actually froze production is EACCES: a HOME that exists, and that uid
+  # 1000 cannot traverse. `/root` at mode 0700 is exactly that shape, and libpq treats the
+  # two differently -- ENOENT it tolerates, EACCES is fatal -- so the tolerated one is a
+  # poor stand-in for the fatal one.
+  test "the entrypoint refuses a HOME that exists but the app user cannot traverse" do
+    skip "running as root, which ignores the mode bits this case is made of" if Process.uid.zero?
+
+    Dir.mktmpdir do |app_home|
+      File.chmod(0o000, app_home)
+
+      output, status = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
+
+      assert_equal 1, status, "expected the entrypoint to refuse, got:\n#{output}"
+      assert_match(/Refusing to start/, output)
+      assert_match(/cannot use HOME=#{Regexp.escape(app_home)}/, output)
+      refute_match(/DROPPED/, output, "it handed over into a HOME the app cannot read")
+    ensure
+      # Or mktmpdir cannot remove it, and the failure surfaces as an unrelated error.
+      File.chmod(0o700, app_home)
+    end
+  end
+
+  # #496 item 1. Everything else here asserts the environment the app is handed; this
+  # asserts the credentials, which no test did. `setpriv --reuid=0` would satisfy every
+  # other assertion in this file while leaving the app running as root -- the exact
+  # condition that fills the shared volumes with files uid 1000 cannot read.
+  test "the handover asks setpriv for uid 1000, gid 1000 and its supplementary groups" do
+    Dir.mktmpdir do |app_home|
+      output, status = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
+      assert_equal 0, status, output
+
+      calls = output.lines.grep(/^SETPRIV-ARGV /).map(&:strip)
+      assert_equal 2, calls.length, "expected a probe and a handover, got:\n#{output}"
+
+      # The probe has to ask as the uid that will have to live with the answer, or it
+      # measures the wrong process's access.
+      assert_equal "SETPRIV-ARGV --reuid=1000 --regid=1000 --init-groups test -x #{app_home} -a -w #{app_home}",
+        calls.first
+
+      # --init-groups and not just --regid: without it the app keeps gid 1000 alone and
+      # silently loses every supplementary group the rails user belongs to.
+      assert_equal "SETPRIV-ARGV --reuid=1000 --regid=1000 --init-groups #{ENTRYPOINT} true",
+        calls.last
+    end
+  end
+
+  # The reclaim sweep. `docker exec` inherits `user: "0:0"` and skips this script
+  # entirely, so root writes into the shared volumes cannot be prevented from here --
+  # only undone. What must hold is that the sweep looks in the right places.
+  test "the reclaim sweeps the app's volume roots and nothing else under HOME" do
+    Dir.mktmpdir do |app_home|
+      FileUtils.mkdir_p([ "#{app_home}/.claude", "#{app_home}/.zimmer", "#{app_home}/.config/gh" ])
+      # Not a volume, and on the container layer: sweeping it would rewrite image state.
+      FileUtils.mkdir_p("#{app_home}/.cache")
+
+      output, status, stubs = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
+      assert_equal 0, status, output
+
+      sweep = stubs.lines.grep(/^FIND-ARGV /).first
+      assert sweep, "the entrypoint never swept:\n#{output}"
+
+      # Skip the flags that precede the operands (`-H`), then take the operands.
+      roots = sweep.split[1..].drop_while { |a| !a.start_with?("/") }.take_while { |a| a.start_with?("/") }
+      assert_equal [ "#{app_home}/.claude", "#{app_home}/.config/gh", "#{app_home}/.zimmer" ], roots.sort,
+        "the sweep must cover the mounted volumes, and only those"
+      refute_includes roots, app_home, "sweeping all of $HOME would rewrite container-layer state"
+      refute_includes roots, "#{app_home}/.cache"
+
+      # -H: `[ -d ]` above follows a symlinked root, so find must too, or such a root
+      # is swept as a single inode while still logging as though it had run.
+      assert_match(/\AFIND-ARGV -H /, sweep)
+      # -xdev: a dev stack's own container filesystems can appear under these paths,
+      # and they are not ours to rewrite.
+      assert_match(/ -xdev /, sweep)
+      assert_match(/ ! -uid 1000 /, sweep)
+    end
+  end
+
+  # The behaviour itself, and the half that must not depend on the machine: whatever the
+  # sweep finds is handed to uid 1000.
+  #
+  # `find_emits:` fakes the hits rather than the predicate, because a suite running AS uid
+  # 1000 cannot create a file that is not owned by uid 1000, and without this the chown
+  # would be asserted nowhere -- deleting it from the entrypoint would leave this file
+  # green. The predicate itself is covered by the scope test above, which runs the real
+  # `find`.
+  test "the reclaim chowns every path the sweep turns up, whatever uid runs the suite" do
+    Dir.mktmpdir do |app_home|
+      FileUtils.mkdir_p("#{app_home}/.claude")
+      hits = [ "#{app_home}/.claude/one.jsonl", "#{app_home}/.claude/two.jsonl" ]
+
+      output, status, stubs = run_entrypoint(
+        app_home: app_home, env: { "HOME" => "/root" }, find_emits: hits
+      )
+      assert_equal 0, status, output
+
+      chowns = stubs.lines.grep(/^CHOWN-ARGV /).map(&:strip)
+      assert_equal 1, chowns.length,
+        "expected the batch to reach chown in one invocation, not one call per file, got:\n#{output}"
+      assert_equal "CHOWN-ARGV -h 1000:1000 #{hits[0]} #{hits[1]}", chowns.first,
+        "-h so a symlink is retargeted rather than whatever it points at"
+      assert_match(/Reclaimed 2 path\(s\) not owned by uid 1000/, output,
+        "a silent repair is one nobody can confirm ran")
+    end
+  end
+
+  # The other direction: a volume that is already correct must not be churned. Only
+  # assertable when the suite runs as the app user, since that is what makes the files it
+  # creates match the predicate's exclusion.
+  test "the reclaim leaves files already owned by uid 1000 alone" do
+    skip "only uid 1000 can create files this sweep is supposed to skip" unless Process.uid == 1000
+
+    Dir.mktmpdir do |app_home|
+      FileUtils.mkdir_p("#{app_home}/.claude/projects/-app")
+      File.write("#{app_home}/.claude/projects/-app/session.jsonl", "{}\n")
+
+      output, status, stubs = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
+
+      assert_equal 0, status, output
+      assert_empty stubs.lines.grep(/^CHOWN-ARGV /), "it rewrote files that were already correct"
+      refute_match(/Reclaimed/, output)
+    end
+  end
+
+  # A one-shot repair leaves the next `docker exec` free to recreate the problem, so the
+  # sweep has to keep running after the handover. It is forked before the drop precisely
+  # so it keeps the root credentials chown needs.
+  test "the reclaim keeps sweeping after the privilege drop" do
+    Dir.mktmpdir do |app_home|
+      FileUtils.mkdir_p("#{app_home}/.claude")
+
+      output, status, stubs = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" }, sleep_succeeds_once: true)
+
+      assert_equal 0, status, output
+      assert_equal 2, stubs.lines.grep(/^FIND-ARGV /).length,
+        "expected the boot sweep plus one repeat, got:\n#{output}"
+    end
+  end
+
+  # The escape hatch, and the reason the repeat is safe to ship: a sweep that ever costs
+  # more than it is worth can be turned off without redeploying a different image.
+  test "ZIMMER_RECLAIM_INTERVAL=0 keeps the boot sweep and drops the repeat" do
+    Dir.mktmpdir do |app_home|
+      FileUtils.mkdir_p("#{app_home}/.claude")
+
+      output, status, stubs = run_entrypoint(
+        app_home: app_home,
+        env: { "HOME" => "/root", "ZIMMER_RECLAIM_INTERVAL" => "0" },
+        sleep_succeeds_once: true
+      )
+
+      assert_equal 0, status, output
+      assert_equal 1, stubs.lines.grep(/^FIND-ARGV /).length,
+        "expected the boot sweep only, got:\n#{output}"
+    end
   end
 
   # Still the root branch -- `run_entrypoint` always stubs `id -u` to 0 -- but with an
