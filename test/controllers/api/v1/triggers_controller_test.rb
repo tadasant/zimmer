@@ -1,4 +1,6 @@
 require "test_helper"
+require "mocha/minitest"
+require "ostruct"
 
 class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
   setup do
@@ -477,5 +479,164 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unprocessable_entity
     assert_nil trigger.reload.scheduling_class
+  end
+
+  # Invoke — the same fire the Invoke button on the trigger page performs.
+  # ---------------------------------------------------------------------------
+
+  def stub_session_creation
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+  end
+
+  test "invoke requires an API key" do
+    post invoke_api_v1_trigger_path(@trigger)
+    assert_response :unauthorized
+  end
+
+  test "invoke creates a session linked to the trigger and increments its fire counter" do
+    stub_session_creation
+    before_count = @trigger.sessions_created_count
+
+    assert_difference("Session.count", 1) do
+      post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    end
+
+    assert_response :created
+    json = JSON.parse(response.body)
+
+    session = Session.last
+    assert_equal session.id, json["session"]["id"]
+    assert_equal session.status, json["session"]["status"]
+    assert_equal @trigger.id.to_s, session.metadata["trigger_id"].to_s
+    assert_equal false, json["burst_notice"]
+    assert_equal "Trigger \"#{@trigger.name}\" fired manually. Session created.", json["message"]
+
+    assert_equal before_count + 1, @trigger.reload.sessions_created_count
+    assert_equal before_count + 1, json["trigger"]["sessions_created_count"]
+    assert_not_nil json["trigger"]["last_triggered_at"]
+  end
+
+  test "invoke interpolates the variables it is given and ignores the rest" do
+    stub_session_creation
+
+    post invoke_api_v1_trigger_path(@trigger),
+      params: { variables: { link: "https://example.com/msg/1", channel: "eng-alerts", nonsense: "dropped" } },
+      headers: @headers
+
+    assert_response :created
+    session = Session.last
+    assert_includes session.prompt, "https://example.com/msg/1"
+    assert_includes session.prompt, "#eng-alerts"
+    assert_not_includes session.prompt, "dropped"
+  end
+
+  test "invoke accepts labels as an array, the one variable that is not a scalar" do
+    stub_session_creation
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(prompt_template: "Labels: {{labels}}")
+
+    post invoke_api_v1_trigger_path(trigger),
+      params: { variables: { labels: [ "bug", "ready to merge" ] } },
+      headers: @headers
+
+    assert_response :created
+    assert_equal "Labels: bug, ready to merge", Session.last.prompt
+  end
+
+  test "invoke without variables leaves the template's placeholders empty" do
+    stub_session_creation
+
+    post invoke_api_v1_trigger_path(@trigger), headers: @headers
+
+    assert_response :created
+    assert_not_includes Session.last.prompt, "{{link}}"
+  end
+
+  test "a session fired over the API carries the api genesis, not web_ui" do
+    stub_session_creation
+
+    post invoke_api_v1_trigger_path(@trigger), headers: @headers
+
+    assert_response :created
+    assert_equal SessionGenesis::API, Session.last.genesis
+  end
+
+  test "a disabled trigger can still be invoked by hand, as it can from the UI" do
+    stub_session_creation
+    trigger = triggers(:disabled_slack_trigger)
+
+    assert_difference("Session.count", 1) do
+      post invoke_api_v1_trigger_path(trigger), headers: @headers
+    end
+
+    assert_response :created
+    assert_equal "disabled", trigger.reload.status, "invoking must not re-arm the trigger"
+  end
+
+  test "invoking a trigger that does not exist is a 404" do
+    post invoke_api_v1_trigger_path(id: 999_999_999), headers: @headers
+
+    assert_response :not_found
+    json = JSON.parse(response.body)
+    assert_equal "Not Found", json["error"]
+  end
+
+  test "over the burst cap invoke returns the burst-notice session, then 429" do
+    stub_session_creation
+    @trigger.update!(max_sessions_per_minute: 1)
+
+    post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :created
+    assert_equal false, JSON.parse(response.body)["burst_notice"]
+
+    post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :created
+    notice = JSON.parse(response.body)
+    assert_equal true, notice["burst_notice"]
+    assert_match(/burst-notice session it spawned instead/, notice["message"])
+
+    assert_no_difference("Session.count") do
+      post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    end
+    assert_response :too_many_requests
+    suppressed = JSON.parse(response.body)
+    assert_equal "Burst suppressed", suppressed["error"]
+    assert_match(/is in a burst/, suppressed["message"])
+    assert suppressed["trigger"]["bursting"]
+  end
+
+  test "a target session that cannot be reused is a 422 that names it, not a 201" do
+    stub_session_creation
+    target = sessions(:failed)
+    @trigger.update!(reuse_session: true, last_session_id: target.id)
+    Trigger.any_instance.stubs(:one_time_reuse_trigger?).returns(true)
+
+    assert_no_difference("Session.count") do
+      post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "No session created", json["error"]
+    assert_match(/no longer reusable/, json["message"])
+    assert_equal target.id, json["session"]["id"]
+  end
+
+  test "invoke reports an unresolvable agent root as a 422 rather than a 500" do
+    AgentRootsConfig.stubs(:find!).raises(AgentRootsConfig::AgentRootNotFoundError.new("Not found"))
+
+    assert_no_difference("Session.count") do
+      post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal "Invalid agent_root", JSON.parse(response.body)["error"]
   end
 end
