@@ -59,9 +59,9 @@ class QuotaSnapshotService
       overage_status: result.overage_status,
       overage_disabled_reason: result.overage_disabled_reason,
       trigger: trigger,
-      # Captured here because nothing else can reconstruct it later: session
-      # status is mutable and keeps no history, so a reading taken today cannot
-      # be attributed to a number of sessions tomorrow.
+      # History, with no reader today: session status is mutable and keeps no
+      # history of its own, so a reading taken now cannot be attributed to a
+      # fleet size later. Kept because it can only be captured here.
       active_session_count: Session.running_claude_code_count
     )
   end

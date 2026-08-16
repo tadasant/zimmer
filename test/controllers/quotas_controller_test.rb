@@ -277,7 +277,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  # The spot gate card lives here, beside the windows it forecasts: the policy
+  # The spot gate card lives here, beside the windows it reads: the policy
   # form, the live reading, and one button per settable genesis kind.
   test "show renders the spot gate with its policy form and genesis controls" do
     get quotas_url
@@ -288,6 +288,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action=?]", spot_policy_path
     assert_select "input[name='app_setting[spot_gate_five_hour_threshold_pct]']"
     assert_select "input[name='app_setting[spot_gate_weekly_threshold_pct]']"
+    assert_select "input[name='app_setting[spot_max_concurrent_sessions]']"
     assert_select "#spot-gate-status"
     assert_select "form[action=?]", reset_genesis_classes_path
 
@@ -297,7 +298,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       genesis_class_path(genesis: kind.key, priority_class: SessionGenesis::SPOT)
   end
 
-  # The gate forecasts the Claude Code quota windows, so it has nothing to say on
+  # The gate reads the Claude Code quota windows, so it has nothing to say on
   # the Codex tab — the same reason the aggregate stats are Claude-only.
   test "show omits the spot gate on the Codex tab" do
     get quotas_url(runtime: CodexAuthProvider::RUNTIME)
@@ -367,7 +368,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_includes response.content_type, "text/vnd.turbo-stream.html"
   end
 
-  # The forecast on the spot gate is computed from the very snapshots a refresh
+  # The decision on the spot gate is read from the very snapshots a refresh
   # replaces, so a refresh that left it alone would show a stale reading beside
   # fresh utilization bars.
   test "refresh_all re-renders the spot gate alongside the aggregate stats" do

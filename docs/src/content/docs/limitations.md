@@ -2472,8 +2472,8 @@ and resume.
 ## The spot gate decides on a reading up to 15 minutes old
 
 The gate compares each window's utilization against its target, and that utilization comes from the
-last `ClaudeAccountQuotaSnapshot` on file. `ClaudeUsageSamplerJob` refreshes the serving account
-every 15 minutes, so between samples the gate is deciding on a number that may already have moved.
+last `ClaudeAccountQuotaSnapshot` on file for the serving account. `ClaudeUsageSamplerJob` refreshes
+it every 15 minutes, so between samples the gate is deciding on a number that may already have moved.
 
 Two consequences worth knowing:
 
@@ -2486,6 +2486,31 @@ Two consequences worth knowing:
   briefly exceed the limit. The next evaluation corrects it, and the jitter on a held session's
   re-check spreads the backlog out, but the limit is enforced per decision rather than held as a
   reservation.
+
+---
+
+## Rotation only happens at refusal, so the pool's spare headroom is not reachable at the target
+
+The gate reads the serving account, because that is the account a session started now spends against.
+`AccountRotationService` moves to a spare when the serving account is **refused** — roughly, at 100%
+or a rejected status — not when it reaches the 80% target. So between the target and the cap, spot
+work waits on a deployment whose other accounts may be nearly empty.
+
+That is the intended reading of "pause when we hit 80%", and the alternative (deciding on the
+roomiest account) would mean deciding on the stalest reading in the pool while spending against a
+different account entirely. But it does mean the pool's spare capacity is only reached by priority
+work pushing the serving account to refusal, by an operator switching accounts on `/quotas`, or by
+raising the target.
+
+---
+
+## `active_session_count` on quota snapshots has no reader
+
+`QuotaSnapshotService` records the running-session count on every snapshot, and nothing reads it:
+`ClaudeUsageRateService`, which divided utilization by session-hours, was deleted with the forecast.
+The column is kept because it can only be captured at write time — a reading taken today cannot be
+attributed to a fleet size tomorrow — so it remains available as history for any future metric. It is
+dead weight until then.
 
 ---
 
@@ -2504,7 +2529,7 @@ whose `spot_hold_retry_at` is well past would close this.
 
 ## A spot session has no starvation escape, by design
 
-While every usable account sits at a window target, spot work waits — with no deadline and no
+While the serving account sits at a window target, spot work waits — with no deadline and no
 override. A 5-hour window falls within hours, but a weekly window pinned near its target can hold a
 queue for a long time, and the queue will not drain on its own until the number comes down. That is
 the behaviour the deployment asked for: the pause is meant to last exactly as long as the utilization

@@ -77,8 +77,7 @@ module Mcp
 
         if decision.account_email
           lines << "- **Windows read from:** #{decision.account_email} " \
-                   "(most room of #{decision.accounts_considered} usable Claude Code " \
-                   "#{'account'.pluralize(decision.accounts_considered)})"
+                   "(the account a session started now would spend against)"
         end
 
         lines.concat(window_lines("5-hour", decision.five_hour))

@@ -338,11 +338,9 @@ class QuotasController < ApplicationController
   # classes. It reads the same Claude Code quota windows the rest of this page
   # reports, which is why it renders here and only on the Claude tab.
   #
-  # One decision, not two. The card used to render a fleet-as-it-stands forecast
-  # beside the answer a starting session would actually get, and the two
-  # disagreed in the obvious way — a green "headroom available" badge above the
-  # line "a spot session starting right now would be held". There is now a single
-  # decision, and `get_spot_policy` renders the same one.
+  # One decision. `SpotGateService.evaluate` is the whole answer, and
+  # `get_spot_policy` renders the same call, so the page and the tool cannot
+  # disagree about whether a spot session would start.
   def load_spot_gate
     @app_setting = AppSetting.current
     @spot_decision = SpotGateService.evaluate
