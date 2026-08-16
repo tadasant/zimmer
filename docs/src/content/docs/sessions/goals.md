@@ -186,10 +186,13 @@ Anything else — including "the user will want to read this" — goes in the fi
 Slack `#updates` if it is a read-only FYI and the session has a Slack server, and the session
 archives. Anything the agent noticed but could not fix goes in a **GitHub issue**, which is the
 other half of why a session can archive at all: an issue is a work item, and a parked session is
-not. The prompt also names three things that *look* like reasons to park and are not: waiting on a
+not. The prompt also names four things that *look* like reasons to park and are not: waiting on a
 machine (CI, an outage, a rate limit, a peer session: none of those is a human, and an unmerged PR
-is the one carve-out), a reason that went stale while the agent worked (the PR merged; the question
-is moot), and finishing with nothing to show (a sweep that found nothing and a gate that aborted
-both ran to completion).
+is the one carve-out), a blocker another session is already fixing (red CI on `main` from an
+unrelated failure, an upstream fix in flight — the agent is told to find that session, set all three
+state wakes on it plus a `wake_me_up_later` backstop, and resume its own work when the blocker
+clears), a reason that went stale while the agent worked (the PR merged; the question is moot), and
+finishing with nothing to show (a sweep that found nothing and a gate that aborted both ran to
+completion).
 
 Whether agents comply is, again, a matter of the model obeying English.
