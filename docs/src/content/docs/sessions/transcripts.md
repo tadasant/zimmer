@@ -97,6 +97,34 @@ It works in two tiers:
 Redaction preserves line count exactly (the regression and rotation guards below compare line
 counts) and leaves no reversible fragment of the original.
 
+### Why the patterns carry their own regexp timeout
+
+`config.load_defaults 8.0` sets `Regexp.timeout = 1` for the whole process. That cap is sized for
+request-scoped strings, and it applies to a *single* search rather than to a `gsub` as a whole — so a
+transcript reaches it in two ordinary ways once it grows into the tens of megabytes. A `gsub` is a
+sequence of searches, one per stretch between matches, and a rule with no literal to seek scans a
+whole transcript that holds none of its shape as one search. And a single line carrying a
+multi-megabyte base64 tool result is one uninterrupted run of the generic `ENV_SECRET` rule's value
+class, which its greedy repeat consumes in one match.
+
+Both were measured on a real 32 MB session transcript, at 1.0 s and 2.2 s. The resulting
+`Regexp::TimeoutError` escaped `TranscriptSource#read` into `TranscriptPollerService`, which logged
+`Error polling transcript for session N: regexp match timeout` and dropped the whole transcript
+update — every poll, for as long as the session stayed alive
+([#472](https://github.com/tadasant/zimmer/issues/472)).
+
+Every pattern that can be handed transcript-scale input therefore carries its own
+`TranscriptRedactor::SCAN_TIMEOUT` (10 s), which takes precedence over the global cap. Like the cap
+it replaces it bounds one search, not a whole pass, so the figure it should be read against is the
+slowest single search: 2.2 s, four times under it. It is a backstop against one runaway match rather
+than a latency budget for `redact`, which takes ~7.6 s on that 32 MB transcript and is not a quantity
+the timeout ever measures.
+
+If it is reached anyway, the pattern pass retries line by line and replaces the single line it cannot
+finish scanning with `[REDACTED:UNSCANNABLE_LINE]`, so a pathological line costs that line rather
+than the whole update. Retrying that way finds exactly what the whole-string pass would have found,
+because no pattern can match across a newline.
+
 :::caution[Defense in depth, not a guarantee — transcripts are still secret material]
 The redactor lowers the blast radius of a transcript that escapes. It does not make one safe to
 expose. It cannot recognize a credential with no recognizable shape that Zimmer never issued: a
