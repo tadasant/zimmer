@@ -180,32 +180,28 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "an archived session whose clone is gone says so instead of offering a dead button" do
+  # The gap #460 left and #463 closed: a session archived long enough ago that
+  # DeferredCloneCleanupJob reclaimed its clone — which is every archived session
+  # an operator actually opens later. The button stays live, because the fork is
+  # given an empty working directory rather than a copy of a tree that is gone.
+  test "an archived session whose clone is gone still regenerates" do
     @session.update_column(:status, Session.statuses[:archived])
     FileUtils.remove_entry(@clone_path)
 
     get session_url(@session)
 
     assert_response :success
-    assert_select "#session_#{@session.id}_status_panel button[disabled]"
-    assert_match "deleted when it went to the trash", response.body
-  end
+    assert_select "#session_#{@session.id}_status_panel button[disabled]", 0,
+      "a reclaimed clone no longer deadens the button"
+    assert_no_match(/cannot be regenerated/, response.body)
 
-  # A stale page can still POST at a button the render would now disable.
-  test "regenerating a session whose clone is gone enqueues nothing and says why" do
-    @session.update_column(:status, Session.statuses[:archived])
-    FileUtils.remove_entry(@clone_path)
-
-    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
       post regenerate_status_summary_session_url(@session)
     end
-
-    assert_redirected_to session_path(@session)
-    assert_match "deleted when it went to the trash", flash[:alert]
   end
 
-  # The two non-clone structural refusals reach the same exits, so the surfaces
-  # answer them the same way rather than only knowing about the trash.
+  # The refusals that remain are the ones no amount of scaffolding can fix, and
+  # the surfaces answer them the same way rather than only knowing about the trash.
   test "regenerating a session with no transcript is refused with its own reason" do
     @session.update_column(:transcript, nil)
 
@@ -216,28 +212,45 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     assert_match "no transcript", flash[:alert]
   end
 
+  test "a summary fork's own panel offers no button, and refuses the post" do
+    fork = Session.create!(
+      prompt: "summarize",
+      agent_runtime: "claude_code",
+      status: :needs_input,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      title: "Status summary for session ##{@session.id}",
+      transcript: @session.transcript,
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => @session.id }
+    )
+
+    get session_url(fork)
+
+    assert_response :success
+    assert_select "#session_#{fork.id}_status_panel button[disabled]"
+    assert_match "does not summarize itself", response.body
+  end
+
   test "the json refusal carries the reason and an unprocessable status" do
-    @session.update_column(:status, Session.statuses[:archived])
-    FileUtils.remove_entry(@clone_path)
+    @session.update_column(:transcript, nil)
 
     post regenerate_status_summary_session_url(@session), as: :json
 
     assert_response :unprocessable_entity
     body = JSON.parse(response.body)
     assert_equal false, body["success"]
-    assert_match "deleted when it went to the trash", body["error"]
+    assert_match "no transcript", body["error"]
   end
 
   # The turbo_stream response is what the button actually gets, and it must not
   # come back saying "Generating" for work that was never queued.
   test "the turbo response to a refused regenerate does not claim to be generating" do
-    @session.update_column(:status, Session.statuses[:archived])
-    FileUtils.remove_entry(@clone_path)
+    @session.update_column(:transcript, nil)
 
     post regenerate_status_summary_session_url(@session), as: :turbo_stream
 
     assert_response :success
     assert_no_match(/Generating/, response.body)
-    assert_match "deleted when it went to the trash", response.body
+    assert_match "Nothing to summarize yet", response.body
   end
 end

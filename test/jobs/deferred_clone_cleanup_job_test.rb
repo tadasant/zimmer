@@ -50,6 +50,21 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_includes log.content, "no unpushed state"
   end
 
+  # A status-summary fork of a session whose clone was already reclaimed gets a
+  # SCAFFOLDED clone — an empty directory that is not a git repository at all. It
+  # has to come back on this path like any other, because it is the only thing
+  # that reclaims it; a fork left holding one would sit on disk forever, hidden
+  # from every operator list.
+  test "reclaims a scaffolded clone that is not a git repository" do
+    @session.update!(metadata: @session.metadata.merge("clone_scaffolded" => true))
+    assert_not File.directory?(File.join(@clone_path, ".git")), "the scaffold is not a repository"
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert_not File.directory?(@clone_path), "a scaffolded clone is reclaimed like any other"
+    assert_nil @session.reload.trash_after, "there is no unpushed state to hold retention open for"
+  end
+
   test "leaves the durable per-session scratch dir intact when reaping the clone" do
     scratch_path = SessionScratchDirectory.ensure_for(@session.id)
     handoff = File.join(scratch_path, "state.txt")

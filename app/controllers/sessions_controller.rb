@@ -1829,8 +1829,10 @@ class SessionsController < ApplicationController
     # Asked before the job is enqueued, so a request that cannot produce a
     # summary is answered with the reason. Enqueuing regardless is what left the
     # panel on "Generating" forever: the job refused, and its refusal had nowhere
-    # to go. Archived is not one of these reasons — a reclaimed clone is.
-    unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: @session)
+    # to go. `force: true` because that is what this action enqueues — neither
+    # being archived nor having lost its clone stops a forced generation, which
+    # scaffolds the fork a working directory when there is no tree left.
+    unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: @session, force: true)
 
     if unavailable
       respond_to do |format|
