@@ -126,4 +126,18 @@ class ClaudeAccountPoolTest < ActiveSupport::TestCase
     assert_in_delta 0.10, measure.five_hour
     assert_equal 1, measure.read_count
   end
+
+  # Two readings can share a timestamp — a rotation captures the outgoing and
+  # incoming accounts in the same instant. Ordering by time alone then picks
+  # arbitrarily, and the pool would average either one. Same tiebreaker
+  # ClaudeAccount#latest_snapshot applies, for the same reason.
+  test "readings that share a timestamp are broken by id, newest first" do
+    acct = account("tied@example.com")
+    stamp = 5.minutes.ago
+    older = seed(acct, five_hour: 0.90, weekly: 0.50)
+    newer = seed(acct, five_hour: 0.10, weekly: 0.20)
+    ClaudeAccountQuotaSnapshot.where(id: [ older.id, newer.id ]).update_all(created_at: stamp)
+
+    assert_in_delta 0.10, ClaudeAccountPool.measure.five_hour
+  end
 end
