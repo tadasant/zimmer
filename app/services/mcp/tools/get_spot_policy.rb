@@ -15,9 +15,10 @@ module Mcp
       description <<~DESC
         Read Zimmer's spot/priority scheduling policy and the live decision the spot gate is making.
 
-        Every session runs as `priority` (always starts) or `spot`. A spot session starts while some
-        Claude Code account is still under both window targets AND a session slot is free. Nothing is
-        forecast: when a window reaches its target, spot work pauses until utilization comes back down.
+        Every session runs as `priority` (always starts) or `spot`. A spot session starts while the
+        Claude Code account pool is under both window targets ON AVERAGE — across every account, including
+        ones in needs_reauth — AND a session slot is free. Nothing is forecast: when a window reaches its
+        target, spot work pauses until utilization comes back down.
         Every running session counts toward the concurrency limit, priority included, but only spot
         sessions are held by it — priority work is meant to crowd spot work out. A held spot session is
         deferred, never cancelled: it stays `waiting` and starts on its own once a slot frees or the
@@ -30,7 +31,7 @@ module Mcp
         Returns:
         - the gate setting (on/off, both window targets, and the max sessions at once)
         - the current decision: running or held, the reason, and how many sessions are running
-        - each window's utilization as last read, against its target
+        - each window's utilization as last read across the pool, against its target
         - every genesis kind, its current class, and how many live sessions derive from it
         - every trigger that carries a class of its own
 
@@ -75,9 +76,12 @@ module Mcp
           "- **Running Claude Code sessions:** #{decision.active_sessions}"
         ]
 
-        if decision.account_email
-          lines << "- **Windows read from:** #{decision.account_email} " \
-                   "(the account a session started now would spend against)"
+        if decision.pool_size
+          counted = decision.accounts_read == decision.pool_size ? "all #{decision.pool_size}" : "#{decision.accounts_read} of #{decision.pool_size}"
+          lines << "- **Windows averaged across:** #{counted} " \
+                   "#{"account".pluralize(decision.pool_size)} in the pool " \
+                   "(every status counts, needs_reauth included; an account whose 7-day window is " \
+                   "spent counts as 100% in the 5-hour figure)"
         end
 
         lines.concat(window_lines("5-hour", decision.five_hour))

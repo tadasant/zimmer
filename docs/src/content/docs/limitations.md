@@ -2507,9 +2507,11 @@ and resume.
 
 ## The spot gate decides on a reading up to 15 minutes old
 
-The gate compares each window's utilization against its target, and that utilization comes from the
-last `ClaudeAccountQuotaSnapshot` on file for the serving account. `ClaudeUsageSamplerJob` refreshes
-it every 15 minutes, so between samples the gate is deciding on a number that may already have moved.
+The gate compares each window's utilization against its target, and that utilization is the average of
+the last `ClaudeAccountQuotaSnapshot` on file for every account in the pool. `ClaudeUsageSamplerJob`
+refreshes the serving account every 15 minutes and a spare is read only on rotation or when somebody
+opens `/quotas`, so between samples the gate is deciding on numbers that may already have moved —
+and a spare's contribution to the average can be considerably staler than 15 minutes.
 
 Two consequences worth knowing:
 
@@ -2525,18 +2527,24 @@ Two consequences worth knowing:
 
 ---
 
-## Rotation only happens at refusal, so the pool's spare headroom is not reachable at the target
+## The gate decides on the pool, but a session spends against one account
 
-The gate reads the serving account, because that is the account a session started now spends against.
-`AccountRotationService` moves to a spare when the serving account is **refused** — roughly, at 100%
-or a rejected status — not when it reaches the 80% target. So between the target and the cap, spot
-work waits on a deployment whose other accounts may be nearly empty.
+The gate averages every account's utilization (`ClaudeAccountPool`), while a session that starts
+spends against whichever account is serving. `AccountRotationService` moves to a spare when the
+serving account is **refused** — roughly, at 100% or a rejected status — not when it reaches the 80%
+target. So a pool comfortably under target can still start a session onto an account with nothing
+left, which is answered by a refusal and a rotation rather than by the gate.
 
-That is the intended reading of "pause when we hit 80%", and the alternative (deciding on the
-roomiest account) would mean deciding on the stalest reading in the pool while spending against a
-different account entirely. But it does mean the pool's spare capacity is only reached by priority
-work pushing the serving account to refusal, by an operator switching accounts on `/quotas`, or by
-raising the target.
+That is the intended trade. Deciding on the serving account alone meant one account at its cap held
+the whole fleet while the rest of the pool sat idle, which is not what the pool is for. The cost is
+that "under 80%" is a statement about the deployment's total headroom, not a promise about the next
+session's first API call.
+
+A second consequence: an account in `needs_reauth` is averaged in, so its headroom counts toward
+running work Zimmer cannot yet route to it. That is deliberate — the window keeps draining while the
+account waits for a human, and treating it as spent would make the pool figure lurch every time an
+account dropped out — but a pool where most accounts need re-authentication will read roomier than
+the accounts actually serving.
 
 ---
 
@@ -2565,7 +2573,7 @@ whose `spot_hold_retry_at` is well past would close this.
 
 ## A spot session has no starvation escape, by design
 
-While the serving account sits at a window target, spot work waits — with no deadline and no
+While the pool average sits at a window target, spot work waits — with no deadline and no
 override. A 5-hour window falls within hours, but a weekly window pinned near its target can hold a
 queue for a long time, and the queue will not drain on its own until the number comes down. That is
 the behaviour the deployment asked for: the pause is meant to last exactly as long as the utilization

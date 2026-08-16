@@ -343,17 +343,28 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
   # The account card only crowds once several accounts are listed, and the email is
   # the token that has to wrap — so this owns both rather than leaning on fixtures.
+  # The readings matter too: with them the spot gate renders its live decision and
+  # the pool note under it, which is the longest prose on the page.
   test "quotas does not overflow horizontally on a phone" do
+    AppSetting.editable.update!(spot_gating_enabled: true,
+                                spot_gate_five_hour_threshold_pct: 80,
+                                spot_gate_weekly_threshold_pct: 80)
     3.times do |i|
-      ClaudeAccount.create!(
+      account = ClaudeAccount.create!(
         email: "a-rather-long-account-address-#{i}@subdomain.example.com",
         status: 0,
         priority: i
+      )
+      ClaudeAccountQuotaSnapshot.create!(
+        claude_account: account, utilization_5h: 0.90 - (i * 0.4), utilization_7d: 0.20,
+        reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+        active_session_count: 1, trigger: "usage_sample"
       )
     end
 
     visit quotas_path
     assert_selector "h1"
+    assert_selector "#spot-gate-pool-note"
 
     assert_no_horizontal_overflow("quotas")
   end
