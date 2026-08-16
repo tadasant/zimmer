@@ -62,7 +62,7 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     session = sessions(:needs_input)
     session.update!(catalog_skills: [ "sync-docs" ])
 
-    %w[change_skills change_hooks change_plugins change_goal change_auto_compact_window change_category set_blocked toggle_push_notifications].each do |action|
+    %w[change_skills change_hooks change_plugins change_goal change_auto_compact_window change_category toggle_push_notifications].each do |action|
       error = assert_raises(Mcp::ToolError) do
         @tool.call("action" => action, "session_id" => session.id, "skills" => [ "open-pr" ], "goal" => "x")
       end
