@@ -11,9 +11,14 @@ require "yaml"
 # starts a container whose root is REAL host root and hands every agent session the host.
 #
 # So one variable arms all three, and these assertions are what keeps that true. They also
-# pin the default: unset, the worker is exactly what it was before this existed.
+# pin each destination's DEFAULT, which is the part that differs: staging deploys armed,
+# production deploys off. Staging's droplet is provisioned for sysbox and runs nobody
+# else's work, so it is where the arrangement gets proven; production is where agent
+# sessions actually live, so it gets the switch only once staging has run on it.
 class NestedDockerSwitchTest < ActiveSupport::TestCase
-  DESTINATIONS = %w[production staging].freeze
+  # destination => whether an unset ZIMMER_NESTED_DOCKER deploys nested Docker armed.
+  DEFAULTS = { "production" => false, "staging" => true }.freeze
+  DESTINATIONS = DEFAULTS.keys.freeze
 
   RENDER_ENV = {
     "PRODUCTION_HOST" => "198.51.100.10",
@@ -34,26 +39,45 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
     keys.each { |k| previous.key?(k) ? ENV[k] = previous[k] : ENV.delete(k) }
   end
 
-  DESTINATIONS.each do |destination|
-    test "#{destination}'s worker is unchanged when the switch is unset" do
-      config = deploy_config(destination)
-      options = config.dig("servers", "worker", "options")
+  # All three armed, or none of them. Asserted as one unit because that is the actual
+  # invariant -- the interesting failure is a config that arms two of the three.
+  def assert_armed(config)
+    options = config.dig("servers", "worker", "options")
 
-      assert_equal "runc", options["runtime"]
-      assert_equal "1000:1000", options["user"]
-      assert_equal "0", config.dig("env", "clear", "ZIMMER_NESTED_DOCKER")
+    assert_equal "sysbox-runc", options["runtime"],
+      "without the sysbox runtime the container has no user namespace"
+    assert_equal "0:0", options["user"],
+      "without container-root the entrypoint cannot start dockerd"
+    assert_equal "1", config.dig("env", "clear", "ZIMMER_NESTED_DOCKER"),
+      "without the env var the entrypoint never starts dockerd"
+  end
+
+  def assert_disarmed(config)
+    options = config.dig("servers", "worker", "options")
+
+    assert_equal "runc", options["runtime"]
+    assert_equal "1000:1000", options["user"]
+    assert_equal "0", config.dig("env", "clear", "ZIMMER_NESTED_DOCKER")
+  end
+
+  DESTINATIONS.each do |destination|
+    armed_by_default = DEFAULTS.fetch(destination)
+
+    test "#{destination} defaults to nested Docker #{armed_by_default ? 'ARMED' : 'OFF'}" do
+      config = deploy_config(destination)
+
+      armed_by_default ? assert_armed(config) : assert_disarmed(config)
     end
 
     test "#{destination}'s worker arms all three settings together when the switch is on" do
-      config = deploy_config(destination, nested: "1")
-      options = config.dig("servers", "worker", "options")
+      assert_armed deploy_config(destination, nested: "1")
+    end
 
-      assert_equal "sysbox-runc", options["runtime"],
-        "without the sysbox runtime the container has no user namespace"
-      assert_equal "0:0", options["user"],
-        "without container-root the entrypoint cannot start dockerd"
-      assert_equal "1", config.dig("env", "clear", "ZIMMER_NESTED_DOCKER"),
-        "without the env var the entrypoint never starts dockerd"
+    # The rollback. A destination that defaults to armed still has to be able to deploy
+    # under plain runc -- that is the one move available if a sysbox deploy misbehaves,
+    # or if the droplet is replaced by one without sysbox on it.
+    test "#{destination}'s worker disarms all three settings together when the switch is off" do
+      assert_disarmed deploy_config(destination, nested: "0")
     end
 
     # YAML reads a bare `0:0` as a sexagesimal integer and yields 0 -- uid 0 with the

@@ -23,6 +23,15 @@ on:
         type: boolean
         required: false
         default: false
+      nested_docker:
+        description: >-
+          Run the worker under sysbox with its own Docker daemon, so agent sessions
+          can use .agent-containers/. ON by default for staging. Turn it OFF to deploy
+          the worker under plain runc as uid 1000 -- the rollback if a sysbox deploy
+          misbehaves, and what to pick if the droplet was rebuilt without sysbox.
+        type: boolean
+        required: false
+        default: true
 
 concurrency:
   group: staging-lifecycle
@@ -259,6 +268,60 @@ jobs:
           gem install kamal -v "$v" --no-document
           kamal version
 
+      # Staging deploys the worker under sysbox so agent sessions get their own Docker
+      # daemon. That needs three things on the HOST, and each one missing fails in a
+      # way that is miserable to diagnose from the app side:
+      #
+      #   no sysbox-runc runtime   -> Kamal's `docker run --runtime sysbox-runc` dies
+      #                               with "unknown or invalid runtime name", mid-cutover.
+      #   runtime but no user ns   -> the container's root IS host root. The entrypoint
+      #                               refuses to start dockerd (by design) and the worker
+      #                               crash-loops on a message nobody is tailing.
+      #   no time-namespaces flag  -> NO sysbox container starts at all, not even
+      #                               `docker run alpine echo hi`. See nestybox/sysbox#1011.
+      #
+      # One command settles all three: start a throwaway sysbox container and read its
+      # uid_map. A non-identity first line (`0 100000 65536`) means the runtime resolved,
+      # the flag is in place, and the user namespace is real. An identity map
+      # (`0 0 4294967295`) means container root is host root -- refuse to deploy, because
+      # that is the exact configuration this whole mechanism exists to avoid.
+      - name: Preflight the droplet's sysbox runtime
+        if: ${{ inputs.nested_docker }}
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+        run: |
+          set -euo pipefail
+          # Diagnostic only, and deliberately not fatal: if the daemon or the SSH hop is
+          # broken, the sysbox check below fails anyway and says so in terms of the thing
+          # we actually care about. Letting this line abort the step first would replace
+          # that message with a raw docker/ssh error.
+          echo "--- registered runtimes ---"
+          ssh root@"${STAGING_HOST}" \
+            "docker info --format '{{range \$k,\$v := .Runtimes}}{{\$k}} {{end}}'" || true
+
+          if ! map=$(ssh root@"${STAGING_HOST}" \
+                'docker run --rm --runtime=sysbox-runc alpine head -1 /proc/self/uid_map' 2>&1); then
+            echo "::error::The droplet cannot start a sysbox container, so the worker would not start either."
+            echo "::error::${map}"
+            echo "--- /etc/docker/daemon.json ---"
+            ssh root@"${STAGING_HOST}" 'cat /etc/docker/daemon.json' || true
+            echo "--- sysbox units ---"
+            ssh root@"${STAGING_HOST}" 'systemctl is-active sysbox sysbox-mgr sysbox-fs' || true
+            echo "::error::Install sysbox (docs/operate/nested-docker.md, 'Turning it on'), or re-run"
+            echo "::error::this workflow with nested_docker unchecked to deploy under plain runc."
+            exit 1
+          fi
+
+          echo "sysbox container uid_map: ${map}"
+          # Field 2 is the host uid that container uid 0 maps to. 0 means no namespace.
+          host_uid=$(echo "${map}" | awk '{print $2}')
+          if [ "${host_uid}" = "0" ]; then
+            echo "::error::A sysbox container started but its root maps to host uid 0 -- there is no"
+            echo "::error::user namespace, so the worker's root would be real host root. Refusing to deploy."
+            exit 1
+          fi
+          echo "✅ sysbox works: container root maps to host uid ${host_uid}, not 0"
+
       # Deploy onto the persistent host. `accessory boot` is already idempotent in
       # Kamal 2 (it skips a container that exists), so this is NOT `|| true`-guarded:
       # a genuine failure here (registry login, image pull, bad DB password) must fail
@@ -267,6 +330,10 @@ jobs:
       - name: Kamal deploy (staging)
         env:
           STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+          # Explicit rather than left to config/deploy.staging.yml's default, so the
+          # dispatch checkbox is a real lever and the deploy log records which way it
+          # went. The config still defaults this ON -- see its header.
+          ZIMMER_NESTED_DOCKER: ${{ inputs.nested_docker && '1' || '0' }}
           KAMAL_REGISTRY_USERNAME: ${{ github.actor }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
           STAGING_SECRET_BASE: ${{ secrets.STAGING_SECRET_BASE }}
@@ -408,6 +475,87 @@ jobs:
           done
           echo "::error::Health check did not pass in time"
           exit 1
+
+      # The worker being "stably running" above says the container did not crash. It
+      # says nothing about whether the thing this deploy turned on actually works, and
+      # that distinction is the whole lesson of 2026-08-13: four green assertions about
+      # the container's SHAPE while the queue sat frozen for ten hours.
+      #
+      # So assert the properties an agent session depends on, from inside the container,
+      # as the uid a session runs as.
+      - name: Verify the worker's nested Docker daemon
+        if: ${{ inputs.nested_docker }}
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+        run: |
+          set -euo pipefail
+          w=$(ssh root@"${STAGING_HOST}" \
+            'docker ps --filter "name=zimmer-worker" --format "{{.Names}}" | head -1')
+          [ -n "$w" ] || { echo "::error::no worker container"; exit 1; }
+          echo "worker: $w"
+
+          # 1. The runtime Kamal actually started it under.
+          rt=$(ssh root@"${STAGING_HOST}" "docker inspect -f '{{.HostConfig.Runtime}}' $w")
+          if [ "$rt" != "sysbox-runc" ]; then
+            echo "::error::worker runtime is '$rt', not sysbox-runc -- the deploy did not arm nested Docker."
+            exit 1
+          fi
+
+          # 2. The user namespace. This is the fence: it is what makes running a daemon
+          #    as container-root defensible, and its absence is the failure that would
+          #    hand every agent session root on the droplet.
+          map=$(ssh root@"${STAGING_HOST}" "docker exec $w head -1 /proc/self/uid_map")
+          echo "worker uid_map: $map"
+          if [ "$(echo "$map" | awk '{print $2}')" = "0" ]; then
+            echo "::error::the worker is NOT user-namespaced: its root is host root."
+            exit 1
+          fi
+
+          # 3. The host's socket must not be reachable. Nested Docker exists precisely so
+          #    the worker does not need it -- a session with the host socket can start a
+          #    container bind-mounting / as root, and can control its sibling containers.
+          #    Captured first so the failure message can show what IS mounted; -x pins
+          #    the match to a whole line, so a path merely containing docker.sock does
+          #    not read as the host's socket. Both spellings, because /var/run is a
+          #    symlink to /run on systemd hosts and a future regression could mount
+          #    either -- this check exists to catch that, not just today's config.
+          mounts=$(ssh root@"${STAGING_HOST}" \
+            "docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' $w")
+          if printf '%s\n' "$mounts" | grep -qxE '/(var/)?run/docker\.sock'; then
+            echo "::error::the worker mounts the HOST Docker socket. That is root-equivalent access to"
+            echo "::error::the droplet from inside any agent session; nested Docker exists to avoid it."
+            echo "--- worker mounts ---"
+            printf '%s\n' "$mounts"
+            exit 1
+          fi
+
+          # 4. The daemon answers as uid 1000 -- not as root. Agent sessions run as 1000
+          #    after the entrypoint's privilege drop, so a root-only socket is a daemon
+          #    that exists and that no session can use (this is what `dockerd --group
+          #    1000` in bin/docker-entrypoint buys).
+          v=$(ssh root@"${STAGING_HOST}" \
+            "docker exec -u 1000:1000 $w docker version --format '{{.Server.Version}}'" 2>&1) || {
+            echo "::error::the inner daemon is not usable as uid 1000, which is the uid agent sessions run as:"
+            echo "::error::${v}"
+            ssh root@"${STAGING_HOST}" "docker exec $w tail -20 /tmp/dockerd.log" || true
+            exit 1
+          }
+          echo "✅ nested dockerd ${v} answering as uid 1000"
+
+          # 5. HOME survived the privilege drop. Read off the real PID 1 rather than a
+          #    fresh exec, because PID 1 is the process whose libpq/~/.claude/~/.config
+          #    lookups are in question -- `HOME=/root` here is exactly how the ten-hour
+          #    freeze presented, and every container-shaped check stayed green through it.
+          home=$(ssh root@"${STAGING_HOST}" "docker exec $w cat /proc/1/environ" \
+            | tr '\0' '\n' | sed -n 's/^HOME=//p')
+          echo "worker PID 1 HOME=${home}"
+          if [ "${home}" != "/home/rails" ]; then
+            echo "::error::the worker's PID 1 has HOME='${home}', not /home/rails. libpq cannot open a TLS"
+            echo "::error::connection through it and the runtime volumes (~/.claude, ~/.config/gh) are absent,"
+            echo "::error::so the worker would run without ever claiming a job."
+            exit 1
+          fi
+          echo "✅ worker is user-namespaced, socket-free, and kept HOME through the drop"
 
       # `/up` above is a liveness ping, not a health check: Rails answers it 200 for
       # any process that finished booting, so a container with a dead database, an
