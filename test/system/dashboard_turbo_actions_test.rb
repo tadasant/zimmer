@@ -52,9 +52,10 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
     page.driver.browser.manage.window.resize_to(1400, 900)
 
     # `sessions(:failed)` is only on the dashboard when the request states its
-    # statuses: a bare "/" opens on SessionsController::DEFAULT_STATUS_FILTER,
-    # which is `needs_input` alone, and a failed card is filtered out before it
-    # is ever rendered. Ask for every status the way the siblings above do.
+    # statuses: a bare "/" with no persisted filter cookie opens on
+    # SessionsController::DEFAULT_STATUS_FILTER, which is `needs_input` alone,
+    # and a failed card is filtered out before it is ever rendered. Ask for
+    # every status the way its siblings in this file do.
     visit root_path(every_status_params)
     assert_selector "turbo-frame#session_#{session.id}"
     stamp_window
