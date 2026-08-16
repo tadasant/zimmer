@@ -3,7 +3,11 @@ require "test_helper"
 # Covers the dashboard's Advanced Search behavior:
 #   - filtering sessions by agent root
 #   - rendering a flat results list (and hiding the category grid) when a search is active
-#   - defaulting trash visibility ON whenever a search runs
+#   - how the status filter composes with a search
+#
+# The fixtures sit in `needs_input` so they are visible under the dashboard's default
+# filter; a search does not widen the status filter, so a test about search would
+# otherwise be asserting the filter instead.
 class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   setup do
     McpOauthPendingFlow.delete_all
@@ -18,6 +22,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
       subdirectory: "agents/agent-orchestrator",
       prompt: "Zimmer session",
       title: "Zimmer Session",
+      status: :needs_input,
       metadata: { "agent_root_key" => "agent-orchestrator" }
     )
 
@@ -27,7 +32,8 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
       git_root: "https://github.com/tadasant/zimmer-catalog.git",
       subdirectory: "agents/agent-orchestrator",
       prompt: "Zimmer legacy session",
-      title: "Zimmer Legacy Session"
+      title: "Zimmer Legacy Session",
+      status: :needs_input
     )
 
     # Belongs to a different root ("agents").
@@ -36,6 +42,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
       subdirectory: "agents",
       prompt: "Agents session",
       title: "Agents Session",
+      status: :needs_input,
       metadata: { "agent_root_key" => "agents" }
     )
   end
@@ -86,22 +93,22 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     assert_select "#search_results", count: 0
   end
 
-  test "searching defaults to including trashed sessions" do
+  test "a search reaches every status when none is ticked, and narrows when one is" do
     @zimmer_legacy_session.update!(status: :archived)
 
-    # No show_archived param: trash is included by default because a search is active.
-    get root_url(agent_root: "agent-orchestrator")
+    # Nothing ticked: the search spans every status, trash included.
+    get root_url(every_status_params(agent_root: "agent-orchestrator"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 2
 
-    # The user can still explicitly hide trash after searching.
-    get root_url(agent_root: "agent-orchestrator", show_archived: "false")
+    # Naming one status narrows the same search to it.
+    get root_url(every_status_params(agent_root: "agent-orchestrator", status: [ @zimmer_session.status ]))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 1
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
   end
 
-  test "a text query also activates the flat list and default trash inclusion" do
+  test "a text query activates the flat list, and spans the trash when no status is ticked" do
     archived = Session.create!(
       git_root: "https://github.com/tadasant/zimmer-catalog.git",
       prompt: "trashed match",
@@ -111,10 +118,11 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     Session.create!(
       git_root: "https://github.com/tadasant/zimmer-catalog.git",
       prompt: "active match",
-      title: "Findme Active"
+      title: "Findme Active",
+      status: :needs_input
     )
 
-    get root_url(q: "Findme")
+    get root_url(every_status_params(q: "Findme"))
     assert_response :success
     assert_select "#search_results"
     assert_select "#sessions_grid turbo-frame", count: 2
@@ -140,6 +148,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
       subdirectory: "agents/agent-orchestrator",
       prompt: "Mismatched session",
       title: "Mismatched Session",
+      status: :needs_input,
       metadata: { "agent_root_key" => "agents" }
     )
 

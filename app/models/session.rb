@@ -39,13 +39,6 @@ class Session < ApplicationRecord
   # session is "Uncategorized". Assigned via drag-and-drop on the index grid.
   belongs_to :category, optional: true
 
-  # Manual "blocked by" relationship: a session can be marked as blocked by another
-  # session (the blocker). A blocked session is hidden from the default index until
-  # its blocker is trashed (archived). The relationship is purely manual — there is
-  # no automatic dependency detection.
-  belongs_to :blocked_by_session, class_name: "Session", optional: true
-  has_many :blocked_sessions, class_name: "Session", foreign_key: :blocked_by_session_id, dependent: :nullify
-
   # Throwaway forks that exist only to write another session's Status blurb (see
   # SessionStatusSummaryGenerator). They are ordinary sessions mechanically —
   # they run, pause, and get archived — but they are Zimmer's own bookkeeping
@@ -77,18 +70,6 @@ class Session < ApplicationRecord
   # sessions whose marker may have been stranded (set with no active elicitation
   # remaining). Mirrors the instance-level `blocked_on_elicitation?` predicate.
   scope :blocked_on_elicitation, -> { where("metadata ->> 'blocked_on_elicitation' = 'true'") }
-
-  # A session is "effectively blocked" when it has a blocker AND that blocker is not
-  # yet archived (trashed). Once the blocker is archived, the session is no longer
-  # effectively blocked and reappears in the default index.
-  scope :effectively_blocked, -> {
-    joins("INNER JOIN sessions blockers ON blockers.id = sessions.blocked_by_session_id")
-      .where.not(blockers: { status: statuses[:archived] })
-  }
-  scope :not_effectively_blocked, -> {
-    where(blocked_by_session_id: nil)
-      .or(where("blocked_by_session_id IN (SELECT id FROM sessions WHERE status = ?)", statuses[:archived]))
-  }
 
   # Excludes sessions that belong to a frozen category. Frozen categories are a
   # "park it and leave it alone" bucket: their sessions must be skipped by every
@@ -1348,12 +1329,6 @@ class Session < ApplicationRecord
     message
   end
 
-  # True when this session is marked as blocked by another session whose blocker is
-  # not yet archived (trashed). Such sessions are hidden from the default index.
-  def effectively_blocked?
-    blocked_by_session_id.present? && blocked_by_session.present? && !blocked_by_session.archived?
-  end
-
   private
 
   # Reclaim the on-disk state a destroyed session owned: its durable scratch
@@ -1466,7 +1441,6 @@ class Session < ApplicationRecord
       saved_change_to_custom_metadata? ||
       saved_change_to_favorited? ||
       saved_change_to_is_autonomous? ||
-      saved_change_to_blocked_by_session_id? ||
       (saved_change_to_session_notes? && (session_notes_previously_was.blank? != session_notes.blank?))
 
     # For last_timeline_entry_at changes, throttle broadcasts to avoid overwhelming the index page
@@ -1619,15 +1593,6 @@ class Session < ApplicationRecord
     # The /sessions page filters out archived sessions by default, so broadcasting
     # a REPLACE would incorrectly show the archived session.
     if archived?
-      broadcast_remove_from_sessions_index
-      return
-    end
-
-    # If session is now effectively blocked, remove it from the default index just like
-    # archived sessions. The /sessions page hides blocked sessions by default, so a
-    # REPLACE would incorrectly keep showing it. Viewers with "Show Blocked" active will
-    # see it again on reload (consistent with how the trash filter behaves).
-    if effectively_blocked?
       broadcast_remove_from_sessions_index
       return
     end

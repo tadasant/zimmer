@@ -16,7 +16,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_category", "set_blocked", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -29,7 +29,6 @@ module Mcp
       GOAL_DESC = 'Required for "change_goal" action. The goal text to set for the session; pass an empty string to clear the goal. Also optional for "follow_up": a non-blank goal is applied to the session along with the prompt, while a blank or omitted one leaves the session\'s current goal alone (use "change_goal" to clear it).'
       AUTO_COMPACT_WINDOW_DESC = 'Required for "change_auto_compact_window" action. The context (auto-compact) window in tokens, a positive integer. Applies on the next turn or restart, not the currently running process.'
       CATEGORY_ID_DESC = 'Required for "change_category" action (the key must be present). The organizational category ID to assign; pass null to move the session back to Uncategorized.'
-      BLOCKED_BY_SESSION_ID_DESC = 'Required for "set_blocked" action. The ID of the session that blocks this one; pass null to clear the blocked-by relationship.'
       ENABLED_DESC = 'Optional for "set_heartbeat" action. When true, enables the session heartbeat; when false, disables it. Omit to leave the enabled state unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       INTERVAL_SECONDS_DESC = 'Optional for "set_heartbeat" action. Heartbeat cadence in seconds (30–86400). Omit to leave the interval unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       MESSAGE_INDEX_DESC = 'Required for "fork" action. The transcript message index to fork from.'
@@ -58,7 +57,6 @@ module Mcp
         change_auto_compact_window
         change_scheduling_class
         change_category
-        set_blocked
         toggle_push_notifications
         set_heartbeat
         fork
@@ -113,7 +111,6 @@ module Mcp
         - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
         - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived)
         - **change_category**: Assign the session's organizational category (requires "category_id"; null moves it to Uncategorized)
-        - **set_blocked**: Set or clear the session's blocked-by relationship (requires "blocked_by_session_id"; null clears it)
         - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
         - **fork**: Fork a session from a specific transcript message (requires "message_index")
@@ -132,7 +129,7 @@ module Mcp
         **Use cases:**
         - Provide additional instructions to an agent
         - Control session lifecycle (pause, restart, fork, refresh)
-        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, update_notes, update_title, change_category, set_blocked, toggle_push_notifications)
+        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, update_notes, update_title, change_category, toggle_push_notifications)
         - Reconfigure session capabilities (MCP servers, skills, hooks, plugins, model, context window)
         - Set or clear a session's goal
       DESC
@@ -160,7 +157,6 @@ module Mcp
             description: SCHEDULING_CLASS_DESC
           },
           category_id: { type: [ "number", "null" ], description: CATEGORY_ID_DESC },
-          blocked_by_session_id: { type: [ "number", "null" ], description: BLOCKED_BY_SESSION_ID_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
           message_index: { type: "number", description: MESSAGE_INDEX_DESC },
@@ -211,7 +207,6 @@ module Mcp
         when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
         when "change_scheduling_class" then change_scheduling_class(find_session(args["session_id"]), args)
         when "change_category" then change_category(find_session(args["session_id"]), args)
-        when "set_blocked" then set_blocked(find_session(args["session_id"]), args)
         when "toggle_push_notifications" then toggle_push_notifications(find_session(args["session_id"]))
         when "set_heartbeat" then set_heartbeat(find_session(args["session_id"]), args)
         when "fork" then fork_session(find_session(args["session_id"]), args)
@@ -684,30 +679,6 @@ module Mcp
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
           "- **Category:** #{category&.name || '(uncategorized)'}"
-        ].join("\n")
-      end
-
-      def set_blocked(session, args)
-        unless args.key?("blocked_by_session_id")
-          raise ToolError, "The \"blocked_by_session_id\" parameter is required for the \"set_blocked\" action (pass null to clear)."
-        end
-
-        blocker_id = args["blocked_by_session_id"].presence
-        blocker = nil
-        if blocker_id
-          blocker = Session.find_by(id: blocker_id)
-          raise ToolError, "Session ##{blocker_id} not found" unless blocker
-          raise ToolError, "A session cannot be blocked by itself" if blocker.id == session.id
-        end
-
-        session.update!(blocked_by_session_id: blocker&.id)
-
-        [
-          "## Blocked-by Updated",
-          "",
-          "- **Session ID:** #{session.id}",
-          "- **Title:** #{session.title}",
-          "- **Blocked By:** #{blocker ? "##{blocker.id}" : '(none)'}"
         ].join("\n")
       end
 

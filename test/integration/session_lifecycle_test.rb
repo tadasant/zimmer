@@ -194,22 +194,21 @@ class SessionLifecycleTest < IntegrationTestCase
     running = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Running", status: "running", agent_runtime: "claude_code")
     archived = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Archived", status: "archived", agent_runtime: "claude_code")
 
-    # Get index (shows only non-archived by default)
-    get root_path
+    # Ask for the two live statuses explicitly.
+    get root_path(every_status_params(status: %w[waiting running]))
 
     assert_response :success
 
-    # Verify non-archived sessions are shown (2 sessions, not 3)
+    # Verify the two selected sessions are shown, not the archived one.
     # Use selector that matches per-session turbo-frame tags (session_<id>),
     # excluding the dashboard's session detail drawer frame (session_detail).
     assert_select "turbo-frame[id^='session_']:not(#session_detail)", 2
 
-    # Get index with archived sessions
-    get root_path(show_archived: true)
+    # Ticking nothing means every status, archived included.
+    get root_path(every_status_params)
 
     assert_response :success
 
-    # Verify all sessions are shown when showing archived
     assert_select "turbo-frame[id^='session_']:not(#session_detail)", 3
   end
 

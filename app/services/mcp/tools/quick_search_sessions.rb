@@ -23,7 +23,7 @@ module Mcp
         **Use cases:**
         - Find a specific session by ID (set id parameter)
         - Search sessions by title keyword (set query parameter)
-        - List all sessions with optional status filter
+        - List all sessions with an optional status filter (one status, or an array to match any)
         - Monitor sessions that need human attention (status: "needs_input")
 
         **Returns:** A list of matching sessions with their status, configuration, and metadata.
@@ -49,9 +49,11 @@ module Mcp
             description: "Search query to find sessions. Matches against session title only — this is a simple title search, not a full-text or semantic search. Leave empty to list all sessions."
           },
           status: {
-            type: "string",
-            enum: [ "waiting", "running", "needs_input", "failed", "archived" ],
-            description: 'Filter results by status. Options: "waiting", "running", "needs_input", "failed", "archived"'
+            oneOf: [
+              { type: "string", enum: SessionsController::STATUS_FILTER_OPTIONS },
+              { type: "array", items: { type: "string", enum: SessionsController::STATUS_FILTER_OPTIONS } }
+            ],
+            description: 'Filter results by status — one status, or an array of them to match any. Options: "waiting", "running", "needs_input", "failed", "archived". Mirrors the dashboard\'s multi-select status filter; omit it for every status.'
           },
           agent_runtime: {
             type: "string",
@@ -125,12 +127,16 @@ module Mcp
         # them, so the two surfaces list the same sessions.
         scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
 
-        status = args["status"].presence
-        if status
-          unless Session.statuses.key?(status.to_s)
-            raise ToolError, "Invalid status: #{status}. Valid statuses: #{Session.statuses.keys.join(', ')}"
+        # One status or several: an array matches any of them, the way the
+        # dashboard's status filter does.
+        statuses = Array(args["status"]).map { |s| s.to_s.strip }.reject(&:empty?)
+        if statuses.any?
+          statuses.each do |status|
+            unless Session.statuses.key?(status)
+              raise ToolError, "Invalid status: #{status}. Valid statuses: #{Session.statuses.keys.join(', ')}"
+            end
           end
-          scope = scope.where(status: status)
+          scope = scope.where(status: statuses)
         end
 
         scope = scope.where(agent_runtime: args["agent_runtime"]) if args["agent_runtime"].present?
@@ -148,7 +154,13 @@ module Mcp
           end
           scope = scope.with_genesis(genesis)
         end
-        scope = scope.where.not(status: :archived) unless truthy?(args["show_archived"])
+        # Archived sessions stay out unless asked for. Naming "archived" in the status
+        # filter IS asking for it — without this, `status: "archived"` and
+        # `show_archived` unset would answer "no sessions found" for a filter the caller
+        # spelled out, which reads as a missing session rather than a missing flag.
+        unless truthy?(args["show_archived"]) || statuses.include?("archived")
+          scope = scope.where.not(status: :archived)
+        end
 
         query = args["query"].to_s.strip
         if query.present?

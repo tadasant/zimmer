@@ -390,7 +390,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_16_020000) do
     t.string "agent_runtime", default: "claude_code", null: false
     t.datetime "archived_at"
     t.integer "auto_compact_window", default: 1000000, null: false
-    t.bigint "blocked_by_session_id"
     t.string "branch", default: "main", null: false
     t.jsonb "catalog_hooks", default: []
     t.jsonb "catalog_plugins", default: []
@@ -436,7 +435,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_16_020000) do
     t.index "((custom_metadata ->> 'router_session_id'::text))", name: "index_sessions_on_router_session_id"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
-    t.index ["blocked_by_session_id"], name: "index_sessions_on_blocked_by_session_id"
     t.index ["category_id"], name: "index_sessions_on_category_id"
     t.index ["created_at"], name: "index_sessions_on_created_at"
     t.index ["execution_provider"], name: "index_sessions_on_execution_provider"
@@ -568,7 +566,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_16_020000) do
   add_foreign_key "session_uncle_links", "sessions", column: "uncle_session_id", on_delete: :cascade
   add_foreign_key "session_uncle_links", "sessions", on_delete: :cascade
   add_foreign_key "sessions", "categories", on_delete: :nullify
-  add_foreign_key "sessions", "sessions", column: "blocked_by_session_id", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
   add_foreign_key "subagent_transcripts", "sessions", on_delete: :cascade
   add_foreign_key "trigger_conditions", "triggers"

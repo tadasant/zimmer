@@ -335,7 +335,12 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_includes entry["url"], "tool_groups=sessions", "scoping must survive retargeting"
   end
 
-  test "post_process! injects npx --prefix /tmp into Codex stdio servers" do
+  # Regression guard for zimmer#467, the Codex half: the rendered argv of an npx
+  # stdio server must be the catalog's argv. The `--prefix /tmp` Zimmer used to
+  # splice in here misdirected npm's bin-linking, leaving the package entrypoint
+  # non-executable and the server dead on `exec` with EACCES for the life of the
+  # clone.
+  test "post_process! writes a Codex stdio server's command and args through verbatim" do
     write_config(
       "acme-server" => {
         "command" => "npx",
@@ -346,9 +351,9 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
 
     build_processor.post_process!
 
-    args = read_config.dig("mcp_servers", "acme-server", "args")
-    assert_includes args, "--prefix"
-    assert_includes args, "/tmp"
+    entry = read_config.dig("mcp_servers", "acme-server")
+    assert_equal "npx", entry["command"]
+    assert_equal [ "-y", "@acme/mcp" ], entry["args"]
   end
 
   test "post_process! resolves ${VAR} interpolations AIR left literal in env" do
@@ -631,9 +636,9 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   # self-session injection is deduped away — this keeps the output independent of
   # the runtime catalog and fully deterministic. It exercises every Codex-specific
   # path: retargeting a native Zimmer http entry, env_vars secret inlining (with
-  # retained host-env forwarding), env_http_headers secret inlining, the npx
-  # --prefix /tmp rewrite, and the elicitation address written into the stdio
-  # entry's env table (and only that entry's).
+  # retained host-env forwarding), env_http_headers secret inlining, an npx entry's
+  # argv passed through verbatim, and the elicitation address written into the
+  # stdio entry's env table (and only that entry's).
   test "post_process! produces byte-for-byte stable .codex/config.toml (golden file)" do
     stub_secrets("ACME_API_KEY" => "sk-acme-123", "ACME_TOKEN" => "tok-acme-xyz")
 
@@ -665,7 +670,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       [mcp_servers.acme-http.http_headers]
       Authorization = "tok-acme-xyz"
       [mcp_servers.acme-server]
-      args = ["-y", "--prefix", "/tmp", "@acme/mcp"]
+      args = ["-y", "@acme/mcp"]
       command = "npx"
       env_vars = ["ACME_HOST_REGION"]
       [mcp_servers.acme-server.env]

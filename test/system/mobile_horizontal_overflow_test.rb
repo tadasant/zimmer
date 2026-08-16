@@ -99,12 +99,27 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
   test "sessions index does not overflow horizontally on a phone" do
     create_session(status: :failed)
-    create_session(title: "Short one", status: :waiting)
+    create_session(title: "Short one", status: :needs_input)
 
     visit root_path
     assert_text "Short one"
 
     assert_no_horizontal_overflow("sessions index")
+
+    # The Filters section is the densest block in the phone-width sidebar: a wrapping
+    # row of five status pills, a segmented scheduling-class control, and — behind the
+    # Advanced disclosure — the widest inputs on the page. The disclosure's contents
+    # are display:none until it is open, so a closed <details> would prove nothing
+    # about them.
+    page.execute_script("document.querySelector('details').open = true")
+    assert_no_horizontal_overflow("sessions index with Filters > Advanced open")
+
+    # A multi-status selection must not widen it either — the pills have to wrap.
+    check "status-filter-failed", allow_label_click: true
+    click_on "Apply filters"
+    assert_text LONG_TOKEN_TITLE
+
+    assert_no_horizontal_overflow("sessions index with a multi-status filter applied")
   end
 
   test "session detail does not overflow horizontally on a phone" do

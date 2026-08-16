@@ -36,7 +36,6 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # meaningless without the session it describes.
     [ "session_status_summaries", "fork_session_id", :nullify ],
     [ "session_status_summaries", "session_id", :cascade ],
-    [ "sessions", "blocked_by_session_id", :nullify ],
     [ "sessions", "parent_session_id", :nullify ],
     # Cascade on BOTH ends, which is where an uncle edge differs from the spawn
     # pointer above. Nulling a parent pointer leaves a meaningful row — a session

@@ -101,7 +101,15 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     ENV.delete("TEST_HEADER_TOKEN")
   end
 
-  test "post_process! injects npx prefix" do
+  # Regression guard for zimmer#467: Zimmer used to splice `--prefix /tmp` into
+  # every npx invocation here. That aimed npm's bin-linking at a directory that
+  # does not exist on the host, so the `chmod 0755` that accompanies bin-linking
+  # never landed and the server died on `exec` with EACCES on every retry —
+  # terminally orphaning production session 4388 three times in 31 minutes. It
+  # also pointed npm at a host-shared path, defeating the per-clone
+  # NPM_CONFIG_CACHE isolation. A catalog entry's argv must reach `.mcp.json`
+  # exactly as the catalog wrote it.
+  test "post_process! writes an npx server's command and args through verbatim" do
     write_config(
       "test-npx-server" => {
         "command" => "npx",
@@ -112,9 +120,9 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     build_processor.post_process!
 
-    args = read_config.dig("mcpServers", "test-npx-server", "args")
-    assert_includes args, "--prefix"
-    assert_includes args, "/tmp"
+    entry = read_config.dig("mcpServers", "test-npx-server")
+    assert_equal "npx", entry["command"]
+    assert_equal [ "-y", "some-package" ], entry["args"]
   end
 
   # ---------------------------------------------------------------------------
@@ -464,8 +472,8 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_equal %w[type url headers], self_server.keys
   end
 
-  test "ensure_baseline! still resolves secrets and rewrites npx on pre-existing servers" do
-    # ensure_baseline! runs resolve_and_rewrite! over the whole table whenever an
+  test "ensure_baseline! still resolves secrets on pre-existing servers" do
+    # ensure_baseline! runs resolve_secrets! over the whole table whenever an
     # injection fires, so pre-existing entries get the same treatment as in post_process!.
     @session.update!(mcp_servers: [], catalog_skills: [])
     ENV["BASELINE_TEST_SECRET"] = "resolved_secret"
@@ -481,8 +489,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     build_processor.ensure_baseline!
 
     entry = read_config.dig("mcpServers", "some-npx-server")
-    assert_includes entry["args"], "--prefix"
-    assert_includes entry["args"], "/tmp"
+    assert_equal [ "-y", "some-package" ], entry["args"]
     assert_equal "resolved_secret", entry.dig("env", "API_KEY")
   ensure
     ENV.delete("BASELINE_TEST_SECRET")
@@ -939,7 +946,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
         },
         "some-npx-server" => {
           "command" => "npx",
-          "args" => [ "-y", "--prefix", "/tmp", "some-package" ],
+          "args" => [ "-y", "some-package" ],
           "env" => {
             "TOKEN" => "fallback",
             "ELICITATION_REQUEST_URL" => ElicitationEndpoint.url,
