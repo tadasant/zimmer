@@ -43,7 +43,11 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
   #               (these tests are not root, and `find`/`chown` are the sweep's whole
   #               implementation, so its argv IS its behaviour)
   #   find     -- records argv and then hands off to the real binary, so the sweep's
-  #               scope is assertable without faking what it actually finds
+  #               scope is assertable without faking what it actually finds.
+  #               `find_emits:` instead makes it print a fixed NUL-separated list,
+  #               which is the only way to assert what the sweep DOES with a hit on
+  #               a machine whose own uid is 1000 and which therefore cannot create
+  #               one.
   #
   # Those last two record to a file rather than to stdout, and the file is the third
   # element `run_entrypoint` returns. They have no usable stream: the sweep redirects
@@ -54,10 +58,15 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
   #               iterations. The loop is forked and inherits stdout, so a real sleep
   #               would hold the pipe `IO.popen` reads until the interval elapsed --
   #               forever, at the default 60s, since the loop never ends on its own.
-  #               `sleep_succeeds_once:` lets one iteration through instead.
+  #               `sleep_succeeds_once:` lets one iteration through instead. Note
+  #               that this stub is also on PATH for the dockerd wait loop, where a
+  #               failing `sleep` is the last command in the body and would abort the
+  #               script under `-e`; no test reaches that loop today, because the
+  #               user-namespace guard exits first.
   #
   # Pass `passwd: nil` to make the lookup find no uid 1000 at all.
-  def run_entrypoint(app_home:, env: {}, app_name: "rails", passwd: :present, sleep_succeeds_once: false)
+  def run_entrypoint(app_home:, env: {}, app_name: "rails", passwd: :present, sleep_succeeds_once: false,
+    find_emits: nil)
     Dir.mktmpdir do |stubs|
       write_stub stubs, "id", <<~SH
         #!/bin/bash
@@ -88,11 +97,19 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
         echo "CHOWN-ARGV $*" >> "#{stub_log}"
       SH
 
-      write_stub stubs, "find", <<~SH
-        #!/bin/bash
-        echo "FIND-ARGV $*" >> "#{stub_log}"
-        exec #{real_find} "$@"
-      SH
+      write_stub stubs, "find", if find_emits
+        <<~SH
+          #!/bin/bash
+          echo "FIND-ARGV $*" >> "#{stub_log}"
+          printf '%s\\0' #{find_emits.map { |p| "'#{p}'" }.join(' ')}
+        SH
+      else
+        <<~SH
+          #!/bin/bash
+          echo "FIND-ARGV $*" >> "#{stub_log}"
+          exec #{real_find} "$@"
+        SH
+      end
 
       write_stub stubs, "sleep", sleep_succeeds_once ? <<~SH : "#!/bin/bash\nexit 1\n"
         #!/bin/bash
@@ -237,35 +254,49 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
     end
   end
 
-  # The behaviour itself: anything in those roots not owned by uid 1000 is handed to it.
+  # The behaviour itself, and the half that must not depend on the machine: whatever the
+  # sweep finds is handed to uid 1000.
   #
-  # A test cannot create a root-owned file without being root, so which half of this runs
-  # depends on the uid running it -- and both halves are real. CI's runner is not uid 1000,
-  # so it exercises the reclaim; a container that runs the suite AS the app user exercises
-  # the no-op. Neither environment can fake its way past the other's assertion.
-  test "the reclaim hands files not owned by uid 1000 back to it, and leaves the rest alone" do
+  # `find_emits:` fakes the hits rather than the predicate, because a suite running AS uid
+  # 1000 cannot create a file that is not owned by uid 1000, and without this the chown
+  # would be asserted nowhere -- deleting it from the entrypoint would leave this file
+  # green. The predicate itself is covered by the scope test above, which runs the real
+  # `find`.
+  test "the reclaim chowns every path the sweep turns up, whatever uid runs the suite" do
     Dir.mktmpdir do |app_home|
-      FileUtils.mkdir_p("#{app_home}/.claude/projects/-app")
-      transcript = "#{app_home}/.claude/projects/-app/session.jsonl"
-      File.write(transcript, "{}\n")
-      File.chmod(0o600, transcript)
+      FileUtils.mkdir_p("#{app_home}/.claude")
+      hits = [ "#{app_home}/.claude/one.jsonl", "#{app_home}/.claude/two.jsonl" ]
 
-      output, status, stubs = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
+      output, status, stubs = run_entrypoint(
+        app_home: app_home, env: { "HOME" => "/root" }, find_emits: hits
+      )
       assert_equal 0, status, output
 
       chowns = stubs.lines.grep(/^CHOWN-ARGV /).map(&:strip)
+      assert_equal 1, chowns.length,
+        "expected the batch to reach chown in one invocation, not one call per file, got:\n#{output}"
+      assert_equal "CHOWN-ARGV -h 1000:1000 #{hits[0]} #{hits[1]}", chowns.first,
+        "-h so a symlink is retargeted rather than whatever it points at"
+      assert_match(/Reclaimed 2 path\(s\) not owned by uid 1000/, output,
+        "a silent repair is one nobody can confirm ran")
+    end
+  end
 
-      if Process.uid == 1000
-        assert_empty chowns, "it rewrote files that were already owned correctly"
-        refute_match(/Reclaimed/, output)
-      else
-        assert_equal 1, chowns.length, "expected one bulk chown for the whole sweep, got:\n#{output}"
-        assert_match(/\ACHOWN-ARGV -h 1000:1000 /, chowns.first,
-          "-h so a symlink is retargeted rather than whatever it points at")
-        assert_includes chowns.first, transcript
-        assert_match(/Reclaimed \d+ root-owned path\(s\)/, output,
-          "a silent repair is one nobody can confirm ran")
-      end
+  # The other direction: a volume that is already correct must not be churned. Only
+  # assertable when the suite runs as the app user, since that is what makes the files it
+  # creates match the predicate's exclusion.
+  test "the reclaim leaves files already owned by uid 1000 alone" do
+    skip "only uid 1000 can create files this sweep is supposed to skip" unless Process.uid == 1000
+
+    Dir.mktmpdir do |app_home|
+      FileUtils.mkdir_p("#{app_home}/.claude/projects/-app")
+      File.write("#{app_home}/.claude/projects/-app/session.jsonl", "{}\n")
+
+      output, status, stubs = run_entrypoint(app_home: app_home, env: { "HOME" => "/root" })
+
+      assert_equal 0, status, output
+      assert_empty stubs.lines.grep(/^CHOWN-ARGV /), "it rewrote files that were already correct"
+      refute_match(/Reclaimed/, output)
     end
   end
 

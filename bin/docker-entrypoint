@@ -150,18 +150,27 @@ if [ "$(id -u)" = "0" ]; then
   # holds container-layer state baked into the image, which is not ours to
   # rewrite and does not persist anyway. These five are exactly the volumes both
   # roles mount (config/deploy.*.yml).
-  zimmer_reclaim_roots=""
+  #
+  # An array, so a $HOME with a space in it cannot split one root into two
+  # operands -- $HOME comes from /etc/passwd and nothing here validates it.
+  zimmer_reclaim_roots=()
   for d in "$HOME/.claude" "$HOME/.codex" "$HOME/.config/gh" "$HOME/.local" "$HOME/.zimmer"; do
     if [ -d "$d" ]; then
-      zimmer_reclaim_roots="$zimmer_reclaim_roots $d"
+      zimmer_reclaim_roots+=("$d")
     fi
   done
 
   zimmer_reclaim() {
-    [ -n "$zimmer_reclaim_roots" ] || return 0
+    [ "${#zimmer_reclaim_roots[@]}" -gt 0 ] || return 0
 
-    # Collected first and chowned in bulk: one `chown` for the whole sweep rather
-    # than one per file, which is what keeps the 4,442-file case cheap.
+    # Collected first and chowned in batches, rather than one `chown` per file --
+    # which is what keeps the 4,442-file case cheap. `xargs` still splits at
+    # ARG_MAX, so a large sweep is several invocations, not one.
+    #
+    # -H follows a symlinked root, because `[ -d ]` above already did: without it
+    # a root that became a symlink would be swept as a single inode while still
+    # logging as though it had run. Symlinks *inside* a root are still not
+    # followed -- only the operands are.
     #
     # -xdev because every root is named explicitly, so find never has to cross a
     # mount to reach one -- while a dev stack's own container filesystems can
@@ -169,17 +178,17 @@ if [ "$(id -u)" = "0" ]; then
     #
     # -h so a symlink is retargeted rather than its target, which may live
     # outside the volume entirely.
-    #
-    # Unquoted on purpose: the roots are a fixed, space-free list built above and
-    # must reach `find` as separate arguments.
     zimmer_reclaim_list="$(mktemp)" || return 0
-    # shellcheck disable=SC2086
-    find $zimmer_reclaim_roots -xdev ! -uid 1000 -print0 >"$zimmer_reclaim_list" 2>/dev/null || true
+    find -H "${zimmer_reclaim_roots[@]}" -xdev ! -uid 1000 -print0 \
+      >"$zimmer_reclaim_list" 2>/dev/null || true
 
-    zimmer_reclaim_n="$(tr -cd '\000' <"$zimmer_reclaim_list" | wc -c)"
-    if [ "$zimmer_reclaim_n" -gt 0 ]; then
+    # `|| ... =0` because this is the one command here whose failure would
+    # otherwise abort the boot under `-e`: a repair that takes down the app it
+    # exists to protect is a worse bargain than a repair that skips a pass.
+    zimmer_reclaim_n="$(tr -cd '\000' <"$zimmer_reclaim_list" | wc -c)" || zimmer_reclaim_n=0
+    if [ "${zimmer_reclaim_n:-0}" -gt 0 ]; then
       xargs -0r chown -h 1000:1000 <"$zimmer_reclaim_list" 2>/dev/null || true
-      echo "Reclaimed $zimmer_reclaim_n root-owned path(s) in the app's volumes to uid 1000." >&2
+      echo "Reclaimed $zimmer_reclaim_n path(s) not owned by uid 1000 in the app's volumes." >&2
     fi
 
     rm -f "$zimmer_reclaim_list"
@@ -195,6 +204,14 @@ if [ "$(id -u)" = "0" ]; then
   ZIMMER_RECLAIM_INTERVAL="${ZIMMER_RECLAIM_INTERVAL:-60}"
   if [ "$ZIMMER_RECLAIM_INTERVAL" -gt 0 ] 2>/dev/null; then
     while sleep "$ZIMMER_RECLAIM_INTERVAL"; do zimmer_reclaim; done &
+  elif [ "$ZIMMER_RECLAIM_INTERVAL" != "0" ]; then
+    # `[` writes "integer expression expected" to a stderr this discards, so an
+    # unparseable value would otherwise turn the healing half off in silence and
+    # leave a container that looks entirely healthy.
+    echo "ZIMMER_RECLAIM_INTERVAL='$ZIMMER_RECLAIM_INTERVAL' is not a positive integer;" >&2
+    echo "the repeat sweep is off. Root-owned files written into the app's volumes after" >&2
+    echo "boot will stay unreadable at uid 1000 until the next restart. Use 0 to mean this" >&2
+    echo "deliberately." >&2
   fi
 
   # Re-exec this same script as the app user. --init-groups picks up the

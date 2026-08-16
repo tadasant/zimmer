@@ -181,6 +181,13 @@ before your command runs. Expect the latency.
 Reach for `--reuse` only for read-only inspection, and pass `docker exec -u 1000:1000`
 directly if you need the app's identity inside the existing container.
 
+A container that refuses to start is a failed deploy. One that starts and quietly claims
+nothing is ten hours of silence — which is exactly what happened, because every check that
+existed asked whether the container was *shaped* right, not whether the worker was
+*working*. `test/config/docker_entrypoint_privilege_drop_test.rb` runs the real script with
+`id`, `getent` and `setpriv` stubbed and asserts on the environment it hands over; it fails
+against the entrypoint as it shipped that morning.
+
 #### The entrypoint reclaims what root leaves behind
 
 Advice is not a mechanism, and `docker exec` is not the only root writer: a
@@ -196,14 +203,17 @@ result instead. While it is still root, before it drops, it sweeps the five volu
 hands anything not owned by uid 1000 back to it:
 
 ```bash
-find ~/.claude ~/.codex ~/.config/gh ~/.local ~/.zimmer -xdev ! -uid 1000 -print0 \
+# in outline -- the real thing batches through a list file and swallows errors
+find -H ~/.claude ~/.codex ~/.config/gh ~/.local ~/.zimmer -xdev ! -uid 1000 -print0 \
   | xargs -0r chown -h 1000:1000
 ```
 
-Once synchronously, so the app never starts on a volume it cannot read, and then every
-`ZIMMER_RECLAIM_INTERVAL` seconds (default 60; `0` drops the repeat and keeps the boot sweep)
-from a process forked before the privilege drop — which is what lets it keep the root credentials `chown` needs. A one-shot
-repair would only be undone by the next exec.
+It fails quietly by design, so the line to grep for in `docker logs` is
+`Reclaimed N path(s) not owned by uid 1000`; nothing is logged when a sweep finds nothing.
+
+Once synchronously, so the app never starts on a volume it cannot read, and then every `ZIMMER_RECLAIM_INTERVAL` seconds from a process forked before the privilege drop — which is what lets it keep the root credentials `chown` needs. A one-shot repair would only be undone by the next exec.
+
+The interval defaults to 60 and is read from the container's environment; `0` drops the repeat and keeps the boot sweep, and anything else that is not a positive integer does the same and says so on stderr. No destination passes it today, so changing it means adding it to that destination's `env: clear:` in `config/deploy.*.yml`, the way `ZIMMER_NESTED_DOCKER` is wired.
 
 It is eventually consistent, and the window is real: a file root writes is unreadable to the
 app for up to one interval. That is tolerable for what this protects, because the transcripts
@@ -212,15 +222,7 @@ damage is done by *other* root writers, whose files nothing is waiting on. It is
 one sweep of 88,285 inodes on staging is 0.77s wall and 0.58s CPU, about 1% of one core at
 the default interval.
 
-Only a container that *starts* as root sweeps, which is exactly the nested-Docker worker.
-`web`, dev, test and CI start as uid 1000, skip the whole block, and pay nothing.
-
-A container that refuses to start is a failed deploy. One that starts and quietly claims
-nothing is ten hours of silence — which is exactly what happened, because every check that
-existed asked whether the container was *shaped* right, not whether the worker was
-*working*. `test/config/docker_entrypoint_privilege_drop_test.rb` runs the real script with
-`id`, `getent` and `setpriv` stubbed and asserts on the environment it hands over; it fails
-against the entrypoint as it shipped that morning.
+The sweep keys on the container's *starting* uid, not on `ZIMMER_NESTED_DOCKER` — so it runs on a worker armed for nested Docker (`user: "0:0"`), and not on `web`, dev, test, CI, or a worker running with nested Docker off, all of which start as uid 1000 and skip the whole block. A rolled-back worker therefore stops healing its volumes, which is worth remembering when reading them.
 
 ## The workaround this depends on
 
