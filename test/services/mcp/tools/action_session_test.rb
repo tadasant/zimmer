@@ -227,6 +227,33 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert session.archived_at.present?
   end
 
+  test "archive records a declared caller as the actor on the archived session" do
+    session = sessions(:needs_input)
+
+    @tool.call("action" => "archive", "session_id" => session.id, "acting_session_id" => 5225)
+
+    line = session.reload.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by session #5225 via the MCP API", line
+  end
+
+  test "archive records an undeclared caller as undeclared rather than inventing one" do
+    session = sessions(:needs_input)
+
+    @tool.call("action" => "archive", "session_id" => session.id)
+
+    line = session.reload.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by an undeclared MCP API caller", line
+  end
+
+  test "archive ignores an acting_session_id that is not a session id" do
+    session = sessions(:needs_input)
+
+    @tool.call("action" => "archive", "session_id" => session.id, "acting_session_id" => "not-an-id")
+
+    line = session.reload.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by an undeclared MCP API caller", line
+  end
+
   test "archive refuses an already archived session" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "archive", "session_id" => sessions(:archived).id) }
     assert_match(/cannot be trashed/, error.message)
@@ -573,6 +600,15 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_includes result, "## Bulk Archive Complete"
     assert_includes result, "- **Archived:** 1"
     assert_equal "archived", archivable.reload.status
+  end
+
+  test "bulk_archive records the actor on each session it archives" do
+    archivable = sessions(:needs_input)
+
+    @tool.call("action" => "bulk_archive", "session_ids" => [ archivable.id ], "acting_session_id" => 5225)
+
+    line = archivable.reload.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by session #5225 via the MCP API (bulk)", line
   end
 
   test "bulk_archive requires session_ids" do

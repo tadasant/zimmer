@@ -175,6 +175,101 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not_nil session.trash_after, "trash_after should be set when session is archived"
   end
 
+  test "archive names the actor the caller recorded" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+
+    session.archive_actor = "session #5225 via the MCP API"
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by session #5225 via the MCP API", line
+  end
+
+  test "archive says so when no caller recorded an actor" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by an unrecorded caller", line
+  end
+
+  test "archive names pull requests it is leaving unresolved" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :needs_input,
+      custom_metadata: {
+        "github_pull_request_urls" => [ "https://github.com/o/r/pull/152" ],
+        "github_pull_request_statuses" => { "https://github.com/o/r/pull/152" => "open" }
+      }
+    )
+
+    session.archive_actor = "session #5225 via the MCP API"
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "Session moved to trash by session #5225 via the MCP API"
+    assert_includes line, "1 tracked pull request had not reached a terminal state"
+    assert_includes line, "no merge notification will be delivered for it"
+    assert_includes line, "https://github.com/o/r/pull/152"
+  end
+
+  test "archive counts several unresolved pull requests, including ones never polled" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :needs_input,
+      custom_metadata: {
+        "github_pull_request_urls" => [ "https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2" ],
+        "github_pull_request_statuses" => { "https://github.com/o/r/pull/1" => "open" }
+      }
+    )
+
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "2 tracked pull requests had not reached a terminal state"
+    assert_includes line, "no merge notification will be delivered for them"
+    assert_includes line, "https://github.com/o/r/pull/1, https://github.com/o/r/pull/2"
+  end
+
+  test "archive stays quiet about pull requests that already reached a terminal state" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :needs_input,
+      custom_metadata: {
+        "github_pull_request_urls" => [ "https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2" ],
+        "github_pull_request_statuses" => {
+          "https://github.com/o/r/pull/1" => "merged",
+          "https://github.com/o/r/pull/2" => "closed"
+        }
+      }
+    )
+
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by an unrecorded caller", line
+  end
+
+  test "archive survives a pull request metadata shape it cannot read" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :needs_input,
+      custom_metadata: {
+        "github_pull_request_urls" => [ "https://github.com/o/r/pull/1" ],
+        "github_pull_request_statuses" => "not-a-hash"
+      }
+    )
+
+    session.archive!
+
+    assert session.reload.archived?, "a bad metadata shape must not take the transition down"
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "https://github.com/o/r/pull/1"
+  end
+
   test "archive sets archived_at timestamp" do
     session = sessions(:waiting)
     session.update!(status: :needs_input, archived_at: nil)

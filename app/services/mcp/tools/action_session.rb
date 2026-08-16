@@ -40,7 +40,7 @@ module Mcp
       # "this session followed up that one".
       FOLLOW_UP_EDGE_SOURCE = "mcp:action_session.follow_up"
 
-      ACTING_SESSION_ID_DESC = 'Optional for "follow_up". If you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value simply records nothing.'
+      ACTING_SESSION_ID_DESC = 'Optional for "follow_up" and "archive". On "archive" it is provenance and nothing else: the archived session\'s timeline names you as the actor, so a human reading it later can tell an agent archiving that session from a human clicking Trash. Set it whenever an agent session drives an archive — including archiving yourself. On "follow_up", if you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value records no edge, and an undeclared archive is logged as exactly that.'
 
       ACTIONS = %w[
         follow_up
@@ -198,7 +198,7 @@ module Mcp
         when "follow_up" then follow_up(find_session(args["session_id"]), args)
         when "pause" then pause(find_session(args["session_id"]))
         when "restart" then restart(find_session(args["session_id"]))
-        when "archive" then archive(find_session(args["session_id"]))
+        when "archive" then archive(find_session(args["session_id"]), args)
         when "unarchive" then unarchive(find_session(args["session_id"]))
         when "change_mcp_servers" then change_mcp_servers(find_session(args["session_id"]), args)
         when "change_model" then change_model(find_session(args["session_id"]), args)
@@ -418,11 +418,12 @@ module Mcp
         summary("Session Restarted", session.reload, status_label: "New Status", message: "Session restarted from scratch")
       end
 
-      def archive(session)
+      def archive(session, args)
         unless session.may_archive?
           raise ToolError, "Session cannot be trashed from current status: #{session.status}"
         end
 
+        session.archive_actor = archive_actor_phrase(args)
         session.archive!
         session.reload
 
@@ -977,8 +978,8 @@ module Mcp
 
         Session.where(id: session_ids).where.not(status: :archived).each do |session|
           if session.may_archive?
+            session.archive_actor = "#{archive_actor_phrase(args)} (bulk)"
             session.archive!
-            session.logs.create!(content: "Session archived via MCP (bulk)", level: "info")
             archived_count += 1
           else
             errors << { id: session.id, error: "Cannot archive from status: #{session.status}" }
@@ -991,6 +992,30 @@ module Mcp
           errors.each { |err| lines << "  - Session #{err[:id]}: #{err[:error]}" }
         end
         lines.join("\n")
+      end
+
+      # --- Provenance -----------------------------------------------------------
+
+      # How the archived session's timeline will name whoever archived it.
+      #
+      # Self-declared, for the same reason `acting_session_id` is self-declared
+      # on follow_up: nothing about an MCP request identifies the caller, since
+      # the API key is shared by the whole fleet. An undeclared archive says so
+      # rather than inventing an actor — and "an undeclared MCP caller" is still
+      # the answer to "a human, or another agent?", because a human archiving a
+      # session does it from the web UI.
+      def archive_actor_phrase(args)
+        declared = args["acting_session_id"].to_s.strip[/\A\d+\z/]
+        return "an undeclared #{mcp_surface_name} caller" if declared.nil?
+
+        "session ##{declared} via the #{mcp_surface_name}"
+      end
+
+      # Which MCP surface this tool is exposed on. The fleet-wide server can
+      # archive any session; the injected self-session server is pointed at the
+      # session itself, so naming them apart is most of the provenance.
+      def mcp_surface_name
+        "MCP API"
       end
 
       # --- Formatting -----------------------------------------------------------

@@ -13,6 +13,8 @@ module Mcp
 
       SELF_ACTION_DESC = 'Action to perform: "update_notes", "update_title", "set_heartbeat", "archive"'
 
+      SELF_ACTING_SESSION_ID_DESC = 'Optional for "archive": your own session ID, recorded as provenance on the archived session\'s timeline. Set it when you archive yourself, so the line reads as a self-archive rather than as an undeclared caller — that distinction is what lets a human later tell a session that finished its work from one that was archived out from under it by something else.'
+
       description <<~DESC
         Perform a self-management action on a session.
 
@@ -47,7 +49,8 @@ module Mcp
           session_notes: { type: "string", description: SESSION_NOTES_DESC },
           title: { type: "string", description: TITLE_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
-          interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC }
+          interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
+          acting_session_id: { type: [ "number", "string" ], description: SELF_ACTING_SESSION_ID_DESC }
         },
         required: [ "session_id", "action" ]
       })
@@ -56,6 +59,15 @@ module Mcp
 
       def allowed_actions
         ACTIONS
+      end
+
+      # This server is injected into a session and pointed at that session, but
+      # nothing enforces the aim: the tool group narrows the *actions*, not the
+      # `session_id`. So the surface is named for what it is rather than
+      # claiming a self-archive, and `acting_session_id` is what turns "someone
+      # on the self-session server" into "this session, archiving itself".
+      def mcp_surface_name
+        "self-session MCP server"
       end
     end
   end

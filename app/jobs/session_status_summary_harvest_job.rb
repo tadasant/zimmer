@@ -141,6 +141,7 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
   def archive_fork(fork)
     return if fork.nil? || fork.archived?
 
+    fork.archive_actor = "Zimmer's status-summary fork cleanup"
     fork.archive! if fork.may_archive?
   rescue StandardError => e
     Rails.logger.error "[SessionStatusSummaryHarvestJob] Failed to archive summary fork #{fork&.id}: #{e.message}"

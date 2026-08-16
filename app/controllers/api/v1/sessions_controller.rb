@@ -140,6 +140,7 @@ class Api::V1::SessionsController < Api::BaseController
   # Archive a session.
   def archive
     if @session.may_archive?
+      @session.archive_actor = "the REST API"
       @session.archive!
       render json: {
         session: session_json(@session.reload),
@@ -982,8 +983,8 @@ class Api::V1::SessionsController < Api::BaseController
 
     sessions.each do |session|
       if session.may_archive?
+        session.archive_actor = "the REST API (bulk)"
         session.archive!
-        session.logs.create!(content: "Session archived via API (bulk)", level: "info")
         archived_count += 1
       else
         errors << { id: session.id, message: "Cannot archive from status: #{session.status}" }
