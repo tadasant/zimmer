@@ -1338,13 +1338,14 @@ the session over MCP/REST never generates.
 
 Pressing **Regenerate** on a session archived long ago works, but not by restoring anything.
 `DeferredCloneCleanupJob` deletes an archived session's clone once the ten-second undo window closes,
-so there is no working tree left to fork; the fork is given an **empty git repository** to run in
-instead (empty so there is nothing to read, a repository because `codex exec` refuses to start outside
-one), and answers from the conversation Zimmer forked it with.
+so there is no working tree left to fork; the fork is given an **empty, freshly `git init`ed
+directory** to run in instead (empty so there is nothing to read, a repository because `codex exec`
+refuses to start outside one), and answers from the conversation Zimmer forked it with.
 
 That is sound for the summarizer, which is told not to run tools — but it is a real constraint on what
 the blurb can contain. A summary fork for a session whose clone is gone cannot read a file, check out
-a branch, or run `git log`; anything not in the transcript is not available to it. In practice the
+a branch, or run `git log` against any real history; anything not in the transcript is not available
+to it. In practice the
 prompt already forbids all of that, so the difference shows up only if the summary prompt ever grows a
 step that touches the filesystem. It would silently degrade for exactly the old sessions this path
 exists to serve.
