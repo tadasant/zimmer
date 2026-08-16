@@ -54,6 +54,53 @@ servers:
       # which is uid 0 with the image's default gid -- close enough to look right and
       # wrong in a way nothing would report.
       user: "<%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "0:0" : "1000:1000" %>"
+      # The droplet is 16 GB with no swap, and this role is the only one that runs
+      # arbitrary work: agent sessions, and jobs whose peak allocation is a function of
+      # the data they touch rather than of anything this config knows. Uncapped, an
+      # overshoot is a GLOBAL out-of-memory event -- the kernel takes victims across every
+      # cgroup, so sshd and Caddy lose their working set and the droplet stops answering
+      # SSH and HTTPS. It looks exactly like a dead box, and it is not.
+      #
+      # That is not hypothetical here. #449 measured this worker on 2026-08-14 climbing
+      # from ~700 MB at rest to 11.6 GB RSS in ~18 minutes under 10-13 concurrent sessions,
+      # which took the host to 139 MB available with 40% iowait and load 13.57 on 8 vCPU.
+      # For minutes the whole box thrashed: single-row SELECTs took 31s, the queue backed
+      # up until it paged, and every agent session slowed down. Then the process died
+      # anyway, around 20 minutes in, taking every session's child process with it.
+      #
+      # So the choice is not "restart or no restart" -- #449 restarts it either way. It is
+      # whether the restart is preceded by minutes of host-wide thrash. The cap buys the
+      # second: the kill lands in this cgroup, at a moment of this config's choosing,
+      # before the host has degraded at all. Everything else on the droplet -- web, redis,
+      # devdb, kamal-proxy, and above all sshd -- keeps its memory and stays reachable.
+      #
+      # 10g is derived from THIS droplet and is not transferable. The two bounds it sits
+      # between, both measured rather than modelled:
+      #
+      #   floor   a healthy worker must not reach it. Observed at 1.6 GiB anon with 3
+      #           concurrent sessions -- so a cap has to be well above that. Staging's 2g
+      #           sits BELOW this floor, which is why copying that number here would
+      #           OOM-kill the worker on the deploy that applied it.
+      #   ceiling it has to trip before the host does. #449's thrash set in with the worker
+      #           at 11.6 GB; 10g stops short of that, and leaves 5.6 GiB against the
+      #           0.9 GiB everything else on the box actually uses.
+      #
+      # Raising it toward 12g would trade that margin for a slightly later kill, and the
+      # margin is what keeps SSH answering -- which is the property being bought here.
+      #
+      # What is deliberately NOT claimed: that 10g is above the worker's true peak demand.
+      # The per-session figure behind the floor was taken at 3 concurrent sessions, and
+      # #449 -- whose growth mechanism is still unknown -- was observed at 10-13. Nothing
+      # here establishes that the cost per session stays linear in between, so a heavy
+      # enough load may well reach 10g. That is accepted rather than solved: at that same
+      # load, uncapped, #449 already ends in a dead worker roughly 20 minutes in. The cap
+      # does not add a failure, it relocates one -- out of the host and into this cgroup,
+      # before the box has spent minutes thrashing on the way there.
+      #
+      # So this does NOT fix #449; it bounds its blast radius. Until that leak is
+      # understood, sustained heavy load still ends in a worker restart that interrupts the
+      # sessions on it. What changes is that the rest of the droplet stays up.
+      memory: 10g
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude

@@ -114,25 +114,45 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
     end
   end
 
-  # Staging's worker is the only role running work whose peak allocation nothing in this
-  # config knows in advance, on a 4 GB droplet with no swap. Uncapped, one such allocation
-  # is a GLOBAL OOM: the kernel takes victims host-wide, sshd and Caddy lose their working
-  # set, and the droplet stops answering SSH and HTTPS while the app itself is fine. The
-  # cap is what keeps the kill inside the worker's cgroup, and it is invisible in every
-  # green check -- so pin it here, where dropping it fails loudly.
+  # destination => the cap its own droplet is sized for. The two numbers are deliberately
+  # different and neither is transferable: staging's 2g is sized against a 4 GB box, and is
+  # BELOW production's measured worker steady state, so copying it onto production would
+  # OOM-kill the worker on the deploy that applied it. Each config carries its own derivation.
+  CAPS = { "production" => "10g", "staging" => "2g" }.freeze
+
+  # Each destination's worker is the only role running work whose peak allocation nothing in
+  # this config knows in advance, on a swapless droplet. Uncapped, one such allocation is a
+  # GLOBAL OOM: the kernel takes victims host-wide, sshd and Caddy lose their working set, and
+  # the droplet stops answering SSH and HTTPS while the app itself is fine. The cap is what
+  # keeps the kill inside the worker's cgroup, and it is invisible in every green check -- so
+  # pin it here, where dropping it fails loudly.
   #
   # Asserted under both switch positions on purpose. The cap is not conditional on the switch
   # today, and that is the property being pinned: arming nested Docker puts an inner dockerd and
   # the session's containers inside this same cgroup, which is the change most likely to tempt
   # someone into making the cap conditional -- or into dropping it to make room.
-  test "staging's worker is capped so a runaway allocation cannot take the droplet down" do
-    %w[0 1].each do |state|
-      memory = deploy_config("staging", nested: state).dig("servers", "worker", "options", "memory")
+  CAPS.each do |destination, expected|
+    test "#{destination}'s worker is capped so a runaway allocation cannot take the droplet down" do
+      %w[0 1].each do |state|
+        memory = deploy_config(destination, nested: state).dig("servers", "worker", "options", "memory")
 
-      assert_equal "2g", memory,
-        "staging's worker memory cap is #{memory.inspect} (switch=#{state}); uncapped, a runaway " \
-        "job takes the whole droplet down with it, sshd included"
+        assert_equal expected, memory,
+          "#{destination}'s worker memory cap is #{memory.inspect} (switch=#{state}); uncapped, a " \
+          "runaway job takes the whole droplet down with it, sshd included"
+      end
     end
+  end
+
+  # Read off the real files rather than off CAPS, which would be tautological. The failure this
+  # catches is the tempting one: sizing a new destination by copying the cap that was already
+  # written down, instead of against the droplet it will actually run on.
+  test "production's cap is sized against its own droplet rather than copied from staging" do
+    production = deploy_config("production").dig("servers", "worker", "options", "memory")
+    staging = deploy_config("staging").dig("servers", "worker", "options", "memory")
+
+    refute_equal staging, production,
+      "production and staging carry the same worker cap (#{production.inspect}) on droplets four " \
+      "times apart in size; one of them is not sized for the box it runs on"
   end
 
   # Arming the switch sets `user: "0:0"`, and Docker derives HOME from --user: uid 0 resolves
