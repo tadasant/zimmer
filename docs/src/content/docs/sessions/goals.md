@@ -186,10 +186,18 @@ Anything else — including "the user will want to read this" — goes in the fi
 Slack `#updates` if it is a read-only FYI and the session has a Slack server, and the session
 archives. Anything the agent noticed but could not fix goes in a **GitHub issue**, which is the
 other half of why a session can archive at all: an issue is a work item, and a parked session is
-not. The prompt also names three things that *look* like reasons to park and are not: waiting on a
+not. The prompt also names four things that *look* like reasons to park and are not: waiting on a
 machine (CI, an outage, a rate limit, a peer session: none of those is a human, and an unmerged PR
-is the one carve-out), a reason that went stale while the agent worked (the PR merged; the question
-is moot), and finishing with nothing to show (a sweep that found nothing and a gate that aborted
-both ran to completion).
+is the one carve-out), a blocker another session is already fixing, a reason that went stale while
+the agent worked (the PR merged; the question is moot), and finishing with nothing to show (a sweep
+that found nothing and a gate that aborted both ran to completion).
+
+The second of those is the one agents miss, because it looks like a handoff rather than a wait: red
+CI on `main` from a failure unrelated to the agent's own diff, an upstream fix in flight. The prompt
+tells the agent to look for the session already working the blocker, set all three
+`wake_me_up_when_session_changes_state` events on it — `session_archived`, `session_needs_input` and
+`session_failed`, since a clean finish self-archives without passing through `needs_input` — plus a
+`wake_me_up_later` deadline as a backstop, and then resume its own work once the blocker clears.
+Escalating is right only when nobody is on the blocker, or after about three hours.
 
 Whether agents comply is, again, a matter of the model obeying English.
