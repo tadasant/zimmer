@@ -412,7 +412,96 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     assert_nil session.metadata["exception_class"]
   end
 
+  # The stall this whole path exists to prevent, driven end to end through the
+  # real recovery call site rather than through the state machine directly.
+  #
+  # Production shape (orchestrator sessions 4388, 4855, 4885): the session was
+  # running when it armed watchers on its children plus a wake_me_up_later
+  # backstop, so Trigger's auto-sleep set pending_sleep instead of sleeping it.
+  # The worker then died mid-turn. SessionRecoveryService#transition_to_needs_input
+  # strips pending_sleep and marks paused_by: "recovery", and the auto-continue
+  # below resumes the session — which used to consume every pending wake on the
+  # way through. The session finished its recovery turn in needs_input with
+  # nothing armed and no sleep intent, and never woke again.
+  test "auto-continue preserves the wake set and puts the session back to sleep" do
+    session = create_recoverable_session(status: :running, paused_by: nil)
+    conditions = arm_wake_set(session)
+
+    # What SessionRecoveryService#transition_to_needs_input does to a running orphan.
+    session.reload.update!(
+      metadata: session.metadata.except("pending_sleep").merge("paused_by" => "recovery")
+    )
+    session.pause!
+    assert session.reload.needs_input?, "precondition: recovery lands the orphan in needs_input"
+
+    DeploymentRecoveryJob.perform_now
+
+    session.reload
+    assert_equal "running", session.status
+    assert_equal true, session.metadata["pending_sleep"],
+      "a recovered session holding a scheduled backstop must be told to sleep again after its turn"
+    conditions.each do |condition|
+      assert_nil condition.reload.last_triggered_at,
+        "recovery must not consume wake condition #{condition.id}"
+    end
+
+    # The recovery turn completes.
+    session.pause!
+
+    assert session.reload.waiting?,
+      "the session must return to waiting with its wake set intact, not sit in needs_input"
+    assert_nil session.metadata["pending_sleep"]
+    conditions.each do |condition|
+      assert_nil condition.reload.last_triggered_at,
+        "wake condition #{condition.id} must still be armed once the session is asleep again"
+    end
+  end
+
+  # The other half of the contract: recovery preserves, a human does not. A
+  # session auto-continued by recovery and then genuinely resumed by someone must
+  # still have its now-moot wake-ups consumed.
+  test "a deliberate resume after an auto-continue still consumes the wake set" do
+    session = create_recoverable_session(status: :needs_input, paused_by: "recovery")
+
+    DeploymentRecoveryJob.perform_now
+    assert_equal "running", session.reload.status
+
+    session.pause!
+    conditions = arm_wake_set(session)
+
+    session.reload.resume!
+
+    conditions.each do |condition|
+      assert_not_nil condition.reload.last_triggered_at,
+        "a deliberate resume must still consume wake condition #{condition.id}"
+    end
+  end
+
   private
+
+  # The wake set an orchestrator actually registers: a watcher on a child plus a
+  # wake_me_up_later deadline backstop. Creating these runs Trigger's auto-sleep
+  # callback, which is what sets pending_sleep on a running session.
+  def arm_wake_set(session)
+    watched = create_recoverable_session(status: :running, paused_by: nil)
+
+    [
+      { condition_type: "ao_event",
+        configuration: { "event_name" => "session_archived", "watched_session_id" => watched.id } },
+      { condition_type: "schedule",
+        configuration: { "scheduled_at" => 30.minutes.from_now.iso8601, "timezone" => "UTC" } }
+    ].map do |condition|
+      Trigger.create!(
+        name: "Wake ##{session.id}",
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: "Wake",
+        reuse_session: true,
+        last_session_id: session.id,
+        trigger_conditions_attributes: [ condition ]
+      ).trigger_conditions.first
+    end
+  end
 
   def create_recoverable_session(status:, paused_by:)
     metadata = {

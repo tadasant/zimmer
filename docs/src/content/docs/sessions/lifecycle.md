@@ -111,6 +111,46 @@ Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
 cancels pending one-time wake-up triggers targeting this session, so a scheduled wake
 doesn't fire on a session you already resumed by hand.
 
+#### A system-recovery resume keeps the wake-ups
+
+That cancellation is right for a *deliberate* resume and wrong for a recovery one. When Zimmer
+restarts a session's process after an interruption — a deployment restart, an orphaned process, a
+hung process reaped, a health-monitor retry — the session did not choose to wake, so the wake-ups
+it was sleeping on are still exactly what it is waiting for. Consuming them there is how an
+orchestrator gets stranded: it comes back with nothing armed, ends its turn, and sits in
+`needs_input` indefinitely with children it was supposed to be watching.
+
+Recovery paths therefore call `Session#resume_for_system_recovery!` rather than `resume!`. It sets
+the transient `system_recovery_resume` flag for the duration of the transition, and
+`cancel_pending_one_time_wake_triggers` takes a preserve branch instead:
+
+- The pending conditions are **left armed** — nothing is consumed.
+- If one of them is a one-time *schedule* (a `wake_me_up_later` deadline backstop), `pending_sleep`
+  is set so the session returns to `waiting` once the recovery turn ends. A wall-clock wake fires
+  regardless of what else happens, so sleeping on it cannot strand the session.
+- If the only pending wakes are session-scoped `ao_event` watchers, the session comes to rest in
+  `needs_input` with those watchers still armed. A watched session may have reached the state being
+  watched for *during* the outage, and that transition is not replayed — so sleeping would trade a
+  long stall for an indefinite one. `Trigger#follow_up_session!` delivers to a `needs_input` session
+  just as well, and the operator can see it in the meantime.
+
+That re-sleep is conditional at execution time as well as at resume time. It is recorded as
+`pending_sleep` plus a `pending_sleep_requires_wake` marker, and `execute_pending_sleep` drops it
+rather than sleeping if nothing is armed by the time the turn ends. A backstop whose wall time
+elapsed during the outage is due the moment recovery resumes the session, so it can fire mid-turn,
+destroy its siblings and hand off to a new turn without ever pausing — and sleeping on that stale
+intent would leave the session in `waiting` with nothing armed and no `paused_by`, invisible to both
+recovery sweeps. A deliberate sleep (`POST /api/v1/sessions/:id/sleep` on a running session) carries
+no marker and is always executed, because arming nothing is exactly what it means.
+
+One recovery path deliberately does *not* preserve: when `continue_recovered_session` finds a queued
+user message, it delivers that instead of the recovery prompt, via a normal `resume!`. A waiting
+user message means someone has taken the session over, which is the case the cancelling semantics
+are for.
+
+The invariant this restores: a session that was in `waiting` with wake-ups registered does not
+silently end up in `needs_input` with none.
+
 ### `sleep` — `needs_input → waiting`
 
 The "wake me up later" path. The session goes dormant and a one-time schedule trigger will
