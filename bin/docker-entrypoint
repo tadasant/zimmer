@@ -109,9 +109,99 @@ if [ "$(id -u)" = "0" ]; then
     fi
   fi
 
+  # ---------------------------------------------------------------------------
+  # Reclaim root-owned files in the volumes the app uses at uid 1000.
+  #
+  # Dropping THIS process to 1000 does not make the container safe for the app,
+  # because this process is not the only thing that runs as root in it. Anything
+  # that enters the container without going through this script -- `docker exec`,
+  # which inherits the configured user (`user: "0:0"`) and never runs an
+  # ENTRYPOINT -- is root, and since the image pins HOME=/home/rails its writes
+  # land in the named volumes `web` and this role share at uid 1000. A file
+  # written there at mode 0600 root:root is one uid 1000 cannot read at all.
+  #
+  # That is not hypothetical. On staging, `~/.claude/projects/-app/` held four
+  # such files, three of them Claude Code session transcripts -- exactly what
+  # transcript polling reads as uid 1000 -- plus a world-writable directory.
+  # The writer was a `.agent-containers` dev stack, whose `app` service runs as
+  # root and bind-mounts `${HOME}/.claude` straight into itself; the same shape
+  # left 4,442 root-owned bootsnap files in a clone that uid 1000 then could not
+  # delete, which is what makes `ac.sh destroy` unreliable.
+  #
+  # There is no way to make an arbitrary root process write as 1000 -- root is
+  # root. So rather than trying to enumerate every writer, reclaim the result:
+  # sweep the volume roots and hand anything not owned by 1000 back to it. This
+  # is the only place in the system that can, because it is the only place that
+  # is both root and knows the invariant. Once, synchronously, so the app never
+  # starts on a volume it cannot read; then on a timer, because a pass that only
+  # fixes what exists leaves the next exec free to recreate it.
+  #
+  # Eventually consistent, and honest about it: a file written by root is
+  # unreadable for up to $ZIMMER_RECLAIM_INTERVAL seconds. That is fine for what
+  # this protects -- the transcripts Zimmer itself polls are written by the app
+  # at uid 1000 and were never the problem -- and it is the difference between a
+  # volume that degrades permanently and one that heals.
+  #
+  # Measured on staging: one sweep of all five roots, 88,285 inodes, is 0.77s
+  # wall and 0.58s CPU. At the default interval that is ~1% of one core.
+  # ---------------------------------------------------------------------------
+
+  # Named one by one rather than as "everything under $HOME", because $HOME also
+  # holds container-layer state baked into the image, which is not ours to
+  # rewrite and does not persist anyway. These five are exactly the volumes both
+  # roles mount (config/deploy.*.yml).
+  zimmer_reclaim_roots=""
+  for d in "$HOME/.claude" "$HOME/.codex" "$HOME/.config/gh" "$HOME/.local" "$HOME/.zimmer"; do
+    if [ -d "$d" ]; then
+      zimmer_reclaim_roots="$zimmer_reclaim_roots $d"
+    fi
+  done
+
+  zimmer_reclaim() {
+    [ -n "$zimmer_reclaim_roots" ] || return 0
+
+    # Collected first and chowned in bulk: one `chown` for the whole sweep rather
+    # than one per file, which is what keeps the 4,442-file case cheap.
+    #
+    # -xdev because every root is named explicitly, so find never has to cross a
+    # mount to reach one -- while a dev stack's own container filesystems can
+    # appear *underneath* these paths, and those are not ours to rewrite.
+    #
+    # -h so a symlink is retargeted rather than its target, which may live
+    # outside the volume entirely.
+    #
+    # Unquoted on purpose: the roots are a fixed, space-free list built above and
+    # must reach `find` as separate arguments.
+    zimmer_reclaim_list="$(mktemp)" || return 0
+    # shellcheck disable=SC2086
+    find $zimmer_reclaim_roots -xdev ! -uid 1000 -print0 >"$zimmer_reclaim_list" 2>/dev/null || true
+
+    zimmer_reclaim_n="$(tr -cd '\000' <"$zimmer_reclaim_list" | wc -c)"
+    if [ "$zimmer_reclaim_n" -gt 0 ]; then
+      xargs -0r chown -h 1000:1000 <"$zimmer_reclaim_list" 2>/dev/null || true
+      echo "Reclaimed $zimmer_reclaim_n root-owned path(s) in the app's volumes to uid 1000." >&2
+    fi
+
+    rm -f "$zimmer_reclaim_list"
+    return 0
+  }
+
+  zimmer_reclaim
+
+  # `while sleep` rather than `while :; do sleep`: the loop then ends when sleep
+  # does, which is what lets a test drive it to a stop instead of hanging on the
+  # inherited stdout forever. Set the interval to 0 to disable the sweep.
+  ZIMMER_RECLAIM_INTERVAL="${ZIMMER_RECLAIM_INTERVAL:-60}"
+  if [ "$ZIMMER_RECLAIM_INTERVAL" -gt 0 ] 2>/dev/null; then
+    while sleep "$ZIMMER_RECLAIM_INTERVAL"; do zimmer_reclaim; done &
+  fi
+
   # Re-exec this same script as the app user. --init-groups picks up the
   # supplementary groups; without it the process keeps only gid 1000 and loses
   # whatever else the rails user belongs to.
+  #
+  # The sweep above is forked, not exec'd, so it survives this and keeps its root
+  # credentials -- which it needs, since chown is root-only.
   exec setpriv --reuid=1000 --regid=1000 --init-groups "$0" "$@"
 fi
 
