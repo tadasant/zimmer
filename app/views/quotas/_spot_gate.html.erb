@@ -9,9 +9,10 @@
     <h2 class="text-lg font-medium text-gray-900">Spot vs priority</h2>
     <p class="mt-1 text-sm text-gray-500">
       Every session runs as <strong>priority</strong> or <strong>spot</strong>. Priority sessions always
-      start. Spot sessions start only while both Claude Code quota windows are forecast to stay under
-      the ceilings below; when they are not, a spot session waits and starts later. It is never
-      cancelled. A session's class is the one chosen for it, or the one its trigger carries, or
+      start. Spot sessions fill the fleet up to the number of concurrent sessions the Claude Code
+      quota can carry before the windows land on the targets below — a target is a level to reach,
+      not a line to stay clear of. Past that, a spot session waits and starts later; it is
+      never cancelled. A session's class is the one chosen for it, or the one its trigger carries, or
       failing both the default for its <strong>genesis</strong> — where the work came from.
     </p>
   </div>
@@ -21,9 +22,9 @@
     <%= form_with url: spot_policy_path, method: :patch, data: { turbo: false } do %>
       <div class="flex items-start justify-between gap-4">
         <div>
-          <div class="text-sm font-medium text-gray-900">Hold spot sessions when forecast exceeds the limits</div>
+          <div class="text-sm font-medium text-gray-900">Fill up to these targets, then hold spot sessions</div>
           <p class="mt-1 text-sm text-gray-500">
-            Off means spot sessions start like any other and the thresholds are ignored.
+            Off means spot sessions start like any other and the targets are ignored.
           </p>
         </div>
         <input type="hidden" name="app_setting[spot_gating_enabled]" value="0">
@@ -35,16 +36,31 @@
                  value="1"
                  class="sr-only peer"
                  role="switch"
-                 aria-label="Hold spot sessions when forecast exceeds the limits"
+                 aria-label="Fill up to these targets, then hold spot sessions"
                  <%= "checked" if @app_setting.spot_gating_enabled %>>
           <div class="w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-2 peer-focus:ring-indigo-500 peer-checked:bg-indigo-600 transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:border after:border-gray-300 after:shadow after:transition-all peer-checked:after:translate-x-5"></div>
         </label>
       </div>
 
-      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div>
+          <label for="app_setting_spot_max_concurrent_sessions" class="block text-sm font-medium text-gray-700 mb-2">
+            Max sessions at once
+          </label>
+          <input type="number"
+                 name="app_setting[spot_max_concurrent_sessions]"
+                 id="app_setting_spot_max_concurrent_sessions"
+                 value="<%= @app_setting.spot_max_concurrent_sessions %>"
+                 min="1" max="100" step="1"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+          <p class="mt-1 text-xs text-gray-500">
+            Every running session counts, priority included — priority work is meant to crowd spot work
+            out of the slots. Only spot sessions wait for one.
+          </p>
+        </div>
         <div>
           <label for="app_setting_spot_gate_five_hour_threshold_pct" class="block text-sm font-medium text-gray-700 mb-2">
-            5-hour window limit (%)
+            5-hour window target (%)
           </label>
           <input type="number"
                  name="app_setting[spot_gate_five_hour_threshold_pct]"
@@ -55,7 +71,7 @@
         </div>
         <div>
           <label for="app_setting_spot_gate_weekly_threshold_pct" class="block text-sm font-medium text-gray-700 mb-2">
-            Weekly window limit (%)
+            Weekly window target (%)
           </label>
           <input type="number"
                  name="app_setting[spot_gate_weekly_threshold_pct]"
@@ -82,18 +98,24 @@
         <span class="text-xs text-gray-500 font-mono"><%= @spot_decision.reason %></span>
       </div>
       <p class="mt-2 text-sm text-gray-700"><%= @spot_decision.detail %></p>
-      <%# The reading above describes the fleet as it stands. A start decision adds
-          the session it is about, so with an idle fleet the two differ — show both
-          rather than let the difference surprise someone. %>
-      <p class="mt-1 text-sm <%= @spot_start_decision.allowed? ? "text-gray-500" : "text-amber-800 font-medium" %>" id="spot-gate-start-decision">
+      <%# One decision, and it is the operative one: what a spot session starting
+          right now gets. The card used to show a second, fleet-as-it-stands
+          reading beside it, which is how it came to render a green badge above
+          the words "would be held". %>
+      <p class="mt-1 text-sm <%= @spot_decision.allowed? ? "text-gray-500" : "text-amber-800 font-medium" %>" id="spot-gate-start-decision">
         A spot session starting right now would be
-        <strong><%= @spot_start_decision.allowed? ? "started" : "held" %></strong>.
+        <strong><%= @spot_decision.allowed? ? "started" : "held" %></strong>.
       </p>
 
       <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 text-sm">
         <div>
-          <dt class="text-gray-500">Active sessions</dt>
-          <dd class="font-medium text-gray-900" id="spot-active-sessions"><%= @spot_decision.active_sessions %></dd>
+          <dt class="text-gray-500">Sessions running / capacity</dt>
+          <dd class="font-medium text-gray-900" id="spot-active-sessions">
+            <%= @spot_decision.active_sessions %>
+            <span class="text-gray-400 font-normal">
+              / <%= @spot_decision.capacity || "—" %>
+            </span>
+          </dd>
         </div>
         <div>
           <dt class="text-gray-500">Usage rate / session-hour</dt>
@@ -106,28 +128,40 @@
           </dd>
         </div>
         <div>
-          <dt class="text-gray-500">5-hour forecast</dt>
+          <dt class="text-gray-500">5-hour window</dt>
           <dd class="font-medium text-gray-900" id="spot-forecast-5h">
             <% if @spot_decision.forecast_5h %>
-              <%= number_with_precision(@spot_decision.forecast_5h.projected_pct, precision: 1) %>%
-              <span class="text-gray-400 font-normal">now <%= number_with_precision(@spot_decision.forecast_5h.current_pct, precision: 1) %>%</span>
+              <%= number_with_precision(@spot_decision.forecast_5h.current_pct, precision: 1) %>%
+              <span class="text-gray-400 font-normal">
+                room for <%= @spot_decision.forecast_5h.capacity || "—" %>
+              </span>
             <% else %>
               <span class="text-gray-400">—</span>
             <% end %>
           </dd>
         </div>
         <div>
-          <dt class="text-gray-500">Weekly forecast</dt>
+          <dt class="text-gray-500">Weekly window</dt>
           <dd class="font-medium text-gray-900" id="spot-forecast-7d">
             <% if @spot_decision.forecast_7d %>
-              <%= number_with_precision(@spot_decision.forecast_7d.projected_pct, precision: 1) %>%
-              <span class="text-gray-400 font-normal">now <%= number_with_precision(@spot_decision.forecast_7d.current_pct, precision: 1) %>%</span>
+              <%= number_with_precision(@spot_decision.forecast_7d.current_pct, precision: 1) %>%
+              <span class="text-gray-400 font-normal">
+                room for <%= @spot_decision.forecast_7d.capacity || "—" %>
+              </span>
             <% else %>
               <span class="text-gray-400">—</span>
             <% end %>
           </dd>
         </div>
       </dl>
+      <% if @spot_decision.account_email %>
+        <p class="mt-2 text-xs text-gray-500">
+          Capacity is the concurrent sessions the roomiest of
+          <%= pluralize(@spot_decision.accounts_considered, "usable account") %>
+          (<%= @spot_decision.account_email %>) can carry before a window reaches its target,
+          never more than the <%= @spot_decision.fleet_cap %> allowed at once.
+        </p>
+      <% end %>
       <% if @spot_decision.rate %>
         <p class="mt-2 text-xs text-gray-500">
           Rate measured from <%= pluralize(@spot_decision.rate.sample_count, "usable sample pair") %>

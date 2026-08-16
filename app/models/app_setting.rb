@@ -26,6 +26,12 @@ class AppSetting < ApplicationRecord
   # of the window. 80 is the value Tadas named; both windows default to it.
   DEFAULT_SPOT_GATE_THRESHOLD_PCT = 80
 
+  # How many sessions may run at once. The gate admits spot work in parallel up to
+  # the concurrency the quota can carry, and this is the brake on that — 10 is the
+  # number Tadas named. Every running session counts against it, priority included;
+  # only spot ones are held by it.
+  DEFAULT_SPOT_MAX_CONCURRENT_SESSIONS = 10
+
   # Null-object stand-in used only when the table can't be read (e.g. during a
   # migration run before the table exists, or in a DB-less boot path). It answers
   # the same read interface as a blank record so AgentRootsConfig never crashes on
@@ -65,6 +71,10 @@ class AppSetting < ApplicationRecord
       DEFAULT_SPOT_GATE_THRESHOLD_PCT
     end
 
+    def spot_max_concurrent_sessions
+      DEFAULT_SPOT_MAX_CONCURRENT_SESSIONS
+    end
+
     def genesis_class_overrides
       {}
     end
@@ -77,6 +87,10 @@ class AppSetting < ApplicationRecord
   validate :only_one_row, on: :create
   validates :spot_gate_five_hour_threshold_pct, :spot_gate_weekly_threshold_pct,
     numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
+  # At least one: a cap of zero would hold every spot session forever, which is
+  # what turning the gate off (or setting a target of 0) is for.
+  validates :spot_max_concurrent_sessions,
+    numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 }
   validate :genesis_class_overrides_well_formed
 
   class << self

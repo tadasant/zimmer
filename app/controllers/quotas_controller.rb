@@ -338,15 +338,14 @@ class QuotasController < ApplicationController
   # classes. It reads the same Claude Code quota windows the rest of this page
   # reports, which is why it renders here and only on the Claude tab.
   #
-  # `@spot_decision` is the forecast for the fleet AS IT STANDS — it does not add
-  # the session a start decision would be about, so with an idle fleet it reads
-  # flat. `@spot_start_decision` is what a spot session starting right now would
-  # actually get; the card shows both so the difference is visible rather than a
-  # surprise.
+  # One decision, not two. The card used to render a forecast for the fleet as it
+  # stands beside the answer a starting session would actually get, and the two
+  # disagreed in the obvious way — a green "headroom available" badge above the
+  # line "a spot session starting right now would be held". `current_decision` is
+  # the operative one, and `get_spot_policy` reads the same method.
   def load_spot_gate
     @app_setting = AppSetting.current
-    @spot_decision = SpotGateService.evaluate
-    @spot_start_decision = SpotGateService.evaluate(candidate_sessions: 1)
+    @spot_decision = SpotGateService.current_decision
     @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
     @genesis_counts = Session.genesis_counts
   end

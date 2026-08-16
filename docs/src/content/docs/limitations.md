@@ -2480,6 +2480,11 @@ Two consequences worth knowing:
 
 - The gate reacts on a 15-minute lag at best. Twenty spot sessions launched at once all evaluate
   against the same pre-burst rate and all start.
+- A session counts against capacity only once it is `running`, and it becomes `running` after its
+  clone and spawn — so a burst that evaluates before any of it has started reads the same fleet size
+  and can overshoot the capacity by up to the width of the `agents` queue. The overshoot is bounded
+  by that queue, corrected at the next evaluation, and spread by the jitter on a held session's
+  re-check, but it is real: capacity is enforced per decision, not held as a reservation.
 - A pair of readings that straddles a window reset is dropped rather than clamped, because the
   counters slide downward on their own and the difference measures nothing. If resets happen to line
   up with the sample cadence, usable pairs get scarce and the gate falls open on
@@ -2500,6 +2505,18 @@ banner whose "next check" time is permanently in the past. `DeploymentRecoveryJo
 up: that only claims sessions carrying `metadata["paused_by"] == "recovery"`, which a held session
 does not have. `spot_hold_count` is recorded but nothing acts on it. A sweep for `waiting` sessions
 whose `spot_hold_retry_at` is well past would close this.
+
+---
+
+## The starvation floor can spend past the target
+
+A session held longer than `SpotSessionHold::STARVATION_DEADLINE` starts anyway once nothing is
+running, whatever the windows say — including past the hard stop. That is deliberate — a window pinned at its ceiling for a day
+would otherwise hold a queue for a day, which is what happened in production — but it means the
+target is a target and not a hard cap: a fully spent pool still lets one session through every two
+idle hours. The floor is narrow on purpose (deadline passed **and** an empty fleet), so it drains a
+starved queue rather than running alongside a busy one, and it cannot release a backlog in parallel:
+each release occupies the fleet the next one checks.
 
 ---
 
