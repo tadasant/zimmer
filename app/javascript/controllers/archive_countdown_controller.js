@@ -18,6 +18,14 @@ export default class extends Controller {
     const form = document.createElement("form")
     form.method = "POST"
     form.action = this.archiveUrlValue
+    // Let Turbo intercept, so SessionsController#archive answers on its
+    // turbo_stream branch and the card is removed in place. The form belongs on
+    // document.body rather than inside this button's `session_detail` frame: a
+    // frame-scoped submission has its response scoped to that frame, and the
+    // stream that removes the dashboard card behind it would never land.
+    form.dataset.turbo = "true"
+    // A submission vehicle, not UI, for the beat it spends in the document.
+    form.hidden = true
 
     // Add CSRF token
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
@@ -30,6 +38,17 @@ export default class extends Controller {
     }
 
     document.body.appendChild(form)
-    form.submit()
+    // Turbo listens for the `submit` event, and a native form.submit() fires
+    // none — the browser POSTs for real, #archive answers on its format.html
+    // branch, and the redirect reloads the dashboard from the top. Only
+    // requestSubmit() fires the event. Turbo dispatches turbo:submit-end on
+    // every settled outcome, so the form always cleans itself up; the native
+    // fallback tears the document down with it.
+    form.addEventListener("turbo:submit-end", () => form.remove(), { once: true })
+    if (form.requestSubmit) {
+      form.requestSubmit()
+    } else {
+      form.submit()
+    }
   }
 }

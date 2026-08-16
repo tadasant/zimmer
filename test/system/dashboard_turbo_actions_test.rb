@@ -34,6 +34,44 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
     capture("undo-toast")
   end
 
+  # The detail header's Trash button is the one the dashboard's session drawer
+  # puts in front of you, and it archives through archive-countdown rather than
+  # through the card's link. A native `form.submit()` fires no `submit` event,
+  # so Turbo never sees the submission: the browser POSTs for real, #archive
+  # answers on its format.html branch, and the redirect reloads the dashboard
+  # from the top, discarding the scroll offset the drawer was opened over. The
+  # window stamp is what separates the two — a stream keeps the document, a
+  # reload takes it and the stamp with it.
+  test "trashing from the session drawer streams in place instead of reloading the dashboard" do
+    session = sessions(:failed)
+
+    # The header actions this test drives sit in a `hidden md:block` wrapper, so
+    # the Trash button is display:none below Tailwind's md breakpoint. Other
+    # tests in the suite resize to phone widths and share the browser, so pin a
+    # desktop width rather than inheriting whatever the last one left behind.
+    page.driver.browser.manage.window.resize_to(1400, 900)
+
+    visit root_path
+    assert_selector "turbo-frame#session_#{session.id}"
+    stamp_window
+
+    within "turbo-frame#session_#{session.id}" do
+      click_on "View"
+    end
+    # The drawer lazy-loads the detail view into its frame; the Trash button
+    # only exists once that frame has landed.
+    assert_selector "[data-controller~='archive-countdown'] button", text: "Trash"
+
+    find("[data-controller~='archive-countdown'] button", text: "Trash").click
+
+    assert_selector "#flash", text: "Session moved to trash."
+    assert_selector "#flash", text: "Undo"
+    assert_no_selector "turbo-frame#session_#{session.id}"
+    assert_equal "kept", window_stamp, "trashing from the drawer should not reload the page"
+
+    capture("drawer-trash-in-place")
+  end
+
   test "Undo puts the trashed card back without leaving the dashboard" do
     session = sessions(:failed)
 
