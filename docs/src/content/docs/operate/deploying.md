@@ -568,6 +568,37 @@ Actions **warning** rather than an info line nobody reads. The consequence of a 
 much later and somewhere else: the rebuilt droplet registers as `zimmer-staging-1` and the MagicDNS
 name drifts off the box you deployed.
 
+### The `ref` input is resolved before anything is checked out
+
+`Deploy staging` takes a `ref` — a branch, a tag, or a commit SHA — and pinning a deploy to a
+known-good commit is how a rollback is driven. `actions/checkout` only special-cases a **full
+40-character SHA**, though; anything shorter it treats as a branch or tag name. An abbreviated
+SHA (`9e95b4d`) therefore had it fetch `refs/heads/9e95b4d*` and `refs/tags/9e95b4d*`, match
+nothing, retry three times, and fail sixty seconds in with
+
+```text
+The process '/usr/bin/git' failed with exit code 1
+```
+
+which never mentions the ref. An abbreviated SHA is exactly what `git log --oneline` prints and
+what gets pasted into a pinned redeploy, and the input's own description said "SHA", so the trap
+was baited.
+
+The job now checks itself out once to get `scripts/` on disk, runs
+`scripts/resolve-deploy-ref.sh`, and checks out whatever that returns:
+
+- **Empty** — the branch the workflow was dispatched from, unchanged and with no request.
+- **A full SHA** — passed through untouched. Checkout already handles it, and asking the API
+  about it could only *narrow* what the workflow accepts.
+- **Anything else** — one `GET /repos/{owner}/{repo}/commits/{ref}`, sent with the `.sha` media
+  type so the answer is the forty characters and nothing else. That endpoint resolves branches,
+  tags, and abbreviated SHAs alike.
+
+A ref that does not exist now fails in about a second, names itself, and quotes GitHub's own
+sentence (`No commit found for SHA: 9e95b4d`). A ref that could not be resolved *because the API
+was unreachable* says that instead, because those send an operator to two different places — so
+a 4xx is never retried, while a transport failure is, three times.
+
 ### `/up` is a liveness ping; `/up/deep` is the health check
 
 `/up` is Rails' built-in endpoint, and it answers 200 for any process that finished booting. A
