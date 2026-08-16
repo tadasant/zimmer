@@ -381,9 +381,21 @@ non-recursive read would call a busy container empty. If any process other than 
 workload means nothing can be lost by killing the container, which is what makes the
 automation safe rather than clever.
 
+It re-checks before every destructive step, not just at the start. The container id
+survives a restart, so the cgroup and the containerd task directory are the *same* paths a
+restarted container uses — and Docker's restart policy can bring the worker back inside the
+poll interval. A stale census would then authorise killing a live worker and report success.
+
 When it does act, it walks the first rungs of the ladder below and stops before the last
 one. `docker rm` plus a redeploy is deliberately manual: nothing on the host can recreate
 the container, so a misfire there would replace a wedged worker with no worker at all.
+
+A worker that ends up gone rather than merely wedged keeps paging. `docker ps` stops listing
+an absent container, so the probe would otherwise fall silent and the single page already
+sent would be the only signal a permanently dead worker ever produced — and nothing else in
+Zimmer notices, because every cron job runs in the worker. Once a wedge has been reported,
+the watchdog keeps repeating "no worker is running" on the same throttle until a healthy one
+appears.
 
 ### The manual ladder
 

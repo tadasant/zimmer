@@ -2900,8 +2900,10 @@ What it does **not** do is make the failure survivable, and four gaps are worth 
 retries `docker start`, which is where the wedge usually ends: `sysbox-mgr` refuses the
 container id it already holds (`redundant container registration`), and only a *new* id
 gets past that. Creating one needs a redeploy, and nothing on the host can run one — so the
-automated path stops at a container in `exited`, which is loud, and pages a human for the
-rest. That is deliberate: `docker rm` cannot be undone from the host, so a misfire would
+automated path stops at a container in `exited` and keeps paging — once a wedge has been
+reported, the watchdog repeats "no worker is running" on its re-alert throttle until a
+healthy worker exists, because `docker ps` stops listing the container and the probe would
+otherwise go silent. That is deliberate: `docker rm` cannot be undone from the host, so a misfire would
 turn a wedged worker into no worker.
 
 **The root cause inside sysbox is still unknown.** Nobody has established *why* the

@@ -100,6 +100,15 @@ EXIT_WAIT="${ZIMMER_WATCHDOG_EXIT_WAIT:-30}"
 # running underneath, so the condition is never forgotten, only throttled.
 REALERT_INTERVAL="${ZIMMER_WATCHDOG_REALERT_INTERVAL:-3600}"
 
+# How soon to try again when the incident was real but the PAGE did not get out (no web
+# container, Slack down). Much shorter than the re-alert interval: the throttle exists
+# to stop repeating a delivered message, not to sit on an undelivered one.
+ALERT_RETRY_INTERVAL="${ZIMMER_WATCHDOG_ALERT_RETRY_INTERVAL:-300}"
+
+# Bound on every `docker inspect`/`ps`/`start`. A hung dockerd would otherwise park
+# the unit until systemd's TimeoutStartSec, which is a long time to be blind.
+DOCKER_TIMEOUT="${ZIMMER_WATCHDOG_DOCKER_TIMEOUT:-30}"
+
 STATE_DIR="${ZIMMER_WATCHDOG_STATE_DIR:-/var/lib/zimmer-worker-watchdog}"
 STATE_FILE="${STATE_DIR}/state"
 INCIDENT_DIR="${STATE_DIR}/incidents"
@@ -114,7 +123,42 @@ mkdir -p "$STATE_DIR" "$INCIDENT_DIR" 2>/dev/null || {
   exit 1
 }
 
+# The throttle bounds these to ~24 a day per container, but nothing bounds them over
+# a year on a host with no disk headroom.
+find "$INCIDENT_DIR" -name '*.json' -mtime +30 -delete 2>/dev/null || true
+
 command -v docker >/dev/null 2>&1 || { err "docker not on PATH"; exit 1; }
+# Without `timeout` every probe would exit 127, which is indistinguishable from a
+# wedge -- the watchdog would page hourly about a perfectly healthy worker.
+command -v timeout >/dev/null 2>&1 || { err "timeout not on PATH"; exit 1; }
+
+# The settings above come from a file that exists to be hand-edited, and two of them
+# land in JSON *number* positions where a non-numeric value produces malformed JSON --
+# which costs the page every structured field it carries. The rest bound `[`
+# comparisons, where a non-numeric value is a hard error. So normalise once, at the
+# door, and say so rather than limping on.
+numeric_or_default() {
+  case "${2-}" in
+    '' | *[!0-9]*)
+      err "${1}='${2-}' is not a non-negative integer; using ${3}"
+      printf '%s' "$3"
+      ;;
+    *) printf '%s' "$2" ;;
+  esac
+}
+
+PROBE_TIMEOUT=$(numeric_or_default ZIMMER_WATCHDOG_PROBE_TIMEOUT "$PROBE_TIMEOUT" 20)
+FAILURES_TO_ACT=$(numeric_or_default ZIMMER_WATCHDOG_FAILURES_TO_ACT "$FAILURES_TO_ACT" 3)
+EXIT_WAIT=$(numeric_or_default ZIMMER_WATCHDOG_EXIT_WAIT "$EXIT_WAIT" 30)
+REALERT_INTERVAL=$(numeric_or_default ZIMMER_WATCHDOG_REALERT_INTERVAL "$REALERT_INTERVAL" 3600)
+DOCKER_TIMEOUT=$(numeric_or_default ZIMMER_WATCHDOG_DOCKER_TIMEOUT "$DOCKER_TIMEOUT" 30)
+ALERT_RETRY_INTERVAL=$(numeric_or_default ZIMMER_WATCHDOG_ALERT_RETRY_INTERVAL "$ALERT_RETRY_INTERVAL" 300)
+# A retry window longer than the window it shortens would stamp the throttle into the
+# future and delay the retry instead of hastening it.
+[ "$ALERT_RETRY_INTERVAL" -le "$REALERT_INTERVAL" ] || ALERT_RETRY_INTERVAL="$REALERT_INTERVAL"
+
+# Every Docker call except the probe, which carries its own (longer) bound.
+dk() { timeout "$DOCKER_TIMEOUT" docker "$@"; }
 
 # ---------------------------------------------------------------------------
 # JSON helpers. Deliberately dependency-free: jq is not guaranteed on a droplet,
@@ -140,22 +184,41 @@ json_escape() {
 # Keyed by id so a fresh container after a deploy never inherits the old one's
 # failures or its report throttle.
 # ---------------------------------------------------------------------------
+SAVED_ID=""
 STREAK=0
 LAST_REPORT=0
 
-read_state() {
-  local id="$1" saved_id saved_n saved_t
+# Load whatever is on disk, whichever container it refers to. The numbers are
+# validated rather than trusted: `write_state` can be interrupted mid-write on a host
+# that is by definition short of memory, and under `set -u` a non-numeric STREAK makes
+# the very next arithmetic a FATAL error -- which would leave the watchdog dead in
+# exactly the way it exists to detect.
+load_state() {
+  local saved_id saved_n saved_t
+  SAVED_ID=""
   STREAK=0
   LAST_REPORT=0
   [ -r "$STATE_FILE" ] || return
   read -r saved_id saved_n saved_t <"$STATE_FILE" 2>/dev/null || true
-  [ "${saved_id:-}" = "$id" ] || return
-  STREAK="${saved_n:-0}"
-  LAST_REPORT="${saved_t:-0}"
+  SAVED_ID="${saved_id:-}"
+  case "${saved_n:-}" in '' | *[!0-9]*) STREAK=0 ;; *) STREAK="$saved_n" ;; esac
+  case "${saved_t:-}" in '' | *[!0-9]*) LAST_REPORT=0 ;; *) LAST_REPORT="$saved_t" ;; esac
 }
 
-write_state() { printf '%s %s %s\n' "$1" "$2" "$3" >"$STATE_FILE"; }
-clear_state() { rm -f "$STATE_FILE"; }
+# The same, narrowed to one container: a fresh container after a deploy must never
+# inherit the previous one's streak or its report throttle.
+read_state() {
+  load_state
+  [ "$SAVED_ID" = "$1" ] && return
+  STREAK=0
+  LAST_REPORT=0
+}
+
+# Write through a temp file: a torn line is the input that kills the next run.
+write_state() {
+  printf '%s %s %s\n' "$1" "$2" "$3" >"${STATE_FILE}.new" && mv "${STATE_FILE}.new" "$STATE_FILE"
+}
+clear_state() { rm -f "$STATE_FILE" "${STATE_FILE}.new"; }
 
 # ---------------------------------------------------------------------------
 # The probe. `/bin/true` is the cheapest possible exec: it exercises the setns path
@@ -188,6 +251,11 @@ find_cgroup() {
   if [ -n "$pid" ] && [ "$pid" != "0" ] && [ -r "/proc/${pid}/cgroup" ]; then
     rel=$(awk -F: '$1 == "0" { print $3 }' "/proc/${pid}/cgroup" 2>/dev/null)
     rel="${rel%/init.scope}"
+    # On a hybrid-cgroup host the v2 line is often bare `/`, which would resolve to
+    # /sys/fs/cgroup itself -- the HOST root. A census from there counts every process
+    # on the box and reports it as the container's, so refuse the degenerate answer and
+    # report "unknown" instead, which is the safe reading.
+    case "$rel" in "" | "/") rel="" ;; esac
     if [ -n "$rel" ] && [ -d "/sys/fs/cgroup${rel}" ]; then
       printf '%s' "/sys/fs/cgroup${rel}"
       return
@@ -206,21 +274,29 @@ find_cgroup() {
 # this scope, so the inner dockerd and every container it runs sit in CHILD cgroups.
 # A non-recursive read would report an empty container while a dev stack was still up
 # inside it, and recovery would then kill work it promised not to touch.
+# Emits "<total> <non-init> <known>". `known` is 0 when the subtree could not be
+# enumerated at all -- a scope that vanished mid-run, an unreadable subtree, a missing
+# `find`. That is NOT the same as an empty container, and only the gate can tell the
+# difference, so the count alone must never be the thing it reads.
 cgroup_census() {
-  local dir="$1" total=0 workload=0 p comm procs
+  local dir="$1" total=0 workload=0 known=0 p comm procs files
   if [ -n "$dir" ] && [ -d "$dir" ]; then
-    procs=$(find "$dir" -name cgroup.procs -exec cat {} + 2>/dev/null | sort -u)
-    while read -r p; do
-      [ -n "$p" ] || continue
-      total=$((total + 1))
-      comm=$(cat "/proc/${p}/comm" 2>/dev/null)
-      case "$comm" in
-        docker-init | tini | "") ;;
-        *) workload=$((workload + 1)) ;;
-      esac
-    done <<<"$procs"
+    files=$(find "$dir" -name cgroup.procs 2>/dev/null)
+    if [ -n "$files" ]; then
+      known=1
+      procs=$(printf '%s\n' "$files" | xargs -r cat 2>/dev/null | sort -u)
+      while read -r p; do
+        [ -n "$p" ] || continue
+        total=$((total + 1))
+        comm=$(cat "/proc/${p}/comm" 2>/dev/null)
+        case "$comm" in
+          docker-init | tini | "") ;;
+          *) workload=$((workload + 1)) ;;
+        esac
+      done <<<"$procs"
+    fi
   fi
-  printf '%s %s' "$total" "$workload"
+  printf '%s %s %s' "$total" "$workload" "$known"
 }
 
 cgroup_field() {
@@ -240,7 +316,7 @@ cgroup_field() {
 # ---------------------------------------------------------------------------
 alert() {
   local payload="$1" web out
-  web=$(docker ps --filter "name=${WEB_FILTER}" --format '{{.ID}}' 2>/dev/null | head -1)
+  web=$(dk ps --filter "name=${WEB_FILTER}" --format '{{.ID}}' 2>/dev/null | head -1)
   if [ -z "$web" ]; then
     err "no running container matching '${WEB_FILTER}' -- alert not delivered to Slack"
     return 1
@@ -289,13 +365,13 @@ recover() {
 
   waited=0
   while [ "$waited" -lt "$EXIT_WAIT" ]; do
-    state=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)
+    state=$(dk inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)
     [ "$state" = "true" ] || break
     sleep 2
     waited=$((waited + 2))
   done
 
-  state=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)
+  state=$(dk inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)
   if [ "$state" = "true" ]; then
     # Still running after the shim died: exec may have come back (Docker's own
     # restart policy can win the race), or the container is wedged harder than #502
@@ -311,6 +387,29 @@ recover() {
   fi
   step "container left the running state"
 
+  # RE-ASSERT before the second destructive step, because the world moved while we
+  # waited. The container id survives a restart, so `docker-<id>.scope` and the task
+  # dir below are the SAME paths a restarted container uses -- and Docker's own restart
+  # policy can bring the worker back inside the poll interval. Killing "leftovers" then
+  # means killing a live worker's PID 1 and its Ruby processes, and reporting success.
+  # The census at the top of the run is stale by now; take a fresh one.
+  state=$(dk inspect -f '{{.State.Running}}{{.State.Restarting}}' "$cid" 2>/dev/null)
+  if [ "$state" != "falsefalse" ]; then
+    step "container came back on its own (${state:-unknown}) -- leaving it alone"
+    if probe "$cid" >/dev/null 2>&1; then
+      RECOVERY_OUTCOME="restarted"
+      return 0
+    fi
+    RECOVERY_OUTCOME="failed"
+    return 1
+  fi
+  read -r _ live_now known_now <<<"$(cgroup_census "$cg")"
+  if [ "$known_now" != "1" ] || [ "${live_now:-1}" -gt 0 ]; then
+    step "workload reappeared in the cgroup (${live_now:-unknown}) -- aborting before touching anything else"
+    RECOVERY_OUTCOME="skipped"
+    return 1
+  fi
+
   # The `init: true` shim is reparented to PID 1 rather than reaped, and holds the
   # cgroup open. Rung 3 of the ladder.
   if [ -n "$cg" ] && [ -d "$cg" ]; then
@@ -324,16 +423,23 @@ recover() {
     done < <(find "$cg" -name cgroup.procs -exec cat {} + 2>/dev/null | sort -u)
   fi
 
-  if start_err=$(docker start "$cid" 2>&1); then
+  if start_err=$(dk start "$cid" 2>&1); then
     step "docker start succeeded"
   else
     step "docker start failed: ${start_err}"
     # Rung 4/5: containerd leaves the task directory behind, and `start` refuses
-    # while it exists.
+    # while it exists. Only ever remove it while the container is genuinely down --
+    # containerd is actively using that directory for a container that is starting.
+    state=$(dk inspect -f '{{.State.Running}}{{.State.Restarting}}' "$cid" 2>/dev/null)
+    if [ "$state" != "falsefalse" ]; then
+      step "container is ${state:-unknown} -- not removing a task dir containerd may be using"
+      RECOVERY_OUTCOME="failed"
+      return 1
+    fi
     if [ -d "/run/containerd/io.containerd.runtime.v2.task/moby/${full}" ]; then
       step "removing stale containerd task dir"
       rm -rf "/run/containerd/io.containerd.runtime.v2.task/moby/${full}"
-      if start_err=$(docker start "$cid" 2>&1); then
+      if start_err=$(dk start "$cid" 2>&1); then
         step "docker start succeeded after clearing the stale task dir"
       else
         step "docker start failed again: ${start_err}"
@@ -360,18 +466,67 @@ recover() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-cid=$(docker ps --filter "name=${FILTER}" --format '{{.ID}}' 2>/dev/null | head -1)
+cid=$(dk ps --filter "name=${FILTER}" --format '{{.ID}}' 2>/dev/null | head -1)
 if [ -z "$cid" ]; then
-  # No running worker is not this watchdog's problem: an exited or absent container is
-  # already visible to Docker, to the restart policy and to the deploy. Clear the
-  # streak so a replacement starts from zero.
+  load_state
+  now_epoch=$(date -u +%s)
+
+  # A worker that is merely absent is not this watchdog's problem: an exited container
+  # between deploys is already visible to Docker and to the deploy. But a worker that
+  # is absent AFTER we reported it wedged is a different thing entirely -- `docker ps`
+  # stops listing it, so the probe would go quiet forever and the single page we
+  # already sent becomes the only signal a permanently dead worker ever produces.
+  # Nothing else in Zimmer notices: every cron job runs in the worker. So keep saying
+  # it, on the same throttle, until a healthy worker turns up and clears the state.
+  if [ -n "$SAVED_ID" ] && [ "$LAST_REPORT" -gt 0 ]; then
+    if [ $((now_epoch - LAST_REPORT)) -lt "$REALERT_INTERVAL" ]; then
+      log "the worker reported wedged (${SAVED_ID}) is still absent -- reported $((now_epoch - LAST_REPORT))s ago, suppressed"
+      exit 0
+    fi
+
+    err "the worker reported wedged (${SAVED_ID}) is GONE: no container matches '${FILTER}', so nothing is running Zimmer's jobs"
+    gone_payload=$(
+      cat <<JSON
+{
+  "schema": 1,
+  "kind": "absent",
+  "host": "$(json_escape "$(hostname)")",
+  "detected_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "container": {
+    "id": "$(json_escape "$SAVED_ID")",
+    "running": false
+  },
+  "probe": {
+    "consecutive_failures": ${STREAK},
+    "last_error": "no container matches '$(json_escape "$FILTER")' -- it is not running at all"
+  },
+  "recovery": {
+    "attempted": false,
+    "outcome": "exited",
+    "steps": ""
+  }
+}
+JSON
+    )
+    printf '%s\n' "$gone_payload" >"${INCIDENT_DIR}/$(date -u +%Y-%m-%dT%H-%M-%SZ)-${SAVED_ID}-absent.json"
+    command -v logger >/dev/null 2>&1 &&
+      logger -t "$TAG" -p daemon.err "worker ${SAVED_ID} reported wedged is now absent; no worker is running"
+    if alert "$gone_payload"; then
+      write_state "$SAVED_ID" "$STREAK" "$now_epoch"
+    else
+      # Do not let a failed delivery buy an hour of silence -- retry sooner.
+      write_state "$SAVED_ID" "$STREAK" "$((now_epoch - REALERT_INTERVAL + ALERT_RETRY_INTERVAL))"
+    fi
+    exit 0
+  fi
+
   clear_state
   log "no running container matching '${FILTER}' -- nothing to probe"
   exit 0
 fi
 
-full=$(docker inspect -f '{{.Id}}' "$cid" 2>/dev/null)
-name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+full=$(dk inspect -f '{{.Id}}' "$cid" 2>/dev/null)
+name=$(dk inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
 [ -n "$full" ] || { err "could not inspect container ${cid}"; exit 1; }
 
 read_state "$full"
@@ -396,7 +551,7 @@ fi
 
 # Re-read state before declaring a wedge: a container that has since exited is a
 # normal failure Docker is already handling, not the silent one.
-running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)
+running=$(dk inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)
 if [ "$running" != "true" ]; then
   clear_state
   log "${name}: exec fails but the container is no longer running -- normal exit path, leaving it to Docker"
@@ -412,15 +567,15 @@ if [ "$LAST_REPORT" -gt 0 ] && [ $((now_epoch - LAST_REPORT)) -lt "$REALERT_INTE
 fi
 write_state "$full" "$streak" "$now_epoch"
 
-oom=$(docker inspect -f '{{.State.OOMKilled}}' "$cid" 2>/dev/null)
-restarts=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null)
-runtime=$(docker inspect -f '{{.HostConfig.Runtime}}' "$cid" 2>/dev/null)
-mem_limit=$(docker inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null)
-started_at=$(docker inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null)
-pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)
+oom=$(dk inspect -f '{{.State.OOMKilled}}' "$cid" 2>/dev/null)
+restarts=$(dk inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null)
+runtime=$(dk inspect -f '{{.HostConfig.Runtime}}' "$cid" 2>/dev/null)
+mem_limit=$(dk inspect -f '{{.HostConfig.Memory}}' "$cid" 2>/dev/null)
+started_at=$(dk inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null)
+pid=$(dk inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)
 
 cg=$(find_cgroup "$pid" "$full")
-read -r cg_total cg_workload <<<"$(cgroup_census "$cg")"
+read -r cg_total cg_workload cg_known <<<"$(cgroup_census "$cg")"
 oom_kill=$(cgroup_field "$cg" oom_kill)
 oom_events=$(cgroup_field "$cg" oom)
 
@@ -433,9 +588,9 @@ recovery_attempted=false
 if [ "$RECOVER" != "1" ]; then
   RECOVERY_OUTCOME="disabled"
   log "recovery disabled (ZIMMER_WATCHDOG_RECOVER=${RECOVER}) -- detecting and alerting only"
-elif [ -z "$cg" ]; then
+elif [ -z "$cg" ] || [ "$cg_known" != "1" ]; then
   RECOVERY_OUTCOME="skipped"
-  log "recovery skipped: could not read the container's cgroup, so 'is anything still running in there?' is unanswered"
+  log "recovery skipped: could not enumerate the container's cgroup, so 'is anything still running in there?' is unanswered"
 elif [ "$cg_workload" -gt 0 ]; then
   RECOVERY_OUTCOME="skipped"
   log "recovery skipped: ${cg_workload} process(es) other than the init shim are still alive in the cgroup"
@@ -491,7 +646,12 @@ command -v logger >/dev/null 2>&1 &&
   logger -t "$TAG" -p daemon.err \
     "worker ${name} wedged (running=true, exec fails, ${cg_workload} workload procs, oom_kills=${oom_kill}); recovery=${RECOVERY_OUTCOME}"
 
-alert "$payload" || true
+# The incident file and the journald line stand on their own, but the PAGE is the only
+# part a human sees -- so a failed delivery must not buy the full silence window.
+if ! alert "$payload"; then
+  write_state "$full" "$streak" "$((now_epoch - REALERT_INTERVAL + ALERT_RETRY_INTERVAL))"
+  log "alert delivery failed -- will retry in ~${ALERT_RETRY_INTERVAL}s rather than waiting out the full re-alert interval"
+fi
 
 # A recovered container starts clean, so the next real failure is judged on its own
 # streak rather than inheriting this one's.
