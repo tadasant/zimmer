@@ -177,6 +177,12 @@ proof of one. The rules, including what happens when a junior calls back into it
 [Hierarchy and human
 messages](/sessions/hierarchy-and-human-messages/#the-rules-including-inversion).
 
+`archive` takes the same argument for a different purpose: **provenance, and no edge**. It records
+you as the actor on the archived session's own timeline, so a human reading that session later can
+tell an agent archiving it from a human clicking Trash. Set it whenever an agent drives an archive,
+including archiving itself; an archive that declares nothing is logged as one. See
+[the archive line](/sessions/lifecycle/#the-archive-line-names-who-did-it).
+
 `action_health`'s three destructive actions (`cleanup_processes`, `retry_sessions`, `archive_old`)
 share a 30-second cooldown with `Api::V1::HealthController` and the `/health` web dashboard — the
 same `HealthActionCooldown` object, bucketed by a digest of the connection's API key. Switching

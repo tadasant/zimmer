@@ -51,6 +51,30 @@ module SessionStateMachine
   # which is executed whether or not any wake-up exists.
   PENDING_SLEEP_REQUIRES_WAKE = "pending_sleep_requires_wake"
 
+  # Who fired `archive`, in the words the session's own timeline will use.
+  #
+  # Every other transition has one obvious cause: a process spawned, a turn
+  # ended, an error was raised. `archive` has six unrelated callers — the web
+  # UI, the REST API, the MCP API, the stale-session sweep, status-summary fork
+  # cleanup, and a session archiving itself — and they all used to leave the
+  # same five words behind. That made "why did my session get archived?"
+  # unanswerable from the session page: a human clicking Trash and another agent
+  # archiving this session out from under its unfinished work were indis-
+  # tinguishable, and telling them apart meant reading another session's raw
+  # transcript off disk.
+  #
+  # Set by the caller immediately before `archive!`. Transient, never persisted.
+  # Nothing enforces it — an archive from a console or a test says it has no
+  # recorded actor rather than claiming one it does not have.
+  attr_accessor :archive_actor
+
+  # What the archive line says when the caller set no actor.
+  ARCHIVE_ACTOR_UNRECORDED = "an unrecorded caller"
+
+  # PR statuses GitHubPullRequestPollerJob treats as the end of the story. Any
+  # other recorded status means Zimmer still expected the PR to move.
+  TERMINAL_PR_STATUSES = %w[merged closed].freeze
+
   included do
     include AASM
 
@@ -213,7 +237,10 @@ module SessionStateMachine
         transitions from: [ :waiting, :running, :needs_input, :failed ], to: :archived
         after do
           set_archived_at
-          log_state_change("Session moved to trash")
+          log_state_change(archive_log_message)
+          # Consumed by the line above, and single-use: an instance archived,
+          # unarchived and archived again must not reuse the first actor.
+          self.archive_actor = nil
           cleanup_running_job
           dismiss_notifications
           fire_ao_event_triggers("session_archived")
@@ -658,6 +685,50 @@ module SessionStateMachine
     TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(self)
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to check for a missing PR URL: #{e.message}"
+  end
+
+  # The archive event's timeline line: who did it, and what it cost.
+  #
+  # Never raises. It is computed inside the `archive` callback chain, ahead of
+  # the trash bookkeeping, so a bad metadata shape here must not be able to take
+  # the transition down with it — the plain line is always available.
+  def archive_log_message
+    [ "Session moved to trash by #{archive_actor.presence || ARCHIVE_ACTOR_UNRECORDED}", unresolved_pr_clause ]
+      .compact.join(" — ")
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to describe the archive of session #{id}: #{e.message}"
+    "Session moved to trash"
+  end
+
+  # The pull requests this session opened that Zimmer never saw reach a terminal
+  # state, named on the archive line.
+  #
+  # Archiving is what removes a session from GitHubPullRequestPollerJob's scope
+  # (`with_github_prs` excludes archived and failed sessions), so it also ends any chance
+  # of the merge message the PR goals in config/goals.json promise: "the
+  # pull-request poller sends this session a message when the PR merges, and
+  # THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE". A session archived first never
+  # gets it, and nothing else records that the promise died.
+  #
+  # This rides on the archive line rather than raising a warning of its own,
+  # deliberately. A merge gate archives the producing session within seconds of
+  # merging — well inside the poller's 30-second cadence — so an unresolved PR
+  # at archive is the common case, not an anomaly worth alerting on. What it is
+  # worth is a sentence in the one place someone asking "where did my session
+  # go?" is already looking.
+  def unresolved_pr_clause
+    urls = custom_metadata&.dig("github_pull_request_urls")
+    return nil unless urls.is_a?(Array) && urls.any?
+
+    statuses = custom_metadata&.dig("github_pull_request_statuses")
+    statuses = {} unless statuses.is_a?(Hash)
+    unresolved = urls.reject { |url| TERMINAL_PR_STATUSES.include?(statuses[url]) }
+    return nil if unresolved.empty?
+
+    subject = unresolved.one? ? "1 tracked pull request had" : "#{unresolved.size} tracked pull requests had"
+    pronoun = unresolved.one? ? "it" : "them"
+    "#{subject} not reached a terminal state, so no merge notification will be delivered for #{pronoun}: " \
+      "#{unresolved.join(', ')}"
   end
 
   # Log state transition to database
