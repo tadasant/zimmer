@@ -4,11 +4,11 @@ require "test_helper"
 
 class SpotGateServiceTest < ActiveSupport::TestCase
   setup do
-    @now = Time.current
-    # The forecast reads the SERVING account's snapshots and multiplies by the
-    # running fleet, so a fixture account or a fixture session in `running`
-    # silently changes the arithmetic these tests assert on. Clear both, then
-    # build the one account this suite forecasts from.
+    # The gate reads the serving account's latest snapshot and counts every running
+    # session, so a fixture reading or a fixture session in `running` silently
+    # changes what these tests assert on. Clear both, then build the one account
+    # this suite reads.
+    ClaudeAccountQuotaSnapshot.delete_all
     ClaudeAccount.update_all(is_current: false)
     Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
     @account = ClaudeAccount.create!(
@@ -18,109 +18,278 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     @setting = AppSetting.editable
     @setting.update!(spot_gating_enabled: true,
                      spot_gate_five_hour_threshold_pct: 80,
-                     spot_gate_weekly_threshold_pct: 80)
+                     spot_gate_weekly_threshold_pct: 80,
+                     spot_max_concurrent_sessions: 10)
   end
 
-  # A rising series of readings ending AT the given current utilization, 30
-  # minutes apart, with `sessions` running throughout.
-  #
-  # The ramp has to *end* at the current value rather than have it appended: an
-  # appended reading is just another sample, so the jump from the ramp to it is
-  # differenced as usage and the measured rate becomes whatever that gap happens
-  # to be, not the slope the test is setting up.
-  #
-  # 4 readings => 3 pairs, each half an hour and each rising by the step, so the
-  # rate is `2 * step` per session-hour. The 0.02 default therefore means 4% of
-  # the 5-hour window per session-hour, which is what the tests below assume.
-  #
-  # The weekly step is deliberately an order of magnitude smaller. Its forecast
-  # horizon is capped at MAX_HORIZON (24h) rather than the 2h the 5-hour window
-  # has left, so an equal rate would project ~96% onto the weekly window and
-  # swamp every assertion about the 5-hour one. A week accrues slower relative
-  # to its own allowance, which is what this reflects.
-  def seed_history(current_5h:, current_7d: 0.10, sessions: 1, rate_step: 0.02, rate_step_7d: 0.002)
-    [ 90, 60, 30, 0 ].each_with_index do |minutes_ago, i|
-      steps_back = 3 - i
-      ClaudeAccountQuotaSnapshot.create!(
-        claude_account: @account,
-        utilization_5h: current_5h - (rate_step * steps_back),
-        utilization_7d: current_7d - (rate_step_7d * steps_back),
-        reset_5h: @now + 2.hours, reset_7d: @now + 2.days,
-        active_session_count: sessions, trigger: "usage_sample",
-        created_at: @now - minutes_ago.minutes
-      )
-    end
+  # One reading is all the gate needs — there is no rate to differentiate and no
+  # series to fit, just the utilization each window is carrying now.
+  def seed(current_5h:, current_7d: 0.10, account: @account, reset_5h: 2.hours.from_now,
+           reset_7d: 2.days.from_now)
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: account,
+      utilization_5h: current_5h, utilization_7d: current_7d,
+      reset_5h: reset_5h, reset_7d: reset_7d,
+      active_session_count: 1, trigger: "usage_sample"
+    )
   end
+
+  def seed_spare(email:, current_5h:, current_7d:)
+    spare = ClaudeAccount.create!(email: email, runtime: "claude_code", oauth_config: { "x" => 1 })
+    seed(current_5h: current_5h, current_7d: current_7d, account: spare)
+    spare
+  end
+
+  # --- fail-open ---------------------------------------------------------------
 
   test "fails open when gating is disabled" do
     @setting.update!(spot_gating_enabled: false)
-    decision = SpotGateService.evaluate(now: @now)
+    decision = SpotGateService.evaluate
 
     assert decision.allowed?
     assert_equal "gating_disabled", decision.reason
   end
 
-  test "fails open when there is not enough data to forecast" do
-    decision = SpotGateService.evaluate(now: @now)
+  test "fails open when there is no reading to decide on" do
+    decision = SpotGateService.evaluate
 
     assert decision.allowed?, "a monitoring gap must not become an outage of all automated work"
-    assert_equal "insufficient_data", decision.reason
+    assert_equal "no_snapshot", decision.reason
   end
 
-  test "allows spot when the forecast stays under both ceilings" do
-    seed_history(current_5h: 0.10, current_7d: 0.10)
+  # Regression: ActiveRecord::ConnectionNotEstablished descends from AdapterError,
+  # not StatementInvalid, so a narrow rescue let it escape into AgentSessionJob —
+  # which marks the session `failed`. The gate must never fail a session.
+  test "any error while evaluating allows the session rather than escaping" do
+    seed(current_5h: 0.99, current_7d: 0.99)
 
-    decision = SpotGateService.evaluate(now: @now)
+    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid, RuntimeError ].each do |klass|
+      Session.stub(:running_claude_code_count, ->(*) { raise klass, "boom" }) do
+        decision = SpotGateService.evaluate
+        assert decision.allowed?, "#{klass} must not be able to hold a session"
+        assert_equal "unavailable", decision.reason
+      end
+    end
+  end
+
+  # --- the targets -------------------------------------------------------------
+
+  test "a window under its target runs spot sessions" do
+    seed(current_5h: 0.42, current_7d: 0.10)
+
+    decision = SpotGateService.evaluate
     assert decision.allowed?
-    assert_equal "within_forecast", decision.reason
-    assert decision.forecast_5h.present?
+    assert_equal "within_limits", decision.reason
+    assert_in_delta 42.0, decision.five_hour.current_pct, 0.001
+    assert_equal 80.0, decision.five_hour.threshold_pct
   end
 
-  test "holds spot when the 5-hour forecast breaches its ceiling" do
-    seed_history(current_5h: 0.79, current_7d: 0.10)
+  # The whole point of the rewrite: work runs right up to the target rather than
+  # backing off from a projection of where it might land. 79% still runs.
+  test "spot work runs at 79% and pauses at exactly the target" do
+    seed(current_5h: 0.79, current_7d: 0.10)
+    assert SpotGateService.evaluate.allowed?, "under the target is under the target"
 
-    # candidate_sessions: 1 is the real start decision — with nothing else
-    # running, the informational reading is flat and could never breach.
-    decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
+    seed(current_5h: 0.80, current_7d: 0.10)
+    decision = SpotGateService.evaluate
+
     refute decision.allowed?
-    assert_equal "forecast_breached", decision.reason
-    assert decision.forecast_5h.breached?
-    assert_match(/5-hour window forecast/, decision.detail)
+    assert_equal "at_utilization_limit", decision.reason
+    assert decision.five_hour.at_limit?
+    refute decision.weekly.at_limit?
+    assert_match(/5-hour window at 80% of its 80% target/, decision.detail)
   end
 
-  test "holds spot when only the weekly forecast breaches" do
-    seed_history(current_5h: 0.10, current_7d: 0.95)
+  test "the weekly window pauses spot work on its own" do
+    seed(current_5h: 0.10, current_7d: 0.95)
+    decision = SpotGateService.evaluate
 
-    decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
     refute decision.allowed?
-    assert decision.forecast_7d.breached?
-    refute decision.forecast_5h.breached?
+    assert_equal "at_utilization_limit", decision.reason
+    assert decision.weekly.at_limit?
+    assert_match(/weekly window at 95% of its 80% target/, decision.detail)
   end
 
-  test "a higher threshold lets the same forecast through" do
-    seed_history(current_5h: 0.79, current_7d: 0.10)
-    assert SpotGateService.evaluate(now: @now, candidate_sessions: 1).held?
+  # The pause is not a cancellation and not a forecast: when the number comes back
+  # down, the very next evaluation runs work again.
+  test "spot work resumes as soon as utilization falls back under the target" do
+    seed(current_5h: 0.85, current_7d: 0.10)
+    assert SpotGateService.evaluate.held?
 
-    @setting.update!(spot_gate_five_hour_threshold_pct: 100, spot_gate_weekly_threshold_pct: 100)
-    assert SpotGateService.evaluate(now: @now, candidate_sessions: 1).allowed?
+    seed(current_5h: 0.62, current_7d: 0.10)
+    decision = SpotGateService.evaluate
+
+    assert decision.allowed?, "the hold lasts exactly as long as the number does"
+    assert_equal "within_limits", decision.reason
   end
 
-  test "the start gate counts the session being asked about" do
-    # 4% per session-hour, 2 hours left, currently at 74%. With nothing running,
-    # the informational forecast is flat at 74% — but starting one session adds
-    # 4% x 1 x 2h = 8%, landing at 82% and over the 80% ceiling. A gate that
-    # ignored the candidate would let it start.
-    seed_history(current_5h: 0.74, current_7d: 0.10)
+  test "a higher target lets the same reading through" do
+    seed(current_5h: 0.85, current_7d: 0.10)
+    assert SpotGateService.evaluate.held?
 
-    informational = SpotGateService.evaluate(now: @now)
-    assert informational.allowed?, "the dashboard reading describes the fleet as it stands"
+    @setting.update!(spot_gate_five_hour_threshold_pct: 90)
+    assert SpotGateService.evaluate.allowed?
+  end
+
+  test "a passed reset reads as zero utilization, matching effective_utilization" do
+    seed(current_5h: 0.99, current_7d: 0.99, reset_5h: 1.minute.ago, reset_7d: 1.minute.ago)
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?, "a window whose reset has passed carries nothing"
+    assert_equal 0.0, decision.five_hour.current
+  end
+
+  # --- which account is read -------------------------------------------------
+
+  # Rotation happens when the serving account is REFUSED, not when it reaches a
+  # target, so a spare's headroom is not headroom a session starting now can
+  # spend. The serving account's number is the one that binds.
+  test "the serving account decides, not a spare with more room" do
+    seed(current_5h: 0.95, current_7d: 0.10)
+    seed_spare(email: "spare@example.com", current_5h: 0.05, current_7d: 0.10)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "a spare cannot lend headroom the serving account does not have"
+    assert_equal "gate-test@example.com", decision.account_email
+  end
+
+  test "with no current account, the first the pool would serve from is read" do
+    @account.update!(is_current: false)
+    seed(current_5h: 0.95, current_7d: 0.10)
+    spare = seed_spare(email: "spare@example.com", current_5h: 0.05, current_7d: 0.10)
+    ClaudeAccount.where.not(id: spare.id).update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?
+    assert_equal "spare@example.com", decision.account_email
+  end
+
+  test "an account with no reading is skipped rather than answering for the gate" do
+    @account.update!(is_current: false)
+    ClaudeAccount.create!(email: "unread@example.com", runtime: "claude_code",
+                          oauth_config: { "x" => 1 }, is_current: true)
+    seed(current_5h: 0.85, current_7d: 0.10)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "the account that HAS a reading is the one that decides"
+    assert_equal "gate-test@example.com", decision.account_email
+  end
+
+  # A snapshot whose two utilization columns are both nil says nothing. Reading it
+  # as "no window at its target" would let an empty row run the deployment.
+  test "a reading with neither window readable is not a reading" do
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: @account, utilization_5h: nil, utilization_7d: nil,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+      active_session_count: 1, trigger: "usage_sample"
+    )
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?
+    assert_equal "no_snapshot", decision.reason
+  end
+
+  test "one unreadable window still decides on the other" do
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: @account, utilization_5h: nil, utilization_7d: 0.85,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+      active_session_count: 1, trigger: "usage_sample"
+    )
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?
+    assert_nil decision.five_hour
+    assert decision.weekly.at_limit?
+  end
+
+  # --- the fleet cap -----------------------------------------------------------
+
+  test "sessions run in parallel up to the cap, then the next one waits" do
+    seed(current_5h: 0.02, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 3)
+
+    2.times { |i| running_session(i) }
+    assert SpotGateService.evaluate.allowed?, "two of three slots taken — the third still starts"
+
+    running_session(2)
+    decision = SpotGateService.evaluate
+
+    refute decision.allowed?, "every slot is taken"
+    assert_equal "fleet_at_cap", decision.reason
+    assert_equal 3, decision.fleet_cap
+    assert_equal 3, decision.active_sessions
+    assert_match(/3 of 3 session slots taken/, decision.detail)
+  end
+
+  test "the cap is the operator's, and raising it runs work immediately" do
+    seed(current_5h: 0.02, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 2)
+    2.times { |i| running_session(i) }
+    assert SpotGateService.evaluate.held?
+
+    @setting.update!(spot_max_concurrent_sessions: 10)
+    assert SpotGateService.evaluate.allowed?
+  end
+
+  # The asymmetry Tadas asked for, in one test: the cap gates spot work and does
+  # not gate priority work.
+  test "a full fleet holds a spot session and lets a priority session through" do
+    seed(current_5h: 0.02, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 2)
+    2.times { |i| running_session(i) }
 
     spot = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s", genesis: SessionGenesis::GITHUB_ISSUE)
-    refute SpotGateService.allow_start?(spot), "the start decision must include the candidate session"
+    priority = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", genesis: SessionGenesis::WEB_UI)
+
+    refute SpotGateService.allow_start?(spot)
+    assert SpotGateService.allow_start?(priority), "the cap must never gate priority work"
+    assert_equal "priority", SpotGateService.start_decision(priority).reason
   end
 
+  # And the consequence, as its own case because it is intended rather than
+  # incidental: priority work crowds spot work out of the slots entirely.
+  test "a fleet of priority sessions leaves zero spot slots" do
+    seed(current_5h: 0.02, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 10)
+    10.times { |i| running_session(i, genesis: SessionGenesis::WEB_UI) }
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "ten priority sessions leave nothing for spot work, by design"
+    assert_equal "fleet_at_cap", decision.reason
+    assert_equal 10, decision.active_sessions
+
+    priority = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", genesis: SessionGenesis::WEB_UI)
+    assert SpotGateService.allow_start?(priority), "an eleventh priority session still starts"
+  end
+
+  # The cap is a start-time check. A session already running is never reconsidered
+  # — lowering the cap under a running fleet holds the next start, and touches
+  # nothing that is already going.
+  test "the cap is checked at start, so lowering it never stops running work" do
+    seed(current_5h: 0.02, current_7d: 0.10)
+    running = 3.times.map { |i| running_session(i) }
+
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    assert SpotGateService.evaluate.held?
+    assert running.all? { |s| s.reload.running? }, "the gate must not touch a session that is already running"
+  end
+
+  # Codex sessions spend nothing against a Claude account, so they do not take a
+  # slot the Claude quota is being protected for.
+  test "only Claude Code sessions count toward the cap" do
+    seed(current_5h: 0.02, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "codex", genesis: SessionGenesis::WEB_UI,
+                    status: :running, agent_runtime: "codex")
+
+    assert SpotGateService.evaluate.allowed?
+    assert_equal 0, SpotGateService.evaluate.active_sessions
+  end
+
+  # --- classification ----------------------------------------------------------
+
   test "allow_start? never consults the gate for a priority session" do
-    seed_history(current_5h: 0.99, current_7d: 0.99)
+    seed(current_5h: 0.99, current_7d: 0.99)
     priority = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", genesis: SessionGenesis::WEB_UI)
     spot = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s", genesis: SessionGenesis::GITHUB_ISSUE)
 
@@ -128,8 +297,17 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     refute SpotGateService.allow_start?(spot)
   end
 
+  test "a priority session is answered without consulting quota at all" do
+    seed(current_5h: 0.99, current_7d: 0.99)
+    priority = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", genesis: SessionGenesis::WEB_UI)
+
+    decision = SpotGateService.start_decision(priority)
+    assert decision.allowed?
+    assert_equal "priority", decision.reason
+  end
+
   test "promoting a genesis lets its sessions start immediately" do
-    seed_history(current_5h: 0.99, current_7d: 0.99)
+    seed(current_5h: 0.99, current_7d: 0.99)
     spot = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s", genesis: SessionGenesis::API)
     refute SpotGateService.allow_start?(spot)
 
@@ -141,7 +319,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
   end
 
   test "a session that named its own class starts on that, not on its genesis" do
-    seed_history(current_5h: 0.99, current_7d: 0.99)
+    seed(current_5h: 0.99, current_7d: 0.99)
     held = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s", genesis: SessionGenesis::GITHUB_ISSUE)
     refute SpotGateService.allow_start?(held)
 
@@ -151,60 +329,44 @@ class SpotGateServiceTest < ActiveSupport::TestCase
       "this is the lever for one held session — no trigger and no policy is touched"
   end
 
-  # Regression: ActiveRecord::ConnectionNotEstablished descends from AdapterError,
-  # not StatementInvalid, so a narrow rescue let it escape into AgentSessionJob —
-  # which marks the session `failed`. The gate must never fail a session.
-  test "any error while evaluating allows the session rather than escaping" do
-    seed_history(current_5h: 0.99, current_7d: 0.99)
+  # --- the incident ------------------------------------------------------------
 
-    [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid, RuntimeError ].each do |klass|
-      ClaudeUsageRateService.stub(:call, ->(*) { raise klass, "boom" }) do
-        decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
-        assert decision.allowed?, "#{klass} must not be able to hold a session"
-        assert_equal "unavailable", decision.reason
-      end
-    end
+  # The state production was in at 2026-08-16T01:10Z: the serving account at 69%
+  # weekly with the 5-hour window freshly reset to 1%, one session running — and
+  # 25 spot sessions that had been waiting up to 23 hours behind a forecast that
+  # projected 122%.
+  test "the production incident runs the queue" do
+    seed(current_5h: 0.01, current_7d: 0.69)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?, "both windows are under their targets — the queue has to run"
+    assert_equal "within_limits", decision.reason
+    assert_equal 1, decision.active_sessions
+    assert_equal 10, decision.fleet_cap
+
+    # And it runs in parallel: nine more start before the limit binds.
+    9.times { |i| running_session(i + 1) }
+    assert SpotGateService.evaluate.held?
+    assert_equal "fleet_at_cap", SpotGateService.evaluate.reason
   end
 
-  # Regression: a nil reset used to fall back to the 24h cap, so a 5-hour burn
-  # rate got projected over a day and manufactured a breach out of a missing field.
-  test "a window with no reset time is skipped rather than projected over the cap" do
-    seed_history(current_5h: 0.70, current_7d: 0.10)
-    ClaudeAccountQuotaSnapshot.create!(
-      claude_account: @account,
-      utilization_5h: 0.70, utilization_7d: 0.10,
-      reset_5h: nil, reset_7d: @now + 2.days,
-      active_session_count: 1, trigger: "usage_sample", created_at: @now + 1.second
-    )
+  # Both brakes engaged at once: the target is the one reported, because a window
+  # at its target is the more specific fact and the one that outlasts the fleet.
+  test "a window at its target outranks a full fleet in the reason" do
+    seed(current_5h: 0.85, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    running_session(0)
 
-    decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
-    assert_nil decision.forecast_5h, "an unknown horizon is a monitoring gap, not a breach"
-    assert decision.allowed?
+    decision = SpotGateService.evaluate
+    refute decision.allowed?
+    assert_equal "at_utilization_limit", decision.reason
   end
 
-  test "a priority session is answered without consulting quota at all" do
-    seed_history(current_5h: 0.99, current_7d: 0.99)
-    priority = Session.create!(git_root: "https://github.com/t/r.git", prompt: "p", genesis: SessionGenesis::WEB_UI)
+  private
 
-    decision = SpotGateService.start_decision(priority)
-    assert decision.allowed?
-    assert_equal "priority", decision.reason
-  end
-
-  test "a passed reset reads as zero utilization, matching effective_utilization" do
-    seed_history(current_5h: 0.10, current_7d: 0.10)
-    # Latest reading: both windows pinned at 99% but already past their reset, so
-    # effective_utilization reads them as 0 and the forecast starts from nothing.
-    # Stamped a second later so it is unambiguously the one pool_snapshot picks.
-    ClaudeAccountQuotaSnapshot.create!(
-      claude_account: @account,
-      utilization_5h: 0.99, utilization_7d: 0.99,
-      reset_5h: @now - 1.minute, reset_7d: @now - 1.minute,
-      active_session_count: 1, trigger: "usage_sample", created_at: @now + 1.second
-    )
-
-    decision = SpotGateService.evaluate(now: @now, candidate_sessions: 1)
-    assert decision.allowed?
-    assert_equal 0.0, decision.forecast_5h.current
+  def running_session(index, genesis: SessionGenesis::WEB_UI)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{index}",
+                    genesis: genesis, status: :running, agent_runtime: "claude_code")
   end
 end

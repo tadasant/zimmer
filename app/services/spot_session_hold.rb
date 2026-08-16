@@ -1,12 +1,17 @@
 # frozen_string_literal: true
 
-# Holds a spot session at the starting line when the forecast says there is no
-# headroom, and re-queues it to try again.
+# Holds a spot session at the starting line when a quota window has reached its
+# target or every session slot is taken, and re-queues it to try again.
 #
 # A held session is left in `waiting` — Zimmer's existing "created, not started"
 # status — and AgentSessionJob is re-enqueued with a delay. GoodJob persists a
 # delayed job in Postgres, so the retry survives a worker restart or a deploy;
 # nothing depends on this process staying alive.
+#
+# The delay carries a little jitter. Without it a backlog held in the same minute
+# re-checks in the same minute forever, and every one of them reads the same
+# fleet size before any of them has started — so the whole queue either stampedes
+# past the cap together or waits together.
 #
 # The hold is recorded in `metadata` so the session detail page can explain
 # itself rather than looking mysteriously stuck, and a log line lands in the
@@ -26,6 +31,10 @@ class SpotSessionHold
 
   METADATA_KEYS = [ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT ].freeze
 
+  # Spread over which held sessions re-check, so a backlog does not re-evaluate
+  # in lockstep.
+  RETRY_JITTER = 2.minutes
+
   class << self
     # True when the session was held and the caller should stop. False means
     # carry on and start it.
@@ -38,9 +47,7 @@ class SpotSessionHold
       return false unless session.spot?
 
       # The one seam. SpotGateService.allow_start? reads the same method, so the
-      # readable predicate and the production path cannot drift apart — and
-      # start_decision counts the candidate session, which the argument-free
-      # `evaluate` (the informational reading for /quotas) does not.
+      # readable predicate and the production path cannot drift apart.
       decision = SpotGateService.start_decision(session)
       if decision.allowed?
         clear(session)
@@ -64,11 +71,13 @@ class SpotSessionHold
     private
 
     def hold!(session, decision, log_buffer:, images:, files:)
-      retry_at = Time.current + SpotGateService::RETRY_DELAY
-      count = (session.metadata || {})[HELD_COUNT].to_i + 1
+      delay = SpotGateService::RETRY_DELAY + rand(RETRY_JITTER.to_i).seconds
+      retry_at = Time.current + delay
+      metadata = session.metadata || {}
+      count = metadata[HELD_COUNT].to_i + 1
 
       session.update_columns(
-        metadata: (session.metadata || {}).merge(
+        metadata: metadata.merge(
           HELD_AT => Time.current.iso8601,
           HELD_REASON => decision.reason,
           HELD_DETAIL => decision.detail,
@@ -77,7 +86,7 @@ class SpotSessionHold
         )
       )
 
-      message = "Spot session held for quota headroom: #{decision.detail} " \
+      message = "Spot session held: #{decision.detail} " \
                 "Re-checking at #{retry_at.iso8601} (hold ##{count}). " \
                 "Its class was #{session.scheduling_class_source}. " \
                 "Make this one session priority to start it now."
@@ -88,7 +97,7 @@ class SpotSessionHold
         session.id,
         images: images.presence,
         files: files.presence,
-        delay: SpotGateService::RETRY_DELAY
+        delay: delay
       )
     end
   end

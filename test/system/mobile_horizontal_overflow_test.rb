@@ -361,7 +361,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # The spot gate's genesis rows are the screen this suite exists for: the table's
   # Action column is the only control there, and it does not fit a phone, so below
   # `sm` the rows render as stacked cards with the button on screen. The card sits
-  # on Quotas, beside the windows it forecasts.
+  # on Quotas, beside the windows it reads.
   test "spot gate genesis controls are reachable on a phone" do
     visit quotas_path
     assert_text "Sessions no trigger started"

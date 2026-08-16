@@ -1,7 +1,9 @@
-<%# A spot session waiting for quota headroom. Without this the session sits in
-    `waiting` looking indistinguishable from one that is merely queued, and the
-    only record of why would be a line in its log. %>
+<%# A spot session the gate is holding — for a quota window at its target, or for
+    a free session slot. Without this the session sits in `waiting` looking
+    indistinguishable from one that is merely queued, and the only record of why
+    would be a line in its log. %>
 <% hold_detail = agent_session.metadata&.dig(SpotSessionHold::HELD_DETAIL) %>
+<% hold_reason = agent_session.metadata&.dig(SpotSessionHold::HELD_REASON) %>
 <% if hold_detail.present? && agent_session.waiting? %>
   <% retry_at = agent_session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT) %>
   <%# A data attribute rather than an id: this partial renders twice per page —
@@ -13,13 +15,15 @@
         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v4a1 1 0 00.293.707l2 2a1 1 0 001.414-1.414L11 10.586V7z" clip-rule="evenodd" />
       </svg>
       <div class="min-w-0">
-        <h3 class="text-sm font-medium text-amber-900">Held for quota headroom</h3>
+        <h3 class="text-sm font-medium text-amber-900">
+          <%= hold_reason == "fleet_at_cap" ? "Held for a free session slot" : "Held for quota headroom" %>
+        </h3>
         <p class="mt-1 text-sm text-amber-800"><%= hold_detail %></p>
         <p class="mt-2 text-xs text-amber-700">
           This is a <span class="font-medium">spot</span> session
           (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>,
           <%= agent_session.scheduling_class_source %>). It has not been cancelled —
-          it will start on its own when headroom returns<%= ", next check #{retry_at}" if retry_at.present? %>.
+          it will start on its own once the gate lets it<%= ", next check #{retry_at}" if retry_at.present? %>.
         </p>
         <%# Moves this session alone. The genesis-wide lever on /quotas would
             move every other session that shares its origin, which is exactly the

@@ -4,27 +4,57 @@
 #
 # == The rule
 #
-# A spot session starts while BOTH windows are forecast to stay under their
-# configured ceiling:
+# Two checks, both against numbers that have already been measured. A spot
+# session starts while BOTH hold:
 #
-#     forecast = utilization now + (rate × sessions × hours left in window)
+#   1. **The serving Claude Code account is under both targets.** Utilization as
+#      last read, not a projection of it. Once a window reaches its target, spot
+#      work pauses until utilization comes back down — the 5-hour window falls on
+#      its own as its sliding window ages events out, and the weekly one behind
+#      it.
+#   2. **The fleet has a free slot.** `spot_max_concurrent_sessions` (10 by
+#      default, set on /quotas) caps how many sessions run at once, which is
+#      what bounds how fast the quota can be spent.
 #
-# `utilization now` comes from the pool's live snapshots. `rate` is
-# ClaudeUsageRateService's per-session-hour figure. `hours left` is the time to
-# the window's own reset. `sessions` is the running fleet **plus the session
-# being asked about** — the question a gate answers is "if I start this, where
-# does the window land", and the fleet does not include it yet. So the forecast
-# answers: if this session and everything already running keep burning at the
-# current rate, where does this window sit by the time it resets?
+# Nothing is forecast. The targets on /quotas are a level to **reach** — spot
+# work fills the fleet up to the cap and runs until a window arrives at its
+# target, rather than backing off from a projection of where it might land. A
+# deployment sitting idle should be idle because its windows are at 80%.
 #
 # Priority sessions are never consulted about any of this. They start.
+#
+# == The cap counts everything, and holds only spot
+#
+# Every running Claude Code session counts against the cap, priority included,
+# but only spot sessions are held by it. Ten running priority sessions therefore
+# leave zero spot slots, which is the intent: priority work crowds spot work out
+# of the slots rather than queueing behind it.
+#
+# The count is checked when a session **starts** and never again. A running
+# session is not reconsidered when the fleet grows or a window fills; the
+# decision point that means something is "should this work begin at all".
+#
+# == The account that will actually serve
+#
+# Utilization is read from the account Zimmer is serving from, because that is
+# the one a session started now will spend against: rotation happens when the
+# serving account is REFUSED, not when it reaches a target, so a spare's headroom
+# is not headroom this session can use. A spare's reading is also the stalest
+# thing in the pool — ClaudeUsageSamplerJob refreshes only the serving account,
+# and a spare is read on rotation or a /quotas visit — so deciding on the
+# roomiest account would mean deciding on the number least likely to be true.
+#
+# With no current account, the first available one stands in: that is who would
+# serve. `available` is the pool AccountRotationService picks from — active
+# status, credentials on file — so an account already marked quota_exceeded is
+# skipped rather than read.
 #
 # == "Hold" means DEFER, not refuse
 #
 # A held session is not rejected and nothing is lost. It stays `waiting` — the
 # status Zimmer already uses for "created, not started" — and AgentSessionJob
-# re-enqueues itself with a delay to re-check. When headroom returns, or simply
-# when the 5-hour window resets, the same job starts the session normally.
+# re-enqueues itself to re-check. When a slot frees or the window resets, the
+# same job starts the session normally.
 #
 # Refusing instead would mean the gate silently deletes work: a github_issue
 # trigger that fires once during a busy afternoon would never run at all, and
@@ -34,41 +64,42 @@
 #
 # == Fail-open
 #
-# Every uncertain condition allows the session: gating off, no rate signal yet,
-# no quota snapshots, an unreadable AppSetting. A monitoring gap must not become
-# an outage of all automated work. `#reason` names which case applied so the UI
-# and MCP can say so rather than showing a bare "allowed".
+# Every uncertain condition allows the session: gating off, no quota readings,
+# an unreadable AppSetting. A monitoring gap must not become an outage of all
+# automated work. `#reason` names which case applied so the UI and MCP can say
+# so rather than showing a bare "allowed".
 class SpotGateService
-  # How long a held session waits before re-checking. Short enough that headroom
-  # returning is noticed promptly; long enough that a held fleet is not
-  # re-evaluating every few seconds.
+  # How long a held session waits before re-checking. Short enough that a freed
+  # slot is noticed promptly; long enough that a held fleet is not re-evaluating
+  # every few seconds.
   RETRY_DELAY = 10.minutes
 
-  # Forecast horizon ceiling. A 7-day window can have six days left, and
-  # multiplying a per-hour rate out that far produces a number with no
-  # predictive content — it says "if nothing ever changes for six days", which
-  # nothing ever does. Cap the horizon so the weekly forecast stays a statement
-  # about the near future.
-  MAX_HORIZON = 24.hours
-
-  Forecast = Data.define(:current, :projected, :threshold, :hours_remaining, :breached) do
-    def breached? = breached
-    def current_pct = current ? current * 100 : nil
-    def projected_pct = projected ? projected * 100 : nil
-    def threshold_pct = threshold ? threshold * 100 : nil
+  # One quota window as last read, against the target it is filling toward.
+  Reading = Data.define(:current, :threshold) do
+    def at_limit? = current >= threshold
+    def current_pct = current * 100
+    def threshold_pct = threshold * 100
 
     def to_h
-      {
-        current_pct: current_pct,
-        projected_pct: projected_pct,
-        threshold_pct: threshold_pct,
-        hours_remaining: hours_remaining,
-        breached: breached?
-      }
+      { current_pct: current_pct, threshold_pct: threshold_pct, at_limit: at_limit? }
     end
   end
 
-  Decision = Data.define(:allowed, :reason, :detail, :forecast_5h, :forecast_7d, :rate, :active_sessions) do
+  # One account's two windows, so the pool can be compared account by account.
+  AccountReading = Data.define(:email, :five_hour, :weekly) do
+    # Window label => reading, skipping a window with no usable number. Labelled
+    # rather than positional because two windows can hold equal values and Data
+    # compares by value — telling them apart by identity would occasionally name
+    # the wrong one as the reason a session was held.
+    def labelled = { "5-hour" => five_hour, "weekly" => weekly }.compact
+
+    def at_limit = labelled.select { |_label, window| window.at_limit? }
+
+    def at_limit? = at_limit.any?
+  end
+
+  Decision = Data.define(:allowed, :reason, :detail, :five_hour, :weekly,
+                         :active_sessions, :fleet_cap, :account_email) do
     def allowed? = allowed
     def held? = !allowed
 
@@ -78,9 +109,10 @@ class SpotGateService
         reason: reason,
         detail: detail,
         active_sessions: active_sessions,
-        forecast_5h: forecast_5h&.to_h,
-        forecast_7d: forecast_7d&.to_h,
-        usage_rate: rate&.to_h
+        fleet_cap: fleet_cap,
+        account_email: account_email,
+        five_hour: five_hour&.to_h,
+        weekly: weekly&.to_h
       }
     end
   end
@@ -89,20 +121,13 @@ class SpotGateService
   # consulted to decide that.
   ALWAYS_ALLOWED = Decision.new(
     allowed: true, reason: "priority",
-    detail: "Priority sessions are never gated on quota headroom.",
-    forecast_5h: nil, forecast_7d: nil, rate: nil, active_sessions: nil
+    detail: "Priority sessions are never gated on quota or on the fleet cap.",
+    five_hour: nil, weekly: nil, active_sessions: nil, fleet_cap: nil, account_email: nil
   ).freeze
 
   class << self
     # Whether `session` may start now. Priority sessions short-circuit without
     # touching the database beyond their own genesis.
-    #
-    # `candidate_sessions: 1` counts the session being asked about. The question
-    # a gate answers is "if I start THIS, where does the window land" — and the
-    # fleet does not include it yet, so forecasting off the running count alone
-    # understates by exactly one session. With nothing else running that
-    # understatement is total: the forecast would equal current utilization and
-    # the first spot session would start however steep the burn rate.
     def allow_start?(session)
       start_decision(session).allowed?
     end
@@ -115,20 +140,15 @@ class SpotGateService
     def start_decision(session)
       return ALWAYS_ALLOWED unless session.spot?
 
-      evaluate(candidate_sessions: 1)
+      evaluate
     end
 
-    # `candidate_sessions` is 0 for the informational read on /quotas and over
-    # MCP — that describes the fleet as it stands, which is what an operator
-    # looking at a dashboard means by "the forecast".
-    def evaluate(now: Time.current, candidate_sessions: 0)
-      new(now: now, candidate_sessions: candidate_sessions).evaluate
+    # The decision, for a spot session and for every surface that reports on it.
+    # There is exactly one — /quotas and `get_spot_policy` both render this — so
+    # the page and the tool cannot answer the same question differently.
+    def evaluate
+      new.evaluate
     end
-  end
-
-  def initialize(now: Time.current, candidate_sessions: 0)
-    @now = now
-    @candidate_sessions = candidate_sessions
   end
 
   def evaluate
@@ -138,57 +158,17 @@ class SpotGateService
       return allow("gating_disabled", "Spot gating is turned off — spot sessions start like any other.")
     end
 
-    rate = ClaudeUsageRateService.call(now: @now)
-    unless rate.sufficient?
-      return allow(
-        "insufficient_data",
-        "Not enough quota samples yet to forecast (#{rate.sample_count} usable " \
-        "#{'sample'.pluralize(rate.sample_count)} in the last #{(rate.lookback / 3600).round}h). " \
-        "Spot sessions run until the rate is measurable.",
-        rate: rate
-      )
-    end
+    account = serving_reading(setting)
+    return allow("no_snapshot", "No Claude Code quota reading to decide on.") if account.nil?
 
-    snapshot = pool_snapshot
-    unless snapshot
-      return allow("no_snapshot", "No Claude Code quota reading available to forecast from.", rate: rate)
-    end
+    fleet_cap = setting.spot_max_concurrent_sessions
 
-    sessions = ClaudeUsageRateService.active_session_count + @candidate_sessions
-
-    five_hour = forecast(
-      current: ClaudeAccountQuotaSnapshot.effective_utilization(snapshot.utilization_5h, snapshot.reset_5h),
-      reset_at: snapshot.reset_5h,
-      rate: rate.rate_5h,
-      sessions: sessions,
-      threshold_pct: setting.spot_gate_five_hour_threshold_pct
-    )
-    weekly = forecast(
-      current: ClaudeAccountQuotaSnapshot.effective_utilization(snapshot.utilization_7d, snapshot.reset_7d),
-      reset_at: snapshot.reset_7d,
-      rate: rate.rate_7d,
-      sessions: sessions,
-      threshold_pct: setting.spot_gate_weekly_threshold_pct
-    )
-
-    breaches = []
-    breaches << "5-hour window forecast at #{five_hour.projected_pct.round}% (limit #{five_hour.threshold_pct.round}%)" if five_hour&.breached?
-    breaches << "weekly window forecast at #{weekly.projected_pct.round}% (limit #{weekly.threshold_pct.round}%)" if weekly&.breached?
-
-    if breaches.any?
-      Decision.new(
-        allowed: false,
-        reason: "forecast_breached",
-        detail: "Holding spot sessions: #{breaches.join(' and ')}. Priority sessions are unaffected.",
-        forecast_5h: five_hour, forecast_7d: weekly, rate: rate, active_sessions: sessions
-      )
+    if account.at_limit?
+      at_limit(account, fleet_cap)
+    elsif active_sessions >= fleet_cap
+      at_fleet_cap(account, fleet_cap)
     else
-      Decision.new(
-        allowed: true,
-        reason: "within_forecast",
-        detail: "Forecast headroom available in both windows.",
-        forecast_5h: five_hour, forecast_7d: weekly, rate: rate, active_sessions: sessions
-      )
+      allowed(account, fleet_cap)
     end
   # StandardError, deliberately broad. ActiveRecord::ConnectionNotEstablished and
   # its ConnectionTimeoutError subclass descend from AdapterError, NOT from
@@ -198,54 +178,123 @@ class SpotGateService
   # be failed by the thing whose entire promise is that it only defers.
   rescue StandardError => e
     Rails.logger.warn("[SpotGateService] Could not evaluate (#{e.class}: #{e.message}); allowing the session")
-    allow("unavailable", "Could not evaluate the spot gate (#{e.class}); allowing the session.")
+    unavailable(e)
   end
 
   private
 
-  def allow(reason, detail, rate: nil)
+  def active_sessions = @active_sessions ||= Session.running_claude_code_count
+
+  # The one decision built without touching the database. Whatever went wrong may
+  # well have been the database itself, so re-reading the fleet count here would
+  # raise a second time — inside the rescue, where nothing catches it, and on into
+  # AgentSessionJob, which fails the session.
+  def unavailable(error)
+    Decision.new(
+      allowed: true, reason: "unavailable",
+      detail: "Could not evaluate the spot gate (#{error.class}); allowing the session.",
+      five_hour: nil, weekly: nil,
+      active_sessions: @active_sessions, fleet_cap: nil, account_email: nil
+    )
+  end
+
+  def allow(reason, detail)
     Decision.new(
       allowed: true, reason: reason, detail: detail,
-      forecast_5h: nil, forecast_7d: nil, rate: rate,
-      active_sessions: ClaudeUsageRateService.active_session_count
+      five_hour: nil, weekly: nil,
+      active_sessions: active_sessions, fleet_cap: nil, account_email: nil
     )
   end
 
-  # The reading the forecast is built from: the latest snapshot of the account
-  # that is serving. The gate asks "will the account we are about to spend
-  # against run out", so the serving account's own numbers are the right ones —
-  # a pool average would hide an exhausted current account behind a fresh spare.
-  def pool_snapshot
-    scope = ClaudeAccount.for_runtime("claude_code")
-    account = scope.find_by(is_current: true) || scope.available.first
-    account&.latest_snapshot
+  def allowed(account, fleet_cap)
+    decision(
+      allowed: true, reason: "within_limits",
+      detail: "#{slots_phrase(fleet_cap)} taken, and #{window_phrase(account)} on #{account.email}.",
+      account: account, fleet_cap: fleet_cap
+    )
   end
 
-  def forecast(current:, reset_at:, rate:, sessions:, threshold_pct:)
+  # A window has reached its target. Spot work pauses until utilization comes
+  # back down; nothing is projected and nothing is cancelled.
+  def at_limit(account, fleet_cap)
+    reached = account.at_limit.map do |label, window|
+      "#{label} window at #{window.current_pct.round}% of its #{window.threshold_pct.round}% target"
+    end
+
+    decision(
+      allowed: false, reason: "at_utilization_limit",
+      detail: "Holding spot sessions: #{reached.join(' and ')} on #{account.email}. " \
+              "Spot work waits for utilization to come back down. Priority sessions are unaffected.",
+      account: account, fleet_cap: fleet_cap
+    )
+  end
+
+  # Every slot is taken. Priority sessions occupy slots and are never held by
+  # this — a fleet of priority work crowding spot work out is the intent.
+  def at_fleet_cap(account, fleet_cap)
+    decision(
+      allowed: false, reason: "fleet_at_cap",
+      detail: "Holding spot sessions: #{slots_phrase(fleet_cap)} taken. Every running session " \
+              "counts, priority included — priority work is meant to crowd spot work out. Raise the " \
+              "limit on /quotas to widen it.",
+      account: account, fleet_cap: fleet_cap
+    )
+  end
+
+  def decision(allowed:, reason:, detail:, account:, fleet_cap:)
+    Decision.new(
+      allowed: allowed, reason: reason, detail: detail.squish,
+      five_hour: account.five_hour, weekly: account.weekly,
+      active_sessions: active_sessions, fleet_cap: fleet_cap, account_email: account.email
+    )
+  end
+
+  def slots_phrase(fleet_cap)
+    "#{active_sessions} of #{fleet_cap} session #{'slot'.pluralize(fleet_cap)}"
+  end
+
+  def window_phrase(account)
+    account.labelled.map do |label, window|
+      "#{label} at #{window.current_pct.round}% of its #{window.threshold_pct.round}% target"
+    end.join(", ")
+  end
+
+  # The account a session started now would spend against: the one marked
+  # current, or the first the pool would serve from when none is. An account with
+  # no reading, or none whose windows can be read, leaves nothing to decide on and
+  # the gate falls open.
+  def serving_reading(setting)
+    serving_accounts.lazy.filter_map { |account| reading_for(account, setting) }.first
+  end
+
+  def serving_accounts
+    scope = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME)
+    current = scope.find_by(is_current: true)
+    ([ current ].compact + scope.available.to_a).uniq
+  end
+
+  def reading_for(account, setting)
+    snapshot = account.latest_snapshot
+    return nil if snapshot.nil?
+
+    five_hour = reading(snapshot.utilization_5h, snapshot.reset_5h,
+                        setting.spot_gate_five_hour_threshold_pct)
+    weekly = reading(snapshot.utilization_7d, snapshot.reset_7d,
+                     setting.spot_gate_weekly_threshold_pct)
+    # Neither window readable is a reading in name only — skip it rather than let
+    # an account with nothing to say answer for the deployment.
+    return nil if five_hour.nil? && weekly.nil?
+
+    AccountReading.new(email: account.email, five_hour: five_hour, weekly: weekly)
+  end
+
+  # A window's utilization as it stands. Past its reset the sliding window has
+  # cleared, so `effective_utilization` reads it as zero rather than holding work
+  # against a number that no longer applies.
+  def reading(utilization, reset_at, threshold_pct)
+    current = ClaudeAccountQuotaSnapshot.effective_utilization(utilization, reset_at)
     return nil if current.nil?
-    # No reset time means we do not know how long this window has left, and
-    # projecting a 5-hour burn rate over the 24-hour cap would manufacture a
-    # breach out of a missing field. An unknown horizon is a monitoring gap, and
-    # a monitoring gap allows.
-    return nil if reset_at.nil?
 
-    threshold = threshold_pct.to_f / 100.0
-    hours = horizon_hours(reset_at)
-    projected = current + ((rate || 0.0) * sessions * hours)
-
-    Forecast.new(
-      current: current,
-      projected: projected,
-      threshold: threshold,
-      hours_remaining: hours,
-      breached: projected > threshold
-    )
-  end
-
-  def horizon_hours(reset_at)
-    hours = (reset_at - @now) / 3600.0
-    return 0.0 if hours.negative?
-
-    [ hours, MAX_HORIZON / 3600.0 ].min
+    Reading.new(current: current, threshold: threshold_pct.to_f / 100.0)
   end
 end

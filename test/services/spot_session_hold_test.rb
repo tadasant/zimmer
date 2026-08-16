@@ -10,8 +10,9 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
   setup do
-    # Same isolation as SpotGateServiceTest: the forecast is sensitive to which
-    # account is serving and how many sessions are running.
+    # Same isolation as SpotGateServiceTest: the gate reads the serving account's
+    # latest snapshot and counts every running session.
+    ClaudeAccountQuotaSnapshot.delete_all
     ClaudeAccount.update_all(is_current: false)
     Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
     @setting = AppSetting.editable
@@ -23,23 +24,15 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   end
 
   # Regression: the hold path and SpotGateService.allow_start? must make the SAME
-  # forecast. When hold_if_needed called the argument-free evaluate, it used the
-  # informational reading — which excludes the candidate — so a session
-  # allow_start? refused was never actually held, and the gate did nothing.
+  # decision. When hold_if_needed called a different reading from the one
+  # allow_start? consulted, a session allow_start? refused was never actually
+  # held, and the gate did nothing.
   test "the hold path makes the same decision as allow_start?" do
     account = ClaudeAccount.create!(email: "hold-parity@example.com", runtime: "claude_code",
                                     oauth_config: { "x" => 1 }, is_current: true)
-    now = Time.current
-    util = 0.66
-    [ 120, 90, 60, 30 ].each do |mins|
-      ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: util, utilization_7d: 0.10,
-        reset_5h: now + 2.hours, reset_7d: now + 2.days, active_session_count: 1,
-        trigger: "usage_sample", created_at: now - mins.minutes)
-      util += 0.02
-    end
-    ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: 0.74, utilization_7d: 0.10,
-      reset_5h: now + 2.hours, reset_7d: now + 2.days, active_session_count: 1,
-      trigger: "usage_sample", created_at: now)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: 0.85, utilization_7d: 0.10,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
+      trigger: "usage_sample")
     @setting.update!(spot_gating_enabled: true,
                      spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
 
@@ -69,6 +62,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     session.reload
     assert_equal "waiting", session.status, "a held session must stay waiting, not fail"
     assert session.metadata[SpotSessionHold::HELD_DETAIL].present?
+    assert_equal "at_utilization_limit", session.metadata[SpotSessionHold::HELD_REASON]
     assert_equal 1, session.metadata[SpotSessionHold::HELD_COUNT]
     assert session.metadata[SpotSessionHold::HELD_RETRY_AT].present?
   end
@@ -82,6 +76,23 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     end
 
     assert_equal 2, session.reload.metadata[SpotSessionHold::HELD_COUNT]
+  end
+
+  # Held sessions re-check within a jittered spread rather than all at once: a
+  # backlog held in the same minute would otherwise re-evaluate in lockstep, every
+  # one of them reading the same fleet size before any of them had started.
+  test "the retry is delayed by the re-check interval plus jitter" do
+    floor = SpotGateService::RETRY_DELAY
+    ceiling = floor + SpotSessionHold::RETRY_JITTER
+
+    5.times do
+      session = build_session(SessionGenesis::GITHUB_ISSUE)
+      SpotGateService.stub(:evaluate, held_decision) { SpotSessionHold.hold_if_needed(session) }
+
+      retry_at = Time.zone.parse(session.reload.metadata[SpotSessionHold::HELD_RETRY_AT])
+      assert_operator retry_at, :>=, Time.current + floor - 5.seconds
+      assert_operator retry_at, :<=, Time.current + ceiling + 5.seconds
+    end
   end
 
   test "a hold is cleared once the session is allowed through" do
@@ -108,15 +119,19 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
 
   def held_decision
     SpotGateService::Decision.new(
-      allowed: false, reason: "forecast_breached", detail: "5-hour window forecast at 90% (limit 80%).",
-      forecast_5h: nil, forecast_7d: nil, rate: nil, active_sessions: 3
+      allowed: false, reason: "at_utilization_limit",
+      detail: "Holding spot sessions: the 5-hour window at 85% of its 80% target on serving@example.com.",
+      five_hour: nil, weekly: nil, active_sessions: 3, fleet_cap: 10,
+      account_email: "serving@example.com"
     )
   end
 
   def allowed_decision
     SpotGateService::Decision.new(
-      allowed: true, reason: "within_forecast", detail: "Forecast headroom available in both windows.",
-      forecast_5h: nil, forecast_7d: nil, rate: nil, active_sessions: 1
+      allowed: true, reason: "within_limits",
+      detail: "1 of 10 session slots taken, and 5-hour at 12% of its 80% target.",
+      five_hour: nil, weekly: nil, active_sessions: 1, fleet_cap: 10,
+      account_email: "serving@example.com"
     )
   end
 end
