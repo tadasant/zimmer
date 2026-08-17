@@ -201,13 +201,19 @@ class SlackTriggerPollerJob < ApplicationJob
   # Record a failure in one unit of the sweep and log it at the severity it
   # actually deserves.
   #
-  # A SlackService::TransientError here means Slack throttled or briefly dropped
-  # the FETCH for this unit, before the unit's cursor was advanced — so #note_transient
-  # hands it to the deferral, the deferred poll re-reads the unit, and nothing is
-  # lost. That is a recovery, not a failure, and it must not log at ERROR: a single
-  # ERROR line trips the "any Zimmer ERROR → critical" Grafana rule (see
-  # ApplicationJob), so a rate-limit burst pages a human about an incident in which
-  # nothing broke. It happened twice; the log line was the only artifact both times.
+  # For the rescues that own a UNIT — a channel, a thread, a DM — a
+  # SlackService::TransientError means Slack threw the unit's fetch away before its
+  # cursor moved, so #note_transient hands it to the deferral, the deferred poll
+  # re-reads that unit, and nothing is lost. That is a recovery, not a failure, and
+  # it must not log at ERROR: a single ERROR line trips the "any Zimmer ERROR →
+  # critical" Grafana rule (see ApplicationJob), so a rate-limit burst pages a human
+  # about an incident in which nothing broke. It happened twice; the log line was the
+  # only artifact both times.
+  #
+  # That is a property of the CALL SITE, not of the error, so it is only true where a
+  # cursor advances on success alone. #fetch_recent_history and #process_message both
+  # keep their ERROR for exactly that reason — see the comments there — and this
+  # method is not the right home for a rescue that resembles theirs.
   #
   # The 429 that IS worth paging for is the one that outlives its deferrals, and
   # #defer_poll logs that one at ERROR itself.
@@ -241,12 +247,22 @@ class SlackTriggerPollerJob < ApplicationJob
   def defer_poll(error)
     spent = deferral_count
     if spent >= MAX_DEFERRALS
-      # ERROR, and the one place in this job that earns it. A single ERROR line trips
-      # the "any Zimmer ERROR → critical" Grafana rule (see ApplicationJob), which is
-      # correct here and nowhere else on this path: the retry budget is spent, Slack
-      # has been unavailable across roughly a quarter of an hour, and polling has
-      # genuinely stopped recovering. The per-unit failures that led here logged at
-      # WARN precisely so that this line still means something when it appears.
+      # ERROR, and on this path it is the line that earns it. A single ERROR line
+      # trips the "any Zimmer ERROR → critical" Grafana rule (see ApplicationJob),
+      # which is correct here: the retry budget is spent, Slack has been unavailable
+      # across roughly a quarter of an hour, and polling has genuinely stopped
+      # recovering. The per-unit failures that led here logged at WARN precisely so
+      # that this line still means something when it appears.
+      #
+      # It is louder than the alert beside it, and that is accepted rather than
+      # overlooked. A give-up costs ~16 minutes (930s of backoff plus a tick) and the
+      # next cron tick starts a fresh chain from zero, so a sustained outage reaches
+      # here roughly four times an hour while AlertService::DEDUP_WINDOW suppresses
+      # all but the first Slack message. Four ERROR lines an hour for an outage that
+      # is genuinely ongoing is a fair price for not making the Grafana signal
+      # conditional on the alert cache; do not demote this line back to WARN on the
+      # grounds that the alert already covers it, which is the reasoning that let a
+      # recovered 429 page in the first place (#509).
       Rails.logger.error "[SlackTriggerPollerJob] Slack still unavailable after #{MAX_DEFERRALS} deferrals: #{error.message}"
       AlertService.raise_alert(
         "Slack trigger poller deferred repeatedly",
@@ -728,6 +744,12 @@ class SlackTriggerPollerJob < ApplicationJob
       # Track the newest reply for this thread whether or not Zimmer is in it — the
       # same thing the @mention scan does. A thread it joins later then starts from
       # a real cursor instead of replaying everything said before it arrived.
+      #
+      # Unlike every other unit in this sweep, the cursor is recorded BEFORE the work
+      # below it rather than after. What keeps the rescue's WARN honest is that
+      # nothing between here and the end of this iteration can raise a Slack failure:
+      # #process_message swallows its own. A new Slack call added below this line
+      # would break that, and would lose the thread's replies under a WARN.
       thread_ts_updates[thread_key] = replies.map { |reply| reply.ts }.max
 
       participation_ts = replies.select { |reply| reply.user == bot_id }.map(&:ts).max
@@ -843,10 +865,19 @@ class SlackTriggerPollerJob < ApplicationJob
   # The channel's last RECENT_HISTORY_LIMIT top-level messages. Passive listening
   # needs the raw history (not just the thread parents) to see whether Zimmer has
   # posted in the channel recently.
+  #
+  # Deliberately NOT #note_unit_failure, even for a transient failure: this is not a
+  # unit boundary. It degrades to [] and its callers carry on in the SAME sweep with
+  # a history slice they believe is complete, then advance their cursors past
+  # messages the empty slice made invisible — a passive channel that looks unengaged
+  # because Zimmer's own post was in the lost slice, or a mention in a thread whose
+  # parent was only discoverable there. Those messages are gone, not deferred, so
+  # this keeps its ERROR.
   def fetch_recent_history(channel_id)
     SlackService.get_channel_history(channel_id, limit: RECENT_HISTORY_LIMIT)
   rescue => e
-    note_unit_failure(e, "fetching recent history for #{channel_id}")
+    note_transient(e)
+    Rails.logger.error "[SlackTriggerPollerJob] Error fetching recent history for #{channel_id}: #{e.message}"
     []
   end
 

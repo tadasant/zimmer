@@ -2224,8 +2224,9 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
   # matters — a change that also silenced the real failure would be worse than the
   # bug it fixed.
 
-  # Verbatim from production (2026-08-17T09:46:07Z onward), so these tests fail if
-  # the shape of what Slack hands us changes.
+  # Copied from the production records (2026-08-17T09:46:07Z onward) so the
+  # assertions below read against the real thing. It is a fixture, not a canary:
+  # SlackService builds this string, and nothing here would notice if it changed.
   PRODUCTION_429 = "Slack rate limit exceeded: Retry after 10 seconds"
 
   def production_rate_limit
@@ -2297,7 +2298,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
 
   # The passive half of the same burst: "Error passively checking thread <ts> in
   # <channel>". Same rescue shape, separate code path, separately regressible.
-  test "a rate-limited passive thread check logs below ERROR and defers the poll" do
+  test "a rate-limited passive thread check logs below ERROR and records the failure for deferral" do
     condition = stub_passive_listening(event_type: "passive_listen_thread")
     parent_ts = passive_ts(5.hours)
     thread_key = "#{PASSIVE_CHANNEL}:#{parent_ts}"
@@ -2342,6 +2343,24 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal 1, errors.size, "the give-up line is the one ERROR this job may emit"
     assert_match(/after #{SlackTriggerPollerJob::MAX_DEFERRALS} deferrals/, errors.first)
     assert_includes errors.first, PRODUCTION_429
+  end
+
+  # Demotion is a property of the call site, not of the error. `#fetch_recent_history`
+  # is not a unit boundary: it degrades to [] and its callers finish the same sweep
+  # believing that slice was complete, advancing cursors past messages the empty
+  # slice hid. Those are lost rather than deferred, so it keeps its ERROR.
+  test "a rate-limited recent-history fetch keeps its ERROR, because the sweep loses messages" do
+    job = SlackTriggerPollerJob.new
+    SlackService.stubs(:get_channel_history).raises(production_rate_limit)
+
+    lines = capture_log_lines do
+      assert_empty job.send(:fetch_recent_history, "C_GENERAL")
+    end
+
+    assert_equal 1, lines.grep(/^ERROR.*fetching recent history for C_GENERAL/).size,
+      "a failure the deferral cannot undo must still page"
+    assert_instance_of SlackService::RateLimitedError, job.instance_variable_get(:@transient_error),
+      "and it must still defer the poll"
   end
 
   # Nor is this blanket suppression: only a transient Slack failure is demoted. A
