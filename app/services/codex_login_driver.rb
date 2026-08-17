@@ -53,6 +53,10 @@ class CodexLoginDriver < RuntimeLoginDriver
     raise "codex auth.json is missing both OAuth tokens and an API key" unless has_oauth || has_api_key
 
     account.update!(oauth_config: { "auth_json" => auth_json }, status: :active)
+
+    # See ClaudeLoginDriver#capture! — a human re-authenticating is the only
+    # thing that retires the needs_reauth nag.
+    AccountReauthNotifier.clear(account)
   end
 
   private

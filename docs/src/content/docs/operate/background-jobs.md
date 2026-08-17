@@ -659,6 +659,36 @@ non-production ones would make an untagged message mean either "from production"
 predates the tag". The tag is applied at render time, so dedup keys and `AlertBatcher`'s
 `(title, source)` grouping stay keyed on the alert itself.
 
+### When an alert is a DM instead of a channel post
+
+`AlertService.dm_operator` sends to one person rather than to `#eng-alerts`. It shares the
+environment gate, the Block Kit rendering and the cache-backed suppression with `raise_alert` — what
+differs is the destination (`OPERATOR_SLACK_USER_ID`, opened with `conversations.open`, which needs
+the bot's `im:write` scope) and the clock.
+
+Reach for it only where a channel post would be the wrong shape: a condition that stays broken until
+one specific human acts, that no amount of retrying will clear. Today that is exactly one caller —
+[an account falling into `needs_reauth`](/auth/harness/#a-dead-account-tells-you-so). A channel alert
+is a feed entry you scroll past; a DM is a nag, and nags spend attention.
+
+Two consequences of being a nag:
+
+- **A much longer window.** `OPERATOR_DM_DEDUP_WINDOW` is 12 hours against `DEDUP_WINDOW`'s 1, and
+  the dedup key is caller-owned and required rather than derived from title + source — so two dead
+  accounts are two DMs, not one collapsed one. The caller may call `clear_dm_suppression` when the
+  condition resolves so a recurrence is not swallowed by the suppression its first occurrence wrote
+  — but it should clear on the *narrowest* signal that the problem is actually fixed, not on any
+  signal that it currently looks fixed. See
+  [the needs_reauth case](/auth/harness/#a-dead-account-tells-you-so) for why clearing too eagerly
+  turns the throttle into a flood.
+- **No `AlertBatcher`.** The batcher collapses same-thread bursts of the same alert, which is a
+  channel concern. A DM is already throttled per subject.
+
+Unset `OPERATOR_SLACK_USER_ID` means the DM is logged and dropped, exactly like an unconfigured
+channel. And `dm_operator` swallows every error it can raise and returns `false` — its callers are
+auth and status-transition paths whose job is to keep the account pool running, and a Slack outage
+must not strand one of them.
+
 ### Why the elicitation probe doesn't run in development
 
 `ElicitationEndpointHealthCheckJob` is registered in `production.rb` and `staging.rb`, not

@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "tmpdir"
+require "mocha/minitest"
 
 class CodexLoginDriverTest < ActiveSupport::TestCase
   setup do
@@ -71,6 +72,19 @@ class CodexLoginDriverTest < ActiveSupport::TestCase
       @account.reload
       assert @account.active?
       assert_equal auth, @account.oauth_config["auth_json"]
+    end
+  end
+
+  # A human re-authenticating is the ONE signal that retires the needs_reauth
+  # nag. ClaudeAccount's status callback deliberately does not clear it, because
+  # plenty of machinery writes `active` without a human involved.
+  test "capture! clears the needs_reauth DM suppression" do
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "auth.json"), JSON.generate({ "OPENAI_API_KEY" => "sk-test" }))
+
+      AccountReauthNotifier.expects(:clear).with { |acct| acct.id == @account.id }
+
+      @driver.capture!(dir, @account)
     end
   end
 

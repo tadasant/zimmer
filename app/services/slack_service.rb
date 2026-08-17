@@ -82,6 +82,57 @@ class SlackService
       @bot_user_id ||= test_connection.user_id
     end
 
+    # Open (or re-open) the DM conversation between the bot and a user.
+    #
+    # `conversations.open` is idempotent: it returns the existing IM channel if
+    # one exists and creates it otherwise, so there is no "have we DMed this
+    # person before" state for a caller to keep. The bot needs the `im:write`
+    # scope; without it Slack answers `missing_scope`, which surfaces as ApiError
+    # and is NOT retried (a scope does not grow back on its own).
+    #
+    # @param user_id [String] the Slack user ID to DM (e.g. "U0BFTSUN8MD")
+    # @return [String] the IM channel ID to post into
+    # @raise [ApiError] if Slack declines to open the conversation
+    def open_dm(user_id)
+      raise ArgumentError, "user_id is required to open a DM" if user_id.blank?
+
+      with_error_handling do
+        response = client.conversations_open(users: user_id)
+        channel_id = response.channel&.id
+        raise ApiError, "Slack returned no DM channel for user #{user_id}" if channel_id.blank?
+
+        channel_id
+      end
+    end
+
+    # Post a message to a channel, DM or thread.
+    #
+    # @param channel [String] channel or IM ID
+    # @param text [String] fallback text; drives push notifications and is all a
+    #   blocks-blind consumer sees, so it must carry the message, not just a label
+    # @param blocks [Array<Hash>, nil] optional Block Kit payload
+    # @return [Hash] the chat.postMessage response
+    def post_message(channel:, text:, blocks: nil)
+      raise ArgumentError, "channel is required to post a message" if channel.blank?
+
+      with_error_handling do
+        params = { channel: channel, text: text }
+        params[:blocks] = blocks if blocks.present?
+
+        client.chat_postMessage(**params)
+      end
+    end
+
+    # Send a direct message to a user, opening the conversation first.
+    #
+    # @param user_id [String] the Slack user ID to DM
+    # @param text [String] fallback text (see {post_message})
+    # @param blocks [Array<Hash>, nil] optional Block Kit payload
+    # @return [Hash] the chat.postMessage response
+    def send_dm(user_id:, text:, blocks: nil)
+      post_message(channel: open_dm(user_id), text: text, blocks: blocks)
+    end
+
     # List all channels the bot has access to
     # @param types [String] channel types to include (default: public and private channels)
     # @param exclude_archived [Boolean] exclude archived channels (default: true)

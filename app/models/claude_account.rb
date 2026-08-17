@@ -84,6 +84,14 @@ class ClaudeAccount < ApplicationRecord
   scope :available, -> { active.where.not(oauth_config: {}).order(:priority) }
   scope :for_runtime, ->(runtime) { where(runtime: runtime) }
 
+  # An account that lands in needs_reauth is dead until a human re-authenticates,
+  # and nothing else tells them. The transition is latched inside the transaction
+  # and acted on after it commits, because the dirty state that identifies it does
+  # not survive to the commit callback — see #latch_needs_reauth_transition.
+  after_update :latch_needs_reauth_transition
+  after_update_commit :notify_status_transition
+  after_rollback :clear_needs_reauth_latch
+
   # Postgres advisory lock namespace for serializing mutations of one runtime's
   # account pool (rotation, activation). Distinct from
   # Session::SESSION_ADVISORY_LOCK_NAMESPACE so the two subsystems can never
@@ -813,6 +821,91 @@ class ClaudeAccount < ApplicationRecord
   end
 
   private
+
+  # DM the operator when this account crosses INTO needs_reauth, and forget that
+  # DM when it crosses back out.
+  #
+  # A model callback rather than instrumentation at the call sites, so no path
+  # that condemns an account can forget to alert — including the Administrate
+  # admin form, which no service-level hook would see.
+  #
+  # Two exclusions fall out of this placement, and both are correct:
+  #
+  # - **Creation.** `after_update_commit` does not fire on insert, so the
+  #   credential-less account QuotasController seeds directly into needs_reauth
+  #   does not DM. The human is on the page adding it; telling them to go to the
+  #   page they are on is noise.
+  #
+  # - **Recovery restores.** {ClaudeAuthProvider#recover_needs_reauth} (and its
+  #   Codex twin) flips an already-dead account to active so `refresh_token!`
+  #   is not status-blocked, then writes needs_reauth back with `update_columns`
+  #   when the probe fails. `update_columns` skips callbacks, so those restores
+  #   are silent — which is what we want: the account was already needs_reauth
+  #   before recovery started, so that is a no-op round trip, not a new failure.
+  #   The probe itself cannot condemn the account either (`recovery_probe: true`
+  #   returns before the permanent-failure branch in `perform_claude_refresh!`).
+  #   Without both of those, every recovery sweep would look like a fresh
+  #   transition and re-nag on the dedup window's clock.
+  #
+  # Note what this does NOT do: clear the suppression when an account leaves
+  # needs_reauth. That was the first shape of this callback and it was wrong.
+  # `sync_from_filesystem!` resurrects the on-disk owner to `active` with a plain
+  # `update!` — including a needs_reauth row whose dead-but-complete tokens are
+  # still in the credentials file — and `ensure_active_account!` runs it before
+  # every session spawn. Clearing there would drop the suppression moments before
+  # `usable_candidate?` re-condemns the same account, turning a drained pool into
+  # one DM per spawn attempt: exactly the flood the window exists to prevent.
+  # Clearing is therefore the job of the human re-auth path alone, where it means
+  # what it says — see ClaudeLoginDriver#capture!.
+  # Record, at save time, that this save crossed into needs_reauth — so that
+  # #notify_status_transition can still tell after the transaction commits.
+  #
+  # It cannot ask `saved_change_to_status?` itself, and that is not a stylistic
+  # preference: `reload` nils `@mutations_before_last_save`
+  # (ActiveRecord::AttributeMethods::Dirty#reload), so any reload between the save
+  # and the commit erases the evidence. `RefreshRuntimeAuthTokensJob` — the
+  # every-5-minutes sweep, and the likeliest discoverer of a dead refresh token —
+  # does exactly that: it wraps the refresh in an outer `account.with_lock`, and
+  # `ClaudeAuthProvider#refresh!` reloads on its failure branch to classify the
+  # error. `with_lock` opens a transaction without `requires_new`, so
+  # `refresh_token!`'s inner lock JOINS it and the commit callback does not run
+  # until that outer transaction commits — by which time the reload has already
+  # happened. Asking at commit time answered "no status change" and the DM was
+  # silently skipped on precisely the path that matters most.
+  #
+  # A plain ivar survives `reload`, so latching here and reading it there is what
+  # closes that gap. Only a save that actually moved `status` touches the latch:
+  # a later non-status save in the same transaction must not clear a pending
+  # transition, and a later save that moves status back OUT of needs_reauth must.
+  def latch_needs_reauth_transition
+    return unless saved_change_to_status?
+
+    @crossed_into_needs_reauth = needs_reauth?
+  end
+
+  def clear_needs_reauth_latch
+    @crossed_into_needs_reauth = false
+  end
+
+  def notify_status_transition
+    return unless @crossed_into_needs_reauth
+
+    AccountReauthAlertJob.perform_later(id)
+  rescue => e
+    # Never let alerting break the auth path. This runs after commit, so the
+    # status change is already durable; losing the notification is survivable,
+    # raising here is not.
+    #
+    # .warn rather than .error: a plain ERROR line trips the "any Zimmer ERROR →
+    # critical" Grafana rule (see ApplicationJob), and paging critically about a
+    # lost notification is the same mistake AlertService#dm_operator's own rescue
+    # avoids.
+    Rails.logger.warn "[ClaudeAccount] Failed to dispatch status-transition alert for #{email}: #{e.class} - #{e.message}"
+  ensure
+    # One latch, one DM. Without this a later save on the same in-memory record
+    # would re-enqueue the alert it already sent.
+    @crossed_into_needs_reauth = false
+  end
 
   # True when an exception raised during token refresh is a transient network
   # failure (see TRANSIENT_REFRESH_ERRORS). Such failures are retried by the
