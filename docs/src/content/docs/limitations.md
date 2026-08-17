@@ -480,6 +480,23 @@ the gate; they only happen after a spawn that did.
 Fixed in [#122](https://github.com/tadasant/zimmer/issues/122), which added the readiness gate. The
 escape hatch above is what that fix deliberately left open.
 
+### Every worker boot lands its own maintenance work on the shared `default` queue
+
+Two initializers enqueue onto `default` as soon as the worker comes up: `post_deploy_cache_clear`
+schedules `CacheClearJob` at +10s (which chains `McpPackageReinstallJob`, an `npx` install of every
+catalog MCP package), and `deployment_recovery` schedules `DeploymentRecoveryJob` at +30s (which
+auto-continues every session the deploy just orphaned). `default` has 4 scheduler threads
+(`ConnectionBudget.good_job_queue_threads`) shared by ~30 job classes, so for the first minutes of
+every deploy a meaningful fraction of the queue is committed to boot work — and that is exactly the
+window in which a post-cutover check is most likely to look at `default` and conclude it is wedged.
+
+`McpPackageReinstallJob` is now bounded (`PREINSTALL_TIMEOUT`, 15 minutes) so a stalled npm cannot
+hold its thread until the next restart. The contention itself is not fixed: the jobs still share
+`default` with ordinary work, and a slow database stretches the window further. Giving boot-time
+maintenance its own queue would fix it properly, but every added scheduler thread is an added
+Postgres backend, and the database's connection ceiling is a plan property Terraform will not raise
+for you (above) — so it is a deliberate change rather than a tuning tweak.
+
 ### The tailnet reaper still no-ops without credentials — it just says so now
 
 `scripts/tailnet-reap-node.sh` skips cleanup when `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET` are
