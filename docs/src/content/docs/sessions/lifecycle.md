@@ -559,29 +559,42 @@ mirror what `BroadcastService` does to them:
 
 | Value | Broadcasts do | Backfill does | Examples |
 | --- | --- | --- | --- |
-| `append` | append children | append children the page lacks, by id | the timeline, elicitation banners |
-| `replace` | replace the element | replace it when the server's copy differs | status badge, header actions, metadata, the composer |
-| `sync` | add, replace and remove children | reconcile children by id, in the server's order | the dashboard's session grids |
+| `append` | append children | append children the page lacks, by id | the timeline |
+| `replace` | replace the element | replace it when the server's copy differs | status badge, header actions, metadata, provenance, enqueued messages, the composer |
+| `sync` | add, replace and remove children | reconcile children by id, in the server's order | the dashboard's session grids, elicitation banners |
 
-Two rules keep it from taking something away from the reader:
+The strategy has to match what the broadcasts actually do, and getting it wrong is silent in one
+direction: elicitation banners are appended when raised *and removed when answered*, so marking
+them `append` would leave a dead approval prompt on screen after a reopen.
+
+Three rules keep the backfill from taking something away from the reader:
 
 - **A region in use is never swapped.** Anything containing the focused element, or a field holding
   a value the server did not render — a half-typed follow-up, a staged attachment — is skipped.
 - **An `append` region never removes.** Older pages pulled in by infinite scroll are not in the
   server's tail render, and are left where they are. The one exception is a child marked
   `data-live-transient` (the empty-state placeholder), which a broadcast would have removed too.
+- **A `sync` region showing a different page is skipped.** The dashboard's category sections page
+  inside their own `<turbo-frame>` without changing `window.location`, so re-fetching that URL
+  returns page 1 — and syncing it would throw away the page the reader had paged to. Each grid
+  records its page in `data-live-page`, and a mismatch means hands off.
 
 Appending by id needs rows that *have* ids, and timeline rows are not records — a row is a `Log`,
 an MCP log, or one of the several OpenTranscripts events a transcript line fans out into.
-`SessionsHelper#timeline_item_dom_id` derives a stable id from what the row is (type, sort time,
-transcript position, content), and the same partial renders both the broadcast append and the
-backfill's copy, so the two agree.
+`SessionsHelper#timeline_item_dom_id` derives one from what the row is, and the derivation is
+constrained by having to agree across both render paths. In particular it excludes
+`transcript_index`: `BroadcastService` normalizes without one, so including it would give every
+live-streamed row a different id from its own re-render — and the backfill would then append a
+second copy of everything that had arrived over the socket. `test/helpers/sessions_helper_test.rb`
+asserts the two paths agree, and `test/system/pwa_reopen_recovery_test.rb` asserts a live-arrived
+row is not duplicated by a reopen.
 
 Three exits are worth knowing about. A socket that reports itself open is left alone entirely and
 the reopen costs nothing. A socket still mid-handshake is left to finish rather than torn down and
-restarted. And a backfill that cannot run at all — the fetch failed, or the URL now redirects
-because you were signed out — falls back to the old replacing visit, because a page that silently
-failed to recover is worse than a page that lost its place.
+restarted. And a backfill that cannot run to completion — the fetch failed or timed out (10s), the
+URL now redirects because you were signed out, or the reconcile itself threw part-way — falls back
+to a replacing visit, because a page left half-recovered and quiet is worse than one that lost its
+place.
 
 `isOpen()` is a `readyState` read, which is its limit — see
 [Limitations](/limitations/#a-zombie-websocket-is-not-detected-on-pwa-reopen).

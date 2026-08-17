@@ -6,8 +6,8 @@
 // Re-rendering the whole document does recover that content, at the cost of
 // everything the reader had accumulated on screen: scroll position, open
 // disclosures, expanded items, the drawer. On iOS the socket dies on every
-// reopen of a standalone PWA, so that cost was being paid every single time the
-// user switched back to the app.
+// reopen of a standalone PWA, so that cost is paid every single time the user
+// switches back to the app.
 //
 // This recovers the same content by fetching the page the server would render
 // now and reconciling only the regions broadcasts actually target. Everything
@@ -16,18 +16,21 @@
 // Regions declare how they reconcile with `data-live-region`, and the values
 // mirror what the broadcasts do to them (see BroadcastService):
 //
-//   append   Broadcasts only add children — the timeline, elicitation banners.
-//            Children the live page lacks are appended in server order and
-//            nothing already on screen is touched, so older pages pulled in by
-//            infinite scroll and any expanded item survive. A child marked
-//            `data-live-transient` (the empty-state placeholder) is dropped once
-//            the server stops rendering it.
+//   append   Broadcasts only add children — the timeline. Children the live page
+//            lacks are appended in server order and nothing already on screen is
+//            touched, so older pages pulled in by infinite scroll and any
+//            expanded item survive. A child marked `data-live-transient` (the
+//            empty-state placeholder) is dropped once the server stops rendering
+//            it, because a broadcast would have removed it too.
 //   replace  Broadcasts swap the whole element — status badge, header actions,
-//            metadata, the composer. Swapped only when the server's copy differs.
+//            metadata, the composer. Swapped when the server's copy differs.
 //   sync     Broadcasts add, replace AND remove children — the dashboard's
-//            session grids. Reconciled by id, in the server's order.
+//            session grids, the elicitation banners. Reconciled by id, in the
+//            server's order.
 //
-// Nothing the reader is currently using is ever swapped: see `inUse`.
+// Two things are never taken away from the reader: a region they are working in
+// (see `inUse`), and a `sync` region showing a different page from the one the
+// server just rendered (see `paginatedElsewhere`).
 
 // A region holding an edit in progress is left alone, whatever the server says.
 // Losing an update is recoverable — the next broadcast carries it, and the user
@@ -35,12 +38,32 @@
 function inUse(element) {
   if (element.contains(document.activeElement)) return true
 
-  return Array.from(element.querySelectorAll("input, textarea")).some((field) => {
-    if (field.type === "checkbox" || field.type === "radio") {
-      return field.checked !== field.defaultChecked
-    }
-    return field.value !== field.defaultValue
-  })
+  return Array.from(element.querySelectorAll("input, textarea")).some(isDirty)
+}
+
+function isDirty(field) {
+  if (field.type === "checkbox" || field.type === "radio") {
+    return field.checked !== field.defaultChecked
+  }
+  return !isEmptyValue(field.value) && field.value !== field.defaultValue
+}
+
+// Hidden fields that carry a JSON collection start life empty and are reset to
+// an empty collection rather than to "" — image-attachment writes `[]` back
+// after the last attachment is removed. Treating that as an edit in progress
+// would pin the composer as in-use for the rest of the page's life.
+function isEmptyValue(value) {
+  const trimmed = String(value ?? "").trim()
+  return trimmed === "" || trimmed === "[]" || trimmed === "{}"
+}
+
+// A `sync` region reconciles by removing children the server did not render, and
+// that is only sound when both copies are showing the same page. The dashboard's
+// category sections page inside their own <turbo-frame> without changing
+// window.location, so a re-fetch of that URL returns page 1 — and syncing it
+// would silently throw away the page the reader had paged to.
+function paginatedElsewhere(live, source) {
+  return (live.dataset.livePage || null) !== (source.dataset.livePage || null)
 }
 
 function childrenWithIds(element) {
@@ -49,6 +72,14 @@ function childrenWithIds(element) {
 
 function liveChildById(parent, id) {
   return Array.from(parent.children).find((child) => child.id === id)
+}
+
+// Take the node if it already exists somewhere in the document — a card that
+// moved between grids — rather than importing a second copy under the same id.
+function adopt(sourceChild) {
+  const existing = document.getElementById(sourceChild.id)
+  if (existing) existing.remove()
+  return document.importNode(sourceChild, true)
 }
 
 function appendMissing(live, source) {
@@ -64,8 +95,9 @@ function appendMissing(live, source) {
 
   // A placeholder the server has stopped rendering ("No activity yet") would
   // otherwise sit above the items that just arrived.
-  for (const child of Array.from(live.querySelectorAll("[data-live-transient][id]"))) {
-    if (source.querySelector(`[data-live-transient][id="${child.id}"]`)) continue
+  for (const child of Array.from(live.querySelectorAll("[data-live-transient]"))) {
+    if (!child.id) continue
+    if (Array.from(source.querySelectorAll("[data-live-transient]")).some((s) => s.id === child.id)) continue
     child.remove()
     changed += 1
   }
@@ -83,6 +115,8 @@ function replaceElement(live, source) {
 }
 
 function syncChildren(live, source) {
+  if (paginatedElsewhere(live, source)) return 0
+
   let changed = 0
   const sourceChildren = childrenWithIds(source)
   const sourceIds = new Set(sourceChildren.map((child) => child.id))
@@ -102,7 +136,7 @@ function syncChildren(live, source) {
     let node = existing
 
     if (!existing) {
-      node = document.importNode(sourceChild, true)
+      node = adopt(sourceChild)
       changed += 1
     } else {
       const replacement = replaceElement(existing, sourceChild)

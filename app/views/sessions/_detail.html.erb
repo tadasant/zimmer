@@ -30,10 +30,10 @@
       cable-reconnect re-subscribes that source in place.
 
     iOS suspends a backgrounded standalone PWA, so the socket is dead on every
-    single reopen and the first path runs every time. It used to answer with a
-    full replacing Turbo visit, which is exactly why the app appeared to reload
-    whenever the user switched back to it. The backfill recovers the same content
-    without touching scroll position, open disclosures or the drawer. %>
+    single reopen and the first path runs every time. Answering it with a
+    navigation is what makes an installed PWA appear to reload on each reopen;
+    the backfill recovers the same content without touching scroll position,
+    open disclosures or the drawer. %>
 <% detail_controllers = "session-scroll auto-scroll log-level-filter page-header-offset cable-reconnect" %>
 <% detail_controllers += " pull-to-refresh stream-visibility-recovery" unless in_drawer %>
 <div class="<%= in_drawer ? "min-h-full pb-32" : "min-h-screen" %> bg-gray-50" data-controller="<%= detail_controllers %>"
@@ -341,7 +341,10 @@
             needs_input says why instead of looking merely idle. %>
         <%= render "elicitations/lost_elicitation_banner", session: @session %>
 
-        <div id="session_<%= @session.id %>_elicitations" class="space-y-2" data-live-region="append">
+        <%# data-live-region="sync": banners are appended when raised AND removed when
+            answered, so a reopen has to drop the ones resolved while the app was away
+            rather than leave a dead approval prompt on screen. %>
+        <div id="session_<%= @session.id %>_elicitations" class="space-y-2" data-live-region="sync">
           <% @session.elicitations.active.each do |elicitation| %>
             <%= render "elicitations/elicitation_banner", elicitation: elicitation, session: @session %>
           <% end %>

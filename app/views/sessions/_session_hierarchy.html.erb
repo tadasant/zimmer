@@ -19,7 +19,7 @@
 
 <%# Nested divide-y: the panel group divides its four sections, this divides the
     two provenance sections from each other. %>
-<div class="divide-y divide-gray-200" id="session_<%= agent_session.id %>_provenance">
+<div class="divide-y divide-gray-200" id="session_<%= agent_session.id %>_provenance" data-live-region="replace">
 
   <%# ---- Spawn hierarchy ---- %>
   <details <%= "open" unless hierarchy.solitary? %>>

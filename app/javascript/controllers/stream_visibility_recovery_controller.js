@@ -16,21 +16,22 @@ import { backfillLiveRegions } from "lib/live_region_backfill"
 //      fire-and-forget with no replay, so re-subscribing cannot recover them.
 //      Only the server can say what the page should look like now.
 //
-// (2) used to be answered with a full replacing `Turbo.visit`, and that is the
-// bug this controller exists to not have: iOS suspends a backgrounded standalone
-// PWA, which kills the WebSocket, so the socket is dead on *every* reopen and the
-// visit fired every time. Checking `isOpen()` first — the previous attempt at
-// this — only made the case that never happens free.
+// (2) is answered with a backfill: fetch the page the server would render and
+// reconcile only the regions broadcasts target (see lib/live_region_backfill.js
+// and the `data-live-region` markers in the views). Missed timeline items, a
+// changed status badge and a stale header land in the document the reader was
+// already looking at — same scroll position, same open disclosures, same
+// expanded items, no navigation at all.
 //
-// So the answer to (2) is a backfill instead: fetch the page the server would
-// render now and reconcile only the regions broadcasts target (see
-// lib/live_region_backfill.js and the `data-live-region` markers in the views).
-// Missed timeline items, a changed status badge and a stale header land in the
-// document the reader was already looking at — same scroll position, same open
-// disclosures, same expanded items, no navigation at all.
+// That matters because iOS suspends a backgrounded standalone PWA, which kills
+// the WebSocket: the socket is dead on *every* reopen, so this branch runs every
+// time the user switches back to the app. Answering it with a navigation is what
+// makes an installed PWA appear to reload on each reopen. Checking `isOpen()`
+// first does not help — it only makes the case that never happens free.
 //
-// A backfill that cannot complete falls back to the visit. A page that silently
-// failed to recover is the one outcome worse than a page that lost its place.
+// A backfill that cannot complete falls back to a replacing visit. A page that
+// silently failed to recover is the one outcome worse than a page that lost its
+// place.
 //
 // Triggers:
 //   - visibilitychange -> 'visible', after the page was hidden at least
@@ -43,7 +44,11 @@ export default class extends Controller {
     // How long (ms) to let the reopened socket land before backfilling. Doing it
     // in this order means an update broadcast *during* the backfill still has a
     // subscription to arrive on.
-    reconnectGrace: { type: Number, default: 1500 }
+    reconnectGrace: { type: Number, default: 1500 },
+    // How long (ms) to wait for the backfill's fetch. A phone that came back
+    // before its network did would otherwise hold the recovery open with no
+    // answer either way; past this the fallback visit takes over.
+    fetchTimeout: { type: Number, default: 10000 }
   }
 
   connect() {
@@ -140,32 +145,34 @@ export default class extends Controller {
 
   // Pick up what was broadcast while the page was away, in place. Reached only
   // for a socket that reported itself closed.
+  //
+  // Every failure inside this method — a fetch that never answers, HTML that
+  // will not parse, a reconcile that throws part-way through — ends in the
+  // fallback visit, because a page left half-recovered and quiet is worse than
+  // one that lost its scroll position.
   async backfill() {
-    let fresh
-
     try {
       const response = await fetch(window.location.href, {
         headers: { Accept: "text/html" },
         credentials: "same-origin",
-        cache: "no-store"
+        cache: "no-store",
+        signal: AbortSignal.timeout(this.fetchTimeoutValue)
       })
 
       // A redirect means this URL is no longer the page it was — signed out, or
       // the record is gone. Let the browser follow it properly.
       if (response.redirected || !response.ok) return this.reload()
 
-      fresh = new DOMParser().parseFromString(await response.text(), "text/html")
+      const fresh = new DOMParser().parseFromString(await response.text(), "text/html")
+      const changed = backfillLiveRegions(fresh)
+      this.dispatch("recovered", { detail: { socketWasOpen: false, changed } })
     } catch (_e) {
-      return this.reload()
+      this.reload()
     }
-
-    const changed = backfillLiveRegions(fresh)
-    this.dispatch("recovered", { detail: { socketWasOpen: false, changed } })
   }
 
-  // The fallback, and the whole of what this controller used to do. Recovers
-  // everything and costs the reader their place, so it is reached only when the
-  // backfill could not run at all.
+  // Recovers everything and costs the reader their place, so it is reached only
+  // when the backfill could not run to completion.
   reload() {
     Turbo.visit(window.location.href, { action: "replace" })
   }

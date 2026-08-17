@@ -2267,12 +2267,18 @@ Also:
   follow-up composer's text: it autosaves to `localStorage` as you type (a 300ms debounce, flushed
   immediately on `visibilitychange`/`pagehide`) and is restored on load. Scroll position and
   expanded panels survive the backfill but not the cold start.
-- The backfill recovers what broadcasts target and nothing else. A session detail loaded into the
-  dashboard's drawer is not in a fresh render of the dashboard, so its regions are not backfilled —
-  `cable-reconnect` restores live updates there, but content broadcast into the drawer during the
-  gap is only recovered by reopening it. Subagent accordions are in the same position: they are
-  replace targets nested inside timeline rows, and the backfill treats a row it already has as
-  already current.
+- The backfill recovers what broadcasts target and nothing else, and three surfaces are knowingly
+  outside it. A session detail loaded into the dashboard's drawer is not in a fresh render of the
+  dashboard, so its regions are not backfilled — `cable-reconnect` restores live updates there, but
+  content broadcast into the drawer during the gap is only recovered by reopening it. Subagent
+  accordions are replace targets nested inside timeline rows, and the backfill treats a row it
+  already has as already current, so subagent progress stays as it was until a real navigation. And
+  the notification badge is a lazily-loaded `<turbo-frame>`: replacing it with the server's copy
+  would blank it and re-fetch, so it is left alone and its count is stale until the next broadcast.
+- A `sync` region that has been paged inside its own `<turbo-frame>` is skipped rather than
+  reconciled, because the URL the backfill re-fetches does not carry that page. So a dashboard
+  category you have paged forward in keeps the cards it had, and does not pick up sessions added or
+  removed while you were away, until you page it again.
 - A composer draft sits in `localStorage` for up to 7 days with no UI to clear it, and nothing
   removes it when the session is archived or you sign out. On a shared browser that is a prompt
   someone else can read. If `localStorage` is full the write fails silently and the previously
