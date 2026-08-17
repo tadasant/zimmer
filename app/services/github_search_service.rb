@@ -35,6 +35,13 @@ class GithubSearchService
   # see GithubTriggerPollerJob#skip_incomplete_search.
   class IncompleteResultsError < SearchError; end
 
+  # One attempt at a request failed in a way a moment's wait might fix: GitHub answered
+  # 5xx, rate-limited us, or the response never arrived whole. Never reaches a caller —
+  # search_issues either retries past it or converts it to a plain SearchError once the
+  # budget is spent — but it subclasses SearchError anyway so that a future escape route
+  # degrades to "the poller alerts", not "an unfamiliar class crashes the tick".
+  class TransientRequestError < SearchError; end
+
   PER_PAGE = 100
 
   # GitHub's search API tops out at 1000 results, which is these 10 pages. A query
@@ -48,11 +55,64 @@ class GithubSearchService
   # cadence, so a condition's whole retry budget has to fit in a couple of seconds. It is
   # 2s of waiting per condition however many pages the search spans, since the delay is
   # spent per search attempt rather than per page.
-  #
-  # Only this failure retries. A timeout or a non-zero exit has already spent
-  # REQUEST_TIMEOUT and is no likelier to succeed on an immediate repeat, so those raise
-  # on the first attempt.
   INCOMPLETE_RESULT_RETRY_DELAYS = [ 0.5, 1.5 ].freeze
+
+  # The same treatment for a request that FAILED rather than came back short: `gh` exited
+  # non-zero for a reason that reads as GitHub's problem rather than ours, or the response
+  # body did not arrive whole. Waits a beat longer than the incomplete-index delays, and
+  # widens, because the failures it covers are an API under load (502/503/504, a connection
+  # cut mid-body) rather than one index query timing out.
+  #
+  # Two retries, not more, because the point is to outlast a blip, not to ride out an
+  # outage. A failure that survives all three attempts still raises SearchError, and the
+  # poller still logs ERROR and pages for it on that tick and every tick after — see
+  # #retryable_failure? for why waiting cannot make a real failure quieter, only later.
+  TRANSIENT_REQUEST_RETRY_DELAYS = [ 1.0, 3.0 ].freeze
+
+  # No new attempt starts once a search has been running this long. The delays above bound
+  # only the SLEEPING (4s, plus 2s for an incomplete index); they say nothing about the
+  # requests a restart re-issues, and restarting is the whole design — so a search spanning
+  # several pages against a merely-slow API could otherwise re-spend MAX_PAGES ×
+  # REQUEST_TIMEOUT per attempt and eat the tick it shares with every other condition. This
+  # is the bound that actually holds: a search still going after this long is not having a
+  # blip, and the next tick is the better place to ask again.
+  #
+  # Generous against the healthy case (these searches return in well under a second, so it
+  # never fires) and tight enough that one condition cannot spend the minute.
+  TRANSIENT_RETRY_DEADLINE = 20
+
+  # `gh` reports the API's status on its error line: `gh: Bad credentials (HTTP 401)`.
+  # Absent for everything that fails below HTTP — a truncated body, a cut connection, a
+  # DNS failure — which is why classification cannot be a status-code lookup alone.
+  HTTP_STATUS_PATTERN = /\(HTTP (\d{3})\)/
+
+  # The 4xx worth retrying. Everything else in that range is GitHub telling us the
+  # REQUEST is wrong — a malformed query (422), a repo the token cannot see (404), a
+  # permission denial (403) — which no amount of waiting changes.
+  #
+  #   401  Observed in production 2026-08-14 and again through the 2026-08-17 degradation,
+  #        against a credential that authenticated from the same host minutes either side.
+  #        Retrying it does not make a genuinely dead credential quieter, only ~4s later:
+  #        the exhausted-retry raise pages on that tick and every tick after. And a
+  #        revoked token does not usually arrive here at all — `configured?` fails, the
+  #        tick skips, no heartbeat is stamped, and GithubTriggerHealthCheckJob pages on
+  #        the stale heartbeat, which is the backstop it documents itself as being.
+  #   408  A request timeout GitHub reports itself, rather than one we imposed.
+  #
+  # **Rate limiting is deliberately NOT here**, though it is transient in every other
+  # sense. GitHub answers it 429, or 403 for a secondary limit, and neither clears inside
+  # this budget: the search endpoint allows 30 requests a minute and a secondary limit
+  # ships a Retry-After that is usually 60s or more. So a retry cannot succeed — and
+  # because a retry re-runs the WHOLE search, it would spend more of the very quota that
+  # produced the failure, on the one class of failure where extra requests make things
+  # worse. It fails fast and pages, exactly as it did before this retry existed, and the
+  # next tick is the retry.
+  RETRYABLE_CLIENT_STATUSES = [ 401, 408 ].freeze
+
+  # `gh` rejecting the command line before it ever calls GitHub — a flag the installed
+  # `gh` does not know, say. That is a bug in this file, deterministic, and identical on
+  # every attempt, so it must page on the first tick rather than three seconds later.
+  GH_USAGE_ERROR_PATTERN = /\A(unknown (flag|shorthand flag|command)|accepts \d+ arg)/
 
   # Hard wall-clock ceiling on a single `gh` invocation. A healthy search API call
   # returns in well under a second; this is generous headroom for a merely slow
@@ -118,8 +178,21 @@ class GithubSearchService
     # re-run whole a bounded number of times and, if it is still incomplete, raises
     # IncompleteResultsError — a SearchError, so callers that do not care about the
     # distinction are unaffected.
+    #
+    # A request that fails outright gets the same shape of second chance when the failure
+    # reads as GitHub's rather than ours (see #retryable_failure?), and for the same
+    # reason it is the whole search that re-runs rather than the offending page. What
+    # changes is only WHEN the caller hears about a failure, never WHETHER: three failed
+    # attempts raise SearchError exactly as one used to.
     def search_issues(query, sort: nil, order: nil)
-      attempt = 0
+      incomplete_attempt = 0
+      transient_attempt = 0
+      # Whether any attempt in this search failed OUTRIGHT, as opposed to coming back
+      # short. It decides which error the exhausted search raises — see the incomplete
+      # branch below, where getting this wrong would route a hard failure into the
+      # poller's quiet skip.
+      request_failed = false
+      deadline = monotonic_now + TRANSIENT_RETRY_DEADLINE
 
       begin
         items = []
@@ -148,16 +221,28 @@ class GithubSearchService
         end
 
         items
-      rescue IncompleteResultsError
-        delay = INCOMPLETE_RESULT_RETRY_DELAYS[attempt]
-        raise if delay.nil?
+      rescue IncompleteResultsError => e
+        delay = INCOMPLETE_RESULT_RETRY_DELAYS[incomplete_attempt]
 
-        attempt += 1
+        if delay.nil?
+          # The narrower class is a promise to the caller: "the index was slow, skip this
+          # tick quietly, the next one re-derives the whole seen-set". That promise is only
+          # honest if the index being slow is ALL that happened. A search that also failed
+          # outright — a 504 on one attempt, an incomplete index on the next — is a
+          # degradation the poller must page for, and raising IncompleteResultsError here
+          # would hand it to #skip_incomplete_search instead, converting a page into five
+          # quiet ticks. The hard failure wins.
+          raise SearchError, "#{e.message} (and the request failed outright during this search)" if request_failed
+
+          raise
+        end
+
+        incomplete_attempt += 1
         # .info, not .warn: an intermediate attempt that may still succeed is not a fault
         # (per the repo's logging philosophy). The terminal case is reported by the caller.
         Rails.logger.info "[GithubSearchService] Search index returned incomplete results on " \
                           "page #{page}; re-running the search in #{delay}s " \
-                          "(retry #{attempt} of #{INCOMPLETE_RESULT_RETRY_DELAYS.length})"
+                          "(retry #{incomplete_attempt} of #{INCOMPLETE_RESULT_RETRY_DELAYS.length})"
         sleep delay
 
         # Restarts the whole search from page 1 with an empty `items` — deliberately not
@@ -167,6 +252,38 @@ class GithubSearchService
         # state, can silently drop an item whose page boundary shifted underneath the
         # pagination. That is the same corrupt-the-seen-set failure the refusal exists to
         # prevent, arrived at by a subtler route. Whole read or nothing, on every attempt.
+        retry
+      rescue TransientRequestError => e
+        request_failed = true
+        delay = TRANSIENT_REQUEST_RETRY_DELAYS[transient_attempt]
+
+        # Budget spent. Out goes a plain SearchError, so the poller's per-condition rescue
+        # logs ERROR and pages exactly as it always has — the attempt count is in the
+        # message so the page says "GitHub kept failing", not "GitHub failed once".
+        if delay.nil?
+          raise SearchError, "#{e.message} (still failing after " \
+                             "#{TRANSIENT_REQUEST_RETRY_DELAYS.length + 1} attempts)"
+        end
+
+        # Out of wall clock rather than out of attempts. Restarting re-issues every page,
+        # so a slow multi-page search can spend far more of the tick than the delay list
+        # implies; past this point the next tick is the better place to ask again.
+        if monotonic_now + delay > deadline
+          raise SearchError, "#{e.message} (giving up after #{TRANSIENT_RETRY_DEADLINE}s)"
+        end
+
+        transient_attempt += 1
+        # .info for the same reason the incomplete path uses it: an attempt that may still
+        # succeed is not a fault, and an ERROR here would page for the blip we are absorbing.
+        Rails.logger.info "[GithubSearchService] Search request failed, possibly transiently " \
+                          "(#{e.message}); re-running the search in #{delay}s " \
+                          "(retry #{transient_attempt} of #{TRANSIENT_REQUEST_RETRY_DELAYS.length})"
+        sleep delay
+
+        # Restarted whole rather than resumed at the failed page, for the reason spelled out
+        # in the incomplete branch above: pages accumulated before the failure were served by
+        # an API that is now visibly unwell, and stitching them onto a page fetched seconds
+        # later can drop an item whose page boundary moved. Same invariant, same remedy.
         retry
       end
     end
@@ -220,7 +337,10 @@ class GithubSearchService
       # full mechanism. Routing it through the same SearchError the poller's per-condition
       # rescue already handles beats crashing the tick with `undefined method 'success?' for nil`.
       unless SubprocessStatus.success?(status)
-        raise SearchError, "gh api search/issues failed: #{SubprocessStatus.describe_failure(status, stderr)}"
+        message = "gh api search/issues failed: #{SubprocessStatus.describe_failure(status, stderr)}"
+        raise TransientRequestError, message if retryable_failure?(status, stderr)
+
+        raise SearchError, message
       end
 
       JSON.parse(stdout)
@@ -228,9 +348,55 @@ class GithubSearchService
       # A hung request is a failure like any other network failure: surface it as a
       # SearchError so the poller's per-condition rescue alerts and retries next tick,
       # rather than letting the stall propagate as an unfamiliar error class.
+      #
+      # Deliberately NOT retried, alone among the transient failures. This one has already
+      # spent REQUEST_TIMEOUT — a full 15s of the tick — and a repeat would spend another
+      # 15s before it could even reach its backoff, so a hang would cost most of a minute
+      # per condition rather than the seconds the retry budget is sized for. It is also the
+      # failure a retry helps least: a stalled connection says the API is not answering at
+      # all, and the next tick is a better time to ask than three seconds from now.
       raise SearchError, "gh api search/issues timed out: #{e.message}"
     rescue JSON::ParserError => e
-      raise SearchError, "Could not parse GitHub search response: #{e.message}"
+      # The zero-exit twin of the truncation `gh` reports as `unexpected end of JSON input`
+      # (observed in production 2026-08-17T13:31:03Z): a body that arrived cut short parses
+      # no better on this attempt than that one, and no worse on the next.
+      raise TransientRequestError, "Could not parse GitHub search response: #{e.message}"
+    end
+
+    # Whether a failed `gh` invocation is worth trying again.
+    #
+    # Deny-list, not allow-list: retry unless the failure is recognisably OURS. The four
+    # modes production has actually produced here — a 401, an incomplete index, a truncated
+    # body, a 504 — share nothing but the exit code, and two of them carry no HTTP status
+    # at all, so an allow-list of known-transient signatures would keep paging for the
+    # next mode nobody has seen yet. The cost of being wrong in this direction is bounded
+    # and small: a permanent failure that slips through waits 4s and then pages anyway, on
+    # this tick and every tick after. Nothing is ever suppressed.
+    def retryable_failure?(status, stderr)
+      # We never learned the exit code (the child was reaped before its waiter). The
+      # command may well have succeeded; a lost race is the most retryable failure there
+      # is, and SubprocessStatus#unknown? exists to let callers say exactly this.
+      return true if SubprocessStatus.unknown?(status)
+
+      detail = stderr.to_s.strip
+      return false if detail.match?(GH_USAGE_ERROR_PATTERN)
+
+      statuses = detail.scan(HTTP_STATUS_PATTERN).flatten.map(&:to_i)
+
+      # No status at all: the failure happened below HTTP — a cut connection, a DNS
+      # failure, a body that stopped mid-stream. Transient by nature.
+      return true if statuses.empty?
+
+      # EVERY status has to be retryable, not merely the first. `gh` can print more than
+      # one, and the query it echoes back is partly user-supplied: repo and label names
+      # reach `q=` from the trigger's configuration, so a label named `x (HTTP 503)` would
+      # otherwise let a permanent 422 read as a retryable 503. Requiring unanimity means an
+      # injected status can only ever make us fail FASTER.
+      statuses.all? { |http| !http.in?(400..499) || RETRYABLE_CLIENT_STATUSES.include?(http) }
+    end
+
+    def monotonic_now
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
   end
 end
