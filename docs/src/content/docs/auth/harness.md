@@ -609,6 +609,28 @@ two future resets and the pool frees up at the earliest such account; `RESET_BUF
 added, and the result is clamped between `MIN_RETRY_DELAY` (5 min) and `MAX_RETRY_DELAY` (12 h). An
 auth outage has no published reset clock, so it uses `DEFAULT_RETRY_DELAY` (1 h).
 
+An account with no *future* reset stamp is only read as "the pool clears now" when
+`windows_clear?` agrees — the same predicate the sweep restores on. The two agree about a stamp that
+has genuinely passed: the sliding window turned over, `.effective_utilization` discounts the counter
+to zero, and the next sweep restores the account. They part company on a snapshot carrying **no
+stamps at all**, which is a real reading — with no reset time to have passed the weekly counter still
+stands, so `seven_day_window_spent?` holds and the sweep correctly leaves the account exceeded.
+Reading that as "now" pinned every parked session to the 5-minute floor and woke them all back into
+the same exhausted pool five minutes later; its reset time is simply unknown, which is what
+`DEFAULT_RETRY_DELAY` means here.
+
+Repeated quota parks also back off. Each consecutive park inside `QUOTA_PARK_WINDOW` (6 h) doubles
+the floor under the retry — 5 m, 10 m, 20 m, and on up to `MAX_RETRY_DELAY`, capped at
+`MAX_QUOTA_PARK_BACKOFF_STEPS` (6) doublings — so a pool that really is about to recover keeps its
+fast first retry while one that is not stops being probed every five minutes by every parked session
+at once. The count lives in `auth_outage_quota_parks`, kept out of `STALE_RETRY_METADATA_KEYS` for
+the same reason the early-wake budget is: it has to outlive the resume it throttles. Every retry also
+carries up to `RETRY_JITTER` (3 min) of random offset, because sessions parked by one outage are
+parked within seconds of each other and would otherwise wake as a herd onto a queue sized for 16
+concurrent agents. On 2026-08-17 the un-jittered, un-backed-off version put 148 sessions through 368
+parks in 40 minutes and 377 jobs into the ready queue, which is what tripped the
+`SystemHealthMonitorJob` backlog page at 14:14 UTC.
+
 Which of the two reasons a park gets is decided by the **pool's shape**, not by which code path
 arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` when nothing
 is available and at least one account is `quota_exceeded` (waiting genuinely helps), and
