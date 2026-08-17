@@ -17,16 +17,16 @@ class McpPackageReinstallJob < ApplicationJob
   # post_deploy_cache_clear initializer), so it runs on the `default` queue at the
   # one moment that queue is least able to absorb a long occupancy: right after a
   # deploy cutover, alongside DeploymentRecoveryJob. `default` has 4 scheduler
-  # threads (ConnectionBudget.good_job_queue_threads) and ~30 job classes, so a
-  # single unbounded install holds a quarter of them for as long as npm takes.
+  # threads (ConnectionBudget.good_job_queue_threads) and ~30 job classes, so an
+  # unbounded install would hold a quarter of them for as long as npm takes.
   #
-  # Unbounded is what it was: Open3.capture3 has no deadline, and the script shells
-  # out to `npx` over the network for every catalog MCP package. A registry that
-  # accepts the connection and then stalls -- the same half-open-socket failure
-  # BoundedSubprocess was written for on the git path -- pins that thread until the
-  # worker restarts. On 2026-08-17 the production deploy canary enqueued one
-  # `default` job and watched it sit unclaimed for its full 180s timeout while
-  # `pollers`, `triggers` and `agents` each claimed and finished in ~4s.
+  # The script shells out to `npx` over the network for every catalog MCP package,
+  # so the case this bounds is a registry that accepts the connection and then
+  # stalls -- the same half-open-socket failure BoundedSubprocess covers on the git
+  # path. Undeadlined, that pins the thread until the worker restarts, which is what
+  # the 2026-08-17 production cutover measured: its drain canary sat unclaimed on
+  # `default` for the full 180s while `pollers`, `triggers` and `agents` each
+  # claimed and finished in ~4s.
   #
   # 15 minutes is well above a cold full reinstall and far below "never".
   PREINSTALL_TIMEOUT = 15.minutes
