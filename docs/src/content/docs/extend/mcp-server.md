@@ -118,6 +118,12 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
   session waking *itself* is never restricted.)
 - `get_configs` hides the roots you may not use, so the model never sees them.
 
+  It hides unusable MCP servers the same way, on every connection: a server whose `${VAR}` does not
+  resolve or whose OAuth credential is missing or dead is left out of the server list and named in a
+  trailing **Unavailable** roster instead — enough for an agent to tell a broken server from an
+  absent one without offering it as a choice. → [Availability, and what an agent is
+  offered](/air/mcp-servers/#availability-and-what-an-agent-is-offered)
+
 ## What Zimmer injects into every session
 
 `SelfSessionInjector` + the runtime config post-processors write these entries into a session's
