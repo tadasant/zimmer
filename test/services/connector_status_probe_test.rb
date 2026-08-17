@@ -456,6 +456,135 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
     assert_equal [ "Unresolved" ], status.variable_sources.reject(&:resolved?).map(&:badge)
   end
 
+  # --- catalog-declared unavailability ---------------------------------------
+  #
+  # The one kind of broken Zimmer cannot detect: every variable resolves and the
+  # endpoint still cannot serve it. The catalog says so; the probe reports it
+  # without running the checks that would all pass.
+
+  test "a catalog-declared unavailable server reports it, whatever its variables say" do
+    config = SECRETS_SERVICE_ACCOUNT.merge(
+      "unavailable" => "The endpoint accepts only static bearer tokens and exposes no OAuth discovery."
+    )
+    status = probe("strad-secrets-oauth", config, resolvable: [ "STRAD_API_KEY" ])
+
+    assert_equal :declared_unavailable, status.state
+    assert_equal "Unavailable", status.label
+    assert_match "only static bearer tokens", status.summary
+    assert_match "the catalog entry has to change", status.summary
+  end
+
+  test "a declared unavailable server outranks a missing variable it also has" do
+    config = SECRETS_SERVICE_ACCOUNT.merge("unavailable" => "Decommissioned upstream.")
+    status = probe("strad-secrets-oauth", config)
+
+    assert_equal :declared_unavailable, status.state,
+      "the standing declaration is the more useful answer than a variable that is also unset"
+  end
+
+  test "a blank declaration is no declaration" do
+    status = probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT.merge("unavailable" => "   "),
+      resolvable: [ "STRAD_API_KEY" ])
+
+    assert_equal :ready, status.state
+  end
+
+  test "a non-string declaration is ignored rather than read as true" do
+    status = probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT.merge("unavailable" => true),
+      resolvable: [ "STRAD_API_KEY" ])
+
+    assert_equal :ready, status.state,
+      "the field carries its reason or it carries nothing — `true` states no reason"
+  end
+
+  test "a declared unavailable server offers no authorize button and no secret instructions" do
+    status = probe("strad-secrets-oauth", OAUTH_SERVER.merge("unavailable" => "No OAuth discovery."))
+
+    assert_not status.authorizable?
+    assert_empty status.instructions
+    assert_empty status.variable_sources
+  end
+
+  # --- available? and the roster reason --------------------------------------
+
+  test "the states that block a spawn are the states that report unavailable" do
+    blocked = {
+      missing_configuration: probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT),
+      needs_authorization: probe("notion", OAUTH_SERVER),
+      declared_unavailable: probe("dead", OAUTH_SERVER.merge("unavailable" => "Gone."))
+    }
+    blocked.each do |expected_state, status|
+      assert_equal expected_state, status.state
+      assert_not status.available?, "#{expected_state} cannot start, so it is not available"
+      assert status.unavailable_reason.present?, "#{expected_state} must say why"
+    end
+  end
+
+  test "needs_reauth blocks but token_expired does not" do
+    expired = with_catalog("notion", OAUTH_SERVER) do
+      create_credential("notion", OAUTH_SERVER, expires_at: 1.hour.ago, refresh_token: nil, token_endpoint: nil)
+    end
+
+    status = probe("notion", OAUTH_SERVER)
+
+    assert_equal :needs_reauth, status.state
+    assert_not status.available?
+    assert_equal "OAuth token expired and cannot be refreshed", status.unavailable_reason
+
+    expired.update!(refresh_token: "refresh-me", token_endpoint: "https://example.com/token")
+    refreshable = probe("notion", OAUTH_SERVER)
+
+    assert_equal :token_expired, refreshable.state
+    assert refreshable.available?, "the refresh job renews this without anyone's help"
+    assert_nil refreshable.unavailable_reason
+  end
+
+  # A store outage hits every server at once. Reporting the whole catalog as
+  # unavailable because Google did not answer would be a far worse lie than
+  # offering a server that might not start.
+  test "an indeterminate probe stays available rather than emptying the catalog" do
+    status = probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT,
+      unavailable_vars: { "STRAD_API_KEY" => "boom" })
+
+    assert_equal :store_unavailable, status.state
+    assert status.available?
+    assert_nil status.unavailable_reason
+  end
+
+  test "the roster reason names the unresolved variables" do
+    config = STDIO_WITH_SECRET.merge("env" => { "A" => "${ALPHA}", "B" => "${BETA}" })
+    status = probe("multi", config, resolvable: [ "ALPHA" ])
+
+    assert_equal "`BETA` unresolved", status.unavailable_reason
+  end
+
+  test "a ready server is available and has nothing to explain" do
+    status = probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT, resolvable: [ "STRAD_API_KEY" ])
+
+    assert_equal :ready, status.state
+    assert status.available?
+    assert_nil status.unavailable_reason
+  end
+
+  # --- the bulk entry point --------------------------------------------------
+
+  test ".all probes every catalog server, in catalog order" do
+    catalog = {
+      "ready-one" => STDIO_NO_SECRETS,
+      "broken-one" => SECRETS_SERVICE_ACCOUNT,
+      "declared-one" => STDIO_NO_SECRETS.merge("unavailable" => "Retired.")
+    }
+    AirCatalogService.stubs(:entries_for).returns({})
+    AirCatalogService.stubs(:entries_for).with(:mcp).returns(catalog)
+    SecretsInterpolator.any_instance.stubs(:resolution).returns(ABSENT)
+
+    statuses = ConnectorStatusProbe.all
+
+    assert_equal %w[ready-one broken-one declared-one], statuses.map(&:server_name)
+    assert_equal %i[no_credential_required missing_configuration declared_unavailable], statuses.map(&:state)
+    assert_equal %w[broken-one declared-one], statuses.reject(&:available?).map(&:server_name)
+  end
+
   private
 
   def create_credential(name, config, **attrs)

@@ -11,6 +11,7 @@ module ConnectorsHelper
     token_expired: "bg-amber-100 text-amber-800",
     needs_reauth: "bg-red-100 text-red-800",
     missing_configuration: "bg-red-100 text-red-800",
+    declared_unavailable: "bg-red-100 text-red-800",
     store_unavailable: "bg-orange-100 text-orange-800",
     probe_failed: "bg-orange-100 text-orange-800"
   }.freeze
@@ -20,25 +21,29 @@ module ConnectorsHelper
   # How far up the list a state sorts. Lower is more urgent, and the ordering is
   # by *what the user has to do*, not by badge colour:
   #
-  #   0-1  nothing works and only a human can fix it
-  #   2    one click, right here on the row
-  #   3-4  Zimmer could not find out; it may be fine, it may not
-  #   5    resolves itself — the refresh job has it
-  #   6-7  nothing to do
+  #   0-2  nothing works and only a human can fix it
+  #   3    one click, right here on the row
+  #   4-5  Zimmer could not find out; it may be fine, it may not
+  #   6    resolves itself — the refresh job has it
+  #   7-8  nothing to do
   #
   # The rank is computed server-side even though the sort happens in the browser,
   # so "which states are problems" has exactly one definition. The view emits it
   # as `data-connector-rank`; connector_list_controller reads it and never
   # decides severity for itself.
+  #
+  # :declared_unavailable leads: it is the only state nobody can fix from this
+  # page or from a secret store — the catalog entry itself has to change.
   SEVERITY_RANKS = {
-    missing_configuration: 0,
-    needs_reauth: 1,
-    needs_authorization: 2,
-    store_unavailable: 3,
-    probe_failed: 4,
-    token_expired: 5,
-    ready: 6,
-    no_credential_required: 7
+    declared_unavailable: 0,
+    missing_configuration: 1,
+    needs_reauth: 2,
+    needs_authorization: 3,
+    store_unavailable: 4,
+    probe_failed: 5,
+    token_expired: 6,
+    ready: 7,
+    no_credential_required: 8
   }.freeze
 
   # Anything ranked above `ready` is something the page should lead with.

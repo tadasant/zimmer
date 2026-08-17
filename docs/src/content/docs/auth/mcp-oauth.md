@@ -373,6 +373,7 @@ order, so a connector reported **Ready** is one that will actually connect:
 | **Token expired** | Expired, but has a refresh token — `RefreshMcpOauthTokensJob` will renew it |
 | **Needs re-auth** | Expired with no refresh token; the row carries a **Re-authorize** button that replaces the credential in place |
 | **Missing configuration** | A required `${VAR}` has no value. The row says where it goes — see [The Secrets Console](/operate/secrets-parameter-store/#the-secrets-console-and-which-project-it-administers) |
+| **Unavailable** | The catalog entry carries an [`unavailable` declaration](/air/mcp-servers/#unavailable-the-breakage-zimmer-cannot-detect) — breakage no local check can infer. Nothing on the page fixes it; the entry has to change |
 | **Secret store unreachable** | The store did not answer. Deliberately *not* "missing" — see [Secrets in the Parameter Store](/operate/secrets-parameter-store/) |
 | **No credential required** | The catalog entry configures no credential at all |
 | **Probe failed** | Anything unexpected, isolated to that one row |
@@ -391,6 +392,12 @@ be deleted.
 
 The page never contacts the MCP server itself and never displays a secret value;
 it reports presence and where to set what is absent.
+
+The same probe decides what an agent is offered. **Missing configuration**, **Needs
+authorization**, **Needs re-auth** and **Unavailable** block a spawn, so `get_configs` leaves those
+servers out of its MCP-server list and names them in a trailing **Unavailable** roster instead —
+one line and a compact reason each. **Token expired** does not block, because the refresh job
+resolves it. → [Availability, and what an agent is offered](/air/mcp-servers/#availability-and-what-an-agent-is-offered)
 
 ### How the list fills in, and why it re-orders itself
 

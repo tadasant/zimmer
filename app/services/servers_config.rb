@@ -11,6 +11,10 @@ class ServersConfig
 
   # Server configuration object
   class Server
+    # How much of an `unavailable` declaration is reported. A reason is one line
+    # in a roster, not a second description; anything longer is a story the
+    # catalog should be telling somewhere else.
+    UNAVAILABLE_REASON_LIMIT = 200
     attr_reader :name, :title, :description, :type, :command, :args, :env, :url, :headers, :oauth
 
     def initialize(name, config)
@@ -24,11 +28,51 @@ class ServersConfig
       @url = config["url"]
       @headers = config["headers"] || {}
       @oauth = config["oauth"] || {}
+      @unavailable = config["unavailable"]
     end
 
     def remote?
       %w[sse streamable-http].include?(type)
     end
+
+    # The catalog's standing declaration that this entry cannot work here, and
+    # why — the escape hatch for the class of breakage no local check can infer.
+    #
+    # Zimmer's readiness check reads what is configured and stored: unresolved
+    # `${VAR}`s, missing or dead OAuth credentials. A server whose every variable
+    # resolves but whose endpoint simply cannot serve Zimmer — one that accepts
+    # only static bearer tokens while the entry is written for OAuth, say —
+    # passes every one of those checks and is still unusable. That fact lives
+    # with whoever curates the catalog; nothing here can derive it.
+    #
+    # The field is `"unavailable": "<reason>"` on the server entry. A non-empty
+    # string means unavailable and IS the reason, reported wherever the state is.
+    # Absent, null, or blank means nothing is declared — which is not a claim that
+    # the server works, only that the catalog is silent, so the ordinary readiness
+    # checks decide. There is no `"unavailable": true`: requiring the reason by
+    # construction is what keeps this from becoming the prose-warning-in-the-
+    # description hack it replaces.
+    #
+    # Normalized rather than passed through, because this string is written in a
+    # different repository and lands in a markdown list that an agent reads as
+    # part of a tool response. Whitespace is squished to single spaces so a
+    # newline cannot split the roster line it sits on, and a `### `, `---` or
+    # leading `- ` cannot forge structure around it; length is capped so one
+    # entry cannot crowd out the roster. AIR's schema constrains `description`
+    # to 500 characters and says nothing at all about this field, so the limit
+    # has to be here.
+    #
+    # @return [String, nil]
+    def unavailable_reason
+      return nil unless @unavailable.is_a?(String)
+
+      reason = @unavailable.gsub(/\s+/, " ").strip
+      return nil if reason.empty?
+
+      reason.truncate(UNAVAILABLE_REASON_LIMIT)
+    end
+
+    def declared_unavailable? = !unavailable_reason.nil?
 
     # Statically-configured OAuth client id for this server, taken from the
     # catalog `oauth` block. Present for servers that require a pre-registered
