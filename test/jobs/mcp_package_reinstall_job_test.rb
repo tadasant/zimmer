@@ -31,4 +31,31 @@ class McpPackageReinstallJobTest < ActiveJob::TestCase
     # Only enable in environments where the script is available
     McpPackageReinstallJob.new.perform
   end
+
+  test "runs the preinstall script under a wall-clock timeout" do
+    script_path = Rails.root.join("bin", "preinstall-mcp-packages")
+    File.stubs(:exist?).with(script_path).returns(true)
+
+    BoundedSubprocess.expects(:run)
+      .with([ script_path.to_s ], timeout: McpPackageReinstallJob::PREINSTALL_TIMEOUT)
+      .returns([ "ok", "", stub(success?: true, exitstatus: 0) ])
+
+    McpPackageReinstallJob.new.perform
+  end
+
+  # A stalled npm must not hold a `default` scheduler thread forever -- the queue has
+  # 4 of them and this job runs 10s after every worker boot, so an unbounded install
+  # starves the queue exactly when a deploy is watching it drain.
+  test "a timed-out preinstall is contained rather than raised" do
+    script_path = Rails.root.join("bin", "preinstall-mcp-packages")
+    File.stubs(:exist?).with(script_path).returns(true)
+
+    BoundedSubprocess.stubs(:run).raises(
+      BoundedSubprocess::TimeoutError, "command timed out after 900s"
+    )
+
+    assert_nothing_raised do
+      McpPackageReinstallJob.new.perform
+    end
+  end
 end

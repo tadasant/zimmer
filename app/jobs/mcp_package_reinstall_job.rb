@@ -11,6 +11,26 @@
 class McpPackageReinstallJob < ApplicationJob
   queue_as :default
 
+  # Wall-clock bound on the preinstall script.
+  #
+  # This job is enqueued 10s after every worker boot (CacheClearJob, from the
+  # post_deploy_cache_clear initializer), so it runs on the `default` queue at the
+  # one moment that queue is least able to absorb a long occupancy: right after a
+  # deploy cutover, alongside DeploymentRecoveryJob. `default` has 4 scheduler
+  # threads (ConnectionBudget.good_job_queue_threads) and ~30 job classes, so a
+  # single unbounded install holds a quarter of them for as long as npm takes.
+  #
+  # Unbounded is what it was: Open3.capture3 has no deadline, and the script shells
+  # out to `npx` over the network for every catalog MCP package. A registry that
+  # accepts the connection and then stalls -- the same half-open-socket failure
+  # BoundedSubprocess was written for on the git path -- pins that thread until the
+  # worker restarts. On 2026-08-17 the production deploy canary enqueued one
+  # `default` job and watched it sit unclaimed for its full 180s timeout while
+  # `pollers`, `triggers` and `agents` each claimed and finished in ~4s.
+  #
+  # 15 minutes is well above a cold full reinstall and far below "never".
+  PREINSTALL_TIMEOUT = 15.minutes
+
   # Don't retry on failure - this is a best-effort operation
   discard_on StandardError
 
@@ -30,9 +50,14 @@ class McpPackageReinstallJob < ApplicationJob
       return
     end
 
-    # Run the preinstall script
-    # Use Open3 to capture output for logging
-    stdout, stderr, status = Open3.capture3(script_path.to_s)
+    # Run the preinstall script under a wall-clock watchdog, so a stalled npm
+    # cannot hold a `default` scheduler thread indefinitely (see PREINSTALL_TIMEOUT).
+    begin
+      stdout, stderr, status = BoundedSubprocess.run([ script_path.to_s ], timeout: PREINSTALL_TIMEOUT)
+    rescue BoundedSubprocess::TimeoutError => e
+      Rails.logger.error "[McpPackageReinstallJob] MCP package reinstall timed out: #{e.message}"
+      return
+    end
 
     if SubprocessStatus.success?(status)
       Rails.logger.info "[McpPackageReinstallJob] MCP package reinstall completed successfully"
