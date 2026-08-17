@@ -483,19 +483,27 @@ escape hatch above is what that fix deliberately left open.
 ### Every worker boot lands its own maintenance work on the shared `default` queue
 
 Two initializers enqueue onto `default` as soon as the worker comes up: `post_deploy_cache_clear`
-schedules `CacheClearJob` at +10s (which chains `McpPackageReinstallJob`, an `npx` install of every
-catalog MCP package), and `deployment_recovery` schedules `DeploymentRecoveryJob` at +30s (which
-auto-continues every session the deploy just orphaned). `default` has 4 scheduler threads
-(`ConnectionBudget.good_job_queue_threads`) shared by ~30 job classes, so for the first minutes of
-every deploy a meaningful fraction of the queue is committed to boot work — and that is exactly the
-window in which a post-cutover check is most likely to look at `default` and conclude it is wedged.
+schedules `CacheClearJob` at +10s, which chains `McpPackageReinstallJob` — an `npx` install of every
+catalog MCP package — whenever it actually cleared the npx cache; and `deployment_recovery` schedules
+`DeploymentRecoveryJob` at +30s, which auto-continues every session the deploy just orphaned.
+`default` has 4 scheduler threads (`ConnectionBudget.good_job_queue_threads`) shared by ~30 job
+classes, so for the first minutes of every deploy part of the queue is committed to boot work — and
+that is exactly the window in which a post-cutover check is most likely to look at `default` and
+conclude it is wedged.
 
-`McpPackageReinstallJob` is now bounded (`PREINSTALL_TIMEOUT`, 15 minutes) so a stalled npm cannot
-hold its thread until the next restart. The contention itself is not fixed: the jobs still share
-`default` with ordinary work, and a slow database stretches the window further. Giving boot-time
-maintenance its own queue would fix it properly, but every added scheduler thread is an added
-Postgres backend, and the database's connection ceiling is a plan property Terraform will not raise
-for you (above) — so it is a deliberate change rather than a tuning tweak.
+Be careful how much this explains. These jobs run at most two at a time, so they cannot by
+themselves account for all four threads being unavailable; a `default` queue that completes *nothing*
+for minutes needs a further cause, and the candidates are the ones below — a worker wedged on jobs it
+has already claimed, or threads held by jobs blocking on a slow external API. Boot work narrows the
+margin rather than being the whole story.
+
+`McpPackageReinstallJob` is bounded (`PREINSTALL_TIMEOUT_SECONDS`, 900) so a stalled npm cannot hold
+its thread until the next restart. The contention itself is not fixed: the jobs still share `default`
+with ordinary work, and a slow database stretches the window further. Giving boot-time maintenance
+its own queue would fix it properly, but every added scheduler thread is an added Postgres backend,
+and the database's connection ceiling is a plan property Terraform will not raise for you (above) —
+so it is a deliberate change rather than a tuning tweak. Tracked in
+[#533](https://github.com/tadasant/zimmer/issues/533).
 
 ### The tailnet reaper still no-ops without credentials — it just says so now
 
@@ -2118,19 +2126,24 @@ would page only if it were broad enough to stall the poller's heartbeat too. Tha
 deliberate — inventing a streak from a failed cache read would page for a Redis blip on the first
 index timeout, which is the noise this exists to remove.
 
-### `BoundedSubprocess` can return a nil `Process::Status`, and only the `gh` search path guards it
+### `BoundedSubprocess` can still return a nil `Process::Status`, and every caller has to remember
 
 `BoundedSubprocess.run` returns Open3's `wait_thr.value`, which is a `Process.detach` thread whose
 `#value` is **`nil`** when the child pid was reaped elsewhere before the waiter's own `waitpid` ran
 (`ECHILD`) — a race that can happen in the multi-threaded worker. A caller that then calls
-`status.success?` on that nil crashes with `undefined method 'success?' for nil`. `GithubSearchService`
-(the `github_label`/`github_issue` poller's search and its `gh auth status` preflight) guards both call
-sites with `status&.success?`, turning a nil into an ordinary `SearchError` the poller already handles.
-The other three consumers — `GitCloneService` and the two `AirPrepareService` calls, all on the
-synchronous `waiting → running` launch path — do **not** yet guard it, so the same race would surface
-there as a `NoMethodError` that fails that one session's launch (not a per-minute alert storm). The
-durable fix is to make `BoundedSubprocess` never hand back a nil status; until then the exposure is
-noted rather than fixed at the source.
+`status.success?` on that nil crashes with `undefined method 'success?' for nil`.
+
+Every consumer today reads the status through `SubprocessStatus.success?` /
+`SubprocessStatus.describe_failure`, which treat nil as a failure (`REAPED_DESCRIPTION`) rather than
+dereferencing it: `GithubSearchService`, `GitCloneService`, both `AirPrepareService` call sites, both
+`CloneDiskGuard` call sites, and `McpPackageReinstallJob`. So the race is handled everywhere it can
+currently occur.
+
+What remains is that this is a **convention, not a guarantee**. The type `BoundedSubprocess` hands
+back still admits nil, so the next caller written against it is one `status.success?` away from the
+same `NoMethodError`, and nothing in the signature or the test suite will stop them. The durable fix
+is to make `BoundedSubprocess` never hand back a nil status — normalising it into a status object
+that reports failure — so callers cannot get it wrong rather than merely not getting it wrong today.
 
 ---
 
