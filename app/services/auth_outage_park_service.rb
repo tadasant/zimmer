@@ -410,10 +410,15 @@ class AuthOutageParkService
 
   # The floor under a quota park's retry, widened by one doubling for each
   # consecutive park this session has already spent inside QUOTA_PARK_WINDOW.
+  #
+  # Held at or below the ceiling: `clamp` raises when its low bound is above its
+  # high one, and the caller's rescue would turn that into a session parked with
+  # no retry at all. The two constants leave room today, so this is a guard
+  # against a later change to either, not a live condition.
   def quota_retry_floor
     steps = [ self.class.recent_quota_parks(session).size, MAX_QUOTA_PARK_BACKOFF_STEPS ].min
 
-    MIN_RETRY_DELAY * (2**steps)
+    [ MIN_RETRY_DELAY * (2**steps), MAX_RETRY_DELAY ].min
   end
 
   def earliest_pool_reset
