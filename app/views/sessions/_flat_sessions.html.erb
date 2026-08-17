@@ -15,7 +15,8 @@
   <%# Grid keeps id="sessions_grid" so real-time broadcasts that prepend new
       cards still land here (the category grid that normally owns this id is not
       rendered in the flat views). %>
-  <div id="sessions_grid"
+  <div id="sessions_grid" data-live-region="sync"
+       data-live-page="<%= sessions.respond_to?(:current_page) ? sessions.current_page : 1 %>"
        class="grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center">
     <% sessions.each do |session| %>
       <%= turbo_frame_tag dom_id(session) do %>

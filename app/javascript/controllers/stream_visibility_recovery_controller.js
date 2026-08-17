@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { Turbo, cable } from "@hotwired/turbo-rails"
+import { backfillLiveRegions } from "lib/live_region_backfill"
 
 // Connects to data-controller="stream-visibility-recovery"
 //
@@ -13,25 +14,24 @@ import { Turbo, cable } from "@hotwired/turbo-rails"
 //      for the cost of a handshake and no rendering at all.
 //   2. Whatever was broadcast while the page was away is gone. Broadcasts are
 //      fire-and-forget with no replay, so re-subscribing cannot recover them.
-//      Only re-rendering from the server can.
+//      Only the server can say what the page should look like now.
 //
-// (2) is what the reload is for, and it is reached only for a socket that
-// reports itself closed. An open socket carried its subscriptions through the
-// hide and queued its messages, so it has missed nothing and the page is left
-// untouched — no navigation, no lost scroll position, no collapsed panels. That
-// matters because `pageshow` fires with `persisted` on every bfcache restore,
-// which on iOS is every single reopen of an installed PWA.
+// (2) is answered with a backfill: fetch the page the server would render and
+// reconcile only the regions broadcasts target (see lib/live_region_backfill.js
+// and the `data-live-region` markers in the views). Missed timeline items, a
+// changed status badge and a stale header land in the document the reader was
+// already looking at — same scroll position, same open disclosures, same
+// expanded items, no navigation at all.
 //
-// The limit of that check is `readyState`: a socket the browser never reports as
-// closed reads as open even when the server is gone, and this controller leaves
-// it alone. ActionCable's own monitor and `cable-reconnect` still heal the
-// subscription, so updates resume — but content broadcast during the gap is not
-// backfilled. See docs limitations.
+// That matters because iOS suspends a backgrounded standalone PWA, which kills
+// the WebSocket: the socket is dead on *every* reopen, so this branch runs every
+// time the user switches back to the app. Answering it with a navigation is what
+// makes an installed PWA appear to reload on each reopen. Checking `isOpen()`
+// first does not help — it only makes the case that never happens free.
 //
-// A morphing refresh was tried for the reload case and rejected: idiomorph
-// removes attributes the server does not render, and controllers here keep state
-// in exactly those (log-level-filter writes its own `level-value`), so a morph
-// reverts that state and the controller then acts on it.
+// A backfill that cannot complete falls back to a replacing visit. A page that
+// silently failed to recover is the one outcome worse than a page that lost its
+// place.
 //
 // Triggers:
 //   - visibilitychange -> 'visible', after the page was hidden at least
@@ -41,11 +41,14 @@ export default class extends Controller {
   static values = {
     // Minimum hidden duration (ms) before the socket is worth checking at all.
     staleAfter: { type: Number, default: 5000 },
-    // How long (ms) to let the reopened socket land before replacing the page.
-    // The re-render happens either way — a closed socket missed content, and
-    // re-subscribing cannot replay it — but reopening first means a visit that
-    // is slow or never arrives still leaves a page with live updates behind it.
-    reconnectGrace: { type: Number, default: 1500 }
+    // How long (ms) to let the reopened socket land before backfilling. Doing it
+    // in this order means an update broadcast *during* the backfill still has a
+    // subscription to arrive on.
+    reconnectGrace: { type: Number, default: 1500 },
+    // How long (ms) to wait for the backfill's fetch. A phone that came back
+    // before its network did would otherwise hold the recovery open with no
+    // answer either way; past this the fallback visit takes over.
+    fetchTimeout: { type: Number, default: 10000 }
   }
 
   connect() {
@@ -87,7 +90,7 @@ export default class extends Controller {
     if (event.persisted) this.recover()
   }
 
-  // Restore live updates, and re-render only if something was missed.
+  // Restore live updates, and backfill only if something was missed.
   async recover() {
     if (this.isRecovering) return
 
@@ -97,8 +100,8 @@ export default class extends Controller {
     this.isRecovering = true
 
     // A consumer that cannot be read says nothing about the socket, so fall
-    // through to the re-render. Leaving a possibly-frozen page alone is the one
-    // outcome worse than a reload.
+    // through to the backfill. Leaving a possibly-frozen page alone is the one
+    // outcome worse than recovering it.
     let connection = null
     try {
       connection = (await cable.getConsumer())?.connection
@@ -108,6 +111,7 @@ export default class extends Controller {
 
     if (connection?.isOpen()) {
       this.isRecovering = false
+      this.dispatch("recovered", { detail: { socketWasOpen: true, changed: 0 } })
       return
     }
 
@@ -118,11 +122,11 @@ export default class extends Controller {
 
       await this.settle(this.reconnectGraceValue)
 
-      this.reload()
+      await this.backfill()
     } finally {
-      // Hold the guard past the visit rather than releasing it here. A reopen
+      // Hold the guard past the backfill rather than releasing it here. A reopen
       // can deliver pageshow and visibilitychange back to back, and each would
-      // otherwise stack another navigation onto the one already in flight.
+      // otherwise stack another fetch onto the one already in flight.
       this.releaseTimer = setTimeout(() => {
         this.isRecovering = false
       }, 2000)
@@ -139,8 +143,36 @@ export default class extends Controller {
     })
   }
 
-  // Re-render from the server to pick up what was broadcast while the page was
-  // away. Reached only for a socket that reported itself closed.
+  // Pick up what was broadcast while the page was away, in place. Reached only
+  // for a socket that reported itself closed.
+  //
+  // Every failure inside this method — a fetch that never answers, HTML that
+  // will not parse, a reconcile that throws part-way through — ends in the
+  // fallback visit, because a page left half-recovered and quiet is worse than
+  // one that lost its scroll position.
+  async backfill() {
+    try {
+      const response = await fetch(window.location.href, {
+        headers: { Accept: "text/html" },
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: AbortSignal.timeout(this.fetchTimeoutValue)
+      })
+
+      // A redirect means this URL is no longer the page it was — signed out, or
+      // the record is gone. Let the browser follow it properly.
+      if (response.redirected || !response.ok) return this.reload()
+
+      const fresh = new DOMParser().parseFromString(await response.text(), "text/html")
+      const changed = backfillLiveRegions(fresh)
+      this.dispatch("recovered", { detail: { socketWasOpen: false, changed } })
+    } catch (_e) {
+      this.reload()
+    }
+  }
+
+  // Recovers everything and costs the reader their place, so it is reached only
+  // when the backfill could not run to completion.
   reload() {
     Turbo.visit(window.location.href, { action: "replace" })
   }

@@ -542,28 +542,70 @@ source in place. A page that was hidden (backgrounded PWA, bfcache restore) and 
 dead socket has also *missed content*, and re-subscribing would not bring it back, so
 `stream-visibility-recovery` handles that case in two steps: reopen the ActionCable consumer,
 which re-subscribes every subscription on the connection and restores live updates without
-rendering anything, then reconcile the gap with a page refresh.
+rendering anything, then **backfill** the gap.
 
-The check that gates all of it is `consumer.connection.isOpen()`. A socket that reports itself
-open carried its subscriptions through the hide and queued its messages, so it missed nothing:
-the recovery is skipped outright and reopening the app costs nothing at all. Without that check
-the controller reloaded on every reopen, because iOS fires `pageshow` with `persisted` each time
-a standalone PWA is restored from bfcache — which is every time the user opens it. Two other
-exits are worth knowing about: a socket still mid-handshake is left to finish rather than torn
-down and restarted, and a consumer that cannot be read at all falls through to the reload, since
-leaving a possibly-frozen page alone is worse than re-rendering it.
+### The reopen backfill
+
+iOS suspends a backgrounded standalone PWA. The process stops and the WebSocket dies with it, so
+on a real reopen the socket is *always* dead and the dead-socket branch runs every single time.
+That branch used to be a full replacing `Turbo.visit`, which is exactly why the app appeared to
+reload whenever the user switched back to it. Checking `consumer.connection.isOpen()` first did
+not fix that — it only made the case that never happens (socket survived the hide) free.
+
+The branch now fetches the page the server would render and reconciles it into the live document,
+region by region, without navigating. `app/javascript/lib/live_region_backfill.js` does the
+reconcile; the regions declare themselves in the markup with `data-live-region`, and the values
+mirror what `BroadcastService` does to them:
+
+| Value | Broadcasts do | Backfill does | Examples |
+| --- | --- | --- | --- |
+| `append` | append children | append children the page lacks, by id | the timeline |
+| `replace` | replace the element | replace it when the server's copy differs | status badge, header actions, metadata, provenance, enqueued messages, the composer |
+| `sync` | add, replace and remove children | reconcile children by id, in the server's order | the dashboard's session grids, elicitation banners |
+
+The strategy has to match what the broadcasts actually do, and getting it wrong is silent in one
+direction: elicitation banners are appended when raised *and removed when answered*, so marking
+them `append` would leave a dead approval prompt on screen after a reopen.
+
+Three rules keep the backfill from taking something away from the reader:
+
+- **A region in use is never swapped.** Anything containing the focused element, or a field holding
+  a value the server did not render — a half-typed follow-up, a staged attachment — is skipped.
+- **An `append` region never removes.** Older pages pulled in by infinite scroll are not in the
+  server's tail render, and are left where they are. The one exception is a child marked
+  `data-live-transient` (the empty-state placeholder), which a broadcast would have removed too.
+- **A `sync` region showing a different page is skipped.** The dashboard's category sections page
+  inside their own `<turbo-frame>` without changing `window.location`, so re-fetching that URL
+  returns page 1 — and syncing it would throw away the page the reader had paged to. Each grid
+  records its page in `data-live-page`, and a mismatch means hands off.
+
+Appending by id needs rows that *have* ids, and timeline rows are not records — a row is a `Log`,
+an MCP log, or one of the several OpenTranscripts events a transcript line fans out into.
+`SessionsHelper#timeline_item_dom_id` derives one from what the row is, and the derivation is
+constrained by having to agree across both render paths. In particular it excludes
+`transcript_index`: `BroadcastService` normalizes without one, so including it would give every
+live-streamed row a different id from its own re-render — and the backfill would then append a
+second copy of everything that had arrived over the socket. `test/helpers/sessions_helper_test.rb`
+asserts the two paths agree, and `test/system/pwa_reopen_recovery_test.rb` asserts a live-arrived
+row is not duplicated by a reopen.
+
+Three exits are worth knowing about. A socket that reports itself open is left alone entirely and
+the reopen costs nothing. A socket still mid-handshake is left to finish rather than torn down and
+restarted. And a backfill that cannot run to completion — the fetch failed or timed out (10s), the
+URL now redirects because you were signed out, or the reconcile itself threw part-way — falls back
+to a replacing visit, because a page left half-recovered and quiet is worse than one that lost its
+place.
 
 `isOpen()` is a `readyState` read, which is its limit — see
 [Limitations](/limitations/#a-zombie-websocket-is-not-detected-on-pwa-reopen).
 
-A morphing refresh was tried for the dead-socket case, to make even that reload invisible, and
-rejected. Morphing reconciles the live DOM against the server's HTML, and Stimulus controllers
-here keep state in value attributes the server does not render —
-`log_level_filter_controller` writes its own `level-value` in `connect()`. Idiomorph removes any
-attribute missing from the server's markup, so that state reverts to its default and the
-controller then acts on it: in testing, a morph reverted the log filter to `minimal` and hid
-every item in the timeline. The hazard is generic to the app rather than specific to one
-controller, so the reconcile stays a replacing visit until those controllers are morph-safe.
+A Turbo 8 morph was tried for this and rejected. Morphing reconciles the whole live DOM against the
+server's HTML, and Stimulus controllers here keep state in value attributes the server does not
+render — `log_level_filter_controller` writes its own `level-value` in `connect()`. Idiomorph
+removes any attribute missing from the server's markup, so that state reverts to its default and
+the controller then acts on it: in testing, a morph reverted the log filter to `minimal` and hid
+every item in the timeline. A morph also closes a `<details>` the reader opened, for the same
+reason. The region-scoped backfill avoids both by touching only what broadcasts touch.
 
 What a refresh *does* depends on the session's state:
 

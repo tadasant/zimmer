@@ -55,7 +55,9 @@
       frame is the collapse body — CSS hides it (grid + pagination together) when the
       section is collapsed. %>
   <%= turbo_frame_tag "category_frame_#{SessionsController::UNCATEGORIZED_PAGE_KEY}", class: "category-collapse-body" do %>
-    <div id="sessions_grid"
+    <%# See _category_section for why the paged-to page is recorded here. %>
+    <div id="sessions_grid" data-live-region="sync"
+         data-live-page="<%= sessions.respond_to?(:current_page) ? sessions.current_page : 1 %>"
          class="category-grid grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center min-h-[5rem]"
          data-category-dnd-target="list"
          data-category-id="">

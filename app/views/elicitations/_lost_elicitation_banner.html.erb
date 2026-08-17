@@ -2,7 +2,7 @@
 
     Renders as an empty slot when there is nothing to say, so the same partial
     both raises and dismisses the banner over Turbo Streams. %>
-<div id="session_<%= session.id %>_lost_elicitation">
+<div id="session_<%= session.id %>_lost_elicitation" data-live-region="replace">
   <% lost = session.lost_elicitation %>
   <% if lost.present? %>
     <div class="bg-orange-50 border border-orange-300 rounded-lg shadow-sm px-4 py-3">

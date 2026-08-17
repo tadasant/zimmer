@@ -231,4 +231,84 @@ class SessionsHelperTest < ActionView::TestCase
     item = event(Types::SYSTEM_EVENT, subtype: "system", payload: { "content" => "Tip: use /help" })
     assert_equal "Tip: use /help", ot_content_markdown(item)
   end
+
+  # ---------------------------------------------------------------------------
+  # timeline_item_dom_id
+  # ---------------------------------------------------------------------------
+  # The id is what the reopen backfill (lib/live_region_backfill.js) uses to tell
+  # a row it already has from one that arrived while the socket was dead. It is
+  # derived rather than stored, so the two render paths agreeing is a property
+  # that has to be asserted, not assumed.
+
+  def normalizable_entry
+    {
+      "type" => "assistant",
+      "uuid" => "entry-uuid-1",
+      "timestamp" => "2026-08-17T03:00:00.000Z",
+      "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "hello world" } ] }
+    }
+  end
+
+  def session_for_normalizer
+    Session.create!(
+      prompt: "p",
+      status: :running,
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main"
+    )
+  end
+
+  test "timeline_item_dom_id is the same whether the row was broadcast or page-rendered" do
+    session = session_for_normalizer
+    normalizer = TranscriptRuntime.normalizer_for(session)
+
+    # BroadcastService normalizes without a transcript_index; the controller's
+    # page render always supplies one. Including it in the id would give every
+    # live-streamed row a different id from its own re-render, and the backfill
+    # would append a second copy of everything received since page load.
+    broadcast = normalizer.normalize(normalizable_entry, session: session)
+    rendered = normalizer.normalize(normalizable_entry, session: session, transcript_index: 7)
+
+    assert_equal broadcast.count, rendered.count
+    assert_predicate broadcast, :any?, "the fixture entry normalized into no events"
+
+    broadcast.zip(rendered).each do |live, page|
+      assert_equal timeline_item_dom_id(live), timeline_item_dom_id(page),
+        "a #{live[:type]} row gets a different id depending on which path rendered it"
+    end
+  end
+
+  test "timeline_item_dom_id separates the several events one transcript line fans out into" do
+    session = session_for_normalizer
+    entry = {
+      "type" => "assistant",
+      "uuid" => "entry-uuid-2",
+      "timestamp" => "2026-08-17T03:00:00.000Z",
+      "message" => {
+        "role" => "assistant",
+        "content" => [
+          { "type" => "text", "text" => "running a tool" },
+          { "type" => "tool_use", "id" => "tool-1", "name" => "Bash", "input" => { "command" => "ls" } }
+        ]
+      }
+    }
+
+    events = TranscriptRuntime.normalizer_for(session).normalize(entry, session: session)
+    assert_operator events.count, :>, 1, "the fixture did not fan out into several events"
+
+    ids = events.map { |event| timeline_item_dom_id(event) }
+    assert_equal ids.uniq.count, ids.count, "two events from one line collapsed onto the same id"
+  end
+
+  test "timeline_item_dom_id distinguishes logs by content and time" do
+    at = Time.utc(2026, 8, 17, 3, 0, 0)
+    one = { type: "log", level: "info", content: "first", sort_time: at }
+    two = { type: "log", level: "info", content: "second", sort_time: at }
+    later = { type: "log", level: "info", content: "first", sort_time: at + 1 }
+
+    assert_equal timeline_item_dom_id(one), timeline_item_dom_id(one.dup)
+    refute_equal timeline_item_dom_id(one), timeline_item_dom_id(two)
+    refute_equal timeline_item_dom_id(one), timeline_item_dom_id(later)
+  end
 end
