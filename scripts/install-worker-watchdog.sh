@@ -120,6 +120,11 @@ else
   # Declared: this file is now managed by the deploy, and is rewritten every converge.
   # Same temp-and-move as the script copy above, for the same reason -- the watchdog
   # sources this file every 60 seconds and must never read half of it.
+  #
+  # The heredoc below is deliberately UNQUOTED, because ${RECOVER} has to expand. That
+  # makes every `$`, backtick and backslash in the prose expand locally too, so keep the
+  # comment text free of them -- and note it is only safe to interpolate RECOVER at all
+  # because the case statement above narrowed it to the literal 0 or 1.
   echo "Asserting ZIMMER_WATCHDOG_RECOVER=${RECOVER} in /etc/default/zimmer-worker-watchdog"
   run 'cat > /etc/default/.zimmer-worker-watchdog.new && chmod 0644 /etc/default/.zimmer-worker-watchdog.new && mv /etc/default/.zimmer-worker-watchdog.new /etc/default/zimmer-worker-watchdog' <<DEFAULTS
 # Zimmer worker watchdog -- MANAGED BY THE DEPLOY (scripts/install-worker-watchdog.sh).
