@@ -332,13 +332,24 @@ GoodJob's concurrency control lets through, and the row stays unfinished — so 
 still held, the cron ticks in between stay no-ops, and the deferred run is the *next* poll rather
 than an extra one. The deferral count rides in the job's serialized params, not in `executions`,
 which also counts retries the poller knows nothing about. After `MAX_DEFERRALS` (5) the job stops
-deferring and raises an alert.
+deferring, logs at ERROR, and raises an alert.
 
 A transient failure deep in the sweep does not abort it. Each unit — channel, thread, DM — owns a
 cursor that only advances for units that finished, and those writes are batched at the end, so
 unwinding mid-sweep would skip them and replay finished units as duplicate sessions. The unit
 rescues record the failure instead, the sweep completes its bookkeeping, and the deferral happens
 once at the end.
+
+Those unit rescues log a `TransientError` at **WARN**, and that is load-bearing. The deferral
+re-reads the unit from a cursor that never moved, so the work is not lost — while an ERROR line
+pages the on-call. Logging a recovered 429 at ERROR meant a 111-second rate-limit burst across nine
+threads paged a human about an incident in which nothing broke, twice
+([#509](https://github.com/tadasant/zimmer/issues/509)). ERROR is reserved for the failures that
+earn it: the give-up line above, the rescues where a transient failure loses work the deferral
+cannot bring back (`#process_message`, whose caller advances the cursor past that message either
+way, and `#fetch_recent_history`, which degrades to an empty slice its callers finish the sweep
+trusting), and anything that is not transient in the first place. See
+[observability](/operate/observability/#a-failure-the-code-recovered-from-is-logged-at-warn-not-error).
 
 ## Queue recovery mode
 
